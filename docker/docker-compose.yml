@@ -1,0 +1,76 @@
+# Copyright 2026 Codevar
+# Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in
+# compliance with the License. You may obtain a copy of the License at
+#
+#   https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software distributed under the License is
+# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and limitations under the License.
+
+version: '3.8'
+
+services:
+  # Linux build service
+  linux-build:
+    build:
+      context: ..
+      dockerfile: linux/Dockerfile
+    image: codevar:linux-latest
+    container_name: codevar-linux-build
+    volumes:
+      - ../target:/app/target
+    command: bash -c "cargo build --workspace --release"
+
+  # macOS build service (cross-compilation)
+  macos-build:
+    build:
+      context: ..
+      dockerfile: macos/Dockerfile
+    image: codevar:macos-latest
+    container_name: codevar-macos-build
+    volumes:
+      - ../target:/app/target
+    command: bash -c "cargo build --workspace --release --target x86_64-apple-darwin"
+
+  # Windows build service (cross-compilation)
+  windows-build:
+    build:
+      context: ..
+      dockerfile: windows/Dockerfile
+    image: codevar:windows-latest
+    container_name: codevar-windows-build
+    volumes:
+      - ../target:/app/target
+    command: bash -c "cargo build --workspace --release --target x86_64-pc-windows-gnu"
+
+  # WASM build service
+  wasm-build:
+    build:
+      context: ..
+      dockerfile: wasm/Dockerfile
+    image: codevar:wasm-latest
+    container_name: codevar-wasm-build
+    volumes:
+      - ../pkg:/app/pkg
+    command: bash -c "cd codevar-core && wasm-pack build --release --out-dir ../../pkg/codevar-core"
+
+  # Development environment
+  dev:
+    build:
+      context: ..
+      dockerfile: linux/Dockerfile
+    image: codevar:dev-latest
+    container_name: codevar-dev
+    volumes:
+      - ..:/app
+      - cargo-cache:/usr/local/cargo/registry
+      - target-cache:/app/target
+    working_dir: /app
+    command: bash
+    stdin_open: true
+    tty: true
+
+volumes:
+  cargo-cache:
+  target-cache:

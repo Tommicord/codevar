@@ -1,0 +1,8 @@
+[build]
+target-dir = "target"
+
+[term]
+verbose = true
+
+[target.wasm32-unknown-unknown]
+runner = "wasm-server-runner"

@@ -1,0 +1,15 @@
+*.iml
+.gradle
+.idea/
+target/
+.DS_Store
+app/google-services.json
+build/
+/captures
+.externalNativeBuild
+local.properties
+cmake-build-debug/
+external/
+latest/
+tmp/
+.vs/

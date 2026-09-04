@@ -1,0 +1,11 @@
+version: "3.9"
+services:
+  codevar:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/usr/src/codevar:cached
+    command: bash -lc "cargo test --verbose"
+    environment:
+      CARGO_TERM_COLOR: always

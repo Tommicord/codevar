@@ -1,0 +1,19 @@
+[package]
+name = "codevar-gpu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "GPU compute abstraction layer for CUDA and Vulkan"
+
+[lib]
+name = "codevar_gpu"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ash = "0.38"
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.14"

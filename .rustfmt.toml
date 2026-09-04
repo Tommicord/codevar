@@ -1,0 +1,7 @@
+max_width = 90
+style_edition = "2024"
+hard_tabs = false
+tab_spaces = 4
+reorder_imports = true
+use_field_init_shorthand = true
+chain_width = 60

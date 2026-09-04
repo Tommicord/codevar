@@ -1,0 +1,100 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'net.codevar'
+    compileSdk 37
+
+    defaultConfig {
+        applicationId "net.codevar"
+        minSdkVersion 29
+        targetSdkVersion 37
+        versionCode 1
+        versionName "1.0"
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            abiFilters 'arm64-v8a', 'x86_64', 'x86', 'armeabi-v7a'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ['src/main/jniLibs']
+        }
+        test {
+            java.srcDirs = ['src/test/java']
+        }
+    }
+
+    testOptions {
+        unitTests.returnDefaultValues = true
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.19.0'
+    implementation 'androidx.appcompat:appcompat:1.7.1'
+    implementation 'com.google.android.material:material:1.14.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.2.1'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.mockito:mockito-inline:5.2.0'
+    androidTestImplementation 'org.mockito:mockito-android:5.23.0'
+    androidTestImplementation 'androidx.test.ext:junit:1.3.0'
+    androidTestImplementation 'androidx.test:runner:1.7.0'
+    androidTestImplementation 'androidx.test.espresso:espresso-core:3.7.0'
+}
+
+tasks.register('addRustTargets', Exec) {
+    commandLine 'rustup', 'target', 'add', 'x86_64-linux-android'
+    commandLine 'rustup', 'target', 'add', 'armv7-linux-androideabi'
+    commandLine 'rustup', 'target', 'add', 'aarch64-linux-android'
+}
+
+tasks.register('buildRustLib', Exec) {
+    workingDir "$projectDir/../"
+    commandLine 'cargo', 'ndk', '-t', 'arm64-v8a', '-t', 'x86_64', '-t', 'armeabi-v7a', 'build', '--release'
+}
+
+tasks.register('copyRustLibs', Copy) {
+    dependsOn buildRustLib
+    duplicatesStrategy DuplicatesStrategy.INCLUDE
+
+    from("$projectDir/target/aarch64-linux-android/release") {
+        include('*.so')
+        into("arm64-v8a")
+    }
+
+    from("$projectDir/../target/x86_64-linux-android/release") {
+        include('*.so')
+        into("x86_64")
+    }
+
+    from("$projectDir/../target/x86-linux-android/release") {
+        include('*.so')
+        into("x86")
+    }
+
+    from("$projectDir/../target/armv7-linux-androideabi/release") {
+        include('*.so')
+        into("armeabi-v7a")
+    }
+    into("$projectDir/src/main/jniLibs")
+}
+
+preBuild.dependsOn addRustTargets
+preBuild.dependsOn copyRustLibs

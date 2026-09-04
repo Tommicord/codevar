@@ -1,0 +1,24 @@
+[package]
+name = "codevar-fparser"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Lightweight file type detection, header validation, and tokenization utilities"
+
+[lib]
+name = "codevar_fparser"
+crate-type = ["cdylib", "rlib"]
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+webpki-roots = { workspace = true }
+arc-swap = { workspace = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.14"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1"

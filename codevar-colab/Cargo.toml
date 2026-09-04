@@ -1,0 +1,46 @@
+[package]
+name = "codevar-colab"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+codevar-core = { path = "../codevar-core" }
+pem = { workspace = true }
+sha1 = { workspace = true }
+sha2 = { workspace = true }
+hkdf = { workspace = true }
+hmac = { workspace = true }
+p256 = { workspace = true }
+p384 = { workspace = true }
+x25519-dalek = { workspace = true }
+rsa = { workspace = true }
+ed25519-dalek = { workspace = true }
+ecdsa = { workspace = true }
+elliptic-curve = { workspace = true }
+pkcs8 = { workspace = true }
+x509-parser = { workspace = true }
+getrandom = { workspace = true }
+rand_core = { workspace = true }
+subtle = { workspace = true }
+zeroize = { workspace = true }
+bsize = "0.3"
+rand = "0.10"
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "aws_lc_rs", "pem"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+webpki-roots = { workspace = true }
+arc-swap = { workspace = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.14"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1"
+
+[dev-dependencies]
+webpki-roots = { workspace = true }

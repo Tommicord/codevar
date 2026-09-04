@@ -1,0 +1,422 @@
+# AGENTS.md
+
+Instructions for AI coding agents working in the Codevar repository.
+
+## Project overview
+
+Codevar is a high-performance code editor targeting for WASM (web) with plans for native desktop and mobile applications. The core library is written in Rust and the project is in early development. 
+
+### Key Features
+
+- **WebAssembly Target**: Optimized for browser-based deployment with wasm-pack
+- **Vulkan Graphics**: High-performance rendering using Vulkan graphics API
+- **Collaborative Editing**: Real-time collaborative editing with CRDT-like conflict resolution
+- **Cross-Platform**: Support for web, desktop, and mobile platforms
+- **AI Integration**: Designed for future integration with AI agents like Claude Code
+- **High Performance**: SIMD optimizations and GPU compute shader support for parallel algorithms
+
+### Architecture
+
+The project is organized into three main crates:
+
+- **codevar-core**: Core library with text editing, compression, and utility functions
+- **codevar-colab**: Collaborative editing features including the Mergen algorithm
+- **codevar-fparser**: File parsing and syntax highlighting capabilities
+
+### Parallel Computing Strategy
+
+Codevar is designed to leverage parallel computing across multiple levels:
+
+- **CPU SIMD**: AVX2/SSE4.1 optimizations for x86_64, ARM NEON for mobile
+- **GPU Compute**: Planned CUDA and Vulkan compute shader support for parallel algorithms
+- **Multi-threading**: Rayon and tokio for CPU parallelism
+- **Web Workers**: Parallel processing in WASM environment
+
+The Mergen algorithm (in `codevar-colab/src/userclient/mergen`) is specifically designed for GPU-friendly parallel execution, using block-based processing (8×8 or 16×16 blocks) for optimal GPU thread scheduling and memory coalescing.
+
+## Environment
+
+- **Rust**: 1.93.0 (pinned in `rust-toolchain.toml`)
+- **Edition**: 2024
+- **License**: Apache-2.0 — preserve the copyright header when creating new source files
+
+## Commands
+
+Run from the repository root:
+
+```bash
+# Build
+cargo build --workspace
+
+# Run all tests
+cargo test --workspace
+
+# Format (must pass in CI)
+cargo fmt --all
+
+# Lint (must pass in CI; warnings are errors)
+cargo clippy --workspace --all-targets -- -D warnings
+
+# Benchmarks (UTF-8/16/32 encoding)
+cargo bench -p codevar-core
+```
+
+CI (`.github/workflows/rust.yml`) runs build, test, `cargo fmt --check`, and clippy on every push/PR to `main`.
+
+```
+
+## Coding conventions
+
+### Style
+
+- Follow `rustfmt` settings in `.rustfmt.toml` (90-column width, 4-space indent, edition 2024).
+- Clippy is enabled with `clippy::all` and `clippy::pedantic` at the crate level.
+- Use `` on hot-path small functions, matching existing code.
+- `unsafe` is allowed at the crate level; document invariants when adding unsafe blocks.
+
+### File headers
+
+New Rust files must include the Apache 2.0 copyright header used elsewhere:
+
+```rust
+//! Copyright 2026 Codevar
+//! Licensed under the Apache License, Version 2.0 (the
+//! "License"); you may not use this file except in
+//! compliance with the License. You may obtain a copy of the
+//! License at
+//!
+//!   https://www.apache.org/licenses/LICENSE-2.0
+//!
+//! Unless required by applicable law or agreed to in
+//! writing, software distributed under the License is
+//! distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+//! CONDITIONS OF ANY KIND, either express or implied. See
+//! the License for the specific language governing
+//! permissions and limitations under the License.
+```
+
+### Documentation
+
+- Public items should have doc comments (`#![warn(missing_docs)]` is enabled).
+- Match the existing style: type-level docs with field descriptions for `#[repr(C)]` structs.
+
+## Testing
+
+- Add integration tests in `codevar-core/tests/` for behavior that spans modules.
+- Keep unit tests close to the code when they only exercise one module.
+- Run `cargo test --workspace` before finishing work.
+- Only add tests that cover meaningful behavior; avoid trivial assertions.
+
+## Guardrails
+
+### Core Development Principles
+
+- **Minimize scope** — fix the requested problem; do not refactor unrelated code.
+- **Match existing patterns** — read surrounding code before adding new abstractions.
+- **Do not commit** unless explicitly asked.
+- **Do not add Markdown docs** (README, AGENTS.md, etc.) unless requested.
+- **Performance First** — every change should consider performance implications.
+- **Safety First** — leverage Rust's type system for zero-cost safety.
+
+### Error Handling Requirements
+
+- **FORBIDDEN use of `.unwrap()` or `.expect()` in production code** — instead, manage errors with Result or Option and handle them appropriately
+- Use `?` operator for error propagation in functions returning `Result`
+- Use `.unwrap_or()`, `.unwrap_or_default()`, or `.unwrap_or_else()` for fallback values
+- `.unwrap()` and `.expect()` are ONLY permitted in unit tests with explicit justification
+- **FORBIDDEN use of `panic!`, `abort()`, and other panicking methods in production code**
+- **FORBIDDEN use of `assert!`, `assert_eq!`, `assert_ne!` in production code**
+- Use `debug_assert!` only in debug builds for invariant checking
+- Always handle errors comprehensively with appropriate error types
+
+### Logging and Output Requirements
+
+- **FORBIDDEN use of `println!` or `eprintln!` for production logging** — this is a serious project requiring professional logging
+- **ALWAYS use the `log` crate macros**: `error!`, `warn!`, `info!`, `debug!`, `trace!`
+- Configure appropriate log levels for different environments
+- Structure log messages with context and relevant data
+- Avoid excessive logging in hot paths
+
+### Memory and Performance
+
+- Avoid unnecessary cloning and copying
+- Prefer stack allocation over heap allocation when possible
+- Use `&[T]` and `&str` for read-only data views
+- Consider memory layout and cache efficiency
+- Profile performance changes before merging
+- Use `#[inline]` on hot-path small functions
+- Design algorithms for CPU and GPU parallel execution
+
+### Unsafe Code Guidelines
+
+- **Use unsafe only when absolutely necessary** — for SIMD optimizations, memory management, or FFI
+- **Document all invariants clearly** for each unsafe block
+- Provide comprehensive safety documentation
+- Isolate unsafe code in well-defined modules
+- Review unsafe code thoroughly before merging
+- Prefer safe alternatives when available
+
+### Testing Requirements
+
+- Write meaningful tests that cover actual behavior
+- Avoid trivial assertions that don't add value
+- Use property-based testing for data processing algorithms
+- Test error paths and edge cases
+- Maintain high test coverage for critical paths
+- Run `cargo test --workspace` before finishing work
+
+### Documentation Requirements
+
+- Public APIs must have doc comments (`#![warn(missing_docs)]` is enabled)
+- Document all unsafe blocks with safety invariants
+- Provide examples for complex algorithms
+- Document performance characteristics for public APIs
+- Include panics/safety sections where relevant
+- Match existing documentation style
+
+### Module Organization
+
+- Use existing re-exports from public APIs
+- Avoid inventing new module prefixes
+- Follow the existing module structure
+- Keep related functionality together
+- Use proper visibility modifiers
+
+### GPU Compute Shader Development
+
+When adding CUDA or Vulkan compute shader support:
+
+#### CUDA Development
+- Design algorithms for massive parallelism (thousands of threads)
+- Minimize thread divergence within warps
+- Use shared memory for frequently accessed data
+- Coalesce global memory access patterns
+- Avoid atomic operations when possible
+- Design for optimal memory bandwidth utilization
+- **FORBIDDEN deeply nested loops** in kernel code
+- **Minimize branch divergence** within warps
+- **Use appropriate block sizes** (typically 128-512 threads)
+- Profile and optimize based on actual hardware metrics
+
+#### Vulkan Compute Shaders
+- Design compute shaders for execution on various GPU architectures
+- Use work groups sized for optimal occupancy
+- Minimize synchronization points
+- Design for efficient memory access patterns
+- Consider push constants vs uniform buffers for parameters
+- **Minimize barrier usage** — only synchronize when necessary
+- **Use memory barriers** carefully to ensure correctness
+- **Avoid nested barriers** which can cause performance issues
+- Design for lock-free algorithms when possible
+
+#### Cross-Platform Compute
+- Abstract compute operations behind Rust interfaces
+- Support fallback to CPU implementations when GPU unavailable
+- Design algorithms that work efficiently on both CPU and GPU
+- Provide consistent behavior across different backends
+- Implement comprehensive error handling for GPU initialization
+
+### Security Considerations
+
+- Validate all external inputs
+- Use bounded integer operations to prevent overflow
+- Be careful with pointer arithmetic in unsafe code
+- Consider side-channel attacks in cryptographic code
+- Validate array bounds before access
+- Use well-vetted cryptographic libraries
+- Avoid implementing custom cryptography
+- Constant-time operations for secret data
+
+### Code Review Checklist
+
+Before considering code complete, verify:
+
+- [ ] No `.unwrap()` or `.expect()` in production code
+- [ ] No `panic!`, `abort()`, or panicking methods in production code
+- [ ] No `println!` or `eprintln!` — use `log` crate instead
+- [ ] All unsafe code has proper documentation
+- [ ] Public APIs have comprehensive documentation
+- [ ] Error handling is comprehensive and proper
+- [ ] Performance characteristics are considered
+- [ ] Code follows existing patterns and conventions
+- [ ] Tests cover meaningful behavior
+- [ ] No unnecessary dependencies added
+- [ ] SIMD and parallel code is efficient
+- [ ] Memory access patterns are optimized
+- [ ] Code compiles with `cargo build --workspace`
+- [ ] Tests pass with `cargo test --workspace`
+- [ ] Code formatting passes with `cargo fmt --all`
+- [ ] Clippy passes with `cargo clippy --workspace --all-targets -- -D warnings`
+
+## Examples
+
+### Module Usage
+
+```rust
+// Correct: import from the public API
+use codevar_core::wredit::BaseWritable;
+
+// Correct: generic params match existing tests
+let writable: BaseWritable<u32, u8, 4096> = BaseWritable::new();
+```
+
+```rust
+// Avoid: inventing new module prefixes or bypassing re-exports
+use codevar_core::wredit::wredit_base_writable::BaseWritable; // use edit::BaseWritable instead
+```
+
+### Error Handling
+
+```rust
+// Correct: proper error handling
+fn process_data(input: &str) -> Result<ProcessedData, ProcessingError> {
+    let parsed = parse_input(input).map_err(ProcessingError::ParseError)?;
+    let validated = validate_data(&parsed).map_err(ProcessingError::ValidationError)?;
+    Ok(ProcessedData::new(validated))
+}
+
+// Correct: using fallback values
+let value = some_option.unwrap_or(0);
+let value = some_option.unwrap_or_else(|| compute_default());
+```
+
+```rust
+// Forbidden: unwrap in production code
+let value = some_option.unwrap();
+let result = some_result.expect("This should never fail");
+```
+
+### Logging
+
+```rust
+// Correct: using log crate
+use log::{error, warn, info, debug, trace};
+
+error!("Failed to process request: {}", error);
+warn!("Cache miss for key: {}", key);
+info!("User logged in: user_id={}", user_id);
+debug!("Processing block: block_id={}, size={}", block_id, size);
+```
+
+```rust
+// Forbidden: println! in production code
+println!("Processing data: {}", data);
+eprintln!("Error occurred: {}", error);
+```
+
+### Unsafe Code
+
+```rust
+// Correct: unsafe with proper documentation
+/// # Safety
+/// 
+/// This function is safe to call when:
+/// - `ptr` is properly aligned for T
+/// - `ptr` points to initialized memory
+/// - The memory at `ptr` is valid for reads of `size * std::mem::size_of::<T>()` bytes
+#[inline]
+unsafe fn read_array<T>(ptr: *const T, size: usize) -> Vec<T> {
+    let mut result = Vec::with_capacity(size);
+    std::ptr::copy_nonoverlapping(ptr, result.as_mut_ptr(), size);
+    result.set_len(size);
+    result
+}
+```
+
+### GPU Compute Shader Example
+
+```rust
+// Correct: cross-platform compute abstraction
+pub trait ComputeBackend {
+    fn process_blocks(&self, input_a: &[u8], input_b: &[u8]) -> Result<Vec<u8>, ComputeError>;
+    fn is_available(&self) -> bool;
+}
+
+pub struct ComputeManager {
+    backend: Box<dyn ComputeBackend>,
+}
+
+impl ComputeManager {
+    pub fn new() -> Result<Self, ComputeError> {
+        let backend = if VulkanBackend::is_available() {
+            Box::new(VulkanBackend::new()?) as Box<dyn ComputeBackend>
+        } else if CudaBackend::is_available() {
+            Box::new(CudaBackend::new()?) as Box<dyn ComputeBackend>
+        } else {
+            Box::new(CpuBackend::new()) as Box<dyn ComputeBackend>
+        };
+        
+        Ok(Self { backend })
+    }
+}
+```
+
+### CUDA Kernel Example
+
+```cuda
+// Correct: efficient CUDA kernel design
+__global__ void merge_blocks(
+    const uint8_t* __restrict__ data_a,
+    const uint8_t* __restrict__ data_b,
+    uint8_t* __restrict__ result,
+    const size_t block_size
+) {
+    const size_t tid = threadIdx.x;
+    const size_t bid = blockIdx.x;
+    const size_t global_id = bid * blockDim.x + tid;
+    
+    // Shared memory for cache efficiency
+    __shared__ uint8_t shared_a[256];
+    __shared__ uint8_t shared_b[256];
+    
+    // Coalesced memory access
+    if (tid < block_size && global_id < block_size) {
+        shared_a[tid] = data_a[global_id];
+        shared_b[tid] = data_b[global_id];
+    }
+    
+    __syncthreads();
+    
+    // Simple merge logic - avoid nested loops
+    if (tid < block_size && global_id < block_size) {
+        result[global_id] = (shared_a[tid] <= shared_b[tid]) ? 
+                            shared_a[tid] : shared_b[tid];
+    }
+}
+```
+
+### Vulkan Compute Shader Example
+
+```glsl
+// Correct: efficient Vulkan compute shader
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0) readonly buffer InputA {
+    uint data_a[];
+};
+
+layout(set = 0, binding = 1) readonly buffer InputB {
+    uint data_b[];
+};
+
+layout(set = 0, binding = 2) writeonly buffer Output {
+    uint result[];
+};
+
+void main() {
+    uint global_id = gl_GlobalInvocationID.x;
+    
+    // Simple, straightforward computation
+    if (global_id < data_a.length() && global_id < data_b.length()) {
+        result[global_id] = (data_a[global_id] <= data_b[global_id]) ? 
+                           data_a[global_id] : data_b[global_id];
+    }
+}
+```
+
+## Additional Resources
+
+- **CODE_QUALITY.md**: Comprehensive Rust code quality standards and GPU compute shader guidelines
+- **Performance Guidelines**: See CODE_QUALITY.md for detailed performance optimization strategies
+- **GPU Development**: Refer to CODE_QUALITY.md for CUDA/Vulkan compute shader development standards
