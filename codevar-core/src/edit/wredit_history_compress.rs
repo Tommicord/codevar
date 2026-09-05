@@ -24,6 +24,7 @@ use crate::edit::wredit_history::History;
 use crate::edit::wredit_history_txu::HistoryTXU;
 use crate::fcware::compression::{Codec, compress, decompress};
 use crate::fcware::compression_error::Error as CompressionError;
+use std::sync::Arc;
 
 /// Minimum payload size (bytes) before a TXU blob is considered compressible.
 pub const TXU_BLOB_COMPRESS_THRESHOLD: usize = 4_096;
@@ -105,17 +106,11 @@ impl HistoryTXU {
         if self.buffer().len() >= blob_threshold {
             match compress(self.buffer(), codec) {
                 Ok(frame) if frame.len() < self.buffer().len() => {
-                    crate::debug!(
-                        "Compressed TXU buffer {} -> {} bytes",
-                        self.buffer().len(),
-                        frame.len()
-                    );
                     *self.buffer_mut() = frame;
                     changed = true;
                 }
                 Ok(_) => {}
                 Err(err) => {
-                    crate::warn!("TXU buffer compression failed: {}", err);
                     return Err(err);
                 }
             }
@@ -130,7 +125,6 @@ impl HistoryTXU {
                 }
                 Ok(_) => {}
                 Err(err) => {
-                    crate::warn!("TXU ppbuff compression failed: {}", err);
                     // Roll back buffer compression if ppbuff failed mid-way.
                     if changed {
                         let _ = self.ensure_decompressed();
@@ -171,7 +165,6 @@ impl HistoryTXU {
                 match decompress(next.ppbuff()) {
                     Ok(plain) => *next.ppbuff_mut() = plain,
                     Err(err) => {
-                        crate::warn!("TXU next-delta decompress failed: {}", err);
                         return Err(err);
                     }
                 }
@@ -260,7 +253,7 @@ impl History {
                 }
             }
         }
-        *guard = std::sync::Arc::new(vec.into_boxed_slice());
+        *guard = Arc::new(vec.into_boxed_slice());
         compressed_count
     }
 
@@ -278,7 +271,7 @@ impl History {
         }
         let mut vec = guard.to_vec();
         let result = vec[index].ensure_decompressed();
-        *guard = std::sync::Arc::new(vec.into_boxed_slice());
+        *guard = Arc::new(vec.into_boxed_slice());
         result
     }
 }

@@ -15,7 +15,7 @@
 
 //! Cache-friendly LIFO queue implementation for log entries.
 
-use crate::logtrace::log_error::{LogError, LogResult};
+use crate::logtrace::log_error::{Error, Result};
 use std::mem::{self, MaybeUninit};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -131,7 +131,7 @@ impl<T> Queue<T> {
     /// This function allocates memory aligned to cache line boundaries
     /// to optimize for cache-friendly access patterns. The initial
     /// allocation uses heap memory with proper alignment.
-    pub fn new() -> LogResult<Self> {
+    pub fn new() -> Result<Self> {
         Self::with_capacity(DEFAULT_INITIAL_CAPACITY)
     }
 
@@ -146,7 +146,7 @@ impl<T> Queue<T> {
     /// The capacity is aligned to cache line boundaries for optimal
     /// memory access patterns. This reduces cache misses and improves
     /// throughput in multi-threaded scenarios.
-    pub fn with_capacity(capacity: usize) -> LogResult<Self> {
+    pub fn with_capacity(capacity: usize) -> Result<Self> {
         let clamped_capacity = capacity.clamp(MIN_CAPACITY, MAX_CAPACITY);
         let mut entries: Vec<QueueEntry<T>> = Vec::with_capacity(clamped_capacity);
         for _ in 0..clamped_capacity {
@@ -183,7 +183,7 @@ impl<T> Queue<T> {
     ///
     /// Returns an error if the queue is at maximum capacity and
     /// cannot be expanded further.
-    pub fn push(&mut self, value: T) -> LogResult<()> {
+    pub fn push(&mut self, value: T) -> Result<()> {
         let current_count = self.count.fetch_add(1, Ordering::Acquire);
         let current_capacity = self.capacity.load(Ordering::Acquire);
 
@@ -193,7 +193,7 @@ impl<T> Queue<T> {
             } else {
                 self.count.fetch_sub(1, Ordering::Release);
                 self.dropped.fetch_add(1, Ordering::Relaxed);
-                return Err(LogError::QueueCapacityExceeded {
+                return Err(Error::QueueCapacityExceeded {
                     capacity: current_capacity,
                     requested: current_count + 1,
                 });
@@ -227,7 +227,7 @@ impl<T> Queue<T> {
     ///
     /// * `Some(T)` - The popped value if the queue is not empty
     /// * `None` - If the queue is empty
-    pub fn pop(&self) -> Option<T> {
+    pub fn pop(&mut self) -> Option<T> {
         let current_count = self.count.load(Ordering::Acquire);
         if current_count == 0 {
             return None;
@@ -322,7 +322,7 @@ impl<T> Queue<T> {
     /// This function uses exponential growth strategy (2x capacity)
     /// to amortize allocation costs. It uses atomic operations to
     /// ensure thread-safe resizing.
-    fn try_expand_capacity(&self, current_count: usize) -> LogResult<()> {
+    fn try_expand_capacity(&self, current_count: usize) -> Result<()> {
         // Use compare-and-swap to ensure only one thread performs resize
         if self
             .resizing
@@ -330,13 +330,13 @@ impl<T> Queue<T> {
             .is_err()
         {
             // Another thread is already resizing, wait and retry
-            return Err(LogError::LockError("Resize in progress".to_string()));
+            return Err(Error::LockError("Resize in progress".to_string()));
         }
         let current_capacity = self.capacity.load(Ordering::Acquire);
         let new_capacity = (current_capacity * 2).min(self.max_capacity);
         if new_capacity <= current_capacity {
             self.resizing.store(false, Ordering::Release);
-            return Err(LogError::QueueCapacityExceeded {
+            return Err(Error::QueueCapacityExceeded {
                 capacity: current_capacity,
                 requested: current_count + 1,
             });
@@ -389,7 +389,7 @@ impl<T> Queue<T> {
     /// This function uses halving strategy when utilization is below
     /// 25% to reduce memory footprint while maintaining buffer for
     /// incoming entries.
-    fn try_shrink_capacity(&self, current_count: usize) -> LogResult<()> {
+    fn try_shrink_capacity(&self, current_count: usize) -> Result<()> {
         // Use compare-and-swap to ensure only one thread performs resize
         if self
             .resizing
@@ -397,7 +397,7 @@ impl<T> Queue<T> {
             .is_err()
         {
             // Another thread is already resizing
-            return Err(LogError::LockError("Resize in progress".to_string()));
+            return Err(Error::LockError("Resize in progress".to_string()));
         }
         let current_capacity = self.capacity.load(Ordering::Acquire);
         let new_capacity = (current_capacity / 2).max(self.min_capacity);

@@ -61,7 +61,6 @@ impl<Raw, Buf, const GAP_SIZE: usize> StreamWritable<Raw, Buf, GAP_SIZE> {
         if start == end {
             return;
         }
-
         let raw = self.base_mut().raw_mut_ptr() as *mut u32;
         std::ptr::copy(raw.add(end), raw.add(start), length - end);
         std::ptr::write_bytes(raw.add(length - (end - start)), 0, end - start);

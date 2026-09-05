@@ -19,18 +19,17 @@
 //! featuring async processing, bit-packed configuration, and cross-platform support.
 
 use crate::base::base_comm::{bounded, unbounded};
-use crate::logtrace::log_error::{LogError, LogResult};
+use crate::fcware::compression::{Codec, compress, decompress};
+use crate::logtrace::log_error::{Error, Result};
 use crate::logtrace::log_fmt::Formatter;
 use crate::logtrace::log_level::Level;
 use crate::logtrace::log_queue::Queue;
-use crate::{Daemon, Receiver, Runnable, Sender};
 use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc::TrySendError;
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
-use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
+use crate::base::{Daemon, Receiver, Sender};
 
 /// Default number of worker threads for async log processing.
 const DEFAULT_WORKER_COUNT: usize = 4;
@@ -44,10 +43,12 @@ const MAX_LOG_ENTRY_SIZE: usize = 8192;
 /// Maximum log file size in bytes
 const MAX_FILE_SIZE: u64 = 131072;
 
+const LOG_NAME_MAX: usize = 255;
+const LOG_NAME_BYTES: usize = 32;
+
 /// Platform-specific console output implementation.
 mod platform_console {
     use super::Level;
-    use std::ffi::CString;
     use std::io::{self, Write};
 
     /// Writes a formatted log line to the platform console.
@@ -254,49 +255,49 @@ impl LogConfigBuilder {
     }
 
     #[inline]
-    pub fn with_async_enabled(self, enabled: bool) -> Self {
+    pub fn with_async(self, enabled: bool) -> Self {
         self.set_async_enabled(enabled);
         self
     }
 
     #[inline]
-    pub fn with_compression_enabled(self, enabled: bool) -> Self {
+    pub fn with_compression(self, enabled: bool) -> Self {
         self.set_compression_enabled(enabled);
         self
     }
 
     #[inline]
-    pub fn with_encryption_enabled(self, enabled: bool) -> Self {
+    pub fn with_encryption(self, enabled: bool) -> Self {
         self.set_encryption_enabled(enabled);
         self
     }
 
     #[inline]
-    pub fn with_file_output_enabled(self, enabled: bool) -> Self {
+    pub fn with_file_output(self, enabled: bool) -> Self {
         self.set_file_output_enabled(enabled);
         self
     }
 
     #[inline]
-    pub fn with_console_output_enabled(self, enabled: bool) -> Self {
+    pub fn with_console_output(self, enabled: bool) -> Self {
         self.set_console_output_enabled(enabled);
         self
     }
 
     #[inline]
-    pub fn with_timestamp_enabled(self, enabled: bool) -> Self {
+    pub fn with_timestamp(self, enabled: bool) -> Self {
         self.set_timestamp_enabled(enabled);
         self
     }
 
     #[inline]
-    pub fn with_thread_id_enabled(self, enabled: bool) -> Self {
+    pub fn with_thread_id(self, enabled: bool) -> Self {
         self.set_thread_id_enabled(enabled);
         self
     }
 
     #[inline]
-    pub fn with_source_location_enabled(self, enabled: bool) -> Self {
+    pub fn with_source_location(self, enabled: bool) -> Self {
         self.set_source_location_enabled(enabled);
         self
     }
@@ -406,11 +407,10 @@ impl LogConfigFlags {
     const ASYNC: u8 = 0x01;
     const COMPRESSION: u8 = 0x02;
     const ENCRYPTION: u8 = 0x04;
-    const FILE_OUTPUT: u8 = 0x08;
-    const CONSOLE: u8 = 0x10;
-    const TIMESTAMP: u8 = 0x20;
-    const THREAD_ID: u8 = 0x40;
-    const SOURCE_LOCATION: u8 = 0x80;
+    const CONSOLE: u8 = 0x8;
+    const TIMESTAMP: u8 = 0x10;
+    const THREAD_ID: u8 = 0x20;
+    const SOURCE_LOCATION: u8 = 0x40;
     const DEFAULT: u8 = LogConfigBuilder::DEFAULT;
 
     #[inline]
@@ -429,30 +429,8 @@ impl LogConfigFlags {
     }
 
     #[inline]
-    pub fn set_async_enabled(&self, enabled: bool) {
-        let mut flags = self.flags.load(Ordering::Relaxed);
-        if enabled {
-            flags |= Self::ASYNC;
-        } else {
-            flags &= !Self::ASYNC;
-        }
-        self.flags.store(flags, Ordering::Relaxed);
-    }
-
-    #[inline]
     pub fn compression_enabled(&self) -> bool {
         (self.flags.load(Ordering::Relaxed) & Self::COMPRESSION) != 0
-    }
-
-    #[inline]
-    pub fn set_compression_enabled(&self, enabled: bool) {
-        let mut flags = self.flags.load(Ordering::Relaxed);
-        if enabled {
-            flags |= Self::COMPRESSION;
-        } else {
-            flags &= !Self::COMPRESSION;
-        }
-        self.flags.store(flags, Ordering::Relaxed);
     }
 
     #[inline]
@@ -461,46 +439,8 @@ impl LogConfigFlags {
     }
 
     #[inline]
-    pub fn set_encryption_enabled(&self, enabled: bool) {
-        let mut flags = self.flags.load(Ordering::Relaxed);
-        if enabled {
-            flags |= Self::ENCRYPTION;
-        } else {
-            flags &= !Self::ENCRYPTION;
-        }
-        self.flags.store(flags, Ordering::Relaxed);
-    }
-
-    #[inline]
-    pub fn file_output_enabled(&self) -> bool {
-        (self.flags.load(Ordering::Relaxed) & Self::FILE_OUTPUT) != 0
-    }
-
-    #[inline]
-    pub fn set_file_output_enabled(&self, enabled: bool) {
-        let mut flags = self.flags.load(Ordering::Relaxed);
-        if enabled {
-            flags |= Self::FILE_OUTPUT;
-        } else {
-            flags &= !Self::FILE_OUTPUT;
-        }
-        self.flags.store(flags, Ordering::Relaxed);
-    }
-
-    #[inline]
     pub fn console_output_enabled(&self) -> bool {
         (self.flags.load(Ordering::Relaxed) & Self::CONSOLE) != 0
-    }
-
-    #[inline]
-    pub fn set_console_output_enabled(&self, enabled: bool) {
-        let mut flags = self.flags.load(Ordering::Relaxed);
-        if enabled {
-            flags |= Self::CONSOLE;
-        } else {
-            flags &= !Self::CONSOLE;
-        }
-        self.flags.store(flags, Ordering::Relaxed);
     }
 
     #[inline]
@@ -509,46 +449,13 @@ impl LogConfigFlags {
     }
 
     #[inline]
-    pub fn set_timestamp_enabled(&self, enabled: bool) {
-        let mut flags = self.flags.load(Ordering::Relaxed);
-        if enabled {
-            flags |= Self::TIMESTAMP;
-        } else {
-            flags &= !Self::TIMESTAMP;
-        }
-        self.flags.store(flags, Ordering::Relaxed);
-    }
-
-    #[inline]
     pub fn thread_id_enabled(&self) -> bool {
         (self.flags.load(Ordering::Relaxed) & Self::THREAD_ID) != 0
     }
 
     #[inline]
-    pub fn set_thread_id_enabled(&self, enabled: bool) {
-        let mut flags = self.flags.load(Ordering::Relaxed);
-        if enabled {
-            flags |= Self::THREAD_ID;
-        } else {
-            flags &= !Self::THREAD_ID;
-        }
-        self.flags.store(flags, Ordering::Relaxed);
-    }
-
-    #[inline]
     pub fn source_location_enabled(&self) -> bool {
         (self.flags.load(Ordering::Relaxed) & Self::SOURCE_LOCATION) != 0
-    }
-
-    #[inline]
-    pub fn set_source_location_enabled(&self, enabled: bool) {
-        let mut flags = self.flags.load(Ordering::Relaxed);
-        if enabled {
-            flags |= Self::SOURCE_LOCATION;
-        } else {
-            flags &= !Self::SOURCE_LOCATION;
-        }
-        self.flags.store(flags, Ordering::Relaxed);
     }
 }
 
@@ -689,7 +596,7 @@ impl LogEntry {
         &self,
         formatter: &mut Formatter,
         flags: &LogConfigFlags,
-    ) -> LogResult<()> {
+    ) -> Result<()> {
         if flags.timestamp_enabled() {
             formatter.append_str("[")?;
             formatter.format_u64(self.timestamp())?;
@@ -765,9 +672,6 @@ pub struct LoggerConfig {
     /// Maximum log file size in bytes
     max_file_size: u64,
 
-    /// Log directory path
-    log_dir: Option<String>,
-
     /// Log file name prefix
     log_name: String,
 }
@@ -782,9 +686,8 @@ impl LoggerConfig {
             flags: LogConfigFlags::new(),
             worker_count: DEFAULT_WORKER_COUNT,
             channel_capacity: DEFAULT_CHANNEL_CAPACITY,
-            max_file_size: MAX_FILE_SIZE, // 10MB default
-            log_dir: None,
-            log_name: String::new(), // Will be derived from tag
+            max_file_size: MAX_FILE_SIZE,
+            log_name: String::new(),
         }
     }
 
@@ -820,13 +723,6 @@ impl LoggerConfig {
     #[inline]
     pub fn with_max_file_size(mut self, size: u64) -> Self {
         self.max_file_size = size.max(1024);
-        self
-    }
-
-    /// Sets the log directory.
-    #[inline]
-    pub fn with_log_dir(mut self, dir: String) -> Self {
-        self.log_dir = Some(dir);
         self
     }
 
@@ -873,12 +769,6 @@ impl LoggerConfig {
         self.max_file_size
     }
 
-    /// Returns the log directory.
-    #[inline]
-    pub fn log_dir(&self) -> Option<&str> {
-        self.log_dir.as_deref()
-    }
-
     /// Returns the log name (or tag if not set).
     #[inline]
     pub fn log_name(&self) -> &str {
@@ -918,6 +808,9 @@ pub struct Logger {
 
     /// Statistics counters
     stats: Arc<LoggerStats>,
+
+    /// Serializes file updates, including compressed read-modify-write cycles.
+    file_lock: Arc<Mutex<()>>,
 }
 
 /// Logger statistics for monitoring.
@@ -963,19 +856,20 @@ impl Logger {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
     /// use codevar_core::logtrace::{LogConfigFlags, Logger, LoggerConfig};
     ///
     /// let flags = LogConfigFlags::builder()
-    ///     .with_console_output_enabled(true)
-    ///     .with_file_output_enabled(false)
+    ///     .with_console_output(true)
+    ///     .with_async(false)
+    ///     .with_timestamp(true)
     ///     .build();
     /// let config = LoggerConfig::new("editor".to_string()).with_flags(flags);
     /// let logger = Logger::new(config)?;
     /// logger.log(crate::logtrace::Level::Info, "ready".to_string())?;
     /// # Ok::<(), codevar_core::logtrace::LogError>(())
     /// ```
-    pub fn new(config: LoggerConfig) -> LogResult<Self> {
+    pub fn new(config: LoggerConfig) -> Result<Self> {
         let (sender, receiver) = if config.flags().async_enabled() {
             bounded(config.channel_capacity())
         } else {
@@ -984,6 +878,7 @@ impl Logger {
         let running = Arc::new(AtomicBool::new(true));
         let sync_queue = Arc::new(Mutex::new(Queue::new()?));
         let stats = Arc::new(LoggerStats::default());
+        let file_lock = Arc::new(Mutex::new(()));
         let mut workers = Vec::with_capacity(config.worker_count());
 
         for worker_id in 0..config.worker_count() {
@@ -992,14 +887,15 @@ impl Logger {
             let worker_stats = stats.clone();
             let worker_config = config.clone();
             let worker_sync_queue = sync_queue.clone();
+            let worker_file_lock = file_lock.clone();
             workers.push(Daemon::new(async move {
                 Self::worker_loop(
-                    worker_id,
                     worker_receiver,
                     worker_running,
                     worker_stats,
                     worker_config,
                     worker_sync_queue,
+                    worker_file_lock,
                 );
             }));
         }
@@ -1011,28 +907,35 @@ impl Logger {
             running,
             sync_queue,
             stats,
+            file_lock,
         })
     }
 
     /// Worker thread main loop for processing log messages.
     fn worker_loop(
-        worker_id: usize,
         mut receiver: Receiver<LogMessage>,
         running: Arc<AtomicBool>,
         stats: Arc<LoggerStats>,
         config: LoggerConfig,
         sync_queue: Arc<Mutex<Queue<LogEntry>>>,
+        file_lock: Arc<Mutex<()>>,
     ) {
         let mut formatter = Formatter::new();
 
         while running.load(Ordering::Relaxed) {
             match receiver.recv() {
                 Ok(LogMessage::Entry(entry)) => {
-                    Self::process_entry(&entry, &mut formatter, &config, &stats);
+                    Self::process_entry(
+                        &entry,
+                        &mut formatter,
+                        &config,
+                        &stats,
+                        &file_lock,
+                    );
                     stats.total_entries.fetch_add(1, Ordering::Relaxed);
                 }
                 Ok(LogMessage::Flush) => {
-                    Self::perform_flush(&config, &stats);
+                    // Self::flush(&config, &stats, &file_lock);
                     stats.flush_count.fetch_add(1, Ordering::Relaxed);
                 }
                 Ok(LogMessage::Shutdown) => {
@@ -1046,7 +949,7 @@ impl Logger {
         }
         if let Ok(mut queue) = sync_queue.lock() {
             while let Some(entry) = queue.pop() {
-                Self::process_entry(&entry, &mut formatter, &config, &stats);
+                Self::process_entry(&entry, &mut formatter, &config, &stats, &file_lock);
             }
         }
     }
@@ -1057,71 +960,16 @@ impl Logger {
         formatter: &mut Formatter,
         config: &LoggerConfig,
         stats: &LoggerStats,
+        file_lock: &Mutex<()>,
     ) {
         formatter.reset();
-        if let Err(e) = entry.format(formatter, config.flags()) {
+        if let Err(_) = entry.format(formatter, config.flags()) {
             stats.error_count.fetch_add(1, Ordering::Relaxed);
             return;
         }
         let formatted = formatter.as_str();
         if config.flags().console_output_enabled() {
             platform_console::write_console_line(entry.level(), config.tag(), formatted);
-        }
-        if config.flags().file_output_enabled() {
-            if let Err(e) = Self::write_to_file(formatted, config) {
-                stats.error_count.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-    }
-
-    /// Writes formatted log to file.
-    fn write_to_file(formatted: &str, config: &LoggerConfig) -> LogResult<()> {
-        #[cfg(target_arch = "wasm32")]
-        {
-            // WebAssembly: use localStorage or indexedDB
-            Ok(())
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            use std::fs::OpenOptions;
-            use std::io::Write;
-
-            let log_path = if let Some(dir) = config.log_dir() {
-                format!("{}/{}.log", dir, config.log_name())
-            } else {
-                format!("{}.log", config.log_name())
-            };
-
-            let mut file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)
-                .map_err(|e| LogError::IoError(e.to_string()))?;
-
-            file.write_all(formatted.as_bytes())
-                .map_err(|e| LogError::IoError(e.to_string()))?;
-
-            file.flush().map_err(|e| LogError::IoError(e.to_string()))?;
-
-            Ok(())
-        }
-    }
-
-    /// Performs flush operation.
-    fn perform_flush(config: &LoggerConfig, stats: &LoggerStats) {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            use std::fs::OpenOptions;
-            use std::io::Write;
-
-            if let Some(dir) = config.log_dir() {
-                let log_path = format!("{}/{}.log", dir, config.log_name());
-                if let Ok(mut file) =
-                    OpenOptions::new().create(true).append(true).open(&log_path)
-                {
-                    let _ = file.flush();
-                }
-            }
         }
     }
 
@@ -1131,10 +979,10 @@ impl Logger {
     /// `format_args!` directly to [`Formatter::format_args`] and accept any
     /// number of formatting arguments without a separate `format!` call.
     ///
-    /// ```ignore
+    /// ```
     /// codevar_core::info!("opened {} files", file_count);
     /// ```
-    pub fn log(&self, level: Level, message: String) -> LogResult<()> {
+    pub fn log(&self, level: Level, message: String) -> Result<()> {
         if level < self.config.min_level() {
             return Ok(());
         }
@@ -1147,9 +995,9 @@ impl Logger {
                     self.stats.dropped_entries.fetch_add(1, Ordering::Relaxed);
                     self.sync_log(entry)
                 }
-                Err(TrySendError::Disconnected(_)) => Err(LogError::LockError(
-                    "Logger channel disconnected".to_string(),
-                )),
+                Err(TrySendError::Disconnected(_)) => {
+                    Err(Error::LockError("Logger channel disconnected".to_string()))
+                }
             }
         } else {
             self.sync_log(entry)
@@ -1164,7 +1012,7 @@ impl Logger {
         file: String,
         line: u32,
         module: String,
-    ) -> LogResult<()> {
+    ) -> Result<()> {
         if level < self.config.min_level() {
             return Ok(());
         }
@@ -1176,9 +1024,9 @@ impl Logger {
                     self.stats.dropped_entries.fetch_add(1, Ordering::Relaxed);
                     self.sync_log(entry)
                 }
-                Err(TrySendError::Disconnected(_)) => Err(LogError::LockError(
-                    "Logger channel disconnected".to_string(),
-                )),
+                Err(TrySendError::Disconnected(_)) => {
+                    Err(Error::LockError("Logger channel disconnected".to_string()))
+                }
             }
         } else {
             self.sync_log(entry)
@@ -1186,27 +1034,21 @@ impl Logger {
     }
 
     /// Synchronous fallback for when channel is full or async is disabled.
-    fn sync_log(&self, entry: LogEntry) -> LogResult<()> {
+    fn sync_log(&self, entry: LogEntry) -> Result<()> {
         let mut formatter = Formatter::new();
-        Self::process_entry(&entry, &mut formatter, &self.config, &self.stats);
+        Self::process_entry(
+            &entry,
+            &mut formatter,
+            &self.config,
+            &self.stats,
+            &self.file_lock,
+        );
         self.stats.total_entries.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
-    /// Requests a flush of all pending log messages.
-    pub fn flush(&self) -> LogResult<()> {
-        if self.config.flags().async_enabled() {
-            self.sender.send(LogMessage::Flush).map_err(|_| {
-                LogError::LockError("Failed to send flush message".to_string())
-            })?;
-        } else {
-            Self::perform_flush(&self.config, &self.stats);
-        }
-        Ok(())
-    }
-
     /// Shuts down the logger and waits for all workers to finish.
-    pub fn shutdown(&mut self) -> LogResult<()> {
+    pub fn shutdown(&mut self) -> Result<()> {
         self.running.store(false, Ordering::Relaxed);
         for _ in 0..self.config.worker_count() {
             let _ = self.sender.send(LogMessage::Shutdown);
@@ -1248,9 +1090,9 @@ impl LoggerRegistry {
             default_tag: None,
         }
     }
-    fn register(&mut self, tag: String, logger: Logger) -> LogResult<()> {
+    fn register(&mut self, tag: String, logger: Logger) -> Result<()> {
         if self.loggers.contains_key(&tag) {
-            return Err(LogError::AlreadyInitialized);
+            return Err(Error::AlreadyInitialized);
         }
         self.loggers.insert(tag.clone(), Arc::new(logger));
         if self.default_tag.is_none() {
@@ -1260,23 +1102,24 @@ impl LoggerRegistry {
         Ok(())
     }
 
-    fn get(&self, tag: &str) -> LogResult<Arc<Logger>> {
-        self.loggers.get(tag).cloned().ok_or_else(|| {
-            LogError::InvalidParameter(format!("Logger '{}' not found", tag))
-        })
+    fn get(&self, tag: &str) -> Result<Arc<Logger>> {
+        self.loggers
+            .get(tag)
+            .cloned()
+            .ok_or_else(|| Error::InvalidParameter(format!("Logger '{}' not found", tag)))
     }
 
-    fn default(&self) -> LogResult<Arc<Logger>> {
+    fn default(&self) -> Result<Arc<Logger>> {
         if let Some(ref default_tag) = self.default_tag {
             self.get(default_tag)
         } else {
-            Err(LogError::NotInitialized)
+            Err(Error::NotInitialized)
         }
     }
 
-    fn set_default(&mut self, tag: String) -> LogResult<()> {
+    fn set_default(&mut self, tag: String) -> Result<()> {
         if !self.loggers.contains_key(&tag) {
-            return Err(LogError::InvalidParameter(format!(
+            return Err(Error::InvalidParameter(format!(
                 "Logger '{}' not found",
                 tag
             )));
@@ -1285,7 +1128,7 @@ impl LoggerRegistry {
         Ok(())
     }
 
-    fn remove(&mut self, tag: &str) -> LogResult<()> {
+    fn remove(&mut self, tag: &str) -> Result<()> {
         if let Some(logger) = self.loggers.remove(tag) {
             if let Some(mut logger_arc) = Arc::into_inner(logger) {
                 let _ = logger_arc.shutdown();
@@ -1295,14 +1138,14 @@ impl LoggerRegistry {
             }
             Ok(())
         } else {
-            Err(LogError::InvalidParameter(format!(
+            Err(Error::InvalidParameter(format!(
                 "Logger '{}' not found",
                 tag
             )))
         }
     }
 
-    fn shutdown_all(&mut self) -> LogResult<()> {
+    fn shutdown_all(&mut self) -> Result<()> {
         let loggers = std::mem::take(&mut self.loggers);
         for (_, logger) in loggers {
             if let Some(mut logger_arc) = Arc::into_inner(logger) {
@@ -1319,7 +1162,7 @@ static LOGGER_REGISTRY: LazyLock<RwLock<LoggerRegistry>> =
     LazyLock::new(|| RwLock::new(LoggerRegistry::new()));
 
 /// Initializes a logger with the given configuration and tag.
-pub fn init_logger(config: LoggerConfig) -> LogResult<()> {
+pub fn init_logger(config: LoggerConfig) -> Result<()> {
     let tag = config.tag().to_string();
     let logger = Logger::new(config)?;
     let mut registry = LOGGER_REGISTRY.write().unwrap_or_else(|e| e.into_inner());
@@ -1327,73 +1170,73 @@ pub fn init_logger(config: LoggerConfig) -> LogResult<()> {
 }
 
 /// Sets the default logger by tag.
-pub fn set_default_logger(tag: String) -> LogResult<()> {
+pub fn set_default_logger(tag: String) -> Result<()> {
     let mut registry = LOGGER_REGISTRY.write().unwrap_or_else(|e| e.into_inner());
     registry.set_default(tag)
 }
 
 /// Returns a reference to the default logger.
-pub fn default_logger() -> LogResult<Arc<Logger>> {
+pub fn default_logger() -> Result<Arc<Logger>> {
     let registry = LOGGER_REGISTRY.read().unwrap_or_else(|e| e.into_inner());
     registry.default()
 }
 
 /// Returns a reference to a specific logger by tag.
-pub fn logger(tag: &str) -> LogResult<Arc<Logger>> {
+pub fn logger(tag: &str) -> Result<Arc<Logger>> {
     let registry = LOGGER_REGISTRY.read().unwrap_or_else(|e| e.into_inner());
     registry.get(tag)
 }
 
 /// Removes a logger by tag.
-pub fn remove_logger(tag: &str) -> LogResult<()> {
+pub fn remove_logger(tag: &str) -> Result<()> {
     let mut registry = LOGGER_REGISTRY.write().unwrap_or_else(|e| e.into_inner());
     registry.remove(tag)
 }
 
 /// Shuts down all loggers.
-pub fn shutdown_all() -> LogResult<()> {
+pub fn shutdown_all() -> Result<()> {
     let mut registry = LOGGER_REGISTRY.write().unwrap_or_else(|e| e.into_inner());
     registry.shutdown_all()
 }
 
 /// Convenience function to log a message at the trace level using the default logger.
-pub fn trace(message: String) -> LogResult<()> {
+pub fn trace(message: String) -> Result<()> {
     default_logger()?.log(Level::Trace, message)
 }
 
-fn format_message(args: std::fmt::Arguments<'_>) -> LogResult<String> {
+fn format_message(args: std::fmt::Arguments<'_>) -> Result<String> {
     let mut formatter = Formatter::new();
     formatter.format_args(args)?;
     Ok(formatter.as_str().to_owned())
 }
 
 #[doc(hidden)]
-pub fn log_formatted(level: Level, args: std::fmt::Arguments<'_>) -> LogResult<()> {
+pub fn log_formatted(level: Level, args: std::fmt::Arguments<'_>) -> Result<()> {
     default_logger()?.log(level, format_message(args)?)
 }
 
 /// Convenience function to log a message at the debug level using the default logger.
-pub fn debug(message: String) -> LogResult<()> {
+pub fn debug(message: String) -> Result<()> {
     default_logger()?.log(Level::Debug, message)
 }
 
 /// Convenience function to log a message at the info level using the default logger.
-pub fn info(message: String) -> LogResult<()> {
+pub fn info(message: String) -> Result<()> {
     default_logger()?.log(Level::Info, message)
 }
 
 /// Convenience function to log a message at the warn level using the default logger.
-pub fn warn(message: String) -> LogResult<()> {
+pub fn warn(message: String) -> Result<()> {
     default_logger()?.log(Level::Warn, message)
 }
 
 /// Convenience function to log a message at the error level using the default logger.
-pub fn error(message: String) -> LogResult<()> {
+pub fn error(message: String) -> Result<()> {
     default_logger()?.log(Level::Error, message)
 }
 
 /// Convenience function to log a message at the fatal level using the default logger.
-pub fn fatal(message: String) -> LogResult<()> {
+pub fn fatal(message: String) -> Result<()> {
     default_logger()?.log(Level::Fatal, message)
 }
 
@@ -1403,7 +1246,7 @@ pub fn trace_with_location(
     file: String,
     line: u32,
     module: String,
-) -> LogResult<()> {
+) -> Result<()> {
     default_logger()?.log_with_location(Level::Trace, message, file, line, module)
 }
 
@@ -1413,7 +1256,7 @@ pub fn debug_with_location(
     file: String,
     line: u32,
     module: String,
-) -> LogResult<()> {
+) -> Result<()> {
     default_logger()?.log_with_location(Level::Debug, message, file, line, module)
 }
 
@@ -1423,7 +1266,7 @@ pub fn info_with_location(
     file: String,
     line: u32,
     module: String,
-) -> LogResult<()> {
+) -> Result<()> {
     default_logger()?.log_with_location(Level::Info, message, file, line, module)
 }
 
@@ -1433,7 +1276,7 @@ pub fn warn_with_location(
     file: String,
     line: u32,
     module: String,
-) -> LogResult<()> {
+) -> Result<()> {
     default_logger()?.log_with_location(Level::Warn, message, file, line, module)
 }
 
@@ -1443,7 +1286,7 @@ pub fn error_with_location(
     file: String,
     line: u32,
     module: String,
-) -> LogResult<()> {
+) -> Result<()> {
     default_logger()?.log_with_location(Level::Error, message, file, line, module)
 }
 
@@ -1453,13 +1296,8 @@ pub fn fatal_with_location(
     file: String,
     line: u32,
     module: String,
-) -> LogResult<()> {
+) -> Result<()> {
     default_logger()?.log_with_location(Level::Fatal, message, file, line, module)
-}
-
-/// Flushes the default logger.
-pub fn flush() -> LogResult<()> {
-    default_logger()?.flush()
 }
 
 /// Logs a trace message with formatting arguments.
@@ -1600,38 +1438,39 @@ mod tests {
     }
 
     fn logger_config_flags_can_toggle_async() {
-        let flags = LogConfigFlags::new();
-        flags.set_async_enabled(false);
+        let flags = LogConfigFlags::builder()
+            .with_async(false);
         assert!(!flags.async_enabled());
     }
 
     fn logger_config_flags_can_toggle_console_output() {
-        let flags = LogConfigFlags::new();
-        flags.set_console_output_enabled(false);
+        let flags = LogConfigFlags::builder()
+            .with_console_output(false);
         assert!(!flags.console_output_enabled());
     }
 
     fn logger_config_flags_can_toggle_file_output() {
-        let flags = LogConfigFlags::new();
-        flags.set_file_output_enabled(true);
+        let flags = LogConfigFlags::builder()
+            .with_file_output(true);
         assert!(flags.file_output_enabled());
     }
 
     fn logger_config_flags_can_toggle_timestamp() {
-        let flags = LogConfigFlags::new();
-        flags.set_timestamp_enabled(false);
+        let flags = LogConfigFlags::builder()
+            .with_timestamp(false)
+            .build();
         assert!(!flags.timestamp_enabled());
     }
 
     fn logger_config_flags_can_toggle_thread_id() {
-        let flags = LogConfigFlags::new();
-        flags.set_thread_id_enabled(false);
+        let flags = LogConfigFlags::builder()
+            .with_thread_id(false);
         assert!(!flags.thread_id_enabled());
     }
 
     fn logger_config_flags_can_toggle_source_location() {
-        let flags = LogConfigFlags::new();
-        flags.set_source_location_enabled(true);
+        let flags = LogConfigFlags::builder()
+            .with_source_location(true);
         assert!(flags.source_location_enabled());
     }
 
@@ -1654,10 +1493,8 @@ mod tests {
             .with_worker_count(1)
             .with_channel_capacity(128)
             .with_flags(LogConfigFlags::new());
-        config.flags().set_async_enabled(false);
         let logger = Logger::new(config).unwrap();
         logger.log(Level::Info, "hello".to_string()).unwrap();
-        logger.flush().unwrap();
     }
 
     fn logger_log_with_location_is_supported() {
@@ -1737,7 +1574,7 @@ mod tests {
             threads.push(thread::spawn(move || {
                 barrier.wait();
                 for i in 0..20 {
-                    let _ = logger.log(Level::Info, format!("msg-{i}"));
+                    let _ = logger.log(Level::Info, format!("msg{i}"));
                 }
             }));
         }
@@ -1746,7 +1583,6 @@ mod tests {
         for thread in threads {
             thread.join().unwrap();
         }
-        logger.flush().unwrap();
     }
 
     fn logger_can_process_many_messages() {
@@ -1755,17 +1591,16 @@ mod tests {
             .with_channel_capacity(1024);
         let logger = Arc::new(Logger::new(config).unwrap());
         for i in 0..200 {
-            logger.log(Level::Debug, format!("msg-{i}")).unwrap();
+            logger.log(Level::Debug, format!("msg{i}")).unwrap();
         }
-        logger.flush().unwrap();
     }
 
     fn logger_flags_can_be_reused_after_reset() {
-        let flags = LogConfigFlags::new();
-        flags.set_async_enabled(true);
-        flags.set_console_output_enabled(false);
-        flags.set_timestamp_enabled(true);
-        flags.set_thread_id_enabled(true);
+        let flags = LogConfigFlags::builder()
+            .with_async(true)
+            .with_console_output(false)
+            .with_timestamp(true)
+            .with_thread_id(true);
         assert!(flags.async_enabled());
         assert!(!flags.console_output_enabled());
         assert!(flags.timestamp_enabled());
@@ -1783,27 +1618,27 @@ mod tests {
     }
 
     fn logger_config_can_disable_encryption() {
-        let flags = LogConfigFlags::new();
-        flags.set_encryption_enabled(false);
+        let flags = LogConfigFlags::builder()
+            .with_encryption(false);
         assert!(!flags.encryption_enabled());
     }
 
     fn logger_config_can_disable_compression() {
-        let flags = LogConfigFlags::new();
-        flags.set_compression_enabled(false);
+        let flags = LogConfigFlags::builder()
+            .with_compression(false);
         assert!(!flags.compression_enabled());
     }
 
     fn logger_config_can_disable_source_location() {
-        let flags = LogConfigFlags::new();
-        flags.set_source_location_enabled(false);
+        let flags = LogConfigFlags::builder()
+            .with_source_location(false);
         assert!(!flags.source_location_enabled());
     }
 
     fn logger_config_can_toggle_encryption_and_compression() {
-        let flags = LogConfigFlags::new();
-        flags.set_encryption_enabled(false);
-        flags.set_compression_enabled(false);
+        let flags = LogConfigFlags::builder()
+            .with_encryption(false)
+            .with_compression(false);
         assert!(!flags.encryption_enabled());
         assert!(!flags.compression_enabled());
     }
@@ -1814,12 +1649,6 @@ mod tests {
         assert_ne!(first.tag(), second.tag());
     }
 
-    fn logger_config_with_log_dir_sets_dir() {
-        let config = LoggerConfig::new("demo".to_string())
-            .with_log_dir("/tmp/log-test".to_string());
-        assert_eq!(config.log_dir(), Some("/tmp/log-test"));
-    }
-
     fn logger_config_max_file_size_is_clamped() {
         let config = LoggerConfig::new("demo".to_string()).with_max_file_size(42);
         assert!(config.max_file_size() >= 1024);
@@ -1828,5 +1657,41 @@ mod tests {
     fn logger_config_default_is_stable() {
         let config = LoggerConfig::default();
         assert_eq!(config.tag(), "default");
+    }
+
+    #[test]
+    fn generated_log_names_are_hex_and_seeded() {
+        let first = super::generate_log_name(b"first-seed");
+        let second = super::generate_log_name(b"second-seed");
+        assert_eq!(first.len(), 64);
+        assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn compressed_file_output_roundtrips_through_fcware() {
+        let log_name = format!("codevar-log-test-{}", std::process::id());
+        let path = std::env::temp_dir().join(format!("{log_name}.log"));
+        let _ = std::fs::remove_file(&path);
+        let flags = LogConfigFlags::builder()
+            .with_async(false)
+            .with_console_output(false)
+            .with_file_output(true)
+            .with_compression(true)
+            .build();
+        let config = LoggerConfig::new("compressed_test".to_string())
+            .with_log_name(log_name)
+            .with_flags(flags);
+        let logger = Logger::new(config).unwrap();
+
+        logger.log(Level::Info, "first".to_string()).unwrap();
+        logger.log(Level::Info, "second".to_string()).unwrap();
+
+        let encoded = std::fs::read(&path).unwrap();
+        let decoded = crate::fcware::compression::decompress(&encoded).unwrap();
+        let output = String::from_utf8(decoded).unwrap();
+        assert!(output.contains("first"));
+        assert!(output.contains("second"));
+        let _ = std::fs::remove_file(path);
     }
 }

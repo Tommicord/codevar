@@ -22,7 +22,7 @@ use std::fmt;
 
 /// Errors that can occur during eviction policy operations
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EvictionError {
+pub enum Error {
     /// Buffer is empty, no victims available
     EmptyBuffer,
     /// Requested victim count exceeds available entries
@@ -52,11 +52,11 @@ pub enum EvictionError {
     TelemetryError(String),
 }
 
-impl fmt::Display for EvictionError {
+impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            EvictionError::EmptyBuffer => write!(f, "Eviction buffer is empty"),
-            EvictionError::InsufficientEntries {
+            Error::EmptyBuffer => write!(f, "Eviction buffer is empty"),
+            Error::InsufficientEntries {
                 requested,
                 available,
             } => {
@@ -66,24 +66,24 @@ impl fmt::Display for EvictionError {
                     requested, available
                 )
             }
-            EvictionError::IndexOutOfBounds { index, buffer_len } => {
+            Error::IndexOutOfBounds { index, buffer_len } => {
                 write!(
                     f,
                     "Index {} out of bounds for buffer length {}",
                     index, buffer_len
                 )
             }
-            EvictionError::InvalidThreshold { value, min, max } => {
+            Error::InvalidThreshold { value, min, max } => {
                 write!(
                     f,
                     "Invalid threshold {} (must be {}-{} basis points)",
                     value, min, max
                 )
             }
-            EvictionError::InvalidTelemetry { reason } => {
+            Error::InvalidTelemetry { reason } => {
                 write!(f, "Invalid telemetry: {}", reason)
             }
-            EvictionError::ScoreOverflow {
+            Error::ScoreOverflow {
                 frequency,
                 age_seconds,
             } => {
@@ -93,46 +93,31 @@ impl fmt::Display for EvictionError {
                     frequency, age_seconds
                 )
             }
-            EvictionError::StrategySwitchCooldown { remaining_ms } => {
+            Error::StrategySwitchCooldown { remaining_ms } => {
                 write!(
                     f,
                     "Strategy switch cooldown active: {}ms remaining",
                     remaining_ms
                 )
             }
-            EvictionError::RecomputeCooldown { remaining_ms } => {
+            Error::RecomputeCooldown { remaining_ms } => {
                 write!(f, "Recompute cooldown active: {}ms remaining", remaining_ms)
             }
-            EvictionError::ConfigValidationFailed { field, reason } => {
+            Error::ConfigValidationFailed { field, reason } => {
                 write!(f, "Config validation failed for {}: {}", field, reason)
             }
-            EvictionError::InternalInconsistency { details } => {
+            Error::InternalInconsistency { details } => {
                 write!(f, "Internal inconsistency: {}", details)
             }
-            EvictionError::ConcurrencyConflict => {
+            Error::ConcurrencyConflict => {
                 write!(f, "Concurrency conflict during eviction")
             }
-            EvictionError::TelemetryError(msg) => write!(f, "Telemetry error: {}", msg),
+            Error::TelemetryError(msg) => write!(f, "Telemetry error: {}", msg),
         }
     }
 }
 
-impl std::error::Error for EvictionError {}
+impl std::error::Error for Error {}
 
 /// Result type for eviction operations
-pub type EvictionResult<T> = Result<T, EvictionError>;
-
-/// Validation error for configuration
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ValidationError {
-    pub field: &'static str,
-    pub reason: &'static str,
-}
-
-impl fmt::Display for ValidationError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Validation failed for {}: {}", self.field, self.reason)
-    }
-}
-
-impl std::error::Error for ValidationError {}
+pub type Result<T> = std::result::Result<T, Error>;

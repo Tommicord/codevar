@@ -19,7 +19,7 @@ use std::fmt;
 
 /// Comprehensive error types for logging operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LogError {
+pub enum Error {
     /// Logger is not initialized
     NotInitialized,
     /// Logger is already initialized
@@ -54,12 +54,12 @@ pub enum LogError {
     },
 }
 
-impl fmt::Display for LogError {
+impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LogError::NotInitialized => write!(f, "Logger is not initialized"),
-            LogError::AlreadyInitialized => write!(f, "Logger is already initialized"),
-            LogError::QueueCapacityExceeded {
+            Error::NotInitialized => write!(f, "Logger is not initialized"),
+            Error::AlreadyInitialized => write!(f, "Logger is already initialized"),
+            Error::QueueCapacityExceeded {
                 capacity,
                 requested,
             } => {
@@ -69,28 +69,28 @@ impl fmt::Display for LogError {
                     capacity, requested
                 )
             }
-            LogError::InvalidLogLevel(level) => {
+            Error::InvalidLogLevel(level) => {
                 write!(f, "Invalid log level: {}", level)
             }
-            LogError::PlatformError(msg) => {
+            Error::PlatformError(msg) => {
                 write!(f, "Platform error: {}", msg)
             }
-            LogError::FormatError(msg) => {
+            Error::FormatError(msg) => {
                 write!(f, "Format error: {}", msg)
             }
-            LogError::LockError(msg) => {
+            Error::LockError(msg) => {
                 write!(f, "Thread synchronization error: {}", msg)
             }
-            LogError::AllocationError(msg) => {
+            Error::AllocationError(msg) => {
                 write!(f, "Memory allocation error: {}", msg)
             }
-            LogError::IoError(msg) => {
+            Error::IoError(msg) => {
                 write!(f, "I/O error: {}", msg)
             }
-            LogError::InvalidParameter(msg) => {
+            Error::InvalidParameter(msg) => {
                 write!(f, "Invalid parameter: {}", msg)
             }
-            LogError::BufferOverflow {
+            Error::BufferOverflow {
                 buffer_size,
                 required_size,
             } => {
@@ -104,7 +104,7 @@ impl fmt::Display for LogError {
     }
 }
 
-impl std::error::Error for LogError {}
+impl std::error::Error for Error {}
 
 /// Result type alias for logging operations.
-pub type LogResult<T> = Result<T, LogError>;
+pub type Result<T> = std::result::Result<T, Error>;

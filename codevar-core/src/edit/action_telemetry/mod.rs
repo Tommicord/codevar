@@ -67,7 +67,7 @@ pub use action_cache_builder::ActionCacheBuilder;
 pub use action_cache_config::ActionCacheConfig;
 pub use action_cache_error::{ActionCacheError, ActionCacheResult};
 pub use action_cache_stats::ActionCacheStats;
-pub use action_eviction_error::{EvictionError, EvictionResult};
+pub use action_eviction_error::{Error, Result};
 pub use action_format::{ActionExtraInfo, ActionFlag, ActionKey, PackedAction};
 pub use action_ring::ActionRing;
 pub use action_sync::{

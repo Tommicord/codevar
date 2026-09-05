@@ -541,7 +541,7 @@ mod tests {
 
     fn register_unregister() {
         let ptr = 0x1234;
-        assert!(register_callback(ptr, std::sync::Arc::new(TestCallback)));
+        assert!(register_callback(ptr, Arc::new(TestCallback)));
         assert_eq!(callback_count(), 1);
         assert!(is_callback_registered(ptr));
         assert!(unregister_callback(ptr));
@@ -552,7 +552,7 @@ mod tests {
         let ptr = 0x1234;
         assert!(register_callback_with_priority(
             ptr,
-            std::sync::Arc::new(TestCallback),
+            Arc::new(TestCallback),
             CallbackPriority::High
         ));
         assert!(is_callback_registered(ptr));
@@ -561,7 +561,7 @@ mod tests {
 
     fn stats() {
         let ptr = 0x1234;
-        register_callback(ptr, std::sync::Arc::new(TestCallback));
+        register_callback(ptr, Arc::new(TestCallback));
 
         let stats = get_callback_stats(ptr);
         assert!(stats.is_some());
@@ -578,8 +578,8 @@ mod tests {
     fn registered_pointers() {
         let ptr1 = 0x1234;
         let ptr2 = 0x5678;
-        register_callback(ptr1, std::sync::Arc::new(TestCallback));
-        register_callback(ptr2, std::sync::Arc::new(TestCallback));
+        register_callback(ptr1, Arc::new(TestCallback));
+        register_callback(ptr2, Arc::new(TestCallback));
 
         let pointers = registered_pointers();
         assert_eq!(pointers.len(), 2);
@@ -590,8 +590,8 @@ mod tests {
     }
 
     fn clear_callbacks() {
-        register_callback(1, std::sync::Arc::new(TestCallback));
-        register_callback(2, std::sync::Arc::new(TestCallback));
+        register_callback(1, Arc::new(TestCallback));
+        register_callback(2, Arc::new(TestCallback));
         assert_eq!(callback_count(), 2);
 
         clear_callbacks();
@@ -600,7 +600,7 @@ mod tests {
 
     fn total_events() {
         let ptr = 0x1234;
-        register_callback(ptr, std::sync::Arc::new(TestCallback));
+        register_callback(ptr, Arc::new(TestCallback));
 
         let initial_events = total_events_dispatched();
         let initial_panics = total_panics();
@@ -616,7 +616,7 @@ mod tests {
         let ptr = 0x1234;
         assert!(!is_callback_registered(ptr));
 
-        register_callback(ptr, std::sync::Arc::new(TestCallback));
+        register_callback(ptr, Arc::new(TestCallback));
         assert!(is_callback_registered(ptr));
 
         unregister_callback(ptr);
@@ -624,9 +624,9 @@ mod tests {
     }
 
     fn multiple_callbacks() {
-        register_callback(1, std::sync::Arc::new(TestCallback));
-        register_callback(2, std::sync::Arc::new(TestCallback));
-        register_callback(3, std::sync::Arc::new(TestCallback));
+        register_callback(1, Arc::new(TestCallback));
+        register_callback(2, Arc::new(TestCallback));
+        register_callback(3, Arc::new(TestCallback));
 
         assert_eq!(callback_count(), 3);
         assert_eq!(registered_pointers().len(), 3);

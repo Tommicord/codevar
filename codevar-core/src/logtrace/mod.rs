@@ -22,11 +22,11 @@ pub(crate) mod log_queue;
 pub use log::{
     LogConfigBuilder, LogConfigFlags, LogEntry, LogMessage, Logger, LoggerConfig, debug,
     debug_with_location, default_logger, error, error_with_location, fatal,
-    fatal_with_location, flush, info, info_with_location, init_logger, logger,
-    log_formatted, remove_logger, set_default_logger, shutdown_all, trace,
+    fatal_with_location, info, info_with_location, init_logger,
+    log_formatted, logger, remove_logger, set_default_logger, shutdown_all, trace,
     trace_with_location, warn, warn_with_location,
 };
-pub use log_error::{LogError, LogResult};
+pub use log_error::{Error, Result};
 pub use log_fmt::{Formattable, Formatter};
 pub use log_level::Level;
 pub use log_queue::Queue;

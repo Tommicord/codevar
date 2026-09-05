@@ -26,6 +26,7 @@ use crate::base::base_task::Daemon;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use crate::base::Error;
 
 /// Basis points for percentage calculations (`10_000` = 100%).
 const BASIS_POINTS: u64 = 10_000;
@@ -435,7 +436,7 @@ impl Drop for PeriodicMemoryChecker {
             while Instant::now() < deadline {
                 match daemon.try_get() {
                     Ok(_) => return,
-                    Err(crate::base::base_task::DaemonError::StillRunning) => {
+                    Err(Error::StillRunning) => {
                         std::thread::yield_now();
                     }
                     Err(_) => return,

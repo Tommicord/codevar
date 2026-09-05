@@ -48,7 +48,7 @@ pub enum DaemonState {
 /// Error type for task operations.
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DaemonError {
+pub enum Error {
     /// Task execution failed
     ExecutionFailed,
     /// Task was cancelled
@@ -577,19 +577,19 @@ impl<T> Daemon<T> {
     ///
     /// `Ok(result)` if the task completed, `Err(DaemonError::StillRunning)` if still running,
     /// or `Err(DaemonError::Cancelled)` if the task was cancelled.
-    pub fn try_get(&self) -> Result<T, DaemonError> {
+    pub fn try_get(&self) -> Result<T, Error> {
         if self.inner.is_completed() {
             if let Some(result) = self.inner.take_result() {
                 Ok(result)
             } else {
-                Err(DaemonError::ExecutionFailed)
+                Err(Error::ExecutionFailed)
             }
         } else if self.inner.is_cancelled() {
-            Err(DaemonError::Cancelled)
+            Err(Error::Cancelled)
         } else if self.inner.is_closed() {
-            Err(DaemonError::Closed)
+            Err(Error::Closed)
         } else {
-            Err(DaemonError::StillRunning)
+            Err(Error::StillRunning)
         }
     }
 
@@ -598,18 +598,18 @@ impl<T> Daemon<T> {
     /// # Returns
     ///
     /// `Ok(result)` if the task completed successfully, or an error if the task failed.
-    pub fn get(self) -> Result<T, DaemonError> {
+    pub fn get(self) -> Result<T, Error> {
         loop {
             if self.inner.is_completed() {
                 if let Some(result) = self.inner.take_result() {
                     return Ok(result);
                 } else {
-                    return Err(DaemonError::ExecutionFailed);
+                    return Err(Error::ExecutionFailed);
                 }
             } else if self.inner.is_cancelled() {
-                return Err(DaemonError::Cancelled);
+                return Err(Error::Cancelled);
             } else if self.inner.is_closed() {
-                return Err(DaemonError::Closed);
+                return Err(Error::Closed);
             } else {
                 std::thread::yield_now();
             }
@@ -665,7 +665,7 @@ unsafe impl<T: Send> Send for Runnable<T> {}
 
 #[cfg(test)]
 mod tests {
-    use super::{Daemon, DaemonError, Runnable, ScheduleInfo};
+    use super::{Daemon, Error, Runnable, ScheduleInfo};
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -702,7 +702,7 @@ mod tests {
             7u8
         });
 
-        assert!(matches!(daemon.try_get(), Err(DaemonError::StillRunning)));
+        assert!(matches!(daemon.try_get(), Err(Error::StillRunning)));
         gate.store(true, Ordering::Release);
         assert!(wait_until(Duration::from_millis(500), || {
             daemon.is_completed()
@@ -726,7 +726,7 @@ mod tests {
         assert!(daemon.is_cancelled());
         assert!(matches!(
             daemon.get(),
-            Err(DaemonError::Cancelled) | Err(DaemonError::Closed)
+            Err(Error::Cancelled) | Err(Error::Closed)
         ));
     }
 
@@ -772,7 +772,7 @@ mod tests {
         assert!(!daemon.is_completed());
         assert!(matches!(
             daemon.try_get(),
-            Err(DaemonError::Cancelled) | Err(DaemonError::StillRunning)
+            Err(Error::Cancelled) | Err(Error::StillRunning)
         ));
     }
 
@@ -837,7 +837,7 @@ mod tests {
         );
 
         assert!(runnable.run());
-        assert!(matches!(daemon.try_get(), Err(DaemonError::StillRunning)));
+        assert!(matches!(daemon.try_get(), Err(Error::StillRunning)));
         release.store(true, Ordering::Release);
         assert!(!runnable.run());
         assert_eq!(daemon.get().expect("done"), 5);

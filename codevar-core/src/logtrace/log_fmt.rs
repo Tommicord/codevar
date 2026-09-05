@@ -15,7 +15,7 @@
 
 //! SIMD-accelerated type-safe formatting for log messages.
 
-use crate::logtrace::log_error::{LogError, LogResult};
+use crate::logtrace::log_error::{Error, Result};
 use core::fmt::Debug;
 use std::fmt;
 use std::mem::{self, MaybeUninit};
@@ -115,7 +115,7 @@ impl Formatter {
     ///
     /// This function uses SIMD operations where available for
     /// numeric formatting to maximize throughput.
-    pub fn format<T: Formattable>(&mut self, value: &T) -> LogResult<()> {
+    pub fn format<T: Formattable>(&mut self, value: &T) -> Result<()> {
         value.format_into(self)
     }
 
@@ -128,8 +128,8 @@ impl Formatter {
     /// # Errors
     ///
     /// Returns an error if the formatted output exceeds the buffer capacity.
-    pub fn format_args(&mut self, args: fmt::Arguments<'_>) -> LogResult<()> {
-        fmt::write(self, args).map_err(|_| LogError::BufferOverflow {
+    pub fn format_args(&mut self, args: fmt::Arguments<'_>) -> Result<()> {
+        fmt::write(self, args).map_err(|_| Error::BufferOverflow {
             buffer_size: FORMAT_BUFFER_SIZE,
             required_size: self.position.saturating_add(1),
         })
@@ -144,9 +144,9 @@ impl Formatter {
     /// # Errors
     ///
     /// Returns an error if the buffer would overflow.
-    pub fn append_bytes(&mut self, bytes: &[u8]) -> LogResult<()> {
+    pub fn append_bytes(&mut self, bytes: &[u8]) -> Result<()> {
         if self.position + bytes.len() > FORMAT_BUFFER_SIZE {
-            return Err(LogError::BufferOverflow {
+            return Err(Error::BufferOverflow {
                 buffer_size: FORMAT_BUFFER_SIZE,
                 required_size: self.position + bytes.len(),
             });
@@ -169,7 +169,7 @@ impl Formatter {
     /// # Errors
     ///
     /// Returns an error if the buffer would overflow or the string is not valid UTF-8.
-    pub fn append_str(&mut self, s: &str) -> LogResult<()> {
+    pub fn append_str(&mut self, s: &str) -> Result<()> {
         self.append_bytes(s.as_bytes())
     }
 
@@ -182,7 +182,7 @@ impl Formatter {
     /// # Errors
     ///
     /// Returns an error if the buffer would overflow.
-    pub fn append_char(&mut self, c: char) -> LogResult<()> {
+    pub fn append_char(&mut self, c: char) -> Result<()> {
         let mut buf = [0u8; 4];
         let len = c.encode_utf8(&mut buf).len();
         self.append_bytes(&buf[..len])
@@ -200,7 +200,7 @@ impl Formatter {
     /// for parallel digit conversion, falling back to scalar code on
     /// other architectures.
     #[inline]
-    pub fn format_i64(&mut self, value: i64) -> LogResult<()> {
+    pub fn format_i64(&mut self, value: i64) -> Result<()> {
         if value < 0 {
             self.append_char('-')?;
             self.format_u64(-(value as i64) as u64)
@@ -221,12 +221,12 @@ impl Formatter {
     /// for parallel digit conversion, falling back to scalar code on
     /// other architectures.
     #[inline]
-    pub fn format_u32(&mut self, value: u32) -> LogResult<()> {
+    pub fn format_u32(&mut self, value: u32) -> Result<()> {
         self.format_u64(value as u64)
     }
 
     #[inline]
-    pub fn format_u64(&mut self, value: u64) -> LogResult<()> {
+    pub fn format_u64(&mut self, value: u64) -> Result<()> {
         if value == 0 {
             return self.append_char('0');
         }
@@ -250,7 +250,7 @@ impl Formatter {
     }
 
     #[inline]
-    pub fn format_i128(&mut self, value: i128) -> LogResult<()> {
+    pub fn format_i128(&mut self, value: i128) -> Result<()> {
         if value < 0 {
             self.append_char('-')?;
             return self.format_u128((-(value + 1) as u128) + 1);
@@ -259,7 +259,7 @@ impl Formatter {
     }
 
     #[inline]
-    fn format_u128(&mut self, value: u128) -> LogResult<()> {
+    fn format_u128(&mut self, value: u128) -> Result<()> {
         if value == 0 {
             return self.append_char('0');
         }
@@ -295,7 +295,7 @@ impl Formatter {
     /// library implementation. The Ryu algorithm is based on the
     /// work by Ulf Adams (https://github.com/ulfjack/ryu).
     #[inline]
-    pub fn format_f64(&mut self, value: f64, precision: usize) -> LogResult<()> {
+    pub fn format_f64(&mut self, value: f64, precision: usize) -> Result<()> {
         let precision = precision.min(MAX_FLOAT_PRECISION);
 
         // Handle special cases
@@ -328,7 +328,7 @@ impl Formatter {
     /// This function uses SIMD-accelerated hex conversion for
     /// optimal performance when formatting addresses.
     #[inline]
-    pub fn format_pointer(&mut self, addr: usize) -> LogResult<()> {
+    pub fn format_pointer(&mut self, addr: usize) -> Result<()> {
         self.append_str("0x")?;
         self.format_hex(addr as u64)
     }
@@ -344,7 +344,7 @@ impl Formatter {
     /// This function uses SIMD operations for parallel hex digit
     /// conversion where available.
     #[inline]
-    pub fn format_hex(&mut self, value: u64) -> LogResult<()> {
+    pub fn format_hex(&mut self, value: u64) -> Result<()> {
         if value == 0 {
             return self.append_char('0');
         }
@@ -370,7 +370,7 @@ impl Formatter {
     ///
     /// * `value` - The value to format as binary
     #[inline]
-    pub fn format_binary(&mut self, value: u64) -> LogResult<()> {
+    pub fn format_binary(&mut self, value: u64) -> Result<()> {
         if value == 0 {
             return self.append_str("0b0");
         }
@@ -537,91 +537,91 @@ pub trait Formattable {
     /// # Errors
     ///
     /// Returns an error if formatting fails (e.g., buffer overflow)
-    fn format_into(&self, formatter: &mut Formatter) -> LogResult<()>;
+    fn format_into(&self, formatter: &mut Formatter) -> Result<()>;
 }
 
 // Implement Formattable for primitive types
 
 impl Formattable for i8 {
     #[inline]
-    fn format_into(&self, formatter: &mut Formatter) -> LogResult<()> {
+    fn format_into(&self, formatter: &mut Formatter) -> Result<()> {
         formatter.format_i64(*self as i64)
     }
 }
 
 impl Formattable for i16 {
     #[inline]
-    fn format_into(&self, formatter: &mut Formatter) -> LogResult<()> {
+    fn format_into(&self, formatter: &mut Formatter) -> Result<()> {
         formatter.format_i64(*self as i64)
     }
 }
 
 impl Formattable for i32 {
     #[inline]
-    fn format_into(&self, formatter: &mut Formatter) -> LogResult<()> {
+    fn format_into(&self, formatter: &mut Formatter) -> Result<()> {
         formatter.format_i64(*self as i64)
     }
 }
 
 impl Formattable for i64 {
     #[inline]
-    fn format_into(&self, formatter: &mut Formatter) -> LogResult<()> {
+    fn format_into(&self, formatter: &mut Formatter) -> Result<()> {
         formatter.format_i64(*self)
     }
 }
 
 impl Formattable for i128 {
     #[inline]
-    fn format_into(&self, formatter: &mut Formatter) -> LogResult<()> {
+    fn format_into(&self, formatter: &mut Formatter) -> Result<()> {
         formatter.format_i128(*self)
     }
 }
 
 impl Formattable for u8 {
     #[inline]
-    fn format_into(&self, formatter: &mut Formatter) -> LogResult<()> {
+    fn format_into(&self, formatter: &mut Formatter) -> Result<()> {
         formatter.format_u64(*self as u64)
     }
 }
 
 impl Formattable for u16 {
     #[inline]
-    fn format_into(&self, formatter: &mut Formatter) -> LogResult<()> {
+    fn format_into(&self, formatter: &mut Formatter) -> Result<()> {
         formatter.format_u64(*self as u64)
     }
 }
 
 impl Formattable for u32 {
     #[inline]
-    fn format_into(&self, formatter: &mut Formatter) -> LogResult<()> {
+    fn format_into(&self, formatter: &mut Formatter) -> Result<()> {
         formatter.format_u64(*self as u64)
     }
 }
 
 impl Formattable for usize {
     #[inline]
-    fn format_into(&self, formatter: &mut Formatter) -> LogResult<()> {
+    fn format_into(&self, formatter: &mut Formatter) -> Result<()> {
         formatter.format_u64(*self as u64)
     }
 }
 
 impl Formattable for isize {
     #[inline]
-    fn format_into(&self, formatter: &mut Formatter) -> LogResult<()> {
+    fn format_into(&self, formatter: &mut Formatter) -> Result<()> {
         formatter.format_i64(*self as i64)
     }
 }
 
 impl Formattable for u64 {
     #[inline]
-    fn format_into(&self, formatter: &mut Formatter) -> LogResult<()> {
+    fn format_into(&self, formatter: &mut Formatter) -> Result<()> {
         formatter.format_u64(*self)
     }
 }
 
 impl Formattable for u128 {
     #[inline]
-    fn format_into(&self, formatter: &mut Formatter) -> LogResult<()> {
+    fn format_into(&self, formatter: &mut Formatter) -> Result<()> {
         if *self == 0 {
             return formatter.append_char('0');
         }
@@ -643,21 +643,21 @@ impl Formattable for u128 {
 
 impl Formattable for f32 {
     #[inline]
-    fn format_into(&self, formatter: &mut Formatter) -> LogResult<()> {
+    fn format_into(&self, formatter: &mut Formatter) -> Result<()> {
         formatter.format_f64(*self as f64, 6)
     }
 }
 
 impl Formattable for f64 {
     #[inline]
-    fn format_into(&self, formatter: &mut Formatter) -> LogResult<()> {
+    fn format_into(&self, formatter: &mut Formatter) -> Result<()> {
         formatter.format_f64(*self, 6)
     }
 }
 
 impl Formattable for bool {
     #[inline]
-    fn format_into(&self, formatter: &mut Formatter) -> LogResult<()> {
+    fn format_into(&self, formatter: &mut Formatter) -> Result<()> {
         formatter.append_str(match bool::from(*self) {
             true => "true",
             false => "false",
@@ -667,28 +667,28 @@ impl Formattable for bool {
 
 impl Formattable for char {
     #[inline]
-    fn format_into(&self, formatter: &mut Formatter) -> LogResult<()> {
+    fn format_into(&self, formatter: &mut Formatter) -> Result<()> {
         formatter.append_char(*self)
     }
 }
 
 impl Formattable for str {
     #[inline]
-    fn format_into(&self, formatter: &mut Formatter) -> LogResult<()> {
+    fn format_into(&self, formatter: &mut Formatter) -> Result<()> {
         formatter.append_str(self)
     }
 }
 
 impl Formattable for &str {
     #[inline]
-    fn format_into(&self, formatter: &mut Formatter) -> LogResult<()> {
+    fn format_into(&self, formatter: &mut Formatter) -> Result<()> {
         formatter.append_str(self)
     }
 }
 
 impl Formattable for String {
     #[inline]
-    fn format_into(&self, formatter: &mut Formatter) -> LogResult<()> {
+    fn format_into(&self, formatter: &mut Formatter) -> Result<()> {
         formatter.append_str(self)
     }
 }
@@ -698,7 +698,7 @@ where
     T: Formattable,
 {
     #[inline]
-    fn format_into(&self, formatter: &mut Formatter) -> LogResult<()> {
+    fn format_into(&self, formatter: &mut Formatter) -> Result<()> {
         formatter.append_char('[')?;
         for (i, item) in self.iter().enumerate() {
             if i > 0 {
@@ -715,7 +715,7 @@ where
     T: Formattable,
 {
     #[inline]
-    fn format_into(&self, formatter: &mut Formatter) -> LogResult<()> {
+    fn format_into(&self, formatter: &mut Formatter) -> Result<()> {
         self.as_slice().format_into(formatter)
     }
 }
@@ -725,7 +725,7 @@ where
     T: Formattable,
 {
     #[inline]
-    fn format_into(&self, formatter: &mut Formatter) -> LogResult<()> {
+    fn format_into(&self, formatter: &mut Formatter) -> Result<()> {
         match self {
             Some(value) => {
                 formatter.append_str("Some(")?;
@@ -737,13 +737,13 @@ where
     }
 }
 
-impl<T, E> Formattable for Result<T, E>
+impl<T, E> Formattable for std::result::Result<T, E>
 where
     T: Formattable,
     E: Formattable,
 {
     #[inline]
-    fn format_into(&self, formatter: &mut Formatter) -> LogResult<()> {
+    fn format_into(&self, formatter: &mut Formatter) -> Result<()> {
         match self {
             Ok(value) => {
                 formatter.append_str("Ok(")?;

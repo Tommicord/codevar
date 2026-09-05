@@ -13,12 +13,12 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-use codevar_core::logtrace::LogError;
+use codevar_core::logtrace::Error;
 
 #[test]
 fn log_error_display_not_initialized() {
     assert_eq!(
-        LogError::NotInitialized.to_string(),
+        Error::NotInitialized.to_string(),
         "Logger is not initialized"
     );
 }
@@ -26,7 +26,7 @@ fn log_error_display_not_initialized() {
 #[test]
 fn log_error_display_already_initialized() {
     assert_eq!(
-        LogError::AlreadyInitialized.to_string(),
+        Error::AlreadyInitialized.to_string(),
         "Logger is already initialized"
     );
 }
@@ -34,7 +34,7 @@ fn log_error_display_already_initialized() {
 #[test]
 fn log_error_display_invalid_log_level() {
     assert_eq!(
-        LogError::InvalidLogLevel("bad".to_string()).to_string(),
+        Error::InvalidLogLevel("bad".to_string()).to_string(),
         "Invalid log level: bad"
     );
 }
@@ -42,7 +42,7 @@ fn log_error_display_invalid_log_level() {
 #[test]
 fn log_error_display_platform_error() {
     assert_eq!(
-        LogError::PlatformError("x".to_string()).to_string(),
+        Error::PlatformError("x".to_string()).to_string(),
         "Platform error: x"
     );
 }
@@ -50,7 +50,7 @@ fn log_error_display_platform_error() {
 #[test]
 fn log_error_display_format_error() {
     assert_eq!(
-        LogError::FormatError("fmt".to_string()).to_string(),
+        Error::FormatError("fmt".to_string()).to_string(),
         "Format error: fmt"
     );
 }
@@ -58,7 +58,7 @@ fn log_error_display_format_error() {
 #[test]
 fn log_error_display_lock_error() {
     assert_eq!(
-        LogError::LockError("lock".to_string()).to_string(),
+        Error::LockError("lock".to_string()).to_string(),
         "Thread synchronization error: lock"
     );
 }
@@ -66,7 +66,7 @@ fn log_error_display_lock_error() {
 #[test]
 fn log_error_display_allocation_error() {
     assert_eq!(
-        LogError::AllocationError("alloc".to_string()).to_string(),
+        Error::AllocationError("alloc".to_string()).to_string(),
         "Memory allocation error: alloc"
     );
 }
@@ -74,7 +74,7 @@ fn log_error_display_allocation_error() {
 #[test]
 fn log_error_display_io_error() {
     assert_eq!(
-        LogError::IoError("io".to_string()).to_string(),
+        Error::IoError("io".to_string()).to_string(),
         "I/O error: io"
     );
 }
@@ -82,7 +82,7 @@ fn log_error_display_io_error() {
 #[test]
 fn log_error_display_invalid_parameter() {
     assert_eq!(
-        LogError::InvalidParameter("bad".to_string()).to_string(),
+        Error::InvalidParameter("bad".to_string()).to_string(),
         "Invalid parameter: bad"
     );
 }
@@ -90,7 +90,7 @@ fn log_error_display_invalid_parameter() {
 #[test]
 fn log_error_display_buffer_overflow() {
     assert_eq!(
-        LogError::BufferOverflow {
+        Error::BufferOverflow {
             buffer_size: 4,
             required_size: 8
         }
@@ -102,7 +102,7 @@ fn log_error_display_buffer_overflow() {
 #[test]
 fn log_error_display_queue_capacity_exceeded() {
     assert_eq!(
-        LogError::QueueCapacityExceeded {
+        Error::QueueCapacityExceeded {
             capacity: 16,
             requested: 33
         }
@@ -113,37 +113,37 @@ fn log_error_display_queue_capacity_exceeded() {
 
 #[test]
 fn log_error_clone_preserves_value() {
-    let e = LogError::InvalidParameter("value".to_string());
+    let e = Error::InvalidParameter("value".to_string());
     let clone = e.clone();
     assert_eq!(clone, e);
 }
 
 #[test]
 fn log_error_partial_eq_for_same_variant() {
-    assert_eq!(LogError::NotInitialized, LogError::NotInitialized);
-    assert_ne!(LogError::NotInitialized, LogError::AlreadyInitialized);
+    assert_eq!(Error::NotInitialized, Error::NotInitialized);
+    assert_ne!(Error::NotInitialized, Error::AlreadyInitialized);
 }
 
 #[test]
 fn log_error_debug_string_is_present() {
-    let text = format!("{:?}", LogError::FormatError("fmt".to_string()));
+    let text = format!("{:?}", Error::FormatError("fmt".to_string()));
     assert!(text.contains("FormatError"));
 }
 
 #[test]
 fn log_error_is_error_trait_compatible() {
     fn assert_error<T: std::error::Error>() {}
-    assert_error::<LogError>();
+    assert_error::<Error>();
 }
 
 #[test]
 fn queue_capacity_error_has_expected_state() {
-    let e = LogError::QueueCapacityExceeded {
+    let e = Error::QueueCapacityExceeded {
         capacity: 2,
         requested: 5,
     };
     match e {
-        LogError::QueueCapacityExceeded {
+        Error::QueueCapacityExceeded {
             capacity,
             requested,
         } => {
@@ -156,12 +156,12 @@ fn queue_capacity_error_has_expected_state() {
 
 #[test]
 fn buffer_overflow_error_has_expected_state() {
-    let e = LogError::BufferOverflow {
+    let e = Error::BufferOverflow {
         buffer_size: 32,
         required_size: 64,
     };
     match e {
-        LogError::BufferOverflow {
+        Error::BufferOverflow {
             buffer_size,
             required_size,
         } => {
@@ -174,12 +174,12 @@ fn buffer_overflow_error_has_expected_state() {
 
 #[test]
 fn invalid_level_error_carries_message() {
-    let e = LogError::InvalidLogLevel("invalid".to_string());
-    assert!(matches!(e, LogError::InvalidLogLevel(_)));
+    let e = Error::InvalidLogLevel("invalid".to_string());
+    assert!(matches!(e, Error::InvalidLogLevel(_)));
 }
 
 #[test]
 fn io_error_carries_message() {
-    let e = LogError::IoError("network".to_string());
-    assert!(matches!(e, LogError::IoError(_)));
+    let e = Error::IoError("network".to_string());
+    assert!(matches!(e, Error::IoError(_)));
 }

@@ -619,7 +619,7 @@ mod tests {
     impl TestCallback {
         fn new() -> Self {
             Self {
-                events: std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
+                events: Arc::new(std::sync::RwLock::new(Vec::new())),
             }
         }
 
@@ -663,7 +663,7 @@ mod tests {
 
     fn register_unregister() {
         let manager = CallbackManager::new();
-        let callback = std::sync::Arc::new(TestCallback::new());
+        let callback = Arc::new(TestCallback::new());
 
         assert_eq!(manager.callback_count(), 0);
         assert!(!manager.is_registered(123));
@@ -679,7 +679,7 @@ mod tests {
 
     fn register_with_priority() {
         let manager = CallbackManager::new();
-        let callback = std::sync::Arc::new(TestCallback::new());
+        let callback = Arc::new(TestCallback::new());
 
         manager
             .register_with_priority(123, callback, CallbackPriority::High)
@@ -689,8 +689,8 @@ mod tests {
 
     fn multiple_callbacks() {
         let manager = CallbackManager::new();
-        let callback1 = std::sync::Arc::new(TestCallback::new());
-        let callback2 = std::sync::Arc::new(TestCallback::new());
+        let callback1 = Arc::new(TestCallback::new());
+        let callback2 = Arc::new(TestCallback::new());
 
         manager.register(1, callback1);
         manager.register(2, callback2);
@@ -710,13 +710,13 @@ mod tests {
         let callbacks = vec![
             (
                 1,
-                std::sync::Arc::new(TestCallback::new())
+                Arc::new(TestCallback::new())
                     as std::sync::Arc<dyn InputCallback>,
                 CallbackPriority::Normal,
             ),
             (
                 2,
-                std::sync::Arc::new(TestCallback::new())
+                Arc::new(TestCallback::new())
                     as std::sync::Arc<dyn InputCallback>,
                 CallbackPriority::High,
             ),
@@ -732,7 +732,7 @@ mod tests {
 
     fn event_dispatch() {
         let manager = CallbackManager::new();
-        let callback = std::sync::Arc::new(TestCallback::new());
+        let callback = Arc::new(TestCallback::new());
         let events = callback.events.clone();
 
         manager.register(123, callback);
@@ -756,9 +756,9 @@ mod tests {
 
     fn clear() {
         let manager = CallbackManager::new();
-        manager.register(1, std::sync::Arc::new(TestCallback::new()));
-        manager.register(2, std::sync::Arc::new(TestCallback::new()));
-        manager.register(3, std::sync::Arc::new(TestCallback::new()));
+        manager.register(1, Arc::new(TestCallback::new()));
+        manager.register(2, Arc::new(TestCallback::new()));
+        manager.register(3, Arc::new(TestCallback::new()));
 
         assert_eq!(manager.callback_count(), 3);
 
@@ -768,7 +768,7 @@ mod tests {
 
     fn stats() {
         let manager = CallbackManager::new();
-        let callback = std::sync::Arc::new(TestCallback::new());
+        let callback = Arc::new(TestCallback::new());
 
         manager.register(123, callback);
         manager.on_key_pressed(123, 29, 0);
@@ -787,8 +787,8 @@ mod tests {
 
     fn registered_pointers() {
         let manager = CallbackManager::new();
-        manager.register(1, std::sync::Arc::new(TestCallback::new()));
-        manager.register(2, std::sync::Arc::new(TestCallback::new()));
+        manager.register(1, Arc::new(TestCallback::new()));
+        manager.register(2, Arc::new(TestCallback::new()));
 
         let pointers = manager.registered_pointers();
         assert_eq!(pointers.len(), 2);
@@ -798,8 +798,8 @@ mod tests {
 
     fn replace_callback() {
         let manager = CallbackManager::new();
-        let callback1 = std::sync::Arc::new(TestCallback::new());
-        let callback2 = std::sync::Arc::new(TestCallback::new());
+        let callback1 = Arc::new(TestCallback::new());
+        let callback2 = Arc::new(TestCallback::new());
         let events2 = callback2.events.clone();
 
         manager.register(123, callback1);

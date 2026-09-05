@@ -28,4 +28,4 @@ pub use base_memory::{
     MemoryMonitor, MemoryPressure, MemorySampleCallback, PeriodicMemoryChecker,
     SystemMemory, sample_system_memory,
 };
-pub use base_task::{Daemon, DaemonError, DaemonState, Runnable};
+pub use base_task::{Daemon, Error, DaemonState, Runnable};

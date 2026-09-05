@@ -19,7 +19,7 @@
 //! dynamic threshold calculation based on user activity patterns.
 
 use super::action_cache::ActionCacheEntry;
-use super::action_eviction_error::{EvictionError, EvictionResult};
+use super::action_eviction_error::{Error, Result};
 use std::collections::HashMap;
 use std::sync::RwLock;
 use std::time::Instant;
@@ -31,19 +31,19 @@ pub trait EvictionPolicy<T>: Send + Sync {
         &self,
         buffer: &[Option<T>],
         count: usize,
-    ) -> EvictionResult<Vec<usize>>;
+    ) -> Result<Vec<usize>>;
 
     /// Called when an entry is accessed
-    fn on_access(&mut self, index: usize, entry: &T) -> EvictionResult<()>;
+    fn on_access(&mut self, index: usize, entry: &T) -> Result<()>;
 
     /// Called when an entry is inserted
-    fn on_insert(&mut self, index: usize, entry: &T) -> EvictionResult<()>;
+    fn on_insert(&mut self, index: usize, entry: &T) -> Result<()>;
 
     /// Called when an entry is removed
-    fn on_remove(&mut self, index: usize) -> EvictionResult<()>;
+    fn on_remove(&mut self, index: usize) -> Result<()>;
 
     /// Update dynamic thresholds based on telemetry
-    fn update_thresholds(&mut self, telemetry: &EvictionTelemetry) -> EvictionResult<()>;
+    fn update_thresholds(&mut self, telemetry: &EvictionTelemetry) -> Result<()>;
 
     /// Get policy name
     fn name(&self) -> &'static str;
@@ -227,7 +227,7 @@ impl EvictionPolicy<ActionCacheEntry> for LruEviction {
         &self,
         buffer: &[Option<ActionCacheEntry>],
         count: usize,
-    ) -> EvictionResult<Vec<usize>> {
+    ) -> Result<Vec<usize>> {
         if count == 0 {
             return Ok(Vec::new());
         }
@@ -253,7 +253,7 @@ impl EvictionPolicy<ActionCacheEntry> for LruEviction {
         &mut self,
         index: usize,
         _entry: &ActionCacheEntry,
-    ) -> EvictionResult<()> {
+    ) -> Result<()> {
         self.move_to_front(index);
         Ok(())
     }
@@ -262,12 +262,12 @@ impl EvictionPolicy<ActionCacheEntry> for LruEviction {
         &mut self,
         index: usize,
         _entry: &ActionCacheEntry,
-    ) -> EvictionResult<()> {
+    ) -> Result<()> {
         self.move_to_front(index);
         Ok(())
     }
 
-    fn on_remove(&mut self, index: usize) -> EvictionResult<()> {
+    fn on_remove(&mut self, index: usize) -> Result<()> {
         if let Some(&pos) = self.index_map.get(&index) {
             self.access_order.remove(pos);
             self.index_map.remove(&index);
@@ -278,7 +278,7 @@ impl EvictionPolicy<ActionCacheEntry> for LruEviction {
         Ok(())
     }
 
-    fn update_thresholds(&mut self, telemetry: &EvictionTelemetry) -> EvictionResult<()> {
+    fn update_thresholds(&mut self, telemetry: &EvictionTelemetry) -> Result<()> {
         self.current_threshold_bps = self.threshold_calc.threshold(telemetry);
         Ok(())
     }
@@ -320,10 +320,10 @@ impl FrequencyWeightedEviction {
     fn recompute_scores(
         &self,
         buffer: &[Option<ActionCacheEntry>],
-    ) -> EvictionResult<()> {
+    ) -> Result<()> {
         let now = Instant::now();
         let mut last_computed = self.last_computed.write().map_err(|e| {
-            EvictionError::TelemetryError(format!("Failed to acquire lock: {}", e))
+            Error::TelemetryError(format!("Failed to acquire lock: {}", e))
         })?;
         if now.duration_since(*last_computed) < self.recompute_interval {
             return Ok(());
@@ -332,7 +332,7 @@ impl FrequencyWeightedEviction {
         drop(last_computed);
 
         let mut scores = self.scores.write().map_err(|e| {
-            EvictionError::TelemetryError(format!("Failed to acquire lock: {}", e))
+            Error::TelemetryError(format!("Failed to acquire lock: {}", e))
         })?;
         scores.clear();
         let current_time = current_timestamp_ns();
@@ -367,14 +367,14 @@ impl EvictionPolicy<ActionCacheEntry> for FrequencyWeightedEviction {
         &self,
         buffer: &[Option<ActionCacheEntry>],
         count: usize,
-    ) -> EvictionResult<Vec<usize>> {
+    ) -> Result<Vec<usize>> {
         if count == 0 {
             return Ok(Vec::new());
         }
         self.recompute_scores(buffer)?;
 
         let scores = self.scores.read().map_err(|e| {
-            EvictionError::TelemetryError(format!("Failed to acquire lock: {}", e))
+            Error::TelemetryError(format!("Failed to acquire lock: {}", e))
         })?;
         let mut scored: Vec<_> = scores
             .iter()
@@ -394,13 +394,13 @@ impl EvictionPolicy<ActionCacheEntry> for FrequencyWeightedEviction {
         &mut self,
         index: usize,
         entry: &ActionCacheEntry,
-    ) -> EvictionResult<()> {
+    ) -> Result<()> {
         let current_time = current_timestamp_ns();
         let score = self.threshold_capability.entry_score(entry, current_time);
         self.scores
             .write()
             .map_err(|e| {
-                EvictionError::TelemetryError(format!("Failed to acquire lock: {}", e))
+                Error::TelemetryError(format!("Failed to acquire lock: {}", e))
             })?
             .insert(index, score);
         Ok(())
@@ -410,28 +410,28 @@ impl EvictionPolicy<ActionCacheEntry> for FrequencyWeightedEviction {
         &mut self,
         index: usize,
         entry: &ActionCacheEntry,
-    ) -> EvictionResult<()> {
+    ) -> Result<()> {
         self.on_access(index, entry)
     }
 
-    fn on_remove(&mut self, index: usize) -> EvictionResult<()> {
+    fn on_remove(&mut self, index: usize) -> Result<()> {
         self.scores
             .write()
             .map_err(|e| {
-                EvictionError::TelemetryError(format!("Failed to acquire lock: {}", e))
+                Error::TelemetryError(format!("Failed to acquire lock: {}", e))
             })?
             .remove(&index);
         Ok(())
     }
 
-    fn update_thresholds(&mut self, telemetry: &EvictionTelemetry) -> EvictionResult<()> {
+    fn update_thresholds(&mut self, telemetry: &EvictionTelemetry) -> Result<()> {
         let threshold = self.threshold_capability.threshold(telemetry);
         *self.current_threshold_bps.write().map_err(|e| {
-            EvictionError::TelemetryError(format!("Failed to acquire lock: {}", e))
+            Error::TelemetryError(format!("Failed to acquire lock: {}", e))
         })? = threshold;
         // Adjust min_keep_score based on threshold
         *self.min_keep_score.write().map_err(|e| {
-            EvictionError::TelemetryError(format!("Failed to acquire lock: {}", e))
+            Error::TelemetryError(format!("Failed to acquire lock: {}", e))
         })? = (threshold * 100) / 10000; // Rough mapping
         Ok(())
     }
@@ -496,9 +496,9 @@ impl AdaptiveEviction {
         }
     }
 
-    fn switch_strategy(&self, telemetry: &EvictionTelemetry) -> EvictionResult<()> {
+    fn switch_strategy(&self, telemetry: &EvictionTelemetry) -> Result<()> {
         let mut current_strategy = self.current_strategy.write().map_err(|e| {
-            EvictionError::TelemetryError(format!("Failed to acquire lock: {}", e))
+            Error::TelemetryError(format!("Failed to acquire lock: {}", e))
         })?;
         *current_strategy = match *current_strategy {
             EvictionStrategy::Fw => EvictionStrategy::Lru,
@@ -507,20 +507,20 @@ impl AdaptiveEviction {
         drop(current_strategy);
 
         *self.last_strategy_switch.write().map_err(|e| {
-            EvictionError::TelemetryError(format!("Failed to acquire lock: {}", e))
+            Error::TelemetryError(format!("Failed to acquire lock: {}", e))
         })? = Instant::now();
         let _ = self
             .lru
             .write()
             .map_err(|e| {
-                EvictionError::TelemetryError(format!("Failed to acquire lock: {}", e))
+                Error::TelemetryError(format!("Failed to acquire lock: {}", e))
             })?
             .update_thresholds(telemetry);
         let _ = self
             .frequency
             .write()
             .map_err(|e| {
-                EvictionError::TelemetryError(format!("Failed to acquire lock: {}", e))
+                Error::TelemetryError(format!("Failed to acquire lock: {}", e))
             })?
             .update_thresholds(telemetry);
         Ok(())
@@ -538,20 +538,20 @@ impl EvictionPolicy<ActionCacheEntry> for AdaptiveEviction {
         &self,
         buffer: &[Option<ActionCacheEntry>],
         count: usize,
-    ) -> EvictionResult<Vec<usize>> {
+    ) -> Result<Vec<usize>> {
         if self.should_switch_strategy(&EvictionTelemetry::default()) {
             // Note: We can't actually switch here due to const reference
             // The switch will happen on next update_thresholds call
         }
         let current_strategy = self.current_strategy.read().map_err(|e| {
-            EvictionError::TelemetryError(format!("Failed to acquire lock: {}", e))
+            Error::TelemetryError(format!("Failed to acquire lock: {}", e))
         })?;
         match *current_strategy {
             EvictionStrategy::Lru => self
                 .lru
                 .read()
                 .map_err(|e| {
-                    EvictionError::TelemetryError(format!(
+                    Error::TelemetryError(format!(
                         "Failed to acquire lock: {}",
                         e
                     ))
@@ -561,7 +561,7 @@ impl EvictionPolicy<ActionCacheEntry> for AdaptiveEviction {
                 .frequency
                 .read()
                 .map_err(|e| {
-                    EvictionError::TelemetryError(format!(
+                    Error::TelemetryError(format!(
                         "Failed to acquire lock: {}",
                         e
                     ))
@@ -574,17 +574,17 @@ impl EvictionPolicy<ActionCacheEntry> for AdaptiveEviction {
         &mut self,
         index: usize,
         entry: &ActionCacheEntry,
-    ) -> EvictionResult<()> {
+    ) -> Result<()> {
         self.lru
             .write()
             .map_err(|e| {
-                EvictionError::TelemetryError(format!("Failed to acquire lock: {}", e))
+                Error::TelemetryError(format!("Failed to acquire lock: {}", e))
             })?
             .on_access(index, entry)?;
         self.frequency
             .write()
             .map_err(|e| {
-                EvictionError::TelemetryError(format!("Failed to acquire lock: {}", e))
+                Error::TelemetryError(format!("Failed to acquire lock: {}", e))
             })?
             .on_access(index, entry)?;
         Ok(())
@@ -594,52 +594,52 @@ impl EvictionPolicy<ActionCacheEntry> for AdaptiveEviction {
         &mut self,
         index: usize,
         entry: &ActionCacheEntry,
-    ) -> EvictionResult<()> {
+    ) -> Result<()> {
         self.lru
             .write()
             .map_err(|e| {
-                EvictionError::TelemetryError(format!("Failed to acquire lock: {}", e))
+                Error::TelemetryError(format!("Failed to acquire lock: {}", e))
             })?
             .on_insert(index, entry)?;
         self.frequency
             .write()
             .map_err(|e| {
-                EvictionError::TelemetryError(format!("Failed to acquire lock: {}", e))
+                Error::TelemetryError(format!("Failed to acquire lock: {}", e))
             })?
             .on_insert(index, entry)?;
         Ok(())
     }
 
-    fn on_remove(&mut self, index: usize) -> EvictionResult<()> {
+    fn on_remove(&mut self, index: usize) -> Result<()> {
         self.lru
             .write()
             .map_err(|e| {
-                EvictionError::TelemetryError(format!("Failed to acquire lock: {}", e))
+                Error::TelemetryError(format!("Failed to acquire lock: {}", e))
             })?
             .on_remove(index)?;
         self.frequency
             .write()
             .map_err(|e| {
-                EvictionError::TelemetryError(format!("Failed to acquire lock: {}", e))
+                Error::TelemetryError(format!("Failed to acquire lock: {}", e))
             })?
             .on_remove(index)?;
         Ok(())
     }
 
-    fn update_thresholds(&mut self, telemetry: &EvictionTelemetry) -> EvictionResult<()> {
+    fn update_thresholds(&mut self, telemetry: &EvictionTelemetry) -> Result<()> {
         if self.should_switch_strategy(telemetry) {
             self.switch_strategy(telemetry)?;
         }
         self.lru
             .write()
             .map_err(|e| {
-                EvictionError::TelemetryError(format!("Failed to acquire lock: {}", e))
+                Error::TelemetryError(format!("Failed to acquire lock: {}", e))
             })?
             .update_thresholds(telemetry)?;
         self.frequency
             .write()
             .map_err(|e| {
-                EvictionError::TelemetryError(format!("Failed to acquire lock: {}", e))
+                Error::TelemetryError(format!("Failed to acquire lock: {}", e))
             })?
             .update_thresholds(telemetry)?;
         Ok(())
