@@ -1,0 +1,33 @@
+[package]
+name = "codevar-fastlike-encode"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "codevar_fastlike_encode"
+crate-type = ["cdylib", "rlib"]
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-O4", "--enable-bulk-memory"]
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+webpki-roots = { workspace = true }
+arc-swap = { workspace = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.15.1"
+android_log-sys = "0.3"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_Threading", "Win32_Foundation", "Win32_System_Console", "Win32_System_Diagnostics_Debug"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1"
+
+[dependencies]
+cfg-if = "1.0.5"

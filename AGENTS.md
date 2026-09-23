@@ -32,7 +32,7 @@ Codevar is designed to leverage parallel computing across multiple levels:
 - **Multi-threading**: Rayon and tokio for CPU parallelism
 - **Web Workers**: Parallel processing in WASM environment
 
-The Mergen algorithm (in `codevar-colab/src/userclient/mergen`) is specifically designed for GPU-friendly parallel execution, using block-based processing (8×8 or 16×16 blocks) for optimal GPU thread scheduling and memory coalescing.
+The Mergen algorithm (in `crates/codevar-colab/src/userclient/mergen`) is specifically designed for GPU-friendly parallel execution, using block-based processing (8×8 or 16×16 blocks) for optimal GPU thread scheduling and memory coalescing.
 
 ## Environment
 
@@ -79,7 +79,7 @@ CI (`.github/workflows/rust.yml`) runs build, test, `cargo fmt --check`, and cli
 New Rust files must include the Apache 2.0 copyright header used elsewhere:
 
 ```rust
-//! Copyright 2026 Codevar
+//! Copyright 2026 Codevar Project
 //! Licensed under the Apache License, Version 2.0 (the
 //! "License"); you may not use this file except in
 //! compliance with the License. You may obtain a copy of the
@@ -102,7 +102,7 @@ New Rust files must include the Apache 2.0 copyright header used elsewhere:
 
 ## Testing
 
-- Add integration tests in `codevar-core/tests/` for behavior that spans modules.
+- Add integration tests in `crates/codevar-core/tests/` for behavior that spans modules.
 - Keep unit tests close to the code when they only exercise one module.
 - Run `cargo test --workspace` before finishing work.
 - Only add tests that cover meaningful behavior; avoid trivial assertions.
@@ -350,73 +350,3 @@ impl ComputeManager {
     }
 }
 ```
-
-### CUDA Kernel Example
-
-```cuda
-// Correct: efficient CUDA kernel design
-__global__ void merge_blocks(
-    const uint8_t* __restrict__ data_a,
-    const uint8_t* __restrict__ data_b,
-    uint8_t* __restrict__ result,
-    const size_t block_size
-) {
-    const size_t tid = threadIdx.x;
-    const size_t bid = blockIdx.x;
-    const size_t global_id = bid * blockDim.x + tid;
-    
-    // Shared memory for cache efficiency
-    __shared__ uint8_t shared_a[256];
-    __shared__ uint8_t shared_b[256];
-    
-    // Coalesced memory access
-    if (tid < block_size && global_id < block_size) {
-        shared_a[tid] = data_a[global_id];
-        shared_b[tid] = data_b[global_id];
-    }
-    
-    __syncthreads();
-    
-    // Simple merge logic - avoid nested loops
-    if (tid < block_size && global_id < block_size) {
-        result[global_id] = (shared_a[tid] <= shared_b[tid]) ? 
-                            shared_a[tid] : shared_b[tid];
-    }
-}
-```
-
-### Vulkan Compute Shader Example
-
-```glsl
-// Correct: efficient Vulkan compute shader
-#version 450
-layout(local_size_x = 16, local_size_y = 16) in;
-
-layout(set = 0, binding = 0) readonly buffer InputA {
-    uint data_a[];
-};
-
-layout(set = 0, binding = 1) readonly buffer InputB {
-    uint data_b[];
-};
-
-layout(set = 0, binding = 2) writeonly buffer Output {
-    uint result[];
-};
-
-void main() {
-    uint global_id = gl_GlobalInvocationID.x;
-    
-    // Simple, straightforward computation
-    if (global_id < data_a.length() && global_id < data_b.length()) {
-        result[global_id] = (data_a[global_id] <= data_b[global_id]) ? 
-                           data_a[global_id] : data_b[global_id];
-    }
-}
-```
-
-## Additional Resources
-
-- **CODE_QUALITY.md**: Comprehensive Rust code quality standards and GPU compute shader guidelines
-- **Performance Guidelines**: See CODE_QUALITY.md for detailed performance optimization strategies
-- **GPU Development**: Refer to CODE_QUALITY.md for CUDA/Vulkan compute shader development standards

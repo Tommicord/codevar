@@ -1,0 +1,40 @@
+[package]
+name = "codevar-tlsws"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "codevar_tlsws"
+
+[dependencies]
+codevar-fastlike-encode = { path = "../codevar-fastlike-encode" }
+pem = { workspace = true }
+sha1 = { workspace = true }
+sha2 = { workspace = true }
+hkdf = { workspace = true }
+hmac = { workspace = true }
+p256 = { workspace = true }
+p384 = { workspace = true }
+x25519-dalek = { workspace = true }
+rsa = { workspace = true }
+ed25519-dalek = { workspace = true }
+ecdsa = { workspace = true }
+elliptic-curve = { workspace = true }
+pkcs8 = { workspace = true }
+x509-parser = { workspace = true }
+getrandom = { workspace = true }
+rand_core = { workspace = true }
+subtle = { workspace = true }
+zeroize = { workspace = true }
+bsize = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+webpki-roots = { workspace = true }
+arc-swap = { workspace = true }
+
+[dev-dependencies]
+webpki-roots = { workspace = true }

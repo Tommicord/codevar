@@ -1,10 +1,7 @@
 [workspace]
-members = [
-    "codevar-colab", 
-    "codevar-core", 
-    "codevar-fparser",
-    "codevar-gpu"
-]
+members = ["crates/codevar-baseutil",
+    "crates/codevar-fastlike-encode", "crates/codevar-fcware",
+    "crates/codevar-tlsws", "crates/codevar-wredit"]
 resolver = "2"
 
 [workspace.package]

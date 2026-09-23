@@ -1,0 +1,19 @@
+[package]
+name = "codevar-baseutil"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "codevar_baseutil"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+webpki-roots = { workspace = true }
+arc-swap = { workspace = true }
+
+[dependencies]
+cfg-if = "1.0.5"
+windows-link = "0.100.0"
