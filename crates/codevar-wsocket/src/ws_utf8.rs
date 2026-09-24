@@ -125,11 +125,11 @@ impl Utf8Validator {
 
 /// Validates that `bytes` is a complete, well-formed UTF-8 string.
 ///
-/// Uses the table-driven validator from `codevar-fastlike-encode`; the
+/// Uses the table-driven validator from `codevar-textlike-encode`; the
 /// streaming [`Utf8Validator`] remains for fragment boundaries where a
 /// multi-byte sequence may be split across feeds.
 pub fn validate_utf8(bytes: &[u8]) -> WsResult<()> {
-    if codevar_fastlike_encode::encoding_utf8::utf8_valid_up_to(bytes) == bytes.len() {
+    if codevar_textlike_encode::encoding_utf8::utf8_valid_up_to(bytes) == bytes.len() {
         Ok(())
     } else {
         Err(WsError::InvalidUtf8)

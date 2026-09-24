@@ -1,5 +1,5 @@
 [package]
-name = "codevar-fastlike-encode"
+name = "codevar-textlike-encode"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,7 +11,7 @@ repository.workspace = true
 simd-accel = []
 
 [lib]
-name = "codevar_fastlike_encode"
+name = "codevar_textlike_encode"
 crate-type = ["cdylib", "rlib"]
 
 [package.metadata.wasm-pack.profile.release]

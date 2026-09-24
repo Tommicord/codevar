@@ -142,7 +142,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "codevar-fastlike-encode"
+name = "codevar-fcware"
 version = "1.0.0"
 dependencies = [
  "android_log-sys",
@@ -156,7 +156,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "codevar-fcware"
+name = "codevar-textlike-encode"
 version = "1.0.0"
 dependencies = [
  "android_log-sys",
@@ -175,7 +175,7 @@ version = "1.0.0"
 dependencies = [
  "arc-swap",
  "bsize",
- "codevar-fastlike-encode",
+ "codevar-textlike-encode",
  "ecdsa",
  "ed25519-dalek",
  "elliptic-curve",
@@ -211,7 +211,7 @@ version = "1.0.0"
 dependencies = [
  "arc-swap",
  "bsize",
- "codevar-fastlike-encode",
+ "codevar-textlike-encode",
  "codevar-tls",
  "getrandom",
  "sha1",

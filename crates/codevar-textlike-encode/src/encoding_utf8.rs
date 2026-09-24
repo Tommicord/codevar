@@ -903,7 +903,7 @@ impl Utf8Encoder {
 /// # Examples
 ///
 /// ```
-/// use codevar_fastlike_encode::encoding_utf8::encode_text;
+/// use codevar_textlike_encode::encoding_utf8::encode_text;
 ///
 /// assert_eq!(encode_text("héllo"), b"h\xc3\xa9llo");
 /// assert_eq!(encode_text(""), Vec::<u8>::new());

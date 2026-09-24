@@ -27,7 +27,7 @@ use crate::ws_ids::{
 };
 use crate::ws_message::WsMessage;
 use crate::ws_utf8::Utf8Validator;
-use codevar_fastlike_encode::encoding_utf8::{encode_text, utf8_valid_up_to};
+use codevar_textlike_encode::encoding_utf8::{encode_text, utf8_valid_up_to};
 use std::collections::VecDeque;
 
 /// High-level WebSocket connection lifecycle (RFC 6455 §7.1).
@@ -251,7 +251,7 @@ impl CommonState {
 
     /// Sends a complete text message (single frame).
     ///
-    /// The payload is encoded to UTF-8 through `codevar-fastlike-encode`
+    /// The payload is encoded to UTF-8 through `codevar-textlike-encode`
     /// and must fit within [`ConnectionConfig::max_message_size`].
     pub fn send_text(&mut self, text: &str) -> WsResult<()> {
         self.ensure_can_send_data()?;
