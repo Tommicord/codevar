@@ -100,7 +100,6 @@ impl VariantEncoding {
             ) => Encoder::new(
                 encoding,
                 VariantEncoder::SingleByte(SingleByteEncoder::new(
-                    encoding,
                     table,
                     run_bmp_offset,
                     run_byte_offset,
@@ -872,7 +871,7 @@ pub static UTF_16LE: Encoding = Encoding {
     variant: VariantEncoding::Utf16Le,
 };
 
-pub fn decode_latin1(bytes: &[u8]) -> Cow<str> {
+pub fn decode_latin1(bytes: &[u8]) -> Cow<'_, str> {
     unsafe {
         let up_to = ascii_valid_up_to(bytes);
         if up_to >= bytes.len() {
@@ -896,7 +895,7 @@ pub fn decode_latin1(bytes: &[u8]) -> Cow<str> {
     }
 }
 
-pub fn encode_latin1_lossy(string: &str) -> Cow<[u8]> {
+pub fn encode_latin1_lossy(string: &str) -> Cow<'_, [u8]> {
     unsafe {
         let bytes = string.as_bytes();
         let up_to = ascii_valid_up_to(bytes);
@@ -917,9 +916,7 @@ pub fn encode_latin1_lossy(string: &str) -> Cow<[u8]> {
         let new_len = old_len + written;
         debug_assert!(new_len <= vec.capacity());
         let new_len = new_len.min(vec.capacity());
-        unsafe {
-            vec.set_len(new_len);
-        }
+        vec.set_len(new_len);
         Cow::Owned(vec)
     }
 }
@@ -931,7 +928,7 @@ pub fn convert_utf8_to_latin1_lossy(src: &[u8], dst: &mut [u8]) -> usize {
     loop {
         let src_left = src_len - total_read;
         let dst_left = dst.len() - total_written;
-        let min_left = ::core::cmp::min(src_left, dst_left);
+        let _min_left = ::core::cmp::min(src_left, dst_left);
         if let Some((non_ascii, consumed)) =
             { ascii_to_ascii(&src[total_read..], &mut dst[total_written..]) }
         {
@@ -1047,7 +1044,7 @@ pub fn convert_str_to_utf16(src: &str, dst: &mut [u16]) -> Result<usize, Encodin
             }
         }
     };
-    'inner: loop {
+    loop {
         if byte < 0xE0 {
             if byte >= 0x80 {
                 let second = unsafe { *(bytes.get_unchecked(read + 1)) };
@@ -1154,7 +1151,7 @@ pub fn convert_latin1_to_str(src: &[u8], dst: &mut str) -> Result<usize, Encodin
     Ok(written)
 }
 
-pub fn decode_utf8(bytes: &[u8]) -> Cow<str> {
+pub fn decode_utf8(bytes: &[u8]) -> Cow<'_, str> {
     unsafe {
         let up_to = utf8_valid_up_to(bytes);
         if up_to >= bytes.len() {

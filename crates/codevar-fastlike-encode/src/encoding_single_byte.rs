@@ -13,7 +13,7 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-use crate::encoding::{DecoderResult, EncoderResult, Encoding, VariantDecoder};
+use crate::encoding::{DecoderResult, EncoderResult, VariantDecoder};
 use crate::encoding_ascii::{ascii_to_basic_latin, basic_latin_to_ascii};
 use crate::encoding_handles::{ByteSource, CopyAsciiResult, Space, Utf8Destination};
 #[derive(Debug, Clone)]
@@ -22,6 +22,7 @@ pub struct SingleByteDecoder {
 }
 
 impl SingleByteDecoder {
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(data: &'static [u16; 128]) -> VariantDecoder {
         VariantDecoder::SingleByte(SingleByteDecoder { table: data })
     }
@@ -258,7 +259,6 @@ pub struct SingleByteEncoder {
 
 impl SingleByteEncoder {
     pub fn new(
-        encoding: &'static Encoding,
         data: &'static [u16; 128],
         run_bmp_offset: u16,
         run_byte_offset: u8,
@@ -508,7 +508,7 @@ impl SingleByteEncoder {
                 None => return (EncoderResult::Unmappable(ch), i, written),
             }
         }
-        (EncoderResult::InputEmpty, src.len(), written)
+        (EncoderResult::InputEmpty, read, written)
     }
 }
 

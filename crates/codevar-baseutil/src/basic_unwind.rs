@@ -24,8 +24,9 @@ use core::ffi::c_void;
 #[cfg(not(target_arch = "wasm32"))]
 use libc;
 
-/// Hard cap on the number of frames reported by [`trace`].
-const MAX_FRAMES: usize = 256;
+/// Hard cap on the number of frames reported by [`trace`] and
+/// [`capture_frames`].
+pub const MAX_FRAMES: usize = 256;
 
 /// Page size constant for mincore checks.
 const PAGE_SIZE: usize = 4096;
@@ -83,6 +84,17 @@ impl Frame {
     pub fn symbol_address(&self) -> *mut c_void {
         self.ip as *mut c_void
     }
+
+    /// Constructs a new [`Frame`] for testing and pretty-printing purposes.
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) const fn new(ip: usize, sp: usize, module_base: Option<usize>) -> Self {
+        Self {
+            ip,
+            sp,
+            module_base,
+        }
+    }
 }
 
 /// Walks the current thread's call stack, invoking `cb` for each frame from
@@ -113,6 +125,33 @@ pub fn trace(cb: &mut dyn FnMut(&Frame) -> bool) {
             let _ = cb;
         }
     }
+}
+
+/// Captures up to `out.len()` stack frames into `out`, most recent first.
+///
+/// Returns the number of frames written. Performs **no heap allocation**,
+/// making it suitable for `no_std` and async-signal-safe contexts (such as
+/// inside a signal handler). The walk semantics match [`trace`]: it never
+/// panics and silently stops when unwind information is missing or corrupt.
+///
+/// # Performance
+///
+/// Stack-only; the cost is one unwind walk bounded by
+/// `min(out.len(), MAX_FRAMES)`.
+pub fn capture_frames(out: &mut [Frame]) -> usize {
+    let limit = out.len().min(MAX_FRAMES);
+    let mut count = 0usize;
+    trace(&mut |frame| {
+        if count >= limit {
+            return false;
+        }
+        if let Some(slot) = out.get_mut(count) {
+            *slot = *frame;
+        }
+        count += 1;
+        count < limit
+    });
+    count
 }
 
 /// Shared machine-register snapshot used by CFI and frame-pointer stepping.
@@ -220,23 +259,23 @@ mod capture {
         // valid because the block only reads registers and PC.
         unsafe {
             core::arch::asm!(
-                "lea {ip}, [rip + 0]",
-                "mov {sp}, rsp",
-                "mov [{rbp_o}], rbp",
-                "mov [{rbx_o}], rbx",
-                "mov [{r12_o}], r12",
-                "mov [{r13_o}], r13",
-                "mov [{r14_o}], r14",
-                "mov [{r15_o}], r15",
-                ip = out(reg) ip,
-                sp = out(reg) sp,
-                rbp_o = in(reg) gpr.add(6),
-                rbx_o = in(reg) gpr.add(3),
-                r12_o = in(reg) gpr.add(12),
-                r13_o = in(reg) gpr.add(13),
-                r14_o = in(reg) gpr.add(14),
-                r15_o = in(reg) gpr.add(15),
-                options(nostack),
+            "lea {ip}, [rip + 0]",
+            "mov {sp}, rsp",
+            "mov [{rbp_o}], rbp",
+            "mov [{rbx_o}], rbx",
+            "mov [{r12_o}], r12",
+            "mov [{r13_o}], r13",
+            "mov [{r14_o}], r14",
+            "mov [{r15_o}], r15",
+            ip = out(reg) ip,
+            sp = out(reg) sp,
+            rbp_o = in(reg) gpr.add(6),
+            rbx_o = in(reg) gpr.add(3),
+            r12_o = in(reg) gpr.add(12),
+            r13_o = in(reg) gpr.add(13),
+            r14_o = in(reg) gpr.add(14),
+            r15_o = in(reg) gpr.add(15),
+            options(nostack),
             );
         }
         regs.gpr[7] = sp;
@@ -254,38 +293,38 @@ mod capture {
         // file and all indexed stores stay in bounds. No stack adjustment.
         unsafe {
             core::arch::asm!(
-                "adr {ip}, 1f",
-                "b 2f",
-                "1:",
-                "2:",
-                "mov {sp}, sp",
-                "mov [{x29_o}], x29",
-                "mov [{x30_o}], x30",
-                "mov [{x19_o}], x19",
-                "mov [{x20_o}], x20",
-                "mov [{x21_o}], x21",
-                "mov [{x22_o}], x22",
-                "mov [{x23_o}], x23",
-                "mov [{x24_o}], x24",
-                "mov [{x25_o}], x25",
-                "mov [{x26_o}], x26",
-                "mov [{x27_o}], x27",
-                "mov [{x28_o}], x28",
-                ip = out(reg) ip,
-                sp = out(reg) sp,
-                x29_o = in(reg) gpr.add(29),
-                x30_o = in(reg) gpr.add(30),
-                x19_o = in(reg) gpr.add(19),
-                x20_o = in(reg) gpr.add(20),
-                x21_o = in(reg) gpr.add(21),
-                x22_o = in(reg) gpr.add(22),
-                x23_o = in(reg) gpr.add(23),
-                x24_o = in(reg) gpr.add(24),
-                x25_o = in(reg) gpr.add(25),
-                x26_o = in(reg) gpr.add(26),
-                x27_o = in(reg) gpr.add(27),
-                x28_o = in(reg) gpr.add(28),
-                options(nostack),
+            "adr {ip}, 1f",
+            "b 2f",
+            "1:",
+            "2:",
+            "mov {sp}, sp",
+            "mov [{x29_o}], x29",
+            "mov [{x30_o}], x30",
+            "mov [{x19_o}], x19",
+            "mov [{x20_o}], x20",
+            "mov [{x21_o}], x21",
+            "mov [{x22_o}], x22",
+            "mov [{x23_o}], x23",
+            "mov [{x24_o}], x24",
+            "mov [{x25_o}], x25",
+            "mov [{x26_o}], x26",
+            "mov [{x27_o}], x27",
+            "mov [{x28_o}], x28",
+            ip = out(reg) ip,
+            sp = out(reg) sp,
+            x29_o = in(reg) gpr.add(29),
+            x30_o = in(reg) gpr.add(30),
+            x19_o = in(reg) gpr.add(19),
+            x20_o = in(reg) gpr.add(20),
+            x21_o = in(reg) gpr.add(21),
+            x22_o = in(reg) gpr.add(22),
+            x23_o = in(reg) gpr.add(23),
+            x24_o = in(reg) gpr.add(24),
+            x25_o = in(reg) gpr.add(25),
+            x26_o = in(reg) gpr.add(26),
+            x27_o = in(reg) gpr.add(27),
+            x28_o = in(reg) gpr.add(28),
+            options(nostack),
             );
         }
         regs.gpr[31] = sp;
@@ -303,20 +342,20 @@ mod capture {
         // intentionally omitted.
         unsafe {
             core::arch::asm!(
-                "mov {sp}, esp",
-                "mov [{ebp_o}], ebp",
-                "mov [{ebx_o}], ebx",
-                "mov [{esi_o}], esi",
-                "mov [{edi_o}], edi",
-                "call 1f",
-                "1:",
-                "pop {ip}",
-                sp = out(reg) sp,
-                ip = out(reg) ip,
-                ebp_o = in(reg) gpr.add(5),
-                ebx_o = in(reg) gpr.add(3),
-                esi_o = in(reg) gpr.add(6),
-                edi_o = in(reg) gpr.add(7),
+            "mov {sp}, esp",
+            "mov [{ebp_o}], ebp",
+            "mov [{ebx_o}], ebx",
+            "mov [{esi_o}], esi",
+            "mov [{edi_o}], edi",
+            "call 1f",
+            "1:",
+            "pop {ip}",
+            sp = out(reg) sp,
+            ip = out(reg) ip,
+            ebp_o = in(reg) gpr.add(5),
+            ebx_o = in(reg) gpr.add(3),
+            esi_o = in(reg) gpr.add(6),
+            edi_o = in(reg) gpr.add(7),
             );
         }
         regs.gpr[4] = sp;
@@ -334,30 +373,30 @@ mod capture {
         // stores in bounds. `adr` does not touch the stack.
         unsafe {
             core::arch::asm!(
-                "adr {ip}, 1f",
-                "1:",
-                "mov {sp}, sp",
-                "mov [{fp_o}], r11",
-                "mov [{lr_o}], r14",
-                "mov [{r4_o}], r4",
-                "mov [{r5_o}], r5",
-                "mov [{r6_o}], r6",
-                "mov [{r7_o}], r7",
-                "mov [{r8_o}], r8",
-                "mov [{r9_o}], r9",
-                "mov [{r10_o}], r10",
-                ip = out(reg) ip,
-                sp = out(reg) sp,
-                fp_o = in(reg) gpr.add(11),
-                lr_o = in(reg) gpr.add(14),
-                r4_o = in(reg) gpr.add(4),
-                r5_o = in(reg) gpr.add(5),
-                r6_o = in(reg) gpr.add(6),
-                r7_o = in(reg) gpr.add(7),
-                r8_o = in(reg) gpr.add(8),
-                r9_o = in(reg) gpr.add(9),
-                r10_o = in(reg) gpr.add(10),
-                options(nostack),
+            "adr {ip}, 1f",
+            "1:",
+            "mov {sp}, sp",
+            "mov [{fp_o}], r11",
+            "mov [{lr_o}], r14",
+            "mov [{r4_o}], r4",
+            "mov [{r5_o}], r5",
+            "mov [{r6_o}], r6",
+            "mov [{r7_o}], r7",
+            "mov [{r8_o}], r8",
+            "mov [{r9_o}], r9",
+            "mov [{r10_o}], r10",
+            ip = out(reg) ip,
+            sp = out(reg) sp,
+            fp_o = in(reg) gpr.add(11),
+            lr_o = in(reg) gpr.add(14),
+            r4_o = in(reg) gpr.add(4),
+            r5_o = in(reg) gpr.add(5),
+            r6_o = in(reg) gpr.add(6),
+            r7_o = in(reg) gpr.add(7),
+            r8_o = in(reg) gpr.add(8),
+            r9_o = in(reg) gpr.add(9),
+            r10_o = in(reg) gpr.add(10),
+            options(nostack),
             );
         }
         regs.gpr[13] = sp;
@@ -689,6 +728,7 @@ mod cfi {
         pub datarel_base: usize,
     }
 
+    #[allow(unused_assignments)]
     fn parse_cie(reader: &mut SliceReader<'_>, entry_end: usize) -> Option<Cie> {
         let version = reader.u8()?;
         if version != 1 && version != 3 && version != 4 {
@@ -750,7 +790,6 @@ mod cfi {
                 }
             }
         }
-
         let insts_off = reader.pos;
         let insts_end = entry_end.min(reader.data.len());
         if insts_off > insts_end {
@@ -1394,9 +1433,7 @@ mod cfi {
             let short_reg = usize::from(op & 0x3f);
             match short_hi {
                 0x40 => {
-                    loc = loc.wrapping_add(
-                        usize::from(short_reg).wrapping_mul(code_factor as usize),
-                    );
+                    loc = loc.wrapping_add(short_reg.wrapping_mul(code_factor as usize))
                 }
                 0x80 => {
                     let off = reader.uleb()? as i64;
@@ -1747,47 +1784,6 @@ mod cfi {
         base = cf;
         stack_len = 0;
         stack_buf = [None; STATE_STACK_LIMIT];
-
-        #[cfg(test)]
-        {
-            std::eprintln!(
-                "  fde loc={:#x} range={:#x} ret_reg={} cie_insts_off={}..{} ip={:#x} gpr6={:#x} gpr7={:#x}",
-                fde.initial_location,
-                fde.address_range,
-                fde.cie.ret_reg,
-                fde.cie.insts_off,
-                fde.cie.insts_end,
-                ip,
-                state.regs.gpr[6],
-                state.regs.gpr[7]
-            );
-            let fde_i: Vec<u8> = fde.insts.data.to_vec();
-            std::eprintln!("  fde insts ({}): {:02x?}", fde_i.len(), fde_i);
-            let cie_i: Vec<u8> = frame
-                .get(fde.cie.insts_off..fde.cie.insts_end)
-                .unwrap_or(&[])
-                .to_vec();
-            std::eprintln!("  cie insts: {:02x?}", cie_i);
-            unsafe {
-                let rw = |a: usize| read_word(a).unwrap_or(0);
-                std::eprintln!(
-                    "  [rbp]={:#x} [rbp+8]={:#x} [rsp]={:#x} [rsp+16]={:#x} [rsp+24]={:#x}",
-                    rw(state.regs.gpr[6]),
-                    rw(state.regs.gpr[6] + 8),
-                    rw(state.regs.gpr[7]),
-                    rw(state.regs.gpr[7] + 16),
-                    rw(state.regs.gpr[7] + 24),
-                );
-            }
-            std::eprintln!(
-                "  after CIE cf.cfa={:?}",
-                match cf.cfa {
-                    CfaRule::RegOff(r, o) => format!("RegOff({r},{o})"),
-                    CfaRule::Expr(_, _) => "Expr".into(),
-                    CfaRule::Undefined => "Undefined".into(),
-                }
-            );
-        }
 
         // FDE instructions up to `ip`.
         let mut fde_reader = fde.insts;
@@ -3020,9 +3016,8 @@ mod tests {
             st.regs.gpr[7] = 0x2_0000;
             st.sp = 0x2_0000;
             let tables = tables_for(&frame);
-            match cfi::step(&mut st, &tables, &frame) {
-                Ok(Some(_)) => panic!("OOB ret_reg must not produce a step"),
-                Ok(None) | Err(_) => {}
+            if let Ok(Some(_)) = cfi::step(&mut st, &tables, &frame) {
+                panic!("OOB ret_reg must not produce a step");
             }
         }
 
@@ -3170,7 +3165,7 @@ mod tests {
             };
             {
                 let ip = st.regs.ip;
-                let fde_dbg = {
+                {
                     // re-parse via step internals isn't exposed; print encodings from hdr
                     if let Some((ha, hl)) = tables.eh_frame_hdr {
                         let hdr = unsafe {
@@ -3188,8 +3183,7 @@ mod tests {
                         tables.datarel_base
                     );
                     std::eprintln!("ip={:#x} in_module={:?}", ip, elf::module_base(ip));
-                };
-                let _ = fde_dbg;
+                }
             }
             for step in 0..6 {
                 let ip = st.regs.ip;

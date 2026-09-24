@@ -411,7 +411,7 @@ impl CertVerifier {
                     .roots()
                     .iter()
                     .find(|r| r.subject == subject.issuer)
-                    .ok_or_else(|| TlsError::Alert(AlertDescription::UnknownCa))?;
+                    .ok_or(TlsError::Alert(AlertDescription::UnknownCa))?;
                 if !root.valid_at(
                     SystemTime::now()
                         .duration_since(UNIX_EPOCH)
@@ -804,7 +804,7 @@ mod tests {
         let verifier = CertVerifier::new(RootCertStore::empty());
         let leaf = leaf_der();
         verifier
-            .verify_server_cert(&[leaf.clone()], Some("example.com"))
+            .verify_server_cert(std::slice::from_ref(&leaf), Some("example.com"))
             .unwrap();
         // But a wrong hostname still fails afterwards.
         let err = verifier

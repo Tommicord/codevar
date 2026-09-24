@@ -157,10 +157,11 @@ impl ClientConnection {
         match try_parse_response(self.common.rx_buf())? {
             Some((response, consumed)) => {
                 self.common.consume_rx(consumed);
-                self.handshake.validate_response(&response).map_err(|e| {
-                    self.common.state = ConnectionState::Closed;
-                    e
-                })?;
+                self.handshake
+                    .validate_response(&response)
+                    .inspect_err(|_| {
+                        self.common.state = ConnectionState::Closed;
+                    })?;
                 self.common
                     .mark_open(self.handshake.selected_protocol.clone());
                 Ok(())
@@ -398,7 +399,7 @@ mod tests {
     fn handshake_rejects_wrong_accept_key() {
         let mut client = ClientConnection::connect("/", "h", None).expect("connect");
         let response = server_accept_response(&mut client);
-        let mut response = String::from_utf8(response).expect("utf8");
+        let response = String::from_utf8(response).expect("utf8");
         let key = "Sec-WebSocket-Accept: ";
         let start = response.find(key).expect("accept header") + key.len();
         let original = response.as_bytes()[start];

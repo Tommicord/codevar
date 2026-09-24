@@ -224,10 +224,10 @@ impl CommonState {
 
     /// On fatal local error, queue the matching alert when possible.
     pub fn fail(&mut self, err: TlsError) -> TlsError {
-        if let Some(desc) = err.alert_description() {
-            if desc != AlertDescription::CloseNotify {
-                let _ = self.send_alert(Alert::fatal(desc));
-            }
+        if let Some(desc) = err.alert_description()
+            && desc != AlertDescription::CloseNotify
+        {
+            let _ = self.send_alert(Alert::fatal(desc));
         }
         self.state = ConnectionState::Closed;
         self.error = Some(err.clone());

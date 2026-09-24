@@ -320,14 +320,12 @@ impl CommonState {
 
     /// Fails the connection (RFC 6455 §7.1.7): optionally send Close, then mark closed.
     pub fn fail(&mut self, err: WsError) -> WsError {
-        if let Some(code) = err.close_code() {
-            if self.state == ConnectionState::Open
-                || self.state == ConnectionState::Closing
-            {
-                if !self.local_close_sent {
-                    let _ = self.close(code, "");
-                }
-            }
+        if let Some(code) = err.close_code()
+            && (self.state == ConnectionState::Open
+                || self.state == ConnectionState::Closing)
+            && !self.local_close_sent
+        {
+            let _ = self.close(code, "");
         }
         self.state = ConnectionState::Closed;
         self.error = Some(err.clone());
@@ -471,15 +469,12 @@ impl CommonState {
     }
 
     fn append_fragment(&mut self, payload: &[u8]) -> WsResult<()> {
-        let new_len = self
-            .fragment
-            .data
-            .len()
-            .checked_add(payload.len())
-            .ok_or_else(|| WsError::MessageTooBig {
+        let new_len = self.fragment.data.len().checked_add(payload.len()).ok_or(
+            WsError::MessageTooBig {
                 size: usize::MAX,
                 limit: self.config.max_message_size,
-            })?;
+            },
+        )?;
         if new_len > self.config.max_message_size {
             return Err(WsError::MessageTooBig {
                 size: new_len,

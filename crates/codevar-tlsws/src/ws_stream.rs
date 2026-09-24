@@ -231,11 +231,9 @@ where
 {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if self.conn.is_handshaking() {
-            self.complete_handshake()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            self.complete_handshake().map_err(io::Error::other)?;
         }
-        self.fill_app_rx()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        self.fill_app_rx().map_err(io::Error::other)?;
         let available = &self.app_rx[self.app_rx_pos..];
         let n = available.len().min(buf.len());
         buf[..n].copy_from_slice(&available[..n]);
@@ -251,20 +249,15 @@ where
 {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if self.conn.is_handshaking() {
-            self.complete_handshake()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            self.complete_handshake().map_err(io::Error::other)?;
         }
-        self.conn
-            .send_binary(buf)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        self.flush_ws()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        self.conn.send_binary(buf).map_err(io::Error::other)?;
+        self.flush_ws().map_err(io::Error::other)?;
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.flush_ws()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        self.flush_ws().map_err(io::Error::other)?;
         self.transport.flush()
     }
 }
@@ -594,7 +587,7 @@ mod tests {
     fn into_inner_returns_transport_and_session() {
         let mut stream = open_client_stream(None);
         stream.complete_handshake().expect("handshake");
-        stream.write(b"z").expect("write");
+        stream.write_all(b"z").expect("write");
         let (transport, conn) = stream.into_inner();
         assert!(conn.is_open());
         assert!(!transport.output.is_empty());

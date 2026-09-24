@@ -233,15 +233,15 @@ fn parse_key_share(data: &[u8], out: &mut ParsedExtensions) -> TlsResult<()> {
     if data.len() >= 4 {
         let maybe_group = u16::from_be_bytes([data[0], data[1]]);
         let maybe_len = u16::from_be_bytes([data[2], data[3]]) as usize;
-        if 4 + maybe_len == data.len() {
-            if let Some(group) = NamedGroup::from_u16(maybe_group) {
-                out.key_shares.push(KeySharePublic {
-                    group,
-                    key_exchange: data[4..].to_vec(),
-                });
-                out.selected_group = Some(group);
-                return Ok(());
-            }
+        if 4 + maybe_len == data.len()
+            && let Some(group) = NamedGroup::from_u16(maybe_group)
+        {
+            out.key_shares.push(KeySharePublic {
+                group,
+                key_exchange: data[4..].to_vec(),
+            });
+            out.selected_group = Some(group);
+            return Ok(());
         }
     }
     // ClientHello form
@@ -372,6 +372,7 @@ pub fn start_extensions(out: &mut Vec<u8>) -> usize {
 }
 
 /// Finishes an extensions block.
+#[allow(clippy::ptr_arg)]
 pub fn finish_extensions(out: &mut Vec<u8>, idx: usize) -> TlsResult<()> {
     fill_u16_len(out, idx)
 }

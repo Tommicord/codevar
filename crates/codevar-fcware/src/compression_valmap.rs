@@ -206,7 +206,7 @@ mod tests {
     #[test]
     fn table_and_candidates_are_well_formed() {
         assert_eq!(COMPACT_RANGE_RECORD_SIZE, 3);
-        assert!(COMPACT_RANGE_RECORD_SIZE > 0);
+        const { assert!(COMPACT_RANGE_RECORD_SIZE > 0) };
         let ranges: Vec<CandidateRange> = compact_candidate_ranges().collect();
         assert!(!ranges.is_empty());
         assert!(ranges.windows(2).all(|w| w[0].start <= w[1].start));

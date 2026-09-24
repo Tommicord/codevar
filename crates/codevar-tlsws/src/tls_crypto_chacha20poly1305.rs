@@ -22,6 +22,7 @@ const TAG_LEN: usize = 16;
 /// Seals `plaintext` under ChaCha20-Poly1305.
 ///
 /// Output layout: ciphertext or 16-byte tag.
+#[allow(clippy::result_unit_err)]
 pub fn seal(
     key: &[u8],
     nonce: &[u8; 12],
@@ -40,6 +41,7 @@ pub fn seal(
 }
 
 /// Opens ciphertext||tag produced by [`seal`].
+#[allow(clippy::result_unit_err)]
 pub fn open(
     key: &[u8],
     nonce: &[u8; 12],
@@ -237,7 +239,7 @@ fn poly1305(key: &[u8; 32], msg: &[u8]) -> [u8; 16] {
         h[3] = h[3].wrapping_add(((t2 >> 14) | (t3 << 18)) & 0x3ff_ffff);
         h[4] = h[4].wrapping_add(((t3 >> 8) | (t4 << 24)) & 0x3ff_ffff);
 
-        let mut m0 = u64::from(h[0]) * u64::from(r0)
+        let m0 = u64::from(h[0]) * u64::from(r0)
             + u64::from(h[1]) * u64::from(s4)
             + u64::from(h[2]) * u64::from(s3)
             + u64::from(h[3]) * u64::from(s2)

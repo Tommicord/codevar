@@ -334,7 +334,7 @@ mod tests {
         assert!(cfg.alpn_protocols.is_empty());
         assert!(cfg.require_ems);
         // Verifier rejects unknown hosts by default (not skip-all).
-        let mut roots = RootCertStore::empty();
+        let roots = RootCertStore::empty();
         let _ = roots;
         assert!(Arc::strong_count(&cfg.verifier) >= 1);
     }

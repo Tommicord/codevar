@@ -401,13 +401,12 @@ mod tests {
     fn missing_or_short_key_rejects_without_rejection_response() {
         // Missing key.
         let mut server = ServerConnection::accept(None).expect("accept");
-        let no_key = format!(
-            "GET / HTTP/1.1\r\n\
+        let no_key = "GET / HTTP/1.1\r\n\
              Host: example.com\r\n\
              Upgrade: websocket\r\n\
              Connection: Upgrade\r\n\
              Sec-WebSocket-Version: 13\r\n\r\n"
-        );
+            .to_string();
         server.feed(no_key.as_bytes()).expect("feed");
         let err = server.process().expect_err("missing key");
         assert!(err.to_string().contains("Sec-WebSocket-Key"));

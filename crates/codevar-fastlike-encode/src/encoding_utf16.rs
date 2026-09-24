@@ -13,10 +13,9 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-use crate::encoding::{DecoderResult, EncoderResult, Encoding, VariantEncoder};
+use crate::encoding::{DecoderResult, EncoderResult};
 use crate::encoding_handles::{
-    BigEndian, ByteSource, Endian, LittleEndian, Space, Utf8Destination,
-    Utf16Destination, Utf16Source,
+    BigEndian, ByteSource, LittleEndian, Space, Utf8Destination, Utf16Destination,
 };
 
 #[derive(Debug, Clone)]
@@ -103,41 +102,39 @@ impl Utf16Decoder {
             }
             match source.check_available() {
                 Space::Full(src_consumed) => {
-                    if last {
-                        if self.lead_surrogate != 0 || self.lead_byte.is_some() {
-                            match dest.check_space_bmp() {
-                                Space::Full(_) => {
-                                    return (DecoderResult::OutputFull, 0, 0);
-                                }
-                                Space::Available(_) => {
-                                    if self.lead_surrogate != 0 {
-                                        self.lead_surrogate = 0;
-                                        match self.lead_byte {
-                                            None => {
-                                                return (
-                                                    DecoderResult::Malformed(2, 0),
-                                                    src_consumed,
-                                                    dest.written(),
-                                                );
-                                            }
-                                            Some(_) => {
-                                                self.lead_byte = None;
-                                                return (
-                                                    DecoderResult::Malformed(3, 0),
-                                                    src_consumed,
-                                                    dest.written(),
-                                                );
-                                            }
+                    if last && (self.lead_surrogate != 0 || self.lead_byte.is_some()) {
+                        match dest.check_space_bmp() {
+                            Space::Full(_) => {
+                                return (DecoderResult::OutputFull, 0, 0);
+                            }
+                            Space::Available(_) => {
+                                if self.lead_surrogate != 0 {
+                                    self.lead_surrogate = 0;
+                                    match self.lead_byte {
+                                        None => {
+                                            return (
+                                                DecoderResult::Malformed(2, 0),
+                                                src_consumed,
+                                                dest.written(),
+                                            );
+                                        }
+                                        Some(_) => {
+                                            self.lead_byte = None;
+                                            return (
+                                                DecoderResult::Malformed(3, 0),
+                                                src_consumed,
+                                                dest.written(),
+                                            );
                                         }
                                     }
-                                    debug_assert!(self.lead_byte.is_some());
-                                    self.lead_byte = None;
-                                    return (
-                                        DecoderResult::Malformed(1, 0),
-                                        src_consumed,
-                                        dest.written(),
-                                    );
                                 }
+                                debug_assert!(self.lead_byte.is_some());
+                                self.lead_byte = None;
+                                return (
+                                    DecoderResult::Malformed(1, 0),
+                                    src_consumed,
+                                    dest.written(),
+                                );
                             }
                         }
                     }
@@ -243,39 +240,37 @@ impl Utf16Decoder {
             }
             match source.check_available() {
                 Space::Full(src_consumed) => {
-                    if last {
-                        if self.lead_surrogate != 0 || self.lead_byte.is_some() {
-                            return match dest.check_space_bmp() {
-                                Space::Full(_) => (DecoderResult::OutputFull, 0, 0),
-                                Space::Available(_) => {
-                                    if self.lead_surrogate != 0 {
-                                        self.lead_surrogate = 0;
-                                        return match self.lead_byte {
-                                            None => (
-                                                DecoderResult::Malformed(2, 0),
+                    if last && (self.lead_surrogate != 0 || self.lead_byte.is_some()) {
+                        return match dest.check_space_bmp() {
+                            Space::Full(_) => (DecoderResult::OutputFull, 0, 0),
+                            Space::Available(_) => {
+                                if self.lead_surrogate != 0 {
+                                    self.lead_surrogate = 0;
+                                    return match self.lead_byte {
+                                        None => (
+                                            DecoderResult::Malformed(2, 0),
+                                            src_consumed,
+                                            dest.written(),
+                                        ),
+                                        Some(_) => {
+                                            self.lead_byte = None;
+                                            (
+                                                DecoderResult::Malformed(3, 0),
                                                 src_consumed,
                                                 dest.written(),
-                                            ),
-                                            Some(_) => {
-                                                self.lead_byte = None;
-                                                (
-                                                    DecoderResult::Malformed(3, 0),
-                                                    src_consumed,
-                                                    dest.written(),
-                                                )
-                                            }
-                                        };
-                                    }
-                                    debug_assert!(self.lead_byte.is_some());
-                                    self.lead_byte = None;
-                                    (
-                                        DecoderResult::Malformed(1, 0),
-                                        src_consumed,
-                                        dest.written(),
-                                    )
+                                            )
+                                        }
+                                    };
                                 }
-                            };
-                        }
+                                debug_assert!(self.lead_byte.is_some());
+                                self.lead_byte = None;
+                                (
+                                    DecoderResult::Malformed(1, 0),
+                                    src_consumed,
+                                    dest.written(),
+                                )
+                            }
+                        };
                     }
                     return (DecoderResult::InputEmpty, src_consumed, dest.written());
                 }
@@ -426,7 +421,7 @@ impl Utf16Encoder {
             }
             read = i + ch.len_utf8();
         }
-        (EncoderResult::InputEmpty, src.len(), written)
+        (EncoderResult::InputEmpty, read, written)
     }
 }
 

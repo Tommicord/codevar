@@ -51,7 +51,7 @@ pub fn utf8_valid_up_to(src: &[u8]) -> usize {
         };
         if read + 4 <= src.len() {
             'inner: loop {
-                if byte >= 0xC2 && byte <= 0xDF {
+                if (0xC2..=0xDF).contains(&byte) {
                     let second = unsafe { *(src.get_unchecked(read + 1)) };
                     if !in_inclusive_range8(second, 0x80, 0xBF) {
                         break 'outer;
@@ -568,6 +568,7 @@ impl Utf8Decoder {
         }
     }
 
+    #[allow(clippy::new_ret_no_self)]
     pub fn new() -> VariantDecoder {
         VariantDecoder::Utf8(Utf8Decoder::new_inner())
     }
@@ -616,18 +617,16 @@ impl Utf8Decoder {
             }
             match source.check_available() {
                 Space::Full(src_consumed) => {
-                    if last {
-                        if self.bytes_needed != 0 {
-                            let bad_bytes = (self.bytes_seen + 1) as u8;
-                            self.code_point = 0;
-                            self.bytes_needed = 0;
-                            self.bytes_seen = 0;
-                            return (
-                                DecoderResult::Malformed(bad_bytes, 0),
-                                src_consumed,
-                                dest.written(),
-                            );
-                        }
+                    if last && self.bytes_needed != 0 {
+                        let bad_bytes = (self.bytes_seen + 1) as u8;
+                        self.code_point = 0;
+                        self.bytes_needed = 0;
+                        self.bytes_seen = 0;
+                        return (
+                            DecoderResult::Malformed(bad_bytes, 0),
+                            src_consumed,
+                            dest.written(),
+                        );
                     }
                     return (DecoderResult::InputEmpty, src_consumed, dest.written());
                 }
@@ -734,18 +733,16 @@ impl Utf8Decoder {
             }
             match source.check_available() {
                 Space::Full(src_consumed) => {
-                    if last {
-                        if self.bytes_needed != 0 {
-                            let bad_bytes = (self.bytes_seen + 1) as u8;
-                            self.code_point = 0;
-                            self.bytes_needed = 0;
-                            self.bytes_seen = 0;
-                            return (
-                                DecoderResult::Malformed(bad_bytes, 0),
-                                src_consumed,
-                                dest.written(),
-                            );
-                        }
+                    if last && self.bytes_needed != 0 {
+                        let bad_bytes = (self.bytes_seen + 1) as u8;
+                        self.code_point = 0;
+                        self.bytes_needed = 0;
+                        self.bytes_seen = 0;
+                        return (
+                            DecoderResult::Malformed(bad_bytes, 0),
+                            src_consumed,
+                            dest.written(),
+                        );
                     }
                     return (DecoderResult::InputEmpty, src_consumed, dest.written());
                 }
@@ -843,6 +840,7 @@ impl Utf8Decoder {
 pub struct Utf8Encoder;
 
 impl Utf8Encoder {
+    #[allow(clippy::new_ret_no_self)]
     pub fn new() -> crate::encoding::Encoder {
         crate::encoding::Encoder::new(&UTF_8, VariantEncoder::Utf8(Utf8Encoder))
     }

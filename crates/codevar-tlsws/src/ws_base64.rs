@@ -62,7 +62,7 @@ pub fn encode(input: &[u8]) -> String {
 /// characters outside the standard Base64 set.
 pub fn decode(input: &str) -> WsResult<Vec<u8>> {
     let cleaned: Vec<u8> = input.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
-    if cleaned.len() % 4 != 0 {
+    if !cleaned.len().is_multiple_of(4) {
         return Err(WsError::decode("base64 length must be a multiple of 4"));
     }
     let mut out = Vec::with_capacity(cleaned.len() / 4 * 3);

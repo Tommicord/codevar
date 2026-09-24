@@ -139,6 +139,16 @@ fn validate_ascii_stride(stride: &[u8; STRIDE]) -> Option<(u8, usize)> {
     Some(validate_ascii_stride_tail(stride))
 }
 
+fn validate_ascii_double_stride(strides: &[[u8; STRIDE]; 2]) -> Option<(u8, usize)> {
+    if let Some((b, pos)) = validate_ascii_stride(&strides[0]) {
+        return Some((b, pos));
+    }
+    if let Some((b, pos)) = validate_ascii_stride(&strides[1]) {
+        return Some((b, STRIDE + pos));
+    }
+    None
+}
+
 fn validate_basic_latin_stride(stride: &[u16; STRIDE]) -> Option<usize> {
     if is_basic_latin(stride) {
         return None;
@@ -298,7 +308,7 @@ cfg_if! {
             None
         }
 
-    } else if #[cfg(all(feature = "simd-accel", target_endian = "little"))] {
+    } else if #[cfg(target_endian = "little")] {
         #[inline(always)]
         fn ascii_valid_impl(bytes: &[u8]) -> Option<(u8, usize)> {
             let mut consumed = 0usize;
@@ -310,7 +320,7 @@ cfg_if! {
                 consumed = STRIDE;
 
                 let (double_strides, single_stride) = strides_tail.as_chunks::<2>();
-                for double_stride in double_strides.iter() {
+                for double_stride in double_strides {
                     if let Some((c, pos)) = validate_ascii_double_stride(double_stride) {
                         return Some((c, consumed + pos));
                     }

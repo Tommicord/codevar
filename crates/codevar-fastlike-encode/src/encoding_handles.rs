@@ -68,6 +68,7 @@ pub struct UnalignedU16Slice {
 }
 
 impl UnalignedU16Slice {
+    /// # Safety
     #[inline(always)]
     pub unsafe fn new(ptr: *const u8, len: usize) -> UnalignedU16Slice {
         UnalignedU16Slice { ptr, len }
@@ -89,6 +90,9 @@ impl UnalignedU16Slice {
     pub fn len(&self) -> usize {
         self.len
     }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
     #[inline(always)]
     pub fn tail(&self, from: usize) -> UnalignedU16Slice {
         debug_assert!(from <= self.len);
@@ -98,16 +102,16 @@ impl UnalignedU16Slice {
     #[inline(always)]
     pub fn copy_bmp_to<E: Endian>(&self, dst: &mut [u16]) -> Option<(u16, usize)> {
         let n = min(self.len, dst.len());
-        for i in 0..n {
-            let unit = if E::OPPOSITE_ENDIAN {
+        for (i, unit) in dst.iter_mut().take(n).enumerate() {
+            let value = if E::OPPOSITE_ENDIAN {
                 self.at(i).swap_bytes()
             } else {
                 self.at(i)
             };
-            if unit.wrapping_sub(0xD800) <= (0xDFFF - 0xD800) {
-                return Some((unit, i));
+            if value.wrapping_sub(0xD800) <= (0xDFFF - 0xD800) {
+                return Some((value, i));
             }
-            dst[i] = unit;
+            *unit = value;
         }
         None
     }
@@ -401,7 +405,7 @@ impl<'a> Utf16Destination<'a> {
                 min(src_remaining.len() / 2, dst_remaining.len()),
             )
         };
-        if src_unaligned.len() == 0 {
+        if src_unaligned.is_empty() {
             return None;
         }
         let last_unit = if E::OPPOSITE_ENDIAN {
@@ -600,7 +604,7 @@ impl<'a> Utf8Destination<'a> {
     }
     #[inline(always)]
     fn write_mid_bmp(&mut self, mid_bmp: u16) {
-        debug_assert!(mid_bmp >= 0x80 && mid_bmp < 0x800);
+        debug_assert!((0x80..0x800).contains(&mid_bmp));
         self.write_code_unit(((mid_bmp >> 6) | 0xC0) as u8);
         self.write_code_unit(((mid_bmp & 0x3F) | 0x80) as u8);
     }
@@ -731,7 +735,7 @@ impl<'a> Utf8Destination<'a> {
         let mut src_unaligned = unsafe {
             UnalignedU16Slice::new(src_remaining.as_ptr(), src_remaining.len() / 2)
         };
-        if src_unaligned.len() == 0 {
+        if src_unaligned.is_empty() {
             return None;
         }
         let mut last_unit = src_unaligned.at(src_unaligned.len() - 1);
@@ -778,19 +782,18 @@ impl<'a> Utf16Source<'a> {
         if unit_minus_surrogate_start > (0xDFFF - 0xD800) {
             return unsafe { char::from_u32_unchecked(u32::from(unit)) };
         }
-        if unit_minus_surrogate_start <= (0xDBFF - 0xD800) {
-            if self.pos < self.slice.len() {
-                let second = self.slice[self.pos];
-                let second_minus_low_surrogate_start = second.wrapping_sub(0xDC00);
-                if second_minus_low_surrogate_start <= (0xDFFF - 0xDC00) {
-                    self.pos += 1;
-                    return unsafe {
-                        char::from_u32_unchecked(
-                            (u32::from(unit) << 10) + u32::from(second)
-                                - (((0xD800u32 << 10) - 0x10000u32) + 0xDC00u32),
-                        )
-                    };
-                }
+        if unit_minus_surrogate_start <= (0xDBFF - 0xD800) && self.pos < self.slice.len()
+        {
+            let second = self.slice[self.pos];
+            let second_minus_low_surrogate_start = second.wrapping_sub(0xDC00);
+            if second_minus_low_surrogate_start <= (0xDFFF - 0xDC00) {
+                self.pos += 1;
+                return unsafe {
+                    char::from_u32_unchecked(
+                        (u32::from(unit) << 10) + u32::from(second)
+                            - (((0xD800u32 << 10) - 0x10000u32) + 0xDC00u32),
+                    )
+                };
             }
         }
         unsafe { char::from_u32_unchecked(0xFFFD) }

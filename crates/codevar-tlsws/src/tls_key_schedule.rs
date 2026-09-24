@@ -14,7 +14,7 @@
 //! permissions and limitations under the License.
 
 use crate::tls_aead::AeadKey;
-use crate::tls_error::{TlsError, TlsResult};
+use crate::tls_error::TlsResult;
 use crate::tls_hkdf::{derive_secret, hkdf_expand_label, hkdf_extract};
 use crate::tls_ids::{AeadAlgorithm, CipherSuite, HashAlgorithm};
 use crate::tls_prf::{hmac_hash, tls12_prf};

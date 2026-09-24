@@ -205,7 +205,7 @@ impl ServerHello {
         let session_id_echo = r.vec_u8()?.to_vec();
         let suite_code = r.u16()?;
         let cipher_suite = CipherSuite::from_u16(suite_code)
-            .ok_or_else(|| TlsError::Alert(AlertDescription::HandshakeFailure))?;
+            .ok_or(TlsError::Alert(AlertDescription::HandshakeFailure))?;
         let compression = r.u8()?;
         if compression != 0 {
             return Err(TlsError::Alert(AlertDescription::IllegalParameter));
@@ -382,7 +382,7 @@ impl CertificateVerify {
     pub fn parse(body: &[u8]) -> TlsResult<Self> {
         let mut r = Reader::new(body);
         let scheme = SignatureScheme::from_u16(r.u16()?)
-            .ok_or_else(|| TlsError::Alert(AlertDescription::IllegalParameter))?;
+            .ok_or(TlsError::Alert(AlertDescription::IllegalParameter))?;
         let signature = r.vec_u16()?.to_vec();
         r.expect_empty("certificate_verify")?;
         Ok(Self { scheme, signature })
@@ -458,10 +458,10 @@ impl ServerKeyExchangeEcdhe {
             return Err(TlsError::Alert(AlertDescription::IllegalParameter));
         }
         let curve = crate::tls_ids::NamedGroup::from_u16(r.u16()?)
-            .ok_or_else(|| TlsError::Alert(AlertDescription::IllegalParameter))?;
+            .ok_or(TlsError::Alert(AlertDescription::IllegalParameter))?;
         let public_key = r.vec_u8()?.to_vec();
         let scheme = SignatureScheme::from_u16(r.u16()?)
-            .ok_or_else(|| TlsError::Alert(AlertDescription::IllegalParameter))?;
+            .ok_or(TlsError::Alert(AlertDescription::IllegalParameter))?;
         let signature = r.vec_u16()?.to_vec();
         r.expect_empty("server_key_exchange")?;
         Ok(Self {

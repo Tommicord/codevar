@@ -211,12 +211,12 @@ impl WsClientHandshake {
             ));
         }
         // Reject unnegotiated extensions (we offer none).
-        if let Some(ext) = response.headers.get("sec-websocket-extensions") {
-            if !ext.trim().is_empty() {
-                return Err(WsError::handshake(format!(
-                    "server selected unoffered extension '{ext}'"
-                )));
-            }
+        if let Some(ext) = response.headers.get("sec-websocket-extensions")
+            && !ext.trim().is_empty()
+        {
+            return Err(WsError::handshake(format!(
+                "server selected unoffered extension '{ext}'"
+            )));
         }
         Ok(())
     }

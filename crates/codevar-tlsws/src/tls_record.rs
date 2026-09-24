@@ -55,7 +55,7 @@ impl TrafficKeys {
         self.seq = self
             .seq
             .checked_add(1)
-            .ok_or_else(|| TlsError::Alert(AlertDescription::InternalError))?;
+            .ok_or(TlsError::Alert(AlertDescription::InternalError))?;
         Ok(seq)
     }
 }
@@ -549,7 +549,7 @@ mod tests {
         assert_eq!(MAX_FRAGMENT_LENGTH, 16384);
         assert_eq!(MAX_CIPHERTEXT_LENGTH, 16640);
         assert_eq!(RECORD_HEADER_LEN, 5);
-        assert!(MAX_CIPHERTEXT_LENGTH > MAX_FRAGMENT_LENGTH);
+        const { assert!(MAX_CIPHERTEXT_LENGTH > MAX_FRAGMENT_LENGTH) };
     }
 
     #[test]

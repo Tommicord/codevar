@@ -22,6 +22,7 @@ const BLOCK: usize = 16;
 const TAG_LEN: usize = 16;
 
 /// Seals with AES-GCM. `key` must be 16 (AES-128) or 32 (AES-256) bytes.
+#[allow(clippy::result_unit_err)]
 pub fn seal(
     key: &[u8],
     nonce: &[u8; 12],
@@ -37,6 +38,7 @@ pub fn seal(
 }
 
 /// Opens ciphertext||tag produced by [`seal`].
+#[allow(clippy::result_unit_err)]
 pub fn open(
     key: &[u8],
     nonce: &[u8; 12],
@@ -110,7 +112,7 @@ fn gcm_seal(
     ctr32_inc(&mut counter);
     gctr(aes, &counter, plaintext, ciphertext);
 
-    let mut s = ghash(&h, aad, ciphertext);
+    let s = ghash(&h, aad, ciphertext);
     let mut tag = [0u8; 16];
     let mut j0_enc = [0u8; 16];
     aes.encrypt_block(&j0, &mut j0_enc);
@@ -390,17 +392,19 @@ unsafe fn aes_encrypt_block_ni(key: &AesKey, input: &[u8; 16], output: &mut [u8;
 
     // SAFETY: callers ensure AES-NI is present; unaligned load/store are valid for any
     // 16-byte buffer; `round_keys` has length `nr + 1`.
-    let mut state = _mm_loadu_si128(input.as_ptr().cast::<__m128i>());
-    state = _mm_xor_si128(state, _mm_loadu_si128(key.round_keys[0].as_ptr().cast()));
-    for round in 1..key.nr {
-        state = _mm_aesenc_si128(
+    unsafe {
+        let mut state = _mm_loadu_si128(input.as_ptr().cast::<__m128i>());
+        state = _mm_xor_si128(state, _mm_loadu_si128(key.round_keys[0].as_ptr().cast()));
+        for round in 1..key.nr {
+            state = _mm_aesenc_si128(
+                state,
+                _mm_loadu_si128(key.round_keys[round].as_ptr().cast()),
+            );
+        }
+        state = _mm_aesenclast_si128(
             state,
-            _mm_loadu_si128(key.round_keys[round].as_ptr().cast()),
+            _mm_loadu_si128(key.round_keys[key.nr].as_ptr().cast()),
         );
+        _mm_storeu_si128(output.as_mut_ptr().cast::<__m128i>(), state);
     }
-    state = _mm_aesenclast_si128(
-        state,
-        _mm_loadu_si128(key.round_keys[key.nr].as_ptr().cast()),
-    );
-    _mm_storeu_si128(output.as_mut_ptr().cast::<__m128i>(), state);
 }

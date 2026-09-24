@@ -7,6 +7,9 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+simd-accel = []
+
 [lib]
 name = "codevar_fastlike_encode"
 crate-type = ["cdylib", "rlib"]

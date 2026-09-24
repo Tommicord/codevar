@@ -178,7 +178,7 @@ pub fn start_u16_vec(out: &mut Vec<u8>) -> usize {
 }
 
 /// Writes the length of bytes after `idx+2` into a previously reserved u16 prefix.
-pub fn fill_u16_len(out: &mut Vec<u8>, idx: usize) -> TlsResult<()> {
+pub fn fill_u16_len(out: &mut [u8], idx: usize) -> TlsResult<()> {
     let len = out.len().saturating_sub(idx + 2);
     if len > 65535 {
         return Err(TlsError::Internal(
@@ -202,7 +202,7 @@ pub fn start_u24_vec(out: &mut Vec<u8>) -> usize {
 }
 
 /// Writes the length of bytes after `idx+3` into a previously reserved u24 prefix.
-pub fn fill_u24_len(out: &mut Vec<u8>, idx: usize) -> TlsResult<()> {
+pub fn fill_u24_len(out: &mut [u8], idx: usize) -> TlsResult<()> {
     let len = out.len().saturating_sub(idx + 3);
     if len > 0xff_ffff {
         return Err(TlsError::Internal(
@@ -224,7 +224,7 @@ pub fn start_u8_vec(out: &mut Vec<u8>) -> usize {
 }
 
 /// Fills a previously reserved u8 length prefix.
-pub fn fill_u8_len(out: &mut Vec<u8>, idx: usize) -> TlsResult<()> {
+pub fn fill_u8_len(out: &mut [u8], idx: usize) -> TlsResult<()> {
     let len = out.len().saturating_sub(idx + 1);
     if len > 255 {
         return Err(TlsError::Internal("vector exceeds u8 length prefix".into()));

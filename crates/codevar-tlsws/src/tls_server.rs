@@ -62,6 +62,7 @@ enum ServerHs {
 struct ServerKx {
     group: NamedGroup,
     private: KeySharePrivate,
+    #[allow(dead_code)]
     public: KeySharePublic,
 }
 
@@ -322,8 +323,8 @@ impl TlsServerConnection {
             self.common.transcript.add_message(&raw);
         }
 
-        let peer = client_share
-            .ok_or_else(|| TlsError::Alert(AlertDescription::MissingExtension))?;
+        let peer =
+            client_share.ok_or(TlsError::Alert(AlertDescription::MissingExtension))?;
         let (private, public) = generate_key_share(group)?;
         let secret = shared_secret(&private, peer)?;
         self.kx = Some(ServerKx {

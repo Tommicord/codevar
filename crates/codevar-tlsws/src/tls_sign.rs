@@ -20,7 +20,7 @@ use crate::tls_crypto_random::SysRng;
 use crate::tls_error::{TlsError, TlsResult};
 use crate::tls_ids::SignatureScheme;
 use ecdsa::signature::Verifier as EcdsaVerifier;
-use ed25519_dalek::{Signature as Ed25519Signature, Signer as Ed25519Signer, Verifier};
+use ed25519_dalek::{Signature as Ed25519Signature, Signer as Ed25519Signer};
 use p256::ecdsa::{
     Signature as P256Signature, SigningKey as P256SigningKey,
     VerifyingKey as P256VerifyingKey,
@@ -37,7 +37,7 @@ use rsa::pss::{
     Signature as RsaPssSignature, SigningKey as RsaPssSigningKey,
     VerifyingKey as RsaPssVerifyingKey,
 };
-use rsa::signature::{RandomizedSigner, SignatureEncoding, Verifier as RsaVerifier};
+use rsa::signature::{RandomizedSigner, SignatureEncoding};
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use sha2::{Digest, Sha256, Sha384};
 
@@ -382,7 +382,6 @@ fn verify_rsa_pkcs1_digest(
 }
 
 use pkcs8::DecodePublicKey;
-use rsa::pkcs8::DecodePublicKey as RsaDecodePublicKey;
 
 /// Hashes data with SHA-256.
 #[must_use]

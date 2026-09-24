@@ -455,7 +455,7 @@ impl TlsClientConnection {
         let selected = sh
             .extensions
             .selected_group
-            .ok_or_else(|| TlsError::Alert(AlertDescription::MissingExtension))?;
+            .ok_or(TlsError::Alert(AlertDescription::MissingExtension))?;
         if !self.config.named_groups.contains(&selected) {
             return Err(TlsError::Alert(AlertDescription::IllegalParameter));
         }
@@ -492,7 +492,7 @@ impl TlsClientConnection {
             .extensions
             .key_shares
             .first()
-            .ok_or_else(|| TlsError::Alert(AlertDescription::MissingExtension))?;
+            .ok_or(TlsError::Alert(AlertDescription::MissingExtension))?;
         let kx = self
             .kx
             .as_ref()

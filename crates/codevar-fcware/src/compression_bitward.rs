@@ -73,25 +73,26 @@ pub fn bitward_encode(values: &[u16]) -> Result<Vec<u8>> {
         {
             run_length += 1;
         }
-        if let Some(&table_index) = repeat_index.get(&value) {
-            if table_index < 8 && run_length >= 2 {
-                let mut remaining = run_length;
-                while remaining > 0 {
-                    let chunk = remaining.min(16);
-                    records.push(0x80 | (table_index << 4) | (chunk as u8 - 1));
-                    remaining -= chunk;
-                }
-                index += run_length;
-                continue;
+        if let Some(&table_index) = repeat_index.get(&value)
+            && table_index < 8
+            && run_length >= 2
+        {
+            let mut remaining = run_length;
+            while remaining > 0 {
+                let chunk = remaining.min(16);
+                records.push(0x80 | (table_index << 4) | (chunk as u8 - 1));
+                remaining -= chunk;
             }
+            index += run_length;
+            continue;
         }
         let [high, low] = value.to_be_bytes();
-        if high == low {
-            if let Some(&duplicate) = duplicate_index.get(&high) {
-                records.extend([DUPLICATE_MARKER, duplicate]);
-                index += 1;
-                continue;
-            }
+        if high == low
+            && let Some(&duplicate) = duplicate_index.get(&high)
+        {
+            records.extend([DUPLICATE_MARKER, duplicate]);
+            index += 1;
+            continue;
         }
         let mask = if high == low {
             3
