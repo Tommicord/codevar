@@ -136,6 +136,7 @@ version = "1.0.0"
 dependencies = [
  "arc-swap",
  "cfg-if",
+ "libc",
  "webpki-roots",
  "windows-link 0.100.0",
 ]

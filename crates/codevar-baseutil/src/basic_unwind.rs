@@ -13,7 +13,7 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-//! Portable stack unwinding without `libunwind`.
+//! Portable stack unwinding
 //!
 //! Captures machine registers with inline assembly, then walks frames using
 //! platform unwind tables (`.eh_frame` DWARF CFI on ELF/Mach-O, WinDBG-style
@@ -21,12 +21,34 @@
 //! library is linked.
 
 use core::ffi::c_void;
+#[cfg(not(target_arch = "wasm32"))]
+use libc;
 
 /// Hard cap on the number of frames reported by [`trace`].
 const MAX_FRAMES: usize = 256;
 
-/// Maximum accepted distance between consecutive frame pointers.
-const MAX_FRAME_DELTA: usize = 8 * 1024 * 1024;
+/// Page size constant for mincore checks.
+const PAGE_SIZE: usize = 4096;
+
+/// Check whether `addr` points to resident, readable memory using `mincore`.
+/// This avoids segmentation faults when probing possibly-unmapped addresses during
+/// stack unwinding without unsafe file I/O.
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+fn is_readable(addr: usize) -> bool {
+    let page = addr & !(PAGE_SIZE - 1);
+    let mut vec = [0u8; 1];
+    unsafe {
+        libc::mincore(page as *mut c_void, PAGE_SIZE, vec.as_mut_ptr()) == 0
+            && (vec[0] & 1) != 0
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline]
+fn is_readable(_addr: usize) -> bool {
+    false
+}
 
 /// A single stack frame yielded by [`trace`].
 #[derive(Clone, Copy, Debug)]
@@ -140,7 +162,10 @@ impl UnwindState {
 /// still fault.
 #[inline]
 unsafe fn read_word(addr: usize) -> Option<usize> {
-    if addr < 4096 || addr % core::mem::size_of::<usize>() != 0 {
+    if addr < 4096
+        || !addr.is_multiple_of(core::mem::size_of::<usize>())
+        || !is_readable(addr)
+    {
         return None;
     }
     let value = unsafe { core::ptr::read_unaligned(addr as *const usize) };
@@ -353,7 +378,7 @@ mod capture {
 
 /// Frame-pointer chain walking (x86_64 / aarch64).
 mod fp {
-    use super::{Frame, MAX_FRAME_DELTA, read_word};
+    use super::{Frame, read_word};
 
     /// DWARF register index of the frame pointer.
     #[cfg(target_arch = "x86_64")]
@@ -375,13 +400,10 @@ mod fp {
         {
             let fp = state.regs.gpr[FP];
             let sp = state.sp;
-            if fp == 0 || fp % 16 != 0 {
+            if fp == 0 || !fp.is_multiple_of(16) {
                 return false;
             }
             if fp < sp {
-                return false;
-            }
-            if fp - sp > MAX_FRAME_DELTA {
                 return false;
             }
             let Some(next_fp) = (unsafe { read_word(fp) }) else {
@@ -457,7 +479,7 @@ mod cfi {
         const fn new() -> Self {
             Self {
                 cfa: CfaRule::Undefined,
-                rules: [RegRule::Undefined; 64],
+                rules: [RegRule::SameValue; 64],
             }
         }
     }
@@ -469,8 +491,6 @@ mod cfi {
         ret_reg: usize,
         fde_enc: u8,
         lsda_enc: u8,
-        #[allow(dead_code)]
-        personality_enc: u8,
         is_signal: bool,
         address_size: u8,
         version: u8,
@@ -682,13 +702,9 @@ mod cfi {
         }
         let code_factor = reader.uleb()?;
         let data_factor = reader.sleb()?;
-        let ret_reg = if version == 1 && false {
-            // `.eh_frame` uses ULEB128 for the return-address register even
-            // at version 1 (values < 128 are identical to a single byte).
-            usize::try_from(reader.u8()?).ok()?
-        } else {
-            reader.uleb()? as usize
-        };
+        // `.eh_frame` uses ULEB128 for the return-address register even at
+        // version 1 (values < 128 are identical to a single byte).
+        let ret_reg = reader.uleb()? as usize;
 
         let mut fde_enc: u8 = 0x00;
         let mut lsda_enc: u8 = 0xff;
@@ -746,7 +762,6 @@ mod cfi {
             ret_reg,
             fde_enc,
             lsda_enc,
-            personality_enc,
             is_signal,
             address_size,
             version,
@@ -887,7 +902,8 @@ mod cfi {
             if !is_cie {
                 let mut idr = SliceReader::new(data, base, datarel_base);
                 idr.pos = body;
-                let cie_ptr_field = body + 4;
+                // `body` is the address of the CIE-pointer field.
+                let cie_ptr_field = body;
                 let cie_ptr = idr.u32()? as usize;
                 if cie_ptr > cie_ptr_field {
                     off = end;
@@ -895,18 +911,16 @@ mod cfi {
                 }
                 let cie_start = cie_ptr_field - cie_ptr;
                 // CIE body starts after its length/id header.
-                let Some((cie_body, cie_end, true)) = entry_offsets(cie_start, data)
+                let Some((_cie_body, cie_end, true)) = entry_offsets(cie_start, data)
                 else {
                     off = end;
                     continue;
                 };
                 let mut cr = SliceReader::new(data, base, datarel_base);
-                cr.pos = cie_body;
-                // Skip CIE id already consumed by entry_offsets conceptually;
-                // cie_body points at id field — advance past id.
+                // Skip length field (4 or 12 bytes) plus CIE id (4 or 8).
                 let id_size =
                     if data.get(cie_start..cie_start + 4) == Some(&[0xff; 4][..]) {
-                        12
+                        20
                     } else {
                         8
                     };
@@ -988,15 +1002,14 @@ mod cfi {
         if off >= frame.len() {
             return None;
         }
-        let Some((body, end, is_cie)) = entry_offsets(off, frame) else {
-            return None;
-        };
+        let (body, end, is_cie) = entry_offsets(off, frame)?;
         if is_cie {
             return None;
         }
         let mut idr = SliceReader::new(frame, frame_addr, tables.datarel_base);
         idr.pos = body;
-        let cie_ptr_field = body + 4;
+        // `body` is the address of the CIE-pointer field (entry start + 4).
+        let cie_ptr_field = body;
         let cie_ptr = idr.u32()? as usize;
         if cie_ptr > cie_ptr_field {
             return None;
@@ -1006,7 +1019,7 @@ mod cfi {
             return None;
         };
         let id_size = if frame.get(cie_start..cie_start + 4) == Some(&[0xff; 4][..]) {
-            12
+            20
         } else {
             8
         };
@@ -1140,7 +1153,7 @@ mod cfi {
                 }
                 0x19 => {
                     let v = *stack.get(sp.checked_sub(1)?)?;
-                    stack[sp - 1] = (v as isize).unsigned_abs() as usize;
+                    stack[sp - 1] = (v as isize).unsigned_abs();
                 }
                 0x1a => {
                     if sp < 2 {
@@ -1358,6 +1371,7 @@ mod cfi {
     ///
     /// When `tracking` is true, location advances are checked against `target`
     /// (the frame's IP). Returns the final location.
+    #[allow(clippy::too_many_arguments)]
     fn exec_cfa(
         reader: &mut SliceReader<'_>,
         state: &mut CfState,
@@ -1376,13 +1390,15 @@ mod cfi {
                 break;
             }
             let op = reader.u8()?;
-            let mut short_hi = op & 0xc0;
+            let short_hi = op & 0xc0;
             let short_reg = usize::from(op & 0x3f);
-            if short_hi == 0 {
-                short_hi = 0;
-            }
             match short_hi {
                 0x40 => {
+                    loc = loc.wrapping_add(
+                        usize::from(short_reg).wrapping_mul(code_factor as usize),
+                    );
+                }
+                0x80 => {
                     let off = reader.uleb()? as i64;
                     if short_reg >= 64 {
                         return None;
@@ -1390,14 +1406,11 @@ mod cfi {
                     state.rules[short_reg] =
                         RegRule::Offset(off.wrapping_mul(data_factor));
                 }
-                0x80 => {
+                0xc0 => {
                     if short_reg >= 64 {
                         return None;
                     }
                     state.rules[short_reg] = base_state.rules[short_reg];
-                }
-                0xc0 => {
-                    return None;
                 }
                 _ => match op {
                     0x00 => {}
@@ -1662,7 +1675,7 @@ mod cfi {
         }
 
         new_regs.gpr[ret_sp_index()] = cfa;
-        let next_ip = new_regs.gpr[cie.ret_reg];
+        let next_ip = *new_regs.gpr.get(cie.ret_reg)?;
         if next_ip == 0 {
             return None;
         }
@@ -1735,6 +1748,47 @@ mod cfi {
         stack_len = 0;
         stack_buf = [None; STATE_STACK_LIMIT];
 
+        #[cfg(test)]
+        {
+            std::eprintln!(
+                "  fde loc={:#x} range={:#x} ret_reg={} cie_insts_off={}..{} ip={:#x} gpr6={:#x} gpr7={:#x}",
+                fde.initial_location,
+                fde.address_range,
+                fde.cie.ret_reg,
+                fde.cie.insts_off,
+                fde.cie.insts_end,
+                ip,
+                state.regs.gpr[6],
+                state.regs.gpr[7]
+            );
+            let fde_i: Vec<u8> = fde.insts.data.to_vec();
+            std::eprintln!("  fde insts ({}): {:02x?}", fde_i.len(), fde_i);
+            let cie_i: Vec<u8> = frame
+                .get(fde.cie.insts_off..fde.cie.insts_end)
+                .unwrap_or(&[])
+                .to_vec();
+            std::eprintln!("  cie insts: {:02x?}", cie_i);
+            unsafe {
+                let rw = |a: usize| read_word(a).unwrap_or(0);
+                std::eprintln!(
+                    "  [rbp]={:#x} [rbp+8]={:#x} [rsp]={:#x} [rsp+16]={:#x} [rsp+24]={:#x}",
+                    rw(state.regs.gpr[6]),
+                    rw(state.regs.gpr[6] + 8),
+                    rw(state.regs.gpr[7]),
+                    rw(state.regs.gpr[7] + 16),
+                    rw(state.regs.gpr[7] + 24),
+                );
+            }
+            std::eprintln!(
+                "  after CIE cf.cfa={:?}",
+                match cf.cfa {
+                    CfaRule::RegOff(r, o) => format!("RegOff({r},{o})"),
+                    CfaRule::Expr(_, _) => "Expr".into(),
+                    CfaRule::Undefined => "Undefined".into(),
+                }
+            );
+        }
+
         // FDE instructions up to `ip`.
         let mut fde_reader = fde.insts;
         if exec_cfa(
@@ -1806,10 +1860,10 @@ mod elf {
 
     #[derive(Clone, Copy, Default)]
     pub(super) struct Found {
-        base: Option<usize>,
-        eh_frame: Option<(usize, usize)>,
-        eh_frame_hdr: Option<(usize, usize)>,
-        datarel_base: usize,
+        pub(super) base: Option<usize>,
+        pub(super) eh_frame: Option<(usize, usize)>,
+        pub(super) eh_frame_hdr: Option<(usize, usize)>,
+        pub(super) datarel_base: usize,
     }
 
     struct Search {
@@ -1952,8 +2006,8 @@ mod elf {
                     return None;
                 }
                 let mut v = 0usize;
-                for i in 0..n {
-                    v |= usize::from(data[i]) << (8 * i);
+                for (i, &byte) in data.iter().enumerate().take(n) {
+                    v |= usize::from(byte) << (8 * i);
                 }
                 pos = n;
                 v
@@ -2022,15 +2076,16 @@ mod elf {
         Some(value)
     }
 
-    /// Parses ELF section headers at load bias `bias` looking for `.eh_frame*`.
-    fn sections_eh_frame(
-        bias: usize,
-        phdrs: &[Phdr],
-    ) -> Option<(
+    /// Section-header lookup result: `.eh_frame`, `.eh_frame_hdr` address,
+    /// and `.eh_frame_hdr` range.
+    type SectionsEhFrame = (
         Option<(usize, usize)>,
         Option<usize>,
         Option<(usize, usize)>,
-    )> {
+    );
+
+    /// Parses ELF section headers at load bias `bias` looking for `.eh_frame*`.
+    fn sections_eh_frame(bias: usize, phdrs: &[Phdr]) -> Option<SectionsEhFrame> {
         // Locate the segment holding the ELF header (usually p_offset == 0).
         let mut ehdr_addr = 0usize;
         let mut found_ehdr = false;
@@ -2089,9 +2144,7 @@ mod elf {
                 hdr = Some((sh_addr, sh_size));
             }
         }
-        if eh_frame.is_none() {
-            return None;
-        }
+        eh_frame?;
         Some((eh_frame, hdr.map(|(a, _)| a), hdr))
     }
 
@@ -2126,22 +2179,24 @@ mod elf {
     fn cfi_or_fp(state: &mut UnwindState) -> bool {
         let ip = state.regs.ip;
         let found = find(ip);
-        if let Some((ef, elen)) = found.eh_frame {
-            if ef >= 4096 && elen > 0 && elen < (1 << 28) {
-                let frame = unsafe { core::slice::from_raw_parts(ef as *const u8, elen) };
-                let tables = cfi::UnwindTables {
-                    eh_frame: (ef, elen),
-                    eh_frame_hdr: found.eh_frame_hdr,
-                    datarel_base: found.datarel_base,
-                };
-                match cfi::step(state, &tables, frame) {
-                    Ok(Some(next)) => {
-                        *state = next;
-                        return true;
-                    }
-                    Ok(None) | Err(true) => return false,
-                    Err(false) => {}
+        if let Some((ef, elen)) = found.eh_frame
+            && ef >= 4096
+            && elen > 0
+            && elen < (1 << 28)
+        {
+            let frame = unsafe { core::slice::from_raw_parts(ef as *const u8, elen) };
+            let tables = cfi::UnwindTables {
+                eh_frame: (ef, elen),
+                eh_frame_hdr: found.eh_frame_hdr,
+                datarel_base: found.datarel_base,
+            };
+            match cfi::step(state, &tables, frame) {
+                Ok(Some(next)) => {
+                    *state = next;
+                    return true;
                 }
+                Ok(None) | Err(true) => return false,
+                Err(false) => {}
             }
         }
         fp::step(state)
@@ -2618,6 +2673,46 @@ mod tests {
         });
     }
 
+    /// Builds a minimal synthetic `.eh_frame` with one CIE and one FDE
+    /// covering `[fde_start, fde_start + range)`.
+    ///
+    /// CIE uses `ret_reg = 16`, `data_factor = -8`, `def_cfa rsp, 16`, and
+    /// `offset r16, 1` (return address at `CFA - 8`).
+    fn synthetic_eh_frame(fde_start: usize, range: usize) -> Vec<u8> {
+        // CIE body after length field:
+        //   id=0, version=1, aug="", code_factor=1, data_factor=-8, ret_reg=16
+        //   DW_CFA_def_cfa r7, 16; DW_CFA_offset r16, 1
+        let cie_payload: &[u8] = &[
+            0x00, 0x00, 0x00, 0x00, // CIE id
+            0x01, // version
+            0x00, // augmentation ""
+            0x01, // code_factor = 1
+            0x78, // data_factor = -8 (SLEB)
+            0x10, // ret_reg = 16 (ULEB)
+            0x0c, 0x07, 0x10, // DW_CFA_def_cfa r7, 16
+            0x90, 0x01, // DW_CFA_offset r16, uleb 1
+        ];
+        let cie_len = cie_payload.len() as u32;
+        let cie_total = 4 + cie_payload.len();
+        // FDE: cie_pointer = distance from pointer field (cie_total + 4) back
+        // to CIE start (0).
+        let cie_ptr = (cie_total + 4) as u32;
+        let mut fde_payload = Vec::new();
+        fde_payload.extend_from_slice(&cie_ptr.to_le_bytes());
+        // fde_enc defaults to 0x00 (absolute native width).
+        fde_payload.extend_from_slice(&fde_start.to_le_bytes());
+        fde_payload.extend_from_slice(&range.to_le_bytes());
+        fde_payload.extend_from_slice(&[0x00]); // DW_CFA_nop
+        let fde_len = fde_payload.len() as u32;
+
+        let mut out = Vec::with_capacity(cie_total + 4 + fde_payload.len());
+        out.extend_from_slice(&cie_len.to_le_bytes());
+        out.extend_from_slice(cie_payload);
+        out.extend_from_slice(&fde_len.to_le_bytes());
+        out.extend_from_slice(&fde_payload);
+        out
+    }
+
     #[test]
     fn captures_nested_frames() {
         let mut frames = Vec::new();
@@ -2664,5 +2759,511 @@ mod tests {
             false
         });
         assert!(ok);
+    }
+
+    #[test]
+    fn trace_respects_frame_cap() {
+        let mut n = 0usize;
+        trace(&mut |_| {
+            n += 1;
+            true
+        });
+        assert!(n <= MAX_FRAMES, "n={n} > MAX_FRAMES");
+        assert!(n >= 1, "expected at least the first frame");
+    }
+
+    #[test]
+    fn read_word_rejects_null_page_and_misalignment() {
+        // Safety: only addresses rejected by the low/misalign checks, plus a
+        // mapped stack local.
+        unsafe {
+            assert_eq!(read_word(0), None);
+            assert_eq!(read_word(8), None);
+            assert_eq!(read_word(4095), None);
+            assert_eq!(read_word(4097), None);
+            assert_eq!(read_word(4103), None);
+            let word = 0x0123_4567_89ab_cdefu64;
+            let addr = (&raw const word).addr();
+            assert_eq!(addr % core::mem::size_of::<usize>(), 0);
+            assert_eq!(read_word(addr), Some(word as usize));
+        }
+    }
+
+    #[test]
+    fn capture_yields_sane_ip_and_sp() {
+        let Some(state) = capture::current() else {
+            return;
+        };
+        assert_ne!(state.regs.ip, 0);
+        assert!(state.sp >= 4096, "sp should be a real stack address");
+    }
+
+    #[cfg(all(unix, not(target_vendor = "apple"), target_pointer_width = "64"))]
+    #[test]
+    fn module_base_none_for_invalid_ip() {
+        assert_eq!(elf::module_base(0), None);
+        assert_eq!(elf::module_base(1), None);
+        assert_eq!(elf::module_base(usize::MAX), None);
+        assert_eq!(elf::module_base(0xdead_beef_dead_beef), None);
+    }
+
+    #[cfg(all(unix, not(target_vendor = "apple"), target_pointer_width = "64"))]
+    #[test]
+    fn module_base_some_for_live_ip() {
+        fn ip_here() -> usize {
+            let ip: usize;
+            // Safety: reads only the current RIP.
+            unsafe {
+                core::arch::asm!("lea {0}, [rip + 0]", out(reg) ip, options(nostack));
+            }
+            ip
+        }
+        let base = elf::module_base(ip_here());
+        assert!(
+            base.is_some(),
+            "code in this binary must have a module base"
+        );
+        assert!(base.is_some_and(|b| b < ip_here()));
+    }
+
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    mod fp_edge {
+        use super::super::UnwindState;
+        use super::super::fp;
+        #[cfg(target_arch = "x86_64")]
+        const FP: usize = 6;
+        #[cfg(target_arch = "aarch64")]
+        const FP: usize = 29;
+
+        fn state_with(fp_val: usize, sp: usize) -> UnwindState {
+            let mut st = UnwindState::new();
+            st.regs.gpr[FP] = fp_val;
+            st.regs.ip = 0x1000;
+            st.sp = sp;
+            st
+        }
+
+        #[test]
+        fn rejects_zero_fp() {
+            assert!(!fp::step(&mut state_with(0, 0x7fff_0000)));
+        }
+
+        #[test]
+        fn rejects_misaligned_fp() {
+            assert!(!fp::step(&mut state_with(0x1008, 0x1000)));
+            assert!(!fp::step(&mut state_with(0x1010 & !0xf | 8, 0x1000)));
+        }
+
+        #[test]
+        fn rejects_fp_below_sp() {
+            let fp_val = 0x4000usize;
+            assert!(!fp::step(&mut state_with(fp_val, fp_val + 16)));
+        }
+
+        #[test]
+        fn advances_through_mapped_frame() {
+            #[repr(C, align(16))]
+            struct Slot {
+                next_fp: usize,
+                next_ip: usize,
+            }
+            let slot = Slot {
+                next_fp: 0,
+                next_ip: 0x1234_0000,
+            };
+            let fp_val = (&raw const slot).addr();
+            assert_eq!(fp_val % 16, 0);
+            let mut st = state_with(fp_val, fp_val.wrapping_sub(16));
+            assert!(fp::step(&mut st));
+            assert_eq!(st.regs.ip, 0x1234_0000);
+            assert_eq!(st.sp, fp_val + 16);
+            assert_eq!(st.regs.gpr[FP], 0);
+            // Next step hits fp == 0 and stops.
+            assert!(!fp::step(&mut st));
+        }
+
+        #[test]
+        fn rejects_zero_next_ip() {
+            #[repr(C, align(16))]
+            struct Slot {
+                next_fp: usize,
+                next_ip: usize,
+            }
+            let slot = Slot {
+                next_fp: 0,
+                next_ip: 0,
+            };
+            let fp_val = (&raw const slot).addr();
+            let mut st = state_with(fp_val, fp_val.wrapping_sub(16));
+            assert!(!fp::step(&mut st));
+        }
+
+        #[test]
+        fn rejects_non_increasing_next_fp() {
+            #[repr(C, align(16))]
+            struct Slot {
+                next_fp: usize,
+                next_ip: usize,
+            }
+            let mut slot = Slot {
+                next_fp: 0,
+                next_ip: 0x1234_0000,
+            };
+            let fp_val = (&raw mut slot).addr();
+            slot.next_fp = fp_val;
+            let mut st = state_with(fp_val, fp_val.wrapping_sub(16));
+            // Read the written field so the store is not dead.
+            assert_eq!(slot.next_fp, fp_val);
+            assert!(!fp::step(&mut st));
+        }
+    }
+
+    mod cfi_edge {
+        use super::super::UnwindState;
+        use super::super::cfi::{self, UnwindTables};
+        use super::synthetic_eh_frame;
+
+        fn tables_for(frame: &[u8]) -> UnwindTables {
+            UnwindTables {
+                eh_frame: (frame.as_ptr() as usize, frame.len()),
+                eh_frame_hdr: None,
+                datarel_base: 0,
+            }
+        }
+
+        fn assert_err_false(r: Result<Option<UnwindState>, bool>, ctx: &str) {
+            match r {
+                Err(false) => {}
+                Err(true) => panic!("{ctx}: unexpected Err(true)"),
+                Ok(None) => panic!("{ctx}: unexpected Ok(None)"),
+                Ok(Some(_)) => panic!("{ctx}: unexpected Ok(Some)"),
+            }
+        }
+
+        #[test]
+        fn empty_frame_rejects_invalid_ip() {
+            let mut st = UnwindState::new();
+            st.regs.ip = 0;
+            st.sp = 0x7fff_0000;
+            let empty: [u8; 0] = [];
+            assert_err_false(
+                cfi::step(&mut st, &tables_for(&empty), &empty),
+                "empty frame",
+            );
+        }
+
+        #[test]
+        fn garbage_eh_frame_does_not_panic() {
+            let mut st = UnwindState::new();
+            st.regs.ip = 0xdead_beef;
+            st.sp = 0x7fff_0000;
+            let pattern_a = [0x00u8; 64];
+            let pattern_b = [0xffu8; 64];
+            let pattern_c = [0xaa, 0x55, 0x01, 0x7f].repeat(16);
+            for pattern in [
+                pattern_a.as_slice(),
+                pattern_b.as_slice(),
+                pattern_c.as_slice(),
+            ] {
+                match cfi::step(&mut st, &tables_for(pattern), pattern) {
+                    Err(_) | Ok(None) => {}
+                    Ok(Some(_)) => panic!("garbage must not produce a step"),
+                }
+            }
+        }
+
+        #[test]
+        fn unknown_ip_yields_no_fde() {
+            let mut st = UnwindState::new();
+            let fde_start = 0x1000_0000usize;
+            let frame = synthetic_eh_frame(fde_start, 0x100);
+            let tables = tables_for(&frame);
+            st.regs.ip = fde_start + 0x200;
+            assert_err_false(cfi::step(&mut st, &tables, &frame), "past range");
+            st.regs.ip = fde_start.wrapping_sub(1);
+            assert_err_false(cfi::step(&mut st, &tables, &frame), "before range");
+            st.regs.ip = 0;
+            assert_err_false(cfi::step(&mut st, &tables, &frame), "ip=0");
+        }
+
+        #[test]
+        fn synthetic_fde_steps_successfully() {
+            let mut st = UnwindState::new();
+            let fde_start = 0x1000_0000usize;
+            let range = 0x100usize;
+            let frame = synthetic_eh_frame(fde_start, range);
+            let tables = tables_for(&frame);
+            let buf = Box::leak(Box::new([0usize; 16]));
+            buf[2] = 0x1000_0180;
+            let rsp = buf as *const _ as usize;
+            st.regs.gpr[7] = rsp + 8;
+            st.regs.ip = fde_start + 16;
+            st.sp = rsp + 8;
+            match cfi::step(&mut st, &tables, &frame) {
+                Ok(Some(next)) => {
+                    assert_eq!(next.regs.ip, 0x1000_0180);
+                }
+                Ok(None) => panic!("synthetic step returned Ok(None)"),
+                Err(false) => panic!("synthetic FDE not found"),
+                Err(true) => panic!("synthetic step stopped unexpectedly"),
+            }
+        }
+
+        #[test]
+        fn out_of_range_ret_reg_is_rejected() {
+            let mut frame = synthetic_eh_frame(0x1000_0000, 0x100);
+            // CIE ret_reg ULEB sits at offset 12 in a short CIE.
+            assert_eq!(frame[12], 0x10);
+            frame[12] = 0x40; // 64 — first invalid index
+            let mut st = UnwindState::new();
+            st.regs.ip = 0x1000_0010;
+            st.regs.gpr[7] = 0x2_0000;
+            st.sp = 0x2_0000;
+            let tables = tables_for(&frame);
+            match cfi::step(&mut st, &tables, &frame) {
+                Ok(Some(_)) => panic!("OOB ret_reg must not produce a step"),
+                Ok(None) | Err(_) => {}
+            }
+        }
+
+        #[test]
+        fn cie_pointer_must_resolve_to_cie_start() {
+            let mut st = UnwindState::new();
+            let fde_start = 0x2000_0000usize;
+            let frame = synthetic_eh_frame(fde_start, 0x40);
+            let tables = tables_for(&frame);
+            let frame_ptr = frame.as_ptr() as usize;
+            st.regs.gpr[7] = frame_ptr;
+            st.regs.ip = fde_start + 8;
+            st.sp = frame_ptr;
+            match cfi::step(&mut st, &tables, &frame) {
+                Ok(Some(_)) => {}
+                Err(false) => panic!("CIE at offset 0 must be found via cie_pointer"),
+                Err(true) => panic!("unexpected stop"),
+                Ok(None) => panic!("unexpected Ok(None)"),
+            }
+        }
+
+        #[cfg(all(unix, not(target_vendor = "apple"), target_pointer_width = "64"))]
+        #[test]
+        fn real_eh_frame_steps_for_live_ip() {
+            use super::super::capture;
+            use super::super::elf;
+            let Some(mut st) = capture::current() else {
+                return;
+            };
+            let found = elf::find(st.regs.ip);
+            let Some((ef, elen)) = found.eh_frame else {
+                return;
+            };
+            assert!(ef >= 4096 && elen > 0 && elen < (1 << 28));
+            // Safety: ef/elen come from the loader and bound a mapped region.
+            let frame = unsafe { core::slice::from_raw_parts(ef as *const u8, elen) };
+            let tables = UnwindTables {
+                eh_frame: (ef, elen),
+                eh_frame_hdr: found.eh_frame_hdr,
+                datarel_base: found.datarel_base,
+            };
+            match cfi::step(&mut st, &tables, frame) {
+                Ok(Some(next)) => {
+                    assert_ne!(next.regs.ip, 0);
+                    assert!(next.sp >= 4096);
+                }
+                Err(false) => panic!("live IP must have an FDE"),
+                Err(true) => panic!("live IP step stopped unexpectedly"),
+                Ok(None) => panic!("live IP apply_rules failed"),
+            }
+        }
+
+        #[cfg(all(unix, not(target_vendor = "apple"), target_pointer_width = "64"))]
+        #[test]
+        fn real_eh_frame_rejects_corrupt_ip() {
+            use super::super::capture;
+            use super::super::elf;
+            let Some(mut st) = capture::current() else {
+                return;
+            };
+            let found = elf::find(st.regs.ip);
+            let Some((ef, elen)) = found.eh_frame else {
+                return;
+            };
+            let frame = unsafe { core::slice::from_raw_parts(ef as *const u8, elen) };
+            let tables = UnwindTables {
+                eh_frame: (ef, elen),
+                eh_frame_hdr: found.eh_frame_hdr,
+                datarel_base: found.datarel_base,
+            };
+            for bad in [0usize, 1, 0xdead, usize::MAX, 0xdead_beef_dead_beef] {
+                st.regs.ip = bad;
+                assert_err_false(
+                    cfi::step(&mut st, &tables, frame),
+                    "corrupt ip must miss FDE",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn walk_terminates_after_capture_with_forced_stop() {
+        // `walk` always captures first; force stop via callback false after
+        // one frame and ensure no further frames are produced even if the
+        // captured IP is valid.
+        let mut n = 0usize;
+        walk(
+            &mut |_| {
+                n += 1;
+                false
+            },
+            None,
+        );
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn walk_uses_step_fn_when_provided() {
+        // A step_fn that always fails yields exactly one frame.
+        let mut n = 0usize;
+        walk(
+            &mut |_| {
+                n += 1;
+                true
+            },
+            Some(|_| false),
+        );
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn debug_walk_detail() {
+        #[inline(never)]
+        fn inner() {
+            let mut n = 0;
+            let mut ips = Vec::new();
+            let mut sps = Vec::new();
+            trace(&mut |f| {
+                n += 1;
+                ips.push(f.ip());
+                sps.push(f.sp());
+                true
+            });
+            std::eprintln!("frames={n}");
+            for (i, (ip, sp)) in ips.iter().zip(sps.iter()).enumerate() {
+                std::eprintln!(
+                    "  [{i}] ip={ip:#x} sp={sp:#x} base={:?}",
+                    elf::module_base(*ip)
+                );
+            }
+        }
+        inner();
+        // also direct CFI steps
+        let Some(mut st) = capture::current() else {
+            return;
+        };
+        let found = elf::find(st.regs.ip);
+        std::eprintln!("eh_frame={:?}", found.eh_frame);
+        if let Some((ef, elen)) = found.eh_frame {
+            let frame = unsafe { core::slice::from_raw_parts(ef as *const u8, elen) };
+            let tables = cfi::UnwindTables {
+                eh_frame: (ef, elen),
+                eh_frame_hdr: found.eh_frame_hdr,
+                datarel_base: found.datarel_base,
+            };
+            {
+                let ip = st.regs.ip;
+                let fde_dbg = {
+                    // re-parse via step internals isn't exposed; print encodings from hdr
+                    if let Some((ha, hl)) = tables.eh_frame_hdr {
+                        let hdr = unsafe {
+                            core::slice::from_raw_parts(ha as *const u8, hl.min(64))
+                        };
+                        std::eprintln!(
+                            "hdr bytes[0..16]={:02x?}",
+                            &hdr[..16.min(hdr.len())]
+                        );
+                    }
+                    std::eprintln!(
+                        "frame addr={:#x} len={} datarel={:#x}",
+                        tables.eh_frame.0,
+                        frame.len(),
+                        tables.datarel_base
+                    );
+                    std::eprintln!("ip={:#x} in_module={:?}", ip, elf::module_base(ip));
+                };
+                let _ = fde_dbg;
+            }
+            for step in 0..6 {
+                let ip = st.regs.ip;
+                let fp = st.regs.gpr[6];
+                let sp = st.sp;
+                match cfi::step(&mut st, &tables, frame) {
+                    Ok(Some(next)) => {
+                        std::eprintln!(
+                            "cfi step {step}: {ip:#x}->{:#x} sp {sp:#x}->{:#x} fp {fp:#x}->{:#x} next_base={:?}",
+                            next.regs.ip,
+                            next.sp,
+                            next.regs.gpr[6],
+                            elf::module_base(next.regs.ip)
+                        );
+                        st = next;
+                    }
+                    Err(e) => {
+                        std::eprintln!(
+                            "cfi step {step}: Err({e}) at ip={ip:#x} sp={sp:#x} fp={fp:#x}"
+                        );
+                        // try FP from here
+                        if fp::step(&mut st) {
+                            std::eprintln!("  fp fallback ok ip={:#x}", st.regs.ip);
+                        } else {
+                            std::eprintln!("  fp fallback fail");
+                            break;
+                        }
+                    }
+                    Ok(None) => {
+                        std::eprintln!("cfi step {step}: Ok(None) at ip={ip:#x}");
+                        break;
+                    }
+                }
+            }
+        }
+        // FP steps from capture
+        let Some(mut st) = capture::current() else {
+            return;
+        };
+        std::eprintln!(
+            "FP start ip={:#x} fp={:#x} sp={:#x}",
+            st.regs.ip,
+            st.regs.gpr[6],
+            st.sp
+        );
+        for step in 0..8 {
+            if fp::step(&mut st) {
+                std::eprintln!(
+                    "fp step {step}: ip={:#x} fp={:#x} sp={:#x}",
+                    st.regs.ip,
+                    st.regs.gpr[6],
+                    st.sp
+                );
+            } else {
+                std::eprintln!("fp step {step}: stop");
+                break;
+            }
+        }
+    }
+
+    #[test]
+    fn deep_recursion_stays_within_cap() {
+        #[inline(never)]
+        fn rec(depth: usize, frames: &mut Vec<Frame>) {
+            if depth == 0 {
+                collect(frames);
+            } else {
+                rec(depth - 1, frames);
+            }
+        }
+        let mut frames = Vec::new();
+        rec(16, &mut frames);
+        assert!(!frames.is_empty());
+        assert!(frames.len() <= MAX_FRAMES);
+        assert!(frames.iter().all(|f| f.ip() != 0));
     }
 }

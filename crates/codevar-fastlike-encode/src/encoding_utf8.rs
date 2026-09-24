@@ -983,7 +983,7 @@ fn in_range16(i: u16, start: u16, end: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::encoding::{CoderResult, DecoderResult, UTF_8};
+    use crate::encoding::DecoderResult;
 
     #[test]
     fn test_encode_text_roundtrip() {

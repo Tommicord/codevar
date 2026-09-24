@@ -16,4 +16,5 @@ arc-swap = { workspace = true }
 
 [dependencies]
 cfg-if = "1.0.5"
+libc = "0.2"
 windows-link = "0.100.0"
