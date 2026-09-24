@@ -13,7 +13,7 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-use crate::compression_error::{Error, Result};
+use crate::compression_error::{CompressorError, CompressorResult};
 use crate::compression_frame::{FrameKind, write_bytes};
 use crate::compression_lzmatch::MIN_MATCH;
 
@@ -36,9 +36,9 @@ pub struct LzWorkspace<'a> {
 
 impl<'a> LzWorkspace<'a> {
     /// Validates workspace buffer sizes and wraps them.
-    pub fn new(heads: &'a mut [u32], previous: &'a mut [u32]) -> Result<Self> {
+    pub fn new(heads: &'a mut [u32], previous: &'a mut [u32]) -> CompressorResult<Self> {
         if heads.len() < HASH_TABLE_SIZE || previous.len() < HISTORY_LIMIT + 1 {
-            return Err(Error::OutputTooSmall);
+            return Err(CompressorError::OutputTooSmall);
         }
         Ok(Self { heads, previous })
     }
@@ -56,14 +56,18 @@ pub struct StreamingEncoder<'a> {
 
 impl<'a> StreamingEncoder<'a> {
     /// Creates a streaming encoder over the given workspace buffers.
-    pub fn new(heads: &'a mut [u32], previous: &'a mut [u32]) -> Result<Self> {
+    pub fn new(heads: &'a mut [u32], previous: &'a mut [u32]) -> CompressorResult<Self> {
         Ok(Self {
             workspace: LzWorkspace::new(heads, previous)?,
         })
     }
 
     /// Encodes one input block into `output`, returning bytes written.
-    pub fn encode_block(&mut self, input: &[u8], output: &mut [u8]) -> Result<usize> {
+    pub fn encode_block(
+        &mut self,
+        input: &[u8],
+        output: &mut [u8],
+    ) -> CompressorResult<usize> {
         compress_block_into(input, output, &mut self.workspace)
     }
 }
@@ -77,8 +81,9 @@ pub fn compress_block_into(
     input: &[u8],
     output: &mut [u8],
     workspace: &mut LzWorkspace<'_>,
-) -> Result<usize> {
-    let input_length = u32::try_from(input.len()).map_err(|_| Error::InputTooLarge)?;
+) -> CompressorResult<usize> {
+    let input_length =
+        u32::try_from(input.len()).map_err(|_| CompressorError::InputTooLarge)?;
     let mut cursor = 0usize;
     write_bytes(output, &mut cursor, FrameKind::LzMatch.magic())?;
     write_bytes(output, &mut cursor, &input_length.to_be_bytes())?;
@@ -111,8 +116,9 @@ pub fn compress_block_into(
         if best_length >= MIN_MATCH {
             flush_literal_slice(input, literal_start, position, output, &mut cursor)?;
             let distance = u16::try_from(position - best_position as usize)
-                .map_err(|_| Error::InvalidMatch)?;
-            let length = u16::try_from(best_length).map_err(|_| Error::InvalidMatch)?;
+                .map_err(|_| CompressorError::InvalidMatch)?;
+            let length =
+                u16::try_from(best_length).map_err(|_| CompressorError::InvalidMatch)?;
             write_bytes(output, &mut cursor, &[1])?;
             write_bytes(output, &mut cursor, &distance.to_be_bytes())?;
             write_bytes(output, &mut cursor, &length.to_be_bytes())?;
@@ -204,7 +210,7 @@ fn flush_literal_slice(
     end: usize,
     output: &mut [u8],
     cursor: &mut usize,
-) -> Result<()> {
+) -> CompressorResult<()> {
     while start < end {
         let length = (end - start).min(usize::from(u16::MAX));
         write_bytes(output, cursor, &[0])?;
@@ -232,7 +238,7 @@ mod tests {
         compress_block_into,
     };
     use crate::compression::lz_match_encode;
-    use crate::compression_error::Error;
+    use crate::compression_error::CompressorError;
     use crate::compression_lzmatch::lz_match_decode;
 
     #[test]
@@ -262,7 +268,7 @@ mod tests {
         let mut output = [0u8; 4];
         assert_eq!(
             compress_block_into(b"hello", &mut output, &mut workspace),
-            Err(Error::OutputTooSmall)
+            Err(CompressorError::OutputTooSmall)
         );
     }
 

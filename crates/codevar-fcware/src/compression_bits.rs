@@ -19,7 +19,7 @@
 //! refills an eight-lane buffer with a single unaligned load + SIMD (or scalar)
 //! expand so consumers pull from packed lanes.
 
-use crate::compression_error::{Error, Result};
+use crate::compression_error::{CompressorError, CompressorResult};
 
 /// Number of parallel bit lanes filled per refill.
 pub const BIT_LANES: usize = 8;
@@ -67,7 +67,7 @@ impl<'a> BitLaneReader<'a> {
 
     /// Returns the next bit (`0` or `1`), refilling lanes when empty.
     #[inline]
-    pub fn next_bit(&mut self) -> Result<u8> {
+    pub fn next_bit(&mut self) -> CompressorResult<u8> {
         if self.lane_pos >= self.lane_len {
             self.refill_lanes()?;
         }
@@ -91,9 +91,9 @@ impl<'a> BitLaneReader<'a> {
     /// Unaligned loads only touch bytes still inside `self.data`, and lane
     /// stores write into the local `[u8; 8]` buffer.
     #[inline]
-    pub fn refill_lanes(&mut self) -> Result<()> {
+    pub fn refill_lanes(&mut self) -> CompressorResult<()> {
         if self.bit_index >= self.bit_end {
-            return Err(Error::TruncatedFrame);
+            return Err(CompressorError::TruncatedFrame);
         }
         let remaining = self.bit_end - self.bit_index;
         let count = remaining.min(BIT_LANES);

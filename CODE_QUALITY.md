@@ -17,8 +17,8 @@ Strict quality standards for high-performance Rust code in the Codevar project.
 #### Strict Requirements
 
 - **NEVER use `.unwrap()` or `.expect()` in production code**
-- **ALWAYS handle errors using `Result`, `Option`, or appropriate error handling methods**
-- Use `?` operator for error propagation in functions returning `Result`
+- **ALWAYS handle errors using `CompressorResult`, `Option`, or appropriate error handling methods**
+- Use `?` operator for error propagation in functions returning `CompressorResult`
 - Use `.unwrap_or()`, `.unwrap_or_default()`, or `.unwrap_or_else()` for fallback values
 - Only `.unwrap()` and `.expect()` are permitted in unit tests with explicit justification
 
@@ -49,7 +49,7 @@ fn process_data(input: &str) -> Result<ProcessedData, ProcessingError> {
 - **NEVER use `panic!`, `abort()`, or other panicking methods in production code**
 - **LIMIT the use of `assert!` and another asserting macros in production code
 - **NEVER use `unreachable!()` in production code**
-- Use `Result` and `Option` for all error conditions
+- Use `CompressorResult` and `Option` for all error conditions
 - Use `debug_assert!` only in debug builds for invariant checking
 - Only panicking methods are permitted in unit tests
 

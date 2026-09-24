@@ -13,20 +13,21 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-use crate::compression_error::{Error, Result};
+use crate::compression_error::{CompressorError, CompressorResult};
 use crate::compression_frame::{FrameKind, extend_bytes, frame_read_u16};
+use alloc::vec::Vec;
 
 const HEADER_SIZE: usize = 7;
 /// Minimum match length encoded in an LZ-match frame.
 pub const MIN_MATCH: usize = 4;
 
 /// Decodes an LZ-match frame into the original byte stream.
-pub fn lz_match_decode(frame: &[u8]) -> Result<Vec<u8>> {
+pub fn lz_match_decode(frame: &[u8]) -> CompressorResult<Vec<u8>> {
     if frame.len() < HEADER_SIZE {
-        return Err(Error::InvalidFrame);
+        return Err(CompressorError::InvalidFrame);
     }
     if FrameKind::from_magic(frame) != Some(FrameKind::LzMatch) {
-        return Err(Error::InvalidFrame);
+        return Err(CompressorError::InvalidFrame);
     }
     // SAFETY: length checked above; bytes 3..7 are in-bounds.
     let expected = unsafe {
@@ -43,9 +44,11 @@ pub fn lz_match_decode(frame: &[u8]) -> Result<Vec<u8>> {
         match marker {
             0 => {
                 let length = usize::from(frame_read_u16(frame, &mut position)?);
-                let end = position.checked_add(length).ok_or(Error::TruncatedFrame)?;
+                let end = position
+                    .checked_add(length)
+                    .ok_or(CompressorError::TruncatedFrame)?;
                 if end > frame.len() {
-                    return Err(Error::TruncatedFrame);
+                    return Err(CompressorError::TruncatedFrame);
                 }
                 // SAFETY: `position..end` is within `frame`.
                 let literals = unsafe {
@@ -58,20 +61,20 @@ pub fn lz_match_decode(frame: &[u8]) -> Result<Vec<u8>> {
                 let distance = usize::from(frame_read_u16(frame, &mut position)?);
                 let length = usize::from(frame_read_u16(frame, &mut position)?);
                 if distance == 0 || distance > output.len() || length < MIN_MATCH {
-                    return Err(Error::InvalidMatch);
+                    return Err(CompressorError::InvalidMatch);
                 }
                 append_match(&mut output, distance, length);
             }
-            marker => return Err(Error::invalid_token(marker)),
+            marker => return Err(CompressorError::invalid_token(marker)),
         }
         if output.len() > expected {
-            return Err(Error::length_mismatch(expected, output.len()));
+            return Err(CompressorError::length_mismatch(expected, output.len()));
         }
     }
     if output.len() == expected {
         Ok(output)
     } else {
-        Err(Error::length_mismatch(expected, output.len()))
+        Err(CompressorError::length_mismatch(expected, output.len()))
     }
 }
 
@@ -113,7 +116,8 @@ fn append_match(output: &mut Vec<u8>, distance: usize, length: usize) {
 mod tests {
     use super::{MIN_MATCH, lz_match_decode};
     use crate::compression::lz_match_encode;
-    use crate::compression_error::Error;
+    use crate::compression_error::CompressorError;
+    use alloc::vec::Vec;
 
     #[test]
     fn min_match_constant() {
@@ -126,10 +130,10 @@ mod tests {
         let frame = lz_match_encode(input).expect("encode");
         assert_eq!(lz_match_decode(&frame).expect("decode"), input);
 
-        assert_eq!(lz_match_decode(b"XX"), Err(Error::InvalidFrame));
+        assert_eq!(lz_match_decode(b"XX"), Err(CompressorError::InvalidFrame));
         assert_eq!(
             lz_match_decode(b"LM\x01\x00\x00\x00\x01"),
-            Err(Error::length_mismatch(1, 0))
+            Err(CompressorError::length_mismatch(1, 0))
         );
     }
 
@@ -138,11 +142,14 @@ mod tests {
         // LM + len=4 + match with distance 0
         let mut frame = Vec::from(&b"LM\x01\x00\x00\x00\x04"[..]);
         frame.extend_from_slice(&[1, 0, 0, 0, 4]);
-        assert_eq!(lz_match_decode(&frame), Err(Error::InvalidMatch));
+        assert_eq!(lz_match_decode(&frame), Err(CompressorError::InvalidMatch));
 
         let mut frame = Vec::from(&b"LM\x01\x00\x00\x00\x00"[..]);
         frame.push(9);
-        assert_eq!(lz_match_decode(&frame), Err(Error::invalid_token(9)));
+        assert_eq!(
+            lz_match_decode(&frame),
+            Err(CompressorError::invalid_token(9))
+        );
     }
 
     #[test]

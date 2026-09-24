@@ -13,12 +13,14 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-use crate::compression_error::{Error, Result};
+use crate::compression_error::{CompressorError, CompressorResult};
 use crate::compression_frame::FrameKind;
+use alloc::vec::Vec;
 
 /// Encodes `input` as a delta / residual frame.
-pub fn delta_encode(input: &[u8]) -> Result<Vec<u8>> {
-    let length = u32::try_from(input.len()).map_err(|_| Error::InputTooLarge)?;
+pub fn delta_encode(input: &[u8]) -> CompressorResult<Vec<u8>> {
+    let length =
+        u32::try_from(input.len()).map_err(|_| CompressorError::InputTooLarge)?;
     let mut frame = Vec::with_capacity(7 + input.len());
     frame.extend_from_slice(FrameKind::Delta.magic());
     frame.extend_from_slice(&length.to_be_bytes());
@@ -58,9 +60,9 @@ pub fn delta_encode(input: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Decodes a delta frame into the original byte stream.
-pub fn delta_decode(frame: &[u8]) -> Result<Vec<u8>> {
+pub fn delta_decode(frame: &[u8]) -> CompressorResult<Vec<u8>> {
     if frame.len() < 7 || FrameKind::from_magic(frame) != Some(FrameKind::Delta) {
-        return Err(Error::InvalidFrame);
+        return Err(CompressorError::InvalidFrame);
     }
     // SAFETY: length >= 7.
     let expected = unsafe {
@@ -71,10 +73,10 @@ pub fn delta_decode(frame: &[u8]) -> Result<Vec<u8>> {
         return if frame.len() == 7 {
             Ok(Vec::new())
         } else {
-            Err(Error::length_mismatch(0, frame.len() - 7))
+            Err(CompressorError::length_mismatch(0, frame.len() - 7))
         };
     }
-    let first = *frame.get(7).ok_or(Error::TruncatedFrame)?;
+    let first = *frame.get(7).ok_or(CompressorError::TruncatedFrame)?;
     let mut output = Vec::with_capacity(expected);
     output.push(first);
     let mut position = 8usize;
@@ -83,10 +85,13 @@ pub fn delta_decode(frame: &[u8]) -> Result<Vec<u8>> {
         let marker = unsafe { *frame.as_ptr().add(position) };
         position += 1;
         let (difference, count) = if marker == 0 {
-            let difference = *frame.get(position).ok_or(Error::TruncatedFrame)?;
-            let count = *frame.get(position + 1).ok_or(Error::TruncatedFrame)?;
+            let difference =
+                *frame.get(position).ok_or(CompressorError::TruncatedFrame)?;
+            let count = *frame
+                .get(position + 1)
+                .ok_or(CompressorError::TruncatedFrame)?;
             if count == 0 {
-                return Err(Error::invalid_control(0));
+                return Err(CompressorError::invalid_control(0));
             }
             position += 2;
             (difference, usize::from(count))
@@ -106,20 +111,22 @@ pub fn delta_decode(frame: &[u8]) -> Result<Vec<u8>> {
             output.set_len(out_len);
         }
         if output.len() > expected {
-            return Err(Error::length_mismatch(expected, output.len()));
+            return Err(CompressorError::length_mismatch(expected, output.len()));
         }
     }
     if output.len() == expected {
         Ok(output)
     } else {
-        Err(Error::length_mismatch(expected, output.len()))
+        Err(CompressorError::length_mismatch(expected, output.len()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{delta_decode, delta_encode};
-    use crate::compression_error::Error;
+    use crate::compression_error::CompressorError;
+    use alloc::vec;
+    use alloc::vec::Vec;
 
     #[test]
     fn roundtrip_patterns() {
@@ -138,17 +145,20 @@ mod tests {
 
     #[test]
     fn rejects_invalid_and_truncated() {
-        assert_eq!(delta_decode(b"XX\x01"), Err(Error::InvalidFrame));
+        assert_eq!(delta_decode(b"XX\x01"), Err(CompressorError::InvalidFrame));
         assert_eq!(
             delta_decode(b"DL\x01\x00\x00\x00\x02\x01"),
-            Err(Error::length_mismatch(2, 1))
+            Err(CompressorError::length_mismatch(2, 1))
         );
         // Truncated run record after control 0.
         let truncated = Vec::from(&b"DL\x01\x00\x00\x00\x02\x01\x00"[..]);
-        assert_eq!(delta_decode(&truncated), Err(Error::TruncatedFrame));
+        assert_eq!(
+            delta_decode(&truncated),
+            Err(CompressorError::TruncatedFrame)
+        );
         let mut bad = Vec::from(&b"DL\x01\x00\x00\x00\x02\x01"[..]);
         bad.extend([0, 1, 0]); // count == 0
-        assert_eq!(delta_decode(&bad), Err(Error::invalid_control(0)));
+        assert_eq!(delta_decode(&bad), Err(CompressorError::invalid_control(0)));
     }
 
     #[test]

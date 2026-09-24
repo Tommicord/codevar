@@ -1,5 +1,5 @@
 [package]
-name = "codevar-baseutil"
+name = "codevar-base"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [lib]
-name = "codevar_baseutil"
+name = "codevar_base"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 webpki-roots = { workspace = true }
@@ -18,3 +18,4 @@ arc-swap = { workspace = true }
 cfg-if = "1.0.5"
 libc = "0.2"
 windows-link = "0.100.0"
+spin = "0.12.3"

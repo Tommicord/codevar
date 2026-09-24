@@ -14,6 +14,10 @@
 //! permissions and limitations under the License.
 
 #![cfg_attr(not(test), no_std)]
+extern crate alloc;
+
+pub mod basic_cpuid;
+pub mod basic_daemon;
 pub mod basic_pretty_unwind;
 pub mod basic_signal;
 pub mod basic_unwind;

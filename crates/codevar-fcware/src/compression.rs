@@ -25,7 +25,7 @@ use crate::compression_dysu::{
     dynamic_substring_decode, dynamic_substring_encode, substring_decode,
     substring_encode,
 };
-use crate::compression_error::{Error, Result};
+use crate::compression_error::{CompressorError, CompressorResult};
 use crate::compression_frame::FrameKind;
 use crate::compression_huffman::{huffman_decode, huffman_encode};
 use crate::compression_lzmatch::lz_match_decode;
@@ -33,12 +33,14 @@ use crate::compression_stream::{
     HASH_TABLE_SIZE, HISTORY_LIMIT, LzWorkspace, NO_POSITION, compress_block_into,
 };
 use crate::compression_valmap::{valmap_decode_frame, valmap_encode_frame};
+use alloc::vec;
+use alloc::vec::Vec;
 
 use crate::compression_bits::BitLaneReader;
 pub use crate::compression_bits::{BIT_LANES, BitLaneReader as BitReader};
 pub use crate::compression_error::{
-    Error as CompressionError, InvalidCodePoint, InvalidControl, InvalidToken,
-    LengthMismatch, Result as CompressionResult,
+    CompressorResult as CompressionResult, InvalidCodePoint, InvalidControl,
+    InvalidToken, LengthMismatch,
 };
 pub use crate::compression_frame::FrameKind as Frame;
 pub use crate::compression_stream::{LzWorkspace as StreamWorkspace, StreamingEncoder};
@@ -113,9 +115,9 @@ impl ValueCodec {
 ///
 /// # Errors
 ///
-/// Returns an [`Error`] when the input exceeds frame limits or a codec fails.
+/// Returns an [`CompressorError`] when the input exceeds frame limits or a codec fails.
 #[inline]
-pub fn compress(input: &[u8], codec: Codec) -> Result<Vec<u8>> {
+pub fn compress(input: &[u8], codec: Codec) -> CompressorResult<Vec<u8>> {
     match codec {
         Codec::LzMatch => lz_match_encode(input),
         Codec::Huffman => huffman_encode(input),
@@ -129,18 +131,18 @@ pub fn compress(input: &[u8], codec: Codec) -> Result<Vec<u8>> {
 ///
 /// # Errors
 ///
-/// Returns [`Error::InvalidFrame`] for unknown or value-oriented magics, or the
+/// Returns [`CompressorError::InvalidFrame`] for unknown or value-oriented magics, or the
 /// underlying codec error for truncated / corrupt payloads.
 #[inline]
-pub fn decompress(frame: &[u8]) -> Result<Vec<u8>> {
-    let kind = FrameKind::from_magic(frame).ok_or(Error::InvalidFrame)?;
+pub fn decompress(frame: &[u8]) -> CompressorResult<Vec<u8>> {
+    let kind = FrameKind::from_magic(frame).ok_or(CompressorError::InvalidFrame)?;
     match kind {
         FrameKind::LzMatch => lz_match_decode(frame),
         FrameKind::Huffman => huffman_decode(frame),
         FrameKind::Substring => substring_decode(frame),
         FrameKind::Dysu => dynamic_substring_decode(frame),
         FrameKind::Delta => delta_decode(frame),
-        FrameKind::Bitward | FrameKind::Dictionary => Err(Error::InvalidFrame),
+        FrameKind::Bitward | FrameKind::Dictionary => Err(CompressorError::InvalidFrame),
     }
 }
 
@@ -148,9 +150,9 @@ pub fn decompress(frame: &[u8]) -> Result<Vec<u8>> {
 ///
 /// # Errors
 ///
-/// Returns an [`Error`] when encoding fails or input is too large.
+/// Returns an [`CompressorError`] when encoding fails or input is too large.
 #[inline]
-pub fn compress_values(values: &[u16], codec: ValueCodec) -> Result<Vec<u8>> {
+pub fn compress_values(values: &[u16], codec: ValueCodec) -> CompressorResult<Vec<u8>> {
     match codec {
         ValueCodec::Bitward => bitward_encode(values),
         ValueCodec::Dictionary => valmap_encode_frame(values),
@@ -161,14 +163,14 @@ pub fn compress_values(values: &[u16], codec: ValueCodec) -> Result<Vec<u8>> {
 ///
 /// # Errors
 ///
-/// Returns [`Error::InvalidFrame`] for non-value frames, or a decode error.
+/// Returns [`CompressorError::InvalidFrame`] for non-value frames, or a decode error.
 #[inline]
-pub fn decompress_values(frame: &[u8]) -> Result<Vec<u16>> {
-    let kind = FrameKind::from_magic(frame).ok_or(Error::InvalidFrame)?;
+pub fn decompress_values(frame: &[u8]) -> CompressorResult<Vec<u16>> {
+    let kind = FrameKind::from_magic(frame).ok_or(CompressorError::InvalidFrame)?;
     match kind {
         FrameKind::Bitward => bitward_decode(frame),
         FrameKind::Dictionary => valmap_decode_frame(frame),
-        _ => Err(Error::InvalidFrame),
+        _ => Err(CompressorError::InvalidFrame),
     }
 }
 
@@ -180,7 +182,7 @@ pub fn detect_frame(frame: &[u8]) -> Option<FrameKind> {
 }
 
 /// Encodes `input` as an LZ-match frame using a temporary workspace.
-pub fn lz_match_encode(input: &[u8]) -> Result<Vec<u8>> {
+pub fn lz_match_encode(input: &[u8]) -> CompressorResult<Vec<u8>> {
     let mut heads = vec![NO_POSITION; HASH_TABLE_SIZE];
     let mut previous = vec![NO_POSITION; HISTORY_LIMIT + 1];
     let mut workspace = LzWorkspace::new(&mut heads, &mut previous)?;
@@ -213,8 +215,10 @@ mod tests {
         Codec, DEFAULT_DYSU_BLOCK, ValueCodec, bit_reader, compress, compress_values,
         decompress, decompress_values, detect_frame, lz_match_bound, lz_match_encode,
     };
-    use crate::Error;
+    use crate::CompressorError;
     use crate::compression_frame::FrameKind;
+    use alloc::vec;
+    use alloc::vec::Vec;
 
     fn roundtrip_bytes(input: &[u8], codec: Codec) {
         let frame = compress(input, codec).expect("compress");
@@ -271,10 +275,13 @@ mod tests {
     #[test]
     fn decompress_rejects_value_frames_and_garbage() {
         let bitward = compress_values(&[1, 2, 3], ValueCodec::Bitward).expect("bw");
-        assert_eq!(decompress(&bitward), Err(Error::InvalidFrame));
-        assert_eq!(decompress(b"XX\x01"), Err(Error::InvalidFrame));
-        assert_eq!(decompress(b""), Err(Error::InvalidFrame));
-        assert_eq!(decompress_values(b"LM\x01"), Err(Error::InvalidFrame));
+        assert_eq!(decompress(&bitward), Err(CompressorError::InvalidFrame));
+        assert_eq!(decompress(b"XX\x01"), Err(CompressorError::InvalidFrame));
+        assert_eq!(decompress(b""), Err(CompressorError::InvalidFrame));
+        assert_eq!(
+            decompress_values(b"LM\x01"),
+            Err(CompressorError::InvalidFrame)
+        );
     }
 
     #[test]

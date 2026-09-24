@@ -13,8 +13,10 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-use crate::compression_error::{Error, Result};
+use crate::compression_error::{CompressorError, CompressorResult};
 use crate::compression_frame::{FrameKind, frame_read_u16};
+use alloc::vec;
+use alloc::vec::Vec;
 
 /// Bytes per compact-range table record (`delta_le16`, `count`).
 #[allow(dead_code)] // public predictive-table surface for dictionary tuning
@@ -78,7 +80,7 @@ pub fn compact_candidates(previous: u16) -> impl Iterator<Item = (u16, u8, u8)> 
 }
 
 /// Encodes values without a frame header.
-pub fn valmap_encode(values: &[u16]) -> Result<Vec<u8>> {
+pub fn valmap_encode(values: &[u16]) -> CompressorResult<Vec<u8>> {
     if values.is_empty() {
         return Ok(Vec::new());
     }
@@ -122,7 +124,7 @@ pub fn valmap_encode(values: &[u16]) -> Result<Vec<u8>> {
             }
         }
         let (candidate, first_multiplier, next_multiplier, _, _) =
-            best.ok_or(Error::InvalidIndex)?;
+            best.ok_or(CompressorError::InvalidIndex)?;
         let similarity =
             (15u32.saturating_sub((previous ^ current).count_ones())).min(7) as u8;
         if candidate == current {
@@ -141,7 +143,7 @@ pub fn valmap_encode(values: &[u16]) -> Result<Vec<u8>> {
 }
 
 /// Encodes values into a Dictionary frame (`DI\x01`).
-pub fn valmap_encode_frame(values: &[u16]) -> Result<Vec<u8>> {
+pub fn valmap_encode_frame(values: &[u16]) -> CompressorResult<Vec<u8>> {
     let payload = valmap_encode(values)?;
     let mut frame = Vec::with_capacity(3 + payload.len());
     frame.extend_from_slice(FrameKind::Dictionary.magic());
@@ -150,7 +152,7 @@ pub fn valmap_encode_frame(values: &[u16]) -> Result<Vec<u8>> {
 }
 
 /// Decodes a header-less dictionary stream.
-pub fn valmap_decode(stream: &[u8]) -> Result<Vec<u16>> {
+pub fn valmap_decode(stream: &[u8]) -> CompressorResult<Vec<u16>> {
     if stream.is_empty() {
         return Ok(Vec::new());
     }
@@ -158,7 +160,7 @@ pub fn valmap_decode(stream: &[u8]) -> Result<Vec<u16>> {
         (u16::from(stream[0] & 0x7f), 1)
     } else {
         if stream.len() < 3 {
-            return Err(Error::TruncatedFrame);
+            return Err(CompressorError::TruncatedFrame);
         }
         (u16::from_be_bytes([stream[1], stream[2]]), 3)
     };
@@ -170,12 +172,14 @@ pub fn valmap_decode(stream: &[u8]) -> Result<Vec<u16>> {
         let first_multiplier = (header >> 4) & 3;
         let next_multiplier = (header >> 6) & 3;
         let current = if mode == 0 {
-            let value = u32::from(*output.last().ok_or(Error::InvalidIndex)?)
+            let value = u32::from(*output.last().ok_or(CompressorError::InvalidIndex)?)
                 .saturating_mul(u32::from(first_multiplier))
                 .saturating_add(u32::from(next_multiplier));
-            u16::try_from(value).map_err(|_| Error::InvalidIndex)?
+            u16::try_from(value).map_err(|_| CompressorError::InvalidIndex)?
         } else if first_multiplier == 1 && next_multiplier == 0 {
-            let value = *stream.get(position).ok_or(Error::TruncatedFrame)?;
+            let value = *stream
+                .get(position)
+                .ok_or(CompressorError::TruncatedFrame)?;
             position += 1;
             u16::from(value)
         } else {
@@ -187,9 +191,9 @@ pub fn valmap_decode(stream: &[u8]) -> Result<Vec<u16>> {
 }
 
 /// Decodes a Dictionary frame (`DI\x01`).
-pub fn valmap_decode_frame(frame: &[u8]) -> Result<Vec<u16>> {
+pub fn valmap_decode_frame(frame: &[u8]) -> CompressorResult<Vec<u16>> {
     if frame.len() < 3 || FrameKind::from_magic(frame) != Some(FrameKind::Dictionary) {
-        return Err(Error::InvalidFrame);
+        return Err(CompressorError::InvalidFrame);
     }
     valmap_decode(&frame[3..])
 }
@@ -201,7 +205,8 @@ mod tests {
         compact_candidate_ranges, compact_candidates, valmap_decode, valmap_decode_frame,
         valmap_encode, valmap_encode_frame,
     };
-    use crate::compression_error::Error;
+    use crate::compression_error::CompressorError;
+    use alloc::vec::Vec;
 
     #[test]
     fn table_and_candidates_are_well_formed() {
@@ -227,7 +232,10 @@ mod tests {
 
     #[test]
     fn rejects_bad_frames() {
-        assert_eq!(valmap_decode_frame(b"XX"), Err(Error::InvalidFrame));
-        assert_eq!(valmap_decode(&[0]), Err(Error::TruncatedFrame));
+        assert_eq!(
+            valmap_decode_frame(b"XX"),
+            Err(CompressorError::InvalidFrame)
+        );
+        assert_eq!(valmap_decode(&[0]), Err(CompressorError::TruncatedFrame));
     }
 }

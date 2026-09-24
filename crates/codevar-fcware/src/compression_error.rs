@@ -13,11 +13,11 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-use std::fmt;
+use core::fmt;
 
 /// FcWare compression error.
 #[derive(Debug, Eq, PartialEq)]
-pub enum Error {
+pub enum CompressorError {
     /// Frame magic or layout is not recognized.
     InvalidFrame,
     /// Frame ended before a complete record was read.
@@ -112,22 +112,22 @@ impl fmt::Display for InvalidCodePoint {
 
 impl core::error::Error for InvalidCodePoint {}
 
-impl Error {
-    /// Builds [`Error::LengthMismatch`].
+impl CompressorError {
+    /// Builds [`CompressorError::LengthMismatch`].
     #[inline]
     #[must_use]
     pub const fn length_mismatch(expected: usize, actual: usize) -> Self {
         Self::LengthMismatch(LengthMismatch::new(expected, actual))
     }
 
-    /// Builds [`Error::InvalidToken`].
+    /// Builds [`CompressorError::InvalidToken`].
     #[inline]
     #[must_use]
     pub const fn invalid_token(token: u8) -> Self {
         Self::InvalidToken(InvalidToken(token))
     }
 
-    /// Builds [`Error::InvalidControl`].
+    /// Builds [`CompressorError::InvalidControl`].
     #[inline]
     #[must_use]
     pub const fn invalid_control(control: u8) -> Self {
@@ -135,7 +135,7 @@ impl Error {
     }
 }
 
-impl fmt::Display for Error {
+impl fmt::Display for CompressorError {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -156,35 +156,35 @@ impl fmt::Display for Error {
     }
 }
 
-impl From<InvalidToken> for Error {
+impl From<InvalidToken> for CompressorError {
     #[inline]
     fn from(err: InvalidToken) -> Self {
         Self::InvalidToken(err)
     }
 }
 
-impl From<LengthMismatch> for Error {
+impl From<LengthMismatch> for CompressorError {
     #[inline]
     fn from(err: LengthMismatch) -> Self {
         Self::LengthMismatch(err)
     }
 }
 
-impl From<InvalidCodePoint> for Error {
+impl From<InvalidCodePoint> for CompressorError {
     #[inline]
     fn from(err: InvalidCodePoint) -> Self {
         Self::InvalidCodePoint(err)
     }
 }
 
-impl From<InvalidControl> for Error {
+impl From<InvalidControl> for CompressorError {
     #[inline]
     fn from(err: InvalidControl) -> Self {
         Self::InvalidControl(err)
     }
 }
 
-impl std::error::Error for Error {}
+impl core::error::Error for CompressorError {}
 
 /// Result alias for FcWare operations.
-pub type Result<T> = std::result::Result<T, Error>;
+pub type CompressorResult<T> = core::result::Result<T, CompressorError>;

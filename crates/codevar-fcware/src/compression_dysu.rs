@@ -13,8 +13,9 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-use crate::compression_error::{Error, Result};
+use crate::compression_error::{CompressorError, CompressorResult};
 use crate::compression_frame::{FrameKind, extend_bytes, frame_read_u16, frame_read_u32};
+use alloc::vec::Vec;
 
 /// Minimum substring match length (also the hash key width).
 pub const SU_LENGTH: usize = 8;
@@ -23,7 +24,7 @@ fn substring_tokens(
     input: &[u8],
     block_end: usize,
     positions: &mut std::collections::HashMap<[u8; SU_LENGTH], Vec<usize>>,
-) -> Result<Vec<u8>> {
+) -> CompressorResult<Vec<u8>> {
     let mut tokens = Vec::new();
     let mut literals = Vec::new();
     let mut index = 0usize;
@@ -41,7 +42,9 @@ fn substring_tokens(
             }
             if let Some(starts) = positions.get(&key) {
                 for &start in starts.iter().rev() {
-                    let offset = index.checked_sub(start).ok_or(Error::InvalidMatch)?;
+                    let offset = index
+                        .checked_sub(start)
+                        .ok_or(CompressorError::InvalidMatch)?;
                     if offset == 0 || offset > usize::from(u16::MAX) {
                         continue;
                     }
@@ -66,7 +69,7 @@ fn substring_tokens(
         } else {
             // SAFETY: `index < block_end <= input.len()` for relative slices, or
             // `index < input.len()` when encoding a whole buffer.
-            let byte = *input.get(index).ok_or(Error::TruncatedFrame)?;
+            let byte = *input.get(index).ok_or(CompressorError::TruncatedFrame)?;
             literals.push(byte);
             if index + SU_LENGTH <= input.len() {
                 let mut key = [0u8; SU_LENGTH];
@@ -188,7 +191,7 @@ fn decode_substring_tokens(
     tokens: &[u8],
     expected: usize,
     output: &mut Vec<u8>,
-) -> Result<()> {
+) -> CompressorResult<()> {
     let mut position = 0usize;
     while position < tokens.len() {
         // SAFETY: `position < tokens.len()`.
@@ -196,12 +199,17 @@ fn decode_substring_tokens(
         match marker {
             0 => {
                 position += 1;
-                let length =
-                    usize::from(*tokens.get(position).ok_or(Error::TruncatedFrame)?);
+                let length = usize::from(
+                    *tokens
+                        .get(position)
+                        .ok_or(CompressorError::TruncatedFrame)?,
+                );
                 position += 1;
-                let end = position.checked_add(length).ok_or(Error::TruncatedFrame)?;
+                let end = position
+                    .checked_add(length)
+                    .ok_or(CompressorError::TruncatedFrame)?;
                 if end > tokens.len() {
-                    return Err(Error::TruncatedFrame);
+                    return Err(CompressorError::TruncatedFrame);
                 }
                 let literals = unsafe {
                     core::slice::from_raw_parts(tokens.as_ptr().add(position), length)
@@ -212,11 +220,14 @@ fn decode_substring_tokens(
             1 => {
                 position += 1;
                 let offset = usize::from(frame_read_u16(tokens, &mut position)?);
-                let length =
-                    usize::from(*tokens.get(position).ok_or(Error::TruncatedFrame)?);
+                let length = usize::from(
+                    *tokens
+                        .get(position)
+                        .ok_or(CompressorError::TruncatedFrame)?,
+                );
                 position += 1;
                 if offset == 0 || offset > output.len() || length < SU_LENGTH {
-                    return Err(Error::InvalidMatch);
+                    return Err(CompressorError::InvalidMatch);
                 }
                 let start = output.len() - offset;
                 output.reserve(length);
@@ -242,18 +253,19 @@ fn decode_substring_tokens(
                     }
                 }
             }
-            marker => return Err(Error::invalid_token(marker)),
+            marker => return Err(CompressorError::invalid_token(marker)),
         }
         if output.len() > expected {
-            return Err(Error::length_mismatch(expected, output.len()));
+            return Err(CompressorError::length_mismatch(expected, output.len()));
         }
     }
     Ok(())
 }
 
 /// Encodes `input` as a fixed-window substring frame.
-pub fn substring_encode(input: &[u8]) -> Result<Vec<u8>> {
-    let length = u32::try_from(input.len()).map_err(|_| Error::InputTooLarge)?;
+pub fn substring_encode(input: &[u8]) -> CompressorResult<Vec<u8>> {
+    let length =
+        u32::try_from(input.len()).map_err(|_| CompressorError::InputTooLarge)?;
     let mut positions = std::collections::HashMap::new();
     let tokens = substring_tokens(input, input.len(), &mut positions)?;
     let mut frame = Vec::with_capacity(7 + tokens.len());
@@ -264,9 +276,9 @@ pub fn substring_encode(input: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Decodes a substring frame.
-pub fn substring_decode(frame: &[u8]) -> Result<Vec<u8>> {
+pub fn substring_decode(frame: &[u8]) -> CompressorResult<Vec<u8>> {
     if frame.len() < 7 || FrameKind::from_magic(frame) != Some(FrameKind::Substring) {
-        return Err(Error::InvalidFrame);
+        return Err(CompressorError::InvalidFrame);
     }
     let expected = unsafe {
         let p = frame.as_ptr().add(3);
@@ -277,16 +289,20 @@ pub fn substring_decode(frame: &[u8]) -> Result<Vec<u8>> {
     if output.len() == expected {
         Ok(output)
     } else {
-        Err(Error::length_mismatch(expected, output.len()))
+        Err(CompressorError::length_mismatch(expected, output.len()))
     }
 }
 
 /// Encodes `input` as blocked dynamic-substring (`Dysu`) frames.
-pub fn dynamic_substring_encode(input: &[u8], block_size: usize) -> Result<Vec<u8>> {
+pub fn dynamic_substring_encode(
+    input: &[u8],
+    block_size: usize,
+) -> CompressorResult<Vec<u8>> {
     if block_size == 0 || block_size > usize::from(u16::MAX) {
-        return Err(Error::InputTooLarge);
+        return Err(CompressorError::InputTooLarge);
     }
-    let length = u32::try_from(input.len()).map_err(|_| Error::InputTooLarge)?;
+    let length =
+        u32::try_from(input.len()).map_err(|_| CompressorError::InputTooLarge)?;
     let mut blocks = Vec::new();
     let mut index = 0usize;
     while index < input.len() {
@@ -299,7 +315,8 @@ pub fn dynamic_substring_encode(input: &[u8], block_size: usize) -> Result<Vec<u
         )?);
         index = end;
     }
-    let block_count = u32::try_from(blocks.len()).map_err(|_| Error::InputTooLarge)?;
+    let block_count =
+        u32::try_from(blocks.len()).map_err(|_| CompressorError::InputTooLarge)?;
     let mut frame = Vec::new();
     frame.extend_from_slice(FrameKind::Dysu.magic());
     frame.extend_from_slice(&length.to_be_bytes());
@@ -307,7 +324,7 @@ pub fn dynamic_substring_encode(input: &[u8], block_size: usize) -> Result<Vec<u
     frame.extend_from_slice(&block_count.to_be_bytes());
     for block in blocks {
         let block_length =
-            u32::try_from(block.len()).map_err(|_| Error::InputTooLarge)?;
+            u32::try_from(block.len()).map_err(|_| CompressorError::InputTooLarge)?;
         frame.extend_from_slice(&block_length.to_be_bytes());
         frame.extend_from_slice(&block);
     }
@@ -315,9 +332,9 @@ pub fn dynamic_substring_encode(input: &[u8], block_size: usize) -> Result<Vec<u
 }
 
 /// Decodes a Dysu frame.
-pub fn dynamic_substring_decode(frame: &[u8]) -> Result<Vec<u8>> {
+pub fn dynamic_substring_decode(frame: &[u8]) -> CompressorResult<Vec<u8>> {
     if frame.len() < 13 || FrameKind::from_magic(frame) != Some(FrameKind::Dysu) {
-        return Err(Error::InvalidFrame);
+        return Err(CompressorError::InvalidFrame);
     }
     let expected = unsafe {
         let p = frame.as_ptr().add(3);
@@ -333,13 +350,15 @@ pub fn dynamic_substring_decode(frame: &[u8]) -> Result<Vec<u8>> {
         let block_length = frame_read_u32(frame, &mut position)? as usize;
         let end = position
             .checked_add(block_length)
-            .ok_or(Error::TruncatedFrame)?;
-        let block = frame.get(position..end).ok_or(Error::TruncatedFrame)?;
+            .ok_or(CompressorError::TruncatedFrame)?;
+        let block = frame
+            .get(position..end)
+            .ok_or(CompressorError::TruncatedFrame)?;
         decode_substring_tokens(block, expected, &mut output)?;
         position = end;
     }
     if position != frame.len() || output.len() != expected {
-        return Err(Error::length_mismatch(expected, output.len()));
+        return Err(CompressorError::length_mismatch(expected, output.len()));
     }
     Ok(output)
 }
@@ -350,7 +369,8 @@ mod tests {
         SU_LENGTH, dynamic_substring_decode, dynamic_substring_encode, substring_decode,
         substring_encode,
     };
-    use crate::compression_error::Error;
+    use crate::compression_error::CompressorError;
+    use alloc::vec::Vec;
 
     #[test]
     fn substring_roundtrip() {
@@ -373,7 +393,7 @@ mod tests {
         assert_eq!(dynamic_substring_decode(&frame).expect("decode"), input);
         assert_eq!(
             dynamic_substring_encode(&input, 0),
-            Err(Error::InputTooLarge)
+            Err(CompressorError::InputTooLarge)
         );
         assert_eq!(SU_LENGTH, 8);
     }
@@ -388,10 +408,13 @@ mod tests {
 
     #[test]
     fn rejects_bad_magic() {
-        assert_eq!(substring_decode(b"XX\x01"), Err(Error::InvalidFrame));
+        assert_eq!(
+            substring_decode(b"XX\x01"),
+            Err(CompressorError::InvalidFrame)
+        );
         assert_eq!(
             dynamic_substring_decode(b"SX\x01"),
-            Err(Error::InvalidFrame)
+            Err(CompressorError::InvalidFrame)
         );
     }
 }

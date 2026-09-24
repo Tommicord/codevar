@@ -1,12 +1,13 @@
 [workspace]
 members = [
-    "crates/codevar-baseutil",
+    "crates/codevar-base",
     "crates/codevar-textlike-encode",
     "crates/codevar-fcware",
     "crates/codevar-tls",
     "crates/codevar-wredit",
     "crates/codevar-wsocket",
-    "crates/codevar-bin"]
+    "crates/codevar-bin",
+    "crates/codevar-ui-core"]
 resolver = "2"
 
 [workspace.package]
@@ -53,11 +54,8 @@ debug = true
 panic = "abort"
 strip = "none"
 
-[profile.dev.package.dev]
+[profile.dev.package."*"]
 opt-level = 2
-
-[profile.dev.package.release]
-opt-level = 3
 
 [profile.release]
 opt-level = 3

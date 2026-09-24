@@ -14,8 +14,11 @@
 //! permissions and limitations under the License.
 
 use crate::compression_bits::BitLaneReader;
-use crate::compression_error::{Error, Result};
+use crate::compression_error::{CompressorError, CompressorResult};
 use crate::compression_frame::FrameKind;
+use alloc::boxed::Box;
+use alloc::vec;
+use alloc::vec::Vec;
 
 #[derive(Clone, Debug)]
 enum HuffmanNode {
@@ -70,13 +73,14 @@ fn huffman_codes(
 }
 
 /// Encodes `input` as a Huffman frame.
-pub fn huffman_encode(input: &[u8]) -> Result<Vec<u8>> {
-    let length = u32::try_from(input.len()).map_err(|_| Error::InputTooLarge)?;
+pub fn huffman_encode(input: &[u8]) -> CompressorResult<Vec<u8>> {
+    let length =
+        u32::try_from(input.len()).map_err(|_| CompressorError::InputTooLarge)?;
     let mut frequencies = [0u32; 256];
     // SAFETY: each `value` indexes `frequencies[0..256]`.
     for &value in input {
         let slot = unsafe { frequencies.get_unchecked_mut(usize::from(value)) };
-        *slot = slot.checked_add(1).ok_or(Error::InputTooLarge)?;
+        *slot = slot.checked_add(1).ok_or(CompressorError::InputTooLarge)?;
     }
     let mut output = Vec::with_capacity(8 + 1024 + input.len());
     output.extend_from_slice(FrameKind::Huffman.magic());
@@ -113,12 +117,12 @@ pub fn huffman_encode(input: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Decodes a Huffman frame using SIMD lane-backed bit reads.
-pub fn huffman_decode(frame: &[u8]) -> Result<Vec<u8>> {
+pub fn huffman_decode(frame: &[u8]) -> CompressorResult<Vec<u8>> {
     if frame.len() < 1032 {
-        return Err(Error::TruncatedFrame);
+        return Err(CompressorError::TruncatedFrame);
     }
     if FrameKind::from_magic(frame) != Some(FrameKind::Huffman) {
-        return Err(Error::InvalidFrame);
+        return Err(CompressorError::InvalidFrame);
     }
     let expected = unsafe {
         let p = frame.as_ptr().add(3);
@@ -135,21 +139,21 @@ pub fn huffman_decode(frame: &[u8]) -> Result<Vec<u8>> {
     }
     let padding = frame[1031];
     if padding > 7 {
-        return Err(Error::invalid_control(padding));
+        return Err(CompressorError::invalid_control(padding));
     }
     let payload = &frame[1032..];
     if expected == 0 {
         return if payload.is_empty() {
             Ok(Vec::new())
         } else {
-            Err(Error::length_mismatch(0, payload.len()))
+            Err(CompressorError::length_mismatch(0, payload.len()))
         };
     }
-    let tree = huffman_tree(&frequencies).ok_or(Error::InvalidFrame)?;
+    let tree = huffman_tree(&frequencies).ok_or(CompressorError::InvalidFrame)?;
     if matches!(tree, HuffmanNode::Leaf(_)) {
         let value = match tree {
             HuffmanNode::Leaf(value) => value,
-            HuffmanNode::Branch(_, _) => return Err(Error::InvalidFrame),
+            HuffmanNode::Branch(_, _) => return Err(CompressorError::InvalidFrame),
         };
         return Ok(vec![value; expected]);
     }
@@ -157,7 +161,7 @@ pub fn huffman_decode(frame: &[u8]) -> Result<Vec<u8>> {
         .len()
         .checked_mul(8)
         .and_then(|bits| bits.checked_sub(usize::from(padding)))
-        .ok_or(Error::TruncatedFrame)?;
+        .ok_or(CompressorError::TruncatedFrame)?;
     let mut output = Vec::with_capacity(expected);
     let mut bits = BitLaneReader::new(payload, available_bits);
     while output.len() < expected {
@@ -181,7 +185,7 @@ pub fn huffman_decode(frame: &[u8]) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::{huffman_decode, huffman_encode};
-    use crate::compression_error::Error;
+    use crate::compression_error::CompressorError;
 
     #[test]
     fn roundtrip_empty_uniform_and_mixed() {
@@ -198,12 +202,15 @@ mod tests {
 
     #[test]
     fn rejects_bad_magic_padding_and_short() {
-        assert_eq!(huffman_decode(b"HF"), Err(Error::TruncatedFrame));
+        assert_eq!(huffman_decode(b"HF"), Err(CompressorError::TruncatedFrame));
         let mut frame = huffman_encode(b"abc").expect("encode");
         frame[0] = b'X';
-        assert_eq!(huffman_decode(&frame), Err(Error::InvalidFrame));
+        assert_eq!(huffman_decode(&frame), Err(CompressorError::InvalidFrame));
         let mut frame = huffman_encode(b"abc").expect("encode");
         frame[1031] = 8;
-        assert_eq!(huffman_decode(&frame), Err(Error::invalid_control(8)));
+        assert_eq!(
+            huffman_decode(&frame),
+            Err(CompressorError::invalid_control(8))
+        );
     }
 }

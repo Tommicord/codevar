@@ -66,7 +66,7 @@ New Rust files must include the Apache 2.0 copyright header used elsewhere:
 //! compliance with the License. You may obtain a copy of the
 //! License at
 //!
-//!   https://www.apache.org/licenses/LICENSE-2.0
+//!   http://www.apache.org/licenses/LICENSE-2.0
 //!
 //! Unless required by applicable law or agreed to in
 //! writing, software distributed under the License is
@@ -102,7 +102,7 @@ New Rust files must include the Apache 2.0 copyright header used elsewhere:
 ### Error Handling Requirements
 
 - **FORBIDDEN use of `.unwrap()` or `.expect()` in production code** — instead, manage errors with Result or Option and handle them appropriately
-- Use `?` operator for error propagation in functions returning `Result`
+- Use `?` operator for error propagation in functions returning `CompressorResult`
 - Use `.unwrap_or()`, `.unwrap_or_default()`, or `.unwrap_or_else()` for fallback values
 - `.unwrap()` and `.expect()` are ONLY permitted in unit tests with explicit justification
 - **FORBIDDEN use of `panic!`, `abort()`, and other panicking methods in production code**
@@ -217,62 +217,6 @@ Before considering code complete, verify:
 - [ ] Code formatting passes with `cargo fmt --all`
 - [ ] Clippy passes with `cargo clippy --workspace --all-targets -- -D warnings`
 
-## Examples
-
-### Module Usage
-
-```rust
-// Correct: import from the public API
-use codevar_wredit::BaseWritable;
-
-// Correct: generic params match existing tests
-let writable: BaseWritable<u32, u8, 4096> = BaseWritable::new();
-```
-
-```rust
-// Avoid: inventing new module prefixes or bypassing re-exports
-use codevar_wredit::writable_base::BaseWritable; // use edit::BaseWritable instead
-```
-
-### Error Handling
-
-```rust
-// Correct: proper error handling
-fn process_data(input: &str) -> Result<ProcessedData, ProcessingError> {
-    let parsed = parse_input(input).map_err(ProcessingError::ParseError)?;
-    let validated = validate_data(&parsed).map_err(ProcessingError::ValidationError)?;
-    Ok(ProcessedData::new(validated))
-}
-
-// Correct: using fallback values
-let value = some_option.unwrap_or(0);
-let value = some_option.unwrap_or_else(|| compute_default());
-```
-
-```rust
-// Forbidden: unwrap in production code
-let value = some_option.unwrap();
-let result = some_result.expect("This should never fail");
-```
-
-### Logging
-
-```rust
-// Correct: using log crate
-use log::{error, warn, info, debug, trace};
-
-error!("Failed to process request: {}", error);
-warn!("Cache miss for key: {}", key);
-info!("User logged in: user_id={}", user_id);
-debug!("Processing block: block_id={}, size={}", block_id, size);
-```
-
-```rust
-// Forbidden: println! in production code
-println!("Processing data: {}", data);
-eprintln!("Error occurred: {}", error);
-```
-
 ### Unsafe Code
 
 ```rust
@@ -292,30 +236,3 @@ unsafe fn read_array<T>(ptr: *const T, size: usize) -> Vec<T> {
 }
 ```
 
-### GPU Compute Shader Example
-
-```rust
-// Correct: cross-platform compute abstraction
-pub trait ComputeBackend {
-    fn process_blocks(&self, input_a: &[u8], input_b: &[u8]) -> Result<Vec<u8>, ComputeError>;
-    fn is_available(&self) -> bool;
-}
-
-pub struct ComputeManager {
-    backend: Box<dyn ComputeBackend>,
-}
-
-impl ComputeManager {
-    pub fn new() -> Result<Self, ComputeError> {
-        let backend = if VulkanBackend::is_available() {
-            Box::new(VulkanBackend::new()?) as Box<dyn ComputeBackend>
-        } else if CudaBackend::is_available() {
-            Box::new(CudaBackend::new()?) as Box<dyn ComputeBackend>
-        } else {
-            Box::new(CpuBackend::new()) as Box<dyn ComputeBackend>
-        };
-        
-        Ok(Self { backend })
-    }
-}
-```

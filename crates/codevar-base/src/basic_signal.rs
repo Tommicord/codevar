@@ -447,8 +447,8 @@ unsafe fn errno() -> i32 {
 #[cfg(unix)]
 mod unix {
     use super::{
-        ENTERED, InstallError, dump_frames, is_fault_signal, signal_name,
-        write_console, write_line,
+        ENTERED, InstallError, dump_frames, is_fault_signal, signal_name, write_console,
+        write_line,
     };
     use core::ffi::c_void;
     use core::mem::{self, MaybeUninit};

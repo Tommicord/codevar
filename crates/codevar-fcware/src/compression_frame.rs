@@ -13,7 +13,8 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-use crate::compression_error::{Error, Result};
+use crate::compression_error::{CompressorError, CompressorResult};
+use alloc::vec::Vec;
 
 /// Three-byte LZ-match frame magic (`LM` + version).
 pub const LZ_MATCH_MAGIC: &[u8; 3] = b"LM\x01";
@@ -98,11 +99,13 @@ impl FrameKind {
 
 /// Reads a big-endian `u16` from `frame` at `position` and advances the cursor.
 #[inline]
-pub fn frame_read_u16(frame: &[u8], position: &mut usize) -> Result<u16> {
+pub fn frame_read_u16(frame: &[u8], position: &mut usize) -> CompressorResult<u16> {
     let start = *position;
-    let end = start.checked_add(2).ok_or(Error::TruncatedFrame)?;
+    let end = start
+        .checked_add(2)
+        .ok_or(CompressorError::TruncatedFrame)?;
     if end > frame.len() {
-        return Err(Error::TruncatedFrame);
+        return Err(CompressorError::TruncatedFrame);
     }
     // SAFETY: `end <= frame.len()` and the two bytes at `start` are in-bounds.
     let value = unsafe {
@@ -115,11 +118,13 @@ pub fn frame_read_u16(frame: &[u8], position: &mut usize) -> Result<u16> {
 
 /// Reads a big-endian `u32` from `frame` at `position` and advances the cursor.
 #[inline]
-pub fn frame_read_u32(frame: &[u8], position: &mut usize) -> Result<u32> {
+pub fn frame_read_u32(frame: &[u8], position: &mut usize) -> CompressorResult<u32> {
     let start = *position;
-    let end = start.checked_add(4).ok_or(Error::TruncatedFrame)?;
+    let end = start
+        .checked_add(4)
+        .ok_or(CompressorError::TruncatedFrame)?;
     if end > frame.len() {
-        return Err(Error::TruncatedFrame);
+        return Err(CompressorError::TruncatedFrame);
     }
     // SAFETY: `end <= frame.len()` and four bytes at `start` are in-bounds.
     let value = unsafe {
@@ -132,13 +137,17 @@ pub fn frame_read_u32(frame: &[u8], position: &mut usize) -> Result<u32> {
 
 /// Writes `bytes` into `output` at `cursor`, advancing the cursor on success.
 #[inline]
-pub fn write_bytes(output: &mut [u8], cursor: &mut usize, bytes: &[u8]) -> Result<()> {
+pub fn write_bytes(
+    output: &mut [u8],
+    cursor: &mut usize,
+    bytes: &[u8],
+) -> CompressorResult<()> {
     let start = *cursor;
     let end = start
         .checked_add(bytes.len())
-        .ok_or(Error::OutputTooSmall)?;
+        .ok_or(CompressorError::OutputTooSmall)?;
     if end > output.len() {
-        return Err(Error::OutputTooSmall);
+        return Err(CompressorError::OutputTooSmall);
     }
     // SAFETY: `start..end` fits in `output`; regions are non-overlapping with `bytes`
     // because `bytes` is a shared borrow of a different allocation (or disjoint slice).
@@ -178,7 +187,7 @@ mod tests {
         HUFFMAN_MAGIC, LZ_MATCH_MAGIC, SUBSTRING_MAGIC, frame_read_u16, frame_read_u32,
         write_bytes,
     };
-    use crate::compression_error::Error;
+    use crate::compression_error::CompressorError;
 
     #[test]
     fn magic_round_trip() {
@@ -214,7 +223,10 @@ mod tests {
         let data = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC];
         assert_eq!(frame_read_u16(&data, &mut pos).expect("u16"), 0x1234);
         assert_eq!(frame_read_u32(&data, &mut pos).expect("u32"), 0x5678_9ABC);
-        assert_eq!(frame_read_u16(&data, &mut pos), Err(Error::TruncatedFrame));
+        assert_eq!(
+            frame_read_u16(&data, &mut pos),
+            Err(CompressorError::TruncatedFrame)
+        );
 
         let mut out = [0u8; 4];
         let mut cursor = 0usize;
@@ -223,7 +235,7 @@ mod tests {
         assert_eq!(&out, b"abcd");
         assert_eq!(
             write_bytes(&mut out, &mut cursor, b"x"),
-            Err(Error::OutputTooSmall)
+            Err(CompressorError::OutputTooSmall)
         );
     }
 
@@ -231,12 +243,15 @@ mod tests {
     fn checked_add_overflow_paths() {
         let data = [1u8, 2];
         let mut pos = usize::MAX - 1;
-        assert_eq!(frame_read_u16(&data, &mut pos), Err(Error::TruncatedFrame));
+        assert_eq!(
+            frame_read_u16(&data, &mut pos),
+            Err(CompressorError::TruncatedFrame)
+        );
         let mut out = [0u8; 2];
         let mut cursor = usize::MAX - 1;
         assert_eq!(
             write_bytes(&mut out, &mut cursor, b"xx"),
-            Err(Error::OutputTooSmall)
+            Err(CompressorError::OutputTooSmall)
         );
     }
 }
