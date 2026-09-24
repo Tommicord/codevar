@@ -2646,35 +2646,61 @@ fn walk(
 mod tests {
     use super::*;
 
-    #[inline(never)]
-    fn level_c(frames: &mut Vec<Frame>) {
-        collect(frames);
+    /// Small stack-only frame collector used by nesting tests (no heap).
+    struct FrameList {
+        frames: [Frame; 64],
+        len: usize,
+    }
+
+    impl FrameList {
+        const fn new() -> Self {
+            Self {
+                frames: [Frame::new(0, 0, None); 64],
+                len: 0,
+            }
+        }
+
+        fn as_slice(&self) -> &[Frame] {
+            &self.frames[..self.len]
+        }
     }
 
     #[inline(never)]
-    fn level_b(frames: &mut Vec<Frame>) {
-        level_c(frames);
+    fn level_c(out: &mut FrameList) {
+        collect(out);
     }
 
     #[inline(never)]
-    fn level_a(frames: &mut Vec<Frame>) {
-        level_b(frames);
+    fn level_b(out: &mut FrameList) {
+        level_c(out);
     }
 
     #[inline(never)]
-    fn collect(frames: &mut Vec<Frame>) {
-        trace(&mut |f| {
-            frames.push(*f);
-            true
-        });
+    fn level_a(out: &mut FrameList) {
+        level_b(out);
     }
+
+    #[inline(never)]
+    fn collect(out: &mut FrameList) {
+        out.len = capture_frames(&mut out.frames);
+    }
+
+    /// Maximum encoded size of a synthetic `.eh_frame` produced by
+    /// [`synthetic_eh_frame`] (CIE ~18 B + FDE ~25 B on 64-bit; 128 is safe).
+    const SYNTH_EH_FRAME_CAP: usize = 128;
 
     /// Builds a minimal synthetic `.eh_frame` with one CIE and one FDE
-    /// covering `[fde_start, fde_start + range)`.
+    /// covering `[fde_start, fde_start + range)` into `out`.
     ///
     /// CIE uses `ret_reg = 16`, `data_factor = -8`, `def_cfa rsp, 16`, and
     /// `offset r16, 1` (return address at `CFA - 8`).
-    fn synthetic_eh_frame(fde_start: usize, range: usize) -> Vec<u8> {
+    ///
+    /// Returns the number of bytes written.
+    fn synthetic_eh_frame(
+        out: &mut [u8; SYNTH_EH_FRAME_CAP],
+        fde_start: usize,
+        range: usize,
+    ) -> usize {
         // CIE body after length field:
         //   id=0, version=1, aug="", code_factor=1, data_factor=-8, ret_reg=16
         //   DW_CFA_def_cfa r7, 16; DW_CFA_offset r16, 1
@@ -2693,26 +2719,37 @@ mod tests {
         // FDE: cie_pointer = distance from pointer field (cie_total + 4) back
         // to CIE start (0).
         let cie_ptr = (cie_total + 4) as u32;
-        let mut fde_payload = Vec::new();
-        fde_payload.extend_from_slice(&cie_ptr.to_le_bytes());
-        // fde_enc defaults to 0x00 (absolute native width).
-        fde_payload.extend_from_slice(&fde_start.to_le_bytes());
-        fde_payload.extend_from_slice(&range.to_le_bytes());
-        fde_payload.extend_from_slice(&[0x00]); // DW_CFA_nop
-        let fde_len = fde_payload.len() as u32;
+        let fde_payload_len = 4 + core::mem::size_of::<usize>() * 2 + 1;
+        let fde_len = fde_payload_len as u32;
+        let mut pos = 0usize;
 
-        let mut out = Vec::with_capacity(cie_total + 4 + fde_payload.len());
-        out.extend_from_slice(&cie_len.to_le_bytes());
-        out.extend_from_slice(cie_payload);
-        out.extend_from_slice(&fde_len.to_le_bytes());
-        out.extend_from_slice(&fde_payload);
-        out
+        let chunks: [&[u8]; 7] = [
+            &cie_len.to_le_bytes(),
+            cie_payload,
+            &fde_len.to_le_bytes(),
+            &cie_ptr.to_le_bytes(),
+            &fde_start.to_le_bytes(),
+            &range.to_le_bytes(),
+            &[0x00], // DW_CFA_nop
+        ];
+        for chunk in chunks {
+            let Some(end) = pos.checked_add(chunk.len()) else {
+                return 0;
+            };
+            if end > out.len() {
+                return 0;
+            }
+            out[pos..end].copy_from_slice(chunk);
+            pos = end;
+        }
+        pos
     }
 
     #[test]
     fn captures_nested_frames() {
-        let mut frames = Vec::new();
-        level_a(&mut frames);
+        let mut list = FrameList::new();
+        level_a(&mut list);
+        let frames = list.as_slice();
         assert!(
             frames.len() >= 3,
             "expected >= 3 frames, got {}",
@@ -2723,8 +2760,9 @@ mod tests {
 
     #[test]
     fn stack_pointers_increase_outward() {
-        let mut frames = Vec::new();
-        level_a(&mut frames);
+        let mut list = FrameList::new();
+        level_a(&mut list);
+        let frames = list.as_slice();
         assert!(
             frames.len() >= 2,
             "expected >= 2 frames, got {}",
@@ -2732,8 +2770,32 @@ mod tests {
         );
         assert!(
             frames.windows(2).all(|w| w[1].sp() > w[0].sp()),
-            "SP must increase toward callers: {:?}",
-            frames.iter().map(|f| f.sp()).collect::<Vec<_>>()
+            "SP must increase toward callers"
+        );
+    }
+
+    #[test]
+    fn capture_frames_empty_slice_returns_zero() {
+        let mut out: [Frame; 0] = [];
+        assert_eq!(capture_frames(&mut out), 0);
+    }
+
+    #[test]
+    fn capture_frames_respects_output_len() {
+        let mut out = [Frame::new(0, 0, None); 3];
+        let n = capture_frames(&mut out);
+        assert_eq!(n, 3, "must fill the whole slice before stopping");
+        assert!(out[..n].iter().all(|f| f.ip() != 0));
+    }
+
+    #[test]
+    fn capture_frames_writes_most_recent_first() {
+        let mut out = [Frame::new(0, 0, None); 16];
+        let n = capture_frames(&mut out);
+        assert!(n >= 2);
+        assert!(
+            out[..n].windows(2).all(|w| w[1].sp() >= w[0].sp()),
+            "frames must be ordered most-recent-first (nondecreasing SP)"
         );
     }
 
@@ -2917,7 +2979,7 @@ mod tests {
     mod cfi_edge {
         use super::super::UnwindState;
         use super::super::cfi::{self, UnwindTables};
-        use super::synthetic_eh_frame;
+        use super::{SYNTH_EH_FRAME_CAP, synthetic_eh_frame};
 
         fn tables_for(frame: &[u8]) -> UnwindTables {
             UnwindTables {
@@ -2955,7 +3017,10 @@ mod tests {
             st.sp = 0x7fff_0000;
             let pattern_a = [0x00u8; 64];
             let pattern_b = [0xffu8; 64];
-            let pattern_c = [0xaa, 0x55, 0x01, 0x7f].repeat(16);
+            let mut pattern_c = [0u8; 64];
+            for (i, b) in pattern_c.iter_mut().enumerate() {
+                *b = [0xaa, 0x55, 0x01, 0x7f][i & 3];
+            }
             for pattern in [
                 pattern_a.as_slice(),
                 pattern_b.as_slice(),
@@ -2972,14 +3037,16 @@ mod tests {
         fn unknown_ip_yields_no_fde() {
             let mut st = UnwindState::new();
             let fde_start = 0x1000_0000usize;
-            let frame = synthetic_eh_frame(fde_start, 0x100);
-            let tables = tables_for(&frame);
+            let mut frame = [0u8; SYNTH_EH_FRAME_CAP];
+            let flen = synthetic_eh_frame(&mut frame, fde_start, 0x100);
+            let frame = &frame[..flen];
+            let tables = tables_for(frame);
             st.regs.ip = fde_start + 0x200;
-            assert_err_false(cfi::step(&mut st, &tables, &frame), "past range");
+            assert_err_false(cfi::step(&mut st, &tables, frame), "past range");
             st.regs.ip = fde_start.wrapping_sub(1);
-            assert_err_false(cfi::step(&mut st, &tables, &frame), "before range");
+            assert_err_false(cfi::step(&mut st, &tables, frame), "before range");
             st.regs.ip = 0;
-            assert_err_false(cfi::step(&mut st, &tables, &frame), "ip=0");
+            assert_err_false(cfi::step(&mut st, &tables, frame), "ip=0");
         }
 
         #[test]
@@ -2987,15 +3054,29 @@ mod tests {
             let mut st = UnwindState::new();
             let fde_start = 0x1000_0000usize;
             let range = 0x100usize;
-            let frame = synthetic_eh_frame(fde_start, range);
-            let tables = tables_for(&frame);
-            let buf = Box::leak(Box::new([0usize; 16]));
-            buf[2] = 0x1000_0180;
-            let rsp = buf as *const _ as usize;
-            st.regs.gpr[7] = rsp + 8;
+            let mut frame = [0u8; SYNTH_EH_FRAME_CAP];
+            let flen = synthetic_eh_frame(&mut frame, fde_start, range);
+            let frame = &frame[..flen];
+            let tables = tables_for(frame);
+            // Stack-resident fake stack image. CFA = rsp + 16 and RA is at
+            // CFA - 8 = rsp + 8, so with rsp = base the RA lives at base + 8
+            // (offset 16 from `rsp_var` below: base = rsp_var + 8).
+            #[repr(C, align(16))]
+            struct FakeStack {
+                _keep: [usize; 2],
+                ra_slot: usize,
+                pad: [usize; 13],
+            }
+            let mut stack = FakeStack {
+                _keep: [0; 2],
+                ra_slot: 0x1000_0180,
+                pad: [0; 13],
+            };
+            let base = (&raw mut stack).addr();
+            st.regs.gpr[7] = base + 8;
             st.regs.ip = fde_start + 16;
-            st.sp = rsp + 8;
-            match cfi::step(&mut st, &tables, &frame) {
+            st.sp = base + 8;
+            match cfi::step(&mut st, &tables, frame) {
                 Ok(Some(next)) => {
                     assert_eq!(next.regs.ip, 0x1000_0180);
                 }
@@ -3007,7 +3088,9 @@ mod tests {
 
         #[test]
         fn out_of_range_ret_reg_is_rejected() {
-            let mut frame = synthetic_eh_frame(0x1000_0000, 0x100);
+            let mut frame = [0u8; SYNTH_EH_FRAME_CAP];
+            let flen = synthetic_eh_frame(&mut frame, 0x1000_0000, 0x100);
+            let frame = &mut frame[..flen];
             // CIE ret_reg ULEB sits at offset 12 in a short CIE.
             assert_eq!(frame[12], 0x10);
             frame[12] = 0x40; // 64 — first invalid index
@@ -3015,8 +3098,8 @@ mod tests {
             st.regs.ip = 0x1000_0010;
             st.regs.gpr[7] = 0x2_0000;
             st.sp = 0x2_0000;
-            let tables = tables_for(&frame);
-            if let Ok(Some(_)) = cfi::step(&mut st, &tables, &frame) {
+            let tables = tables_for(frame);
+            if let Ok(Some(_)) = cfi::step(&mut st, &tables, frame) {
                 panic!("OOB ret_reg must not produce a step");
             }
         }
@@ -3025,13 +3108,15 @@ mod tests {
         fn cie_pointer_must_resolve_to_cie_start() {
             let mut st = UnwindState::new();
             let fde_start = 0x2000_0000usize;
-            let frame = synthetic_eh_frame(fde_start, 0x40);
-            let tables = tables_for(&frame);
+            let mut frame = [0u8; SYNTH_EH_FRAME_CAP];
+            let flen = synthetic_eh_frame(&mut frame, fde_start, 0x40);
+            let frame = &frame[..flen];
+            let tables = tables_for(frame);
             let frame_ptr = frame.as_ptr() as usize;
             st.regs.gpr[7] = frame_ptr;
             st.regs.ip = fde_start + 8;
             st.sp = frame_ptr;
-            match cfi::step(&mut st, &tables, &frame) {
+            match cfi::step(&mut st, &tables, frame) {
                 Ok(Some(_)) => {}
                 Err(false) => panic!("CIE at offset 0 must be found via cie_pointer"),
                 Err(true) => panic!("unexpected stop"),
@@ -3132,20 +3217,16 @@ mod tests {
     fn debug_walk_detail() {
         #[inline(never)]
         fn inner() {
-            let mut n = 0;
-            let mut ips = Vec::new();
-            let mut sps = Vec::new();
-            trace(&mut |f| {
-                n += 1;
-                ips.push(f.ip());
-                sps.push(f.sp());
-                true
-            });
-            std::eprintln!("frames={n}");
-            for (i, (ip, sp)) in ips.iter().zip(sps.iter()).enumerate() {
+            let mut list = FrameList::new();
+            collect(&mut list);
+            let frames = list.as_slice();
+            std::eprintln!("frames={}", frames.len());
+            for (i, f) in frames.iter().enumerate() {
                 std::eprintln!(
-                    "  [{i}] ip={ip:#x} sp={sp:#x} base={:?}",
-                    elf::module_base(*ip)
+                    "  [{i}] ip={:#x} sp={:#x} base={:?}",
+                    f.ip(),
+                    f.sp(),
+                    elf::module_base(f.ip())
                 );
             }
         }
@@ -3247,15 +3328,16 @@ mod tests {
     #[test]
     fn deep_recursion_stays_within_cap() {
         #[inline(never)]
-        fn rec(depth: usize, frames: &mut Vec<Frame>) {
+        fn rec(depth: usize, out: &mut FrameList) {
             if depth == 0 {
-                collect(frames);
+                collect(out);
             } else {
-                rec(depth - 1, frames);
+                rec(depth - 1, out);
             }
         }
-        let mut frames = Vec::new();
-        rec(16, &mut frames);
+        let mut list = FrameList::new();
+        rec(16, &mut list);
+        let frames = list.as_slice();
         assert!(!frames.is_empty());
         assert!(frames.len() <= MAX_FRAMES);
         assert!(frames.iter().all(|f| f.ip() != 0));

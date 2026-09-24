@@ -13,6 +13,7 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
+#![cfg_attr(not(test), no_std)]
 pub mod basic_pretty_unwind;
 pub mod basic_signal_handler;
 pub mod basic_unwind;

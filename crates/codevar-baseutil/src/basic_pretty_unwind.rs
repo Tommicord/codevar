@@ -22,7 +22,7 @@
 //! into a fixed stack buffer inside a signal handler).
 
 use crate::basic_unwind::Frame;
-use core::fmt::{self, Write as _};
+use core::fmt::{self, Write};
 
 /// Formats a single stack frame into `w`.
 ///
@@ -39,7 +39,11 @@ use core::fmt::{self, Write as _};
 ///
 /// Writes only to the provided sink; allocates nothing.
 #[inline]
-pub fn write_frame<W: Write + ?Sized>(w: &mut W, frame: &Frame, index: usize) -> fmt::Result {
+pub fn write_frame<W: Write + ?Sized>(
+    w: &mut W,
+    frame: &Frame,
+    index: usize,
+) -> fmt::Result {
     let ip = frame.ip();
     let sp = frame.sp();
     let module_base = frame.module_base_address();
@@ -68,9 +72,9 @@ pub fn write_frame<W: Write + ?Sized>(w: &mut W, frame: &Frame, index: usize) ->
 ///
 /// Writes only to the provided sink; allocates nothing.
 #[inline]
-pub fn write_frames<W: Write + ?Sized>(
+pub fn write_frames<'a, W: Write + ?Sized>(
     w: &mut W,
-    frames: impl Iterator<Item = &Frame>,
+    frames: impl Iterator<Item = &'a Frame>,
 ) -> fmt::Result {
     for (i, frame) in frames.enumerate() {
         if i > 0 {
