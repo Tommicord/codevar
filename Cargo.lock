@@ -205,6 +205,9 @@ dependencies = [
 [[package]]
 name = "codevar-ui-core"
 version = "1.0.0"
+dependencies = [
+ "num-traits",
+]
 
 [[package]]
 name = "codevar-wredit"

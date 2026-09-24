@@ -11,3 +11,4 @@ repository.workspace = true
 name = "codevar_ui_core"
 
 [dependencies]
+num-traits = { version = "0.2", default-features = false }
