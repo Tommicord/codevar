@@ -998,7 +998,7 @@ mod cfi {
         let field = r.addr();
         let _eh_frame_ptr = r.read_encoded(eh_frame_ptr_enc, field)?;
         let count_field = r.addr();
-        let count = r.read_encoded(fde_count_enc, count_field)? as usize;
+        let count = r.read_encoded(fde_count_enc, count_field)?;
         let count = count.min(1 << 24);
         let entry_size = fixed_encoded_size(table_enc)?;
         let table_bytes = count.checked_mul(entry_size.checked_mul(2)?)?;
