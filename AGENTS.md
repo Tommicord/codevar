@@ -15,25 +15,6 @@ Codevar is a high-performance code editor targeting for WASM (web) with plans fo
 - **AI Integration**: Designed for future integration with AI agents like Claude Code
 - **High Performance**: SIMD optimizations and GPU compute shader support for parallel algorithms
 
-### Architecture
-
-The project is organized into three main crates:
-
-- **codevar-core**: Core library with text editing, compression, and utility functions
-- **codevar-colab**: Collaborative editing features including the Mergen algorithm
-- **codevar-fparser**: File parsing and syntax highlighting capabilities
-
-### Parallel Computing Strategy
-
-Codevar is designed to leverage parallel computing across multiple levels:
-
-- **CPU SIMD**: AVX2/SSE4.1 optimizations for x86_64, ARM NEON for mobile
-- **GPU Compute**: Planned CUDA and Vulkan compute shader support for parallel algorithms
-- **Multi-threading**: Rayon and tokio for CPU parallelism
-- **Web Workers**: Parallel processing in WASM environment
-
-The Mergen algorithm (in `crates/codevar-colab/src/userclient/mergen`) is specifically designed for GPU-friendly parallel execution, using block-based processing (8×8 or 16×16 blocks) for optimal GPU thread scheduling and memory coalescing.
-
 ## Environment
 
 - **Rust**: 1.93.0 (pinned in `rust-toolchain.toml`)
@@ -131,8 +112,7 @@ New Rust files must include the Apache 2.0 copyright header used elsewhere:
 
 ### Logging and Output Requirements
 
-- **FORBIDDEN use of `println!` or `eprintln!` for production logging** — this is a serious project requiring professional logging
-- **ALWAYS use the `log` crate macros**: `error!`, `warn!`, `info!`, `debug!`, `trace!`
+- **FORBIDDEN use of `println!` or `eprintln!` for production logging**
 - Configure appropriate log levels for different environments
 - Structure log messages with context and relevant data
 - Avoid excessive logging in hot paths
@@ -198,17 +178,6 @@ When adding CUDA or Vulkan compute shader support:
 - **Use appropriate block sizes** (typically 128-512 threads)
 - Profile and optimize based on actual hardware metrics
 
-#### Vulkan Compute Shaders
-- Design compute shaders for execution on various GPU architectures
-- Use work groups sized for optimal occupancy
-- Minimize synchronization points
-- Design for efficient memory access patterns
-- Consider push constants vs uniform buffers for parameters
-- **Minimize barrier usage** — only synchronize when necessary
-- **Use memory barriers** carefully to ensure correctness
-- **Avoid nested barriers** which can cause performance issues
-- Design for lock-free algorithms when possible
-
 #### Cross-Platform Compute
 - Abstract compute operations behind Rust interfaces
 - Support fallback to CPU implementations when GPU unavailable
@@ -254,7 +223,7 @@ Before considering code complete, verify:
 
 ```rust
 // Correct: import from the public API
-use codevar_core::wredit::BaseWritable;
+use codevar_wredit::BaseWritable;
 
 // Correct: generic params match existing tests
 let writable: BaseWritable<u32, u8, 4096> = BaseWritable::new();
@@ -262,7 +231,7 @@ let writable: BaseWritable<u32, u8, 4096> = BaseWritable::new();
 
 ```rust
 // Avoid: inventing new module prefixes or bypassing re-exports
-use codevar_core::wredit::wredit_base_writable::BaseWritable; // use edit::BaseWritable instead
+use codevar_wredit::writable_base::BaseWritable; // use edit::BaseWritable instead
 ```
 
 ### Error Handling

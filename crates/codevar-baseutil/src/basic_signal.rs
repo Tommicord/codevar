@@ -314,6 +314,10 @@ fn write_line(s: fmt::Arguments<'_>) {
 }
 
 /// Returns a short symbolic name for `sig`, or `"SIGUNKNOWN"`.
+///
+/// Only defined on Unix, where the POSIX signal constants exist (Windows
+/// maps exception codes to the same names in its own backend).
+#[cfg(unix)]
 fn signal_name(sig: core::ffi::c_int) -> &'static str {
     // Constant values differ per OS, so match on the libc constants.
     match sig {
@@ -357,6 +361,7 @@ fn signal_name(sig: core::ffi::c_int) -> &'static str {
 
 /// Returns `true` for synchronous fault signals (where `si_addr` is
 /// meaningful and the faulting instruction pointer is worth reporting).
+#[cfg(unix)]
 fn is_fault_signal(sig: core::ffi::c_int) -> bool {
     matches!(
         sig,
@@ -486,9 +491,14 @@ fn write_console(_bytes: &[u8]) {}
 #[cfg(unix)]
 unsafe fn errno() -> i32 {
     cfg_if::cfg_if! {
-        if #[cfg(any(target_os = "linux", target_os = "android", target_os = "emscripten"))] {
+        if #[cfg(target_os = "android")] {
+            // SAFETY: `__errno` (bionic) returns a valid pointer to the
+            // calling thread's errno slot; bionic does not export
+            // `__errno_location`.
+            unsafe { *libc::__errno() }
+        } else if #[cfg(any(target_os = "linux", target_os = "emscripten"))] {
             // SAFETY: `__errno_location` returns a valid pointer to the
-            // calling thread's errno slot (glibc/musl/bionic contract).
+            // calling thread's errno slot (glibc/musl contract).
             unsafe { *libc::__errno_location() }
         } else if #[cfg(any(
             target_os = "macos",
@@ -973,53 +983,53 @@ mod unix {
 
 #[cfg(all(windows, not(target_vendor = "uwp")))]
 mod windows {
-    use super::{
-        DUMP_FRAMES, ENTERED, InstallError, Options, dump_frames, write_console,
-        write_line,
-    };
+    use super::{ENTERED, InstallError, Options};
+    use super::{capture_frames, dump_frames, write_console, write_frame, write_line};
     use core::ffi::c_void;
-    use core::fmt::Write as _;
+    use core::fmt::{self, Write as _};
     use core::sync::atomic::{AtomicUsize, Ordering};
 
+    // Parameter names are snake_case for the lints; they do not affect the
+    // ABI of the imported symbols.
     windows_link::link!(
         "kernel32.dll" "system"
         fn AddVectoredExceptionHandler(
-            First: u32,
-            Handler: *const c_void,
+            first: u32,
+            handler: *const c_void,
         ) -> *mut c_void
     );
     windows_link::link!(
         "kernel32.dll" "system"
-        fn RemoveVectoredExceptionHandler(Handler: *mut c_void) -> i32
+        fn RemoveVectoredExceptionHandler(handler: *mut c_void) -> i32
     );
     windows_link::link!(
         "kernel32.dll" "system"
         fn SetUnhandledExceptionFilter(
-            Filter: *const c_void,
+            filter: *const c_void,
         ) -> *mut c_void
     );
     windows_link::link!(
         "kernel32.dll" "system"
         fn SetConsoleCtrlHandler(
-            Handler: *const c_void,
-            Add: i32,
+            handler: *const c_void,
+            add: i32,
         ) -> i32
     );
-    windows_link::link!("kernel32.dll" "system" fn GetStdHandle(StdHandle: i32) -> *mut c_void);
+    windows_link::link!("kernel32.dll" "system" fn GetStdHandle(std_handle: i32) -> *mut c_void);
     windows_link::link!(
         "kernel32.dll" "system"
         fn WriteFile(
-            hFile: *mut c_void,
-            lpBuffer: *const u8,
-            nNumberOfBytesToWrite: u32,
-            lpNumberOfBytesWritten: *mut u32,
-            lpOverlapped: *mut c_void,
+            file: *mut c_void,
+            buffer: *const u8,
+            number_of_bytes_to_write: u32,
+            number_of_bytes_written: *mut u32,
+            overlapped: *mut c_void,
         ) -> i32
     );
     windows_link::link!("kernel32.dll" "system" fn IsDebuggerPresent() -> i32);
     windows_link::link!(
         "kernel32.dll" "system"
-        fn TerminateProcess(Handle: *mut c_void, ExitCode: u32) -> i32
+        fn TerminateProcess(handle: *mut c_void, exit_code: u32) -> i32
     );
     windows_link::link!("kernel32.dll" "system" fn GetCurrentProcess() -> *mut c_void);
     windows_link::link!("kernel32.dll" "system" fn GetLastError() -> u32);
@@ -1194,8 +1204,15 @@ mod windows {
             let _ = w.write_char('\n');
             let out_len = w.len;
             // SAFETY: `out_len <= buf.len()` by construction of
-            // `SliceWriter`; the bytes are UTF-8 (formatted output).
-            let out = unsafe { &(*core::ptr::addr_of!(SCRATCH_LINE))[..out_len] };
+            // `SliceWriter`; the bytes are UTF-8 (formatted output). The
+            // slice is built from `addr_of!` to avoid an implicit autoref
+            // of the raw pointer's dereference.
+            let out = unsafe {
+                core::slice::from_raw_parts(
+                    core::ptr::addr_of!(SCRATCH_LINE).cast::<u8>(),
+                    out_len,
+                )
+            };
             write_console(out);
         }
     }
@@ -1217,7 +1234,7 @@ mod windows {
         }
     }
 
-    use super::super::basic_unwind::{self as bu, Frame};
+    use super::super::basic_unwind::Frame;
 
     /// `EXCEPTION_POINTERS` vectored handler.
     ///
@@ -1433,12 +1450,16 @@ mod tests {
     //! `.unwrap()` is permitted here: tests only.
 
     use super::*;
+    #[cfg(unix)]
     use core::ffi::c_int;
+    #[cfg(unix)]
     use std::sync::{Mutex, PoisonError};
 
-    /// Serializes tests that install/uninstall process-wide handlers.
+    /// Serializes tests that install/uninstall process-wide Unix handlers.
+    #[cfg(unix)]
     static LOCK: Mutex<()> = Mutex::new(());
 
+    #[cfg(unix)]
     fn lock() -> std::sync::MutexGuard<'static, ()> {
         LOCK.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -1463,6 +1484,7 @@ mod tests {
         assert_eq!(syscall.to_string(), "`sigaction` failed with errno 22");
     }
 
+    #[cfg(unix)]
     #[test]
     fn signal_name_reports_known_and_unknown() {
         assert_eq!(signal_name(libc::SIGTERM), "SIGTERM");
@@ -1472,6 +1494,7 @@ mod tests {
         assert_eq!(signal_name(c_int::MAX), "SIGUNKNOWN");
     }
 
+    #[cfg(unix)]
     #[test]
     fn is_fault_signal_classifies_signals() {
         assert!(is_fault_signal(libc::SIGSEGV));

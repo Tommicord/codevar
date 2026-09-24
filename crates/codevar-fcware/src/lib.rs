@@ -15,7 +15,7 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-//! FcWare — frame-oriented multi-codec compression.
+//! The FcWare frame-oriented multi-codec compression.
 //!
 //! The stable entry points live in [`compression`]:
 //! [`compression::compress`], [`compression::decompress`],

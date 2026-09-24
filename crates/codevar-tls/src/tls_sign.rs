@@ -20,7 +20,9 @@ use crate::tls_crypto_random::SysRng;
 use crate::tls_error::{TlsError, TlsResult};
 use crate::tls_ids::SignatureScheme;
 use ecdsa::signature::Verifier as EcdsaVerifier;
-use ed25519_dalek::{Signature as Ed25519Signature, Signer as Ed25519Signer};
+use ed25519_dalek::{
+    Signature as Ed25519Signature, Signer as Ed25519Signer, VerifyingKey,
+};
 use p256::ecdsa::{
     Signature as P256Signature, SigningKey as P256SigningKey,
     VerifyingKey as P256VerifyingKey,
@@ -255,7 +257,7 @@ pub fn verify_raw_signature(
                 .map_err(|_| TlsError::Alert(AlertDescription::DecryptError))
         }
         SignatureScheme::Ed25519 => {
-            let vk = ed25519_dalek::VerifyingKey::from_public_key_der(spki_der)
+            let vk = VerifyingKey::from_public_key_der(spki_der)
                 .map_err(|_| TlsError::certificate("invalid Ed25519 SPKI"))?;
             let sig_arr: [u8; 64] = signature
                 .try_into()

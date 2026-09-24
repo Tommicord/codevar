@@ -142,6 +142,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-bin"
+version = "1.0.0"
+
+[[package]]
 name = "codevar-fcware"
 version = "1.0.0"
 dependencies = [
@@ -174,8 +178,6 @@ name = "codevar-tls"
 version = "1.0.0"
 dependencies = [
  "arc-swap",
- "bsize",
- "codevar-textlike-encode",
  "ecdsa",
  "ed25519-dalek",
  "elliptic-curve",
@@ -188,7 +190,6 @@ dependencies = [
  "pkcs8",
  "rand_core",
  "rsa",
- "sha1",
  "sha2",
  "subtle",
  "webpki-roots",

@@ -1,14 +1,19 @@
 [workspace]
-members = ["crates/codevar-baseutil",
-    "crates/codevar-textlike-encode", "crates/codevar-fcware",
-    "crates/codevar-tls", "crates/codevar-wredit", "crates/codevar-wsocket"]
+members = [
+    "crates/codevar-baseutil",
+    "crates/codevar-textlike-encode",
+    "crates/codevar-fcware",
+    "crates/codevar-tls",
+    "crates/codevar-wredit",
+    "crates/codevar-wsocket",
+    "crates/codevar-bin"]
 resolver = "2"
 
 [workspace.package]
 version = "1.0.0"
 edition = "2024"
 rust-version = "1.93.0"
-authors = ["Codevar"]
+authors = ["Tommicord"]
 license = "Apache-2.0"
 repository = "https://github.com/Tommicord/codevar"
 

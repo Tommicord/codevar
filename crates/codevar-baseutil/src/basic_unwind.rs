@@ -21,7 +21,7 @@
 //! library is linked.
 
 use core::ffi::c_void;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(unix, not(target_arch = "wasm32")))]
 use libc;
 
 /// Hard cap on the number of frames reported by [`trace`] and
@@ -29,23 +29,97 @@ use libc;
 pub const MAX_FRAMES: usize = 256;
 
 /// Page size constant for mincore checks.
+#[cfg(all(unix, not(target_arch = "wasm32")))]
 const PAGE_SIZE: usize = 4096;
 
 /// Check whether `addr` points to resident, readable memory using `mincore`.
 /// This avoids segmentation faults when probing possibly-unmapped addresses during
 /// stack unwinding without unsafe file I/O.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(unix, not(target_arch = "wasm32")))]
 #[inline]
 fn is_readable(addr: usize) -> bool {
     let page = addr & !(PAGE_SIZE - 1);
     let mut vec = [0u8; 1];
     unsafe {
-        libc::mincore(page as *mut c_void, PAGE_SIZE, vec.as_mut_ptr()) == 0
+        // Safety: `page` is page-aligned and `vec` is one valid byte;
+        // `mincore` only writes the queried residency bytes and retains no
+        // pointer. The pointer type differs per libc (`*mut u8` on Linux,
+        // `*mut c_char` on the BSDs/macOS), hence the inferred cast.
+        libc::mincore(page as *mut c_void, PAGE_SIZE, vec.as_mut_ptr().cast()) == 0
             && (vec[0] & 1) != 0
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+/// Minimal `MEMORY_BASIC_INFORMATION` as filled in by `VirtualQuery`.
+///
+/// `#[repr(C)]` layout matches the Win32 structure on both 32- and 64-bit
+/// Windows: the optional `PartitionId` field introduced on newer SDKs
+/// occupies the padding that follows `allocation_protect` here.
+#[cfg(all(windows, not(target_vendor = "uwp")))]
+#[repr(C)]
+struct MemoryBasicInformation {
+    base_address: *mut c_void,
+    allocation_base: *mut c_void,
+    allocation_protect: u32,
+    region_size: usize,
+    state: u32,
+    protect: u32,
+    kind: u32,
+}
+
+#[cfg(all(windows, not(target_vendor = "uwp")))]
+windows_link::link!(
+    "kernel32.dll" "system"
+    fn VirtualQuery(
+        lp_address: *const c_void,
+        lp_buffer: *mut MemoryBasicInformation,
+        dw_length: usize,
+    ) -> usize
+);
+
+/// Check whether `addr` lies in committed, readable memory by querying the
+/// VM region that contains it with `VirtualQuery`. Avoids the segmentation
+/// fault `IsBadReadPtr` is documented to still raise under race conditions.
+#[cfg(all(windows, not(target_vendor = "uwp")))]
+#[inline]
+fn is_readable(addr: usize) -> bool {
+    /// `MEM_COMMIT`: the region holds committed pages.
+    const MEM_COMMIT: u32 = 0x1000;
+    /// `PAGE_NOACCESS`: no access of any kind is granted.
+    const PAGE_NOACCESS: u32 = 0x01;
+    /// `PAGE_GUARD`: access raises `EXCEPTION_GUARD_PAGE`.
+    const PAGE_GUARD: u32 = 0x100;
+
+    let mut info = MemoryBasicInformation {
+        base_address: core::ptr::null_mut(),
+        allocation_base: core::ptr::null_mut(),
+        allocation_protect: 0,
+        region_size: 0,
+        state: 0,
+        protect: 0,
+        kind: 0,
+    };
+    // Safety: `info` is a valid, correctly-sized out-buffer and `addr` is a
+    // plain address; `VirtualQuery` neither retains nor dereferences
+    // `lpAddress` itself and returns the number of bytes written.
+    let written = unsafe {
+        VirtualQuery(
+            addr as *const c_void,
+            &raw mut info,
+            core::mem::size_of::<MemoryBasicInformation>(),
+        )
+    };
+    written != 0
+        && info.state == MEM_COMMIT
+        && (info.protect & (PAGE_NOACCESS | PAGE_GUARD)) == 0
+}
+
+/// Fallback for targets without a residency probe (e.g. `wasm32`, UWP):
+/// conservatively reject every address so probing never faults.
+#[cfg(not(any(
+    all(unix, not(target_arch = "wasm32")),
+    all(windows, not(target_vendor = "uwp")),
+)))]
 #[inline]
 fn is_readable(_addr: usize) -> bool {
     false
@@ -249,6 +323,19 @@ mod capture {
         13
     }
 
+    /// DWARF register index of the stack pointer for architectures without
+    /// a register-capture implementation. [`capture_arch`] returns `None`
+    /// for them, so [`current`] bails out before this index is ever read.
+    #[cfg(not(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "x86",
+        target_arch = "arm",
+    )))]
+    const fn sp_index() -> usize {
+        0
+    }
+
     #[cfg(target_arch = "x86_64")]
     fn capture_arch(regs: &mut Regs) -> Option<()> {
         let ip: usize;
@@ -417,6 +504,7 @@ mod capture {
 
 /// Frame-pointer chain walking (x86_64 / aarch64).
 mod fp {
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     use super::{Frame, read_word};
 
     /// DWARF register index of the frame pointer.
@@ -426,10 +514,6 @@ mod fp {
     /// DWARF register index of the frame pointer.
     #[cfg(target_arch = "aarch64")]
     const FP: usize = 29;
-
-    /// DWARF register index of the frame pointer.
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    const FP: usize = 0;
 
     /// Steps one frame using `[fp]` / `[fp + 8]`.
     ///
@@ -471,6 +555,10 @@ mod fp {
     }
 
     /// Frame-pointer-only walk used when no unwind tables are available.
+    ///
+    /// Mirrors the availability of [`super::walk`] (referenced from
+    /// [`super::trace`] only on these architectures).
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     #[allow(dead_code)]
     pub(super) fn trace_inner(cb: &mut dyn FnMut(&Frame) -> bool) {
         super::walk(cb, None);
@@ -478,6 +566,11 @@ mod fp {
 }
 
 /// DWARF `.eh_frame` CFI interpreter shared by ELF and Mach-O backends.
+///
+/// Only reachable from the 64-bit Unix backends (`elf` / `apple`) at run
+/// time; on other targets it is compiled solely for the unit tests, so the
+/// dead-code lint is silenced there.
+#[cfg_attr(not(all(unix, target_pointer_width = "64")), allow(dead_code))]
 mod cfi {
     use super::{Regs, UnwindState, read_word};
 
@@ -2321,7 +2414,7 @@ mod apple {
         found
     }
 
-    fn find(ip: usize) -> Found {
+    fn find(_ip: usize) -> Found {
         let count = unsafe { _dyld_image_count() };
         for i in 0..count.min(4096) {
             let header = unsafe { _dyld_get_image_header(i) };
@@ -2385,26 +2478,28 @@ mod windows {
     use core::ffi::c_void;
     use core::ptr;
 
-    windows_link::link!("kernel32.dll" "system" fn RtlCaptureContext(ContextRecord: *mut c_void) -> ());
+    // Parameter names are snake_case for the lints; they do not affect the
+    // ABI of the imported symbols.
+    windows_link::link!("kernel32.dll" "system" fn RtlCaptureContext(context_record: *mut c_void) -> ());
     windows_link::link!(
         "kernel32.dll" "system"
         fn RtlLookupFunctionEntry(
-            ControlPc: usize,
-            ImageBase: *mut usize,
-            HistoryTable: *mut c_void,
+            control_pc: usize,
+            image_base: *mut usize,
+            history_table: *mut c_void,
         ) -> *mut RuntimeFunction
     );
     windows_link::link!(
         "kernel32.dll" "system"
         fn RtlVirtualUnwind(
-            HandlerType: u32,
-            ControlPc: usize,
-            ImageBase: usize,
-            FunctionEntry: *mut RuntimeFunction,
-            ContextRecord: *mut c_void,
-            HandlerData: *mut *mut c_void,
-            EstablisherFrame: *mut usize,
-            ContextPointers: *mut c_void,
+            handler_type: u32,
+            control_pc: usize,
+            image_base: usize,
+            function_entry: *mut RuntimeFunction,
+            context_record: *mut c_void,
+            handler_data: *mut *mut c_void,
+            establisher_frame: *mut usize,
+            context_pointers: *mut c_void,
         ) -> ()
     );
 
@@ -2868,20 +2963,23 @@ mod tests {
     #[cfg(all(unix, not(target_vendor = "apple"), target_pointer_width = "64"))]
     #[test]
     fn module_base_some_for_live_ip() {
+        // The function's own address is a live IP inside this binary; using
+        // it (rather than inline assembly reading the PC) keeps the test
+        // portable across architectures.
+        #[inline(never)]
         fn ip_here() -> usize {
-            let ip: usize;
-            // Safety: reads only the current RIP.
-            unsafe {
-                core::arch::asm!("lea {0}, [rip + 0]", out(reg) ip, options(nostack));
-            }
-            ip
+            // Cast via a pointer: the `function_casts_as_integer` lint asks
+            // for the intermediate pointer conversion even though the value
+            // is identical.
+            ip_here as *const () as usize
         }
-        let base = elf::module_base(ip_here());
+        let ip = ip_here();
+        let base = elf::module_base(ip);
         assert!(
             base.is_some(),
             "code in this binary must have a module base"
         );
-        assert!(base.is_some_and(|b| b < ip_here()));
+        assert!(base.is_some_and(|b| b < ip));
     }
 
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -3183,36 +3281,54 @@ mod tests {
         }
     }
 
-    #[test]
-    fn walk_terminates_after_capture_with_forced_stop() {
-        // `walk` always captures first; force stop via callback false after
-        // one frame and ensure no further frames are produced even if the
-        // captured IP is valid.
-        let mut n = 0usize;
-        walk(
-            &mut |_| {
-                n += 1;
-                false
-            },
-            None,
-        );
-        assert_eq!(n, 1);
+    /// `walk` is only compiled for these targets (see its own `#[cfg]`);
+    /// the tests that drive it are gated identically so targets such as
+    /// `wasm32` and 32-bit Unix still build.
+    #[cfg(any(
+        all(unix, not(target_vendor = "apple"), target_pointer_width = "64"),
+        all(unix, target_vendor = "apple", target_pointer_width = "64"),
+        all(
+            windows,
+            not(target_vendor = "uwp"),
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+    ))]
+    mod walk_tests {
+        use super::*;
+
+        #[test]
+        fn walk_terminates_after_capture_with_forced_stop() {
+            // `walk` always captures first; force stop via callback false
+            // after one frame and ensure no further frames are produced even
+            // if the captured IP is valid.
+            let mut n = 0usize;
+            walk(
+                &mut |_| {
+                    n += 1;
+                    false
+                },
+                None,
+            );
+            assert_eq!(n, 1);
+        }
+
+        #[test]
+        fn walk_uses_step_fn_when_provided() {
+            // A step_fn that always fails yields exactly one frame.
+            let mut n = 0usize;
+            walk(
+                &mut |_| {
+                    n += 1;
+                    true
+                },
+                Some(|_| false),
+            );
+            assert_eq!(n, 1);
+        }
     }
 
-    #[test]
-    fn walk_uses_step_fn_when_provided() {
-        // A step_fn that always fails yields exactly one frame.
-        let mut n = 0usize;
-        walk(
-            &mut |_| {
-                n += 1;
-                true
-            },
-            Some(|_| false),
-        );
-        assert_eq!(n, 1);
-    }
-
+    #[cfg(all(unix, not(target_vendor = "apple"), target_pointer_width = "64"))]
     #[test]
     fn debug_walk_detail() {
         #[inline(never)]
