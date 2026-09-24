@@ -15,5 +15,5 @@
 
 #![cfg_attr(not(test), no_std)]
 pub mod basic_pretty_unwind;
-pub mod basic_signal_handler;
+pub mod basic_signal;
 pub mod basic_unwind;
