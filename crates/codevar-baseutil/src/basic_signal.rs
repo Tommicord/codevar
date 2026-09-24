@@ -46,56 +46,11 @@ const DUMP_FRAMES: usize = 64;
 /// Reentrancy guard: `0` = idle, `1` = inside handler/dump.
 static ENTERED: AtomicU32 = AtomicU32::new(0);
 
-/// Whether [`install`] / [`install_with`] has succeeded and [`uninstall`]
+/// Whether [`install`] / [`install_handler`] has succeeded and [`uninstall`]
 /// has not yet been called.
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
-/// Which categories of signals are currently being caught (mirrors the
-/// [`Options`] used at install time).
-static OPT_FAULTS: AtomicBool = AtomicBool::new(false);
-static OPT_TERMINATION: AtomicBool = AtomicBool::new(false);
-static OPT_JOB_CONTROL: AtomicBool = AtomicBool::new(false);
-static OPT_ALT_STACK: AtomicBool = AtomicBool::new(false);
-
-/// Which categories were active at install time (used by [`uninstall`]).
-static INSTALLED_FAULTS: AtomicBool = AtomicBool::new(false);
-static INSTALLED_TERMINATION: AtomicBool = AtomicBool::new(false);
-static INSTALLED_JOB_CONTROL: AtomicBool = AtomicBool::new(false);
-
-/// Configuration for [`install_with`].
-///
-/// The default enables fault signals, termination signals, and the
-/// alternate signal stack, and disables job-control stop signals.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Options {
-    /// Catch synchronous hardware faults (`SIGSEGV`, `SIGFPE`, `SIGILL`,
-    /// …) and dump a backtrace before re-raising.
-    pub catch_faults: bool,
-    /// Catch process-termination signals (`SIGINT`, `SIGTERM`, `SIGHUP`, …)
-    /// and dump a backtrace before re-raising with `SIG_DFL`.
-    pub catch_termination: bool,
-    /// Catch job-control stop signals (`SIGTSTP`, `SIGTTIN`, `SIGTTOU`).
-    /// Dump runs, then the signal is re-raised with `SIG_DFL`, which stops
-    /// the process as usual. Disabled by default.
-    pub catch_job_control: bool,
-    /// Install a static 64 KiB 16-byte-aligned alternate signal stack so
-    /// handlers run even when the faulting thread's stack is exhausted.
-    pub install_alt_stack: bool,
-}
-
-impl Default for Options {
-    #[inline]
-    fn default() -> Self {
-        Self {
-            catch_faults: true,
-            catch_termination: true,
-            catch_job_control: false,
-            install_alt_stack: true,
-        }
-    }
-}
-
-/// Errors returned by [`install`], [`install_with`], [`uninstall`], and
+/// Errors returned by [`install`], [`install_handler`], [`uninstall`], and
 /// [`install_alt_stack`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallError {
@@ -138,7 +93,7 @@ impl core::error::Error for InstallError {}
 /// backend, or [`InstallError::Syscall`] when the OS rejects the request.
 #[inline]
 pub fn install() -> Result<(), InstallError> {
-    install_with(Options::default())
+    install_handler()
 }
 
 /// Installs signal handlers according to `opts`.
@@ -157,32 +112,18 @@ pub fn install() -> Result<(), InstallError> {
 /// backend, or [`InstallError::Syscall`] when the OS rejects the request
 /// (any partially installed handlers are rolled back first).
 #[inline]
-pub fn install_with(opts: Options) -> Result<(), InstallError> {
+pub fn install_handler() -> Result<(), InstallError> {
     if INSTALLED.load(Ordering::Acquire) {
         return Ok(());
     }
-
-    OPT_FAULTS.store(opts.catch_faults, Ordering::Relaxed);
-    OPT_TERMINATION.store(opts.catch_termination, Ordering::Relaxed);
-    OPT_JOB_CONTROL.store(opts.catch_job_control, Ordering::Relaxed);
-    OPT_ALT_STACK.store(opts.install_alt_stack, Ordering::Relaxed);
-
-    let result = install_impl(opts);
+    let result = install_impl();
     if result.is_ok() {
-        INSTALLED_FAULTS.store(opts.catch_faults, Ordering::Release);
-        INSTALLED_TERMINATION.store(opts.catch_termination, Ordering::Release);
-        INSTALLED_JOB_CONTROL.store(opts.catch_job_control, Ordering::Release);
         INSTALLED.store(true, Ordering::Release);
-    } else {
-        OPT_FAULTS.store(false, Ordering::Relaxed);
-        OPT_TERMINATION.store(false, Ordering::Relaxed);
-        OPT_JOB_CONTROL.store(false, Ordering::Relaxed);
-        OPT_ALT_STACK.store(false, Ordering::Relaxed);
     }
     result
 }
 
-/// Removes handlers installed by [`install`] / [`install_with`], restoring
+/// Removes handlers installed by [`install`] / [`install_handler`], restoring
 /// the previous dispositions on Unix.
 ///
 /// Safe to call when nothing is installed (no-op). Does not disable an
@@ -199,18 +140,11 @@ pub fn uninstall() -> Result<(), InstallError> {
     let result = uninstall_impl();
     if result.is_ok() {
         INSTALLED.store(false, Ordering::Release);
-        INSTALLED_FAULTS.store(false, Ordering::Release);
-        INSTALLED_TERMINATION.store(false, Ordering::Release);
-        INSTALLED_JOB_CONTROL.store(false, Ordering::Release);
-        OPT_FAULTS.store(false, Ordering::Relaxed);
-        OPT_TERMINATION.store(false, Ordering::Relaxed);
-        OPT_JOB_CONTROL.store(false, Ordering::Relaxed);
-        OPT_ALT_STACK.store(false, Ordering::Relaxed);
     }
     result
 }
 
-/// Returns `true` between a successful [`install`] / [`install_with`] and
+/// Returns `true` between a successful [`install`] / [`install_handler`] and
 /// the matching [`uninstall`].
 #[inline]
 pub fn is_installed() -> bool {
@@ -385,14 +319,9 @@ fn is_fault_signal(sig: core::ffi::c_int) -> bool {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Backend dispatch
-// ---------------------------------------------------------------------------
-
 #[cfg(unix)]
-fn install_impl(opts: Options) -> Result<(), InstallError> {
-    unix::install(opts)
+fn install_impl() -> Result<(), InstallError> {
+    unix::install()
 }
 
 #[cfg(unix)]
@@ -438,10 +367,6 @@ fn uninstall_impl() -> Result<(), InstallError> {
 fn install_alt_stack_impl(_buf: &mut [u8]) -> Result<(), InstallError> {
     Err(InstallError::Unsupported)
 }
-
-// ---------------------------------------------------------------------------
-// Console output
-// ---------------------------------------------------------------------------
 
 /// Writes `bytes` to stderr, retrying on `EINTR`. Best-effort: silently
 /// stops on hard errors (the crash path must not block or panic).
@@ -519,14 +444,10 @@ unsafe fn errno() -> i32 {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Unix backend
-// ---------------------------------------------------------------------------
-
 #[cfg(unix)]
 mod unix {
     use super::{
-        ENTERED, InstallError, Options, dump_frames, is_fault_signal, signal_name,
+        ENTERED, InstallError, dump_frames, is_fault_signal, signal_name,
         write_console, write_line,
     };
     use core::ffi::c_void;
@@ -573,9 +494,9 @@ mod unix {
 
     /// Collects the signal numbers enabled by `opts` into `out`.
     /// Returns how many were written (truncates at `out.len()`).
-    fn collect_signals(opts: Options, out: &mut [libc::c_int]) -> usize {
+    fn collect_signals(out: &mut [libc::c_int]) -> usize {
         let mut n = 0usize;
-        macro_rules! push {
+        macro_rules! push_sig {
             ($($sig:expr),+ $(,)?) => {
                 $(
                     if n < out.len() {
@@ -585,40 +506,29 @@ mod unix {
                 )+
             };
         }
-
-        if opts.catch_faults {
-            push!(
-                libc::SIGILL,
-                libc::SIGTRAP,
-                libc::SIGABRT,
-                libc::SIGBUS,
-                libc::SIGFPE,
-                libc::SIGSEGV,
-                libc::SIGSYS,
-                libc::SIGXCPU,
-                libc::SIGXFSZ,
-            );
-            #[cfg(any(target_os = "linux", target_os = "android"))]
-            push!(libc::SIGSTKFLT);
-        }
-        if opts.catch_termination {
-            push!(
-                libc::SIGHUP,
-                libc::SIGINT,
-                libc::SIGQUIT,
-                libc::SIGTERM,
-                libc::SIGUSR1,
-                libc::SIGUSR2,
-                libc::SIGALRM,
-                libc::SIGVTALRM,
-                libc::SIGPROF,
-            );
-            #[cfg(any(target_os = "linux", target_os = "android"))]
-            push!(libc::SIGPWR, libc::SIGIO);
-        }
-        if opts.catch_job_control {
-            push!(libc::SIGTSTP, libc::SIGTTIN, libc::SIGTTOU);
-        }
+        push_sig!(
+            libc::SIGILL,
+            libc::SIGTRAP,
+            libc::SIGABRT,
+            libc::SIGBUS,
+            libc::SIGFPE,
+            libc::SIGSEGV,
+            libc::SIGSYS,
+            libc::SIGXCPU,
+            libc::SIGXFSZ,
+            libc::SIGHUP,
+            libc::SIGINT,
+            libc::SIGQUIT,
+            libc::SIGTERM,
+            libc::SIGUSR1,
+            libc::SIGUSR2,
+            libc::SIGALRM,
+            libc::SIGVTALRM,
+            libc::SIGPROF,
+        );
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        push_sig!(libc::SIGPWR, libc::SIGIO);
+        push_sig!(libc::SIGTSTP, libc::SIGTTIN, libc::SIGTTOU);
         n
     }
 
@@ -705,31 +615,29 @@ mod unix {
         }
     }
 
-    pub(super) fn install(opts: Options) -> Result<(), InstallError> {
+    pub(super) fn install() -> Result<(), InstallError> {
         let mut sigs = [0 as libc::c_int; MAX_SAVED];
-        let n = collect_signals(opts, &mut sigs);
+        let n = collect_signals(&mut sigs);
 
-        if opts.install_alt_stack {
-            // SAFETY: `DEFAULT_STACK` is a static with the required size
-            // and alignment; it outlives the process. Taking a raw pointer
-            // to a field of a `static mut` requires `unsafe` in edition
-            // 2024; no reference is materialized.
-            let storage = unsafe { ptr::addr_of_mut!(DEFAULT_STACK.storage) };
-            let ss = libc::stack_t {
-                ss_sp: storage.cast::<c_void>(),
-                ss_size: DEFAULT_ALT_STACK,
-                ss_flags: 0,
-            };
-            // SAFETY: `ss` points at a valid, 16-byte-aligned, process-
-            // lifetime buffer of `ss_size` bytes.
-            if unsafe { libc::sigaltstack(&ss, ptr::null_mut()) } != 0 {
-                // SAFETY: called immediately after the failed syscall.
-                let e = unsafe { super::errno() };
-                return Err(InstallError::Syscall {
-                    op: "sigaltstack",
-                    errno: e,
-                });
-            }
+        // SAFETY: `DEFAULT_STACK` is a static with the required size
+        // and alignment; it outlives the process. Taking a raw pointer
+        // to a field of a `static mut` requires `unsafe` in edition
+        // 2024; no reference is materialized.
+        let storage = unsafe { ptr::addr_of_mut!(DEFAULT_STACK.storage) };
+        let ss = libc::stack_t {
+            ss_sp: storage.cast::<c_void>(),
+            ss_size: DEFAULT_ALT_STACK,
+            ss_flags: 0,
+        };
+        // SAFETY: `ss` points at a valid, 16-byte-aligned, process-
+        // lifetime buffer of `ss_size` bytes.
+        if unsafe { libc::sigaltstack(&ss, ptr::null_mut()) } != 0 {
+            // SAFETY: called immediately after the failed syscall.
+            let e = unsafe { super::errno() };
+            return Err(InstallError::Syscall {
+                op: "sigaltstack",
+                errno: e,
+            });
         }
 
         if n == 0 {
@@ -1465,15 +1373,6 @@ mod tests {
     }
 
     #[test]
-    fn options_default_enables_faults_and_termination() {
-        let opts = Options::default();
-        assert!(opts.catch_faults);
-        assert!(opts.catch_termination);
-        assert!(!opts.catch_job_control);
-        assert!(opts.install_alt_stack);
-    }
-
-    #[test]
     fn install_error_display_formats() {
         let unsupported = InstallError::Unsupported;
         assert!(!unsupported.to_string().is_empty());
@@ -1571,36 +1470,6 @@ mod tests {
             before.sa_sigaction, after.sa_sigaction,
             "uninstall must restore the previous disposition"
         );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn install_with_empty_options_succeeds() {
-        let _g = lock();
-        let opts = Options {
-            catch_faults: false,
-            catch_termination: false,
-            catch_job_control: false,
-            install_alt_stack: false,
-        };
-        install_with(opts).expect("no-signal install must succeed");
-        assert!(is_installed());
-        uninstall().expect("uninstall must succeed");
-        assert!(!is_installed());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn install_with_job_control_opt_in() {
-        let _g = lock();
-        let opts = Options {
-            catch_job_control: true,
-            ..Options::default()
-        };
-        install_with(opts).expect("job-control install must succeed");
-        assert!(is_installed());
-        uninstall().expect("uninstall must succeed");
-        assert!(!is_installed());
     }
 
     #[cfg(unix)]
