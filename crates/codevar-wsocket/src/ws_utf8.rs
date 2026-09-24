@@ -28,7 +28,7 @@ use crate::ws_error::{WsError, WsResult};
 /// # Example
 ///
 /// ```
-/// use codevar_tlsws::ws_utf8::Utf8Validator;
+/// use codevar_wsocket::ws_utf8::Utf8Validator;
 ///
 /// let mut v = Utf8Validator::new();
 /// // Split multi-byte character across two fragments: U+00E9 (é) = C3 A9

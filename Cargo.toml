@@ -1,7 +1,7 @@
 [workspace]
 members = ["crates/codevar-baseutil",
     "crates/codevar-fastlike-encode", "crates/codevar-fcware",
-    "crates/codevar-tlsws", "crates/codevar-wredit"]
+    "crates/codevar-tls", "crates/codevar-wredit", "crates/codevar-wsocket"]
 resolver = "2"
 
 [workspace.package]

@@ -1,5 +1,5 @@
 [package]
-name = "codevar-tlsws"
+name = "codevar-tls"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [lib]
-name = "codevar_tlsws"
+name = "codevar_tls"
 
 [dependencies]
 codevar-fastlike-encode = { path = "../codevar-fastlike-encode" }

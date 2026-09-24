@@ -170,7 +170,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "codevar-tlsws"
+name = "codevar-tls"
 version = "1.0.0"
 dependencies = [
  "arc-swap",
@@ -202,6 +202,19 @@ name = "codevar-wredit"
 version = "1.0.0"
 dependencies = [
  "arc-swap",
+ "webpki-roots",
+]
+
+[[package]]
+name = "codevar-wsocket"
+version = "1.0.0"
+dependencies = [
+ "arc-swap",
+ "bsize",
+ "codevar-fastlike-encode",
+ "codevar-tls",
+ "getrandom",
+ "sha1",
  "webpki-roots",
 ]
 
