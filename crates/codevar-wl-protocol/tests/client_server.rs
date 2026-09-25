@@ -13,7 +13,7 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-//! End to end tests wiring a real [`WlClientDisplay`] to a real
+//! End-to-end tests wiring a real [`WlClientDisplay`] to a real
 //! [`WlServerDisplay`] over an in-memory pipe pair.
 //!
 //! The two sides are driven by hand: the client flushes its requests,
@@ -143,7 +143,7 @@ impl WlTransport for ClientEnd {
 
 /// Poller reporting the readiness of the server end of the pipe.
 ///
-/// Hangup is reported outside of the interest mask, like `poll(2)`,
+/// Hangup is reported outside the interest mask, like `poll(2)`,
 /// so a closed client can never be missed.
 struct WirePoller {
     wire: Rc<RefCell<Wire>>,

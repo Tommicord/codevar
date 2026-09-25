@@ -336,8 +336,8 @@ fn install_alt_stack_impl(buf: &mut [u8]) -> Result<(), InstallError> {
 }
 
 #[cfg(all(windows, not(target_vendor = "uwp")))]
-fn install_impl(opts: Options) -> Result<(), InstallError> {
-    windows::install(opts)
+fn install_impl() -> Result<(), InstallError> {
+    windows::install()
 }
 
 #[cfg(all(windows, not(target_vendor = "uwp")))]
@@ -891,7 +891,7 @@ mod unix {
 
 #[cfg(all(windows, not(target_vendor = "uwp")))]
 mod windows {
-    use super::{ENTERED, InstallError, Options};
+    use super::{ENTERED, InstallError};
     use super::{capture_frames, dump_frames, write_console, write_frame, write_line};
     use core::ffi::c_void;
     use core::fmt::{self, Write as _};
@@ -1288,40 +1288,35 @@ mod windows {
         1
     }
 
-    pub(super) fn install(opts: Options) -> Result<(), InstallError> {
-        if opts.catch_faults || opts.catch_termination {
-            // SAFETY: `veh_handler` has the required ABI and stays loaded
-            // for the process lifetime (uninstall removes it explicitly).
-            let veh =
-                unsafe { AddVectoredExceptionHandler(1, veh_handler as *const c_void) };
-            if veh.is_null() {
-                // SAFETY: immediately after the failed call.
-                let e = unsafe { GetLastError() } as i32;
-                return Err(InstallError::Syscall {
-                    op: "AddVectoredExceptionHandler",
-                    errno: e,
-                });
-            }
-            VEH.store(veh as usize, Ordering::Release);
-
-            // SAFETY: `unhandled_filter` has the required ABI; the return
-            // value is the previous filter pointer (may be null).
-            let prev =
-                unsafe { SetUnhandledExceptionFilter(unhandled_filter as *const c_void) };
-            PREV_FILTER.store(prev as usize, Ordering::Release);
+    pub(super) fn install() -> Result<(), InstallError> {
+        // SAFETY: `veh_handler` has the required ABI and stays loaded
+        // for the process lifetime (uninstall removes it explicitly).
+        let veh =
+            unsafe { AddVectoredExceptionHandler(1, veh_handler as *const c_void) };
+        if veh.is_null() {
+            // SAFETY: immediately after the failed call.
+            let e = unsafe { GetLastError() } as i32;
+            return Err(InstallError::Syscall {
+                op: "AddVectoredExceptionHandler",
+                errno: e,
+            });
         }
+        VEH.store(veh as usize, Ordering::Release);
+        // SAFETY: `unhandled_filter` has the required ABI; the return
+        // value is the previous filter pointer (may be null).
+        let prev =
+            unsafe { SetUnhandledExceptionFilter(unhandled_filter as *const c_void) };
+        PREV_FILTER.store(prev as usize, Ordering::Release);
 
-        if opts.catch_termination {
-            // SAFETY: `ctrl_handler` has the required ABI; `Add = 1`
-            // registers it.
-            if unsafe { SetConsoleCtrlHandler(ctrl_handler as *const c_void, 1) } == 0 {
-                // SAFETY: immediately after the failed call.
-                let e = unsafe { GetLastError() } as i32;
-                return Err(InstallError::Syscall {
-                    op: "SetConsoleCtrlHandler",
-                    errno: e,
-                });
-            }
+        // SAFETY: `ctrl_handler` has the required ABI; `Add = 1`
+        // registers it.
+        if unsafe { SetConsoleCtrlHandler(ctrl_handler as *const c_void, 1) } == 0 {
+            // SAFETY: immediately after the failed call.
+            let e = unsafe { GetLastError() } as i32;
+            return Err(InstallError::Syscall {
+                op: "SetConsoleCtrlHandler",
+                errno: e,
+            });
         }
         Ok(())
     }

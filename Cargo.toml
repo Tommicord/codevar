@@ -8,7 +8,9 @@ members = [
     "crates/codevar-wsocket",
     "crates/codevar-bin",
     "crates/codevar-wl-protocol",
-    "crates/codevar-xdg-portal", "crates/codevar-dbus"]
+    "crates/codevar-xdg-portal",
+    "crates/codevar-dbus"
+]
 resolver = "2"
 
 [workspace.package]
