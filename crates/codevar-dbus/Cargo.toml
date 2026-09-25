@@ -1,5 +1,5 @@
 [package]
-name = "codevar-base"
+name = "codevar-dbus"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,10 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [lib]
-name = "codevar_base"
+name = "codevar_dbus"
 
-[dependencies]
-cfg-if = { workspace = true }
+[target.'cfg(all(unix, not(target_arch = "wasm32")))'.dependencies]
 libc = { workspace = true }
-windows-link = { workspace = true }
-spin = { workspace = true }

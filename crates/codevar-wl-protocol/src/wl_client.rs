@@ -772,7 +772,12 @@ impl<T: WlTransport> WlClientDisplay<T> {
 
     /// Handles `wl_display.error` by recording the protocol error.
     fn handle_display_error(&mut self, args: &mut [WlArgument]) {
-        let object_id = uint_arg(args, 0).unwrap_or(0);
+        // The first argument is an object; unknown ids already arrived as
+        // the null object, matching `display_handle_error` of libwayland.
+        let object_id = match args.first() {
+            Some(WlArgument::Object(id)) => *id,
+            _ => uint_arg(args, 0).unwrap_or(0),
+        };
         let code = uint_arg(args, 1).unwrap_or(0);
         let message = str_arg(args, 2).unwrap_or_default();
         let interface = self

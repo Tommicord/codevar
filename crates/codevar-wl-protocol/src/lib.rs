@@ -42,12 +42,13 @@ mod wl_handle;
 mod wl_server;
 
 pub use wl_client::{WlClientDisplay, WlProxyId, WlRegistryEvent};
-pub use wl_conn::{WlClosure, WlConnection, WlTransport};
+pub use wl_conn::{WlClosure, WlConnection, WlTransport, reserve_new_ids};
 pub use wl_error::{WlError, WlProtocolError, WlResult};
 pub use wl_evloop::{
     WlClock, WlEventLoop, WlEventSourceId, WlPollEntry, WlPollEvents, WlPoller,
 };
 pub use wl_handle::{
-    WlArgument, WlArray, WlFixed, WlInterface, WlList, WlMap, WlMessage, WlSignal,
+    MAX_CLOSURE_ARGS, MAX_MESSAGE_WORDS, WlArgument, WlArray, WlDisplayError, WlFixed,
+    WlInterface, WlList, WlMap, WlMessage, WlObject, WlSignal,
 };
 pub use wl_server::{WlClient, WlClientId, WlResource, WlServerDisplay, WlTaskQueue};

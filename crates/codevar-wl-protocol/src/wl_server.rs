@@ -1258,3 +1258,508 @@ fn post_create_failure<T: WlTransport>(
         ),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::wl_conn::WlHandle;
+    use crate::wl_evloop::WlPollEntry;
+    use crate::wl_handle::{WlFd, WlMessage};
+
+    use super::*;
+
+    static POKE: WlMessage = WlMessage::new("poke", "u", &[None]);
+    static PONG: WlMessage = WlMessage::new("pong", "u", &[None]);
+    static TEST_INTERFACE: WlInterface = WlInterface::new("wl_test", 3, &[POKE], &[PONG]);
+    static OTHER_INTERFACE: WlInterface = WlInterface::new("wl_other", 2, &[], &[]);
+
+    /// Opcode of `wl_test.poke`, the only request of [`TEST_INTERFACE`].
+    const POKE_OPCODE: u32 = 0;
+    /// Opcode of `wl_test.pong`, the only event of [`TEST_INTERFACE`].
+    const PONG_OPCODE: u32 = 0;
+    /// Handle reported by the single test pipe.
+    const PIPE_HANDLE: WlHandle = 7;
+
+    /// State shared by the server transport, the poller and the test.
+    #[derive(Default)]
+    struct PipeState {
+        input: Vec<u8>,
+        input_pos: usize,
+        output: Vec<u8>,
+        output_pos: usize,
+        peer_closed: bool,
+        task_ran: bool,
+        polls_after_task: usize,
+    }
+
+    /// Server end of an in-memory pipe.
+    struct ServerPipe {
+        state: Rc<RefCell<PipeState>>,
+    }
+
+    impl WlTransport for ServerPipe {
+        fn recv(&mut self, buf: &mut [u8], _fds: &mut Vec<WlFd>) -> WlResult<usize> {
+            let mut state = self.state.borrow_mut();
+            if state.peer_closed {
+                return Ok(0);
+            }
+            if state.input_pos >= state.input.len() {
+                return Err(WlError::WouldBlock);
+            }
+            let available = state.input.len() - state.input_pos;
+            let count = available.min(buf.len());
+            let start = state.input_pos;
+            buf[..count].copy_from_slice(&state.input[start..start + count]);
+            state.input_pos += count;
+            Ok(count)
+        }
+
+        fn send(&mut self, data: &[u8], _fds: &[WlFd]) -> WlResult<usize> {
+            self.state.borrow_mut().output.extend_from_slice(data);
+            Ok(data.len())
+        }
+
+        fn wait(
+            &mut self,
+            _timeout: Option<Duration>,
+            mask: WlPollEvents,
+        ) -> WlResult<WlPollEvents> {
+            let state = self.state.borrow();
+            let mut events = WlPollEvents::EMPTY;
+            if state.peer_closed {
+                events.insert(WlPollEvents::HANGUP);
+            }
+            if state.input_pos < state.input.len() {
+                events.insert(WlPollEvents::READABLE);
+            }
+            Ok(events.intersection(mask))
+        }
+
+        fn handle(&self) -> WlHandle {
+            PIPE_HANDLE
+        }
+    }
+
+    /// Poller reporting the readiness of the single test pipe.
+    ///
+    /// Hangup is reported outside of the interest mask, like `poll(2)`,
+    /// so the event loop can never miss a closed peer.
+    struct PipePoller {
+        state: Rc<RefCell<PipeState>>,
+    }
+
+    impl WlPoller for PipePoller {
+        fn poll(
+            &mut self,
+            entries: &mut [WlPollEntry],
+            _timeout: Option<Duration>,
+        ) -> WlResult<usize> {
+            let mut state = self.state.borrow_mut();
+            if state.task_ran {
+                state.polls_after_task += 1;
+            }
+            let mut ready = 0;
+            for entry in entries.iter_mut() {
+                let mut events = WlPollEvents::EMPTY;
+                if state.peer_closed {
+                    events.insert(WlPollEvents::HANGUP);
+                }
+                if state.input_pos < state.input.len() {
+                    events.insert(WlPollEvents::READABLE);
+                }
+                if entry.interest.contains(WlPollEvents::WRITABLE) {
+                    events.insert(WlPollEvents::WRITABLE);
+                }
+                entry.revents = events;
+                if !events.is_empty() {
+                    ready += 1;
+                }
+            }
+            Ok(ready)
+        }
+    }
+
+    /// Clock standing still at zero.
+    struct TestClock;
+
+    impl WlClock for TestClock {
+        fn now_ms(&self) -> u64 {
+            0
+        }
+    }
+
+    type TestDisplay = WlServerDisplay<ServerPipe, PipePoller, TestClock>;
+
+    /// Display with one connected client over an in-memory pipe.
+    struct Fixture {
+        display: TestDisplay,
+        client_id: WlClientId,
+        state: Rc<RefCell<PipeState>>,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            Self::with_setup(|_| {})
+        }
+
+        fn with_setup(setup: impl FnOnce(&mut TestDisplay)) -> Self {
+            let state = Rc::new(RefCell::new(PipeState::default()));
+            let mut display = WlServerDisplay::new(
+                PipePoller {
+                    state: Rc::clone(&state),
+                },
+                TestClock,
+            );
+            setup(&mut display);
+            let client_id = display
+                .create_client(ServerPipe {
+                    state: Rc::clone(&state),
+                })
+                .unwrap();
+            Self {
+                display,
+                client_id,
+                state,
+            }
+        }
+
+        /// Queues raw request bytes for the server to read.
+        fn send(&self, bytes: &[u8]) {
+            self.state.borrow_mut().input.extend_from_slice(bytes);
+        }
+
+        /// Runs one non-blocking dispatch of the display.
+        fn dispatch(&mut self) {
+            self.display.dispatch(Some(Duration::ZERO)).unwrap();
+        }
+
+        /// Returns the events flushed since the previous call.
+        fn take_messages(&self) -> Vec<u8> {
+            let mut state = self.state.borrow_mut();
+            let bytes = state.output[state.output_pos..].to_vec();
+            state.output_pos = state.output.len();
+            bytes
+        }
+
+        /// Closes the test end of the pipe.
+        fn close_peer(&self) {
+            self.state.borrow_mut().peer_closed = true;
+        }
+    }
+
+    /// Builds a request whose arguments are 32 bit words only.
+    fn fixed_request(sender: u32, opcode: u32, words: &[u32]) -> Vec<u8> {
+        let size = 8 + 4 * words.len();
+        let mut bytes = Vec::with_capacity(size);
+        bytes.extend_from_slice(&sender.to_le_bytes());
+        bytes.extend_from_slice(&(((size as u32) << 16) | opcode).to_le_bytes());
+        for word in words {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        bytes
+    }
+
+    /// Builds a `wl_registry.bind` request.
+    fn bind_request(
+        registry: u32,
+        name: u32,
+        interface: &str,
+        version: u32,
+        id: u32,
+    ) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&name.to_le_bytes());
+        payload.extend_from_slice(&((interface.len() + 1) as u32).to_le_bytes());
+        payload.extend_from_slice(interface.as_bytes());
+        payload.push(0);
+        while payload.len() % 4 != 0 {
+            payload.push(0);
+        }
+        payload.extend_from_slice(&version.to_le_bytes());
+        payload.extend_from_slice(&id.to_le_bytes());
+        let size = 8 + payload.len();
+        let mut bytes = Vec::with_capacity(size);
+        bytes.extend_from_slice(&registry.to_le_bytes());
+        bytes.extend_from_slice(&(((size as u32) << 16) | REGISTRY_BIND).to_le_bytes());
+        bytes.extend_from_slice(&payload);
+        bytes
+    }
+
+    /// Splits raw event bytes into sender, opcode and payload.
+    fn split_messages(bytes: &[u8]) -> Vec<(u32, u32, Vec<u8>)> {
+        let mut messages = Vec::new();
+        let mut pos = 0;
+        while pos + 8 <= bytes.len() {
+            let sender =
+                u32::from_le_bytes(bytes[pos..pos + 4].try_into().unwrap_or([0; 4]));
+            let header =
+                u32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().unwrap_or([0; 4]));
+            let size = (header >> 16) as usize;
+            let opcode = header & 0xffff;
+            if size < 8 || pos + size > bytes.len() {
+                break;
+            }
+            messages.push((sender, opcode, bytes[pos + 8..pos + size].to_vec()));
+            pos += size;
+        }
+        messages
+    }
+
+    /// Reads a 32 bit word out of a message payload.
+    fn word(payload: &[u8], at: usize) -> u32 {
+        let end = at + 4;
+        if end > payload.len() {
+            return 0;
+        }
+        u32::from_le_bytes(payload[at..end].try_into().unwrap_or([0; 4]))
+    }
+
+    /// Decodes a `wl_registry.global` payload.
+    fn parse_global(payload: &[u8]) -> (u32, String, u32) {
+        let name = word(payload, 0);
+        let length = word(payload, 4) as usize;
+        let text_end = (8 + length).min(payload.len());
+        let interface = if length > 0 && 8 < text_end {
+            String::from_utf8_lossy(&payload[8..text_end - 1]).into_owned()
+        } else {
+            String::new()
+        };
+        let pos = (8 + length + 3) & !3;
+        (name, interface, word(payload, pos))
+    }
+
+    /// Decodes a `wl_display.error` payload.
+    fn parse_error(payload: &[u8]) -> (u32, u32, String) {
+        let length = word(payload, 8) as usize;
+        let text_end = (12 + length).min(payload.len());
+        let message = if length > 0 && 12 < text_end {
+            String::from_utf8_lossy(&payload[12..text_end - 1]).into_owned()
+        } else {
+            String::new()
+        };
+        (word(payload, 0), word(payload, 4), message)
+    }
+
+    #[test]
+    fn sync_replies_with_done_and_delete_id() {
+        let mut fixture = Fixture::new();
+        fixture.send(&fixed_request(DISPLAY_RESOURCE_ID, DISPLAY_SYNC, &[2]));
+        fixture.dispatch();
+
+        let messages = split_messages(&fixture.take_messages());
+        assert_eq!(messages.len(), 2);
+        assert_eq!((messages[0].0, messages[0].1), (2, CALLBACK_DONE));
+        assert_eq!(word(&messages[0].2, 0), 1);
+        assert_eq!(
+            (messages[1].0, messages[1].1),
+            (DISPLAY_RESOURCE_ID, DISPLAY_DELETE_ID)
+        );
+        assert_eq!(word(&messages[1].2, 0), 2);
+
+        let client = fixture.display.client(fixture.client_id).unwrap();
+        assert_eq!(client.resource_count(), 1);
+        assert!(client.resource_interface(2).is_none());
+    }
+
+    #[test]
+    fn get_registry_publishes_globals() {
+        let mut fixture = Fixture::with_setup(|display| {
+            display.add_global(&TEST_INTERFACE, 3).unwrap();
+            display.add_global(&OTHER_INTERFACE, 2).unwrap();
+        });
+        fixture.send(&fixed_request(
+            DISPLAY_RESOURCE_ID,
+            DISPLAY_GET_REGISTRY,
+            &[2],
+        ));
+        fixture.dispatch();
+
+        let messages = split_messages(&fixture.take_messages());
+        assert_eq!(messages.len(), 2);
+        assert_eq!((messages[0].0, messages[0].1), (2, REGISTRY_GLOBAL));
+        assert_eq!(
+            parse_global(&messages[0].2),
+            (1, String::from("wl_test"), 3)
+        );
+        assert_eq!((messages[1].0, messages[1].1), (2, REGISTRY_GLOBAL));
+        assert_eq!(
+            parse_global(&messages[1].2),
+            (2, String::from("wl_other"), 2)
+        );
+    }
+
+    #[test]
+    fn bind_invokes_the_bind_callback_and_creates_the_resource() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let mut fixture = Fixture::with_setup({
+            let calls = Rc::clone(&calls);
+            move |display| {
+                display
+                    .add_global_with(&TEST_INTERFACE, 3, move |client, _, version, id| {
+                        calls.borrow_mut().push((version, id));
+                        let created =
+                            client.create_resource(id, &TEST_INTERFACE, version);
+                        assert!(created.is_ok());
+                    })
+                    .unwrap();
+            }
+        });
+        fixture.send(&fixed_request(
+            DISPLAY_RESOURCE_ID,
+            DISPLAY_GET_REGISTRY,
+            &[2],
+        ));
+        fixture.send(&bind_request(2, 1, "wl_test", 2, 3));
+        fixture.dispatch();
+
+        assert_eq!(*calls.borrow(), [(2u32, 3u32)]);
+        let messages = split_messages(&fixture.take_messages());
+        assert_eq!(messages.len(), 1);
+        assert_eq!((messages[0].0, messages[0].1), (2, REGISTRY_GLOBAL));
+        assert_eq!(fixture.display.client_count(), 1);
+        let client = fixture.display.client(fixture.client_id).unwrap();
+        assert_eq!(
+            client.resource_interface(3).map(|interface| interface.name),
+            Some("wl_test")
+        );
+        assert_eq!(client.resource_version(3), Some(2));
+    }
+
+    #[test]
+    fn bind_rejects_versions_above_the_global() {
+        let mut fixture = Fixture::with_setup(|display| {
+            display.add_global(&TEST_INTERFACE, 1).unwrap();
+        });
+        fixture.send(&fixed_request(
+            DISPLAY_RESOURCE_ID,
+            DISPLAY_GET_REGISTRY,
+            &[2],
+        ));
+        fixture.send(&bind_request(2, 1, "wl_test", 2, 3));
+        fixture.dispatch();
+
+        let messages = split_messages(&fixture.take_messages());
+        assert_eq!(messages.len(), 2);
+        assert_eq!(
+            (messages[1].0, messages[1].1),
+            (DISPLAY_RESOURCE_ID, DISPLAY_ERROR)
+        );
+        let (object, code, message) = parse_error(&messages[1].2);
+        assert_eq!(object, 2);
+        assert_eq!(code, WlDisplayError::InvalidObject.code());
+        assert!(message.contains("expected at most 1, got 2"), "{message}");
+        assert_eq!(fixture.display.client_count(), 0);
+    }
+
+    #[test]
+    fn unknown_object_posts_an_error_and_destroys_the_client() {
+        let mut fixture = Fixture::new();
+        fixture.send(&fixed_request(42, DISPLAY_SYNC, &[0]));
+        fixture.dispatch();
+
+        let messages = split_messages(&fixture.take_messages());
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            (messages[0].0, messages[0].1),
+            (DISPLAY_RESOURCE_ID, DISPLAY_ERROR)
+        );
+        let (object, code, message) = parse_error(&messages[0].2);
+        assert_eq!(object, DISPLAY_RESOURCE_ID);
+        assert_eq!(code, WlDisplayError::InvalidObject.code());
+        assert_eq!(message, "invalid object 42");
+        assert_eq!(fixture.display.client_count(), 0);
+    }
+
+    #[test]
+    fn request_handler_receives_requests_and_replies() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let mut fixture = Fixture::with_setup({
+            let calls = Rc::clone(&calls);
+            move |display| {
+                display
+                    .add_global_with(&TEST_INTERFACE, 1, |client, _, version, id| {
+                        let created =
+                            client.create_resource(id, &TEST_INTERFACE, version);
+                        assert!(created.is_ok());
+                    })
+                    .unwrap();
+                display
+                    .add_request_handler(
+                        &TEST_INTERFACE,
+                        move |client, _, sender, opcode, args| {
+                            let value = match args.first() {
+                                Some(WlArgument::Uint(value)) => *value,
+                                _ => 0,
+                            };
+                            calls.borrow_mut().push((sender, opcode, value));
+                            let reply = vec![WlArgument::Uint(9)];
+                            let sent = client.post_event(sender, PONG_OPCODE, reply);
+                            assert!(sent.is_ok());
+                        },
+                    )
+                    .unwrap();
+            }
+        });
+        fixture.send(&fixed_request(
+            DISPLAY_RESOURCE_ID,
+            DISPLAY_GET_REGISTRY,
+            &[2],
+        ));
+        fixture.send(&bind_request(2, 1, "wl_test", 1, 3));
+        fixture.send(&fixed_request(3, POKE_OPCODE, &[7]));
+        fixture.dispatch();
+
+        assert_eq!(*calls.borrow(), [(3u32, POKE_OPCODE, 7u32)]);
+        let messages = split_messages(&fixture.take_messages());
+        assert_eq!(messages.len(), 2);
+        assert_eq!((messages[0].0, messages[0].1), (2, REGISTRY_GLOBAL));
+        assert_eq!((messages[1].0, messages[1].1), (3, PONG_OPCODE));
+        assert_eq!(word(&messages[1].2, 0), 9);
+    }
+
+    #[test]
+    fn remove_global_announces_global_remove() {
+        let mut fixture = Fixture::with_setup(|display| {
+            display.add_global(&TEST_INTERFACE, 3).unwrap();
+        });
+        fixture.send(&fixed_request(
+            DISPLAY_RESOURCE_ID,
+            DISPLAY_GET_REGISTRY,
+            &[2],
+        ));
+        fixture.dispatch();
+        let globals = split_messages(&fixture.take_messages());
+        assert_eq!(globals.len(), 1);
+
+        fixture.display.remove_global(1).unwrap();
+        fixture.display.flush_clients();
+        let messages = split_messages(&fixture.take_messages());
+        assert_eq!(messages.len(), 1);
+        assert_eq!((messages[0].0, messages[0].1), (2, REGISTRY_GLOBAL_REMOVE));
+        assert_eq!(word(&messages[0].2, 0), 1);
+    }
+
+    #[test]
+    fn closed_peer_removes_the_client() {
+        let mut fixture = Fixture::new();
+        assert_eq!(fixture.display.client_count(), 1);
+
+        fixture.close_peer();
+        fixture.dispatch();
+        assert_eq!(fixture.display.client_count(), 0);
+        fixture.dispatch();
+    }
+
+    #[test]
+    fn scheduled_tasks_run_before_the_poll() {
+        let mut fixture = Fixture::new();
+        let state = Rc::clone(&fixture.state);
+        fixture.display.tasks().push(move |_| {
+            state.borrow_mut().task_ran = true;
+        });
+        fixture.dispatch();
+
+        let state = fixture.state.borrow();
+        assert!(state.task_ran);
+        assert_eq!(state.polls_after_task, 1);
+    }
+}

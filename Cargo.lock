@@ -108,11 +108,9 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 name = "codevar-base"
 version = "1.0.0"
 dependencies = [
- "arc-swap",
  "cfg-if",
  "libc",
  "spin 0.12.3",
- "webpki-roots",
  "windows-link 0.100.0",
 ]
 
@@ -121,6 +119,13 @@ name = "codevar-bin"
 version = "1.0.0"
 dependencies = [
  "codevar-base",
+]
+
+[[package]]
+name = "codevar-dbus"
+version = "1.0.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
