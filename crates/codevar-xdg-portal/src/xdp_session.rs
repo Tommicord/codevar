@@ -34,7 +34,7 @@ use crate::xdp_app_info::AppInfo;
 use crate::xdp_error::{PortalError, XdpResult};
 use crate::xdp_utils::{is_valid_token, generate_token, OptionMap};
 
-const SESSION_BASE_PATH: &str = "/org/freedesktop/portal/desktop/session";
+pub const SESSION_BASE_PATH: &str = "/org/freedesktop/portal/desktop/session";
 
 /// A handle for a persistent portal session.
 #[derive(Debug, Clone, PartialEq, Eq)]

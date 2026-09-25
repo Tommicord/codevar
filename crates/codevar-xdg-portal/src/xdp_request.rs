@@ -13,7 +13,7 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-//! Request handle objects, ported from `desktop-portal/xdp-request.c`.
+//! Request handle objects
 //!
 //! A `RequestHandle` represents a pending portal operation that returns a
 //! handle object path. The path format (since portal protocol 0.9) is:
@@ -33,7 +33,7 @@ use crate::xdp_app_info::AppInfo;
 use crate::xdp_error::{PortalError, XdpResult};
 use crate::xdp_utils::{is_valid_token, generate_token, OptionMap};
 
-const REQUEST_BASE_PATH: &str = "/org/freedesktop/portal/desktop/request";
+pub const REQUEST_BASE_PATH: &str = "/org/freedesktop/portal/desktop/request";
 
 /// A handle for a portal request that returns a request object path.
 #[derive(Debug, Clone, PartialEq, Eq)]

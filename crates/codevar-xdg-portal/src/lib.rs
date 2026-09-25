@@ -38,5 +38,8 @@ pub mod xdp_error;
 pub mod xdp_method_info;
 pub mod xdp_permissions;
 pub mod xdp_portal_config;
+pub mod xdp_request;
+pub mod xdp_session;
 pub mod xdp_utils;
 pub mod xdp_validate;
+pub mod xdp_context;

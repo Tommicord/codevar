@@ -26,6 +26,9 @@ use core::fmt;
 
 use codevar_dbus::DbusError;
 
+/// Result type for portal operations.
+pub type XdpResult<T> = Result<T, PortalError>;
+
 /// A portal-level failure with an `org.freedesktop.portal.Error.*`
 /// error code and a human readable message.
 #[derive(Clone, Debug, PartialEq, Eq)]

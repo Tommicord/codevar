@@ -24,3 +24,4 @@ pub mod basic_pretty_unwind;
 pub mod basic_signal;
 pub mod basic_unwind;
 pub mod basic_url;
+pub mod basic_xml;
