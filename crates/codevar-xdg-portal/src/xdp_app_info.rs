@@ -19,7 +19,7 @@
 //! sandbox engine (if any) hosts it, its application id, and the
 //! policies derived from that (network access, `O_PATH` support,
 //! USB queries, dynamic launcher rewriting).
-//! 
+//!
 //! Notes:
 //! * Linyaps app infos are not detected (out of scope) and the
 //!   systemd unit lookup for host apps is skipped, so host apps get
