@@ -21,3 +21,4 @@ pub mod basic_daemon;
 pub mod basic_pretty_unwind;
 pub mod basic_signal;
 pub mod basic_unwind;
+pub mod basic_base64;
