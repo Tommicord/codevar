@@ -70,9 +70,7 @@ pub enum InstallError {
 impl fmt::Display for InstallError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Unsupported => {
-                f.write_str("signal handling not supported on this target")
-            }
+            Self::Unsupported => f.write_str("signal handling not supported on this target"),
             Self::Syscall { op, errno } => {
                 write!(f, "`{op}` failed with errno {errno}")
             }
@@ -447,8 +445,7 @@ unsafe fn errno() -> i32 {
 #[cfg(unix)]
 mod unix {
     use super::{
-        ENTERED, InstallError, dump_frames, is_fault_signal, signal_name, write_console,
-        write_line,
+        ENTERED, InstallError, dump_frames, is_fault_signal, signal_name, write_console, write_line,
     };
     use core::ffi::c_void;
     use core::mem::{self, MaybeUninit};
@@ -1116,10 +1113,7 @@ mod windows {
             // slice is built from `addr_of!` to avoid an implicit autoref
             // of the raw pointer's dereference.
             let out = unsafe {
-                core::slice::from_raw_parts(
-                    core::ptr::addr_of!(SCRATCH_LINE).cast::<u8>(),
-                    out_len,
-                )
+                core::slice::from_raw_parts(core::ptr::addr_of!(SCRATCH_LINE).cast::<u8>(), out_len)
             };
             write_console(out);
         }
@@ -1254,7 +1248,7 @@ mod windows {
     unsafe extern "system" fn ctrl_handler(ctrl_type: u32) -> i32 {
         // 128 + signo: conventional shell-style exit codes.
         let (name, exit_code) = match ctrl_type {
-            0 => (b"CTRL_C_EVENT".as_slice(), 128 + 2), // SIGINT
+            0 => (b"CTRL_C_EVENT".as_slice(), 128 + 2),     // SIGINT
             1 => (b"CTRL_BREAK_EVENT".as_slice(), 128 + 3), // SIGQUIT
             2 => (b"CTRL_CLOSE_EVENT".as_slice(), 128 + 1), // SIGHUP
             5 => (b"CTRL_LOGOFF_EVENT".as_slice(), 128 + 1),
@@ -1303,8 +1297,7 @@ mod windows {
         VEH.store(veh as usize, Ordering::Release);
         // SAFETY: `unhandled_filter` has the required ABI; the return
         // value is the previous filter pointer (may be null).
-        let prev =
-            unsafe { SetUnhandledExceptionFilter(unhandled_filter as *const c_void) };
+        let prev = unsafe { SetUnhandledExceptionFilter(unhandled_filter as *const c_void) };
         PREV_FILTER.store(prev as usize, Ordering::Release);
 
         // SAFETY: `ctrl_handler` has the required ABI; `Add = 1`

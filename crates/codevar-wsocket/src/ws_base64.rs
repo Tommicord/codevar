@@ -229,9 +229,9 @@ mod tests {
         let encoded = encode(&data);
         assert!(!encoded.chars().any(char::is_whitespace));
         assert!(
-            encoded.chars().all(|c| {
-                c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '='
-            })
+            encoded
+                .chars()
+                .all(|c| { c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=' })
         );
     }
 }

@@ -137,11 +137,7 @@ pub fn frame_read_u32(frame: &[u8], position: &mut usize) -> CompressorResult<u3
 
 /// Writes `bytes` into `output` at `cursor`, advancing the cursor on success.
 #[inline]
-pub fn write_bytes(
-    output: &mut [u8],
-    cursor: &mut usize,
-    bytes: &[u8],
-) -> CompressorResult<()> {
+pub fn write_bytes(output: &mut [u8], cursor: &mut usize, bytes: &[u8]) -> CompressorResult<()> {
     let start = *cursor;
     let end = start
         .checked_add(bytes.len())
@@ -152,11 +148,7 @@ pub fn write_bytes(
     // SAFETY: `start..end` fits in `output`; regions are non-overlapping with `bytes`
     // because `bytes` is a shared borrow of a different allocation (or disjoint slice).
     unsafe {
-        core::ptr::copy_nonoverlapping(
-            bytes.as_ptr(),
-            output.as_mut_ptr().add(start),
-            bytes.len(),
-        );
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), output.as_mut_ptr().add(start), bytes.len());
     }
     *cursor = end;
     Ok(())
@@ -171,11 +163,7 @@ pub fn extend_bytes(dst: &mut Vec<u8>, src: &[u8]) {
     // SAFETY: reserved capacity covers `new_len`; `src` does not alias `dst`'s buffer
     // because `src` is a shared slice from a distinct allocation or a prior snapshot.
     unsafe {
-        core::ptr::copy_nonoverlapping(
-            src.as_ptr(),
-            dst.as_mut_ptr().add(old_len),
-            src.len(),
-        );
+        core::ptr::copy_nonoverlapping(src.as_ptr(), dst.as_mut_ptr().add(old_len), src.len());
         dst.set_len(new_len);
     }
 }
@@ -183,9 +171,8 @@ pub fn extend_bytes(dst: &mut Vec<u8>, src: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        BITWARD_MAGIC, DELTA_MAGIC, DICTIONARY_MAGIC, DYNSU_MAGIC, FrameKind,
-        HUFFMAN_MAGIC, LZ_MATCH_MAGIC, SUBSTRING_MAGIC, frame_read_u16, frame_read_u32,
-        write_bytes,
+        BITWARD_MAGIC, DELTA_MAGIC, DICTIONARY_MAGIC, DYNSU_MAGIC, FrameKind, HUFFMAN_MAGIC, LZ_MATCH_MAGIC,
+        SUBSTRING_MAGIC, frame_read_u16, frame_read_u32, write_bytes,
     };
     use crate::compression_error::CompressorError;
 

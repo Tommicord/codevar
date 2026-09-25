@@ -211,9 +211,7 @@ impl AuthSession {
                 _ => Err(DbusError::auth("REJECTED received out of state")),
             }
         } else if line.starts_with("ERROR") {
-            Err(DbusError::auth(alloc::format!(
-                "server reported error: {line}"
-            )))
+            Err(DbusError::auth(alloc::format!("server reported error: {line}")))
         } else {
             Err(DbusError::auth(alloc::format!(
                 "unexpected server response: {line}"

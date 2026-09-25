@@ -35,12 +35,7 @@ impl WlProtocolError {
     /// Creates a protocol error payload.
     #[inline]
     #[must_use]
-    pub fn new(
-        code: u32,
-        object_id: u32,
-        interface: &'static str,
-        message: String,
-    ) -> Self {
+    pub fn new(code: u32, object_id: u32, interface: &'static str, message: String) -> Self {
         Self {
             code,
             object_id,
@@ -180,12 +175,7 @@ mod tests {
 
     #[test]
     fn protocol_error_display_contains_context() {
-        let error = WlProtocolError::new(
-            1,
-            0xff00_0001,
-            "wl_registry",
-            String::from("unknown global"),
-        );
+        let error = WlProtocolError::new(1, 0xff00_0001, "wl_registry", String::from("unknown global"));
         let err = WlError::protocol(error);
         assert!(err.is_protocol());
         assert_eq!(

@@ -95,8 +95,7 @@ pub fn valmap_encode(values: &[u16]) -> CompressorResult<Vec<u8>> {
     }
     for index in 1..values.len() {
         // SAFETY: `index` and `index - 1` are in-bounds.
-        let (previous, current) =
-            unsafe { (*values.as_ptr().add(index - 1), *values.as_ptr().add(index)) };
+        let (previous, current) = unsafe { (*values.as_ptr().add(index - 1), *values.as_ptr().add(index)) };
         let mut best: Option<(u16, u8, u8, u32, u16)> = None;
         for first_multiplier in 0u8..4 {
             for next_multiplier in 0u8..4 {
@@ -105,32 +104,21 @@ pub fn valmap_encode(values: &[u16]) -> CompressorResult<Vec<u8>> {
                     .saturating_add(u32::from(next_multiplier));
                 if let Ok(candidate) = u16::try_from(candidate) {
                     let distance = u32::from(candidate.abs_diff(current));
-                    let order =
-                        (u16::from(first_multiplier) << 2) | u16::from(next_multiplier);
-                    let replace =
-                        best.is_none_or(|(_, _, _, best_distance, best_order)| {
-                            (distance, order) < (best_distance, best_order)
-                        });
+                    let order = (u16::from(first_multiplier) << 2) | u16::from(next_multiplier);
+                    let replace = best.is_none_or(|(_, _, _, best_distance, best_order)| {
+                        (distance, order) < (best_distance, best_order)
+                    });
                     if replace {
-                        best = Some((
-                            candidate,
-                            first_multiplier,
-                            next_multiplier,
-                            distance,
-                            order,
-                        ));
+                        best = Some((candidate, first_multiplier, next_multiplier, distance, order));
                     }
                 }
             }
         }
         let (candidate, first_multiplier, next_multiplier, _, _) =
             best.ok_or(CompressorError::InvalidIndex)?;
-        let similarity =
-            (15u32.saturating_sub((previous ^ current).count_ones())).min(7) as u8;
+        let similarity = (15u32.saturating_sub((previous ^ current).count_ones())).min(7) as u8;
         if candidate == current {
-            output.push(
-                (similarity << 1) | (first_multiplier << 4) | (next_multiplier << 6),
-            );
+            output.push((similarity << 1) | (first_multiplier << 4) | (next_multiplier << 6));
         } else if current < 0x80 {
             output.push((similarity << 1) | 0x11);
             output.push(current as u8);
@@ -201,9 +189,8 @@ pub fn valmap_decode_frame(frame: &[u8]) -> CompressorResult<Vec<u16>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        COMPACT_RANGE_RECORD_SIZE, CandidateRange, compact_candidate_count,
-        compact_candidate_ranges, compact_candidates, valmap_decode, valmap_decode_frame,
-        valmap_encode, valmap_encode_frame,
+        COMPACT_RANGE_RECORD_SIZE, CandidateRange, compact_candidate_count, compact_candidate_ranges,
+        compact_candidates, valmap_decode, valmap_decode_frame, valmap_encode, valmap_encode_frame,
     };
     use crate::compression_error::CompressorError;
     use alloc::vec::Vec;
@@ -232,10 +219,7 @@ mod tests {
 
     #[test]
     fn rejects_bad_frames() {
-        assert_eq!(
-            valmap_decode_frame(b"XX"),
-            Err(CompressorError::InvalidFrame)
-        );
+        assert_eq!(valmap_decode_frame(b"XX"), Err(CompressorError::InvalidFrame));
         assert_eq!(valmap_decode(&[0]), Err(CompressorError::TruncatedFrame));
     }
 }

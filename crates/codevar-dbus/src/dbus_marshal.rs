@@ -24,9 +24,7 @@ use alloc::vec::Vec;
 
 use crate::dbus_error::{DbusError, DbusResult};
 use crate::dbus_names::{is_valid_object_path, validate_object_path};
-use crate::dbus_signature::{
-    MAX_SIGNATURE_LEN, type_alignment, validate_signature, validate_single_type,
-};
+use crate::dbus_signature::{MAX_SIGNATURE_LEN, type_alignment, validate_signature, validate_single_type};
 
 /// Maximum length of an array in bytes (2^26 as mandated by the spec).
 pub const MAX_ARRAY_LEN: usize = 1 << 26;
@@ -325,12 +323,9 @@ impl<'a> DbusReader<'a> {
             return Err(DbusError::invalid_message("string is not nul terminated"));
         }
         if text.contains(&0) {
-            return Err(DbusError::invalid_message(
-                "string contains an embedded nul",
-            ));
+            return Err(DbusError::invalid_message("string contains an embedded nul"));
         }
-        core::str::from_utf8(text)
-            .map_err(|_| DbusError::invalid_message("string is not valid utf-8"))
+        core::str::from_utf8(text).map_err(|_| DbusError::invalid_message("string is not valid utf-8"))
     }
 
     /// Reads an `OBJECT_PATH` value and validates it.
@@ -362,9 +357,7 @@ impl<'a> DbusReader<'a> {
         let text = self.read_bytes(length)?;
         let nul = self.read_bytes(1)?;
         if nul[0] != 0 {
-            return Err(DbusError::invalid_message(
-                "signature is not nul terminated",
-            ));
+            return Err(DbusError::invalid_message("signature is not nul terminated"));
         }
         let sig = core::str::from_utf8(text)
             .map_err(|_| DbusError::invalid_message("signature is not valid utf-8"))?;
@@ -574,9 +567,7 @@ impl DbusWriter {
     /// embedded nul byte.
     pub fn write_str(&mut self, value: &str) -> DbusResult<()> {
         if value.as_bytes().contains(&0) {
-            return Err(DbusError::invalid_message(
-                "string contains an embedded nul",
-            ));
+            return Err(DbusError::invalid_message("string contains an embedded nul"));
         }
         self.align(4);
         self.write_u32(value.len() as u32);
@@ -702,12 +693,13 @@ impl DbusWriter {
     /// Returns [`DbusError::InvalidSignature`] when `sig` is empty or
     /// does not start with a valid type.
     pub fn first_type_alignment(sig: &str) -> DbusResult<usize> {
-        let code = sig.as_bytes().first().copied().ok_or_else(|| {
-            DbusError::invalid_signature("signature does not contain a type")
-        })?;
-        type_alignment(code).ok_or_else(|| {
-            DbusError::invalid_signature(alloc::format!("invalid type code: {code}"))
-        })
+        let code = sig
+            .as_bytes()
+            .first()
+            .copied()
+            .ok_or_else(|| DbusError::invalid_signature("signature does not contain a type"))?;
+        type_alignment(code)
+            .ok_or_else(|| DbusError::invalid_signature(alloc::format!("invalid type code: {code}")))
     }
 }
 
@@ -784,11 +776,9 @@ mod tests {
             bytes,
             vec![
                 // "foo": length, text, trailing nul.
-                3, 0, 0, 0, b'f', b'o', b'o', 0,
-                // "+": length, text, trailing nul.
+                3, 0, 0, 0, b'f', b'o', b'o', 0, // "+": length, text, trailing nul.
                 1, 0, 0, 0, b'+', 0, // "": two pad bytes, length 0, trailing nul.
-                0, 0, 0, 0, 0, 0, 0,
-                // "/a/b": three pad bytes, length 4, text, trailing nul.
+                0, 0, 0, 0, 0, 0, 0, // "/a/b": three pad bytes, length 4, text, trailing nul.
                 0, 0, 0, 4, 0, 0, 0, b'/', b'a', b'/', b'b', 0,
                 // Signature "a{sv}": one byte length, text, trailing nul.
                 5, b'a', b'{', b's', b'v', b'}', 0,

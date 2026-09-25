@@ -63,11 +63,7 @@ impl<'a> StreamingEncoder<'a> {
     }
 
     /// Encodes one input block into `output`, returning bytes written.
-    pub fn encode_block(
-        &mut self,
-        input: &[u8],
-        output: &mut [u8],
-    ) -> CompressorResult<usize> {
+    pub fn encode_block(&mut self, input: &[u8], output: &mut [u8]) -> CompressorResult<usize> {
         compress_block_into(input, output, &mut self.workspace)
     }
 }
@@ -82,8 +78,7 @@ pub fn compress_block_into(
     output: &mut [u8],
     workspace: &mut LzWorkspace<'_>,
 ) -> CompressorResult<usize> {
-    let input_length =
-        u32::try_from(input.len()).map_err(|_| CompressorError::InputTooLarge)?;
+    let input_length = u32::try_from(input.len()).map_err(|_| CompressorError::InputTooLarge)?;
     let mut cursor = 0usize;
     write_bytes(output, &mut cursor, FrameKind::LzMatch.magic())?;
     write_bytes(output, &mut cursor, &input_length.to_be_bytes())?;
@@ -117,8 +112,7 @@ pub fn compress_block_into(
             flush_literal_slice(input, literal_start, position, output, &mut cursor)?;
             let distance = u16::try_from(position - best_position as usize)
                 .map_err(|_| CompressorError::InvalidMatch)?;
-            let length =
-                u16::try_from(best_length).map_err(|_| CompressorError::InvalidMatch)?;
+            let length = u16::try_from(best_length).map_err(|_| CompressorError::InvalidMatch)?;
             write_bytes(output, &mut cursor, &[1])?;
             write_bytes(output, &mut cursor, &distance.to_be_bytes())?;
             write_bytes(output, &mut cursor, &length.to_be_bytes())?;
@@ -143,12 +137,7 @@ fn match_length(input: &[u8], a: usize, b: usize, limit: usize) -> usize {
     while length + 16 <= limit {
         // SAFETY: `a + length + 16 <= a + limit` and both regions are within `input`
         // because `limit <= input.len() - b` and `a + limit <= input.len()` from caller.
-        let equal = unsafe {
-            load_cmp16(
-                input.as_ptr().add(a + length),
-                input.as_ptr().add(b + length),
-            )
-        };
+        let equal = unsafe { load_cmp16(input.as_ptr().add(a + length), input.as_ptr().add(b + length)) };
         if equal != 16 {
             return length + equal;
         }
@@ -234,8 +223,7 @@ fn insert_position_flat(input: &[u8], position: usize, workspace: &mut LzWorkspa
 #[cfg(test)]
 mod tests {
     use super::{
-        HASH_TABLE_SIZE, HISTORY_LIMIT, LzWorkspace, NO_POSITION, StreamingEncoder,
-        compress_block_into,
+        HASH_TABLE_SIZE, HISTORY_LIMIT, LzWorkspace, NO_POSITION, StreamingEncoder, compress_block_into,
     };
     use crate::compression::lz_match_encode;
     use crate::compression_error::CompressorError;
@@ -252,8 +240,7 @@ mod tests {
     fn streaming_encoder_roundtrip() {
         let mut heads = vec![NO_POSITION; HASH_TABLE_SIZE];
         let mut previous = vec![NO_POSITION; HISTORY_LIMIT + 1];
-        let mut encoder =
-            StreamingEncoder::new(&mut heads, &mut previous).expect("workspace");
+        let mut encoder = StreamingEncoder::new(&mut heads, &mut previous).expect("workspace");
         let input = b"stream-stream-stream-data-stream";
         let mut output = vec![0u8; input.len() * 2 + 64];
         let written = encoder.encode_block(input, &mut output).expect("encode");
@@ -280,8 +267,7 @@ mod tests {
         let mut previous = vec![NO_POSITION; HISTORY_LIMIT + 1];
         let mut workspace = LzWorkspace::new(&mut heads, &mut previous).expect("ws");
         let mut output = vec![0u8; one_shot.len() + 16];
-        let written =
-            compress_block_into(input, &mut output, &mut workspace).expect("block");
+        let written = compress_block_into(input, &mut output, &mut workspace).expect("block");
         assert_eq!(&output[..written], one_shot.as_slice());
     }
 }

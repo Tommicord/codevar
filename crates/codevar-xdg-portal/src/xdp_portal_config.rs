@@ -108,9 +108,10 @@ impl PreferredConfig {
     pub fn prefers_none(&self, interface: &str) -> bool {
         match self.preference(interface) {
             Some(preference) => preference.portals.iter().any(|portal| portal == "none"),
-            None => self.default_portal.as_ref().is_some_and(|default| {
-                default.portals.iter().any(|portal| portal == "none")
-            }),
+            None => self
+                .default_portal
+                .as_ref()
+                .is_some_and(|default| default.portals.iter().any(|portal| portal == "none")),
         }
     }
 }
@@ -228,31 +229,22 @@ impl PortalConfig {
                 log::debug!("Found 'none' in configuration for {interface}");
                 return None;
             }
-            if let Some(impl_config) =
-                self.impl_for_preference(config.preference(interface), interface)
-            {
+            if let Some(impl_config) = self.impl_for_preference(config.preference(interface), interface) {
                 log::debug!(
                     "Using {} for {interface} (interface specific config)",
                     impl_config.source
                 );
                 return Some(impl_config);
             }
-            if let Some(impl_config) =
-                self.impl_for_preference(config.default_portal.as_ref(), interface)
-            {
-                log::debug!(
-                    "Using {} for {interface} (default config)",
-                    impl_config.source
-                );
+            if let Some(impl_config) = self.impl_for_preference(config.default_portal.as_ref(), interface) {
+                log::debug!("Using {} for {interface} (default config)", impl_config.source);
                 return Some(impl_config);
             }
         }
 
         for desktop in &self.current_desktops {
             for impl_config in &self.impls {
-                if impl_config.supports(interface)
-                    && contains_ci(&impl_config.use_in, desktop)
-                {
+                if impl_config.supports(interface) && contains_ci(&impl_config.use_in, desktop) {
                     warn_use_in(&impl_config.source, interface, desktop);
                     return Some(impl_config);
                 }
@@ -286,9 +278,7 @@ impl PortalConfig {
 
         for desktop in &self.current_desktops {
             for impl_config in &self.impls {
-                if impl_config.supports(interface)
-                    && contains_ci(&impl_config.use_in, desktop)
-                {
+                if impl_config.supports(interface) && contains_ci(&impl_config.use_in, desktop) {
                     warn_use_in(&impl_config.source, interface, desktop);
                     out.push(impl_config);
                 }
@@ -348,20 +338,14 @@ impl PortalConfig {
             return;
         };
         let portals = preference.portals.join(";");
-        log::debug!(
-            "Found '{portals}' in configuration for {}",
-            preference.interface
-        );
+        log::debug!("Found '{portals}' in configuration for {}", preference.interface);
         for portal in &preference.portals {
             for candidate in &self.impls {
                 if candidate.source != *portal && portal != "*" {
                     continue;
                 }
                 if out.iter().any(|entry| entry.source == candidate.source) {
-                    log::info!(
-                        "Duplicate backend {}.portal. Skipping...",
-                        candidate.source
-                    );
+                    log::info!("Duplicate backend {}.portal. Skipping...", candidate.source);
                     continue;
                 }
                 if !candidate.supports(interface) {
@@ -412,10 +396,7 @@ fn warn_use_in(source: &str, interface: &str, desktop: &str) {
 /// is missing, `DBusName` is absent or not a valid bus name, or an
 /// `Interfaces` entry is not a valid
 /// `org.freedesktop.impl.portal.*` interface name.
-pub fn parse_portal_file(
-    source: &str,
-    contents: &str,
-) -> Result<PortalImpl, PortalError> {
+pub fn parse_portal_file(source: &str, contents: &str) -> Result<PortalImpl, PortalError> {
     let key_file = KeyFile::parse(contents)?;
     let dbus_name = key_file
         .get("portal", "DBusName")
@@ -425,9 +406,9 @@ pub fn parse_portal_file(
             "Not a valid bus name: {dbus_name}"
         )));
     }
-    let interfaces = key_file.list("portal", "Interfaces").ok_or_else(|| {
-        PortalError::InvalidArgument(String::from("missing Interfaces"))
-    })?;
+    let interfaces = key_file
+        .list("portal", "Interfaces")
+        .ok_or_else(|| PortalError::InvalidArgument(String::from("missing Interfaces")))?;
     for interface in &interfaces {
         if !is_valid_interface_name(interface) {
             return Err(PortalError::InvalidArgument(format!(
@@ -458,18 +439,16 @@ pub fn parse_portal_file(
 ///
 /// Returns [`PortalError::InvalidArgument`] when the file is not a
 /// valid key file or a preference key has no value list.
-pub fn parse_preferred_config(
-    contents: &str,
-) -> Result<Option<PreferredConfig>, PortalError> {
+pub fn parse_preferred_config(contents: &str) -> Result<Option<PreferredConfig>, PortalError> {
     let key_file = KeyFile::parse(contents)?;
     let Some(entries) = key_file.entries("preferred") else {
         return Ok(None);
     };
     let mut config = PreferredConfig::default();
     for (key, _) in entries {
-        let portals = key_file.list("preferred", key).ok_or_else(|| {
-            PortalError::InvalidArgument(format!("Invalid portals for interface '{key}'"))
-        })?;
+        let portals = key_file
+            .list("preferred", key)
+            .ok_or_else(|| PortalError::InvalidArgument(format!("Invalid portals for interface '{key}'")))?;
         let preference = PortalPreference {
             interface: key.clone(),
             portals,
@@ -634,18 +613,15 @@ fn config_search_dirs() -> Vec<String> {
 pub fn read_file(path: &str) -> Result<String, PortalError> {
     use alloc::ffi::CString;
 
-    let c_path = CString::new(path).map_err(|_| {
-        PortalError::InvalidArgument(String::from("path contains a nul byte"))
-    })?;
+    let c_path = CString::new(path)
+        .map_err(|_| PortalError::InvalidArgument(String::from("path contains a nul byte")))?;
     // SAFETY: `c_path` is a valid NUL-terminated path; the returned
     // descriptor is checked against -1 before use.
     let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
     if fd < 0 {
         // SAFETY: `fd` is negative, so `errno` describes the failure.
         let errno = unsafe { *libc::__errno_location() };
-        return Err(PortalError::Failed(format!(
-            "cannot open {path}: errno {errno}"
-        )));
+        return Err(PortalError::Failed(format!("cannot open {path}: errno {errno}")));
     }
     let mut bytes = Vec::new();
     let mut buffer = [0u8; 4096];
@@ -661,9 +637,7 @@ pub fn read_file(path: &str) -> Result<String, PortalError> {
             if errno == libc::EINTR {
                 continue;
             }
-            return Err(PortalError::Failed(format!(
-                "cannot read {path}: errno {errno}"
-            )));
+            return Err(PortalError::Failed(format!("cannot read {path}: errno {errno}")));
         }
         if count == 0 {
             break;
@@ -682,8 +656,7 @@ pub fn read_file(path: &str) -> Result<String, PortalError> {
     }
     // SAFETY: the descriptor is open and will be closed.
     unsafe { libc::close(fd) };
-    String::from_utf8(bytes)
-        .map_err(|_| PortalError::InvalidArgument(format!("{path} is not valid UTF-8")))
+    String::from_utf8(bytes).map_err(|_| PortalError::InvalidArgument(format!("{path} is not valid UTF-8")))
 }
 
 /// Lists the names of the directory entries in `path`, skipping `.`
@@ -754,10 +727,7 @@ fn load_portals_dir(portals: &mut BTreeMap<String, PortalImpl>, dir: &str) {
 /// Tries to load one preference file; returns `None` when the file is
 /// absent or unusable.
 #[cfg(all(unix, not(target_arch = "wasm32")))]
-fn load_portal_configuration_for_dir(
-    base_directory: &str,
-    portal_file: &str,
-) -> Option<PreferredConfig> {
+fn load_portal_configuration_for_dir(base_directory: &str, portal_file: &str) -> Option<PreferredConfig> {
     let path = format!("{base_directory}/{portal_file}");
     log::debug!("Looking for portals configuration in '{path}'");
     let contents = read_file(&path).ok()?;
@@ -774,16 +744,12 @@ fn load_config_directory(dir: &str, desktops: &[String]) -> Option<PreferredConf
     for desktop in desktops {
         let file = format!("{desktop}-portals.conf");
         if let Some(config) = load_portal_configuration_for_dir(dir, &file) {
-            log::debug!(
-                "Using portal configuration file '{dir}/{file}' for desktop '{desktop}'"
-            );
+            log::debug!("Using portal configuration file '{dir}/{file}' for desktop '{desktop}'");
             return Some(config);
         }
     }
     let config = load_portal_configuration_for_dir(dir, "portals.conf")?;
-    log::debug!(
-        "Using portal configuration file '{dir}/portals.conf' for non-specific desktop"
-    );
+    log::debug!("Using portal configuration file '{dir}/portals.conf' for non-specific desktop");
     Some(config)
 }
 
@@ -886,10 +852,9 @@ mod tests {
         // code calls g_key_file_get_string_list for every key
         // returned by g_key_file_get_keys, which resolves "default" to
         // its final entry.
-        let duplicate_default =
-            parse_preferred_config("[preferred]\ndefault=first;\ndefault=second;\n")
-                .unwrap()
-                .unwrap();
+        let duplicate_default = parse_preferred_config("[preferred]\ndefault=first;\ndefault=second;\n")
+            .unwrap()
+            .unwrap();
         assert_eq!(
             duplicate_default.default_portal.unwrap().portals,
             Vec::from([String::from("second")])
@@ -924,11 +889,7 @@ mod tests {
                 &[IFACE, "org.freedesktop.impl.portal.Settings"],
                 &["GNOME"],
             ),
-            impl_with(
-                "wlr",
-                &["org.freedesktop.impl.portal.Screenshot"],
-                &["wlroots"],
-            ),
+            impl_with("wlr", &["org.freedesktop.impl.portal.Screenshot"], &["wlroots"]),
             impl_with("other", &[IFACE], &[]),
         ]);
 
@@ -979,8 +940,7 @@ mod tests {
         );
         assert_eq!(wildcard.find(IFACE).unwrap().source, "gtk");
 
-        let no_config =
-            PortalConfig::from_parts(Vec::from([String::from("gnome")]), impls, vec![]);
+        let no_config = PortalConfig::from_parts(Vec::from([String::from("gnome")]), impls, vec![]);
         assert_eq!(no_config.find(IFACE).unwrap().source, "gtk");
     }
 
@@ -990,16 +950,14 @@ mod tests {
             impl_with("kde", &[IFACE], &["KDE"]),
             impl_with("gtk", &[IFACE], &[]),
         ]);
-        let config =
-            PortalConfig::from_parts(Vec::from([String::from("kde")]), impls, vec![]);
+        let config = PortalConfig::from_parts(Vec::from([String::from("kde")]), impls, vec![]);
         assert_eq!(config.find(IFACE).unwrap().source, "kde");
 
         let impls = Vec::from([
             impl_with("wlr", &["org.freedesktop.impl.portal.Screenshot"], &[]),
             impl_with("gtk", &[IFACE], &[]),
         ]);
-        let config =
-            PortalConfig::from_parts(Vec::from([String::from("gnome")]), impls, vec![]);
+        let config = PortalConfig::from_parts(Vec::from([String::from("gnome")]), impls, vec![]);
         assert_eq!(config.find(IFACE).unwrap().source, "gtk");
         assert!(config.find("org.freedesktop.impl.portal.Email").is_none());
     }

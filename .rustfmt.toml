@@ -1,7 +1,8 @@
-max_width = 90
+max_width = 110
 style_edition = "2024"
 hard_tabs = false
 tab_spaces = 4
 reorder_imports = true
 use_field_init_shorthand = true
 chain_width = 60
+chain_indent = "Block"

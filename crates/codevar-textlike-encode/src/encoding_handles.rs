@@ -226,11 +226,7 @@ impl<'a, 'b> Utf16BmpHandle<'a, 'b> {
         self.dest
     }
     #[inline(always)]
-    pub fn write_surrogate_pair(
-        self,
-        high: u16,
-        low: u16,
-    ) -> &'a mut Utf16Destination<'b> {
+    pub fn write_surrogate_pair(self, high: u16, low: u16) -> &'a mut Utf16Destination<'b> {
         self.dest.write_surrogate_pair(high, low);
         self.dest
     }
@@ -276,11 +272,7 @@ impl<'a, 'b> Utf16AstralHandle<'a, 'b> {
         self.dest
     }
     #[inline(always)]
-    pub fn write_surrogate_pair(
-        self,
-        high: u16,
-        low: u16,
-    ) -> &'a mut Utf16Destination<'b> {
+    pub fn write_surrogate_pair(self, high: u16, low: u16) -> &'a mut Utf16Destination<'b> {
         self.dest.write_surrogate_pair(high, low);
         self.dest
     }
@@ -355,8 +347,7 @@ impl<'a> Utf16Destination<'a> {
     pub fn copy_ascii_from_check_space_bmp<'b>(
         &'b mut self,
         source: &mut ByteSource,
-    ) -> CopyAsciiResult<(DecoderResult, usize, usize), (u8, Utf16BmpHandle<'b, 'a>)>
-    {
+    ) -> CopyAsciiResult<(DecoderResult, usize, usize), (u8, Utf16BmpHandle<'b, 'a>)> {
         let non_ascii_ret = {
             let src_remaining = &source.slice[source.pos..];
             let dst_remaining = &mut self.slice[self.pos..];
@@ -385,18 +376,13 @@ impl<'a> Utf16Destination<'a> {
     pub fn copy_utf8_up_to_invalid_from(&mut self, source: &mut ByteSource) {
         let src_remaining = &source.slice[source.pos..];
         let dst_remaining = &mut self.slice[self.pos..];
-        let (read, written) = crate::encoding_utf8::convert_utf8_to_utf16_up_to_invalid(
-            src_remaining,
-            dst_remaining,
-        );
+        let (read, written) =
+            crate::encoding_utf8::convert_utf8_to_utf16_up_to_invalid(src_remaining, dst_remaining);
         source.pos += read;
         self.pos += written;
     }
     #[inline(always)]
-    pub fn copy_utf16_from<E: Endian>(
-        &mut self,
-        source: &mut ByteSource,
-    ) -> Option<(usize, usize)> {
+    pub fn copy_utf16_from<E: Endian>(&mut self, source: &mut ByteSource) -> Option<(usize, usize)> {
         let src_remaining = &source.slice[source.pos..];
         let dst_remaining = &mut self.slice[self.pos..];
         let mut src_unaligned = unsafe {
@@ -487,11 +473,7 @@ impl<'a, 'b> Utf8BmpHandle<'a, 'b> {
         self.dest
     }
     #[inline(always)]
-    pub fn write_surrogate_pair(
-        self,
-        high: u16,
-        low: u16,
-    ) -> &'a mut Utf8Destination<'b> {
+    pub fn write_surrogate_pair(self, high: u16, low: u16) -> &'a mut Utf8Destination<'b> {
         self.dest.write_surrogate_pair(high, low);
         self.dest
     }
@@ -537,11 +519,7 @@ impl<'a, 'b> Utf8AstralHandle<'a, 'b> {
         self.dest
     }
     #[inline(always)]
-    pub fn write_surrogate_pair(
-        self,
-        high: u16,
-        low: u16,
-    ) -> &'a mut Utf8Destination<'b> {
+    pub fn write_surrogate_pair(self, high: u16, low: u16) -> &'a mut Utf8Destination<'b> {
         self.dest.write_surrogate_pair(high, low);
         self.dest
     }
@@ -634,8 +612,7 @@ impl<'a> Utf8Destination<'a> {
     #[inline(always)]
     pub fn write_surrogate_pair(&mut self, high: u16, low: u16) {
         self.write_astral(
-            (u32::from(high) << 10) + u32::from(low)
-                - (((0xD800u32 << 10) - 0x10000u32) + 0xDC00u32),
+            (u32::from(high) << 10) + u32::from(low) - (((0xD800u32 << 10) - 0x10000u32) + 0xDC00u32),
         );
     }
     #[inline(always)]
@@ -665,11 +642,7 @@ impl<'a> Utf8Destination<'a> {
                         source.pos += 1;
                         non_ascii
                     } else {
-                        return CopyAsciiResult::Stop((
-                            DecoderResult::OutputFull,
-                            source.pos,
-                            self.pos,
-                        ));
+                        return CopyAsciiResult::Stop((DecoderResult::OutputFull, source.pos, self.pos));
                     }
                 }
             }
@@ -680,8 +653,7 @@ impl<'a> Utf8Destination<'a> {
     pub fn copy_ascii_from_check_space_astral<'b>(
         &'b mut self,
         source: &mut ByteSource,
-    ) -> CopyAsciiResult<(DecoderResult, usize, usize), (u8, Utf8AstralHandle<'b, 'a>)>
-    {
+    ) -> CopyAsciiResult<(DecoderResult, usize, usize), (u8, Utf8AstralHandle<'b, 'a>)> {
         let non_ascii_ret = {
             let dst_len = self.slice.len();
             let src_remaining = &source.slice[source.pos..];
@@ -704,11 +676,7 @@ impl<'a> Utf8Destination<'a> {
                         source.pos += 1;
                         non_ascii
                     } else {
-                        return CopyAsciiResult::Stop((
-                            DecoderResult::OutputFull,
-                            source.pos,
-                            self.pos,
-                        ));
+                        return CopyAsciiResult::Stop((DecoderResult::OutputFull, source.pos, self.pos));
                     }
                 }
             }
@@ -726,15 +694,11 @@ impl<'a> Utf8Destination<'a> {
         self.pos += valid_len;
     }
     #[inline(always)]
-    pub fn copy_utf16_from<E: Endian>(
-        &mut self,
-        source: &mut ByteSource,
-    ) -> Option<(usize, usize)> {
+    pub fn copy_utf16_from<E: Endian>(&mut self, source: &mut ByteSource) -> Option<(usize, usize)> {
         let src_remaining = &source.slice[source.pos..];
         let dst_remaining = &mut self.slice[self.pos..];
-        let mut src_unaligned = unsafe {
-            UnalignedU16Slice::new(src_remaining.as_ptr(), src_remaining.len() / 2)
-        };
+        let mut src_unaligned =
+            unsafe { UnalignedU16Slice::new(src_remaining.as_ptr(), src_remaining.len() / 2) };
         if src_unaligned.is_empty() {
             return None;
         }
@@ -745,8 +709,7 @@ impl<'a> Utf8Destination<'a> {
         if crate::encoding::in_range16(last_unit, 0xD800, 0xDC00) {
             src_unaligned.trim_last();
         }
-        let (read, written, had_error) =
-            convert_unaligned_utf16_to_utf8::<E>(src_unaligned, dst_remaining);
+        let (read, written, had_error) = convert_unaligned_utf16_to_utf8::<E>(src_unaligned, dst_remaining);
         source.pos += read * 2;
         self.pos += written;
         if had_error {
@@ -782,8 +745,7 @@ impl<'a> Utf16Source<'a> {
         if unit_minus_surrogate_start > (0xDFFF - 0xD800) {
             return unsafe { char::from_u32_unchecked(u32::from(unit)) };
         }
-        if unit_minus_surrogate_start <= (0xDBFF - 0xD800) && self.pos < self.slice.len()
-        {
+        if unit_minus_surrogate_start <= (0xDBFF - 0xD800) && self.pos < self.slice.len() {
             let second = self.slice[self.pos];
             let second_minus_low_surrogate_start = second.wrapping_sub(0xDC00);
             if second_minus_low_surrogate_start <= (0xDFFF - 0xDC00) {
@@ -1096,19 +1058,17 @@ pub fn convert_unaligned_utf16_to_utf8<E: Endian>(
     let src_len = src.len();
     let dst_len_minus_three = dst.len() - 3;
     'outer: loop {
-        let mut non_ascii = match copy_unaligned_basic_latin_to_ascii::<E>(
-            src.tail(src_pos),
-            &mut dst[dst_pos..],
-        ) {
-            CopyAsciiResult::GoOn((unit, read_written)) => {
-                src_pos += read_written;
-                dst_pos += read_written;
-                unit
-            }
-            CopyAsciiResult::Stop(read_written) => {
-                return (src_pos + read_written, dst_pos + read_written, false);
-            }
-        };
+        let mut non_ascii =
+            match copy_unaligned_basic_latin_to_ascii::<E>(src.tail(src_pos), &mut dst[dst_pos..]) {
+                CopyAsciiResult::GoOn((unit, read_written)) => {
+                    src_pos += read_written;
+                    dst_pos += read_written;
+                    unit
+                }
+                CopyAsciiResult::Stop(read_written) => {
+                    return (src_pos + read_written, dst_pos + read_written, false);
+                }
+            };
         if dst_pos >= dst_len_minus_three {
             break 'outer;
         }

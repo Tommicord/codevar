@@ -125,10 +125,7 @@ mod tests {
     #[test]
     fn text_constructor_handles_empty_and_unicode() {
         assert_eq!(WsMessage::text(""), WsMessage::Text(String::new()));
-        assert_eq!(
-            WsMessage::text("héllo"),
-            WsMessage::Text(String::from("héllo"))
-        );
+        assert_eq!(WsMessage::text("héllo"), WsMessage::Text(String::from("héllo")));
 
         let owned = String::from("owned");
         let msg = WsMessage::text(owned.clone());

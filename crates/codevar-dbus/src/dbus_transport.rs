@@ -145,11 +145,7 @@ pub trait DbusTransport {
     ///
     /// Returns [`DbusError::Timeout`] when the deadline elapses
     /// before any requested event is ready.
-    fn wait(
-        &mut self,
-        timeout: Option<Duration>,
-        interest: DbusPollEvents,
-    ) -> DbusResult<DbusPollEvents>;
+    fn wait(&mut self, timeout: Option<Duration>, interest: DbusPollEvents) -> DbusResult<DbusPollEvents>;
 
     /// Returns the current monotonic time in milliseconds.
     ///

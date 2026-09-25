@@ -773,8 +773,7 @@ mod tests {
     fn table_is_grouped_by_interface() {
         assert_eq!(count(), METHOD_INFO.len());
         assert!(!METHOD_INFO.is_empty());
-        let mut seen: alloc::collections::BTreeSet<&str> =
-            alloc::collections::BTreeSet::new();
+        let mut seen: alloc::collections::BTreeSet<&str> = alloc::collections::BTreeSet::new();
         let mut previous: Option<&str> = None;
         for info in METHOD_INFO {
             if previous != Some(info.interface) {
@@ -796,13 +795,11 @@ mod tests {
         assert!(info.uses_request);
         assert_eq!(info.option_arg, 1);
 
-        let info =
-            find("org.freedesktop.portal.DynamicLauncher", "PrepareInstall").unwrap();
+        let info = find("org.freedesktop.portal.DynamicLauncher", "PrepareInstall").unwrap();
         assert!(info.uses_request);
         assert_eq!(info.option_arg, 3);
 
-        let info =
-            find("org.freedesktop.portal.Notification", "AddNotification").unwrap();
+        let info = find("org.freedesktop.portal.Notification", "AddNotification").unwrap();
         assert!(!info.uses_request);
         assert_eq!(info.option_arg, -1);
 

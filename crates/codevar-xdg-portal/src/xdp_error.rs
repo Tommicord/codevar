@@ -96,16 +96,12 @@ impl PortalError {
     pub fn from_name(name: &str, message: String) -> Option<Self> {
         let error = match name {
             "org.freedesktop.portal.Error.Failed" => Self::Failed(message),
-            "org.freedesktop.portal.Error.InvalidArgument" => {
-                Self::InvalidArgument(message)
-            }
+            "org.freedesktop.portal.Error.InvalidArgument" => Self::InvalidArgument(message),
             "org.freedesktop.portal.Error.NotFound" => Self::NotFound(message),
             "org.freedesktop.portal.Error.Exists" => Self::Exists(message),
             "org.freedesktop.portal.Error.NotAllowed" => Self::NotAllowed(message),
             "org.freedesktop.portal.Error.Cancelled" => Self::Cancelled(message),
-            "org.freedesktop.portal.Error.WindowDestroyed" => {
-                Self::WindowDestroyed(message)
-            }
+            "org.freedesktop.portal.Error.WindowDestroyed" => Self::WindowDestroyed(message),
             _ => return None,
         };
         Some(error)
@@ -195,10 +191,7 @@ mod tests {
 
     #[test]
     fn from_name_rejects_foreign_errors() {
-        assert!(
-            PortalError::from_name("org.freedesktop.DBus.Error.Failed", String::new())
-                .is_none()
-        );
+        assert!(PortalError::from_name("org.freedesktop.DBus.Error.Failed", String::new()).is_none());
     }
 
     #[test]

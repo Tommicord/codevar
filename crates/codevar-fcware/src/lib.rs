@@ -37,8 +37,8 @@ pub mod compression_error;
 pub mod compression_stream;
 
 pub use compression::{
-    BIT_LANES, BitReader, Codec, DEFAULT_DYSU_BLOCK, Frame, StreamWorkspace,
-    StreamingEncoder, ValueCodec, bit_reader, compress, compress_values, decompress,
-    decompress_values, detect_frame, lz_match_bound, lz_match_encode,
+    BIT_LANES, BitReader, Codec, DEFAULT_DYSU_BLOCK, Frame, StreamWorkspace, StreamingEncoder, ValueCodec,
+    bit_reader, compress, compress_values, decompress, decompress_values, detect_frame, lz_match_bound,
+    lz_match_encode,
 };
 pub use compression_error::{CompressorError, CompressorResult};

@@ -28,9 +28,8 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use codevar_dbus::{
-    BodyWriter, DbusReader, DbusResult, DbusWriter, SignatureIter,
-    single_complete_type_len, type_alignment, validate_array_element_type,
-    validate_signature, validate_single_type,
+    BodyWriter, DbusReader, DbusResult, DbusWriter, SignatureIter, single_complete_type_len, type_alignment,
+    validate_array_element_type, validate_signature, validate_single_type,
 };
 use spin::Mutex;
 
@@ -150,24 +149,20 @@ impl KeyFile {
             let line_number = index + 1;
             if let Some(rest) = line.strip_prefix('[') {
                 let name = rest.strip_suffix(']').ok_or_else(|| {
-                    PortalError::InvalidArgument(format!(
-                        "line {line_number}: unterminated group header"
-                    ))
+                    PortalError::InvalidArgument(format!("line {line_number}: unterminated group header"))
                 })?;
                 if name.is_empty() {
                     return Err(PortalError::InvalidArgument(format!(
                         "line {line_number}: empty group name"
                     )));
                 }
-                current_group = Some(
-                    match file.groups.iter().position(|(entry, _)| entry == name) {
-                        Some(position) => position,
-                        None => {
-                            file.groups.push((String::from(name), Vec::new()));
-                            file.groups.len() - 1
-                        }
-                    },
-                );
+                current_group = Some(match file.groups.iter().position(|(entry, _)| entry == name) {
+                    Some(position) => position,
+                    None => {
+                        file.groups.push((String::from(name), Vec::new()));
+                        file.groups.len() - 1
+                    }
+                });
                 continue;
             }
             let Some(eq) = line.find('=') else {
@@ -285,8 +280,7 @@ impl KeyFile {
     /// Removes the first occurrence of `key` from `group` and returns
     /// whether it existed.
     pub fn remove(&mut self, group: &str, key: &str) -> bool {
-        let Some(group_index) = self.groups.iter().position(|(name, _)| name == group)
-        else {
+        let Some(group_index) = self.groups.iter().position(|(name, _)| name == group) else {
             return false;
         };
         let entries = &mut self.groups[group_index].1;
@@ -448,10 +442,7 @@ impl PortalValue {
     /// Returns [`PortalError::InvalidArgument`] when
     /// `element_signature` is not a single valid D-Bus type or an
     /// element does not match it.
-    pub fn new_array(
-        element_signature: &str,
-        items: Vec<PortalValue>,
-    ) -> Result<Self, PortalError> {
+    pub fn new_array(element_signature: &str, items: Vec<PortalValue>) -> Result<Self, PortalError> {
         validate_array_element_type(element_signature)
             .map_err(|err| PortalError::InvalidArgument(err.to_string()))?;
         if items
@@ -527,9 +518,7 @@ impl PortalValue {
             Self::Handle(_) => signature == "h",
             Self::Variant(_) => signature == "v",
             Self::Array(element, items) => match signature.strip_prefix('a') {
-                Some(rest) if rest == element => {
-                    items.iter().all(|item| item.matches_one(element))
-                }
+                Some(rest) if rest == element => items.iter().all(|item| item.matches_one(element)),
                 _ => false,
             },
             Self::Struct(fields) => {
@@ -603,9 +592,7 @@ impl PortalValue {
                 let element = &signature[1..];
                 let code = element.as_bytes().first().copied().unwrap_or_default();
                 let alignment = type_alignment(code).ok_or_else(|| {
-                    codevar_dbus::DbusError::invalid_signature(format!(
-                        "invalid element type code: {code}"
-                    ))
+                    codevar_dbus::DbusError::invalid_signature(format!("invalid element type code: {code}"))
                 })?;
                 let mut array = reader.read_array(alignment)?;
                 let mut items = Vec::new();
@@ -626,14 +613,10 @@ impl PortalValue {
                 reader.read_struct()?;
                 let mut iter = SignatureIter::new(&signature[1..signature.len() - 1]);
                 let key_signature = iter.next().ok_or_else(|| {
-                    codevar_dbus::DbusError::invalid_signature(
-                        "dict entry without key type",
-                    )
+                    codevar_dbus::DbusError::invalid_signature("dict entry without key type")
                 })?;
                 let value_signature = iter.next().ok_or_else(|| {
-                    codevar_dbus::DbusError::invalid_signature(
-                        "dict entry without value type",
-                    )
+                    codevar_dbus::DbusError::invalid_signature("dict entry without value type")
                 })?;
                 let key = Self::decode_one(reader, key_signature)?;
                 let value = Self::decode_one(reader, value_signature)?;
@@ -650,7 +633,7 @@ impl PortalValue {
 }
 
 /// Writes `value` through `writer`.
-fn write_value<W: ValueWriter>(writer: &mut W, value: &PortalValue) -> DbusResult<()> {
+pub(crate) fn write_value<W: ValueWriter>(writer: &mut W, value: &PortalValue) -> DbusResult<()> {
     match value {
         PortalValue::Bool(v) => writer.write_bool(*v),
         PortalValue::Byte(v) => writer.write_u8(*v),
@@ -932,10 +915,7 @@ pub fn encode_options(writer: &mut BodyWriter, options: &OptionMap) -> DbusResul
 ///
 /// Returns a `DbusError` when an option cannot be encoded, e.g. an
 /// object path or string that fails validation.
-pub fn encode_options_raw(
-    writer: &mut DbusWriter,
-    options: &OptionMap,
-) -> DbusResult<()> {
+pub fn encode_options_raw(writer: &mut DbusWriter, options: &OptionMap) -> DbusResult<()> {
     <DbusWriter as ValueWriter>::write_array(writer, "{sv}", |inner| {
         for (key, value) in options {
             <DbusWriter as ValueWriter>::write_struct(inner, "sv", |entry| {
@@ -969,8 +949,7 @@ pub fn decode_options(reader: &mut DbusReader<'_>) -> DbusResult<OptionMap> {
 
 /// Semantic validation callback for one supported option key, called
 /// with the key, its value and the full incoming option map.
-pub type OptionKeyValidate =
-    fn(&str, &PortalValue, &OptionMap) -> Result<(), PortalError>;
+pub type OptionKeyValidate = fn(&str, &PortalValue, &OptionMap) -> Result<(), PortalError>;
 
 /// One supported option key, mirroring `XdpOptionKey` in the C
 /// reference.
@@ -1020,10 +999,7 @@ impl OptionKey {
 /// Returns [`PortalError::InvalidArgument`] when a supported key
 /// holds the wrong type, or the error produced by a validation
 /// callback.
-pub fn filter_options(
-    options: &OptionMap,
-    supported: &[OptionKey],
-) -> Result<OptionMap, PortalError> {
+pub fn filter_options(options: &OptionMap, supported: &[OptionKey]) -> Result<OptionMap, PortalError> {
     let mut filtered = OptionMap::new();
     let mut first_error: Option<PortalError> = None;
     for supported_key in supported {
@@ -1055,6 +1031,23 @@ pub fn filter_options(
         Some(error) => Err(error),
         None => Ok(filtered),
     }
+}
+
+/// Extracts and filters options directly from a `DbusReader`.
+///
+/// This decodes the `a{sv}` array from the reader and then applies
+/// [`filter_options`] to validate and filter the options.
+///
+/// # Errors
+///
+/// Returns [`PortalError::InvalidArgument`] when the options cannot
+/// be decoded, or when a supported key holds the wrong type.
+pub fn filter_options_from_reader(
+    reader: &mut DbusReader<'_>,
+    supported: &[OptionKey],
+) -> Result<OptionMap, PortalError> {
+    let options = decode_options(reader)?;
+    filter_options(&options, supported)
 }
 
 /// Reads the environment variable `name`.
@@ -1179,8 +1172,8 @@ const fn shell_needs_quoting(arg: &str) -> bool {
     let mut index = 0;
     while index < bytes.len() {
         let c = bytes[index];
-        let safe = c.is_ascii_alphanumeric()
-            || matches!(c, b'-' | b'/' | b'~' | b':' | b'.' | b'_' | b'=' | b'@');
+        let safe =
+            c.is_ascii_alphanumeric() || matches!(c, b'-' | b'/' | b'~' | b':' | b'.' | b'_' | b'=' | b'@');
         if !safe {
             return true;
         }
@@ -1308,9 +1301,7 @@ pub fn shell_parse_argv(command: &str) -> Result<Vec<String>, PortalError> {
         }
     }
     if state != State::Unquoted {
-        return Err(PortalError::InvalidArgument(String::from(
-            "unmatched quote",
-        )));
+        return Err(PortalError::InvalidArgument(String::from("unmatched quote")));
     }
     if escaped {
         current.push('\\');
@@ -1320,9 +1311,7 @@ pub fn shell_parse_argv(command: &str) -> Result<Vec<String>, PortalError> {
         words.push(current);
     }
     if words.is_empty() {
-        return Err(PortalError::InvalidArgument(String::from(
-            "empty command line",
-        )));
+        return Err(PortalError::InvalidArgument(String::from("empty command line")));
     }
     Ok(words)
 }
@@ -1508,10 +1497,7 @@ mod tests {
             PortalValue::ObjectPath(String::from("/h/1")),
         );
         options.insert(String::from("count"), PortalValue::U32(7));
-        options.insert(
-            String::from("names"),
-            PortalValue::string_array(Vec::from(["x"])),
-        );
+        options.insert(String::from("names"), PortalValue::string_array(Vec::from(["x"])));
         options.insert(
             String::from("wrapped"),
             PortalValue::Variant(Box::new(PortalValue::F64(0.5))),
@@ -1540,17 +1526,11 @@ mod tests {
         assert_eq!(decoded, options);
     }
 
-    fn validate_flag(
-        _key: &str,
-        value: &PortalValue,
-        _options: &OptionMap,
-    ) -> Result<(), PortalError> {
+    fn validate_flag(_key: &str, value: &PortalValue, _options: &OptionMap) -> Result<(), PortalError> {
         if *value == PortalValue::Bool(true) {
             Ok(())
         } else {
-            Err(PortalError::InvalidArgument(String::from(
-                "flag must be true",
-            )))
+            Err(PortalError::InvalidArgument(String::from("flag must be true")))
         }
     }
 
@@ -1638,31 +1618,18 @@ mod tests {
     #[test]
     fn remaps_paths_inside_the_document_mount() {
         set_documents_mountpoint(Some("/run/user/1000/doc"));
+        assert_eq!(documents_mountpoint().as_deref(), Some("/run/user/1000/doc"));
         assert_eq!(
-            documents_mountpoint().as_deref(),
-            Some("/run/user/1000/doc")
-        );
-        assert_eq!(
-            get_alternate_document_path(
-                "/run/user/1000/doc/abcd/file.txt",
-                "org.example.App"
-            )
-            .as_deref(),
+            get_alternate_document_path("/run/user/1000/doc/abcd/file.txt", "org.example.App").as_deref(),
             Some("/run/user/1000/doc/by-app/org.example.App/abcd/file.txt")
         );
         assert_eq!(
             get_alternate_document_path("/etc/passwd", "org.example.App"),
             None
         );
-        assert_eq!(
-            get_alternate_document_path("/run/user/1000/doc/abcd/x", ""),
-            None
-        );
+        assert_eq!(get_alternate_document_path("/run/user/1000/doc/abcd/x", ""), None);
         set_documents_mountpoint(None);
         assert_eq!(documents_mountpoint(), None);
-        assert_eq!(
-            get_alternate_document_path("/run/user/1000/doc/x", "a.b"),
-            None
-        );
+        assert_eq!(get_alternate_document_path("/run/user/1000/doc/x", "a.b"), None);
     }
 }

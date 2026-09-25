@@ -31,20 +31,14 @@ fn huffman_tree(frequencies: &[u32; 256]) -> Option<HuffmanNode> {
         .iter()
         .enumerate()
         .filter(|(_, frequency)| **frequency != 0)
-        .map(|(value, frequency)| {
-            (*frequency, value as u8, HuffmanNode::Leaf(value as u8))
-        })
+        .map(|(value, frequency)| (*frequency, value as u8, HuffmanNode::Leaf(value as u8)))
         .collect();
     if nodes.is_empty() {
         return None;
     }
     while nodes.len() > 1 {
         nodes.sort_by_key(|(frequency, minimum, node)| {
-            (
-                *frequency,
-                *minimum,
-                matches!(node, HuffmanNode::Branch(_, _)),
-            )
+            (*frequency, *minimum, matches!(node, HuffmanNode::Branch(_, _)))
         });
         let (left_frequency, left_minimum, left) = nodes.remove(0);
         let (right_frequency, right_minimum, right) = nodes.remove(0);
@@ -57,12 +51,7 @@ fn huffman_tree(frequencies: &[u32; 256]) -> Option<HuffmanNode> {
     nodes.pop().map(|(_, _, node)| node)
 }
 
-fn huffman_codes(
-    node: &HuffmanNode,
-    prefix: u32,
-    length: u8,
-    codes: &mut [(u32, u8); 256],
-) {
+fn huffman_codes(node: &HuffmanNode, prefix: u32, length: u8, codes: &mut [(u32, u8); 256]) {
     match node {
         HuffmanNode::Leaf(value) => codes[usize::from(*value)] = (prefix, length.max(1)),
         HuffmanNode::Branch(left, right) => {
@@ -74,8 +63,7 @@ fn huffman_codes(
 
 /// Encodes `input` as a Huffman frame.
 pub fn huffman_encode(input: &[u8]) -> CompressorResult<Vec<u8>> {
-    let length =
-        u32::try_from(input.len()).map_err(|_| CompressorError::InputTooLarge)?;
+    let length = u32::try_from(input.len()).map_err(|_| CompressorError::InputTooLarge)?;
     let mut frequencies = [0u32; 256];
     // SAFETY: each `value` indexes `frequencies[0..256]`.
     for &value in input {
@@ -208,9 +196,6 @@ mod tests {
         assert_eq!(huffman_decode(&frame), Err(CompressorError::InvalidFrame));
         let mut frame = huffman_encode(b"abc").expect("encode");
         frame[1031] = 8;
-        assert_eq!(
-            huffman_decode(&frame),
-            Err(CompressorError::invalid_control(8))
-        );
+        assert_eq!(huffman_decode(&frame), Err(CompressorError::invalid_control(8)));
     }
 }

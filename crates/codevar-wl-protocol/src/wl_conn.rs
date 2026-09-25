@@ -28,8 +28,8 @@ use alloc::vec::Vec;
 
 use crate::wl_error::{WlError, WlResult};
 use crate::wl_handle::{
-    MAX_MESSAGE_SIZE, WlArgType, WlArgument, WlArray, WlFd, WlFixed, WlMap, WlMessage,
-    WlObject, WlPollEvents, arg_count, get_next_argument,
+    MAX_MESSAGE_SIZE, WlArgType, WlArgument, WlArray, WlFd, WlFixed, WlMap, WlMessage, WlObject,
+    WlPollEvents, arg_count, get_next_argument,
 };
 
 /// Opaque handle used to poll a transport from an event loop.
@@ -60,11 +60,7 @@ pub trait WlTransport {
     ///
     /// A `timeout` of `None` blocks indefinitely, `Some(Duration::ZERO)`
     /// polls without blocking.
-    fn wait(
-        &mut self,
-        timeout: Option<Duration>,
-        mask: WlPollEvents,
-    ) -> WlResult<WlPollEvents>;
+    fn wait(&mut self, timeout: Option<Duration>, mask: WlPollEvents) -> WlResult<WlPollEvents>;
 
     /// Opaque handle used to poll this transport from an event loop.
     fn handle(&self) -> WlHandle;
@@ -305,19 +301,14 @@ fn parse_args(
                 let data = bytes.get(pos..end).ok_or_else(truncated)?;
                 let payload = data.get(..length).ok_or_else(truncated)?;
                 if payload.last() != Some(&0) {
-                    return Err(WlError::invalid_argument(
-                        "string is not nul terminated",
-                    ));
+                    return Err(WlError::invalid_argument("string is not nul terminated"));
                 }
                 let text = &payload[..length - 1];
                 if text.contains(&0) {
-                    return Err(WlError::invalid_argument(
-                        "string contains an embedded nul",
-                    ));
+                    return Err(WlError::invalid_argument("string contains an embedded nul"));
                 }
-                let value = String::from_utf8(text.to_vec()).map_err(|_| {
-                    WlError::invalid_argument("string is not valid utf-8")
-                })?;
+                let value = String::from_utf8(text.to_vec())
+                    .map_err(|_| WlError::invalid_argument("string is not valid utf-8"))?;
                 pos = end;
                 args.push(WlArgument::Str(Some(value)));
             }
@@ -332,9 +323,9 @@ fn parse_args(
                 args.push(WlArgument::Array(Some(WlArray::from_bytes(payload))));
             }
             WlArgType::Fd => {
-                let fd = fds.pop_front().ok_or_else(|| {
-                    WlError::invalid_argument("file descriptor expected")
-                })?;
+                let fd = fds
+                    .pop_front()
+                    .ok_or_else(|| WlError::invalid_argument("file descriptor expected"))?;
                 taken_fds.push(fd);
                 args.push(WlArgument::Fd(fd));
             }
@@ -371,10 +362,7 @@ pub fn reserve_new_ids<T>(closure: &WlClosure, map: &mut WlMap<T>) -> WlResult<(
 /// Returns [`WlError::InvalidObject`] for unknown ids and
 /// [`WlError::InvalidArgument`] when the object type does not match the
 /// signature.
-pub fn lookup_objects<T: WlObject>(
-    closure: &mut WlClosure,
-    map: &WlMap<T>,
-) -> WlResult<()> {
+pub fn lookup_objects<T: WlObject>(closure: &mut WlClosure, map: &WlMap<T>) -> WlResult<()> {
     for (arg, details) in closure.args.iter_mut().zip(closure.message.args()) {
         if details.details.ty != WlArgType::Object {
             continue;
@@ -659,11 +647,7 @@ impl<T: WlTransport> WlConnection<T> {
     /// # Errors
     ///
     /// Returns [`WlError::Disconnected`] when the connection is gone.
-    pub fn wait(
-        &mut self,
-        timeout: Option<Duration>,
-        mask: WlPollEvents,
-    ) -> WlResult<WlPollEvents> {
+    pub fn wait(&mut self, timeout: Option<Duration>, mask: WlPollEvents) -> WlResult<WlPollEvents> {
         if self.disconnected {
             return Err(WlError::Disconnected);
         }
@@ -692,9 +676,8 @@ impl<T: WlTransport> WlConnection<T> {
 mod tests {
     use super::*;
     use crate::wl_handle::{
-        CALLBACK_DONE, CALLBACK_INTERFACE, DISPLAY_ERROR, DISPLAY_GET_REGISTRY,
-        DISPLAY_INTERFACE, DISPLAY_SYNC, REGISTRY_BIND, REGISTRY_INTERFACE, WlInterface,
-        WlMapSide,
+        CALLBACK_DONE, CALLBACK_INTERFACE, DISPLAY_ERROR, DISPLAY_GET_REGISTRY, DISPLAY_INTERFACE,
+        DISPLAY_SYNC, REGISTRY_BIND, REGISTRY_INTERFACE, WlInterface, WlMapSide,
     };
 
     struct TestTransport {
@@ -734,11 +717,7 @@ mod tests {
             Ok(data.len())
         }
 
-        fn wait(
-            &mut self,
-            _timeout: Option<Duration>,
-            _mask: WlPollEvents,
-        ) -> WlResult<WlPollEvents> {
+        fn wait(&mut self, _timeout: Option<Duration>, _mask: WlPollEvents) -> WlResult<WlPollEvents> {
             Ok(WlPollEvents::READABLE)
         }
 
@@ -764,10 +743,7 @@ mod tests {
     fn rejects_argument_mismatches() {
         let message = &DISPLAY_INTERFACE.requests[DISPLAY_SYNC as usize];
         assert!(WlClosure::new(1, DISPLAY_SYNC, message, alloc::vec![]).is_err());
-        assert!(
-            WlClosure::new(1, DISPLAY_SYNC, message, alloc::vec![WlArgument::Uint(1)],)
-                .is_err()
-        );
+        assert!(WlClosure::new(1, DISPLAY_SYNC, message, alloc::vec![WlArgument::Uint(1)],).is_err());
     }
 
     #[test]
@@ -794,10 +770,7 @@ mod tests {
         assert_eq!(decoded.sender_id, 2);
         assert_eq!(decoded.opcode, REGISTRY_BIND);
         assert_eq!(decoded.args[0], WlArgument::Uint(4));
-        assert_eq!(
-            decoded.args[1],
-            WlArgument::Str(Some(String::from("wl_seat")))
-        );
+        assert_eq!(decoded.args[1], WlArgument::Str(Some(String::from("wl_seat"))));
         assert_eq!(decoded.args[3], WlArgument::NewId(10));
         assert_eq!(connection.pending_input(), 0);
     }
@@ -824,10 +797,7 @@ mod tests {
         connection
             .input
             .extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0x80]);
-        assert_eq!(
-            connection.demarshal(message),
-            Err(WlError::MessageTooBig(0x8000))
-        );
+        assert_eq!(connection.demarshal(message), Err(WlError::MessageTooBig(0x8000)));
         assert_eq!(connection.pending_input(), 8);
     }
 
@@ -836,8 +806,7 @@ mod tests {
         let mut connection = WlConnection::new(TestTransport::new());
         let message = &CALLBACK_INTERFACE.events[CALLBACK_DONE as usize];
         let mut closure =
-            WlClosure::new(7, CALLBACK_DONE, message, alloc::vec![WlArgument::Uint(3)])
-                .unwrap();
+            WlClosure::new(7, CALLBACK_DONE, message, alloc::vec![WlArgument::Uint(3)]).unwrap();
         connection.queue_closure(&mut closure).unwrap();
         assert!(connection.wants_write());
         let written = connection.flush().unwrap();
@@ -855,9 +824,7 @@ mod tests {
     #[test]
     fn reserves_new_ids_and_validates_objects() {
         let message = &DISPLAY_INTERFACE.requests[DISPLAY_SYNC as usize];
-        let closure =
-            WlClosure::new(1, DISPLAY_SYNC, message, alloc::vec![WlArgument::NewId(3)])
-                .unwrap();
+        let closure = WlClosure::new(1, DISPLAY_SYNC, message, alloc::vec![WlArgument::NewId(3)]).unwrap();
         let mut map: WlMap<u32> = WlMap::new(WlMapSide::Server);
         // The client's id space grows densely, so ids 1 and 2 exist already.
         map.reserve_new(1).unwrap();

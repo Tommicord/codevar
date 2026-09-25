@@ -31,10 +31,7 @@ impl SingleByteDecoder {
         Some(byte_length)
     }
 
-    pub fn max_utf8_buffer_length_without_replacement(
-        &self,
-        byte_length: usize,
-    ) -> Option<usize> {
+    pub fn max_utf8_buffer_length_without_replacement(&self, byte_length: usize) -> Option<usize> {
         byte_length.checked_mul(3)
     }
 
@@ -56,9 +53,7 @@ impl SingleByteDecoder {
                 CopyAsciiResult::GoOn((mut non_ascii, mut handle)) => 'middle: loop {
                     // SAFETY: `non_ascii` is a u8 byte >=0x80, from the invariants
                     // on Utf8Destination::copy_ascii_from_check_space_bmp()
-                    let mapped = unsafe {
-                        *(self.table.get_unchecked(non_ascii as usize - 0x80usize))
-                    };
+                    let mapped = unsafe { *(self.table.get_unchecked(non_ascii as usize - 0x80usize)) };
                     // let mapped = self.table[non_ascii as usize - 0x80usize];
                     if mapped == 0u16 {
                         return (
@@ -70,11 +65,7 @@ impl SingleByteDecoder {
                     let dest_again = handle.write_bmp_excl_ascii(mapped);
                     match source.check_available() {
                         Space::Full(src_consumed) => {
-                            return (
-                                DecoderResult::InputEmpty,
-                                src_consumed,
-                                dest_again.written(),
-                            );
+                            return (DecoderResult::InputEmpty, src_consumed, dest_again.written());
                         }
                         Space::Available(source_handle) => {
                             match dest_again.check_space_bmp() {
@@ -94,8 +85,7 @@ impl SingleByteDecoder {
                                             handle = destination_handle;
                                             continue 'middle;
                                         }
-                                        let dest_again_again =
-                                            destination_handle.write_ascii(b);
+                                        let dest_again_again = destination_handle.write_ascii(b);
                                         if b < 60 {
                                             // We've got punctuation
                                             match source_again.check_available() {
@@ -107,31 +97,20 @@ impl SingleByteDecoder {
                                                     );
                                                 }
                                                 Space::Available(source_handle_again) => {
-                                                    match dest_again_again
-                                                        .check_space_bmp()
-                                                    {
-                                                        Space::Full(
-                                                            dst_written_again,
-                                                        ) => {
+                                                    match dest_again_again.check_space_bmp() {
+                                                        Space::Full(dst_written_again) => {
                                                             return (
                                                                 DecoderResult::OutputFull,
-                                                                source_handle_again
-                                                                    .consumed(),
+                                                                source_handle_again.consumed(),
                                                                 dst_written_again,
                                                             );
                                                         }
-                                                        Space::Available(
-                                                            destination_handle_again,
-                                                        ) => {
-                                                            let (
-                                                                b_again,
-                                                                unread_handle_again,
-                                                            ) = source_handle_again
-                                                                .read();
+                                                        Space::Available(destination_handle_again) => {
+                                                            let (b_again, unread_handle_again) =
+                                                                source_handle_again.read();
                                                             unread_handle_again.commit();
                                                             b = b_again;
-                                                            destination_handle =
-                                                                destination_handle_again;
+                                                            destination_handle = destination_handle_again;
                                                             continue 'innermost;
                                                         }
                                                     }
@@ -189,9 +168,7 @@ impl SingleByteDecoder {
                         //
                         // SAFETY: We can rely on `non_ascii` being between `0x80` and `0xFF` due to
                         // the invariants of `ascii_to_basic_latin()`, and our table has enough space for that.
-                        let mapped = unsafe {
-                            *(self.table.get_unchecked(non_ascii as usize - 0x80usize))
-                        };
+                        let mapped = unsafe { *(self.table.get_unchecked(non_ascii as usize - 0x80usize)) };
                         // let mapped = self.table[non_ascii as usize - 0x80usize];
                         if mapped == 0u16 {
                             return (
@@ -272,17 +249,11 @@ impl SingleByteEncoder {
         }
     }
 
-    pub fn max_buffer_length_from_utf16_without_replacement(
-        &self,
-        u16_length: usize,
-    ) -> Option<usize> {
+    pub fn max_buffer_length_from_utf16_without_replacement(&self, u16_length: usize) -> Option<usize> {
         Some(u16_length)
     }
 
-    pub fn max_buffer_length_from_utf8_without_replacement(
-        &self,
-        byte_length: usize,
-    ) -> Option<usize> {
+    pub fn max_buffer_length_from_utf8_without_replacement(&self, byte_length: usize) -> Option<usize> {
         Some(byte_length)
     }
 
@@ -302,17 +273,14 @@ impl SingleByteEncoder {
 
         if self.run_byte_offset >= 64 {
             // Search third quadrant before the run
-            if let Some(pos) = position(&self.table[64..self.run_byte_offset], code_unit)
-            {
+            if let Some(pos) = position(&self.table[64..self.run_byte_offset], code_unit) {
                 return Some(((128 + 64) + pos) as u8);
             }
             // Search second quadrant
             if let Some(pos) = position(&self.table[32..64], code_unit) {
                 return Some(((128 + 32) + pos) as u8);
             }
-        } else if let Some(pos) =
-            position(&self.table[32..self.run_byte_offset], code_unit)
-        {
+        } else if let Some(pos) = position(&self.table[32..self.run_byte_offset], code_unit) {
             // windows-1252, windows-874, ISO-8859-15 and ISO-8859-5
             // Search second quadrant before the run
             return Some(((128 + 32) + pos) as u8);
@@ -380,9 +348,7 @@ impl SingleByteEncoder {
                                     }
                                     // SAFETY: convered < length from outside the match, and `converted + 1 != length`,
                                     // So `converted + 1 < length` as well. We're in bounds
-                                    let second = u32::from(unsafe {
-                                        *src.get_unchecked(converted + 1)
-                                    });
+                                    let second = u32::from(unsafe { *src.get_unchecked(converted + 1) });
                                     if second & 0xFC00u32 != 0xDC00u32 {
                                         return (
                                             EncoderResult::Unmappable('\u{FFFD}'),
@@ -406,8 +372,7 @@ impl SingleByteEncoder {
                                         // high ten bits, and the low surrogate - 0xDc00 to the low ten bits, and then adding 0x10000
                                         char::from_u32_unchecked(
                                             (u32::from(non_ascii) << 10) + second
-                                                - (((0xD800u32 << 10) - 0x1_0000u32)
-                                                    + 0xDC00u32),
+                                                - (((0xD800u32 << 10) - 0x1_0000u32) + 0xDC00u32),
                                         )
                                     };
                                     return (

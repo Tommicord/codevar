@@ -43,8 +43,8 @@ use alloc::vec::Vec;
 
 use crate::xdp_error::PortalError;
 use crate::xdp_utils::{
-    KeyFile, documents_mountpoint, env_var, get_alternate_document_path, is_valid_app_id,
-    maybe_quote, shell_parse_argv, shell_quote,
+    KeyFile, documents_mountpoint, env_var, get_alternate_document_path, is_valid_app_id, maybe_quote,
+    shell_parse_argv, shell_quote,
 };
 
 /// Engine recorded for flatpak applications, like `FLATPAK_ENGINE_ID`.
@@ -308,28 +308,23 @@ impl AppInfo {
     /// `name` key does not hold a valid application id.
     pub fn from_flatpak_info(sender: &str, info: &str) -> Result<Self, PortalError> {
         let key_file = KeyFile::parse(info).map_err(|error| {
-            PortalError::Failed(format!(
-                "Can't load .flatpak-info file: {}",
-                error.message()
-            ))
+            PortalError::Failed(format!("Can't load .flatpak-info file: {}", error.message()))
         })?;
         let group = if key_file.has_group("Runtime") {
             "Runtime"
         } else {
             "Application"
         };
-        let id = key_file.get(group, "name").ok_or_else(|| {
-            PortalError::NotFound(format!(".flatpak-info has no {group} name key"))
-        })?;
+        let id = key_file
+            .get(group, "name")
+            .ok_or_else(|| PortalError::NotFound(format!(".flatpak-info has no {group} name key")))?;
         if !is_valid_app_id(&id) {
             return Err(PortalError::InvalidArgument(format!(
                 ".flatpak-info name '{id}' is not a valid app id"
             )));
         }
         let instance = key_file.get("Instance", "instance-id").ok_or_else(|| {
-            PortalError::NotFound(String::from(
-                ".flatpak-info has no Instance instance-id key",
-            ))
+            PortalError::NotFound(String::from(".flatpak-info has no Instance instance-id key"))
         })?;
         let has_network = key_file
             .list("Context", "shared")
@@ -458,11 +453,7 @@ impl AppInfo {
     /// is unavailable here, so the application id is used instead.
     #[must_use]
     pub fn app_display_name(&self) -> Option<&str> {
-        if self.id.is_empty() {
-            None
-        } else {
-            Some(&self.id)
-        }
+        if self.id.is_empty() { None } else { Some(&self.id) }
     }
 
     /// Returns a human readable engine name, like
@@ -531,10 +522,7 @@ impl AppInfo {
     /// no usable `Exec` line or uses `--file-forwarding`, and
     /// [`PortalError::NotAllowed`] when the application kind does
     /// not support dynamic launchers (snap).
-    pub fn validate_dynamic_launcher(
-        &self,
-        key_file: &mut KeyFile,
-    ) -> Result<(), PortalError> {
+    pub fn validate_dynamic_launcher(&self, key_file: &mut KeyFile) -> Result<(), PortalError> {
         match self.kind {
             AppInfoKind::Host => Ok(()),
             AppInfoKind::Flatpak => self.flatpak_validate_dynamic_launcher(key_file),
@@ -560,11 +548,7 @@ impl AppInfo {
     /// for the remaining `fstat`/`readlink`/identity failures of the
     /// C implementation.
     #[cfg(all(unix, not(target_arch = "wasm32")))]
-    pub fn path_for_fd(
-        &self,
-        fd: i32,
-        require_st_mode: u32,
-    ) -> Result<FdPath, PortalError> {
+    pub fn path_for_fd(&self, fd: i32, require_st_mode: u32) -> Result<FdPath, PortalError> {
         if fd == -1 {
             return Err(PortalError::InvalidArgument(String::from(
                 "Invalid file descriptor",
@@ -595,12 +579,10 @@ impl AppInfo {
         let file_type = stat_buf.st_mode & libc::S_IFMT;
         if require_st_mode != 0 && file_type != require_st_mode {
             return Err(match require_st_mode {
-                libc::S_IFDIR => PortalError::Failed(format!(
-                    "File type 0o{file_type:o} is not a directory"
-                )),
-                libc::S_IFREG => PortalError::Failed(format!(
-                    "File type 0o{file_type:o} is not a regular file"
-                )),
+                libc::S_IFDIR => PortalError::Failed(format!("File type 0o{file_type:o} is not a directory")),
+                libc::S_IFREG => {
+                    PortalError::Failed(format!("File type 0o{file_type:o} is not a regular file"))
+                }
                 _ => PortalError::Failed(format!(
                     "File type 0o{file_type:o} does not match expected 0o{require_st_mode:o}"
                 )),
@@ -663,9 +645,7 @@ impl AppInfo {
             return Ok(None);
         };
         let info = String::from_utf8(info).map_err(|_| {
-            PortalError::Failed(String::from(
-                "Can't load .flatpak-info file: not valid UTF-8",
-            ))
+            PortalError::Failed(String::from("Can't load .flatpak-info file: not valid UTF-8"))
         })?;
         Self::from_flatpak_info(sender, &info).map(Some)
     }
@@ -680,10 +660,7 @@ impl AppInfo {
 
     /// Applies the flatpak `Exec` rewriting of
     /// `xdp_app_info_flatpak_validate_dynamic_launcher`.
-    fn flatpak_validate_dynamic_launcher(
-        &self,
-        key_file: &mut KeyFile,
-    ) -> Result<(), PortalError> {
+    fn flatpak_validate_dynamic_launcher(&self, key_file: &mut KeyFile) -> Result<(), PortalError> {
         let exec = key_file
             .get(DESKTOP_GROUP, DESKTOP_KEY_EXEC)
             .ok_or_else(|| {
@@ -731,9 +708,7 @@ impl AppInfo {
         let prefix = &path[..index];
         let tryexec_path = format!("{prefix}exports/bin/{}", self.id);
         if !access(&tryexec_path, libc::X_OK) {
-            log::debug!(
-                "Wrapper script unexpectedly not executable or nonexistent: {tryexec_path}"
-            );
+            log::debug!("Wrapper script unexpectedly not executable or nonexistent: {tryexec_path}");
             return None;
         }
         Some(tryexec_path)
@@ -792,11 +767,7 @@ const fn is_name_character(c: u8, allow_dash: bool) -> bool {
 
 /// Rewrites `commandline` into a `flatpak run` invocation, like
 /// `rewrite_commandline` in the C reference.
-fn rewrite_commandline(
-    app_id: &str,
-    commandline: &[String],
-    quote_escape: bool,
-) -> Vec<String> {
+fn rewrite_commandline(app_id: &str, commandline: &[String], quote_escape: bool) -> Vec<String> {
     let mut args = Vec::from([String::from("flatpak"), String::from("run")]);
     if let Some(command) = commandline.first() {
         let quoted_command = maybe_quote(command, quote_escape);
@@ -858,14 +829,10 @@ fn flatpak_remap_path(info: Option<&KeyFile>, app_id: &str, path: &str) -> Strin
     let app_path = info.and_then(|info| info.get("Instance", "app-path"));
     let runtime_path = info.and_then(|info| info.get("Instance", "runtime-path"));
 
-    if let (Some(app_path), Some(rest)) =
-        (app_path.as_deref(), path.strip_prefix("/app/"))
-    {
+    if let (Some(app_path), Some(rest)) = (app_path.as_deref(), path.strip_prefix("/app/")) {
         return join_path(app_path, rest);
     }
-    if let (Some(runtime_path), Some(rest)) =
-        (runtime_path.as_deref(), path.strip_prefix("/usr/"))
-    {
+    if let (Some(runtime_path), Some(rest)) = (runtime_path.as_deref(), path.strip_prefix("/usr/")) {
         return join_path(runtime_path, rest);
     }
     if let Some(rest) = path.strip_prefix("/run/host/usr/") {
@@ -885,10 +852,7 @@ fn flatpak_remap_path(info: Option<&KeyFile>, app_id: &str, path: &str) -> Strin
     if let Some(rest) = path.strip_prefix("/var/config/") {
         let base = join_path(
             &join_path(
-                &join_path(
-                    &join_path(&env_var("HOME").unwrap_or_default(), ".var"),
-                    "app",
-                ),
+                &join_path(&join_path(&env_var("HOME").unwrap_or_default(), ".var"), "app"),
                 app_id,
             ),
             "config",
@@ -898,10 +862,7 @@ fn flatpak_remap_path(info: Option<&KeyFile>, app_id: &str, path: &str) -> Strin
     if let Some(rest) = path.strip_prefix("/var/data/") {
         let base = join_path(
             &join_path(
-                &join_path(
-                    &join_path(&env_var("HOME").unwrap_or_default(), ".var"),
-                    "app",
-                ),
+                &join_path(&join_path(&env_var("HOME").unwrap_or_default(), ".var"), "app"),
                 app_id,
             ),
             "data",
@@ -953,15 +914,12 @@ fn environ_value<'a>(environ: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
 fn verify_proc_self_fd(proc_path: &str) -> Result<String, PortalError> {
     use alloc::ffi::CString;
 
-    let c_path = CString::new(proc_path).map_err(|_| {
-        PortalError::InvalidArgument(String::from("path contains a nul byte"))
-    })?;
+    let c_path = CString::new(proc_path)
+        .map_err(|_| PortalError::InvalidArgument(String::from("path contains a nul byte")))?;
     let mut buffer = [0u8; 4096];
     // SAFETY: `c_path` is a valid C string and `buffer` is writable
     // for its full length.
-    let size = unsafe {
-        libc::readlink(c_path.as_ptr(), buffer.as_mut_ptr().cast(), buffer.len())
-    };
+    let size = unsafe { libc::readlink(c_path.as_ptr(), buffer.as_mut_ptr().cast(), buffer.len()) };
     if size < 0 {
         // SAFETY: the call failed, so `errno` is live.
         let errno = unsafe { *libc::__errno_location() };
@@ -972,9 +930,8 @@ fn verify_proc_self_fd(proc_path: &str) -> Result<String, PortalError> {
     let Ok(size) = usize::try_from(size) else {
         return Err(PortalError::Failed(format!("readlink {proc_path}")));
     };
-    let link = String::from_utf8(buffer[..size].to_vec()).map_err(|_| {
-        PortalError::Failed(format!("readlink {proc_path}: not valid UTF-8"))
-    })?;
+    let link = String::from_utf8(buffer[..size].to_vec())
+        .map_err(|_| PortalError::Failed(format!("readlink {proc_path}: not valid UTF-8")))?;
 
     // All normal paths start with /, but some weird things don't,
     // such as socket:[27345] or anon_inode:[eventfd].
@@ -994,9 +951,7 @@ fn verify_proc_self_fd(proc_path: &str) -> Result<String, PortalError> {
         if allowed {
             return Ok(String::from(stripped));
         }
-        return Err(PortalError::Failed(format!(
-            "Cannot share deleted file: {link}"
-        )));
+        return Err(PortalError::Failed(format!("Cannot share deleted file: {link}")));
     }
     Ok(link)
 }
@@ -1006,9 +961,8 @@ fn verify_proc_self_fd(proc_path: &str) -> Result<String, PortalError> {
 fn check_same_file(path: &str, expected: &libc::stat) -> Result<(), PortalError> {
     use alloc::ffi::CString;
 
-    let c_path = CString::new(path).map_err(|_| {
-        PortalError::InvalidArgument(String::from("path contains a nul byte"))
-    })?;
+    let c_path = CString::new(path)
+        .map_err(|_| PortalError::InvalidArgument(String::from("path contains a nul byte")))?;
     let mut real: libc::stat = unsafe { core::mem::zeroed() };
     // SAFETY: `c_path` is a valid path and `real` is writable.
     if unsafe { libc::stat(c_path.as_ptr(), &mut real) } < 0 {
@@ -1046,19 +1000,14 @@ fn open_flatpak_info(pid: u32) -> Result<Option<Vec<u8>>, PortalError> {
     use alloc::ffi::CString;
 
     let root_path = format!("/proc/{pid}/root");
-    let c_root = CString::new(root_path.clone()).map_err(|_| {
-        PortalError::InvalidArgument(String::from("path contains a nul byte"))
-    })?;
+    let c_root = CString::new(root_path.clone())
+        .map_err(|_| PortalError::InvalidArgument(String::from("path contains a nul byte")))?;
     // SAFETY: `c_root` is a valid C string; the descriptor is
     // checked against negative values before use.
     let root_fd = unsafe {
         libc::open(
             c_root.as_ptr(),
-            libc::O_RDONLY
-                | libc::O_NONBLOCK
-                | libc::O_DIRECTORY
-                | libc::O_CLOEXEC
-                | libc::O_NOCTTY,
+            libc::O_RDONLY | libc::O_NONBLOCK | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOCTTY,
         )
     };
     if root_fd < 0 {
@@ -1075,9 +1024,8 @@ fn open_flatpak_info(pid: u32) -> Result<Option<Vec<u8>>, PortalError> {
         )));
     }
 
-    let c_info = CString::new(".flatpak-info").map_err(|_| {
-        PortalError::InvalidArgument(String::from("path contains a nul byte"))
-    })?;
+    let c_info = CString::new(".flatpak-info")
+        .map_err(|_| PortalError::InvalidArgument(String::from("path contains a nul byte")))?;
     // SAFETY: `root_fd` is an open directory and `c_info` is a
     // valid relative name.
     let info_fd = unsafe {
@@ -1134,18 +1082,15 @@ fn is_fuse_root(_path: &str) -> bool {
 fn read_proc_file(path: &str) -> Result<Vec<u8>, PortalError> {
     use alloc::ffi::CString;
 
-    let c_path = CString::new(path).map_err(|_| {
-        PortalError::InvalidArgument(String::from("path contains a nul byte"))
-    })?;
+    let c_path = CString::new(path)
+        .map_err(|_| PortalError::InvalidArgument(String::from("path contains a nul byte")))?;
     // SAFETY: `c_path` is a valid path; the descriptor is checked
     // before use.
     let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
     if fd < 0 {
         // SAFETY: the call failed, so `errno` is live.
         let errno = unsafe { *libc::__errno_location() };
-        return Err(PortalError::Failed(format!(
-            "cannot open {path}: errno {errno}"
-        )));
+        return Err(PortalError::Failed(format!("cannot open {path}: errno {errno}")));
     }
     let bytes = read_fd_all(fd, path);
     // SAFETY: the descriptor is open and will be closed.
@@ -1167,9 +1112,7 @@ fn read_fd_all(fd: i32, label: &str) -> Result<Vec<u8>, PortalError> {
             if errno == libc::EINTR {
                 continue;
             }
-            return Err(PortalError::Failed(format!(
-                "cannot read {label}: errno {errno}"
-            )));
+            return Err(PortalError::Failed(format!("cannot read {label}: errno {errno}")));
         }
         if count == 0 {
             return Ok(bytes);
@@ -1227,31 +1170,24 @@ mod tests {
             "malformed metadata must fail"
         );
         assert!(
-            AppInfo::from_flatpak_info("s", "[Application]\n[Instance]\ninstance-id=i\n")
-                .is_err(),
+            AppInfo::from_flatpak_info("s", "[Application]\n[Instance]\ninstance-id=i\n").is_err(),
             "missing name must fail"
         );
         assert!(
-            AppInfo::from_flatpak_info(
-                "s",
-                "[Application]\nname=nodots\n[Instance]\ninstance-id=i\n"
-            )
-            .is_err(),
+            AppInfo::from_flatpak_info("s", "[Application]\nname=nodots\n[Instance]\ninstance-id=i\n")
+                .is_err(),
             "invalid app id must fail"
         );
         assert!(
-            AppInfo::from_flatpak_info("s", "[Application]\nname=org.example.App\n")
-                .is_err(),
+            AppInfo::from_flatpak_info("s", "[Application]\nname=org.example.App\n").is_err(),
             "missing instance id must fail"
         );
     }
 
     #[test]
     fn rewrites_flatpak_paths() {
-        let info = KeyFile::parse(
-            "[Instance]\napp-path=/flatpak/app\nruntime-path=/flatpak/runtime\n",
-        )
-        .unwrap();
+        let info =
+            KeyFile::parse("[Instance]\napp-path=/flatpak/app\nruntime-path=/flatpak/runtime\n").unwrap();
         let app_id = "org.example.App";
 
         assert_eq!(
@@ -1325,11 +1261,8 @@ mod tests {
 
     #[test]
     fn builds_snap_app_infos_from_environ() {
-        let snap = AppInfo::from_snap_environ(
-            "s",
-            b"SNAP_NAME=calibre\0SNAP_DESKTOP_FILE=x.desktop\0",
-        )
-        .unwrap();
+        let snap =
+            AppInfo::from_snap_environ("s", b"SNAP_NAME=calibre\0SNAP_DESKTOP_FILE=x.desktop\0").unwrap();
         assert_eq!(snap.kind(), AppInfoKind::Snap);
         assert_eq!(snap.id(), "snap.calibre");
         assert_eq!(snap.engine(), Some("io.snapcraft"));
@@ -1339,11 +1272,8 @@ mod tests {
         assert!(!snap.flags().contains(AppInfoFlags::SUPPORTS_OPATH));
         assert_eq!(snap.usb_queries(), None);
 
-        let networked = AppInfo::from_snap_environ(
-            "s",
-            b"SNAP_NAME=calibre\0SNAP_HAS_NETWORK_STATUS=true\0",
-        )
-        .unwrap();
+        let networked =
+            AppInfo::from_snap_environ("s", b"SNAP_NAME=calibre\0SNAP_HAS_NETWORK_STATUS=true\0").unwrap();
         assert!(networked.has_network());
 
         assert_eq!(AppInfo::from_snap_environ("s", b"PATH=/usr/bin\0"), None);
@@ -1393,16 +1323,12 @@ mod tests {
         assert_eq!(usb_rule_from_string("bogus"), None);
         assert_eq!(usb_rule_from_string(""), None);
 
-        let query =
-            usb_query_from_string(UsbQueryType::Enumerable, "all+dev:0001").unwrap();
+        let query = usb_query_from_string(UsbQueryType::Enumerable, "all+dev:0001").unwrap();
         assert_eq!(
             query.rules,
             Vec::from([UsbRule::All, UsbRule::Device { product: 1 }])
         );
-        assert_eq!(
-            usb_query_from_string(UsbQueryType::Hidden, "dev:0001+"),
-            None
-        );
+        assert_eq!(usb_query_from_string(UsbQueryType::Hidden, "dev:0001+"), None);
         assert_eq!(usb_query_from_string(UsbQueryType::Hidden, ""), None);
     }
 
@@ -1416,10 +1342,7 @@ mod tests {
         let queries = usb_queries_from_info(&info, "org.example.App");
         assert_eq!(queries.len(), 2, "queries with invalid rules are skipped");
         assert_eq!(queries[0].query_type, UsbQueryType::Enumerable);
-        assert_eq!(
-            queries[0].rules,
-            Vec::from([UsbRule::Device { product: 1 }])
-        );
+        assert_eq!(queries[0].rules, Vec::from([UsbRule::Device { product: 1 }]));
         assert_eq!(queries[1].query_type, UsbQueryType::Hidden);
         assert_eq!(
             queries[1].rules,
@@ -1437,9 +1360,7 @@ mod tests {
         host.validate_dynamic_launcher(&mut entry).unwrap();
 
         let flatpak = AppInfo::from_flatpak_info("s", flatpak_info()).unwrap();
-        let mut entry =
-            KeyFile::parse("[Desktop Entry]\nName=Calc\nExec=gnome-calculator --open\n")
-                .unwrap();
+        let mut entry = KeyFile::parse("[Desktop Entry]\nName=Calc\nExec=gnome-calculator --open\n").unwrap();
         flatpak.validate_dynamic_launcher(&mut entry).unwrap();
         assert_eq!(
             entry.get("Desktop Entry", "Exec").unwrap(),
@@ -1460,8 +1381,7 @@ mod tests {
             "missing Exec must be rejected"
         );
 
-        let mut bad_exec =
-            KeyFile::parse("[Desktop Entry]\nExec='unterminated\n").unwrap();
+        let mut bad_exec = KeyFile::parse("[Desktop Entry]\nExec='unterminated\n").unwrap();
         assert!(
             matches!(
                 flatpak.validate_dynamic_launcher(&mut bad_exec),
@@ -1470,8 +1390,7 @@ mod tests {
             "unparseable Exec must be rejected"
         );
 
-        let mut forwarding =
-            KeyFile::parse("[Desktop Entry]\nExec=tool --file-forwarding\n").unwrap();
+        let mut forwarding = KeyFile::parse("[Desktop Entry]\nExec=tool --file-forwarding\n").unwrap();
         assert!(
             matches!(
                 flatpak.validate_dynamic_launcher(&mut forwarding),
@@ -1480,10 +1399,8 @@ mod tests {
             "--file-forwarding must be rejected"
         );
 
-        let mut security_key = KeyFile::parse(
-            "[Desktop Entry]\nExec=true\nX-GNOME-Bugzilla-ExtraInfoScript=evil\n",
-        )
-        .unwrap();
+        let mut security_key =
+            KeyFile::parse("[Desktop Entry]\nExec=true\nX-GNOME-Bugzilla-ExtraInfoScript=evil\n").unwrap();
         flatpak
             .validate_dynamic_launcher(&mut security_key)
             .unwrap();
@@ -1521,17 +1438,11 @@ mod tests {
         assert_eq!(resolved.path, "/dev/null");
         assert!(resolved.writable, "host apps may write");
         assert!(
-            matches!(
-                host.path_for_fd(fd, libc::S_IFDIR),
-                Err(PortalError::Failed(_))
-            ),
+            matches!(host.path_for_fd(fd, libc::S_IFDIR), Err(PortalError::Failed(_))),
             "mode mismatch must fail"
         );
         assert!(
-            matches!(
-                host.path_for_fd(fd, libc::S_IFREG),
-                Err(PortalError::Failed(_))
-            ),
+            matches!(host.path_for_fd(fd, libc::S_IFREG), Err(PortalError::Failed(_))),
             "/dev/null is a character device, not a regular file"
         );
         // SAFETY: `fd` is open and will be closed.
@@ -1539,12 +1450,7 @@ mod tests {
 
         // SAFETY: `path` is a valid C string; O_PATH|O_NOFOLLOW is
         // rejected by the portal.
-        let fd = unsafe {
-            libc::open(
-                path.as_ptr(),
-                libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            )
-        };
+        let fd = unsafe { libc::open(path.as_ptr(), libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
         assert!(fd >= 0, "opening an O_PATH fd must succeed");
         assert!(matches!(
             host.path_for_fd(fd, 0),
@@ -1563,8 +1469,7 @@ mod tests {
         unsafe { libc::close(fd) };
 
         // A real regular file satisfies the S_IFREG requirement.
-        let temp = std::env::temp_dir()
-            .join(format!("codevar-xdp-app-info-{}", std::process::id()));
+        let temp = std::env::temp_dir().join(format!("codevar-xdp-app-info-{}", std::process::id()));
         std::fs::write(&temp, b"codevar").unwrap();
         let temp_c = CString::new(temp.to_str().unwrap()).unwrap();
         // SAFETY: `temp_c` is a valid C string; O_RDWR matches the

@@ -39,11 +39,7 @@ use core::fmt::{self, Write};
 ///
 /// Writes only to the provided sink; allocates nothing.
 #[inline]
-pub fn write_frame<W: Write + ?Sized>(
-    w: &mut W,
-    frame: &Frame,
-    index: usize,
-) -> fmt::Result {
+pub fn write_frame<W: Write + ?Sized>(w: &mut W, frame: &Frame, index: usize) -> fmt::Result {
     let ip = frame.ip();
     let sp = frame.sp();
     let module_base = frame.module_base_address();
@@ -112,10 +108,7 @@ mod tests {
 
     impl<const N: usize> StackBuf<N> {
         const fn new() -> Self {
-            Self {
-                buf: [0; N],
-                len: 0,
-            }
+            Self { buf: [0; N], len: 0 }
         }
 
         fn as_str(&self) -> &str {
@@ -162,10 +155,7 @@ mod tests {
 
     #[test]
     fn write_frames_multiple() {
-        let frames = [
-            make_frame(0x1000, 0x2000, None),
-            make_frame(0x3000, 0x4000, None),
-        ];
+        let frames = [make_frame(0x1000, 0x2000, None), make_frame(0x3000, 0x4000, None)];
         let mut out = StackBuf::<512>::new();
         write_frames(&mut out, frames.iter()).unwrap_or(());
         let formatted = out.as_str();

@@ -46,17 +46,11 @@ impl ServerConnection {
     /// preference order. The first client-offered protocol that appears in
     /// this list is chosen.
     pub fn accept(protocols: Option<Vec<String>>) -> WsResult<Self> {
-        Self::accept_with_config(
-            protocols.unwrap_or_default(),
-            ConnectionConfig::default(),
-        )
+        Self::accept_with_config(protocols.unwrap_or_default(), ConnectionConfig::default())
     }
 
     /// Like [`Self::accept`], with full configuration control.
-    pub fn accept_with_config(
-        protocols: Vec<String>,
-        config: ConnectionConfig,
-    ) -> WsResult<Self> {
+    pub fn accept_with_config(protocols: Vec<String>, config: ConnectionConfig) -> WsResult<Self> {
         Ok(Self {
             common: CommonState::new(Role::Server, config),
             handshake: WsServerHandshake::new(protocols),
@@ -299,8 +293,7 @@ mod tests {
             .expect("parse")
             .expect("complete");
         assert_eq!(consumed, response.len());
-        let mut client = WsClientHandshake::new("/chat", "example.com", vec![], None)
-            .expect("handshake");
+        let mut client = WsClientHandshake::new("/chat", "example.com", vec![], None).expect("handshake");
         // Rebuild with the same key the request used.
         client.key_b64 = VALID_KEY.to_string();
         client.expected_accept = crate::ws_handshake::compute_accept_key(VALID_KEY);
@@ -435,10 +428,8 @@ mod tests {
     #[test]
     fn protocol_negotiation_selects_first_client_offered_mutual() {
         let mut server =
-            ServerConnection::accept(Some(vec!["a".to_string(), "b".to_string()]))
-                .expect("accept");
-        let request =
-            upgrade_request("/", "13", VALID_KEY, "Sec-WebSocket-Protocol: b, a\r\n");
+            ServerConnection::accept(Some(vec!["a".to_string(), "b".to_string()])).expect("accept");
+        let request = upgrade_request("/", "13", VALID_KEY, "Sec-WebSocket-Protocol: b, a\r\n");
         server.feed(&request).expect("feed");
         server.process().expect("process");
         assert!(server.is_open());
@@ -448,10 +439,8 @@ mod tests {
         assert!(response.contains("Sec-WebSocket-Protocol: b\r\n"));
 
         // No mutual protocol -> none selected, no protocol header.
-        let mut server2 =
-            ServerConnection::accept(Some(vec!["z".to_string()])).expect("accept");
-        let request2 =
-            upgrade_request("/", "13", VALID_KEY, "Sec-WebSocket-Protocol: a\r\n");
+        let mut server2 = ServerConnection::accept(Some(vec!["z".to_string()])).expect("accept");
+        let request2 = upgrade_request("/", "13", VALID_KEY, "Sec-WebSocket-Protocol: a\r\n");
         server2.feed(&request2).expect("feed");
         server2.process().expect("process");
         assert_eq!(server2.protocol(), None);
@@ -539,8 +528,7 @@ mod tests {
         server.process().expect("process");
         server.take_write();
 
-        let close =
-            WsFrame::close(Some(WsCloseCode::Normal), "done").expect("close frame");
+        let close = WsFrame::close(Some(WsCloseCode::Normal), "done").expect("close frame");
         server.feed(&masked(&close, [7, 7, 7, 7])).expect("feed");
         server.process().expect("process");
         match server.read_message().expect("read") {
@@ -563,22 +551,10 @@ mod tests {
     #[test]
     fn send_before_open_is_rejected() {
         let mut server = ServerConnection::accept(None).expect("accept");
-        assert!(matches!(
-            server.send_text("x"),
-            Err(WsError::InvalidState(_))
-        ));
-        assert!(matches!(
-            server.send_binary(b"x"),
-            Err(WsError::InvalidState(_))
-        ));
-        assert!(matches!(
-            server.send_ping(b"x"),
-            Err(WsError::InvalidState(_))
-        ));
-        assert!(matches!(
-            server.send_pong(b"x"),
-            Err(WsError::InvalidState(_))
-        ));
+        assert!(matches!(server.send_text("x"), Err(WsError::InvalidState(_))));
+        assert!(matches!(server.send_binary(b"x"), Err(WsError::InvalidState(_))));
+        assert!(matches!(server.send_ping(b"x"), Err(WsError::InvalidState(_))));
+        assert!(matches!(server.send_pong(b"x"), Err(WsError::InvalidState(_))));
     }
 
     #[test]
@@ -588,8 +564,7 @@ mod tests {
             max_message_size: 512,
             ..ConnectionConfig::default()
         };
-        let mut server =
-            ServerConnection::accept_with_config(vec![], config).expect("accept");
+        let mut server = ServerConnection::accept_with_config(vec![], config).expect("accept");
         let request = upgrade_request("/", "13", VALID_KEY, "");
         server.feed(&request).expect("feed");
         server.process().expect("process");

@@ -35,16 +35,13 @@ use codevar_dbus::{BodyWriter, Connection, DbusReader, DbusResult, DbusTransport
 use crate::xdp_error::PortalError;
 
 /// Bus name of the permission store service.
-pub const PERMISSION_STORE_DBUS_NAME: &str =
-    "org.freedesktop.impl.portal.PermissionStore";
+pub const PERMISSION_STORE_DBUS_NAME: &str = "org.freedesktop.impl.portal.PermissionStore";
 
 /// Object path of the permission store service.
-pub const PERMISSION_STORE_DBUS_PATH: &str =
-    "/org/freedesktop/impl/portal/PermissionStore";
+pub const PERMISSION_STORE_DBUS_PATH: &str = "/org/freedesktop/impl/portal/PermissionStore";
 
 /// Interface implemented by the permission store service.
-pub const PERMISSION_STORE_INTERFACE: &str =
-    "org.freedesktop.impl.portal.PermissionStore";
+pub const PERMISSION_STORE_INTERFACE: &str = "org.freedesktop.impl.portal.PermissionStore";
 
 /// Call timeout used by GDBus proxies created with default settings
 /// (25 seconds).
@@ -74,10 +71,7 @@ pub enum Permission {
 #[must_use]
 pub fn to_tristate(permissions: &[String]) -> Permission {
     if permissions.len() != 1 {
-        log::warn!(
-            "Wrong permission format, ignoring ({})",
-            permissions.join(" ")
-        );
+        log::warn!("Wrong permission format, ignoring ({})", permissions.join(" "));
         return Permission::Unset;
     }
     match permissions[0].as_str() {
@@ -85,10 +79,7 @@ pub fn to_tristate(permissions: &[String]) -> Permission {
         "no" => Permission::No,
         "ask" => Permission::Ask,
         _ => {
-            log::warn!(
-                "Wrong permission format, ignoring ({})",
-                permissions.join(" ")
-            );
+            log::warn!("Wrong permission format, ignoring ({})", permissions.join(" "));
             Permission::Unset
         }
     }
@@ -224,10 +215,7 @@ pub fn set_permission<T: DbusTransport>(
 
 /// Reads the `a{sas}` permission map at the start of a `Lookup`
 /// reply and returns the entry for `app_id`.
-fn decode_permissions(
-    reader: &mut DbusReader<'_>,
-    app_id: &str,
-) -> Result<Option<Vec<String>>, PortalError> {
+fn decode_permissions(reader: &mut DbusReader<'_>, app_id: &str) -> Result<Option<Vec<String>>, PortalError> {
     let mut entries = reader.read_array(8)?;
     while !entries.is_empty() {
         entries.read_struct()?;
@@ -328,10 +316,8 @@ mod tests {
 
     #[test]
     fn decodes_permission_store_lookup_replies() {
-        let (bytes, signature) = build_lookup_body(&[
-            ("org.example.App", &["yes"]),
-            ("org.other.App", &["no", "ask"]),
-        ]);
+        let (bytes, signature) =
+            build_lookup_body(&[("org.example.App", &["yes"]), ("org.other.App", &["no", "ask"])]);
         assert_eq!(signature, "a{sas}");
 
         assert_eq!(

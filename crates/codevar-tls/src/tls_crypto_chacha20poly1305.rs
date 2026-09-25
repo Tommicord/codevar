@@ -23,12 +23,7 @@ const TAG_LEN: usize = 16;
 ///
 /// Output layout: ciphertext or 16-byte tag.
 #[allow(clippy::result_unit_err)]
-pub fn seal(
-    key: &[u8],
-    nonce: &[u8; 12],
-    aad: &[u8],
-    plaintext: &[u8],
-) -> Result<Vec<u8>, ()> {
+pub fn seal(key: &[u8], nonce: &[u8; 12], aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, ()> {
     if key.len() != KEY_LEN {
         return Err(());
     }
@@ -42,12 +37,7 @@ pub fn seal(
 
 /// Opens ciphertext||tag produced by [`seal`].
 #[allow(clippy::result_unit_err)]
-pub fn open(
-    key: &[u8],
-    nonce: &[u8; 12],
-    aad: &[u8],
-    ciphertext: &[u8],
-) -> Result<Vec<u8>, ()> {
+pub fn open(key: &[u8], nonce: &[u8; 12], aad: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, ()> {
     if key.len() != KEY_LEN || ciphertext.len() < TAG_LEN {
         return Err(());
     }
@@ -137,13 +127,7 @@ unsafe fn read_key_words(key: &[u8]) -> [u32; 8] {
     }
 }
 
-fn chacha20_xor(
-    key: &[u8],
-    nonce: &[u8; 12],
-    mut counter: u32,
-    input: &[u8],
-    output: &mut [u8],
-) {
+fn chacha20_xor(key: &[u8], nonce: &[u8; 12], mut counter: u32, input: &[u8], output: &mut [u8]) {
     let mut offset = 0;
     while offset < input.len() {
         let mut block = [0u8; 64];
@@ -158,12 +142,7 @@ fn chacha20_xor(
     }
 }
 
-fn poly1305_aead_tag(
-    key: &[u8],
-    nonce: &[u8; 12],
-    aad: &[u8],
-    ciphertext: &[u8],
-) -> [u8; 16] {
+fn poly1305_aead_tag(key: &[u8], nonce: &[u8; 12], aad: &[u8], ciphertext: &[u8]) -> [u8; 16] {
     let mut block = [0u8; 64];
     chacha20_block(key, nonce, 0, &mut block);
     let mut otk = [0u8; 32];

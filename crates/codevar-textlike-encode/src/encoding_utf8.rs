@@ -1,6 +1,4 @@
-use crate::encoding::{
-    CoderResult, DecoderResult, EncoderResult, UTF_8, convert_utf16_to_utf8_partial,
-};
+use crate::encoding::{CoderResult, DecoderResult, EncoderResult, UTF_8, convert_utf16_to_utf8_partial};
 use crate::encoding::{VariantDecoder, VariantEncoder};
 use crate::encoding_ascii::{ascii_to_basic_latin, basic_latin_to_ascii, validate_ascii};
 use crate::encoding_handles::{ByteSource, Space, Utf8Destination, Utf16Destination};
@@ -12,27 +10,23 @@ pub struct Utf8Data {
 
 pub static UTF8_DATA: Utf8Data = Utf8Data {
     table: [
-        252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252,
-        252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252,
-        252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252,
-        252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252,
-        252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252,
-        252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252,
-        252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252,
-        252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252,
-        84, 84, 84, 84, 84, 84, 84, 84, 84, 84, 84, 84, 84, 84, 84, 84, 148, 148, 148,
-        148, 148, 148, 148, 148, 148, 148, 148, 148, 148, 148, 148, 148, 164, 164, 164,
-        164, 164, 164, 164, 164, 164, 164, 164, 164, 164, 164, 164, 164, 164, 164, 164,
-        164, 164, 164, 164, 164, 164, 164, 164, 164, 164, 164, 164, 164, 252, 252, 252,
-        252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252,
-        252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252,
-        252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252,
-        252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 4, 4, 4, 4, 4,
-        4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-        4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-        4, 4, 4, 4, 4, 4, 4, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
-        8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 16, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 32, 8, 8,
-        64, 8, 8, 8, 128, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+        252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252,
+        252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252,
+        252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252,
+        252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252,
+        252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252,
+        252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252,
+        252, 252, 252, 252, 252, 252, 252, 252, 84, 84, 84, 84, 84, 84, 84, 84, 84, 84, 84, 84, 84, 84, 84,
+        84, 148, 148, 148, 148, 148, 148, 148, 148, 148, 148, 148, 148, 148, 148, 148, 148, 164, 164, 164,
+        164, 164, 164, 164, 164, 164, 164, 164, 164, 164, 164, 164, 164, 164, 164, 164, 164, 164, 164, 164,
+        164, 164, 164, 164, 164, 164, 164, 164, 164, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252,
+        252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252,
+        252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252,
+        252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+        4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+        4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+        8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 16, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 32, 8, 8, 64,
+        8, 8, 8, 128, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
     ],
 };
 
@@ -72,9 +66,7 @@ pub fn utf8_valid_up_to(src: &[u8]) -> usize {
                         let second = unsafe { *(src.get_unchecked(read + 1)) };
                         let third = unsafe { *(src.get_unchecked(read + 2)) };
                         if ((UTF8_DATA.table[usize::from(second)]
-                            & unsafe {
-                                *(UTF8_DATA.table.get_unchecked(byte as usize + 0x80))
-                            })
+                            & unsafe { *(UTF8_DATA.table.get_unchecked(byte as usize + 0x80)) })
                             | (third >> 6))
                             != 2
                         {
@@ -100,9 +92,7 @@ pub fn utf8_valid_up_to(src: &[u8]) -> usize {
                 let fourth = unsafe { *(src.get_unchecked(read + 3)) };
                 if (u16::from(
                     UTF8_DATA.table[usize::from(second)]
-                        & unsafe {
-                            *(UTF8_DATA.table.get_unchecked(byte as usize + 0x80))
-                        },
+                        & unsafe { *(UTF8_DATA.table.get_unchecked(byte as usize + 0x80)) },
                 ) | u16::from(third >> 6)
                     | (u16::from(fourth & 0xC0) << 2))
                     != 0x202
@@ -165,10 +155,7 @@ pub fn utf8_valid_up_to(src: &[u8]) -> usize {
     read
 }
 
-pub fn convert_utf8_to_utf16_up_to_invalid(
-    src: &[u8],
-    dst: &mut [u16],
-) -> (usize, usize) {
+pub fn convert_utf8_to_utf16_up_to_invalid(src: &[u8], dst: &mut [u16]) -> (usize, usize) {
     let mut read = 0;
     let mut written = 0;
     'outer: loop {
@@ -224,9 +211,7 @@ pub fn convert_utf8_to_utf16_up_to_invalid(
                         let second = unsafe { *(src.get_unchecked(read + 1)) };
                         let third = unsafe { *(src.get_unchecked(read + 2)) };
                         if ((UTF8_DATA.table[usize::from(second)]
-                            & unsafe {
-                                *(UTF8_DATA.table.get_unchecked(byte as usize + 0x80))
-                            })
+                            & unsafe { *(UTF8_DATA.table.get_unchecked(byte as usize + 0x80)) })
                             | (third >> 6))
                             != 2
                         {
@@ -269,9 +254,7 @@ pub fn convert_utf8_to_utf16_up_to_invalid(
                 let fourth = unsafe { *(src.get_unchecked(read + 3)) };
                 if (u16::from(
                     UTF8_DATA.table[usize::from(second)]
-                        & unsafe {
-                            *(UTF8_DATA.table.get_unchecked(byte as usize + 0x80))
-                        },
+                        & unsafe { *(UTF8_DATA.table.get_unchecked(byte as usize + 0x80)) },
                 ) | u16::from(third >> 6)
                     | (u16::from(fourth & 0xC0) << 2))
                     != 0x202
@@ -286,8 +269,7 @@ pub fn convert_utf8_to_utf16_up_to_invalid(
                     *(dst.get_unchecked_mut(written)) = (0xD7C0 + (point >> 10)) as u16;
                 }
                 unsafe {
-                    *(dst.get_unchecked_mut(written + 1)) =
-                        (0xDC00 + (point & 0x3FF)) as u16;
+                    *(dst.get_unchecked_mut(written + 1)) = (0xDC00 + (point & 0x3FF)) as u16;
                 }
                 read += 4;
                 written += 2;
@@ -329,8 +311,7 @@ pub fn convert_utf8_to_utf16_up_to_invalid(
                 if !in_inclusive_range8(second, 0x80, 0xBF) {
                     break 'outer;
                 }
-                dst[written] =
-                    ((u16::from(byte) & 0x1F) << 6) | (u16::from(second) & 0x3F);
+                dst[written] = ((u16::from(byte) & 0x1F) << 6) | (u16::from(second) & 0x3F);
                 read += 2;
                 written += 1;
                 continue 'tail;
@@ -363,10 +344,7 @@ pub fn convert_utf8_to_utf16_up_to_invalid(
     (read, written)
 }
 
-pub fn convert_utf16_to_utf8_partial_inner(
-    src: &[u16],
-    dst: &mut [u8],
-) -> (usize, usize) {
+pub fn convert_utf16_to_utf8_partial_inner(src: &[u16], dst: &mut [u8]) -> (usize, usize) {
     let mut read = 0;
     let mut written = 0;
     'outer: loop {
@@ -411,8 +389,7 @@ pub fn convert_utf16_to_utf8_partial_inner(
                     unsafe {
                         *(dst.get_unchecked_mut(written)) = (unit >> 12) as u8 | 0xE0u8;
                         written += 1;
-                        *(dst.get_unchecked_mut(written)) =
-                            ((unit & 0xFC0) >> 6) as u8 | 0x80u8;
+                        *(dst.get_unchecked_mut(written)) = ((unit & 0xFC0) >> 6) as u8 | 0x80u8;
                         written += 1;
                         *(dst.get_unchecked_mut(written)) = (unit & 0x3F) as u8 | 0x80u8;
                         written += 1;
@@ -438,17 +415,13 @@ pub fn convert_utf16_to_utf8_partial_inner(
                         let astral = (u32::from(unit) << 10) + u32::from(second)
                             - (((0xD800u32 << 10) - 0x10000u32) + 0xDC00u32);
                         unsafe {
-                            *(dst.get_unchecked_mut(written)) =
-                                (astral >> 18) as u8 | 0xF0u8;
+                            *(dst.get_unchecked_mut(written)) = (astral >> 18) as u8 | 0xF0u8;
                             written += 1;
-                            *(dst.get_unchecked_mut(written)) =
-                                ((astral & 0x3F000u32) >> 12) as u8 | 0x80u8;
+                            *(dst.get_unchecked_mut(written)) = ((astral & 0x3F000u32) >> 12) as u8 | 0x80u8;
                             written += 1;
-                            *(dst.get_unchecked_mut(written)) =
-                                ((astral & 0xFC0u32) >> 6) as u8 | 0x80u8;
+                            *(dst.get_unchecked_mut(written)) = ((astral & 0xFC0u32) >> 6) as u8 | 0x80u8;
                             written += 1;
-                            *(dst.get_unchecked_mut(written)) =
-                                (astral & 0x3F) as u8 | 0x80u8;
+                            *(dst.get_unchecked_mut(written)) = (astral & 0x3F) as u8 | 0x80u8;
                             written += 1;
                         }
                         break;
@@ -581,10 +554,7 @@ impl Utf8Decoder {
         byte_length.checked_add(1 + self.extra_from_state())
     }
 
-    pub fn max_utf8_buffer_length_without_replacement(
-        &self,
-        byte_length: usize,
-    ) -> Option<usize> {
+    pub fn max_utf8_buffer_length_without_replacement(&self, byte_length: usize) -> Option<usize> {
         byte_length.checked_add(3 + self.extra_from_state())
     }
 
@@ -632,11 +602,7 @@ impl Utf8Decoder {
                 }
                 Space::Available(source_handle) => match dest.check_space_astral() {
                     Space::Full(dst_written) => {
-                        return (
-                            DecoderResult::OutputFull,
-                            source_handle.consumed(),
-                            dst_written,
-                        );
+                        return (DecoderResult::OutputFull, source_handle.consumed(), dst_written);
                     }
                     Space::Available(destination_handle) => {
                         let (b, unread_handle) = source_handle.read();
@@ -706,8 +672,7 @@ impl Utf8Decoder {
                         if self.bytes_needed == 3 {
                             destination_handle.write_astral(self.code_point);
                         } else {
-                            destination_handle
-                                .write_bmp_excl_ascii(self.code_point as u16);
+                            destination_handle.write_bmp_excl_ascii(self.code_point as u16);
                         }
                         self.code_point = 0;
                         self.bytes_needed = 0;
@@ -748,11 +713,7 @@ impl Utf8Decoder {
                 }
                 Space::Available(source_handle) => match dest.check_space_astral() {
                     Space::Full(dst_written) => {
-                        return (
-                            DecoderResult::OutputFull,
-                            source_handle.consumed(),
-                            dst_written,
-                        );
+                        return (DecoderResult::OutputFull, source_handle.consumed(), dst_written);
                     }
                     Space::Available(destination_handle) => {
                         let (b, unread_handle) = source_handle.read();
@@ -822,8 +783,7 @@ impl Utf8Decoder {
                         if self.bytes_needed == 3 {
                             destination_handle.write_astral(self.code_point);
                         } else {
-                            destination_handle
-                                .write_bmp_excl_ascii(self.code_point as u16);
+                            destination_handle.write_bmp_excl_ascii(self.code_point as u16);
                         }
                         self.code_point = 0;
                         self.bytes_needed = 0;
@@ -845,17 +805,11 @@ impl Utf8Encoder {
         crate::encoding::Encoder::new(&UTF_8, VariantEncoder::Utf8(Utf8Encoder))
     }
 
-    pub fn max_buffer_length_from_utf16_without_replacement(
-        &self,
-        u16_length: usize,
-    ) -> Option<usize> {
+    pub fn max_buffer_length_from_utf16_without_replacement(&self, u16_length: usize) -> Option<usize> {
         u16_length.checked_mul(3)
     }
 
-    pub fn max_buffer_length_from_utf8_without_replacement(
-        &self,
-        byte_length: usize,
-    ) -> Option<usize> {
+    pub fn max_buffer_length_from_utf8_without_replacement(&self, byte_length: usize) -> Option<usize> {
         Some(byte_length)
     }
 
@@ -915,8 +869,7 @@ pub fn encode_text(text: &str) -> Vec<u8> {
     let mut written = 0usize;
     let mut read = 0usize;
     loop {
-        let (result, r, w, _) =
-            encoder.encode_from_utf8(&text[read..], &mut buf[written..], true);
+        let (result, r, w, _) = encoder.encode_from_utf8(&text[read..], &mut buf[written..], true);
         read += r;
         written += w;
         match result {
@@ -1046,8 +999,7 @@ mod tests {
     fn test_utf8_decode_valid() {
         let mut decoder = Utf8Decoder::new_inner();
         let mut dst = [0u8; 10];
-        let (result, read, written) =
-            decoder.decode_to_utf8_raw(b"hello", &mut dst, true);
+        let (result, read, written) = decoder.decode_to_utf8_raw(b"hello", &mut dst, true);
         assert_eq!(result, DecoderResult::InputEmpty);
         assert_eq!(read, 5);
         assert_eq!(written, 5);
@@ -1058,20 +1010,17 @@ mod tests {
         let mut decoder = Utf8Decoder::new_inner();
         let mut dst = [0u8; 10];
         // \xC3 is an incomplete lead; Z is not a continuation and is unread
-        let (result, _read, _written) =
-            decoder.decode_to_utf8_raw(b"a\xC3Z", &mut dst, true);
+        let (result, _read, _written) = decoder.decode_to_utf8_raw(b"a\xC3Z", &mut dst, true);
         assert_eq!(result, DecoderResult::Malformed(1, 0));
         // Incomplete sequence at EOF
         let mut decoder = Utf8Decoder::new_inner();
         let mut dst = [0u8; 10];
-        let (result, _read, _written) =
-            decoder.decode_to_utf8_raw(b"a\xC3", &mut dst, true);
+        let (result, _read, _written) = decoder.decode_to_utf8_raw(b"a\xC3", &mut dst, true);
         assert_eq!(result, DecoderResult::Malformed(1, 0));
         // Invalid lead byte
         let mut decoder = Utf8Decoder::new_inner();
         let mut dst = [0u8; 10];
-        let (result, _read, _written) =
-            decoder.decode_to_utf8_raw(b"\xFF", &mut dst, true);
+        let (result, _read, _written) = decoder.decode_to_utf8_raw(b"\xFF", &mut dst, true);
         assert_eq!(result, DecoderResult::Malformed(1, 0));
     }
 
@@ -1091,8 +1040,7 @@ mod tests {
     fn test_convert_utf8_to_utf16() {
         let src = "abc\u{1F4A9}";
         let mut dst: Vec<u16> = vec![0; src.len() + 1];
-        let (read, written) =
-            convert_utf8_to_utf16_up_to_invalid(src.as_bytes(), &mut dst[..]);
+        let (read, written) = convert_utf8_to_utf16_up_to_invalid(src.as_bytes(), &mut dst[..]);
         assert_eq!(read, src.len());
         assert_eq!(written, src.encode_utf16().count());
     }

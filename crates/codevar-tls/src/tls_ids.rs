@@ -290,9 +290,7 @@ impl CipherSuite {
     pub const fn is_tls13(self) -> bool {
         matches!(
             self,
-            Self::TlsAes128GcmSha256
-                | Self::TlsAes256GcmSha384
-                | Self::TlsChacha20Poly1305Sha256
+            Self::TlsAes128GcmSha256 | Self::TlsAes256GcmSha384 | Self::TlsChacha20Poly1305Sha256
         )
     }
 
@@ -325,9 +323,7 @@ impl CipherSuite {
             | Self::TlsEcdheRsaWithAes256GcmSha384 => AeadAlgorithm::Aes256Gcm,
             Self::TlsChacha20Poly1305Sha256
             | Self::TlsEcdheRsaWithChacha20Poly1305Sha256
-            | Self::TlsEcdheEcdsaWithChacha20Poly1305Sha256 => {
-                AeadAlgorithm::ChaCha20Poly1305
-            }
+            | Self::TlsEcdheEcdsaWithChacha20Poly1305Sha256 => AeadAlgorithm::ChaCha20Poly1305,
         }
     }
 
@@ -471,11 +467,7 @@ impl NamedGroup {
     }
 }
 
-const DEFAULT_GROUPS: [NamedGroup; 3] = [
-    NamedGroup::X25519,
-    NamedGroup::Secp256r1,
-    NamedGroup::Secp384r1,
-];
+const DEFAULT_GROUPS: [NamedGroup; 3] = [NamedGroup::X25519, NamedGroup::Secp256r1, NamedGroup::Secp384r1];
 
 /// Signature schemes (RFC 8446 §4.2.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -578,28 +570,23 @@ impl KeyUpdateRequest {
         match v {
             0 => Ok(Self::UpdateNotRequested),
             1 => Ok(Self::UpdateRequested),
-            other => Err(TlsError::decode(format!(
-                "invalid KeyUpdate request {other}"
-            ))),
+            other => Err(TlsError::decode(format!("invalid KeyUpdate request {other}"))),
         }
     }
 }
 
 /// TLS 1.3 HelloRetryRequest random value: SHA-256("HelloRetryRequest").
 pub const HELLO_RETRY_REQUEST_RANDOM: [u8; 32] = [
-    0xCF, 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11, 0xBE, 0x1D, 0x8C, 0x02, 0x1E, 0x65,
-    0xB8, 0x91, 0xC2, 0xA2, 0x11, 0x16, 0x7A, 0xBB, 0x8C, 0x5E, 0x07, 0x9E, 0x09, 0xE2,
-    0xC8, 0xA8, 0x33, 0x9C,
+    0xCF, 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11, 0xBE, 0x1D, 0x8C, 0x02, 0x1E, 0x65, 0xB8, 0x91, 0xC2,
+    0xA2, 0x11, 0x16, 0x7A, 0xBB, 0x8C, 0x5E, 0x07, 0x9E, 0x09, 0xE2, 0xC8, 0xA8, 0x33, 0x9C,
 ];
 
 /// Downgrade sentinel placed in ServerHello.random when a TLS 1.3 server
 /// negotiates TLS 1.2 (`DOWNGRD` || 0x01).
-pub const DOWNGRADE_TLS12_SENTINEL: [u8; 8] =
-    [0x44, 0x4F, 0x57, 0x4E, 0x47, 0x52, 0x44, 0x01];
+pub const DOWNGRADE_TLS12_SENTINEL: [u8; 8] = [0x44, 0x4F, 0x57, 0x4E, 0x47, 0x52, 0x44, 0x01];
 
 /// Downgrade sentinel for TLS 1.1 or below (`DOWNGRD` || 0x00).
-pub const DOWNGRADE_TLS11_SENTINEL: [u8; 8] =
-    [0x44, 0x4F, 0x57, 0x4E, 0x47, 0x52, 0x44, 0x00];
+pub const DOWNGRADE_TLS11_SENTINEL: [u8; 8] = [0x44, 0x4F, 0x57, 0x4E, 0x47, 0x52, 0x44, 0x00];
 
 /// Maximum plaintext fragment length (2^14).
 pub const MAX_FRAGMENT_LENGTH: usize = 16384;
@@ -608,8 +595,7 @@ pub const MAX_FRAGMENT_LENGTH: usize = 16384;
 pub const MAX_TLS13_CIPHERTEXT_OVERHEAD: usize = 256;
 
 /// Maximum ciphertext record payload accepted by the record layer.
-pub const MAX_CIPHERTEXT_LENGTH: usize =
-    MAX_FRAGMENT_LENGTH + MAX_TLS13_CIPHERTEXT_OVERHEAD;
+pub const MAX_CIPHERTEXT_LENGTH: usize = MAX_FRAGMENT_LENGTH + MAX_TLS13_CIPHERTEXT_OVERHEAD;
 
 #[cfg(test)]
 mod tests {
@@ -909,19 +895,12 @@ mod tests {
         assert_eq!(AeadAlgorithm::ChaCha20Poly1305.tls12_fixed_iv_len(), 12);
         assert_eq!(AeadAlgorithm::Aes128Gcm.tls12_explicit_nonce_len(), 8);
         assert_eq!(AeadAlgorithm::Aes256Gcm.tls12_explicit_nonce_len(), 8);
-        assert_eq!(
-            AeadAlgorithm::ChaCha20Poly1305.tls12_explicit_nonce_len(),
-            0
-        );
+        assert_eq!(AeadAlgorithm::ChaCha20Poly1305.tls12_explicit_nonce_len(), 0);
     }
 
     #[test]
     fn named_group_round_trips_and_defaults() {
-        for g in [
-            NamedGroup::Secp256r1,
-            NamedGroup::Secp384r1,
-            NamedGroup::X25519,
-        ] {
+        for g in [NamedGroup::Secp256r1, NamedGroup::Secp384r1, NamedGroup::X25519] {
             assert_eq!(NamedGroup::from_u16(g.as_u16()), Some(g));
         }
         assert_eq!(NamedGroup::Secp256r1.as_u16(), 0x0017);
@@ -931,11 +910,7 @@ mod tests {
         }
         assert_eq!(
             NamedGroup::default_offered(),
-            &[
-                NamedGroup::X25519,
-                NamedGroup::Secp256r1,
-                NamedGroup::Secp384r1
-            ]
+            &[NamedGroup::X25519, NamedGroup::Secp256r1, NamedGroup::Secp384r1]
         );
     }
 
@@ -949,10 +924,7 @@ mod tests {
         for bad in [0u16, 0x0402, 0x0806, 0x0808, 0xffff] {
             assert_eq!(SignatureScheme::from_u16(bad), None, "bad={bad:#06x}");
         }
-        for s in [
-            SignatureScheme::RsaPkcs1Sha256,
-            SignatureScheme::RsaPkcs1Sha384,
-        ] {
+        for s in [SignatureScheme::RsaPkcs1Sha256, SignatureScheme::RsaPkcs1Sha384] {
             assert!(!s.allowed_in_tls13_cert_verify(), "s={s:?}");
         }
         for s in [
@@ -966,23 +938,14 @@ mod tests {
         }
         assert_eq!(SignatureScheme::default_offered().len(), 7);
         for s in all_signature_schemes() {
-            assert!(
-                SignatureScheme::default_offered().contains(&s),
-                "missing {s:?}"
-            );
+            assert!(SignatureScheme::default_offered().contains(&s), "missing {s:?}");
         }
     }
 
     #[test]
     fn psk_key_exchange_modes_parse_boundary_values() {
-        assert_eq!(
-            PskKeyExchangeMode::from_u8(0),
-            Some(PskKeyExchangeMode::PskKe)
-        );
-        assert_eq!(
-            PskKeyExchangeMode::from_u8(1),
-            Some(PskKeyExchangeMode::PskDheKe)
-        );
+        assert_eq!(PskKeyExchangeMode::from_u8(0), Some(PskKeyExchangeMode::PskKe));
+        assert_eq!(PskKeyExchangeMode::from_u8(1), Some(PskKeyExchangeMode::PskDheKe));
         assert_eq!(PskKeyExchangeMode::PskKe as u8, 0);
         assert_eq!(PskKeyExchangeMode::PskDheKe as u8, 1);
         for bad in [2u8, 3, 127, 255] {
@@ -1016,10 +979,7 @@ mod tests {
         assert_eq!(DOWNGRADE_TLS12_SENTINEL, *b"DOWNGRD\x01");
         assert_eq!(DOWNGRADE_TLS11_SENTINEL, *b"DOWNGRD\x00");
         assert_eq!(HELLO_RETRY_REQUEST_RANDOM.len(), 32);
-        let hrr = crate::tls_crypto_hash::hash_message(
-            HashAlgorithm::Sha256,
-            b"HelloRetryRequest",
-        );
+        let hrr = crate::tls_crypto_hash::hash_message(HashAlgorithm::Sha256, b"HelloRetryRequest");
         assert_eq!(HELLO_RETRY_REQUEST_RANDOM.as_slice(), hrr.as_slice());
     }
 }

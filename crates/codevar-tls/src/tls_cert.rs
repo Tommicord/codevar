@@ -66,8 +66,8 @@ pub struct ParsedCert {
 impl ParsedCert {
     /// Parses a single DER-encoded certificate.
     pub fn from_der(der: &[u8]) -> TlsResult<Self> {
-        let (rest, cert) = X509Certificate::from_der(der)
-            .map_err(|e| TlsError::certificate(format!("X.509 parse: {e}")))?;
+        let (rest, cert) =
+            X509Certificate::from_der(der).map_err(|e| TlsError::certificate(format!("X.509 parse: {e}")))?;
         if !rest.is_empty() {
             return Err(TlsError::certificate(String::from(
                 "trailing bytes after certificate",
@@ -186,9 +186,7 @@ impl ParsedCert {
                 if oid == "1.3.101.112" {
                     Ok(LeafKeyKind::Ed25519)
                 } else {
-                    Err(TlsError::certificate(format!(
-                        "unsupported public key OID {oid}"
-                    )))
+                    Err(TlsError::certificate(format!("unsupported public key OID {oid}")))
                 }
             }
             Err(e) => Err(TlsError::certificate(format!("public key: {e}"))),
@@ -225,9 +223,7 @@ pub fn parse_pem_certs(pem_bytes: &[u8]) -> TlsResult<Vec<Vec<u8>>> {
     let text = std::str::from_utf8(pem_bytes)
         .map_err(|_| TlsError::certificate(String::from("PEM is not UTF-8")))?;
     let mut certs = Vec::new();
-    for block in
-        pem::parse_many(text).map_err(|e| TlsError::certificate(format!("PEM: {e}")))?
-    {
+    for block in pem::parse_many(text).map_err(|e| TlsError::certificate(format!("PEM: {e}")))? {
         if block.tag() == "CERTIFICATE" {
             certs.push(block.contents().to_vec());
         }
@@ -345,11 +341,7 @@ impl CertVerifier {
     /// Validates `chain` (leaf first) for `hostname` (SNI).
     ///
     /// Returns the parsed leaf on success.
-    pub fn verify_server_cert(
-        &self,
-        chain: &[Vec<u8>],
-        hostname: Option<&str>,
-    ) -> TlsResult<ParsedCert> {
+    pub fn verify_server_cert(&self, chain: &[Vec<u8>], hostname: Option<&str>) -> TlsResult<ParsedCert> {
         if chain.is_empty() {
             return Err(TlsError::Alert(AlertDescription::BadCertificate));
         }
@@ -375,9 +367,7 @@ impl CertVerifier {
 
         if !self.skip_hostname {
             let host = hostname.ok_or_else(|| {
-                TlsError::certificate(String::from(
-                    "server name required for certificate check",
-                ))
+                TlsError::certificate(String::from("server name required for certificate check"))
             })?;
             if !leaf.matches_hostname(host) {
                 return Err(TlsError::Alert(AlertDescription::BadCertificate));
@@ -673,8 +663,7 @@ mod tests {
         assert!(!leaf.matches_hostname("example.org"));
         assert!(!leaf.matches_hostname(""));
 
-        let legacy =
-            ParsedCert::from_der(&parse_pem_certs(LEGACY_CN_PEM).unwrap()[0]).unwrap();
+        let legacy = ParsedCert::from_der(&parse_pem_certs(LEGACY_CN_PEM).unwrap()[0]).unwrap();
         // CN fallback when no SAN dNSName is present.
         assert!(legacy.matches_hostname("legacy.example"));
         assert!(!legacy.matches_hostname("other.example"));
@@ -689,13 +678,11 @@ mod tests {
         assert!(!leaf.valid_at(leaf.not_before - 1));
         assert!(!leaf.valid_at(leaf.not_after + 1));
 
-        let future =
-            ParsedCert::from_der(&parse_pem_certs(FUTURE_PEM).unwrap()[0]).unwrap();
+        let future = ParsedCert::from_der(&parse_pem_certs(FUTURE_PEM).unwrap()[0]).unwrap();
         assert!(!future.valid_at(1_700_000_000));
         assert!(future.valid_at(4_100_000_000));
 
-        let expired =
-            ParsedCert::from_der(&parse_pem_certs(EXPIRED_PEM).unwrap()[0]).unwrap();
+        let expired = ParsedCert::from_der(&parse_pem_certs(EXPIRED_PEM).unwrap()[0]).unwrap();
         assert!(!expired.valid_at(1_700_000_000));
         assert!(!expired.valid_at(0));
     }

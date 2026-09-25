@@ -1137,10 +1137,7 @@ mod tests {
         assert_eq!(cpu_feature!("avx"), has(Feature::Avx));
         assert_eq!(cpu_feature!("sse4.1"), has(Feature::Sse41));
         assert_eq!(cpu_feature!("avx512"), has(Feature::Avx512));
-        assert_eq!(
-            cpu_feature_at_time!(sse2),
-            Feature::Sse2.compile_time_available()
-        );
+        assert_eq!(cpu_feature_at_time!(sse2), Feature::Sse2.compile_time_available());
         assert_eq!(
             cpu_feature_at_time!("crc32"),
             Feature::Crc32.compile_time_available()

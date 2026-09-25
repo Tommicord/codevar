@@ -264,8 +264,7 @@ mod tests {
 
     #[test]
     fn connect_queues_upgrade_request_and_starts_handshaking() {
-        let mut client =
-            ClientConnection::connect("/chat", "example.com", None).expect("connect");
+        let mut client = ClientConnection::connect("/chat", "example.com", None).expect("connect");
         assert!(client.is_handshaking());
         assert!(!client.is_open());
         assert!(!client.is_closed());
@@ -302,14 +301,9 @@ mod tests {
 
     #[test]
     fn handshake_completes_via_server_connection() {
-        let mut client = ClientConnection::connect(
-            "/chat",
-            "example.com",
-            Some(vec!["chat".to_string()]),
-        )
-        .expect("connect");
-        let mut server =
-            ServerConnection::accept(Some(vec!["chat".to_string()])).expect("accept");
+        let mut client = ClientConnection::connect("/chat", "example.com", Some(vec!["chat".to_string()]))
+            .expect("connect");
+        let mut server = ServerConnection::accept(Some(vec!["chat".to_string()])).expect("accept");
 
         let request = client.take_write();
         server.feed(&request).expect("feed");
@@ -469,22 +463,10 @@ mod tests {
     #[test]
     fn send_before_open_is_rejected() {
         let mut client = ClientConnection::connect("/", "h", None).expect("connect");
-        assert!(matches!(
-            client.send_text("x"),
-            Err(WsError::InvalidState(_))
-        ));
-        assert!(matches!(
-            client.send_binary(b"x"),
-            Err(WsError::InvalidState(_))
-        ));
-        assert!(matches!(
-            client.send_ping(b"x"),
-            Err(WsError::InvalidState(_))
-        ));
-        assert!(matches!(
-            client.send_pong(b"x"),
-            Err(WsError::InvalidState(_))
-        ));
+        assert!(matches!(client.send_text("x"), Err(WsError::InvalidState(_))));
+        assert!(matches!(client.send_binary(b"x"), Err(WsError::InvalidState(_))));
+        assert!(matches!(client.send_ping(b"x"), Err(WsError::InvalidState(_))));
+        assert!(matches!(client.send_pong(b"x"), Err(WsError::InvalidState(_))));
     }
 
     #[test]
@@ -499,10 +481,9 @@ mod tests {
         let wire = client.take_write();
         assert_eq!(wire[0], 0x81);
         assert_ne!(wire[1] & 0x80, 0);
-        let (frame, consumed) =
-            try_parse_frame(&wire, Role::Server, DEFAULT_MAX_FRAME_SIZE)
-                .expect("parse")
-                .expect("complete");
+        let (frame, consumed) = try_parse_frame(&wire, Role::Server, DEFAULT_MAX_FRAME_SIZE)
+            .expect("parse")
+            .expect("complete");
         assert_eq!(consumed, wire.len());
         assert_eq!(frame.payload, b"hello");
     }
@@ -602,8 +583,7 @@ mod tests {
         let tx = client.take_write();
         assert_eq!(tx[0] & 0x0F, 0x8); // close opcode
 
-        let close =
-            WsFrame::close(Some(WsCloseCode::GoingAway), "bye").expect("close frame");
+        let close = WsFrame::close(Some(WsCloseCode::GoingAway), "bye").expect("close frame");
         client.feed(&unmasked(&close)).expect("feed");
         client.process().expect("peer close");
         assert!(client.is_closed());

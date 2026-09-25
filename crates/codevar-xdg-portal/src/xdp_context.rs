@@ -25,12 +25,17 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::time::Duration;
 
-use codevar_dbus::{BodyWriter, Connection, DbusError, DbusMessage, DbusReader, DbusResult, DbusTransport, MessageKind};
+use codevar_base::basic_xml::{XmlBuilder, XmlDocument};
+use codevar_dbus::{
+    BodyWriter, Connection, DbusError, DbusMessage, DbusReader, DbusResult, DbusTransport, MessageKind,
+};
 
 use crate::xdp_error::{PortalError, XdpResult};
 use crate::xdp_portal_config::PortalConfig;
 use crate::xdp_request::{REQUEST_BASE_PATH, RequestHandle, build_request_path, extract_handle_token};
-use crate::xdp_session::{SESSION_BASE_PATH, SessionHandle, build_session_path, close_reason, extract_session_token};
+use crate::xdp_session::{
+    SESSION_BASE_PATH, SessionHandle, build_session_path, close_reason, extract_session_token,
+};
 use crate::xdp_utils::{OptionMap, encode_options};
 
 /// Desktop portal well-known object path.
@@ -70,9 +75,7 @@ impl MethodInvocation {
     /// Creates a `MethodInvocation` from a `DbusMessage`.
     pub fn from_message(message: DbusMessage) -> XdpResult<Self> {
         if message.kind() != MessageKind::MethodCall {
-            return Err(PortalError::InvalidArgument(String::from(
-                "not a method call",
-            )));
+            return Err(PortalError::InvalidArgument(String::from("not a method call")));
         }
         Ok(Self {
             serial: message.serial(),
@@ -104,14 +107,14 @@ pub type PortalFn<T> = fn(&mut PortalContext<T>, &MethodInvocation) -> XdpResult
 ///
 /// Each interface provides its D-Bus name, version, introspection XML,
 /// and a slice of method name / handler pairs.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct PortalInterface<T: DbusTransport + 'static> {
     /// The D-Bus interface name (e.g. `org.freedesktop.portal.FileChooser`).
     pub name: &'static str,
     /// The interface version.
     pub version: u32,
     /// Introspection XML for this interface.
-    pub introspect_xml: &'static str,
+    pub introspect_xml: codevar_base::basic_xml::XmlDocument,
     /// Method name and handler pairs.
     pub methods: &'static [(&'static str, PortalFn<T>)],
 }
@@ -121,7 +124,7 @@ pub struct PortalInterface<T: DbusTransport + 'static> {
 /// The context manages request and session handles, registered portal
 /// interfaces, and runs the main event loop.
 pub struct PortalContext<T: DbusTransport + 'static> {
-    conn: Connection<T>,
+    pub(crate) conn: Connection<T>,
     config: PortalConfig,
     verbose: bool,
     requests: BTreeMap<String, RequestHandle>,
@@ -130,7 +133,7 @@ pub struct PortalContext<T: DbusTransport + 'static> {
     quit_status: Option<i32>,
 }
 
-impl<T: DbusTransport> PortalContext<T> {
+impl<T: DbusTransport + 'static> PortalContext<T> {
     /// Creates a new portal context.
     ///
     /// The connection must already be authenticated and have called
@@ -189,7 +192,10 @@ impl<T: DbusTransport> PortalContext<T> {
         let dbus_error = error.clone().into_dbus_error();
         let (name, message) = match dbus_error {
             DbusError::Remote { name, message } => (name, message),
-            _ => (String::from("org.freedesktop.portal.Error.Failed"), dbus_error.to_string()),
+            _ => (
+                String::from("org.freedesktop.portal.Error.Failed"),
+                dbus_error.to_string(),
+            ),
         };
         let mut reply = DbusMessage::error(inv.serial, &name)?;
         reply.build_body(|bw| bw.write_str(&message))?;
@@ -198,13 +204,7 @@ impl<T: DbusTransport> PortalContext<T> {
     }
 
     /// Emits a signal on the given path, interface, and member.
-    pub fn emit_signal<F>(
-        &mut self,
-        path: &str,
-        interface: &str,
-        member: &str,
-        body: F,
-    ) -> XdpResult<()>
+    pub fn emit_signal<F>(&mut self, path: &str, interface: &str, member: &str, body: F) -> XdpResult<()>
     where
         F: FnOnce(&mut BodyWriter) -> DbusResult<()>,
     {
@@ -246,11 +246,7 @@ impl<T: DbusTransport> PortalContext<T> {
     ///
     /// Extracts or generates the handle token, validates it, builds the
     /// request path, and inserts the handle into the request table.
-    pub fn begin_request(
-        &mut self,
-        inv: &MethodInvocation,
-        options: &OptionMap,
-    ) -> XdpResult<RequestHandle> {
+    pub fn begin_request(&mut self, inv: &MethodInvocation, options: &OptionMap) -> XdpResult<RequestHandle> {
         let token = extract_handle_token(options)?;
         let path = build_request_path(&inv.sender, &token, &self.requests)?;
         let app_info = crate::xdp_app_info::AppInfo::host(&inv.sender);
@@ -285,11 +281,7 @@ impl<T: DbusTransport> PortalContext<T> {
     ///
     /// Extracts or generates the session handle token, validates it,
     /// builds the session path, and inserts the handle into the session table.
-    pub fn begin_session(
-        &mut self,
-        inv: &MethodInvocation,
-        options: &OptionMap,
-    ) -> XdpResult<SessionHandle> {
+    pub fn begin_session(&mut self, inv: &MethodInvocation, options: &OptionMap) -> XdpResult<SessionHandle> {
         let token = extract_session_token(options)?;
         let path = build_session_path(&inv.sender, &token, &self.sessions)?;
         let app_info = crate::xdp_app_info::AppInfo::host(&inv.sender);
@@ -335,9 +327,7 @@ impl<T: DbusTransport> PortalContext<T> {
                     // Normal timeout, continue loop
                 }
                 Err(DbusError::Disconnected) => {
-                    return Err(PortalError::Failed(String::from(
-                        "disconnected from bus",
-                    )));
+                    return Err(PortalError::Failed(String::from("disconnected from bus")));
                 }
                 Err(e) => {
                     log::error!("Error receiving message: {}", e);
@@ -440,10 +430,11 @@ impl<T: DbusTransport> PortalContext<T> {
         }
 
         // Unknown method
-        self.reply_err(&inv, "org.freedesktop.DBus.Error.UnknownMethod", &format!(
-            "Method {} not found on interface {}",
-            inv.member, inv.interface
-        ))
+        self.reply_err(
+            &inv,
+            "org.freedesktop.DBus.Error.UnknownMethod",
+            &format!("Method {} not found on interface {}", inv.member, inv.interface),
+        )
     }
 
     /// Handles Properties.Get and Properties.GetAll.
@@ -457,10 +448,11 @@ impl<T: DbusTransport> PortalContext<T> {
                     bw.write_variant("u", |bw| bw.write_u32(DESKTOP_VERSION))
                 })?;
             } else {
-                self.reply_err(&inv, "org.freedesktop.DBus.Error.UnknownProperty", &format!(
-                    "Property {} not found",
-                    property
-                ))?;
+                self.reply_err(
+                    &inv,
+                    "org.freedesktop.DBus.Error.UnknownProperty",
+                    &format!("Property {} not found", property),
+                )?;
             }
         } else if inv.member == "GetAll" {
             let _interface = reader.read_str()?; // interface name
@@ -473,62 +465,106 @@ impl<T: DbusTransport> PortalContext<T> {
                 })
             })?;
         } else {
-            self.reply_err(&inv, "org.freedesktop.DBus.Error.UnknownMethod", &format!(
-                "Method {} not found on interface {}",
-                inv.member, inv.interface
-            ))?;
+            self.reply_err(
+                &inv,
+                "org.freedesktop.DBus.Error.UnknownMethod",
+                &format!("Method {} not found on interface {}", inv.member, inv.interface),
+            )?;
         }
         Ok(())
     }
 
     /// Handles Introspectable.Introspect.
     fn handle_introspect(&mut self, inv: MethodInvocation) -> XdpResult<()> {
-        let mut xml = String::from("<node>\n");
-        xml.push_str("  <interface name=\"org.freedesktop.DBus.Introspectable\">\n");
-        xml.push_str("    <method name=\"Introspect\">\n");
-        xml.push_str("      <arg name=\"data\" type=\"s\" direction=\"out\"/>\n");
-        xml.push_str("    </method>\n");
-        xml.push_str("  </interface>\n");
-        xml.push_str("  <interface name=\"org.freedesktop.DBus.Properties\">\n");
-        xml.push_str("    <method name=\"Get\">\n");
-        xml.push_str("      <arg name=\"interface\" type=\"s\" direction=\"in\"/>\n");
-        xml.push_str("      <arg name=\"property\" type=\"s\" direction=\"in\"/>\n");
-        xml.push_str("      <arg name=\"value\" type=\"v\" direction=\"out\"/>\n");
-        xml.push_str("    </method>\n");
-        xml.push_str("    <method name=\"GetAll\">\n");
-        xml.push_str("      <arg name=\"interface\" type=\"s\" direction=\"in\"/>\n");
-        xml.push_str("      <arg name=\"props\" type=\"a{sv}\" direction=\"out\"/>\n");
-        xml.push_str("    </method>\n");
-        xml.push_str("  </interface>\n");
-
-        // Add registered portal interfaces
-        for iface in &self.interfaces {
-            xml.push_str(iface.introspect_xml);
-        }
-
-        // Add Request interface
-        xml.push_str("  <interface name=\"org.freedesktop.portal.Request\">\n");
-        xml.push_str("    <method name=\"Close\">\n");
-        xml.push_str("    </method>\n");
-        xml.push_str("    <signal name=\"Response\">\n");
-        xml.push_str("      <arg name=\"response\" type=\"u\"/>\n");
-        xml.push_str("      <arg name=\"results\" type=\"a{sv}\"/>\n");
-        xml.push_str("    </signal>\n");
-        xml.push_str("  </interface>\n");
-
-        // Add Session interface
-        xml.push_str("  <interface name=\"org.freedesktop.portal.Session\">\n");
-        xml.push_str("    <method name=\"Close\">\n");
-        xml.push_str("      <arg name=\"reason\" type=\"u\" direction=\"in\"/>\n");
-        xml.push_str("    </method>\n");
-        xml.push_str("    <signal name=\"Closed\">\n");
-        xml.push_str("      <arg name=\"reason\" type=\"u\"/>\n");
-        xml.push_str("    </signal>\n");
-        xml.push_str("  </interface>\n");
-
-        xml.push_str("</node>");
-
-        self.reply(&inv, |bw| bw.write_str(&xml))
+        let iface_xmls: String = self
+            .interfaces
+            .iter()
+            .map(|iface| iface.introspect_xml.to_string())
+            .collect();
+        let xml = XmlBuilder::new("node")
+            .child("interface")
+                .attr("name", "org.freedesktop.DBus.Introspectable")
+                .child("method")
+                    .attr("name", "Introspect")
+                    .child("arg")
+                        .attr("name", "data")
+                        .attr("type", "s")
+                        .attr("direction", "out")
+                    .end()
+                .end()
+            .end()
+            .child("interface")
+                .attr("name", "org.freedesktop.DBus.Properties")
+                .child("method")
+                    .attr("name", "Get")
+                    .child("arg")
+                        .attr("name", "interface")
+                        .attr("type", "s")
+                        .attr("direction", "in")
+                    .end()
+                    .child("arg")
+                        .attr("name", "property")
+                        .attr("type", "s")
+                        .attr("direction", "in")
+                    .end()
+                    .child("arg")
+                        .attr("name", "value")
+                        .attr("type", "v")
+                        .attr("direction", "out")
+                    .end()
+                .end()
+                .child("method")
+                    .attr("name", "GetAll")
+                    .child("arg")
+                        .attr("name", "interface")
+                        .attr("type", "s")
+                        .attr("direction", "in")
+                    .end()
+                    .child("arg")
+                        .attr("name", "props")
+                        .attr("type", "a{sv}")
+                        .attr("direction", "out")
+                    .end()
+                .end()
+            .end()
+            .push(&iface_xmls)
+            .child("interface")
+                .attr("name", "org.freedesktop.portal.Request")
+                .child("method")
+                    .attr("name", "Close")
+                .end()
+                .child("signal")
+                    .attr("name", "Response")
+                    .child("arg")
+                        .attr("name", "response")
+                        .attr("type", "u")
+                    .end()
+                    .child("arg")
+                        .attr("name", "results")
+                        .attr("type", "a{sv}")
+                    .end()
+                .end()
+            .end()
+            .child("interface")
+                .attr("name", "org.freedesktop.portal.Session")
+                .child("method")
+                    .attr("name", "Close")
+                    .child("arg")
+                        .attr("name", "reason")
+                        .attr("type", "u")
+                        .attr("direction", "in")
+                    .end()
+                .end()
+                .child("signal")
+                    .attr("name", "Closed")
+                    .child("arg")
+                        .attr("name", "reason")
+                        .attr("type", "u")
+                    .end()
+                .end()
+            .end()
+            .build();
+        self.reply(&inv, |bw| bw.write_str(xml.to_string()))
     }
 
     /// Handles Request.Close.
@@ -593,12 +629,7 @@ mod tests {
     use super::*;
     use codevar_dbus::DbusMessage;
 
-    fn make_test_message(
-        destination: &str,
-        path: &str,
-        interface: &str,
-        member: &str,
-    ) -> DbusMessage {
+    fn make_test_message(destination: &str, path: &str, interface: &str, member: &str) -> DbusMessage {
         let mut msg = DbusMessage::method_call(destination, path, interface, member).unwrap();
         msg.set_serial(1).unwrap();
         msg
@@ -607,22 +638,35 @@ mod tests {
     #[test]
     fn request_path_helpers() {
         let requests = BTreeMap::new();
-        assert!(!PortalContext::<MockTransport>::is_request_path("/org/freedesktop/portal/desktop"));
-        assert!(PortalContext::<MockTransport>::is_request_path("/org/freedesktop/portal/desktop/request/_1_42/abc"));
+        assert!(!PortalContext::<MockTransport>::is_request_path(
+            "/org/freedesktop/portal/desktop"
+        ));
+        assert!(PortalContext::<MockTransport>::is_request_path(
+            "/org/freedesktop/portal/desktop/request/_1_42/abc"
+        ));
         assert!(build_request_path(":1.42", "abc123", &requests).is_ok());
     }
 
     #[test]
     fn session_path_helpers() {
         let sessions = BTreeMap::new();
-        assert!(!PortalContext::<MockTransport>::is_session_path("/org/freedesktop/portal/desktop"));
-        assert!(PortalContext::<MockTransport>::is_session_path("/org/freedesktop/portal/desktop/session/_1_42/abc"));
+        assert!(!PortalContext::<MockTransport>::is_session_path(
+            "/org/freedesktop/portal/desktop"
+        ));
+        assert!(PortalContext::<MockTransport>::is_session_path(
+            "/org/freedesktop/portal/desktop/session/_1_42/abc"
+        ));
         assert!(build_session_path(":1.42", "abc123", &sessions).is_ok());
     }
 
     #[test]
     fn method_invocation_from_message() {
-        let msg = make_test_message("org.freedesktop.DBus", DESKTOP_PATH, "org.freedesktop.portal.FileChooser", "OpenFile");
+        let msg = make_test_message(
+            "org.freedesktop.DBus",
+            DESKTOP_PATH,
+            "org.freedesktop.portal.FileChooser",
+            "OpenFile",
+        );
         let inv = MethodInvocation::from_message(msg).unwrap();
         assert_eq!(inv.path, DESKTOP_PATH);
         assert_eq!(inv.interface, "org.freedesktop.portal.FileChooser");

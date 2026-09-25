@@ -106,16 +106,15 @@ pub fn parse(input: &str) -> Result<Url<'_>, UrlError> {
         .find('?')
         .map_or(hash, |rel| hier_start + rel);
 
-    let (authority, path_start, path_end) =
-        if input[hier_start..question].starts_with("//") {
-            let scan = hier_start + 2;
-            let end = input[scan..question]
-                .find('/')
-                .map_or(question, |rel| scan + rel);
-            (Some((scan, end)), end, question)
-        } else {
-            (None, hier_start, question)
-        };
+    let (authority, path_start, path_end) = if input[hier_start..question].starts_with("//") {
+        let scan = hier_start + 2;
+        let end = input[scan..question]
+            .find('/')
+            .map_or(question, |rel| scan + rel);
+        (Some((scan, end)), end, question)
+    } else {
+        (None, hier_start, question)
+    };
 
     let allow_empty_host = input[..scheme_end].eq_ignore_ascii_case("file");
     let authority = authority
@@ -656,11 +655,7 @@ fn split_host_port<'a>(
 /// instead of silently becoming a domain name.
 ///
 /// `base` is the byte offset of `host` within the whole URL.
-fn classify_host<'a>(
-    host: &'a str,
-    base: usize,
-    allow_empty_host: bool,
-) -> Result<Host<'a>, UrlError> {
+fn classify_host<'a>(host: &'a str, base: usize, allow_empty_host: bool) -> Result<Host<'a>, UrlError> {
     if host.is_empty() {
         return if allow_empty_host {
             Ok(Host::Domain(""))
@@ -937,10 +932,7 @@ mod tests {
         assert!(mailto.query().is_none());
         assert!(mailto.fragment().is_none());
 
-        assert_eq!(
-            parse("urn:isbn:0451450523").unwrap().path(),
-            "isbn:0451450523"
-        );
+        assert_eq!(parse("urn:isbn:0451450523").unwrap().path(), "isbn:0451450523");
         assert_eq!(
             parse("data:text/plain,hello%20world").unwrap().path(),
             "text/plain,hello%20world"
@@ -989,10 +981,7 @@ mod tests {
             parse("http://192.168.0.1/").unwrap().host(),
             Some(Host::Ipv4("192.168.0.1"))
         );
-        assert_eq!(
-            parse("http://[::1]/").unwrap().host(),
-            Some(Host::Ipv6("::1"))
-        );
+        assert_eq!(parse("http://[::1]/").unwrap().host(), Some(Host::Ipv6("::1")));
         assert_eq!(Host::Ipv6("::1").as_str(), "::1");
         assert_eq!(Host::Domain("a.b").as_str(), "a.b");
     }
@@ -1038,8 +1027,7 @@ mod tests {
 
     #[test]
     fn validates_ports() {
-        let port_of =
-            |input: &str| parse(input).unwrap().authority().unwrap().port_number();
+        let port_of = |input: &str| parse(input).unwrap().authority().unwrap().port_number();
         assert_eq!(port_of("http://h:0/"), Some(0));
         assert_eq!(port_of("http://h:65535/"), Some(65535));
         assert_eq!(port_of("http://h/"), None);
@@ -1058,10 +1046,7 @@ mod tests {
 
     #[test]
     fn reports_absolute_byte_offsets_for_invalid_characters() {
-        assert_eq!(
-            parse("http://x/a b").unwrap_err(),
-            UrlError::InvalidCharacter(10)
-        );
+        assert_eq!(parse("http://x/a b").unwrap_err(), UrlError::InvalidCharacter(10));
         assert_eq!(
             parse("http://x/p?q u").unwrap_err(),
             UrlError::InvalidCharacter(12)
@@ -1079,10 +1064,7 @@ mod tests {
             parse("http://exämple.com/").unwrap_err(),
             UrlError::InvalidCharacter(9)
         );
-        assert_eq!(
-            parse("http://x/ä").unwrap_err(),
-            UrlError::InvalidCharacter(9)
-        );
+        assert_eq!(parse("http://x/ä").unwrap_err(), UrlError::InvalidCharacter(9));
     }
 
     #[test]
@@ -1134,15 +1116,9 @@ mod tests {
         assert_eq!(parse("http://").unwrap_err(), UrlError::EmptyHost);
         assert_eq!(parse("http://:8080/").unwrap_err(), UrlError::EmptyHost);
         assert_eq!(parse("http://?query").unwrap_err(), UrlError::EmptyHost);
-        assert_eq!(
-            parse("http://999.1.1.1/").unwrap_err(),
-            UrlError::InvalidHost
-        );
+        assert_eq!(parse("http://999.1.1.1/").unwrap_err(), UrlError::InvalidHost);
         assert_eq!(parse("http://1.2.3/").unwrap_err(), UrlError::InvalidHost);
-        assert_eq!(
-            parse("http://192.168.0.01/").unwrap_err(),
-            UrlError::InvalidHost
-        );
+        assert_eq!(parse("http://192.168.0.01/").unwrap_err(), UrlError::InvalidHost);
         assert_eq!(parse("http://[::1/").unwrap_err(), UrlError::InvalidIpv6);
         assert_eq!(parse("http://[zz::1]/").unwrap_err(), UrlError::InvalidIpv6);
         assert_eq!(parse("http://[::1]x/").unwrap_err(), UrlError::InvalidHost);
@@ -1239,22 +1215,10 @@ mod tests {
     fn decode_rejects_malformed_percent_sequences() {
         assert_eq!(decode("").unwrap(), "");
         assert_eq!(decode("+").unwrap(), "+");
-        assert_eq!(
-            decode("%").unwrap_err(),
-            UrlError::InvalidPercentEncoding(0)
-        );
-        assert_eq!(
-            decode("%2").unwrap_err(),
-            UrlError::InvalidPercentEncoding(0)
-        );
-        assert_eq!(
-            decode("%zz").unwrap_err(),
-            UrlError::InvalidPercentEncoding(0)
-        );
-        assert_eq!(
-            decode("a%2G").unwrap_err(),
-            UrlError::InvalidPercentEncoding(1)
-        );
+        assert_eq!(decode("%").unwrap_err(), UrlError::InvalidPercentEncoding(0));
+        assert_eq!(decode("%2").unwrap_err(), UrlError::InvalidPercentEncoding(0));
+        assert_eq!(decode("%zz").unwrap_err(), UrlError::InvalidPercentEncoding(0));
+        assert_eq!(decode("a%2G").unwrap_err(), UrlError::InvalidPercentEncoding(1));
         assert_eq!(decode("%2f").unwrap(), "/");
         assert_eq!(decode("%2F").unwrap(), "/");
     }
@@ -1271,10 +1235,7 @@ mod tests {
     #[test]
     fn error_messages_are_stable() {
         assert_eq!(UrlError::EmptyInput.to_string(), "empty URL");
-        assert_eq!(
-            UrlError::MissingScheme.to_string(),
-            "URL is missing a scheme"
-        );
+        assert_eq!(UrlError::MissingScheme.to_string(), "URL is missing a scheme");
         assert_eq!(UrlError::InvalidScheme.to_string(), "invalid URL scheme");
         assert_eq!(
             UrlError::InvalidCharacter(7).to_string(),
@@ -1284,15 +1245,9 @@ mod tests {
             UrlError::InvalidPercentEncoding(7).to_string(),
             "invalid percent-encoding at byte offset 7"
         );
-        assert_eq!(
-            UrlError::EmptyHost.to_string(),
-            "URL authority has an empty host"
-        );
+        assert_eq!(UrlError::EmptyHost.to_string(), "URL authority has an empty host");
         assert_eq!(UrlError::InvalidHost.to_string(), "invalid URL host");
-        assert_eq!(
-            UrlError::InvalidIpv6.to_string(),
-            "invalid IPv6 host address"
-        );
+        assert_eq!(UrlError::InvalidIpv6.to_string(), "invalid IPv6 host address");
         assert_eq!(UrlError::InvalidPort.to_string(), "invalid URL port");
         assert_eq!(
             UrlError::InvalidUtf8.to_string(),

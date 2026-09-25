@@ -148,9 +148,7 @@ pub fn put_vec_u8(out: &mut Vec<u8>, data: &[u8]) -> TlsResult<()> {
 /// Appends a 16-bit length-prefixed vector.
 pub fn put_vec_u16(out: &mut Vec<u8>, data: &[u8]) -> TlsResult<()> {
     if data.len() > 65535 {
-        return Err(TlsError::Internal(
-            "vector exceeds u16 length prefix".into(),
-        ));
+        return Err(TlsError::Internal("vector exceeds u16 length prefix".into()));
     }
     put_u16(out, data.len() as u16);
     out.extend_from_slice(data);
@@ -160,9 +158,7 @@ pub fn put_vec_u16(out: &mut Vec<u8>, data: &[u8]) -> TlsResult<()> {
 /// Appends a 24-bit length-prefixed vector.
 pub fn put_vec_u24(out: &mut Vec<u8>, data: &[u8]) -> TlsResult<()> {
     if data.len() > 0xff_ffff {
-        return Err(TlsError::Internal(
-            "vector exceeds u24 length prefix".into(),
-        ));
+        return Err(TlsError::Internal("vector exceeds u24 length prefix".into()));
     }
     put_u24(out, data.len() as u32);
     out.extend_from_slice(data);
@@ -181,9 +177,7 @@ pub fn start_u16_vec(out: &mut Vec<u8>) -> usize {
 pub fn fill_u16_len(out: &mut [u8], idx: usize) -> TlsResult<()> {
     let len = out.len().saturating_sub(idx + 2);
     if len > 65535 {
-        return Err(TlsError::Internal(
-            "vector exceeds u16 length prefix".into(),
-        ));
+        return Err(TlsError::Internal("vector exceeds u16 length prefix".into()));
     }
     let bytes = u16::try_from(len)
         .map_err(|_| TlsError::Internal("vector exceeds u16 length prefix".into()))?
@@ -205,9 +199,7 @@ pub fn start_u24_vec(out: &mut Vec<u8>) -> usize {
 pub fn fill_u24_len(out: &mut [u8], idx: usize) -> TlsResult<()> {
     let len = out.len().saturating_sub(idx + 3);
     if len > 0xff_ffff {
-        return Err(TlsError::Internal(
-            "vector exceeds u24 length prefix".into(),
-        ));
+        return Err(TlsError::Internal("vector exceeds u24 length prefix".into()));
     }
     out[idx] = ((len >> 16) & 0xff) as u8;
     out[idx + 1] = ((len >> 8) & 0xff) as u8;

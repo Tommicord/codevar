@@ -16,8 +16,7 @@
 //! CSPRNG helpers and device-aware AEAD preference.
 
 use crate::tls_crypto_device::{
-    CryptoCapabilities, DeviceClass, capabilities, preferred_aead,
-    preferred_cipher_suites,
+    CryptoCapabilities, DeviceClass, capabilities, preferred_aead, preferred_cipher_suites,
 };
 use crate::tls_error::{TlsError, TlsResult};
 use crate::tls_ids::{AeadAlgorithm, CipherSuite};
@@ -57,9 +56,7 @@ pub fn device_cipher_suites() -> &'static [CipherSuite] {
 pub fn device_crypto_profile() -> &'static str {
     let caps = capabilities();
     match (caps.device, caps.preferred_aead()) {
-        (DeviceClass::Mobile, AeadAlgorithm::ChaCha20Poly1305) => {
-            "mobile / ChaCha20-Poly1305"
-        }
+        (DeviceClass::Mobile, AeadAlgorithm::ChaCha20Poly1305) => "mobile / ChaCha20-Poly1305",
         (DeviceClass::Mobile, AeadAlgorithm::Aes256Gcm) => "mobile / AES-256-GCM (hw)",
         (DeviceClass::Web, AeadAlgorithm::ChaCha20Poly1305) => "web / ChaCha20-Poly1305",
         (DeviceClass::Web, AeadAlgorithm::Aes256Gcm) => "web / AES-256-GCM",

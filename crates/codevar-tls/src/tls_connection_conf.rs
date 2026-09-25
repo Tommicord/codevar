@@ -279,10 +279,7 @@ pub fn select_cipher_suite(
 }
 
 /// Selects a mutually supported named group.
-pub fn select_group(
-    preference: &[NamedGroup],
-    offered: &[NamedGroup],
-) -> TlsResult<NamedGroup> {
+pub fn select_group(preference: &[NamedGroup], offered: &[NamedGroup]) -> TlsResult<NamedGroup> {
     for g in preference {
         if offered.contains(g) {
             return Ok(*g);
@@ -321,16 +318,10 @@ mod tests {
     #[test]
     fn client_config_builder_defaults() {
         let cfg = ClientConfig::builder().build().unwrap();
-        assert_eq!(
-            cfg.versions,
-            vec![ProtocolVersion::Tls13, ProtocolVersion::Tls12]
-        );
+        assert_eq!(cfg.versions, vec![ProtocolVersion::Tls13, ProtocolVersion::Tls12]);
         assert_eq!(cfg.cipher_suites, CipherSuite::default_offered().to_vec());
         assert_eq!(cfg.named_groups, NamedGroup::default_offered().to_vec());
-        assert_eq!(
-            cfg.signature_schemes,
-            SignatureScheme::default_offered().to_vec()
-        );
+        assert_eq!(cfg.signature_schemes, SignatureScheme::default_offered().to_vec());
         assert!(cfg.alpn_protocols.is_empty());
         assert!(cfg.require_ems);
         // Verifier rejects unknown hosts by default (not skip-all).
@@ -342,10 +333,7 @@ mod tests {
     #[test]
     fn client_config_dangerous_insecure_defaults() {
         let cfg = ClientConfig::dangerous_insecure();
-        assert_eq!(
-            cfg.versions,
-            vec![ProtocolVersion::Tls13, ProtocolVersion::Tls12]
-        );
+        assert_eq!(cfg.versions, vec![ProtocolVersion::Tls13, ProtocolVersion::Tls12]);
         assert!(!cfg.cipher_suites.is_empty());
         assert!(!cfg.named_groups.is_empty());
         assert!(!cfg.signature_schemes.is_empty());
@@ -436,10 +424,7 @@ mod tests {
     #[test]
     fn server_config_new_defaults_and_builder() {
         let cfg = ServerConfig::new(certified_key());
-        assert_eq!(
-            cfg.versions,
-            vec![ProtocolVersion::Tls13, ProtocolVersion::Tls12]
-        );
+        assert_eq!(cfg.versions, vec![ProtocolVersion::Tls13, ProtocolVersion::Tls12]);
         assert_eq!(cfg.cipher_suites, CipherSuite::default_offered().to_vec());
         assert_eq!(cfg.named_groups, NamedGroup::default_offered().to_vec());
         assert!(cfg.alpn_protocols.is_empty());
@@ -464,14 +449,8 @@ mod tests {
     #[test]
     fn select_version_prefers_server_order_and_errors() {
         use ProtocolVersion::{Tls12, Tls13};
-        assert_eq!(
-            select_version(&[Tls12, Tls13], &[Tls13, Tls12]).unwrap(),
-            Tls13
-        );
-        assert_eq!(
-            select_version(&[Tls13, Tls12], &[Tls12, Tls13]).unwrap(),
-            Tls12
-        );
+        assert_eq!(select_version(&[Tls12, Tls13], &[Tls13, Tls12]).unwrap(), Tls13);
+        assert_eq!(select_version(&[Tls13, Tls12], &[Tls12, Tls13]).unwrap(), Tls12);
         assert_eq!(select_version(&[Tls12], &[Tls13, Tls12]).unwrap(), Tls12);
         let err = select_version(&[], &[Tls13]).unwrap_err();
         assert_eq!(
@@ -502,8 +481,7 @@ mod tests {
             TlsAes128GcmSha256
         );
         // TLS 1.3 suite not offered under TLS 1.3.
-        let err =
-            select_cipher_suite(&[TlsAes128GcmSha256], &[0xC02B], Tls13).unwrap_err();
+        let err = select_cipher_suite(&[TlsAes128GcmSha256], &[0xC02B], Tls13).unwrap_err();
         assert_eq!(
             err,
             TlsError::Alert(crate::tls_alert::AlertDescription::HandshakeFailure)
@@ -535,10 +513,7 @@ mod tests {
             select_group(&[Secp384r1, X25519], &[X25519, Secp384r1]).unwrap(),
             Secp384r1
         );
-        assert_eq!(
-            select_group(&[X25519], &[Secp384r1, X25519]).unwrap(),
-            X25519
-        );
+        assert_eq!(select_group(&[X25519], &[Secp384r1, X25519]).unwrap(), X25519);
         let err = select_group(&[Secp384r1], &[X25519]).unwrap_err();
         assert_eq!(
             err,

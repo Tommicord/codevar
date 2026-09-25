@@ -69,10 +69,7 @@ impl fmt::Display for ValidateError {
                 f,
                 "buffer too short: need at least {required} bytes, got {actual}"
             ),
-            Self::UnknownFormat => write!(
-                f,
-                "unknown format: magic bytes do not match any supported format"
-            ),
+            Self::UnknownFormat => write!(f, "unknown format: magic bytes do not match any supported format"),
             Self::InvalidSvg => {
                 write!(f, "invalid SVG: missing XML declaration or <svg element")
             }
@@ -271,10 +268,7 @@ mod tests {
     #[test]
     fn rejects_riff_without_wave() {
         let riff = b"RIFF\x24\x00\x00\x00AVI ";
-        assert!(matches!(
-            validate_sound(riff),
-            Err(ValidateError::UnknownFormat)
-        ));
+        assert!(matches!(validate_sound(riff), Err(ValidateError::UnknownFormat)));
     }
 
     #[test]
@@ -337,18 +331,9 @@ mod tests {
             IconOrSound::Icon(IconFormat::Ico).mime_type(),
             "image/vnd.microsoft.icon"
         );
-        assert_eq!(
-            IconOrSound::Icon(IconFormat::Svg).mime_type(),
-            "image/svg+xml"
-        );
-        assert_eq!(
-            IconOrSound::Sound(SoundFormat::Wav).mime_type(),
-            "audio/wav"
-        );
-        assert_eq!(
-            IconOrSound::Sound(SoundFormat::Ogg).mime_type(),
-            "audio/ogg"
-        );
+        assert_eq!(IconOrSound::Icon(IconFormat::Svg).mime_type(), "image/svg+xml");
+        assert_eq!(IconOrSound::Sound(SoundFormat::Wav).mime_type(), "audio/wav");
+        assert_eq!(IconOrSound::Sound(SoundFormat::Ogg).mime_type(), "audio/ogg");
     }
 
     #[test]

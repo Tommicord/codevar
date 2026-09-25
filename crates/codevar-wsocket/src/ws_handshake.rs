@@ -206,9 +206,7 @@ impl WsClientHandshake {
             }
             self.selected_protocol = Some(proto.clone());
         } else if response.headers.contains_key("sec-websocket-protocol") {
-            return Err(WsError::handshake(
-                "empty Sec-WebSocket-Protocol in response",
-            ));
+            return Err(WsError::handshake("empty Sec-WebSocket-Protocol in response"));
         }
         // Reject unnegotiated extensions (we offer none).
         if let Some(ext) = response.headers.get("sec-websocket-extensions")
@@ -280,9 +278,7 @@ impl WsServerHandshake {
         // Key must decode to 16 bytes (RFC 6455 §4.1).
         let decoded = ws_base64::decode(&request.key)?;
         if decoded.len() != 16 {
-            return Err(WsError::handshake(
-                "Sec-WebSocket-Key must decode to 16 bytes",
-            ));
+            return Err(WsError::handshake("Sec-WebSocket-Key must decode to 16 bytes"));
         }
         // Select first mutually supported subprotocol.
         self.selected_protocol = request
@@ -440,9 +436,9 @@ where
         if line.is_empty() {
             break;
         }
-        let (name, value) = line.split_once(':').ok_or_else(|| {
-            WsError::handshake(format!("malformed header line: {line}"))
-        })?;
+        let (name, value) = line
+            .split_once(':')
+            .ok_or_else(|| WsError::handshake(format!("malformed header line: {line}")))?;
         let name = name.trim().to_ascii_lowercase();
         let value = value.trim().to_string();
         // Combine duplicate headers with comma (RFC 7230 §3.2.2), except
@@ -501,10 +497,7 @@ mod tests {
         let nonce = *b"the sample nonce";
         assert_eq!(nonce.len(), 16);
         assert_eq!(ws_base64::encode(&nonce), "dGhlIHNhbXBsZSBub25jZQ==");
-        assert_eq!(
-            accept_key_from_nonce(&nonce),
-            "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
-        );
+        assert_eq!(accept_key_from_nonce(&nonce), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
         let manual = compute_accept_key(&ws_base64::encode(&nonce));
         assert_eq!(accept_key_from_nonce(&nonce), manual);
     }
@@ -530,8 +523,7 @@ mod tests {
     #[test]
     fn client_handshake_validates_path_and_derives_expectations() {
         for bad in ["", "relative", "http://x/y"] {
-            let err = WsClientHandshake::new(bad, "host", vec![], None)
-                .expect_err("bad path accepted");
+            let err = WsClientHandshake::new(bad, "host", vec![], None).expect_err("bad path accepted");
             assert!(matches!(err, WsError::Handshake(_)));
         }
         let hs = WsClientHandshake::new(
@@ -570,8 +562,7 @@ mod tests {
         assert!(text.contains("Sec-WebSocket-Protocol: chat, superchat\r\n"));
         assert!(text.ends_with("\r\n\r\n"));
 
-        let plain =
-            WsClientHandshake::new("/", "h", vec![], None).expect("valid handshake");
+        let plain = WsClientHandshake::new("/", "h", vec![], None).expect("valid handshake");
         let plain_text = String::from_utf8(plain.encode_request()).expect("utf8");
         assert!(!plain_text.contains("Sec-WebSocket-Protocol"));
         assert!(!plain_text.contains("Origin"));
@@ -579,26 +570,17 @@ mod tests {
 
     #[test]
     fn request_response_round_trip() {
-        let mut client = WsClientHandshake::new(
-            "/chat",
-            "example.com",
-            vec!["chat".to_string()],
-            None,
-        )
-        .expect("valid handshake");
+        let mut client = WsClientHandshake::new("/chat", "example.com", vec!["chat".to_string()], None)
+            .expect("valid handshake");
         let bytes = client.encode_request();
-        let (req, consumed) =
-            try_parse_request(&bytes).expect("parse").expect("complete");
+        let (req, consumed) = try_parse_request(&bytes).expect("parse").expect("complete");
         assert_eq!(consumed, bytes.len());
         assert_eq!(req.path, "/chat");
         assert_eq!(req.host, "example.com");
         assert_eq!(req.key, client.key_b64);
         assert_eq!(req.protocols, vec!["chat".to_string()]);
         assert!(req.origin.is_none());
-        assert_eq!(
-            req.headers.get("upgrade").map(String::as_str),
-            Some("websocket")
-        );
+        assert_eq!(req.headers.get("upgrade").map(String::as_str), Some("websocket"));
         assert_eq!(
             req.headers.get("sec-websocket-version").map(String::as_str),
             Some("13")
@@ -647,14 +629,10 @@ mod tests {
             let parsed = try_parse_response(&full[..i]).expect("prefix parses");
             assert!(parsed.is_none(), "prefix of {i} bytes parsed early");
         }
-        let (resp, consumed) =
-            try_parse_response(full).expect("parse").expect("complete");
+        let (resp, consumed) = try_parse_response(full).expect("parse").expect("complete");
         assert_eq!(consumed, full.len());
         assert_eq!(resp.status, 101);
-        assert_eq!(
-            resp.headers.get("upgrade").map(String::as_str),
-            Some("websocket")
-        );
+        assert_eq!(resp.headers.get("upgrade").map(String::as_str), Some("websocket"));
     }
 
     #[test]
@@ -672,14 +650,10 @@ mod tests {
                     Sec-WebSocket-Protocol: chat\r\n\
                     Sec-WebSocket-Protocol: super\r\n\r\n";
         let (req2, _) = try_parse_request(raw2).expect("parse").expect("complete");
-        assert_eq!(
-            req2.protocols,
-            vec!["chat".to_string(), "super".to_string()]
-        );
+        assert_eq!(req2.protocols, vec!["chat".to_string(), "super".to_string()]);
 
         // Empty protocol tokens are dropped.
-        let raw3 =
-            b"GET / HTTP/1.1\r\nHost: h\r\nSec-WebSocket-Protocol: a,, b ,\r\n\r\n";
+        let raw3 = b"GET / HTTP/1.1\r\nHost: h\r\nSec-WebSocket-Protocol: a,, b ,\r\n\r\n";
         let (req3, _) = try_parse_request(raw3).expect("parse").expect("complete");
         assert_eq!(req3.protocols, vec!["a".to_string(), "b".to_string()]);
 
@@ -700,17 +674,11 @@ mod tests {
 
         // Whitespace-folded header lines have no colon -> rejected as malformed.
         let folded = b"GET / HTTP/1.1\r\nHost: h\r\nX-Long: part1\r\n  part2\r\n\r\n";
-        assert!(matches!(
-            try_parse_request(folded),
-            Err(WsError::Handshake(_))
-        ));
+        assert!(matches!(try_parse_request(folded), Err(WsError::Handshake(_))));
 
         // Non-GET method.
         let post = b"POST / HTTP/1.1\r\nHost: h\r\n\r\n";
-        assert!(matches!(
-            try_parse_request(post),
-            Err(WsError::Handshake(_))
-        ));
+        assert!(matches!(try_parse_request(post), Err(WsError::Handshake(_))));
 
         // Wrong HTTP version.
         let v10 = b"GET / HTTP/1.0\r\nHost: h\r\n\r\n";
@@ -718,17 +686,11 @@ mod tests {
 
         // Request line with too few tokens.
         let short = b"GET\r\nHost: h\r\n\r\n";
-        assert!(matches!(
-            try_parse_request(short),
-            Err(WsError::Handshake(_))
-        ));
+        assert!(matches!(try_parse_request(short), Err(WsError::Handshake(_))));
 
         // Header block is not valid UTF-8.
         let bad_utf8 = b"GET / HTTP/1.1\r\nHost: \xff\xfe\r\n\r\n";
-        assert!(matches!(
-            try_parse_request(bad_utf8),
-            Err(WsError::Handshake(_))
-        ));
+        assert!(matches!(try_parse_request(bad_utf8), Err(WsError::Handshake(_))));
     }
 
     #[test]
@@ -745,31 +707,19 @@ mod tests {
 
         // Non-numeric status token.
         let bogus = b"HTTP/1.1 xyz\r\n\r\n";
-        assert!(matches!(
-            try_parse_response(bogus),
-            Err(WsError::Handshake(_))
-        ));
+        assert!(matches!(try_parse_response(bogus), Err(WsError::Handshake(_))));
 
         // Not an HTTP status line at all (no status token).
         let garbage = b"GARBAGE\r\n\r\n";
-        assert!(matches!(
-            try_parse_response(garbage),
-            Err(WsError::Handshake(_))
-        ));
+        assert!(matches!(try_parse_response(garbage), Err(WsError::Handshake(_))));
 
         // Missing status token entirely.
         let short = b"HTTP/1.1\r\n\r\n";
-        assert!(matches!(
-            try_parse_response(short),
-            Err(WsError::Handshake(_))
-        ));
+        assert!(matches!(try_parse_response(short), Err(WsError::Handshake(_))));
 
         // Non-UTF-8 header block.
         let bad_utf8 = b"HTTP/1.1 101\r\nX: \xff\r\n\r\n";
-        assert!(matches!(
-            try_parse_response(bad_utf8),
-            Err(WsError::Handshake(_))
-        ));
+        assert!(matches!(try_parse_response(bad_utf8), Err(WsError::Handshake(_))));
 
         // Accept and subprotocol are extracted.
         let with_keys = b"HTTP/1.1 101\r\n\
@@ -796,39 +746,26 @@ mod tests {
 
     #[test]
     fn validate_response_rejects_bad_status_upgrade_and_accept() {
-        let mut hs = WsClientHandshake::new("/", "h", vec!["chat".to_string()], None)
-            .expect("handshake");
+        let mut hs = WsClientHandshake::new("/", "h", vec!["chat".to_string()], None).expect("handshake");
         let good_accept = hs.expected_accept.clone();
 
         let mut resp = base_response(&good_accept);
         resp.status = 400;
-        assert!(matches!(
-            hs.validate_response(&resp),
-            Err(WsError::Handshake(_))
-        ));
+        assert!(matches!(hs.validate_response(&resp), Err(WsError::Handshake(_))));
 
         let mut resp = base_response(&good_accept);
         resp.headers.remove("upgrade");
-        assert!(matches!(
-            hs.validate_response(&resp),
-            Err(WsError::Handshake(_))
-        ));
+        assert!(matches!(hs.validate_response(&resp), Err(WsError::Handshake(_))));
 
         let mut resp = base_response(&good_accept);
         resp.headers
             .insert("upgrade".to_string(), "h2c".to_string());
-        assert!(matches!(
-            hs.validate_response(&resp),
-            Err(WsError::Handshake(_))
-        ));
+        assert!(matches!(hs.validate_response(&resp), Err(WsError::Handshake(_))));
 
         let mut resp = base_response(&good_accept);
         resp.headers
             .insert("connection".to_string(), "keep-alive".to_string());
-        assert!(matches!(
-            hs.validate_response(&resp),
-            Err(WsError::Handshake(_))
-        ));
+        assert!(matches!(hs.validate_response(&resp), Err(WsError::Handshake(_))));
 
         // Connection may be a token list, case-insensitively.
         let mut resp = base_response(&good_accept);
@@ -837,10 +774,7 @@ mod tests {
         hs.validate_response(&resp).expect("token list accepted");
 
         let resp = base_response("AAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
-        assert!(matches!(
-            hs.validate_response(&resp),
-            Err(WsError::Handshake(_))
-        ));
+        assert!(matches!(hs.validate_response(&resp), Err(WsError::Handshake(_))));
 
         // Correct everything with matching accept: success path.
         let resp = base_response(&good_accept);
@@ -850,13 +784,9 @@ mod tests {
 
     #[test]
     fn validate_response_subprotocol_and_extension_rules() {
-        let mut hs = WsClientHandshake::new(
-            "/",
-            "h",
-            vec!["chat".to_string(), "superchat".to_string()],
-            None,
-        )
-        .expect("handshake");
+        let mut hs =
+            WsClientHandshake::new("/", "h", vec!["chat".to_string(), "superchat".to_string()], None)
+                .expect("handshake");
         let accept = hs.expected_accept.clone();
 
         // Offered subprotocol is selected.
@@ -868,19 +798,13 @@ mod tests {
         // Unoffered subprotocol is rejected.
         let mut resp = base_response(&accept);
         resp.protocol = Some("evil".to_string());
-        assert!(matches!(
-            hs.validate_response(&resp),
-            Err(WsError::Handshake(_))
-        ));
+        assert!(matches!(hs.validate_response(&resp), Err(WsError::Handshake(_))));
 
         // Empty Sec-WebSocket-Protocol header with no selected protocol fails.
         let mut resp = base_response(&accept);
         resp.headers
             .insert("sec-websocket-protocol".to_string(), String::new());
-        assert!(matches!(
-            hs.validate_response(&resp),
-            Err(WsError::Handshake(_))
-        ));
+        assert!(matches!(hs.validate_response(&resp), Err(WsError::Handshake(_))));
 
         // Unoffered extension is rejected; empty extension header is fine.
         let mut resp = base_response(&accept);
@@ -888,10 +812,7 @@ mod tests {
             "sec-websocket-extensions".to_string(),
             "permessage-deflate".to_string(),
         );
-        assert!(matches!(
-            hs.validate_response(&resp),
-            Err(WsError::Handshake(_))
-        ));
+        assert!(matches!(hs.validate_response(&resp), Err(WsError::Handshake(_))));
 
         let mut resp = base_response(&accept);
         resp.headers
@@ -988,10 +909,7 @@ mod tests {
     #[test]
     fn encode_response_requires_accepted_request() {
         let hs = WsServerHandshake::new(vec![]);
-        assert!(matches!(
-            hs.encode_response(),
-            Err(WsError::InvalidState(_))
-        ));
+        assert!(matches!(hs.encode_response(), Err(WsError::InvalidState(_))));
     }
 
     #[test]
@@ -1023,17 +941,13 @@ mod tests {
         let mut hs = WsClientHandshake::new("/", "h", vec![], None).expect("handshake");
         hs.path = "/x\r\nInjected: yes".to_string();
         let bytes = hs.encode_request();
-        assert!(matches!(
-            try_parse_request(&bytes),
-            Err(WsError::Handshake(_))
-        ));
+        assert!(matches!(try_parse_request(&bytes), Err(WsError::Handshake(_))));
     }
 
     #[test]
     fn crlf_injection_in_origin_splits_into_a_separate_header() {
         let hs =
-            WsClientHandshake::new("/", "h", vec![], Some("o\r\nX-Evil: 1".to_string()))
-                .expect("handshake");
+            WsClientHandshake::new("/", "h", vec![], Some("o\r\nX-Evil: 1".to_string())).expect("handshake");
         let bytes = hs.encode_request();
         let (req, _) = try_parse_request(&bytes).expect("parse").expect("complete");
         // The injected line is parsed as its own header, and Origin is truncated.
@@ -1047,9 +961,6 @@ mod tests {
         hs.host = "h\r\nGET /evil HTTP/1.1".to_string();
         let bytes = hs.encode_request();
         // The injected line has no colon, so it is rejected as malformed.
-        assert!(matches!(
-            try_parse_request(&bytes),
-            Err(WsError::Handshake(_))
-        ));
+        assert!(matches!(try_parse_request(&bytes), Err(WsError::Handshake(_))));
     }
 }

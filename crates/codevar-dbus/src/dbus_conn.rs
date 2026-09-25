@@ -32,8 +32,7 @@ use crate::dbus_transport::{DbusPollEvents, DbusTransport, close_fds};
 
 /// Default timeout for a method call, matching the D-Bus
 /// specification default of 25 seconds.
-pub const DEFAULT_CALL_TIMEOUT: core::time::Duration =
-    core::time::Duration::from_millis(25_000);
+pub const DEFAULT_CALL_TIMEOUT: core::time::Duration = core::time::Duration::from_millis(25_000);
 
 /// `RequestName` flag: let a later `REPLACE_EXISTING` requester take
 /// the name away from this request.
@@ -241,13 +240,7 @@ impl<T: DbusTransport> Connection<T> {
     ///
     /// Returns [`DbusError::InvalidName`] if the path or interface
     /// is malformed, or [`DbusError::Io`] on transport errors.
-    pub fn emit_signal<F>(
-        &mut self,
-        path: &str,
-        interface: &str,
-        member: &str,
-        body: F,
-    ) -> DbusResult<()>
+    pub fn emit_signal<F>(&mut self, path: &str, interface: &str, member: &str, body: F) -> DbusResult<()>
     where
         F: FnOnce(&mut BodyWriter) -> DbusResult<()>,
     {
@@ -291,12 +284,7 @@ impl<T: DbusTransport> Connection<T> {
     /// `org.freedesktop.DBus.Error.*` failure, [`DbusError::Timeout`]
     /// on deadline expiry, or [`DbusError::InvalidName`] for a
     /// malformed name.
-    pub fn request_name(
-        &mut self,
-        name: &str,
-        flags: u32,
-        timeout: core::time::Duration,
-    ) -> DbusResult<u32> {
+    pub fn request_name(&mut self, name: &str, flags: u32, timeout: core::time::Duration) -> DbusResult<u32> {
         let mut message = DbusMessage::method_call(
             "org.freedesktop.DBus",
             "/org/freedesktop/DBus",
@@ -322,11 +310,7 @@ impl<T: DbusTransport> Connection<T> {
     /// Returns [`DbusError::Remote`] if the bus reports an error,
     /// [`DbusError::Timeout`] on deadline expiry, or
     /// [`DbusError::InvalidName`] for a malformed rule.
-    pub fn add_match(
-        &mut self,
-        rule: &str,
-        timeout: core::time::Duration,
-    ) -> DbusResult<()> {
+    pub fn add_match(&mut self, rule: &str, timeout: core::time::Duration) -> DbusResult<()> {
         let mut message = DbusMessage::method_call(
             "org.freedesktop.DBus",
             "/org/freedesktop/DBus",
@@ -351,11 +335,7 @@ impl<T: DbusTransport> Connection<T> {
     ///
     /// Returns [`DbusError::Remote`], [`DbusError::Timeout`], or
     /// [`DbusError::InvalidName`].
-    pub fn remove_match(
-        &mut self,
-        rule: &str,
-        timeout: core::time::Duration,
-    ) -> DbusResult<()> {
+    pub fn remove_match(&mut self, rule: &str, timeout: core::time::Duration) -> DbusResult<()> {
         let mut message = DbusMessage::method_call(
             "org.freedesktop.DBus",
             "/org/freedesktop/DBus",
@@ -395,10 +375,7 @@ impl<T: DbusTransport> Connection<T> {
     ///
     /// Returns [`DbusError::Timeout`] when no message arrives in
     /// time, or [`DbusError::Disconnected`] on peer close.
-    pub fn recv_timeout(
-        &mut self,
-        timeout: core::time::Duration,
-    ) -> DbusResult<DbusMessage> {
+    pub fn recv_timeout(&mut self, timeout: core::time::Duration) -> DbusResult<DbusMessage> {
         let deadline = self
             .transport
             .now_ms()
@@ -568,18 +545,13 @@ impl<T: DbusTransport> Connection<T> {
         }
     }
 
-    fn wait_reply(
-        &mut self,
-        serial: u32,
-        timeout: core::time::Duration,
-    ) -> DbusResult<DbusMessage> {
+    fn wait_reply(&mut self, serial: u32, timeout: core::time::Duration) -> DbusResult<DbusMessage> {
         let deadline = self
             .transport
             .now_ms()
             .saturating_add(timeout.as_millis() as u64);
         loop {
-            if let Some(pos) = self.pending_replies.iter().position(|(s, _)| *s == serial)
-            {
+            if let Some(pos) = self.pending_replies.iter().position(|(s, _)| *s == serial) {
                 let (_, message) = self.pending_replies.remove(pos);
                 return if message.kind() == MessageKind::Error {
                     Err(self.remote_error(message))
@@ -602,9 +574,7 @@ impl<T: DbusTransport> Connection<T> {
             if events.contains(DbusPollEvents::WRITABLE) {
                 self.flush_writable()?;
             }
-            if events.contains(DbusPollEvents::READABLE)
-                || events.contains(DbusPollEvents::HANGUP)
-            {
+            if events.contains(DbusPollEvents::READABLE) || events.contains(DbusPollEvents::HANGUP) {
                 self.drain_available()?;
             }
         }
@@ -794,8 +764,7 @@ mod tests {
     #[test]
     fn request_name_maps_bus_errors_to_remote_errors() {
         let mut transport = MockTransport::new();
-        let mut error =
-            DbusMessage::error(1, "org.freedesktop.DBus.Error.NameHasNoOwner").unwrap();
+        let mut error = DbusMessage::error(1, "org.freedesktop.DBus.Error.NameHasNoOwner").unwrap();
         error.set_serial(100).unwrap();
         error
             .build_body(|body| body.write_str("no such name"))
@@ -838,10 +807,7 @@ mod tests {
         assert_eq!(sent.len(), 2);
         // First message travels plain, the second one carries the fd.
         assert!(sent[0].1.is_empty());
-        assert_eq!(
-            DbusMessage::decode(&sent[0].0).unwrap().member(),
-            Some("One")
-        );
+        assert_eq!(DbusMessage::decode(&sent[0].0).unwrap().member(), Some("One"));
         assert_eq!(sent[1].1, vec![fd]);
         let decoded = DbusMessage::decode(&sent[1].0).unwrap();
         assert_eq!(decoded.member(), Some("Two"));

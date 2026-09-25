@@ -97,9 +97,7 @@ impl DbusAddress {
                 continue;
             }
             let (key, value) = pair.split_once('=').ok_or_else(|| {
-                DbusError::invalid_address(alloc::format!(
-                    "address entry `{pair}` is missing `=`"
-                ))
+                DbusError::invalid_address(alloc::format!("address entry `{pair}` is missing `=`"))
             })?;
             if key.is_empty() {
                 return Err(DbusError::invalid_address("address key is empty"));
@@ -175,26 +173,19 @@ pub fn percent_decode(value: &str) -> DbusResult<String> {
             .get(index + 1)
             .and_then(|&digit| hex_digit(digit))
             .ok_or_else(|| {
-                DbusError::invalid_address(alloc::format!(
-                    "invalid escape sequence in `{value}`"
-                ))
+                DbusError::invalid_address(alloc::format!("invalid escape sequence in `{value}`"))
             })?;
         let low = bytes
             .get(index + 2)
             .and_then(|&digit| hex_digit(digit))
             .ok_or_else(|| {
-                DbusError::invalid_address(alloc::format!(
-                    "invalid escape sequence in `{value}`"
-                ))
+                DbusError::invalid_address(alloc::format!("invalid escape sequence in `{value}`"))
             })?;
         decoded.push(high << 4 | low);
         index += 3;
     }
-    String::from_utf8(decoded).map_err(|_| {
-        DbusError::invalid_address(alloc::format!(
-            "`{value}` does not decode to valid UTF-8"
-        ))
-    })
+    String::from_utf8(decoded)
+        .map_err(|_| DbusError::invalid_address(alloc::format!("`{value}` does not decode to valid UTF-8")))
 }
 
 const fn hex_digit(digit: u8) -> Option<u8> {
@@ -212,8 +203,7 @@ mod tests {
 
     #[test]
     fn parses_unix_path_with_guid() {
-        let address =
-            DbusAddress::parse("unix:path=/run/user/1000/bus,guid=1234abcd").unwrap();
+        let address = DbusAddress::parse("unix:path=/run/user/1000/bus,guid=1234abcd").unwrap();
         assert_eq!(address.transport(), "unix");
         assert!(address.is_unix());
         assert!(address.is_connectable());

@@ -34,11 +34,7 @@ fn substring_tokens(
             let mut key = [0u8; SU_LENGTH];
             // SAFETY: `index + SU_LENGTH <= input.len()`.
             unsafe {
-                core::ptr::copy_nonoverlapping(
-                    input.as_ptr().add(index),
-                    key.as_mut_ptr(),
-                    SU_LENGTH,
-                );
+                core::ptr::copy_nonoverlapping(input.as_ptr().add(index), key.as_mut_ptr(), SU_LENGTH);
             }
             if let Some(starts) = positions.get(&key) {
                 for &start in starts.iter().rev() {
@@ -74,11 +70,7 @@ fn substring_tokens(
             if index + SU_LENGTH <= input.len() {
                 let mut key = [0u8; SU_LENGTH];
                 unsafe {
-                    core::ptr::copy_nonoverlapping(
-                        input.as_ptr().add(index),
-                        key.as_mut_ptr(),
-                        SU_LENGTH,
-                    );
+                    core::ptr::copy_nonoverlapping(input.as_ptr().add(index), key.as_mut_ptr(), SU_LENGTH);
                 }
                 positions.entry(key).or_default().push(index);
             }
@@ -135,12 +127,7 @@ fn match_prefix(input: &[u8], a: usize, b: usize, limit: usize) -> usize {
     }
     while length < limit {
         // SAFETY: `a + length < input.len()` and same for `b` by `limit` clamp.
-        let (left, right) = unsafe {
-            (
-                *input.as_ptr().add(a + length),
-                *input.as_ptr().add(b + length),
-            )
-        };
+        let (left, right) = unsafe { (*input.as_ptr().add(a + length), *input.as_ptr().add(b + length)) };
         if left != right {
             break;
         }
@@ -172,11 +159,7 @@ fn index_substring_positions(
         if index + SU_LENGTH <= input.len() {
             let mut key = [0u8; SU_LENGTH];
             unsafe {
-                core::ptr::copy_nonoverlapping(
-                    input.as_ptr().add(index),
-                    key.as_mut_ptr(),
-                    SU_LENGTH,
-                );
+                core::ptr::copy_nonoverlapping(input.as_ptr().add(index), key.as_mut_ptr(), SU_LENGTH);
             }
             let chain = positions.entry(key).or_default();
             chain.push(index);
@@ -187,11 +170,7 @@ fn index_substring_positions(
     }
 }
 
-fn decode_substring_tokens(
-    tokens: &[u8],
-    expected: usize,
-    output: &mut Vec<u8>,
-) -> CompressorResult<()> {
+fn decode_substring_tokens(tokens: &[u8], expected: usize, output: &mut Vec<u8>) -> CompressorResult<()> {
     let mut position = 0usize;
     while position < tokens.len() {
         // SAFETY: `position < tokens.len()`.
@@ -211,9 +190,7 @@ fn decode_substring_tokens(
                 if end > tokens.len() {
                     return Err(CompressorError::TruncatedFrame);
                 }
-                let literals = unsafe {
-                    core::slice::from_raw_parts(tokens.as_ptr().add(position), length)
-                };
+                let literals = unsafe { core::slice::from_raw_parts(tokens.as_ptr().add(position), length) };
                 extend_bytes(output, literals);
                 position = end;
             }
@@ -264,8 +241,7 @@ fn decode_substring_tokens(
 
 /// Encodes `input` as a fixed-window substring frame.
 pub fn substring_encode(input: &[u8]) -> CompressorResult<Vec<u8>> {
-    let length =
-        u32::try_from(input.len()).map_err(|_| CompressorError::InputTooLarge)?;
+    let length = u32::try_from(input.len()).map_err(|_| CompressorError::InputTooLarge)?;
     let mut positions = std::collections::HashMap::new();
     let tokens = substring_tokens(input, input.len(), &mut positions)?;
     let mut frame = Vec::with_capacity(7 + tokens.len());
@@ -294,37 +270,27 @@ pub fn substring_decode(frame: &[u8]) -> CompressorResult<Vec<u8>> {
 }
 
 /// Encodes `input` as blocked dynamic-substring (`Dysu`) frames.
-pub fn dynamic_substring_encode(
-    input: &[u8],
-    block_size: usize,
-) -> CompressorResult<Vec<u8>> {
+pub fn dynamic_substring_encode(input: &[u8], block_size: usize) -> CompressorResult<Vec<u8>> {
     if block_size == 0 || block_size > usize::from(u16::MAX) {
         return Err(CompressorError::InputTooLarge);
     }
-    let length =
-        u32::try_from(input.len()).map_err(|_| CompressorError::InputTooLarge)?;
+    let length = u32::try_from(input.len()).map_err(|_| CompressorError::InputTooLarge)?;
     let mut blocks = Vec::new();
     let mut index = 0usize;
     while index < input.len() {
         let end = (index + block_size).min(input.len());
         let mut positions = std::collections::HashMap::new();
-        blocks.push(substring_tokens(
-            &input[index..end],
-            end - index,
-            &mut positions,
-        )?);
+        blocks.push(substring_tokens(&input[index..end], end - index, &mut positions)?);
         index = end;
     }
-    let block_count =
-        u32::try_from(blocks.len()).map_err(|_| CompressorError::InputTooLarge)?;
+    let block_count = u32::try_from(blocks.len()).map_err(|_| CompressorError::InputTooLarge)?;
     let mut frame = Vec::new();
     frame.extend_from_slice(FrameKind::Dysu.magic());
     frame.extend_from_slice(&length.to_be_bytes());
     frame.extend_from_slice(&(block_size as u16).to_be_bytes());
     frame.extend_from_slice(&block_count.to_be_bytes());
     for block in blocks {
-        let block_length =
-            u32::try_from(block.len()).map_err(|_| CompressorError::InputTooLarge)?;
+        let block_length = u32::try_from(block.len()).map_err(|_| CompressorError::InputTooLarge)?;
         frame.extend_from_slice(&block_length.to_be_bytes());
         frame.extend_from_slice(&block);
     }
@@ -366,20 +332,14 @@ pub fn dynamic_substring_decode(frame: &[u8]) -> CompressorResult<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        SU_LENGTH, dynamic_substring_decode, dynamic_substring_encode, substring_decode,
-        substring_encode,
+        SU_LENGTH, dynamic_substring_decode, dynamic_substring_encode, substring_decode, substring_encode,
     };
     use crate::compression_error::CompressorError;
     use alloc::vec::Vec;
 
     #[test]
     fn substring_roundtrip() {
-        let samples: &[&[u8]] = &[
-            b"",
-            b"short",
-            b"abcdefghijklmnopabcdefghijklmnop",
-            &[0xAAu8; 64],
-        ];
+        let samples: &[&[u8]] = &[b"", b"short", b"abcdefghijklmnopabcdefghijklmnop", &[0xAAu8; 64]];
         for sample in samples {
             let frame = substring_encode(sample).expect("encode");
             assert_eq!(substring_decode(&frame).expect("decode"), *sample);
@@ -408,10 +368,7 @@ mod tests {
 
     #[test]
     fn rejects_bad_magic() {
-        assert_eq!(
-            substring_decode(b"XX\x01"),
-            Err(CompressorError::InvalidFrame)
-        );
+        assert_eq!(substring_decode(b"XX\x01"), Err(CompressorError::InvalidFrame));
         assert_eq!(
             dynamic_substring_decode(b"SX\x01"),
             Err(CompressorError::InvalidFrame)

@@ -31,7 +31,7 @@ use alloc::string::{String, ToString};
 
 use crate::xdp_app_info::AppInfo;
 use crate::xdp_error::{PortalError, XdpResult};
-use crate::xdp_utils::{is_valid_token, generate_token, OptionMap};
+use crate::xdp_utils::{OptionMap, generate_token, is_valid_token};
 
 pub const REQUEST_BASE_PATH: &str = "/org/freedesktop/portal/desktop/request";
 
@@ -56,12 +56,7 @@ pub struct RequestHandle {
 
 impl RequestHandle {
     /// Creates a new request handle.
-    pub fn new(
-        sender: &str,
-        token: String,
-        app_info: AppInfo,
-        created_ms: u64,
-    ) -> Self {
+    pub fn new(sender: &str, token: String, app_info: AppInfo, created_ms: u64) -> Self {
         let sanitized = sanitize_sender(sender);
         let path = format!("{}/{}/{}", REQUEST_BASE_PATH, sanitized, token);
         Self {
@@ -84,7 +79,7 @@ impl RequestHandle {
 
 /// Sanitizes a sender name for use in an object path: replaces `:` and `.` with `_`.
 fn sanitize_sender(sender: &str) -> String {
-    sender.replace(':', "_").replace('.', "_")
+    sender.replace([':', '.'], "_")
 }
 
 /// Extracts the `handle_token` from an option map, or generates one.
@@ -121,10 +116,7 @@ pub fn build_request_path(
     claimed_paths: &BTreeMap<String, RequestHandle>,
 ) -> XdpResult<String> {
     if !is_valid_token(token) {
-        return Err(PortalError::InvalidArgument(format!(
-            "Invalid token: {}",
-            token
-        )));
+        return Err(PortalError::InvalidArgument(format!("Invalid token: {}", token)));
     }
     let sanitized = sanitize_sender(sender);
     let path = format!("{}/{}/{}", REQUEST_BASE_PATH, sanitized, token);
@@ -141,7 +133,7 @@ pub fn build_request_path(
 mod tests {
     use super::*;
     use crate::xdp_app_info::AppInfo;
-    use crate::xdp_utils::{is_valid_token, generate_token, OptionMap, PortalValue};
+    use crate::xdp_utils::{OptionMap, PortalValue, is_valid_token};
 
     #[test]
     fn sanitizes_sender_for_path() {
@@ -152,14 +144,14 @@ mod tests {
 
     #[test]
     fn builds_request_path_with_token() {
-        let mut claimed = BTreeMap::new();
+        let claimed = BTreeMap::new();
         let path = build_request_path(":1.42", "abc123", &claimed).unwrap();
         assert_eq!(path, "/org/freedesktop/portal/desktop/request/_1_42/abc123");
     }
 
     #[test]
     fn rejects_invalid_token() {
-        let mut claimed = BTreeMap::new();
+        let claimed = BTreeMap::new();
         let err = build_request_path(":1.42", "has-dash", &claimed).unwrap_err();
         assert!(matches!(err, PortalError::InvalidArgument(_)));
     }
@@ -195,10 +187,7 @@ mod tests {
     #[test]
     fn rejects_non_string_handle_token() {
         let mut options = OptionMap::new();
-        options.insert(
-            "handle_token".to_string(),
-            PortalValue::U32(42),
-        );
+        options.insert("handle_token".to_string(), PortalValue::U32(42));
         let err = extract_handle_token(&options).unwrap_err();
         assert!(matches!(err, PortalError::InvalidArgument(_)));
     }
@@ -207,7 +196,10 @@ mod tests {
     fn request_handle_creation() {
         let app_info = AppInfo::host(":1.42");
         let handle = RequestHandle::new(":1.42", "test_token".to_string(), app_info, 12345);
-        assert_eq!(handle.path, "/org/freedesktop/portal/desktop/request/_1_42/test_token");
+        assert_eq!(
+            handle.path,
+            "/org/freedesktop/portal/desktop/request/_1_42/test_token"
+        );
         assert_eq!(handle.token, "test_token");
         assert_eq!(handle.sender, ":1.42");
         assert_eq!(handle.created_ms, 12345);

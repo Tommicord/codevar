@@ -134,10 +134,7 @@ mod tests {
     #[test]
     fn display_text_is_exact_for_unit_variants() {
         assert_eq!(TlsError::Closed.to_string(), "TLS connection closed");
-        assert_eq!(
-            TlsError::WouldBlock.to_string(),
-            "TLS operation would block"
-        );
+        assert_eq!(TlsError::WouldBlock.to_string(), "TLS operation would block");
         assert_eq!(
             TlsError::HandshakeNotComplete.to_string(),
             "TLS handshake not complete"
@@ -170,10 +167,7 @@ mod tests {
             TlsError::Internal("invariant".into()).to_string(),
             "internal TLS error: invariant"
         );
-        assert_eq!(
-            TlsError::Io("reset".into()).to_string(),
-            "TLS I/O error: reset"
-        );
+        assert_eq!(TlsError::Io("reset".into()).to_string(), "TLS I/O error: reset");
     }
 
     #[test]
@@ -204,10 +198,7 @@ mod tests {
             level: AlertLevel::Fatal,
             description: AlertDescription::ProtocolVersion,
         };
-        assert_eq!(
-            peer.alert_description(),
-            Some(AlertDescription::ProtocolVersion)
-        );
+        assert_eq!(peer.alert_description(), Some(AlertDescription::ProtocolVersion));
         assert_eq!(
             TlsError::decode("x").alert_description(),
             Some(AlertDescription::DecodeError)
@@ -247,10 +238,7 @@ mod tests {
     fn constructors_produce_expected_variants() {
         assert_eq!(TlsError::decode("m"), TlsError::Decode("m".into()));
         assert_eq!(TlsError::crypto("m"), TlsError::Crypto("m".into()));
-        assert_eq!(
-            TlsError::certificate("m"),
-            TlsError::Certificate("m".into())
-        );
+        assert_eq!(TlsError::certificate("m"), TlsError::Certificate("m".into()));
     }
 
     #[test]

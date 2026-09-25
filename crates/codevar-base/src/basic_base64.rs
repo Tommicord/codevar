@@ -43,8 +43,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 /// The RFC 4648 standard base64 alphabet.
-const ENCODE_TABLE: [u8; 64] =
-    *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const ENCODE_TABLE: [u8; 64] = *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// Returns the exact length in bytes of the base64 encoding of an
 /// `input_len`-byte input: `ceil(input_len / 3) * 4`.
@@ -133,9 +132,7 @@ pub fn decode(input: &str) -> Result<Vec<u8>, Base64Error> {
     while let Some(a) = bytes.next() {
         // The length was validated above, so a full quartet exists here;
         // the arm below only keeps the compiler from assuming a panic.
-        let (Some(b), Some(c_raw), Some(d_raw)) =
-            (bytes.next(), bytes.next(), bytes.next())
-        else {
+        let (Some(b), Some(c_raw), Some(d_raw)) = (bytes.next(), bytes.next(), bytes.next()) else {
             return Err(Base64Error::InvalidLength);
         };
 
@@ -147,10 +144,7 @@ pub fn decode(input: &str) -> Result<Vec<u8>, Base64Error> {
             return Err(Base64Error::InvalidPadding);
         }
 
-        let n = (u32::from(a) << 18)
-            | (u32::from(b) << 12)
-            | (u32::from(c) << 6)
-            | u32::from(d);
+        let n = (u32::from(a) << 18) | (u32::from(b) << 12) | (u32::from(c) << 6) | u32::from(d);
         out.push(((n >> 16) & 0xff) as u8);
         if !pad_c {
             out.push(((n >> 8) & 0xff) as u8);
@@ -200,9 +194,7 @@ fn encode_scalar(input: &[u8], out: &mut [u8]) -> usize {
     let mut i = 0;
     let mut o = 0;
     while i + 3 <= input.len() {
-        let n = (u32::from(input[i]) << 16)
-            | (u32::from(input[i + 1]) << 8)
-            | u32::from(input[i + 2]);
+        let n = (u32::from(input[i]) << 16) | (u32::from(input[i + 1]) << 8) | u32::from(input[i + 2]);
         out[o] = ENCODE_TABLE[((n >> 18) & 0x3f) as usize];
         out[o + 1] = ENCODE_TABLE[((n >> 12) & 0x3f) as usize];
         out[o + 2] = ENCODE_TABLE[((n >> 6) & 0x3f) as usize];
@@ -310,35 +302,30 @@ mod simd_tables {
     /// Byte permutation applied to one loaded input block so that each
     /// 32-bit lane holds the bytes needed to extract four sextets:
     /// `[in1, in2, in0, in1]` per lane, little-endian byte order.
-    pub(super) const RESHUFFLE_MASK: [u8; 16] =
-        [1, 0, 2, 1, 4, 3, 5, 4, 7, 6, 8, 7, 10, 9, 11, 10];
+    pub(super) const RESHUFFLE_MASK: [u8; 16] = [1, 0, 2, 1, 4, 3, 5, 4, 7, 6, 8, 7, 10, 9, 11, 10];
 
     /// Per-lane AND masks for the multiply-based sextet extraction
     /// (equivalent to the `0x0FC0FC00` / `0x003F03F0` / `0x01000010`
     /// constants of the scalar formulation, broadcast per 32-bit lane).
     pub(super) const MUL_MASK_A: [u8; 16] = [
-        0x00, 0xFC, 0xC0, 0x0F, 0x00, 0xFC, 0xC0, 0x0F, 0x00, 0xFC, 0xC0, 0x0F, 0x00,
-        0xFC, 0xC0, 0x0F,
+        0x00, 0xFC, 0xC0, 0x0F, 0x00, 0xFC, 0xC0, 0x0F, 0x00, 0xFC, 0xC0, 0x0F, 0x00, 0xFC, 0xC0, 0x0F,
     ];
 
     /// See [`MUL_MASK_A`](MUL_MASK_A).
     pub(super) const MUL_MASK_B: [u8; 16] = [
-        0xF0, 0x03, 0x3F, 0x00, 0xF0, 0x03, 0x3F, 0x00, 0xF0, 0x03, 0x3F, 0x00, 0xF0,
-        0x03, 0x3F, 0x00,
+        0xF0, 0x03, 0x3F, 0x00, 0xF0, 0x03, 0x3F, 0x00, 0xF0, 0x03, 0x3F, 0x00, 0xF0, 0x03, 0x3F, 0x00,
     ];
 
     /// See [`MUL_MASK_A`](MUL_MASK_A).
     pub(super) const MUL_FACTOR: [u8; 16] = [
-        0x10, 0x00, 0x00, 0x01, 0x10, 0x00, 0x00, 0x01, 0x10, 0x00, 0x00, 0x01, 0x10,
-        0x00, 0x00, 0x01,
+        0x10, 0x00, 0x00, 0x01, 0x10, 0x00, 0x00, 0x01, 0x10, 0x00, 0x00, 0x01, 0x10, 0x00, 0x00, 0x01,
     ];
 
     /// Selects the shifted copy for each 16-bit lane: low lanes take the
     /// `>> 10` result, high lanes the `>> 6` result, reproducing a
     /// widening multiply high against `0x04000040`.
     pub(super) const MULHI_BLEND: [u8; 16] = [
-        0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF, 0x00,
-        0x00, 0xFF, 0xFF,
+        0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF,
     ];
 
     /// Offsets added to each sextet value `v` (0..64) to reach its
@@ -364,15 +351,15 @@ mod simd_tables {
 mod ssse3 {
     #[cfg(target_arch = "x86")]
     use core::arch::x86::{
-        __m128i, _mm_add_epi8, _mm_and_si128, _mm_cmpgt_epi8, _mm_mulhi_epu16,
-        _mm_mullo_epi16, _mm_or_si128, _mm_set_epi8, _mm_set1_epi8, _mm_set1_epi32,
-        _mm_setr_epi8, _mm_shuffle_epi8, _mm_storeu_si128, _mm_sub_epi8, _mm_subs_epu8,
+        __m128i, _mm_add_epi8, _mm_and_si128, _mm_cmpgt_epi8, _mm_mulhi_epu16, _mm_mullo_epi16, _mm_or_si128,
+        _mm_set_epi8, _mm_set1_epi8, _mm_set1_epi32, _mm_setr_epi8, _mm_shuffle_epi8, _mm_storeu_si128,
+        _mm_sub_epi8, _mm_subs_epu8,
     };
     #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::{
-        __m128i, _mm_add_epi8, _mm_and_si128, _mm_cmpgt_epi8, _mm_mulhi_epu16,
-        _mm_mullo_epi16, _mm_or_si128, _mm_set_epi8, _mm_set1_epi8, _mm_set1_epi32,
-        _mm_setr_epi8, _mm_shuffle_epi8, _mm_storeu_si128, _mm_sub_epi8, _mm_subs_epu8,
+        __m128i, _mm_add_epi8, _mm_and_si128, _mm_cmpgt_epi8, _mm_mulhi_epu16, _mm_mullo_epi16, _mm_or_si128,
+        _mm_set_epi8, _mm_set1_epi8, _mm_set1_epi32, _mm_setr_epi8, _mm_shuffle_epi8, _mm_storeu_si128,
+        _mm_sub_epi8, _mm_subs_epu8,
     };
 
     /// Input bytes consumed per iteration.
@@ -444,9 +431,7 @@ mod ssse3 {
     #[inline]
     #[target_feature(enable = "ssse3")]
     unsafe fn translate(sextets: __m128i) -> __m128i {
-        let offsets = _mm_setr_epi8(
-            65, 71, -4, -4, -4, -4, -4, -4, -4, -4, -4, -4, -19, -16, 0, 0,
-        );
+        let offsets = _mm_setr_epi8(65, 71, -4, -4, -4, -4, -4, -4, -4, -4, -4, -4, -19, -16, 0, 0);
         let indices = _mm_subs_epu8(sextets, _mm_set1_epi8(51));
         let above = _mm_cmpgt_epi8(sextets, _mm_set1_epi8(25));
         let indices = _mm_sub_epi8(indices, above);
@@ -459,13 +444,12 @@ mod ssse3 {
 #[cfg(target_arch = "aarch64")]
 mod neon {
     use super::simd_tables::{
-        MUL_FACTOR, MUL_MASK_A, MUL_MASK_B, MULHI_BLEND, RESHUFFLE_MASK,
-        TRANSLATE_OFFSETS,
+        MUL_FACTOR, MUL_MASK_A, MUL_MASK_B, MULHI_BLEND, RESHUFFLE_MASK, TRANSLATE_OFFSETS,
     };
     use core::arch::aarch64::{
-        uint8x16_t, uint16x8_t, vaddq_u8, vandq_u8, vbslq_u8, vcgtq_s8, vdupq_n_s8,
-        vdupq_n_u8, vmulq_u16, vorrq_u8, vqsubq_u8, vqtbl1q_u8, vreinterpretq_s8_u8,
-        vreinterpretq_u8_u16, vreinterpretq_u16_u8, vshrq_n_u16, vsubq_u8,
+        uint8x16_t, uint16x8_t, vaddq_u8, vandq_u8, vbslq_u8, vcgtq_s8, vdupq_n_s8, vdupq_n_u8, vmulq_u16,
+        vorrq_u8, vqsubq_u8, vqtbl1q_u8, vreinterpretq_s8_u8, vreinterpretq_u8_u16, vreinterpretq_u16_u8,
+        vshrq_n_u16, vsubq_u8,
     };
 
     /// Input bytes consumed per iteration.
@@ -489,8 +473,7 @@ mod neon {
             // SAFETY: `staging` is a readable 16-byte local; the loop
             // condition guarantees 16 writable bytes at `out[o..]`.
             unsafe {
-                let bytes =
-                    core::ptr::read_unaligned(staging.as_ptr().cast::<uint8x16_t>());
+                let bytes = core::ptr::read_unaligned(staging.as_ptr().cast::<uint8x16_t>());
                 let chars = translate(reshuffle(bytes));
                 let dst = out[o..o + OUT_BLOCK].as_mut_ptr().cast::<uint8x16_t>();
                 core::ptr::write_unaligned(dst, chars);
@@ -549,8 +532,7 @@ mod neon {
         // exceeds 13, so `tbl` yields a real offset (never zero-fill).
         unsafe {
             let indices = vqsubq_u8(sextets, vdupq_n_u8(51));
-            let above: uint8x16_t =
-                vcgtq_s8(vreinterpretq_s8_u8(sextets), vdupq_n_s8(25));
+            let above: uint8x16_t = vcgtq_s8(vreinterpretq_s8_u8(sextets), vdupq_n_s8(25));
             let indices = vsubq_u8(indices, above);
             let offsets = vqtbl1q_u8(load16::<uint8x16_t>(&TRANSLATE_OFFSETS), indices);
             vaddq_u8(sextets, offsets)
@@ -573,12 +555,11 @@ mod neon {
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 mod wasm_simd {
     use super::simd_tables::{
-        MUL_FACTOR, MUL_MASK_A, MUL_MASK_B, MULHI_BLEND, RESHUFFLE_MASK,
-        TRANSLATE_OFFSETS,
+        MUL_FACTOR, MUL_MASK_A, MUL_MASK_B, MULHI_BLEND, RESHUFFLE_MASK, TRANSLATE_OFFSETS,
     };
     use core::arch::wasm32::{
-        u8x16_add, u8x16_gt, u8x16_splat, u8x16_sub, u8x16_sub_sat, u8x16_swizzle,
-        u16x8_mul, u16x8_shr, v128, v128_and, v128_bitselect, v128_or,
+        u8x16_add, u8x16_gt, u8x16_splat, u8x16_sub, u8x16_sub_sat, u8x16_swizzle, u16x8_mul, u16x8_shr,
+        v128, v128_and, v128_bitselect, v128_or,
     };
 
     /// Input bytes consumed per iteration.
@@ -830,11 +811,7 @@ mod tests {
                 continue;
             }
             let input = "A".repeat(n);
-            assert_eq!(
-                decode(&input).unwrap_err(),
-                Base64Error::InvalidLength,
-                "n {n}"
-            );
+            assert_eq!(decode(&input).unwrap_err(), Base64Error::InvalidLength, "n {n}");
         }
         assert_eq!(decode("Zg").unwrap_err(), Base64Error::InvalidLength);
         assert_eq!(decode("Zg=").unwrap_err(), Base64Error::InvalidLength);
@@ -868,18 +845,9 @@ mod tests {
     fn decode_rejects_malformed_padding_placement() {
         assert_eq!(decode("AA=A").unwrap_err(), Base64Error::InvalidPadding);
         assert_eq!(decode("Zg=A").unwrap_err(), Base64Error::InvalidPadding);
-        assert!(matches!(
-            decode("A==="),
-            Err(Base64Error::InvalidCharacter(_))
-        ));
-        assert!(matches!(
-            decode("=AAA"),
-            Err(Base64Error::InvalidCharacter(_))
-        ));
-        assert!(matches!(
-            decode("===="),
-            Err(Base64Error::InvalidCharacter(_))
-        ));
+        assert!(matches!(decode("A==="), Err(Base64Error::InvalidCharacter(_))));
+        assert!(matches!(decode("=AAA"), Err(Base64Error::InvalidCharacter(_))));
+        assert!(matches!(decode("===="), Err(Base64Error::InvalidCharacter(_))));
     }
 
     #[test]
@@ -905,10 +873,7 @@ mod tests {
             Base64Error::InvalidCharacter(b'!').to_string(),
             "invalid base64 character 0x21"
         );
-        assert_eq!(
-            Base64Error::InvalidPadding.to_string(),
-            "invalid base64 padding"
-        );
+        assert_eq!(Base64Error::InvalidPadding.to_string(), "invalid base64 padding");
     }
 
     #[test]
@@ -938,9 +903,9 @@ mod tests {
         let encoded = encode(&data);
         assert!(!encoded.chars().any(char::is_whitespace));
         assert!(
-            encoded.chars().all(|c| {
-                c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '='
-            })
+            encoded
+                .chars()
+                .all(|c| { c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=' })
         );
     }
 
@@ -971,8 +936,7 @@ mod tests {
                 let mut out = vec![0u8; encoded_len(len)];
                 let consumed = simd_encode(&input, &mut out);
                 let prefix = encoded_len(consumed);
-                let written =
-                    prefix + encode_scalar(&input[consumed..], &mut out[prefix..]);
+                let written = prefix + encode_scalar(&input[consumed..], &mut out[prefix..]);
                 assert_eq!(written, out.len(), "len {len}");
                 assert_eq!(
                     String::from_utf8(out).unwrap(),

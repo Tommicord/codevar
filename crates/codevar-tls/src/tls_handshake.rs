@@ -16,14 +16,11 @@
 //! Handshake message framing and common structures.
 
 use crate::tls_alert::AlertDescription;
-use crate::tls_codec::{
-    Reader, fill_u24_len, put_u16, put_vec_u8, put_vec_u16, put_vec_u24, start_u24_vec,
-};
+use crate::tls_codec::{Reader, fill_u24_len, put_u16, put_vec_u8, put_vec_u16, put_vec_u24, start_u24_vec};
 use crate::tls_error::{TlsError, TlsResult};
 use crate::tls_extensions::ParsedExtensions;
 use crate::tls_ids::{
-    CipherSuite, HELLO_RETRY_REQUEST_RANDOM, HandshakeType, ProtocolVersion,
-    SignatureScheme,
+    CipherSuite, HELLO_RETRY_REQUEST_RANDOM, HandshakeType, ProtocolVersion, SignatureScheme,
 };
 
 /// A framed handshake message.
@@ -124,8 +121,7 @@ impl ClientHello {
     pub fn parse(body: &[u8], raw_message: Vec<u8>) -> TlsResult<Self> {
         let mut r = Reader::new(body);
         let legacy_raw = r.u16()?;
-        let legacy_version =
-            ProtocolVersion::from_u16(legacy_raw).unwrap_or(ProtocolVersion::Tls12);
+        let legacy_version = ProtocolVersion::from_u16(legacy_raw).unwrap_or(ProtocolVersion::Tls12);
         let random: [u8; 32] = r
             .bytes(32)?
             .try_into()
@@ -196,16 +192,15 @@ impl ServerHello {
     /// Parses a ServerHello body.
     pub fn parse(body: &[u8], raw_message: Vec<u8>) -> TlsResult<Self> {
         let mut r = Reader::new(body);
-        let legacy_version =
-            ProtocolVersion::from_u16(r.u16()?).unwrap_or(ProtocolVersion::Tls12);
+        let legacy_version = ProtocolVersion::from_u16(r.u16()?).unwrap_or(ProtocolVersion::Tls12);
         let random: [u8; 32] = r
             .bytes(32)?
             .try_into()
             .map_err(|_| TlsError::decode("server random"))?;
         let session_id_echo = r.vec_u8()?.to_vec();
         let suite_code = r.u16()?;
-        let cipher_suite = CipherSuite::from_u16(suite_code)
-            .ok_or(TlsError::Alert(AlertDescription::HandshakeFailure))?;
+        let cipher_suite =
+            CipherSuite::from_u16(suite_code).ok_or(TlsError::Alert(AlertDescription::HandshakeFailure))?;
         let compression = r.u8()?;
         if compression != 0 {
             return Err(TlsError::Alert(AlertDescription::IllegalParameter));
@@ -381,8 +376,8 @@ impl CertificateVerify {
     /// Parses CertificateVerify.
     pub fn parse(body: &[u8]) -> TlsResult<Self> {
         let mut r = Reader::new(body);
-        let scheme = SignatureScheme::from_u16(r.u16()?)
-            .ok_or(TlsError::Alert(AlertDescription::IllegalParameter))?;
+        let scheme =
+            SignatureScheme::from_u16(r.u16()?).ok_or(TlsError::Alert(AlertDescription::IllegalParameter))?;
         let signature = r.vec_u16()?.to_vec();
         r.expect_empty("certificate_verify")?;
         Ok(Self { scheme, signature })
@@ -460,8 +455,8 @@ impl ServerKeyExchangeEcdhe {
         let curve = crate::tls_ids::NamedGroup::from_u16(r.u16()?)
             .ok_or(TlsError::Alert(AlertDescription::IllegalParameter))?;
         let public_key = r.vec_u8()?.to_vec();
-        let scheme = SignatureScheme::from_u16(r.u16()?)
-            .ok_or(TlsError::Alert(AlertDescription::IllegalParameter))?;
+        let scheme =
+            SignatureScheme::from_u16(r.u16()?).ok_or(TlsError::Alert(AlertDescription::IllegalParameter))?;
         let signature = r.vec_u16()?.to_vec();
         r.expect_empty("server_key_exchange")?;
         Ok(Self {
@@ -691,10 +686,7 @@ mod tests {
     fn reassembly_streams_ten_thousand_small_messages() {
         let mut ra = HandshakeReassembly::default();
         for i in 0..10_000u32 {
-            let msg = HandshakeMessage::new(
-                HandshakeType::NewSessionTicket,
-                i.to_be_bytes().to_vec(),
-            );
+            let msg = HandshakeMessage::new(HandshakeType::NewSessionTicket, i.to_be_bytes().to_vec());
             ra.push(&msg.encode());
         }
         let mut count = 0usize;
@@ -711,11 +703,7 @@ mod tests {
         let random = [0x11u8; 32];
         let session_id = [0x22u8; 32];
         let sni = encode_server_name("example.com").unwrap();
-        let sv = encode_supported_versions_client(&[
-            ProtocolVersion::Tls13,
-            ProtocolVersion::Tls12,
-        ])
-        .unwrap();
+        let sv = encode_supported_versions_client(&[ProtocolVersion::Tls13, ProtocolVersion::Tls12]).unwrap();
         let extensions = ext_block(&[
             (ExtensionType::ServerName as u16, sni),
             (ExtensionType::SupportedVersions as u16, sv),
@@ -745,14 +733,8 @@ mod tests {
     fn client_hello_truncated_at_fixed_field_boundaries() {
         let random = [7u8; 32];
         let session_id = [8u8; 32];
-        let body = build_client_hello_body(
-            ProtocolVersion::Tls12,
-            &random,
-            &session_id,
-            &[0x1301],
-            &[],
-        )
-        .unwrap();
+        let body =
+            build_client_hello_body(ProtocolVersion::Tls12, &random, &session_id, &[0x1301], &[]).unwrap();
         // Cut points inside the fixed prefix (legacy + random + session id)
         // must always fail; the prefix ends at offset 69.
         for cut in 0..69 {
@@ -796,13 +778,11 @@ mod tests {
     #[test]
     fn client_hello_session_id_overlong_rejected() {
         let random = [3u8; 32];
-        let body =
-            manual_ch_body(0x0303, &random, &[0x44; 33], &[0x13, 0x01], &[0], None);
+        let body = manual_ch_body(0x0303, &random, &[0x44; 33], &[0x13, 0x01], &[0], None);
         let err = ClientHello::parse(&body, Vec::new()).unwrap_err();
         assert_eq!(err, TlsError::Alert(AlertDescription::IllegalParameter));
         // Exactly 32 bytes is accepted.
-        let body =
-            manual_ch_body(0x0303, &random, &[0x44; 32], &[0x13, 0x01], &[0], None);
+        let body = manual_ch_body(0x0303, &random, &[0x44; 32], &[0x13, 0x01], &[0], None);
         assert!(ClientHello::parse(&body, Vec::new()).is_ok());
     }
 
@@ -832,8 +812,7 @@ mod tests {
         let ch = ClientHello::parse(&body, Vec::new()).unwrap();
         assert_eq!(ch.cipher_suites, vec![0x1301]);
         // Multiple suites accepted.
-        let body =
-            manual_ch_body(0x0303, &random, &[], &[0x13, 0x01, 0xC0, 0x2F], &[0], None);
+        let body = manual_ch_body(0x0303, &random, &[], &[0x13, 0x01, 0xC0, 0x2F], &[0], None);
         let ch = ClientHello::parse(&body, Vec::new()).unwrap();
         assert_eq!(ch.cipher_suites, vec![0x1301, 0xC02F]);
     }
@@ -869,14 +848,7 @@ mod tests {
         for host in ["", long.as_str(), "ex\0ample.com"] {
             let sni = encode_server_name(host).unwrap();
             let extensions = ext_block(&[(ExtensionType::ServerName as u16, sni)]);
-            let body = manual_ch_body(
-                0x0303,
-                &random,
-                &[0],
-                &[0x13, 0x01],
-                &[0],
-                Some(&extensions),
-            );
+            let body = manual_ch_body(0x0303, &random, &[0], &[0x13, 0x01], &[0], Some(&extensions));
             let ch = ClientHello::parse(&body, Vec::new()).unwrap();
             assert_eq!(ch.extensions.server_name.as_deref(), Some(host));
         }
@@ -887,41 +859,18 @@ mod tests {
         let random = [2u8; 32];
         // Empty list rejected.
         let extensions = ext_block(&[(ExtensionType::SupportedVersions as u16, vec![0])]);
-        let body = manual_ch_body(
-            0x0303,
-            &random,
-            &[0],
-            &[0x13, 0x01],
-            &[0],
-            Some(&extensions),
-        );
+        let body = manual_ch_body(0x0303, &random, &[0], &[0x13, 0x01], &[0], Some(&extensions));
         let err = ClientHello::parse(&body, Vec::new()).unwrap_err();
         assert_eq!(err, TlsError::Alert(AlertDescription::DecodeError));
         // Unknown-only list parses to empty; offered_versions falls back.
-        let extensions =
-            ext_block(&[(ExtensionType::SupportedVersions as u16, vec![2, 0x99, 0x99])]);
-        let body = manual_ch_body(
-            0x0303,
-            &random,
-            &[0],
-            &[0x13, 0x01],
-            &[0],
-            Some(&extensions),
-        );
+        let extensions = ext_block(&[(ExtensionType::SupportedVersions as u16, vec![2, 0x99, 0x99])]);
+        let body = manual_ch_body(0x0303, &random, &[0], &[0x13, 0x01], &[0], Some(&extensions));
         let ch = ClientHello::parse(&body, Vec::new()).unwrap();
         assert!(ch.extensions.supported_versions.is_empty());
         assert_eq!(ch.offered_versions(), vec![ProtocolVersion::Tls12]);
         // Odd-length list rejected.
-        let extensions =
-            ext_block(&[(ExtensionType::SupportedVersions as u16, vec![1, 3])]);
-        let body = manual_ch_body(
-            0x0303,
-            &random,
-            &[0],
-            &[0x13, 0x01],
-            &[0],
-            Some(&extensions),
-        );
+        let extensions = ext_block(&[(ExtensionType::SupportedVersions as u16, vec![1, 3])]);
+        let body = manual_ch_body(0x0303, &random, &[0], &[0x13, 0x01], &[0], Some(&extensions));
         assert!(ClientHello::parse(&body, Vec::new()).is_err());
     }
 
@@ -1048,9 +997,7 @@ mod tests {
 
     #[test]
     fn certificate_verify_round_trip_and_errors() {
-        let body =
-            CertificateVerify::encode(SignatureScheme::EcdsaSecp256r1Sha256, &[1, 2])
-                .unwrap();
+        let body = CertificateVerify::encode(SignatureScheme::EcdsaSecp256r1Sha256, &[1, 2]).unwrap();
         let cv = CertificateVerify::parse(&body).unwrap();
         assert_eq!(cv.scheme, SignatureScheme::EcdsaSecp256r1Sha256);
         assert_eq!(cv.signature, vec![1, 2]);
@@ -1133,8 +1080,7 @@ mod tests {
         // signed_content layout: client_random || server_random || curve_params
         let cr = [1u8; 32];
         let sr = [2u8; 32];
-        let signed =
-            ServerKeyExchangeEcdhe::signed_content(&cr, &sr, NamedGroup::X25519, &pk);
+        let signed = ServerKeyExchangeEcdhe::signed_content(&cr, &sr, NamedGroup::X25519, &pk);
         assert_eq!(signed.len(), 32 + 32 + 1 + 2 + 1 + pk.len());
         assert_eq!(&signed[..32], &cr);
         assert_eq!(&signed[32..64], &sr);
@@ -1166,19 +1112,11 @@ mod tests {
     #[test]
     fn build_client_hello_body_rejects_oversized_session_id() {
         let random = [0u8; 32];
-        let err = build_client_hello_body(
-            ProtocolVersion::Tls12,
-            &random,
-            &[0u8; 256],
-            &[0x1301],
-            &[],
-        )
-        .unwrap_err();
+        let err = build_client_hello_body(ProtocolVersion::Tls12, &random, &[0u8; 256], &[0x1301], &[])
+            .unwrap_err();
         assert!(matches!(err, TlsError::Internal(_)));
         // Empty cipher suite list builds fine (rejected later by the parser).
-        let body =
-            build_client_hello_body(ProtocolVersion::Tls12, &random, &[], &[], &[])
-                .unwrap();
+        let body = build_client_hello_body(ProtocolVersion::Tls12, &random, &[], &[], &[]).unwrap();
         assert!(ClientHello::parse(&body, Vec::new()).is_err());
     }
 

@@ -103,9 +103,7 @@ impl CommonState {
     pub fn send_alert(&mut self, alert: Alert) -> TlsResult<()> {
         let payload = alert.encode();
         self.record.write_raw(ContentType::Alert, &payload)?;
-        if alert.level == AlertLevel::Fatal
-            || alert.description == AlertDescription::CloseNotify
-        {
+        if alert.level == AlertLevel::Fatal || alert.description == AlertDescription::CloseNotify {
             self.local_closed = true;
             if alert.description == AlertDescription::CloseNotify {
                 self.state = ConnectionState::Closing;
@@ -476,10 +474,7 @@ mod tests {
         );
         let transcript_before = state.transcript.bytes().len();
         state.send_handshake_raw(&big).unwrap();
-        assert_eq!(
-            state.transcript.bytes().len(),
-            transcript_before + big.len()
-        );
+        assert_eq!(state.transcript.bytes().len(), transcript_before + big.len());
         let bytes = state.record.take_ciphertext();
         assert_eq!(bytes.len(), (5 + MAX_FRAGMENT_LENGTH) + (5 + 14));
         // Records parse back as handshake content.
@@ -589,8 +584,7 @@ mod tests {
         use crate::tls_ids::AeadAlgorithm;
         use crate::tls_record::TrafficKeys;
 
-        let aead =
-            AeadKey::new(AeadAlgorithm::Aes128Gcm, vec![7u8; 16], vec![9u8; 12]).unwrap();
+        let aead = AeadKey::new(AeadAlgorithm::Aes128Gcm, vec![7u8; 16], vec![9u8; 12]).unwrap();
         let mut keys = TrafficKeys::new(aead.clone());
         assert_eq!(keys.next_seq().unwrap(), 0);
         assert_eq!(keys.next_seq().unwrap(), 1);
@@ -605,15 +599,10 @@ mod tests {
         let mut state = CommonState::new();
         state.state = ConnectionState::Connected;
         let exhausted = TrafficKeys {
-            aead: AeadKey::new(AeadAlgorithm::Aes128Gcm, vec![7u8; 16], vec![9u8; 12])
-                .unwrap(),
+            aead: AeadKey::new(AeadAlgorithm::Aes128Gcm, vec![7u8; 16], vec![9u8; 12]).unwrap(),
             seq: u64::MAX,
         };
-        state.install_write_keys(
-            exhausted,
-            ProtocolVersion::Tls13,
-            CipherSuite::TlsAes128GcmSha256,
-        );
+        state.install_write_keys(exhausted, ProtocolVersion::Tls13, CipherSuite::TlsAes128GcmSha256);
         let err = state.write_app(b"x").unwrap_err();
         assert_eq!(err, TlsError::Alert(AlertDescription::InternalError));
     }
@@ -631,10 +620,7 @@ mod tests {
                 CipherSuite::TlsEcdheEcdsaWithAes128GcmSha256,
             ),
         ] {
-            let key = || {
-                AeadKey::new(AeadAlgorithm::Aes128Gcm, vec![0x11u8; 16], vec![0x22u8; 12])
-                    .unwrap()
-            };
+            let key = || AeadKey::new(AeadAlgorithm::Aes128Gcm, vec![0x11u8; 16], vec![0x22u8; 12]).unwrap();
             let mut tx = CommonState::new();
             tx.state = ConnectionState::Connected;
             tx.install_write_keys(TrafficKeys::new(key()), version, suite);

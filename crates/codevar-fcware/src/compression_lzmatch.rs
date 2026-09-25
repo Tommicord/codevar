@@ -51,9 +51,7 @@ pub fn lz_match_decode(frame: &[u8]) -> CompressorResult<Vec<u8>> {
                     return Err(CompressorError::TruncatedFrame);
                 }
                 // SAFETY: `position..end` is within `frame`.
-                let literals = unsafe {
-                    core::slice::from_raw_parts(frame.as_ptr().add(position), length)
-                };
+                let literals = unsafe { core::slice::from_raw_parts(frame.as_ptr().add(position), length) };
                 extend_bytes(&mut output, literals);
                 position = end;
             }
@@ -146,10 +144,7 @@ mod tests {
 
         let mut frame = Vec::from(&b"LM\x01\x00\x00\x00\x00"[..]);
         frame.push(9);
-        assert_eq!(
-            lz_match_decode(&frame),
-            Err(CompressorError::invalid_token(9))
-        );
+        assert_eq!(lz_match_decode(&frame), Err(CompressorError::invalid_token(9)));
     }
 
     #[test]

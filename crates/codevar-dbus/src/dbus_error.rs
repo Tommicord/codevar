@@ -195,10 +195,7 @@ mod tests {
 
     #[test]
     fn remote_error_display_contains_name_and_message() {
-        let err = DbusError::remote(
-            "org.freedesktop.DBus.Error.ServiceUnknown",
-            "no such service",
-        );
+        let err = DbusError::remote("org.freedesktop.DBus.Error.ServiceUnknown", "no such service");
         assert!(err.is_remote());
         assert_eq!(
             err.to_string(),

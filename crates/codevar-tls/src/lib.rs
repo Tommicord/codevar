@@ -40,9 +40,7 @@ pub mod tls_stream;
 pub mod tls_transcript;
 
 pub use tls_alert::{Alert, AlertDescription, AlertLevel};
-pub use tls_cert::{
-    CertVerifier, LeafKeyKind, ParsedCert, RootCertStore, ServerName, parse_pem_certs,
-};
+pub use tls_cert::{CertVerifier, LeafKeyKind, ParsedCert, RootCertStore, ServerName, parse_pem_certs};
 pub use tls_client::TlsClientConnection;
 pub use tls_connection::{ConnectionState, IoState};
 pub use tls_connection_conf::{
@@ -50,8 +48,8 @@ pub use tls_connection_conf::{
 };
 pub use tls_error::{TlsError, TlsResult};
 pub use tls_ids::{
-    AeadAlgorithm, CipherSuite, ContentType, ExtensionType, HandshakeType, HashAlgorithm,
-    KeyUpdateRequest, NamedGroup, ProtocolVersion, PskKeyExchangeMode, SignatureScheme,
+    AeadAlgorithm, CipherSuite, ContentType, ExtensionType, HandshakeType, HashAlgorithm, KeyUpdateRequest,
+    NamedGroup, ProtocolVersion, PskKeyExchangeMode, SignatureScheme,
 };
 pub use tls_server::TlsServerConnection;
 pub use tls_stream::{TlsSession, TlsStream};

@@ -15,8 +15,7 @@
 
 use crate::tls_alert::AlertDescription;
 use crate::tls_codec::{
-    Reader, fill_u8_len, fill_u16_len, put_u16, put_vec_u8, put_vec_u16, start_u8_vec,
-    start_u16_vec,
+    Reader, fill_u8_len, fill_u16_len, put_u16, put_vec_u8, put_vec_u16, start_u8_vec, start_u16_vec,
 };
 use crate::tls_error::{TlsError, TlsResult};
 use crate::tls_ids::{ExtensionType, NamedGroup, ProtocolVersion, SignatureScheme};
@@ -272,9 +271,7 @@ pub fn encode_server_name(hostname: &str) -> TlsResult<Vec<u8>> {
 }
 
 /// Encodes ClientHello `supported_versions`.
-pub fn encode_supported_versions_client(
-    versions: &[ProtocolVersion],
-) -> TlsResult<Vec<u8>> {
+pub fn encode_supported_versions_client(versions: &[ProtocolVersion]) -> TlsResult<Vec<u8>> {
     let mut list = Vec::new();
     for v in versions {
         put_u16(&mut list, v.as_u16());
@@ -355,11 +352,7 @@ pub fn encode_alpn_selected(protocol: &[u8]) -> TlsResult<Vec<u8>> {
 }
 
 /// Appends one extension to `out`.
-pub fn put_extension(
-    out: &mut Vec<u8>,
-    ext_type: ExtensionType,
-    data: &[u8],
-) -> TlsResult<()> {
+pub fn put_extension(out: &mut Vec<u8>, ext_type: ExtensionType, data: &[u8]) -> TlsResult<()> {
     put_u16(out, ext_type.as_u16());
     put_vec_u16(out, data)?;
     Ok(())
@@ -446,14 +439,9 @@ mod tests {
     #[test]
     fn parse_multiple_mixed_known_and_unknown_extensions() {
         let sni = encode_server_name("a.test").unwrap();
-        let groups =
-            encode_supported_groups(&[NamedGroup::X25519, NamedGroup::Secp256r1])
-                .unwrap();
-        let versions = encode_supported_versions_client(&[
-            ProtocolVersion::Tls12,
-            ProtocolVersion::Tls13,
-        ])
-        .unwrap();
+        let groups = encode_supported_groups(&[NamedGroup::X25519, NamedGroup::Secp256r1]).unwrap();
+        let versions =
+            encode_supported_versions_client(&[ProtocolVersion::Tls12, ProtocolVersion::Tls13]).unwrap();
         let wire = entries(&[
             (ExtensionType::ServerName.as_u16(), &sni),
             (0x9999, &[1, 2, 3]),
@@ -530,8 +518,7 @@ mod tests {
 
     #[test]
     fn zero_length_extension_data_is_tolerated() {
-        let wire =
-            entries(&[(ExtensionType::SessionTicket.as_u16(), &[]), (0x9999, &[])]);
+        let wire = entries(&[(ExtensionType::SessionTicket.as_u16(), &[]), (0x9999, &[])]);
         let parsed = ParsedExtensions::parse(&wire).unwrap();
         assert_eq!(parsed.raw.len(), 2);
         assert!(parsed.raw[0].data.is_empty());
@@ -554,8 +541,7 @@ mod tests {
     fn extension_data_truncated_mid_field_rejected() {
         // supported_groups declares a 4-byte list but only 2 bytes follow.
         let truncated_groups = [0x00, 0x04, 0x00, 0x17];
-        let wire =
-            entries(&[(ExtensionType::SupportedGroups.as_u16(), &truncated_groups)]);
+        let wire = entries(&[(ExtensionType::SupportedGroups.as_u16(), &truncated_groups)]);
         assert!(ParsedExtensions::parse(&wire).is_err());
 
         // Cookie declares more bytes than the extension carries.
@@ -601,11 +587,8 @@ mod tests {
 
     #[test]
     fn supported_versions_client_and_server_forms() {
-        let client = encode_supported_versions_client(&[
-            ProtocolVersion::Tls12,
-            ProtocolVersion::Tls13,
-        ])
-        .unwrap();
+        let client =
+            encode_supported_versions_client(&[ProtocolVersion::Tls12, ProtocolVersion::Tls13]).unwrap();
         assert_eq!(client, vec![4, 3, 3, 3, 4]);
         let wire = entries(&[(ExtensionType::SupportedVersions.as_u16(), &client)]);
         let parsed = ParsedExtensions::parse(&wire).unwrap();
@@ -637,29 +620,19 @@ mod tests {
         let mixed = [4, 0x99, 0x99, 0x03, 0x04];
         let mixed_wire = entries(&[(ExtensionType::SupportedVersions.as_u16(), &mixed)]);
         let mixed_parsed = ParsedExtensions::parse(&mixed_wire).unwrap();
-        assert_eq!(
-            mixed_parsed.supported_versions,
-            vec![ProtocolVersion::Tls13]
-        );
+        assert_eq!(mixed_parsed.supported_versions, vec![ProtocolVersion::Tls13]);
     }
 
     #[test]
     fn supported_groups_and_signature_algorithms_round_trip() {
-        let groups = encode_supported_groups(&[
-            NamedGroup::X25519,
-            NamedGroup::Secp256r1,
-            NamedGroup::Secp384r1,
-        ])
-        .unwrap();
+        let groups =
+            encode_supported_groups(&[NamedGroup::X25519, NamedGroup::Secp256r1, NamedGroup::Secp384r1])
+                .unwrap();
         let wire = entries(&[(ExtensionType::SupportedGroups.as_u16(), &groups)]);
         let parsed = ParsedExtensions::parse(&wire).unwrap();
         assert_eq!(
             parsed.supported_groups,
-            vec![
-                NamedGroup::X25519,
-                NamedGroup::Secp256r1,
-                NamedGroup::Secp384r1
-            ]
+            vec![NamedGroup::X25519, NamedGroup::Secp256r1, NamedGroup::Secp384r1]
         );
 
         // Unknown group codes inside the list are skipped.
@@ -668,25 +641,18 @@ mod tests {
         put_u16(&mut list, NamedGroup::X25519.as_u16());
         let mut with_unknown = Vec::new();
         put_vec_u16(&mut with_unknown, &list).unwrap();
-        let unk_wire =
-            entries(&[(ExtensionType::SupportedGroups.as_u16(), &with_unknown)]);
+        let unk_wire = entries(&[(ExtensionType::SupportedGroups.as_u16(), &with_unknown)]);
         let unk_parsed = ParsedExtensions::parse(&unk_wire).unwrap();
         assert_eq!(unk_parsed.supported_groups, vec![NamedGroup::X25519]);
 
-        let schemes = encode_signature_algorithms(&[
-            SignatureScheme::EcdsaSecp256r1Sha256,
-            SignatureScheme::Ed25519,
-        ])
-        .unwrap();
-        let sig_wire =
-            entries(&[(ExtensionType::SignatureAlgorithms.as_u16(), &schemes)]);
+        let schemes =
+            encode_signature_algorithms(&[SignatureScheme::EcdsaSecp256r1Sha256, SignatureScheme::Ed25519])
+                .unwrap();
+        let sig_wire = entries(&[(ExtensionType::SignatureAlgorithms.as_u16(), &schemes)]);
         let sig_parsed = ParsedExtensions::parse(&sig_wire).unwrap();
         assert_eq!(
             sig_parsed.signature_algorithms,
-            vec![
-                SignatureScheme::EcdsaSecp256r1Sha256,
-                SignatureScheme::Ed25519
-            ]
+            vec![SignatureScheme::EcdsaSecp256r1Sha256, SignatureScheme::Ed25519]
         );
     }
 
@@ -790,8 +756,7 @@ mod tests {
         // Trailing bytes after the psk_modes vector are rejected.
         let mut psk_trailing = psk.clone();
         psk_trailing.push(0xff);
-        let psk_bad_wire =
-            entries(&[(ExtensionType::PskKeyExchangeModes.as_u16(), &psk_trailing)]);
+        let psk_bad_wire = entries(&[(ExtensionType::PskKeyExchangeModes.as_u16(), &psk_trailing)]);
         assert!(ParsedExtensions::parse(&psk_bad_wire).is_err());
 
         let reneg = encode_renegotiation_info_empty().unwrap();
@@ -805,8 +770,7 @@ mod tests {
         assert!(ems_parsed.extended_master_secret);
 
         let ems_bad = [0x01];
-        let ems_bad_wire =
-            entries(&[(ExtensionType::ExtendedMasterSecret.as_u16(), &ems_bad)]);
+        let ems_bad_wire = entries(&[(ExtensionType::ExtendedMasterSecret.as_u16(), &ems_bad)]);
         assert!(matches!(
             ParsedExtensions::parse(&ems_bad_wire),
             Err(TlsError::Alert(AlertDescription::IllegalParameter))

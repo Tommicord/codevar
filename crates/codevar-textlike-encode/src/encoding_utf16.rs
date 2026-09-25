@@ -37,8 +37,7 @@ impl Utf16Decoder {
     }
 
     pub fn additional_from_state(&self) -> usize {
-        1 + if self.lead_byte.is_some() { 1 } else { 0 }
-            + if self.lead_surrogate == 0 { 0 } else { 2 }
+        1 + if self.lead_byte.is_some() { 1 } else { 0 } + if self.lead_surrogate == 0 { 0 } else { 2 }
     }
 
     pub fn max_utf16_buffer_length(&self, byte_length: usize) -> Option<usize> {
@@ -48,10 +47,7 @@ impl Utf16Decoder {
         )
     }
 
-    pub fn max_utf8_buffer_length_without_replacement(
-        &self,
-        byte_length: usize,
-    ) -> Option<usize> {
+    pub fn max_utf8_buffer_length_without_replacement(&self, byte_length: usize) -> Option<usize> {
         checked_add(
             1,
             checked_mul(
@@ -130,11 +126,7 @@ impl Utf16Decoder {
                                 }
                                 debug_assert!(self.lead_byte.is_some());
                                 self.lead_byte = None;
-                                return (
-                                    DecoderResult::Malformed(1, 0),
-                                    src_consumed,
-                                    dest.written(),
-                                );
+                                return (DecoderResult::Malformed(1, 0), src_consumed, dest.written());
                             }
                         }
                     }
@@ -142,11 +134,7 @@ impl Utf16Decoder {
                 }
                 Space::Available(source_handle) => match dest.check_space_astral() {
                     Space::Full(dst_written) => {
-                        return (
-                            DecoderResult::OutputFull,
-                            source_handle.consumed(),
-                            dst_written,
-                        );
+                        return (DecoderResult::OutputFull, source_handle.consumed(), dst_written);
                     }
                     Space::Available(destination_handle) => {
                         let (b, unread_handle) = source_handle.read();
@@ -183,10 +171,7 @@ impl Utf16Decoder {
                                             destination_handle.written(),
                                         );
                                     }
-                                    destination_handle.write_surrogate_pair(
-                                        self.lead_surrogate,
-                                        code_unit,
-                                    );
+                                    destination_handle.write_surrogate_pair(self.lead_surrogate, code_unit);
                                     self.lead_surrogate = 0;
                                     continue;
                                 }
@@ -247,28 +232,18 @@ impl Utf16Decoder {
                                 if self.lead_surrogate != 0 {
                                     self.lead_surrogate = 0;
                                     return match self.lead_byte {
-                                        None => (
-                                            DecoderResult::Malformed(2, 0),
-                                            src_consumed,
-                                            dest.written(),
-                                        ),
+                                        None => {
+                                            (DecoderResult::Malformed(2, 0), src_consumed, dest.written())
+                                        }
                                         Some(_) => {
                                             self.lead_byte = None;
-                                            (
-                                                DecoderResult::Malformed(3, 0),
-                                                src_consumed,
-                                                dest.written(),
-                                            )
+                                            (DecoderResult::Malformed(3, 0), src_consumed, dest.written())
                                         }
                                     };
                                 }
                                 debug_assert!(self.lead_byte.is_some());
                                 self.lead_byte = None;
-                                (
-                                    DecoderResult::Malformed(1, 0),
-                                    src_consumed,
-                                    dest.written(),
-                                )
+                                (DecoderResult::Malformed(1, 0), src_consumed, dest.written())
                             }
                         };
                     }
@@ -276,11 +251,7 @@ impl Utf16Decoder {
                 }
                 Space::Available(source_handle) => match dest.check_space_astral() {
                     Space::Full(dst_written) => {
-                        return (
-                            DecoderResult::OutputFull,
-                            source_handle.consumed(),
-                            dst_written,
-                        );
+                        return (DecoderResult::OutputFull, source_handle.consumed(), dst_written);
                     }
                     Space::Available(destination_handle) => {
                         let (b, unread_handle) = source_handle.read();
@@ -317,10 +288,7 @@ impl Utf16Decoder {
                                             destination_handle.written(),
                                         );
                                     }
-                                    destination_handle.write_surrogate_pair(
-                                        self.lead_surrogate,
-                                        code_unit,
-                                    );
+                                    destination_handle.write_surrogate_pair(self.lead_surrogate, code_unit);
                                     self.lead_surrogate = 0;
                                     continue;
                                 }
@@ -354,17 +322,11 @@ impl Utf16Encoder {
         Utf16Encoder { be: big_endian }
     }
 
-    pub fn max_buffer_length_from_utf16_without_replacement(
-        &self,
-        u16_length: usize,
-    ) -> Option<usize> {
+    pub fn max_buffer_length_from_utf16_without_replacement(&self, u16_length: usize) -> Option<usize> {
         u16_length.checked_mul(2)
     }
 
-    pub fn max_buffer_length_from_utf8_without_replacement(
-        &self,
-        byte_length: usize,
-    ) -> Option<usize> {
+    pub fn max_buffer_length_from_utf8_without_replacement(&self, byte_length: usize) -> Option<usize> {
         byte_length.checked_mul(2)
     }
 
@@ -458,8 +420,7 @@ mod tests {
     fn test_utf16_decode_le() {
         let mut decoder = Utf16Decoder::new(false);
         let mut dst = [0u16; 10];
-        let (result, read, written) =
-            decoder.decode_to_utf16_raw(b"\x61\x00\x62\x00", &mut dst, true);
+        let (result, read, written) = decoder.decode_to_utf16_raw(b"\x61\x00\x62\x00", &mut dst, true);
         assert_eq!(result, DecoderResult::InputEmpty);
         assert_eq!(read, 4);
         assert_eq!(written, 2);
@@ -470,8 +431,7 @@ mod tests {
     fn test_utf16_decode_be() {
         let mut decoder = Utf16Decoder::new(true);
         let mut dst = [0u16; 10];
-        let (result, read, written) =
-            decoder.decode_to_utf16_raw(b"\x00\x61\x00\x62", &mut dst, true);
+        let (result, read, written) = decoder.decode_to_utf16_raw(b"\x00\x61\x00\x62", &mut dst, true);
         assert_eq!(result, DecoderResult::InputEmpty);
         assert_eq!(read, 4);
         assert_eq!(written, 2);

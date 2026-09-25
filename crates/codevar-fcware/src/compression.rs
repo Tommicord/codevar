@@ -22,8 +22,7 @@
 use crate::compression_bitward::{bitward_decode, bitward_encode};
 use crate::compression_delta::{delta_decode, delta_encode};
 use crate::compression_dysu::{
-    dynamic_substring_decode, dynamic_substring_encode, substring_decode,
-    substring_encode,
+    dynamic_substring_decode, dynamic_substring_encode, substring_decode, substring_encode,
 };
 use crate::compression_error::{CompressorError, CompressorResult};
 use crate::compression_frame::FrameKind;
@@ -39,8 +38,7 @@ use alloc::vec::Vec;
 use crate::compression_bits::BitLaneReader;
 pub use crate::compression_bits::{BIT_LANES, BitLaneReader as BitReader};
 pub use crate::compression_error::{
-    CompressorResult as CompressionResult, InvalidCodePoint, InvalidControl,
-    InvalidToken, LengthMismatch,
+    CompressorResult as CompressionResult, InvalidCodePoint, InvalidControl, InvalidToken, LengthMismatch,
 };
 pub use crate::compression_frame::FrameKind as Frame;
 pub use crate::compression_stream::{LzWorkspace as StreamWorkspace, StreamingEncoder};
@@ -212,8 +210,8 @@ pub fn bit_reader(data: &[u8], available_bits: usize) -> BitLaneReader<'_> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Codec, DEFAULT_DYSU_BLOCK, ValueCodec, bit_reader, compress, compress_values,
-        decompress, decompress_values, detect_frame, lz_match_bound, lz_match_encode,
+        Codec, DEFAULT_DYSU_BLOCK, ValueCodec, bit_reader, compress, compress_values, decompress,
+        decompress_values, detect_frame, lz_match_bound, lz_match_encode,
     };
     use crate::CompressorError;
     use crate::compression_frame::FrameKind;
@@ -278,10 +276,7 @@ mod tests {
         assert_eq!(decompress(&bitward), Err(CompressorError::InvalidFrame));
         assert_eq!(decompress(b"XX\x01"), Err(CompressorError::InvalidFrame));
         assert_eq!(decompress(b""), Err(CompressorError::InvalidFrame));
-        assert_eq!(
-            decompress_values(b"LM\x01"),
-            Err(CompressorError::InvalidFrame)
-        );
+        assert_eq!(decompress_values(b"LM\x01"), Err(CompressorError::InvalidFrame));
     }
 
     #[test]

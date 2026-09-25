@@ -51,18 +51,16 @@ use alloc::vec::Vec;
 use crate::wl_conn::{WlClosure, WlConnection, WlTransport, lookup_objects};
 use crate::wl_error::{WlError, WlProtocolError, WlResult};
 use crate::wl_handle::{
-    CALLBACK_DONE, CALLBACK_INTERFACE, DISPLAY_DELETE_ID, DISPLAY_ERROR,
-    DISPLAY_GET_REGISTRY, DISPLAY_INTERFACE, DISPLAY_SYNC, MAX_MESSAGE_SIZE,
-    REGISTRY_BIND, REGISTRY_GLOBAL, REGISTRY_GLOBAL_REMOVE, REGISTRY_INTERFACE,
-    SERVER_ID_START, WlArgType, WlArgument, WlInterface, WlMap, WlMapSide, WlMessage,
-    WlObject, WlPollEvents,
+    CALLBACK_DONE, CALLBACK_INTERFACE, DISPLAY_DELETE_ID, DISPLAY_ERROR, DISPLAY_GET_REGISTRY,
+    DISPLAY_INTERFACE, DISPLAY_SYNC, MAX_MESSAGE_SIZE, REGISTRY_BIND, REGISTRY_GLOBAL,
+    REGISTRY_GLOBAL_REMOVE, REGISTRY_INTERFACE, SERVER_ID_START, WlArgType, WlArgument, WlInterface, WlMap,
+    WlMapSide, WlMessage, WlObject, WlPollEvents,
 };
 
 /// Id of the display proxy, which is always `1`.
 pub const DISPLAY_PROXY_ID: u32 = 1;
 
-type ProxyListener<T> =
-    Box<dyn FnMut(&mut WlClientDisplay<T>, u32, &mut [WlArgument]) -> i32>;
+type ProxyListener<T> = Box<dyn FnMut(&mut WlClientDisplay<T>, u32, &mut [WlArgument]) -> i32>;
 
 /// Handle of a proxy object owned by a [`WlClientDisplay`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -321,9 +319,7 @@ impl<T: WlTransport> WlClientDisplay<T> {
         F: FnMut(&mut Self, u32, &mut [WlArgument]) -> i32 + 'static,
     {
         if id.0 == DISPLAY_PROXY_ID {
-            return Err(WlError::invalid_state(
-                "the display proxy has no public listener",
-            ));
+            return Err(WlError::invalid_state("the display proxy has no public listener"));
         }
         let proxy = self
             .proxies
@@ -343,19 +339,14 @@ impl<T: WlTransport> WlClientDisplay<T> {
     /// Returns [`WlError::InvalidObject`] when `id` is stale,
     /// [`WlError::InvalidArgument`] when `id` is not a registry and
     /// [`WlError::InvalidState`] when it already has a listener.
-    pub fn add_registry_listener<F>(
-        &mut self,
-        registry: WlProxyId,
-        mut listener: F,
-    ) -> WlResult<()>
+    pub fn add_registry_listener<F>(&mut self, registry: WlProxyId, mut listener: F) -> WlResult<()>
     where
         F: FnMut(&mut Self, WlRegistryEvent) -> i32 + 'static,
     {
         self.require_interface(registry, REGISTRY_INTERFACE.name)?;
         self.add_listener(registry, move |display, opcode, args| match opcode {
             REGISTRY_GLOBAL => {
-                let (Some(name), Some(version)) = (uint_arg(args, 0), uint_arg(args, 2))
-                else {
+                let (Some(name), Some(version)) = (uint_arg(args, 0), uint_arg(args, 2)) else {
                     return -1;
                 };
                 let Some(interface) = str_arg(args, 1) else {
@@ -385,11 +376,7 @@ impl<T: WlTransport> WlClientDisplay<T> {
     /// Returns [`WlError::InvalidObject`] when `id` is stale,
     /// [`WlError::InvalidArgument`] when `id` is not a callback and
     /// [`WlError::InvalidState`] when it already has a listener.
-    pub fn add_callback_listener<F>(
-        &mut self,
-        callback: WlProxyId,
-        mut listener: F,
-    ) -> WlResult<()>
+    pub fn add_callback_listener<F>(&mut self, callback: WlProxyId, mut listener: F) -> WlResult<()>
     where
         F: FnMut(&mut Self, u32) -> i32 + 'static,
     {
@@ -414,9 +401,7 @@ impl<T: WlTransport> WlClientDisplay<T> {
     /// [`WlError::InvalidState`] when `id` is the display proxy.
     pub fn proxy_destroy(&mut self, id: WlProxyId) -> WlResult<()> {
         if id.0 == DISPLAY_PROXY_ID {
-            return Err(WlError::invalid_state(
-                "the display proxy cannot be destroyed",
-            ));
+            return Err(WlError::invalid_state("the display proxy cannot be destroyed"));
         }
         let proxy = self
             .proxies
@@ -568,11 +553,7 @@ impl<T: WlTransport> WlClientDisplay<T> {
         serial
     }
 
-    fn create_proxy(
-        &mut self,
-        interface: &'static WlInterface,
-        version: u32,
-    ) -> WlResult<u32> {
+    fn create_proxy(&mut self, interface: &'static WlInterface, version: u32) -> WlResult<u32> {
         let serial = self.alloc_serial();
         let id = self.proxies.insert_new(WlProxy {
             id: 0,
@@ -682,9 +663,9 @@ impl<T: WlTransport> WlClientDisplay<T> {
             if *id == 0 {
                 continue;
             }
-            let interface = details.interface.ok_or_else(|| {
-                WlError::invalid_argument("new id event without an interface")
-            })?;
+            let interface = details
+                .interface
+                .ok_or_else(|| WlError::invalid_argument("new id event without an interface"))?;
             let version = self
                 .proxies
                 .lookup(closure.sender_id)
@@ -790,8 +771,7 @@ impl<T: WlTransport> WlClientDisplay<T> {
                     .map(|interface| interface.name)
             })
             .unwrap_or("wl_unknown");
-        self.protocol_error =
-            Some(WlProtocolError::new(code, object_id, interface, message));
+        self.protocol_error = Some(WlProtocolError::new(code, object_id, interface, message));
     }
 }
 
@@ -852,12 +832,10 @@ mod tests {
                     break;
                 }
                 if sender == DISPLAY_PROXY_ID && opcode == DISPLAY_SYNC {
-                    let callback =
-                        u32::from_le_bytes(bytes[8..12].try_into().unwrap_or([0; 4]));
+                    let callback = u32::from_le_bytes(bytes[8..12].try_into().unwrap_or([0; 4]));
                     self.input.extend_from_slice(&callback.to_le_bytes());
-                    self.input.extend_from_slice(
-                        &((12u32 << 16) | CALLBACK_DONE).to_le_bytes(),
-                    );
+                    self.input
+                        .extend_from_slice(&((12u32 << 16) | CALLBACK_DONE).to_le_bytes());
                     self.input.extend_from_slice(&0u32.to_le_bytes());
                 }
                 self.output_pos += size;
@@ -885,11 +863,7 @@ mod tests {
             Ok(data.len())
         }
 
-        fn wait(
-            &mut self,
-            _timeout: Option<Duration>,
-            mask: WlPollEvents,
-        ) -> WlResult<WlPollEvents> {
+        fn wait(&mut self, _timeout: Option<Duration>, mask: WlPollEvents) -> WlResult<WlPollEvents> {
             let mut events = WlPollEvents::EMPTY;
             if self.input_pos < self.input.len() {
                 events.insert(WlPollEvents::READABLE);

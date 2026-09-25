@@ -70,11 +70,7 @@ impl Tls13KeySchedule {
     /// Derives handshake traffic secrets from the ECDHE shared secret.
     ///
     /// `hello_hash` is `Transcript-Hash(ClientHello...ServerHello)`.
-    pub fn from_handshake(
-        suite: CipherSuite,
-        ecdhe_secret: &[u8],
-        hello_hash: &[u8],
-    ) -> TlsResult<Self> {
+    pub fn from_handshake(suite: CipherSuite, ecdhe_secret: &[u8], hello_hash: &[u8]) -> TlsResult<Self> {
         let hash = suite.hash_algorithm();
         let aead = suite.aead_algorithm();
         let hash_len = hash.output_len();
@@ -85,18 +81,14 @@ impl Tls13KeySchedule {
         let derived = derive_secret(hash, &early_secret, b"derived", None)?;
         let handshake_secret = hkdf_extract(hash, &derived, ecdhe_secret);
 
-        let client_hs_secret =
-            derive_secret(hash, &handshake_secret, b"c hs traffic", Some(hello_hash))?;
-        let server_hs_secret =
-            derive_secret(hash, &handshake_secret, b"s hs traffic", Some(hello_hash))?;
+        let client_hs_secret = derive_secret(hash, &handshake_secret, b"c hs traffic", Some(hello_hash))?;
+        let server_hs_secret = derive_secret(hash, &handshake_secret, b"s hs traffic", Some(hello_hash))?;
 
         let client_handshake = traffic_from_secret(hash, aead, &client_hs_secret)?;
         let server_handshake = traffic_from_secret(hash, aead, &server_hs_secret)?;
 
-        let client_finished_key =
-            hkdf_expand_label(hash, &client_hs_secret, b"finished", &[], hash_len)?;
-        let server_finished_key =
-            hkdf_expand_label(hash, &server_hs_secret, b"finished", &[], hash_len)?;
+        let client_finished_key = hkdf_expand_label(hash, &client_hs_secret, b"finished", &[], hash_len)?;
+        let server_finished_key = hkdf_expand_label(hash, &server_hs_secret, b"finished", &[], hash_len)?;
 
         // Prepare master secret extract input: Derive-Secret(handshake, "derived", "")
         let hs_derived = derive_secret(hash, &handshake_secret, b"derived", None)?;
@@ -118,10 +110,7 @@ impl Tls13KeySchedule {
 
     /// Derives application traffic secrets using the transcript hash up to and
     /// including the server Finished (RFC 8446 §7.1: `c/s ap traffic`).
-    pub fn derive_application_secrets(
-        &mut self,
-        server_finished_hash: &[u8],
-    ) -> TlsResult<()> {
+    pub fn derive_application_secrets(&mut self, server_finished_hash: &[u8]) -> TlsResult<()> {
         let client_ap = derive_secret(
             self.hash,
             &self.master_secret,
@@ -134,19 +123,14 @@ impl Tls13KeySchedule {
             b"s ap traffic",
             Some(server_finished_hash),
         )?;
-        self.client_application =
-            Some(traffic_from_secret(self.hash, self.aead, &client_ap)?);
-        self.server_application =
-            Some(traffic_from_secret(self.hash, self.aead, &server_ap)?);
+        self.client_application = Some(traffic_from_secret(self.hash, self.aead, &client_ap)?);
+        self.server_application = Some(traffic_from_secret(self.hash, self.aead, &server_ap)?);
         Ok(())
     }
 
     /// Derives the resumption master secret after the client Finished is added
     /// to the transcript.
-    pub fn derive_resumption_master(
-        &mut self,
-        client_finished_hash: &[u8],
-    ) -> TlsResult<()> {
+    pub fn derive_resumption_master(&mut self, client_finished_hash: &[u8]) -> TlsResult<()> {
         let rms = derive_secret(
             self.hash,
             &self.master_secret,
@@ -174,18 +158,12 @@ impl Tls13KeySchedule {
     }
 
     /// Performs a TLS 1.3 KeyUpdate on an application traffic secret.
-    pub fn update_traffic_secret(
-        hash: HashAlgorithm,
-        secret: &[u8],
-    ) -> TlsResult<Vec<u8>> {
+    pub fn update_traffic_secret(hash: HashAlgorithm, secret: &[u8]) -> TlsResult<Vec<u8>> {
         hkdf_expand_label(hash, secret, b"traffic upd", &[], hash.output_len())
     }
 
     /// Re-derives AEAD keys from an updated application traffic secret.
-    pub fn traffic_from_app_secret(
-        &self,
-        secret: &[u8],
-    ) -> TlsResult<DirectionalSecrets> {
+    pub fn traffic_from_app_secret(&self, secret: &[u8]) -> TlsResult<DirectionalSecrets> {
         traffic_from_secret(self.hash, self.aead, secret)
     }
 }
@@ -270,11 +248,7 @@ impl Tls12Keys {
     }
 
     /// Computes TLS 1.2 Finished `verify_data` (12 bytes for AEAD suites).
-    pub fn finished_verify(
-        &self,
-        label: &[u8],
-        handshake_hash: &[u8],
-    ) -> TlsResult<Vec<u8>> {
+    pub fn finished_verify(&self, label: &[u8], handshake_hash: &[u8]) -> TlsResult<Vec<u8>> {
         tls12_prf(self.hash, &self.master_secret, label, handshake_hash, 12)
     }
 
@@ -321,11 +295,8 @@ mod tests {
     fn tls13_handshake_secrets_have_expected_lengths() {
         let ecdhe = [7u8; 32];
         let hello_hash = [3u8; 32];
-        let ks = match Tls13KeySchedule::from_handshake(
-            CipherSuite::TlsAes128GcmSha256,
-            &ecdhe,
-            &hello_hash,
-        ) {
+        let ks = match Tls13KeySchedule::from_handshake(CipherSuite::TlsAes128GcmSha256, &ecdhe, &hello_hash)
+        {
             Ok(ks) => ks,
             Err(_) => return,
         };

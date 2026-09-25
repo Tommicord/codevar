@@ -147,9 +147,7 @@ impl fmt::Display for CompressorError {
             Self::InputTooLarge => f.write_str("input exceeds FcWare frame limits"),
             Self::InvalidCodePoint(err) => err.fmt(f),
             Self::InvalidIndex => f.write_str("invalid FcWare dictionary index"),
-            Self::InvalidDuplicateIndex => {
-                f.write_str("invalid FcWare duplicate-byte index")
-            }
+            Self::InvalidDuplicateIndex => f.write_str("invalid FcWare duplicate-byte index"),
             Self::InvalidControl(err) => err.fmt(f),
             Self::OutputTooSmall => f.write_str("output buffer too small"),
         }

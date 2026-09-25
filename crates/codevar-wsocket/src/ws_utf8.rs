@@ -165,13 +165,7 @@ fn validate_complete_sequence(seq: &[u8]) -> WsResult<()> {
                 Err(WsError::InvalidUtf8)
             }
         }
-        [0xF0, b, c, d]
-            if (0x90..=0xBF).contains(b)
-                && is_continuation(*c)
-                && is_continuation(*d) =>
-        {
-            Ok(())
-        }
+        [0xF0, b, c, d] if (0x90..=0xBF).contains(b) && is_continuation(*c) && is_continuation(*d) => Ok(()),
         [a, b, c, d]
             if (0xF1..=0xF3).contains(a)
                 && is_continuation(*b)
@@ -180,13 +174,7 @@ fn validate_complete_sequence(seq: &[u8]) -> WsResult<()> {
         {
             Ok(())
         }
-        [0xF4, b, c, d]
-            if (0x80..=0x8F).contains(b)
-                && is_continuation(*c)
-                && is_continuation(*d) =>
-        {
-            Ok(())
-        }
+        [0xF4, b, c, d] if (0x80..=0x8F).contains(b) && is_continuation(*c) && is_continuation(*d) => Ok(()),
         _ => Err(WsError::InvalidUtf8),
     }
 }
@@ -265,10 +253,7 @@ mod tests {
     #[test]
     fn rejects_boundary_invalid_sequences() {
         for seq in INVALID_SEQUENCES {
-            assert!(
-                validate_utf8(seq).is_err(),
-                "accepted invalid UTF-8: {seq:02x?}"
-            );
+            assert!(validate_utf8(seq).is_err(), "accepted invalid UTF-8: {seq:02x?}");
         }
     }
 
@@ -391,10 +376,7 @@ mod tests {
     #[test]
     fn invalid_byte_fails_feed_even_after_valid_prefix() {
         let mut v = Utf8Validator::new();
-        assert!(matches!(
-            v.feed(&[0x41, 0xFF, 0x42]),
-            Err(WsError::InvalidUtf8)
-        ));
+        assert!(matches!(v.feed(&[0x41, 0xFF, 0x42]), Err(WsError::InvalidUtf8)));
     }
 
     #[test]

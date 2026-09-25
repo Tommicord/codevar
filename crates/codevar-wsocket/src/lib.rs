@@ -27,18 +27,16 @@ pub mod ws_utf8;
 
 pub use crate::ws_client::ClientConnection as WsClientConnection;
 pub use crate::ws_connection::{
-    ConnectionConfig as WsConnectionConfig, ConnectionState as WsConnectionState,
-    IoState as WsIoState,
+    ConnectionConfig as WsConnectionConfig, ConnectionState as WsConnectionState, IoState as WsIoState,
 };
 pub use crate::ws_error::{WsError, WsResult};
 pub use crate::ws_frame::{WsFrame, WsFrameHeader};
 pub use crate::ws_handshake::{
-    HandshakeRequest, WsClientHandshake, WsHandshakeResponse, WsServerHandshake,
-    accept_key_from_nonce, compute_accept_key, generate_key_nonce,
+    HandshakeRequest, WsClientHandshake, WsHandshakeResponse, WsServerHandshake, accept_key_from_nonce,
+    compute_accept_key, generate_key_nonce,
 };
 pub use crate::ws_ids::{
-    DEFAULT_MAX_FRAME_SIZE, DEFAULT_MAX_MESSAGE_SIZE, GUID, Role, VERSION, WsCloseCode,
-    WsOpcode,
+    DEFAULT_MAX_FRAME_SIZE, DEFAULT_MAX_MESSAGE_SIZE, GUID, Role, VERSION, WsCloseCode, WsOpcode,
 };
 pub use crate::ws_message::WsMessage;
 pub use crate::ws_server::ServerConnection as WsServerConnection;

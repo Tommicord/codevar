@@ -57,9 +57,7 @@ use core::time::Duration;
 use crate::xdp_app_info::{AppInfo, AppInfoKind};
 use crate::xdp_error::PortalError;
 use crate::xdp_utils::{documents_mountpoint, env_var, set_documents_mountpoint};
-use codevar_dbus::{
-    BodyWriter, Connection, DbusError, DbusMessage, DbusResult, DbusTransport,
-};
+use codevar_dbus::{BodyWriter, Connection, DbusError, DbusMessage, DbusResult, DbusTransport};
 
 /// Bus name of the document portal service.
 pub const DOCUMENTS_DBUS_NAME: &str = "org.freedesktop.portal.Documents";
@@ -372,9 +370,7 @@ impl DocumentAddPlan {
             return filename_to_uri(&self.path);
         }
         let mountpoint = self.mountpoint.as_deref().ok_or_else(|| {
-            PortalError::Failed(String::from(
-                "Cannot determine the document portal mount point",
-            ))
+            PortalError::Failed(String::from("Cannot determine the document portal mount point"))
         })?;
         filename_to_uri(&build_filename(&[mountpoint, doc_id, &self.basename]))
     }
@@ -396,13 +392,11 @@ impl DocumentAddPlan {
     pub fn open_register_fd(&self) -> Result<i32, PortalError> {
         use alloc::ffi::CString;
 
-        let target = CString::new(self.open_path.as_str()).map_err(|_| {
-            PortalError::InvalidArgument(String::from("path contains a nul byte"))
-        })?;
+        let target = CString::new(self.open_path.as_str())
+            .map_err(|_| PortalError::InvalidArgument(String::from("path contains a nul byte")))?;
         // SAFETY: `target` is a valid NUL-terminated path string and
         // the returned descriptor is checked for failure before use.
-        let raw_fd =
-            unsafe { libc::open(target.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+        let raw_fd = unsafe { libc::open(target.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
         if raw_fd < 0 {
             // SAFETY: the call failed, so `errno` is live.
             let errno = unsafe { *libc::__errno_location() };
@@ -482,9 +476,7 @@ pub fn plan_register_document(
         )));
     }
     let path = uri_to_path(uri).ok_or_else(|| {
-        PortalError::InvalidArgument(format!(
-            "URI {uri} not supported by the document portal"
-        ))
+        PortalError::InvalidArgument(format!("URI {uri} not supported by the document portal"))
     })?;
     let basename = path_basename(&path);
     let open_path = if flags.contains(DocumentFlags::FOR_SAVE) {
@@ -499,8 +491,7 @@ pub fn plan_register_document(
         (false, 2..) => DocumentAddMethod::AddFull,
         (false, _) => DocumentAddMethod::Add,
     };
-    let needs_grant_permissions =
-        matches!(method, DocumentAddMethod::Add | DocumentAddMethod::AddNamed);
+    let needs_grant_permissions = matches!(method, DocumentAddMethod::Add | DocumentAddMethod::AddNamed);
 
     Ok(DocumentAddPlan {
         uri: String::from(uri),
@@ -576,10 +567,7 @@ pub fn filename_to_uri(path: &str) -> Result<String, PortalError> {
 /// `runtime_dir` never matches, so a missing `XDG_RUNTIME_DIR` cannot
 /// turn every path into a document path.
 #[must_use]
-pub fn parse_document_portal_path<'a>(
-    path: &'a str,
-    runtime_dir: &str,
-) -> Option<(&'a str, &'a str)> {
+pub fn parse_document_portal_path<'a>(path: &'a str, runtime_dir: &str) -> Option<(&'a str, &'a str)> {
     if runtime_dir.is_empty() || !path.starts_with(runtime_dir) {
         return None;
     }
@@ -663,19 +651,14 @@ pub fn resolve_document_portal_path<T: DbusTransport>(
 ///
 /// Returns the underlying [`PortalError`] when the document portal
 /// cannot be reached or replies with an unusable path.
-pub fn init_document_proxy<T: DbusTransport>(
-    connection: &mut Connection<T>,
-) -> Result<String, PortalError> {
+pub fn init_document_proxy<T: DbusTransport>(connection: &mut Connection<T>) -> Result<String, PortalError> {
     match get_mount_point(connection) {
         Ok(path) => {
             set_documents_mountpoint(Some(&path));
             Ok(path)
         }
         Err(error) => {
-            log::warn!(
-                "Document portal fuse mount point unknown: {}",
-                error.message()
-            );
+            log::warn!("Document portal fuse mount point unknown: {}", error.message());
             set_documents_mountpoint(None);
             Err(error)
         }
@@ -689,9 +672,7 @@ pub fn init_document_proxy<T: DbusTransport>(
 ///
 /// Returns [`PortalError::Failed`] when the call or the `ay`
 /// bytestring reply cannot be decoded.
-pub fn get_mount_point<T: DbusTransport>(
-    connection: &mut Connection<T>,
-) -> Result<String, PortalError> {
+pub fn get_mount_point<T: DbusTransport>(connection: &mut Connection<T>) -> Result<String, PortalError> {
     let reply = connection.call(
         DOCUMENTS_DBUS_NAME,
         DOCUMENTS_DBUS_PATH,
@@ -711,9 +692,7 @@ pub fn get_mount_point<T: DbusTransport>(
 ///
 /// Returns [`PortalError::Failed`] when the call fails or the reply is
 /// not a `u` variant.
-pub fn get_documents_version<T: DbusTransport>(
-    connection: &mut Connection<T>,
-) -> Result<u32, PortalError> {
+pub fn get_documents_version<T: DbusTransport>(connection: &mut Connection<T>) -> Result<u32, PortalError> {
     let reply = connection.call(
         DOCUMENTS_DBUS_NAME,
         DOCUMENTS_DBUS_PATH,
@@ -752,10 +731,7 @@ pub fn get_real_path_for_doc_id<T: DbusTransport>(
         .map_err(PortalError::from)
         .and_then(|reply| decode_path_reply(&reply, "Info"));
     if let Err(error) = &outcome {
-        log::debug!(
-            "document portal error for doc id '{doc_id}': {}",
-            error.message()
-        );
+        log::debug!("document portal error for doc id '{doc_id}': {}", error.message());
     }
     outcome
 }
@@ -796,8 +772,7 @@ fn user_runtime_dir() -> Option<String> {
 fn permissions_for(flags: DocumentFlags) -> Vec<String> {
     let mut permissions = Vec::new();
     permissions.push(String::from("read"));
-    if flags.contains(DocumentFlags::WRITABLE) || flags.contains(DocumentFlags::FOR_SAVE)
-    {
+    if flags.contains(DocumentFlags::WRITABLE) || flags.contains(DocumentFlags::FOR_SAVE) {
         permissions.push(String::from("write"));
     }
     permissions.push(String::from("grant-permissions"));
@@ -868,9 +843,8 @@ fn decode_path_reply(reply: &DbusMessage, context: &str) -> Result<String, Porta
     if value.last() == Some(&0u8) {
         value.pop();
     }
-    String::from_utf8(value).map_err(|_| {
-        PortalError::Failed(format!("The {context} reply is not valid UTF-8"))
-    })
+    String::from_utf8(value)
+        .map_err(|_| PortalError::Failed(format!("The {context} reply is not valid UTF-8")))
 }
 
 /// Reads the `u` variant the `Properties.Get` reply wraps the
@@ -893,10 +867,7 @@ fn decode_version_reply(reply: &DbusMessage) -> Result<u32, PortalError> {
 
 /// Reads the document id out of an `Add*` reply; `AddFull` answers
 /// with an array and takes its first entry, as the C code does.
-fn decode_doc_id(
-    method: DocumentAddMethod,
-    reply: &DbusMessage,
-) -> Result<String, PortalError> {
+fn decode_doc_id(method: DocumentAddMethod, reply: &DbusMessage) -> Result<String, PortalError> {
     let context = match method {
         DocumentAddMethod::AddFull => "AddFull",
         DocumentAddMethod::AddNamedFull => "AddNamedFull",
@@ -1080,38 +1051,20 @@ mod tests {
     }
 
     fn plan_with(uri: &str, flags: DocumentFlags, version: u32) -> DocumentAddPlan {
-        plan_register_document(
-            uri,
-            "org.example.App",
-            &flatpak_app_info(),
-            flags,
-            version,
-        )
-        // Justified: a file URI and a valid app id cannot fail.
-        .unwrap()
+        plan_register_document(uri, "org.example.App", &flatpak_app_info(), flags, version)
+            // Justified: a file URI and a valid app id cannot fail.
+            .unwrap()
     }
 
     #[test]
     fn converts_file_uris_to_paths_like_glib() {
-        assert_eq!(
-            uri_to_path("file:///tmp/a%20b").as_deref(),
-            Some("/tmp/a b")
-        );
-        assert_eq!(
-            uri_to_path("file://localhost/tmp/x").as_deref(),
-            Some("/tmp/x")
-        );
-        assert_eq!(
-            uri_to_path("file://otherhost/tmp/x").as_deref(),
-            Some("/tmp/x")
-        );
+        assert_eq!(uri_to_path("file:///tmp/a%20b").as_deref(), Some("/tmp/a b"));
+        assert_eq!(uri_to_path("file://localhost/tmp/x").as_deref(), Some("/tmp/x"));
+        assert_eq!(uri_to_path("file://otherhost/tmp/x").as_deref(), Some("/tmp/x"));
         assert_eq!(uri_to_path("file:/tmp/x").as_deref(), Some("/tmp/x"));
         assert_eq!(uri_to_path("FILE:///tmp/x").as_deref(), Some("/tmp/x"));
         assert_eq!(uri_to_path("file:///").as_deref(), Some("/"));
-        assert_eq!(
-            uri_to_path("file:///tmp/x?a=1#f").as_deref(),
-            Some("/tmp/x")
-        );
+        assert_eq!(uri_to_path("file:///tmp/x?a=1#f").as_deref(), Some("/tmp/x"));
         assert_eq!(
             uri_to_path("file:///tmp/uni%C3%BCcode.txt").as_deref(),
             Some("/tmp/uni\u{fc}code.txt")
@@ -1123,10 +1076,7 @@ mod tests {
         assert_eq!(uri_to_path("file:///tmp/x/").as_deref(), Some("/tmp/x"));
         assert_eq!(uri_to_path("file:///tmp//x").as_deref(), Some("/tmp/x"));
         assert_eq!(uri_to_path("file:///../x").as_deref(), Some("/x"));
-        assert_eq!(
-            uri_to_path("file:///tmp/a//b/../c").as_deref(),
-            Some("/tmp/a/c")
-        );
+        assert_eq!(uri_to_path("file:///tmp/a//b/../c").as_deref(), Some("/tmp/a/c"));
 
         // Not a file URI, not a path, or an escape GLib rejects.
         assert_eq!(uri_to_path("http://h/p"), None);
@@ -1152,10 +1102,7 @@ mod tests {
         assert_eq!(filename_to_uri("/tmp/a%b").unwrap(), "file:///tmp/a%25b");
         assert_eq!(filename_to_uri("/tmp/a;b").unwrap(), "file:///tmp/a%3Bb");
         assert_eq!(filename_to_uri("/tmp/a+b").unwrap(), "file:///tmp/a+b");
-        assert_eq!(
-            filename_to_uri("/tmp/a~b.txt").unwrap(),
-            "file:///tmp/a~b.txt"
-        );
+        assert_eq!(filename_to_uri("/tmp/a~b.txt").unwrap(), "file:///tmp/a~b.txt");
         assert_eq!(
             filename_to_uri("/tmp/\u{fc}n\u{ef}code.txt").unwrap(),
             "file:///tmp/%C3%BCn%C3%AFcode.txt"
@@ -1367,10 +1314,7 @@ mod tests {
         let mut handles = reader.read_array(4).unwrap();
         assert_eq!(handles.read_fd().unwrap(), 2);
         assert!(handles.is_empty());
-        assert_eq!(
-            reader.read_u32().unwrap(),
-            u32::from(plan.full_flags().bits())
-        );
+        assert_eq!(reader.read_u32().unwrap(), u32::from(plan.full_flags().bits()));
         assert_eq!(reader.read_str().unwrap(), "org.example.App");
         let mut permissions = reader.read_array(4).unwrap();
         assert_eq!(permissions.read_str().unwrap(), "read");
@@ -1392,10 +1336,7 @@ mod tests {
             rest.push(filename.read_u8().unwrap());
         }
         assert_eq!(rest, b"ile.txt\0");
-        assert_eq!(
-            reader.read_u32().unwrap(),
-            u32::from(plan.full_flags().bits())
-        );
+        assert_eq!(reader.read_u32().unwrap(), u32::from(plan.full_flags().bits()));
         assert_eq!(reader.read_str().unwrap(), "org.example.App");
         let mut permissions = reader.read_array(4).unwrap();
         assert_eq!(permissions.read_str().unwrap(), "read");
@@ -1409,13 +1350,7 @@ mod tests {
     fn encodes_grant_permissions_arguments() {
         let permissions = Vec::from([String::from("read"), String::from("delete")]);
         let mut body = BodyWriter::new(ByteOrder::Little);
-        write_grant_permissions_args(
-            &mut body,
-            "abc123",
-            "org.example.App",
-            &permissions,
-        )
-        .unwrap();
+        write_grant_permissions_args(&mut body, "abc123", "org.example.App", &permissions).unwrap();
         let (bytes, signature) = body.into_parts();
         assert_eq!(signature, "ssas");
         let mut reader = DbusReader::new(&bytes, ByteOrder::Little);
@@ -1441,9 +1376,7 @@ mod tests {
 
     #[test]
     fn decodes_documents_replies() {
-        let mount_point = reply_with("ay", |writer| {
-            write_byte_string(writer, "/run/user/1000/doc")
-        });
+        let mount_point = reply_with("ay", |writer| write_byte_string(writer, "/run/user/1000/doc"));
         assert_eq!(
             decode_path_reply(&mount_point, "GetMountPoint").unwrap(),
             "/run/user/1000/doc"
@@ -1458,10 +1391,7 @@ mod tests {
                 })
             })
         });
-        assert_eq!(
-            decode_path_reply(&info, "Info").unwrap(),
-            "/home/user/file.txt"
-        );
+        assert_eq!(decode_path_reply(&info, "Info").unwrap(), "/home/user/file.txt");
 
         let version = reply_with("v", |writer| {
             writer.write_variant("u", |writer| writer.write_u32(5))
@@ -1490,19 +1420,13 @@ mod tests {
             })?;
             writer.write_array("{sv}", |_writer| Ok(()))
         });
-        assert_eq!(
-            decode_doc_id(DocumentAddMethod::AddFull, &many).unwrap(),
-            "first"
-        );
+        assert_eq!(decode_doc_id(DocumentAddMethod::AddFull, &many).unwrap(), "first");
 
         let empty = reply_with("asa{sv}", |writer| {
             writer.write_array("s", |_writer| Ok(()))?;
             writer.write_array("{sv}", |_writer| Ok(()))
         });
-        assert_eq!(
-            decode_doc_id(DocumentAddMethod::AddFull, &empty).unwrap(),
-            ""
-        );
+        assert_eq!(decode_doc_id(DocumentAddMethod::AddFull, &empty).unwrap(), "");
     }
 
     #[test]
@@ -1515,10 +1439,7 @@ mod tests {
             Some(("abc123", ""))
         );
         assert_eq!(
-            parse_document_portal_path(
-                "/run/user/1000/doc/abc123/mydir/sub/file.txt",
-                runtime_dir
-            ),
+            parse_document_portal_path("/run/user/1000/doc/abc123/mydir/sub/file.txt", runtime_dir),
             Some(("abc123", "/sub/file.txt"))
         );
         assert_eq!(
@@ -1537,12 +1458,9 @@ mod tests {
         assert_eq!(parse_document_portal_path(file_path, ""), None);
 
         assert_eq!(
-            resolve_document_portal_path_with(
-                file_path,
-                ResolveDocumentStrategy::File,
-                runtime_dir,
-                |_| Some(String::from("/home/user/file.txt"))
-            ),
+            resolve_document_portal_path_with(file_path, ResolveDocumentStrategy::File, runtime_dir, |_| {
+                Some(String::from("/home/user/file.txt"))
+            }),
             "/home/user/file.txt"
         );
 
@@ -1569,12 +1487,9 @@ mod tests {
 
         // Unknown documents and unrelated paths stay untouched.
         assert_eq!(
-            resolve_document_portal_path_with(
-                file_path,
-                ResolveDocumentStrategy::File,
-                runtime_dir,
-                |_| None
-            ),
+            resolve_document_portal_path_with(file_path, ResolveDocumentStrategy::File, runtime_dir, |_| {
+                None
+            }),
             file_path
         );
         assert_eq!(
@@ -1592,8 +1507,7 @@ mod tests {
     #[test]
     fn opens_the_registration_target() {
         let directory = std::env::temp_dir();
-        let path =
-            directory.join(format!("codevar-documents-{}.txt", std::process::id()));
+        let path = directory.join(format!("codevar-documents-{}.txt", std::process::id()));
         std::fs::write(&path, b"x").unwrap();
         let uri = format!("file://{}", path.display());
 

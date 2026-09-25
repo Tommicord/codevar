@@ -134,9 +134,7 @@ impl AlertDescription {
             116 => Self::CertificateRequired,
             120 => Self::NoApplicationProtocol,
             other => {
-                return Err(TlsError::decode(format!(
-                    "unknown alert description {other}"
-                )));
+                return Err(TlsError::decode(format!("unknown alert description {other}")));
             }
         };
         Ok(desc)
@@ -285,14 +283,8 @@ mod tests {
 
     #[test]
     fn alert_encode_produces_level_then_description() {
-        assert_eq!(
-            Alert::fatal(AlertDescription::DecodeError).encode(),
-            [2, 50]
-        );
-        assert_eq!(
-            Alert::warning(AlertDescription::CloseNotify).encode(),
-            [1, 0]
-        );
+        assert_eq!(Alert::fatal(AlertDescription::DecodeError).encode(), [2, 50]);
+        assert_eq!(Alert::warning(AlertDescription::CloseNotify).encode(), [1, 0]);
         assert_eq!(
             Alert::fatal(AlertDescription::NoApplicationProtocol).encode(),
             [2, 120]

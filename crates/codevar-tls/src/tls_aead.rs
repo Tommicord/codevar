@@ -87,23 +87,13 @@ pub struct TlsAead;
 
 impl TlsAead {
     /// TLS 1.3 record encryption (RFC 8446 §5.2).
-    pub fn encrypt_tls13(
-        keys: &AeadKey,
-        seq: u64,
-        aad: &[u8],
-        plaintext: &[u8],
-    ) -> TlsResult<Vec<u8>> {
+    pub fn encrypt_tls13(keys: &AeadKey, seq: u64, aad: &[u8], plaintext: &[u8]) -> TlsResult<Vec<u8>> {
         let nonce = nonce_xor_seq(&keys.iv, seq);
         seal(keys.alg, &keys.key, &nonce, aad, plaintext)
     }
 
     /// TLS 1.3 record decryption.
-    pub fn decrypt_tls13(
-        keys: &AeadKey,
-        seq: u64,
-        aad: &[u8],
-        ciphertext: &[u8],
-    ) -> TlsResult<Vec<u8>> {
+    pub fn decrypt_tls13(keys: &AeadKey, seq: u64, aad: &[u8], ciphertext: &[u8]) -> TlsResult<Vec<u8>> {
         let nonce = nonce_xor_seq(&keys.iv, seq);
         open(keys.alg, &keys.key, &nonce, aad, ciphertext)
     }
@@ -128,11 +118,7 @@ impl TlsAead {
     }
 
     /// TLS 1.2 AES-GCM decryption.
-    pub fn decrypt_tls12_gcm(
-        keys: &AeadKey,
-        ciphertext: &[u8],
-        aad: &[u8],
-    ) -> TlsResult<Vec<u8>> {
+    pub fn decrypt_tls12_gcm(keys: &AeadKey, ciphertext: &[u8], aad: &[u8]) -> TlsResult<Vec<u8>> {
         if ciphertext.len() < 8 + 16 {
             return Err(TlsError::Alert(AlertDescription::BadRecordMac));
         }
@@ -178,10 +164,8 @@ fn seal(
             tls_crypto_aes_gcm::seal(key, nonce, aad, plaintext)
                 .map_err(|()| TlsError::crypto("AES-GCM encrypt"))
         }
-        AeadAlgorithm::ChaCha20Poly1305 => {
-            tls_crypto_chacha20poly1305::seal(key, nonce, aad, plaintext)
-                .map_err(|()| TlsError::crypto("ChaCha20-Poly1305 encrypt"))
-        }
+        AeadAlgorithm::ChaCha20Poly1305 => tls_crypto_chacha20poly1305::seal(key, nonce, aad, plaintext)
+            .map_err(|()| TlsError::crypto("ChaCha20-Poly1305 encrypt")),
     }
 }
 
@@ -196,9 +180,7 @@ fn open(
         AeadAlgorithm::Aes128Gcm | AeadAlgorithm::Aes256Gcm => {
             tls_crypto_aes_gcm::open(key, nonce, aad, ciphertext)
         }
-        AeadAlgorithm::ChaCha20Poly1305 => {
-            tls_crypto_chacha20poly1305::open(key, nonce, aad, ciphertext)
-        }
+        AeadAlgorithm::ChaCha20Poly1305 => tls_crypto_chacha20poly1305::open(key, nonce, aad, ciphertext),
     };
     result.map_err(|()| TlsError::Alert(AlertDescription::BadRecordMac))
 }

@@ -45,8 +45,7 @@ fn is_readable(addr: usize) -> bool {
         // `mincore` only writes the queried residency bytes and retains no
         // pointer. The pointer type differs per libc (`*mut u8` on Linux,
         // `*mut c_char` on the BSDs/macOS), hence the inferred cast.
-        libc::mincore(page as *mut c_void, PAGE_SIZE, vec.as_mut_ptr().cast()) == 0
-            && (vec[0] & 1) != 0
+        libc::mincore(page as *mut c_void, PAGE_SIZE, vec.as_mut_ptr().cast()) == 0 && (vec[0] & 1) != 0
     }
 }
 
@@ -109,9 +108,7 @@ fn is_readable(addr: usize) -> bool {
             core::mem::size_of::<MemoryBasicInformation>(),
         )
     };
-    written != 0
-        && info.state == MEM_COMMIT
-        && (info.protect & (PAGE_NOACCESS | PAGE_GUARD)) == 0
+    written != 0 && info.state == MEM_COMMIT && (info.protect & (PAGE_NOACCESS | PAGE_GUARD)) == 0
 }
 
 /// Fallback for targets without a residency probe (e.g. `wasm32`, UWP):
@@ -163,11 +160,7 @@ impl Frame {
     #[inline]
     #[allow(dead_code)]
     pub(crate) const fn new(ip: usize, sp: usize, module_base: Option<usize>) -> Self {
-        Self {
-            ip,
-            sp,
-            module_base,
-        }
+        Self { ip, sp, module_base }
     }
 }
 
@@ -240,10 +233,7 @@ struct Regs {
 
 impl Regs {
     const fn new() -> Self {
-        Self {
-            gpr: [0; 64],
-            ip: 0,
-        }
+        Self { gpr: [0; 64], ip: 0 }
     }
 }
 
@@ -275,10 +265,7 @@ impl UnwindState {
 /// still fault.
 #[inline]
 unsafe fn read_word(addr: usize) -> Option<usize> {
-    if addr < 4096
-        || !addr.is_multiple_of(core::mem::size_of::<usize>())
-        || !is_readable(addr)
-    {
+    if addr < 4096 || !addr.is_multiple_of(core::mem::size_of::<usize>()) || !is_readable(addr) {
         return None;
     }
     let value = unsafe { core::ptr::read_unaligned(addr as *const usize) };
@@ -902,11 +889,7 @@ mod cfi {
         })
     }
 
-    fn parse_fde<'a>(
-        reader: &mut SliceReader<'a>,
-        entry_end: usize,
-        cie: Cie,
-    ) -> Option<Fde<'a>> {
+    fn parse_fde<'a>(reader: &mut SliceReader<'a>, entry_end: usize, cie: Cie) -> Option<Fde<'a>> {
         let loc_field = reader.addr();
         let initial_location = reader.read_encoded(cie.fde_enc, loc_field)?;
         let address_range = reader.read_encoded_raw(cie.fde_enc)?;
@@ -1014,12 +997,7 @@ mod cfi {
     }
 
     /// Walks `.eh_frame` linearly looking for an FDE covering `ip`.
-    fn scan_eh_frame<'a>(
-        data: &'a [u8],
-        base: usize,
-        datarel_base: usize,
-        ip: usize,
-    ) -> Option<Fde<'a>> {
+    fn scan_eh_frame<'a>(data: &'a [u8], base: usize, datarel_base: usize, ip: usize) -> Option<Fde<'a>> {
         let mut off = 0usize;
         while off + 4 <= data.len() {
             if data[off..off + 4] == [0, 0, 0, 0] {
@@ -1043,19 +1021,17 @@ mod cfi {
                 }
                 let cie_start = cie_ptr_field - cie_ptr;
                 // CIE body starts after its length/id header.
-                let Some((_cie_body, cie_end, true)) = entry_offsets(cie_start, data)
-                else {
+                let Some((_cie_body, cie_end, true)) = entry_offsets(cie_start, data) else {
                     off = end;
                     continue;
                 };
                 let mut cr = SliceReader::new(data, base, datarel_base);
                 // Skip length field (4 or 12 bytes) plus CIE id (4 or 8).
-                let id_size =
-                    if data.get(cie_start..cie_start + 4) == Some(&[0xff; 4][..]) {
-                        20
-                    } else {
-                        8
-                    };
+                let id_size = if data.get(cie_start..cie_start + 4) == Some(&[0xff; 4][..]) {
+                    20
+                } else {
+                    8
+                };
                 cr.pos = cie_start + id_size;
                 let cie = parse_cie(&mut cr, cie_end)?;
                 let mut fr = SliceReader::new(data, base, datarel_base);
@@ -1071,11 +1047,7 @@ mod cfi {
     }
 
     /// Binary-searches `.eh_frame_hdr` for an FDE address covering `ip`.
-    fn hdr_find_fde<'a>(
-        tables: &UnwindTables,
-        ip: usize,
-        frame: &'a [u8],
-    ) -> Option<Fde<'a>> {
+    fn hdr_find_fde<'a>(tables: &UnwindTables, ip: usize, frame: &'a [u8]) -> Option<Fde<'a>> {
         let (hdr_addr, hdr_len) = tables.eh_frame_hdr?;
         if hdr_len < 4 || hdr_addr < 4096 {
             return None;
@@ -1177,11 +1149,7 @@ mod cfi {
         }
     }
 
-    fn find_fde<'a>(
-        tables: &UnwindTables,
-        frame: &'a [u8],
-        ip: usize,
-    ) -> Option<Fde<'a>> {
+    fn find_fde<'a>(tables: &UnwindTables, frame: &'a [u8], ip: usize) -> Option<Fde<'a>> {
         if let Some(fde) = hdr_find_fde(tables, ip, frame) {
             return Some(fde);
         }
@@ -1198,10 +1166,7 @@ mod cfi {
         let mut r = SliceReader::new(data, base, 0);
         let mut stack = [0usize; EXPR_STACK_LIMIT];
         let mut sp = 0usize;
-        let push = |stack: &mut [usize; EXPR_STACK_LIMIT],
-                    sp: &mut usize,
-                    v: usize|
-         -> Option<()> {
+        let push = |stack: &mut [usize; EXPR_STACK_LIMIT], sp: &mut usize, v: usize| -> Option<()> {
             if *sp >= EXPR_STACK_LIMIT {
                 return None;
             }
@@ -1375,9 +1340,7 @@ mod cfi {
                     if sp < 2 {
                         return None;
                     }
-                    stack[sp - 2] = ((stack[sp - 2] as isize)
-                        .wrapping_shr(stack[sp - 1] as u32))
-                        as usize;
+                    stack[sp - 2] = ((stack[sp - 2] as isize).wrapping_shr(stack[sp - 1] as u32)) as usize;
                     sp -= 1;
                 }
                 0x27 => {
@@ -1461,9 +1424,7 @@ mod cfi {
                     } else if a < 4096 {
                         return None;
                     } else {
-                        let bytes = unsafe {
-                            core::slice::from_raw_parts(a as *const u8, size.min(8))
-                        };
+                        let bytes = unsafe { core::slice::from_raw_parts(a as *const u8, size.min(8)) };
                         let mut v = 0usize;
                         for (i, &b) in bytes.iter().enumerate() {
                             v |= usize::from(b) << (8 * i);
@@ -1525,16 +1486,13 @@ mod cfi {
             let short_hi = op & 0xc0;
             let short_reg = usize::from(op & 0x3f);
             match short_hi {
-                0x40 => {
-                    loc = loc.wrapping_add(short_reg.wrapping_mul(code_factor as usize))
-                }
+                0x40 => loc = loc.wrapping_add(short_reg.wrapping_mul(code_factor as usize)),
                 0x80 => {
                     let off = reader.uleb()? as i64;
                     if short_reg >= 64 {
                         return None;
                     }
-                    state.rules[short_reg] =
-                        RegRule::Offset(off.wrapping_mul(data_factor));
+                    state.rules[short_reg] = RegRule::Offset(off.wrapping_mul(data_factor));
                 }
                 0xc0 => {
                     if short_reg >= 64 {
@@ -1548,19 +1506,13 @@ mod cfi {
                         loc = reader.usize_native(address_size)?;
                     }
                     0x02 => {
-                        loc = loc.wrapping_add(
-                            usize::from(reader.u8()?) * code_factor as usize,
-                        );
+                        loc = loc.wrapping_add(usize::from(reader.u8()?) * code_factor as usize);
                     }
                     0x03 => {
-                        loc = loc.wrapping_add(
-                            usize::from(reader.u16()?) * code_factor as usize,
-                        );
+                        loc = loc.wrapping_add(usize::from(reader.u16()?) * code_factor as usize);
                     }
                     0x04 => {
-                        loc = loc.wrapping_add(
-                            (reader.u32()? as usize).wrapping_mul(code_factor as usize),
-                        );
+                        loc = loc.wrapping_add((reader.u32()? as usize).wrapping_mul(code_factor as usize));
                     }
                     0x05 => {
                         let reg = reader.uleb()? as usize;
@@ -1696,8 +1648,7 @@ mod cfi {
                         if reg >= 64 {
                             return None;
                         }
-                        state.rules[reg] =
-                            RegRule::ValOffset(off.wrapping_mul(data_factor));
+                        state.rules[reg] = RegRule::ValOffset(off.wrapping_mul(data_factor));
                     }
                     0x15 => {
                         let reg = reader.uleb()? as usize;
@@ -1705,8 +1656,7 @@ mod cfi {
                         if reg >= 64 {
                             return None;
                         }
-                        state.rules[reg] =
-                            RegRule::ValOffset(off.wrapping_mul(data_factor));
+                        state.rules[reg] = RegRule::ValOffset(off.wrapping_mul(data_factor));
                     }
                     0x16 => {
                         let reg = reader.uleb()? as usize;
@@ -1783,13 +1733,7 @@ mod cfi {
                         return None;
                     }
                     let slice = frame_data.get(start..end)?;
-                    let addr = eval_expr(
-                        slice,
-                        frame_base + start,
-                        &old.gpr,
-                        cfa,
-                        cie.address_size,
-                    )?;
+                    let addr = eval_expr(slice, frame_base + start, &old.gpr, cfa, cie.address_size)?;
                     unsafe { read_word(addr) }?
                 }
                 RegRule::ValExpr(start, end) => {
@@ -1898,8 +1842,7 @@ mod cfi {
             return Err(false);
         }
 
-        let mut next = apply_rules(&cf, &state.regs, fde.cie, frame, tables.eh_frame.0)
-            .ok_or(true)?;
+        let mut next = apply_rules(&cf, &state.regs, fde.cie, frame, tables.eh_frame.0).ok_or(true)?;
         if fde.cie.is_signal {
             next.stop = true;
         }
@@ -1938,11 +1881,7 @@ mod elf {
 
     unsafe extern "C" {
         fn dl_iterate_phdr(
-            callback: extern "C" fn(
-                *const DlPhdrInfo,
-                usize,
-                *mut core::ffi::c_void,
-            ) -> i32,
+            callback: extern "C" fn(*const DlPhdrInfo, usize, *mut core::ffi::c_void) -> i32,
             data: *mut core::ffi::c_void,
         ) -> i32;
     }
@@ -1966,11 +1905,7 @@ mod elf {
         (start, end)
     }
 
-    extern "C" fn callback(
-        info: *const DlPhdrInfo,
-        _size: usize,
-        data: *mut core::ffi::c_void,
-    ) -> i32 {
+    extern "C" fn callback(info: *const DlPhdrInfo, _size: usize, data: *mut core::ffi::c_void) -> i32 {
         if info.is_null() || data.is_null() {
             return 0;
         }
@@ -1982,9 +1917,7 @@ mod elf {
         if info.dlpi_phdr.is_null() || info.dlpi_phnum == 0 {
             return 0;
         }
-        let phdrs = unsafe {
-            core::slice::from_raw_parts(info.dlpi_phdr, usize::from(info.dlpi_phnum))
-        };
+        let phdrs = unsafe { core::slice::from_raw_parts(info.dlpi_phdr, usize::from(info.dlpi_phnum)) };
 
         let mut min_start = usize::MAX;
         let mut in_text = false;
@@ -2025,8 +1958,7 @@ mod elf {
         let mut datarel_base = 0;
         if let Some((hdr, hdr_len)) = eh_hdr {
             datarel_base = hdr;
-            if let Some((ef, ef_len)) = parse_hdr_for_eh_frame(hdr, hdr_len, phdrs, info)
-            {
+            if let Some((ef, ef_len)) = parse_hdr_for_eh_frame(hdr, hdr_len, phdrs, info) {
                 eh_frame = Some((ef, ef_len));
             }
         }
@@ -2167,11 +2099,7 @@ mod elf {
 
     /// Section-header lookup result: `.eh_frame`, `.eh_frame_hdr` address,
     /// and `.eh_frame_hdr` range.
-    type SectionsEhFrame = (
-        Option<(usize, usize)>,
-        Option<usize>,
-        Option<(usize, usize)>,
-    );
+    type SectionsEhFrame = (Option<(usize, usize)>, Option<usize>, Option<(usize, usize)>);
 
     /// Parses ELF section headers at load bias `bias` looking for `.eh_frame*`.
     fn sections_eh_frame(bias: usize, phdrs: &[Phdr]) -> Option<SectionsEhFrame> {
@@ -2201,30 +2129,26 @@ mod elf {
         }
         let shdrs_addr = ehdr_addr.checked_add(shoff)?;
         let sh_size = shentsize.checked_mul(shnum)?;
-        let shdrs =
-            unsafe { core::slice::from_raw_parts(shdrs_addr as *const u8, sh_size) };
+        let shdrs = unsafe { core::slice::from_raw_parts(shdrs_addr as *const u8, sh_size) };
         let get = |i: usize| -> Option<&[u8]> {
             let off = i.checked_mul(shentsize)?;
             shdrs.get(off..off + 64)
         };
         let strtab = get(shstrndx)?;
         // ELF64 Shdr: sh_addr at 16, sh_size at 32.
-        let str_addr = bias
-            .wrapping_add(u64::from_le_bytes(strtab[16..24].try_into().ok()?) as usize);
+        let str_addr = bias.wrapping_add(u64::from_le_bytes(strtab[16..24].try_into().ok()?) as usize);
         let str_size = u64::from_le_bytes(strtab[32..40].try_into().ok()?) as usize;
         if str_addr < 4096 || str_size > (1 << 24) {
             return None;
         }
-        let strtab_bytes =
-            unsafe { core::slice::from_raw_parts(str_addr as *const u8, str_size) };
+        let strtab_bytes = unsafe { core::slice::from_raw_parts(str_addr as *const u8, str_size) };
 
         let mut eh_frame = None;
         let mut hdr = None;
         for i in 0..shnum {
             let sh = get(i)?;
             let name_off = u32::from_le_bytes(sh[0..4].try_into().ok()?) as usize;
-            let sh_addr = bias
-                .wrapping_add(u64::from_le_bytes(sh[16..24].try_into().ok()?) as usize);
+            let sh_addr = bias.wrapping_add(u64::from_le_bytes(sh[16..24].try_into().ok()?) as usize);
             let sh_size = u64::from_le_bytes(sh[32..40].try_into().ok()?) as usize;
             let name = cstr_at(strtab_bytes, name_off)?;
             if name == b".eh_frame" && sh_size > 0 && sh_size < (1 << 28) {
@@ -2249,10 +2173,7 @@ mod elf {
             found: Found::default(),
         };
         unsafe {
-            dl_iterate_phdr(
-                callback,
-                &mut search as *mut Search as *mut core::ffi::c_void,
-            );
+            dl_iterate_phdr(callback, &mut search as *mut Search as *mut core::ffi::c_void);
         }
         search.found
     }
@@ -2369,13 +2290,10 @@ mod apple {
         if mh.magic != 0xfeed_facf || mh.ncmds > 4096 {
             return found;
         }
-        let mut cmd_addr =
-            (header as usize).wrapping_add(core::mem::size_of::<MachHeader64>());
+        let mut cmd_addr = (header as usize).wrapping_add(core::mem::size_of::<MachHeader64>());
         for _ in 0..mh.ncmds {
             let cmd = unsafe { core::ptr::read_unaligned(cmd_addr as *const u32) };
-            let cmdsize = unsafe {
-                core::ptr::read_unaligned(cmd_addr.wrapping_add(4) as *const u32)
-            };
+            let cmdsize = unsafe { core::ptr::read_unaligned(cmd_addr.wrapping_add(4) as *const u32) };
             if cmdsize < 8 || cmdsize as usize > (1 << 24) {
                 break;
             }
@@ -2386,13 +2304,11 @@ mod apple {
                     found.base = Some(vmaddr);
                 }
                 if seg.nsects > 0 && seg.nsects < 1024 {
-                    let sects_addr =
-                        cmd_addr.wrapping_add(core::mem::size_of::<SegmentCommand64>());
+                    let sects_addr = cmd_addr.wrapping_add(core::mem::size_of::<SegmentCommand64>());
                     for s in 0..seg.nsects {
                         let sect = unsafe {
-                            &*(sects_addr.wrapping_add(
-                                s as usize * core::mem::size_of::<Section64>(),
-                            ) as *const Section64)
+                            &*(sects_addr.wrapping_add(s as usize * core::mem::size_of::<Section64>())
+                                as *const Section64)
                         };
                         let name = sect.sectname.split(|&b| b == 0).next().unwrap_or(b"");
                         let addr = (sect.addr as isize + slide) as usize;
@@ -2445,8 +2361,7 @@ mod apple {
             Some(|state: &mut UnwindState| {
                 let found = find(state.regs.ip);
                 if let Some((ef, elen)) = found.eh_frame {
-                    let frame =
-                        unsafe { core::slice::from_raw_parts(ef as *const u8, elen) };
+                    let frame = unsafe { core::slice::from_raw_parts(ef as *const u8, elen) };
                     let tables = cfi::UnwindTables {
                         eh_frame: (ef, elen),
                         eh_frame_hdr: found.eh_frame_hdr,
@@ -2602,11 +2517,7 @@ mod windows {
             let mut base = 0usize;
             let entry = unsafe { RtlLookupFunctionEntry(ip, &mut base, ptr::null_mut()) };
             let module_base = if base != 0 { Some(base) } else { None };
-            let frame = Frame {
-                ip,
-                sp,
-                module_base,
-            };
+            let frame = Frame { ip, sp, module_base };
             if !cb(&frame) {
                 return;
             }
@@ -2692,10 +2603,7 @@ mod windows {
     ),
     allow(dead_code)
 )]
-fn walk(
-    cb: &mut dyn FnMut(&Frame) -> bool,
-    step_fn: Option<fn(&mut UnwindState) -> bool>,
-) {
+fn walk(cb: &mut dyn FnMut(&Frame) -> bool, step_fn: Option<fn(&mut UnwindState) -> bool>) {
     use cfg_if::cfg_if;
 
     cfg_if! {
@@ -2791,11 +2699,7 @@ mod tests {
     /// `offset r16, 1` (return address at `CFA - 8`).
     ///
     /// Returns the number of bytes written.
-    fn synthetic_eh_frame(
-        out: &mut [u8; SYNTH_EH_FRAME_CAP],
-        fde_start: usize,
-        range: usize,
-    ) -> usize {
+    fn synthetic_eh_frame(out: &mut [u8; SYNTH_EH_FRAME_CAP], fde_start: usize, range: usize) -> usize {
         // CIE body after length field:
         //   id=0, version=1, aug="", code_factor=1, data_factor=-8, ret_reg=16
         //   DW_CFA_def_cfa r7, 16; DW_CFA_offset r16, 1
@@ -2845,11 +2749,7 @@ mod tests {
         let mut list = FrameList::new();
         level_a(&mut list);
         let frames = list.as_slice();
-        assert!(
-            frames.len() >= 3,
-            "expected >= 3 frames, got {}",
-            frames.len()
-        );
+        assert!(frames.len() >= 3, "expected >= 3 frames, got {}", frames.len());
         assert!(frames.iter().all(|f| f.ip() != 0));
     }
 
@@ -2858,11 +2758,7 @@ mod tests {
         let mut list = FrameList::new();
         level_a(&mut list);
         let frames = list.as_slice();
-        assert!(
-            frames.len() >= 2,
-            "expected >= 2 frames, got {}",
-            frames.len()
-        );
+        assert!(frames.len() >= 2, "expected >= 2 frames, got {}", frames.len());
         assert!(
             frames.windows(2).all(|w| w[1].sp() > w[0].sp()),
             "SP must increase toward callers"
@@ -2975,10 +2871,7 @@ mod tests {
         }
         let ip = ip_here();
         let base = elf::module_base(ip);
-        assert!(
-            base.is_some(),
-            "code in this binary must have a module base"
-        );
+        assert!(base.is_some(), "code in this binary must have a module base");
         assert!(base.is_some_and(|b| b < ip));
     }
 
@@ -3102,10 +2995,7 @@ mod tests {
             st.regs.ip = 0;
             st.sp = 0x7fff_0000;
             let empty: [u8; 0] = [];
-            assert_err_false(
-                cfi::step(&mut st, &tables_for(&empty), &empty),
-                "empty frame",
-            );
+            assert_err_false(cfi::step(&mut st, &tables_for(&empty), &empty), "empty frame");
         }
 
         #[test]
@@ -3119,11 +3009,7 @@ mod tests {
             for (i, b) in pattern_c.iter_mut().enumerate() {
                 *b = [0xaa, 0x55, 0x01, 0x7f][i & 3];
             }
-            for pattern in [
-                pattern_a.as_slice(),
-                pattern_b.as_slice(),
-                pattern_c.as_slice(),
-            ] {
+            for pattern in [pattern_a.as_slice(), pattern_b.as_slice(), pattern_c.as_slice()] {
                 match cfi::step(&mut st, &tables_for(pattern), pattern) {
                     Err(_) | Ok(None) => {}
                     Ok(Some(_)) => panic!("garbage must not produce a step"),
@@ -3273,10 +3159,7 @@ mod tests {
             };
             for bad in [0usize, 1, 0xdead, usize::MAX, 0xdead_beef_dead_beef] {
                 st.regs.ip = bad;
-                assert_err_false(
-                    cfi::step(&mut st, &tables, frame),
-                    "corrupt ip must miss FDE",
-                );
+                assert_err_false(cfi::step(&mut st, &tables, frame), "corrupt ip must miss FDE");
             }
         }
     }
@@ -3365,13 +3248,8 @@ mod tests {
                 {
                     // re-parse via step internals isn't exposed; print encodings from hdr
                     if let Some((ha, hl)) = tables.eh_frame_hdr {
-                        let hdr = unsafe {
-                            core::slice::from_raw_parts(ha as *const u8, hl.min(64))
-                        };
-                        std::eprintln!(
-                            "hdr bytes[0..16]={:02x?}",
-                            &hdr[..16.min(hdr.len())]
-                        );
+                        let hdr = unsafe { core::slice::from_raw_parts(ha as *const u8, hl.min(64)) };
+                        std::eprintln!("hdr bytes[0..16]={:02x?}", &hdr[..16.min(hdr.len())]);
                     }
                     std::eprintln!(
                         "frame addr={:#x} len={} datarel={:#x}",
@@ -3398,9 +3276,7 @@ mod tests {
                         st = next;
                     }
                     Err(e) => {
-                        std::eprintln!(
-                            "cfi step {step}: Err({e}) at ip={ip:#x} sp={sp:#x} fp={fp:#x}"
-                        );
+                        std::eprintln!("cfi step {step}: Err({e}) at ip={ip:#x} sp={sp:#x} fp={fp:#x}");
                         // try FP from here
                         if fp::step(&mut st) {
                             std::eprintln!("  fp fallback ok ip={:#x}", st.regs.ip);

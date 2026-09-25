@@ -19,8 +19,7 @@ use alloc::vec::Vec;
 
 /// Encodes `input` as a delta / residual frame.
 pub fn delta_encode(input: &[u8]) -> CompressorResult<Vec<u8>> {
-    let length =
-        u32::try_from(input.len()).map_err(|_| CompressorError::InputTooLarge)?;
+    let length = u32::try_from(input.len()).map_err(|_| CompressorError::InputTooLarge)?;
     let mut frame = Vec::with_capacity(7 + input.len());
     frame.extend_from_slice(FrameKind::Delta.magic());
     frame.extend_from_slice(&length.to_be_bytes());
@@ -85,8 +84,7 @@ pub fn delta_decode(frame: &[u8]) -> CompressorResult<Vec<u8>> {
         let marker = unsafe { *frame.as_ptr().add(position) };
         position += 1;
         let (difference, count) = if marker == 0 {
-            let difference =
-                *frame.get(position).ok_or(CompressorError::TruncatedFrame)?;
+            let difference = *frame.get(position).ok_or(CompressorError::TruncatedFrame)?;
             let count = *frame
                 .get(position + 1)
                 .ok_or(CompressorError::TruncatedFrame)?;
@@ -152,10 +150,7 @@ mod tests {
         );
         // Truncated run record after control 0.
         let truncated = Vec::from(&b"DL\x01\x00\x00\x00\x02\x01\x00"[..]);
-        assert_eq!(
-            delta_decode(&truncated),
-            Err(CompressorError::TruncatedFrame)
-        );
+        assert_eq!(delta_decode(&truncated), Err(CompressorError::TruncatedFrame));
         let mut bad = Vec::from(&b"DL\x01\x00\x00\x00\x02\x01"[..]);
         bad.extend([0, 1, 0]); // count == 0
         assert_eq!(delta_decode(&bad), Err(CompressorError::invalid_control(0)));

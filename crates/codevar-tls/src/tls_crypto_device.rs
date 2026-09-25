@@ -109,11 +109,7 @@ fn detect_aes_hw() -> bool {
     {
         std::arch::is_aarch64_feature_detected!("aes")
     }
-    #[cfg(not(any(
-        target_arch = "x86_64",
-        target_arch = "x86",
-        target_arch = "aarch64"
-    )))]
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86", target_arch = "aarch64")))]
     {
         false
     }
@@ -129,11 +125,7 @@ fn detect_clmul_hw() -> bool {
         // PMULL ships with the ARM crypto extension set used for AES.
         std::arch::is_aarch64_feature_detected!("aes")
     }
-    #[cfg(not(any(
-        target_arch = "x86_64",
-        target_arch = "x86",
-        target_arch = "aarch64"
-    )))]
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86", target_arch = "aarch64")))]
     {
         false
     }

@@ -22,9 +22,7 @@
 
 use crate::ws_error::{WsError, WsResult};
 use crate::ws_frame::{WsFrame, decode_close_payload, random_mask_key, try_parse_frame};
-use crate::ws_ids::{
-    DEFAULT_MAX_FRAME_SIZE, DEFAULT_MAX_MESSAGE_SIZE, Role, WsCloseCode, WsOpcode,
-};
+use crate::ws_ids::{DEFAULT_MAX_FRAME_SIZE, DEFAULT_MAX_MESSAGE_SIZE, Role, WsCloseCode, WsOpcode};
 use crate::ws_message::WsMessage;
 use crate::ws_utf8::Utf8Validator;
 use codevar_textlike_encode::encoding_utf8::{encode_text, utf8_valid_up_to};
@@ -231,14 +229,10 @@ impl CommonState {
         // After sending Close, only control frames already in-flight matter;
         // RFC 6455 §5.5.1: MUST NOT send further data frames.
         if self.local_close_sent && frame.header.opcode.is_data() {
-            return Err(WsError::invalid_state(
-                "cannot send data frames after Close",
-            ));
+            return Err(WsError::invalid_state("cannot send data frames after Close"));
         }
         if self.local_close_sent && frame.header.opcode == WsOpcode::Continuation {
-            return Err(WsError::invalid_state(
-                "cannot send continuation after Close",
-            ));
+            return Err(WsError::invalid_state("cannot send continuation after Close"));
         }
         let mask = if self.role.must_mask_outbound() {
             Some(random_mask_key()?)
@@ -290,9 +284,7 @@ impl CommonState {
 
     /// Sends a Pong control frame.
     pub fn send_pong(&mut self, payload: &[u8]) -> WsResult<()> {
-        if self.state == ConnectionState::Closed
-            || self.state == ConnectionState::Connecting
-        {
+        if self.state == ConnectionState::Closed || self.state == ConnectionState::Connecting {
             return Err(WsError::invalid_state("cannot pong in current state"));
         }
         self.send_frame(&WsFrame::pong(payload)?)
@@ -321,8 +313,7 @@ impl CommonState {
     /// Fails the connection (RFC 6455 §7.1.7): optionally send Close, then mark closed.
     pub fn fail(&mut self, err: WsError) -> WsError {
         if let Some(code) = err.close_code()
-            && (self.state == ConnectionState::Open
-                || self.state == ConnectionState::Closing)
+            && (self.state == ConnectionState::Open || self.state == ConnectionState::Closing)
             && !self.local_close_sent
         {
             let _ = self.close(code, "");
@@ -383,9 +374,7 @@ impl CommonState {
 
     fn ensure_can_send_data(&self) -> WsResult<()> {
         if self.state != ConnectionState::Open {
-            return Err(WsError::invalid_state(
-                "connection is not open for data frames",
-            ));
+            return Err(WsError::invalid_state("connection is not open for data frames"));
         }
         if self.local_close_sent {
             return Err(WsError::invalid_state("cannot send data after Close"));
@@ -469,12 +458,15 @@ impl CommonState {
     }
 
     fn append_fragment(&mut self, payload: &[u8]) -> WsResult<()> {
-        let new_len = self.fragment.data.len().checked_add(payload.len()).ok_or(
-            WsError::MessageTooBig {
+        let new_len = self
+            .fragment
+            .data
+            .len()
+            .checked_add(payload.len())
+            .ok_or(WsError::MessageTooBig {
                 size: usize::MAX,
                 limit: self.config.max_message_size,
-            },
-        )?;
+            })?;
         if new_len > self.config.max_message_size {
             return Err(WsError::MessageTooBig {
                 size: new_len,
@@ -500,8 +492,7 @@ impl CommonState {
                 if utf8_valid_up_to(&payload) != payload.len() {
                     return Err(WsError::InvalidUtf8);
                 }
-                let text =
-                    String::from_utf8(payload).map_err(|_| WsError::InvalidUtf8)?;
+                let text = String::from_utf8(payload).map_err(|_| WsError::InvalidUtf8)?;
                 self.messages.push_back(WsMessage::Text(text));
             }
             WsOpcode::Binary => {
@@ -517,10 +508,7 @@ impl CommonState {
     }
 
     fn handle_ping(&mut self, frame: WsFrame) -> WsResult<()> {
-        if self.config.auto_pong
-            && !self.local_close_sent
-            && self.state != ConnectionState::Closed
-        {
+        if self.config.auto_pong && !self.local_close_sent && self.state != ConnectionState::Closed {
             self.send_frame(&WsFrame::pong(frame.payload.clone())?)?;
         }
         self.messages.push_back(WsMessage::Ping(frame.payload));
@@ -644,10 +632,9 @@ mod tests {
         let client_wire = client.take_write();
         assert_eq!(client_wire[0], 0x81); // FIN + text
         assert_ne!(client_wire[1] & 0x80, 0); // mask bit set
-        let (frame, consumed) =
-            try_parse_frame(&client_wire, Role::Server, DEFAULT_MAX_FRAME_SIZE)
-                .expect("parse")
-                .expect("complete");
+        let (frame, consumed) = try_parse_frame(&client_wire, Role::Server, DEFAULT_MAX_FRAME_SIZE)
+            .expect("parse")
+            .expect("complete");
         assert_eq!(consumed, client_wire.len());
         assert_eq!(frame.payload, b"hello");
 
@@ -657,10 +644,9 @@ mod tests {
         let server_wire = server.take_write();
         assert_eq!(server_wire[0], 0x81);
         assert_eq!(server_wire[1] & 0x80, 0); // mask bit clear
-        let (frame2, _) =
-            try_parse_frame(&server_wire, Role::Client, DEFAULT_MAX_FRAME_SIZE)
-                .expect("parse")
-                .expect("complete");
+        let (frame2, _) = try_parse_frame(&server_wire, Role::Client, DEFAULT_MAX_FRAME_SIZE)
+            .expect("parse")
+            .expect("complete");
         assert_eq!(frame2.payload, b"hello");
     }
 
@@ -679,10 +665,7 @@ mod tests {
         server.mark_open(None);
         server.feed(&wire);
         server.process_frames().expect("receive");
-        assert_eq!(
-            server.read_message(),
-            Some(WsMessage::Text(text.to_string()))
-        );
+        assert_eq!(server.read_message(), Some(WsMessage::Text(text.to_string())));
     }
 
     #[test]
@@ -901,13 +884,7 @@ mod tests {
         s.mark_open(None);
         let data = [0u8; 65];
         let err = s.send_binary(&data).expect_err("too big");
-        assert_eq!(
-            err,
-            WsError::MessageTooBig {
-                size: 65,
-                limit: 64,
-            }
-        );
+        assert_eq!(err, WsError::MessageTooBig { size: 65, limit: 64 });
         assert!(!s.wants_write());
     }
 
@@ -954,8 +931,7 @@ mod tests {
     #[test]
     fn peer_close_with_reason_auto_replies_and_closes() {
         let mut s = open_client();
-        let close =
-            WsFrame::close(Some(WsCloseCode::GoingAway), "bye").expect("close frame");
+        let close = WsFrame::close(Some(WsCloseCode::GoingAway), "bye").expect("close frame");
         s.feed(&encode(&close, None));
         s.process_frames().expect("close");
         match s.read_message() {
@@ -1032,8 +1008,7 @@ mod tests {
         assert_eq!(code, WsCloseCode::GoingAway);
         assert_eq!(reason, "bye");
 
-        let peer_close =
-            WsFrame::close(Some(WsCloseCode::Normal), "").expect("close frame");
+        let peer_close = WsFrame::close(Some(WsCloseCode::Normal), "").expect("close frame");
         s.feed(&encode(&peer_close, None));
         s.process_frames().expect("peer close");
         assert!(s.is_closed());
@@ -1052,8 +1027,7 @@ mod tests {
         };
         let mut s = CommonState::new(Role::Client, config);
         s.mark_open(None);
-        let peer_close =
-            WsFrame::close(Some(WsCloseCode::Normal), "").expect("close frame");
+        let peer_close = WsFrame::close(Some(WsCloseCode::Normal), "").expect("close frame");
         s.feed(&encode(&peer_close, None));
         s.process_frames().expect("close");
         assert_eq!(s.state, ConnectionState::Closing);
@@ -1080,8 +1054,7 @@ mod tests {
         let frag = WsFrame::new(false, WsOpcode::Binary, vec![1, 2, 3]);
         s.feed(&encode(&frag, None));
         s.process_frames().expect("fragment");
-        let close =
-            WsFrame::close(Some(WsCloseCode::Normal), "stop").expect("close frame");
+        let close = WsFrame::close(Some(WsCloseCode::Normal), "stop").expect("close frame");
         s.feed(&encode(&close, None));
         s.process_frames().expect("close");
         assert!(s.is_closed());
@@ -1108,8 +1081,7 @@ mod tests {
         assert!(s.rx_buf().is_empty());
 
         // Complete the close handshake, then feed data to a closed connection.
-        let peer_close =
-            WsFrame::close(Some(WsCloseCode::Normal), "").expect("close frame");
+        let peer_close = WsFrame::close(Some(WsCloseCode::Normal), "").expect("close frame");
         s.feed(&encode(&peer_close, None));
         s.process_frames().expect("peer close");
         assert!(s.is_closed());

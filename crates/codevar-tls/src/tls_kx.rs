@@ -44,9 +44,7 @@ pub struct KeySharePublic {
 }
 
 /// Generates an ephemeral key share for `group`.
-pub fn generate_key_share(
-    group: NamedGroup,
-) -> TlsResult<(KeySharePrivate, KeySharePublic)> {
+pub fn generate_key_share(group: NamedGroup) -> TlsResult<(KeySharePrivate, KeySharePublic)> {
     let mut rng = SysRng;
     match group {
         NamedGroup::X25519 => {
@@ -58,10 +56,7 @@ pub fn generate_key_share(
             let key_exchange = public.as_bytes().to_vec();
             Ok((
                 KeySharePrivate::X25519(secret),
-                KeySharePublic {
-                    group,
-                    key_exchange,
-                },
+                KeySharePublic { group, key_exchange },
             ))
         }
         NamedGroup::Secp256r1 => {
@@ -92,10 +87,7 @@ pub fn generate_key_share(
 }
 
 /// Computes the shared secret with a peer public share.
-pub fn shared_secret(
-    private: &KeySharePrivate,
-    peer: &KeySharePublic,
-) -> TlsResult<Vec<u8>> {
+pub fn shared_secret(private: &KeySharePrivate, peer: &KeySharePublic) -> TlsResult<Vec<u8>> {
     match (private, peer.group) {
         (KeySharePrivate::X25519(secret), NamedGroup::X25519) => {
             if peer.key_exchange.len() != 32 {
@@ -110,18 +102,14 @@ pub fn shared_secret(
             Ok(shared.as_bytes().to_vec())
         }
         (KeySharePrivate::P256(secret), NamedGroup::Secp256r1) => {
-            let peer_pk =
-                p256::PublicKey::from_sec1_bytes(&peer.key_exchange).map_err(|_| {
-                    TlsError::Alert(crate::tls_alert::AlertDescription::IllegalParameter)
-                })?;
+            let peer_pk = p256::PublicKey::from_sec1_bytes(&peer.key_exchange)
+                .map_err(|_| TlsError::Alert(crate::tls_alert::AlertDescription::IllegalParameter))?;
             let shared = p256_dh(secret.to_nonzero_scalar(), peer_pk.as_affine());
             Ok(shared.raw_secret_bytes().to_vec())
         }
         (KeySharePrivate::P384(secret), NamedGroup::Secp384r1) => {
-            let peer_pk =
-                p384::PublicKey::from_sec1_bytes(&peer.key_exchange).map_err(|_| {
-                    TlsError::Alert(crate::tls_alert::AlertDescription::IllegalParameter)
-                })?;
+            let peer_pk = p384::PublicKey::from_sec1_bytes(&peer.key_exchange)
+                .map_err(|_| TlsError::Alert(crate::tls_alert::AlertDescription::IllegalParameter))?;
             let shared = p384_dh(secret.to_nonzero_scalar(), peer_pk.as_affine());
             Ok(shared.raw_secret_bytes().to_vec())
         }

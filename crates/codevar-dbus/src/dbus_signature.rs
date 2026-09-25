@@ -66,18 +66,7 @@ pub const fn type_fixed_size(code: u8) -> Option<usize> {
 pub const fn is_basic_type(code: u8) -> bool {
     matches!(
         code,
-        b'y' | b'b'
-            | b'n'
-            | b'q'
-            | b'i'
-            | b'u'
-            | b'x'
-            | b't'
-            | b'd'
-            | b's'
-            | b'o'
-            | b'g'
-            | b'h'
+        b'y' | b'b' | b'n' | b'q' | b'i' | b'u' | b'x' | b't' | b'd' | b's' | b'o' | b'g' | b'h'
     )
 }
 
@@ -108,8 +97,7 @@ fn parse_one(
 ) -> Result<(), ParseError> {
     let code = *bytes.get(*pos).ok_or(ParseError::Truncated)?;
     match code {
-        b'y' | b'b' | b'n' | b'q' | b'i' | b'u' | b'x' | b't' | b'd' | b's' | b'o'
-        | b'g' | b'h' => {
+        b'y' | b'b' | b'n' | b'q' | b'i' | b'u' | b'x' | b't' | b'd' | b's' | b'o' | b'g' | b'h' => {
             *pos += 1;
             Ok(())
         }
@@ -236,9 +224,7 @@ pub fn validate_signature(sig: &str) -> DbusResult<()> {
             ParseError::Depth => DbusError::invalid_signature(alloc::format!(
                 "signature nests containers deeper than the specification allows: {sig}"
             )),
-            ParseError::Invalid => {
-                DbusError::invalid_signature(alloc::format!("invalid signature: {sig}"))
-            }
+            ParseError::Invalid => DbusError::invalid_signature(alloc::format!("invalid signature: {sig}")),
         })?;
     }
     Ok(())
@@ -258,9 +244,8 @@ pub fn validate_single_type(sig: &str) -> DbusResult<()> {
             sig.len()
         )));
     }
-    let length = single_complete_type_len(sig).ok_or_else(|| {
-        DbusError::invalid_signature(alloc::format!("invalid variant signature: {sig}"))
-    })?;
+    let length = single_complete_type_len(sig)
+        .ok_or_else(|| DbusError::invalid_signature(alloc::format!("invalid variant signature: {sig}")))?;
     if length != sig.len() {
         return Err(DbusError::invalid_signature(alloc::format!(
             "variant signature must hold exactly one type: {sig}"

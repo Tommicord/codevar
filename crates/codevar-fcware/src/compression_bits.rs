@@ -106,11 +106,7 @@ impl<'a> BitLaneReader<'a> {
 
 /// Extracts up to eight consecutive MSB-first bits into byte lanes.
 #[inline]
-pub(crate) fn extract_bit_lanes(
-    data: &[u8],
-    bit_index: usize,
-    count: usize,
-) -> [u8; BIT_LANES] {
+pub(crate) fn extract_bit_lanes(data: &[u8], bit_index: usize, count: usize) -> [u8; BIT_LANES] {
     let count = count.min(BIT_LANES);
     if count == 0 {
         return [0; BIT_LANES];
@@ -126,11 +122,7 @@ pub(crate) fn extract_bit_lanes(
 }
 
 #[inline]
-fn extract_bit_lanes_scalar(
-    data: &[u8],
-    bit_index: usize,
-    count: usize,
-) -> [u8; BIT_LANES] {
+fn extract_bit_lanes_scalar(data: &[u8], bit_index: usize, count: usize) -> [u8; BIT_LANES] {
     let mut lanes = [0u8; BIT_LANES];
     let window = load_bit_window(data, bit_index);
     for (lane, slot) in lanes.iter_mut().enumerate().take(count) {
@@ -152,11 +144,7 @@ fn load_bit_window(data: &[u8], bit_index: usize) -> u64 {
     let copy_len = available.min(8);
     // SAFETY: `byte_index + copy_len <= data.len()` and `copy_len <= 8`.
     unsafe {
-        core::ptr::copy_nonoverlapping(
-            data.as_ptr().add(byte_index),
-            tmp.as_mut_ptr(),
-            copy_len,
-        );
+        core::ptr::copy_nonoverlapping(data.as_ptr().add(byte_index), tmp.as_mut_ptr(), copy_len);
     }
     let window = u64::from_be_bytes(tmp);
     window << bit_off
@@ -164,20 +152,14 @@ fn load_bit_window(data: &[u8], bit_index: usize) -> u64 {
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "sse2")]
-unsafe fn extract_bit_lanes_sse2(
-    data: &[u8],
-    bit_index: usize,
-    count: usize,
-) -> [u8; BIT_LANES] {
+unsafe fn extract_bit_lanes_sse2(data: &[u8], bit_index: usize, count: usize) -> [u8; BIT_LANES] {
     #[cfg(target_arch = "x86")]
     use core::arch::x86::{
-        __m128i, _mm_and_si128, _mm_cmpeq_epi8, _mm_set1_epi8, _mm_setr_epi8,
-        _mm_storeu_si128,
+        __m128i, _mm_and_si128, _mm_cmpeq_epi8, _mm_set1_epi8, _mm_setr_epi8, _mm_storeu_si128,
     };
     #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::{
-        __m128i, _mm_and_si128, _mm_cmpeq_epi8, _mm_set1_epi8, _mm_setr_epi8,
-        _mm_storeu_si128,
+        __m128i, _mm_and_si128, _mm_cmpeq_epi8, _mm_set1_epi8, _mm_setr_epi8, _mm_storeu_si128,
     };
 
     let window = load_bit_window(data, bit_index);

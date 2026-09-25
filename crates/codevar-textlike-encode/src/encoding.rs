@@ -13,13 +13,11 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-use crate::encoding_ascii::{
-    ascii_to_ascii, ascii_to_basic_latin, ascii_valid_up_to, validate_ascii,
-};
+use crate::encoding_ascii::{ascii_to_ascii, ascii_to_basic_latin, ascii_valid_up_to, validate_ascii};
 use crate::encoding_single_byte::{SingleByteDecoder, SingleByteEncoder};
 use crate::encoding_utf8::{
-    Utf8Decoder, Utf8Encoder, convert_utf16_to_utf8_partial_inner,
-    convert_utf16_to_utf8_partial_tail, utf8_valid_up_to,
+    Utf8Decoder, Utf8Encoder, convert_utf16_to_utf8_partial_inner, convert_utf16_to_utf8_partial_tail,
+    utf8_valid_up_to,
 };
 use crate::encoding_utf16::{Utf16Decoder, Utf16Encoder};
 use std::borrow::Cow;
@@ -52,11 +50,7 @@ impl Encoding {
 
     #[inline]
     pub fn new_decoder_with_bom_removal(&'static self) -> Decoder {
-        Decoder::new(
-            self,
-            self.variant.new_variant_decoder(),
-            BomHandling::Remove,
-        )
+        Decoder::new(self, self.variant.new_variant_decoder(), BomHandling::Remove)
     }
 
     #[inline]
@@ -92,12 +86,7 @@ impl VariantEncoding {
 
     pub fn new_encoder(&self, encoding: &'static Encoding) -> Encoder {
         match *self {
-            VariantEncoding::SingleByte(
-                table,
-                run_bmp_offset,
-                run_byte_offset,
-                run_length,
-            ) => Encoder::new(
+            VariantEncoding::SingleByte(table, run_bmp_offset, run_byte_offset, run_length) => Encoder::new(
                 encoding,
                 VariantEncoder::SingleByte(SingleByteEncoder::new(
                     table,
@@ -106,9 +95,7 @@ impl VariantEncoding {
                     run_length,
                 )),
             ),
-            VariantEncoding::Utf8 => {
-                Encoder::new(encoding, VariantEncoder::Utf8(Utf8Encoder))
-            }
+            VariantEncoding::Utf8 => Encoder::new(encoding, VariantEncoder::Utf8(Utf8Encoder)),
             VariantEncoding::Utf16Be => {
                 Encoder::new(encoding, VariantEncoder::Utf16(Utf16Encoder::new(true)))
             }
@@ -243,20 +230,11 @@ impl VariantDecoder {
         }
     }
 
-    pub fn max_utf8_buffer_length_without_replacement(
-        &self,
-        byte_length: usize,
-    ) -> Option<usize> {
+    pub fn max_utf8_buffer_length_without_replacement(&self, byte_length: usize) -> Option<usize> {
         match *self {
-            VariantDecoder::SingleByte(ref v) => {
-                v.max_utf8_buffer_length_without_replacement(byte_length)
-            }
-            VariantDecoder::Utf8(ref v) => {
-                v.max_utf8_buffer_length_without_replacement(byte_length)
-            }
-            VariantDecoder::Utf16(ref v) => {
-                v.max_utf8_buffer_length_without_replacement(byte_length)
-            }
+            VariantDecoder::SingleByte(ref v) => v.max_utf8_buffer_length_without_replacement(byte_length),
+            VariantDecoder::Utf8(ref v) => v.max_utf8_buffer_length_without_replacement(byte_length),
+            VariantDecoder::Utf16(ref v) => v.max_utf8_buffer_length_without_replacement(byte_length),
         }
     }
 
@@ -288,9 +266,7 @@ impl VariantDecoder {
         last: bool,
     ) -> (DecoderResult, usize, usize) {
         match *self {
-            VariantDecoder::SingleByte(ref mut v) => {
-                v.decode_to_utf16_raw(src, dst, last)
-            }
+            VariantDecoder::SingleByte(ref mut v) => v.decode_to_utf16_raw(src, dst, last),
             VariantDecoder::Utf8(ref mut v) => v.decode_to_utf16_raw(src, dst, last),
             VariantDecoder::Utf16(ref mut v) => v.decode_to_utf16_raw(src, dst, last),
         }
@@ -298,37 +274,23 @@ impl VariantDecoder {
 }
 
 impl VariantEncoder {
-    pub fn max_buffer_length_from_utf16_without_replacement(
-        &self,
-        u16_length: usize,
-    ) -> Option<usize> {
+    pub fn max_buffer_length_from_utf16_without_replacement(&self, u16_length: usize) -> Option<usize> {
         match *self {
             VariantEncoder::SingleByte(ref v) => {
                 v.max_buffer_length_from_utf16_without_replacement(u16_length)
             }
-            VariantEncoder::Utf8(ref v) => {
-                v.max_buffer_length_from_utf16_without_replacement(u16_length)
-            }
-            VariantEncoder::Utf16(ref v) => {
-                v.max_buffer_length_from_utf16_without_replacement(u16_length)
-            }
+            VariantEncoder::Utf8(ref v) => v.max_buffer_length_from_utf16_without_replacement(u16_length),
+            VariantEncoder::Utf16(ref v) => v.max_buffer_length_from_utf16_without_replacement(u16_length),
         }
     }
 
-    pub fn max_buffer_length_from_utf8_without_replacement(
-        &self,
-        byte_length: usize,
-    ) -> Option<usize> {
+    pub fn max_buffer_length_from_utf8_without_replacement(&self, byte_length: usize) -> Option<usize> {
         match *self {
             VariantEncoder::SingleByte(ref v) => {
                 v.max_buffer_length_from_utf8_without_replacement(byte_length)
             }
-            VariantEncoder::Utf8(ref v) => {
-                v.max_buffer_length_from_utf8_without_replacement(byte_length)
-            }
-            VariantEncoder::Utf16(ref v) => {
-                v.max_buffer_length_from_utf8_without_replacement(byte_length)
-            }
+            VariantEncoder::Utf8(ref v) => v.max_buffer_length_from_utf8_without_replacement(byte_length),
+            VariantEncoder::Utf16(ref v) => v.max_buffer_length_from_utf8_without_replacement(byte_length),
         }
     }
 
@@ -339,9 +301,7 @@ impl VariantEncoder {
         last: bool,
     ) -> (EncoderResult, usize, usize) {
         match *self {
-            VariantEncoder::SingleByte(ref mut v) => {
-                v.encode_from_utf16_raw(src, dst, last)
-            }
+            VariantEncoder::SingleByte(ref mut v) => v.encode_from_utf16_raw(src, dst, last),
             VariantEncoder::Utf8(ref mut v) => v.encode_from_utf16_raw(src, dst, last),
             VariantEncoder::Utf16(ref mut v) => v.encode_from_utf16_raw(src, dst, last),
         }
@@ -354,9 +314,7 @@ impl VariantEncoder {
         last: bool,
     ) -> (EncoderResult, usize, usize) {
         match *self {
-            VariantEncoder::SingleByte(ref mut v) => {
-                v.encode_from_utf8_raw(src, dst, last)
-            }
+            VariantEncoder::SingleByte(ref mut v) => v.encode_from_utf8_raw(src, dst, last),
             VariantEncoder::Utf8(ref mut v) => v.encode_from_utf8_raw(src, dst, last),
             VariantEncoder::Utf16(ref mut v) => v.encode_from_utf8_raw(src, dst, last),
         }
@@ -380,10 +338,7 @@ impl Encoder {
         self.encoding
     }
 
-    pub fn max_buffer_length_from_utf8_if_no_unmappables(
-        &self,
-        byte_length: usize,
-    ) -> Option<usize> {
+    pub fn max_buffer_length_from_utf8_if_no_unmappables(&self, byte_length: usize) -> Option<usize> {
         checked_add(
             if self.encoding().can_encode_everything() {
                 0
@@ -394,10 +349,7 @@ impl Encoder {
         )
     }
 
-    pub fn max_buffer_length_from_utf8_without_replacement(
-        &self,
-        byte_length: usize,
-    ) -> Option<usize> {
+    pub fn max_buffer_length_from_utf8_without_replacement(&self, byte_length: usize) -> Option<usize> {
         self.variant
             .max_buffer_length_from_utf8_without_replacement(byte_length)
     }
@@ -452,8 +404,7 @@ impl Encoder {
                     had_unmappables = true;
                     total_written += write_ncr(unmappable, &mut dst[total_written..]);
                     if total_written >= effective_dst_len {
-                        if total_read == src.len() && !(last && self.has_pending_state())
-                        {
+                        if total_read == src.len() && !(last && self.has_pending_state()) {
                             return (
                                 CoderResult::InputEmpty,
                                 total_read,
@@ -482,10 +433,7 @@ impl Encoder {
         self.variant.encode_from_utf8_raw(src, dst, last)
     }
 
-    pub fn max_buffer_length_from_utf16_if_no_unmappables(
-        &self,
-        u16_length: usize,
-    ) -> Option<usize> {
+    pub fn max_buffer_length_from_utf16_if_no_unmappables(&self, u16_length: usize) -> Option<usize> {
         checked_add(
             if self.encoding().can_encode_everything() {
                 0
@@ -496,10 +444,7 @@ impl Encoder {
         )
     }
 
-    pub fn max_buffer_length_from_utf16_without_replacement(
-        &self,
-        u16_length: usize,
-    ) -> Option<usize> {
+    pub fn max_buffer_length_from_utf16_without_replacement(&self, u16_length: usize) -> Option<usize> {
         self.variant
             .max_buffer_length_from_utf16_without_replacement(u16_length)
     }
@@ -554,8 +499,7 @@ impl Encoder {
                     had_unmappables = true;
                     total_written += write_ncr(unmappable, &mut dst[total_written..]);
                     if total_written >= effective_dst_len {
-                        if total_read == src.len() && !(last && self.has_pending_state())
-                        {
+                        if total_read == src.len() && !(last && self.has_pending_state()) {
                             return (
                                 CoderResult::InputEmpty,
                                 total_read,
@@ -597,11 +541,7 @@ impl PartialEq<Encoding> for &Encoding {
 }
 
 impl Decoder {
-    fn new(
-        enc: &'static Encoding,
-        decoder: VariantDecoder,
-        sniffing: BomHandling,
-    ) -> Decoder {
+    fn new(enc: &'static Encoding, decoder: VariantDecoder, sniffing: BomHandling) -> Decoder {
         Decoder {
             encoding: enc,
             variant: decoder,
@@ -641,10 +581,7 @@ impl Decoder {
         None
     }
 
-    pub fn max_utf8_buffer_length_without_replacement(
-        &self,
-        byte_length: usize,
-    ) -> Option<usize> {
+    pub fn max_utf8_buffer_length_without_replacement(&self, byte_length: usize) -> Option<usize> {
         match self.life_cycle {
             DecoderLifeCycle::Converting
             | DecoderLifeCycle::AtUtf8Start
@@ -682,29 +619,16 @@ impl Decoder {
         let mut total_read = 0usize;
         let mut total_written = 0usize;
         loop {
-            let (result, read, written) = self.decode_to_utf8_without_replacement(
-                &src[total_read..],
-                &mut dst[total_written..],
-                last,
-            );
+            let (result, read, written) =
+                self.decode_to_utf8_without_replacement(&src[total_read..], &mut dst[total_written..], last);
             total_read += read;
             total_written += written;
             match result {
                 DecoderResult::InputEmpty => {
-                    return (
-                        CoderResult::InputEmpty,
-                        total_read,
-                        total_written,
-                        had_errors,
-                    );
+                    return (CoderResult::InputEmpty, total_read, total_written, had_errors);
                 }
                 DecoderResult::OutputFull => {
-                    return (
-                        CoderResult::OutputFull,
-                        total_read,
-                        total_written,
-                        had_errors,
-                    );
+                    return (CoderResult::OutputFull, total_read, total_written, had_errors);
                 }
                 DecoderResult::Malformed(_, _) => {
                     had_errors = true;
@@ -738,29 +662,16 @@ impl Decoder {
         let mut total_read = 0usize;
         let mut total_written = 0usize;
         loop {
-            let (result, read, written) = self.decode_to_utf16_without_replacement(
-                &src[total_read..],
-                &mut dst[total_written..],
-                last,
-            );
+            let (result, read, written) =
+                self.decode_to_utf16_without_replacement(&src[total_read..], &mut dst[total_written..], last);
             total_read += read;
             total_written += written;
             match result {
                 DecoderResult::InputEmpty => {
-                    return (
-                        CoderResult::InputEmpty,
-                        total_read,
-                        total_written,
-                        had_errors,
-                    );
+                    return (CoderResult::InputEmpty, total_read, total_written, had_errors);
                 }
                 DecoderResult::OutputFull => {
-                    return (
-                        CoderResult::OutputFull,
-                        total_read,
-                        total_written,
-                        had_errors,
-                    );
+                    return (CoderResult::OutputFull, total_read, total_written, had_errors);
                 }
                 DecoderResult::Malformed(_, _) => {
                     had_errors = true;
@@ -910,8 +821,7 @@ pub fn encode_latin1_lossy(string: &str) -> Cow<'_, [u8]> {
         let mut spare_temp = vec.clone();
         let spare_capacity = minimally_init(spare_temp.spare_capacity_mut());
         debug_assert_eq!(old_len, up_to);
-        let written =
-            convert_utf8_to_latin1_lossy(tail, spare_capacity.assume_init_mut());
+        let written = convert_utf8_to_latin1_lossy(tail, spare_capacity.assume_init_mut());
         debug_assert!(written <= spare_capacity.len());
         let new_len = old_len + written;
         debug_assert!(new_len <= vec.capacity());
@@ -929,8 +839,7 @@ pub fn convert_utf8_to_latin1_lossy(src: &[u8], dst: &mut [u8]) -> usize {
         let src_left = src_len - total_read;
         let dst_left = dst.len() - total_written;
         let _min_left = ::core::cmp::min(src_left, dst_left);
-        if let Some((non_ascii, consumed)) =
-            { ascii_to_ascii(&src[total_read..], &mut dst[total_written..]) }
+        if let Some((non_ascii, consumed)) = { ascii_to_ascii(&src[total_read..], &mut dst[total_written..]) }
         {
             total_read += consumed + 1;
             total_written += consumed;
@@ -962,8 +871,7 @@ pub fn convert_latin1_to_utf8_partial(src: &[u8], dst: &mut [u8]) -> (usize, usi
         let src_left = src_len - total_read;
         let dst_left = dst_len - total_written;
         let min_left = ::core::cmp::min(src_left, dst_left);
-        if let Some((non_ascii, consumed)) =
-            { ascii_to_ascii(&src[total_read..], &mut dst[total_written..]) }
+        if let Some((non_ascii, consumed)) = { ascii_to_ascii(&src[total_read..], &mut dst[total_written..]) }
         {
             total_read += consumed;
             total_written += consumed;
@@ -981,10 +889,7 @@ pub fn convert_latin1_to_utf8_partial(src: &[u8], dst: &mut [u8]) -> (usize, usi
     }
 }
 
-pub fn convert_utf8_to_utf16(
-    src: &[u8],
-    dst: &mut [u16],
-) -> Result<usize, EncodingError> {
+pub fn convert_utf8_to_utf16(src: &[u8], dst: &mut [u16]) -> Result<usize, EncodingError> {
     if dst.len() <= src.len() {
         return Err(EncodingError::DestinationTooSmall {
             required: src.len().saturating_add(1),
@@ -995,11 +900,8 @@ pub fn convert_utf8_to_utf16(
     let mut total_read = 0usize;
     let mut total_written = 0usize;
     loop {
-        let (result, read, written) = decoder.decode_to_utf16_raw(
-            &src[total_read..],
-            &mut dst[total_written..],
-            true,
-        );
+        let (result, read, written) =
+            decoder.decode_to_utf16_raw(&src[total_read..], &mut dst[total_written..], true);
         total_read += read;
         total_written += written;
         match result {
@@ -1074,12 +976,8 @@ pub fn convert_str_to_utf16(src: &str, dst: &mut [u16]) -> Result<usize, Encodin
                 | ((u32::from(second) & 0x3F) << 12)
                 | ((u32::from(third) & 0x3F) << 6)
                 | (u32::from(fourth) & 0x3F);
-            unsafe {
-                *(dst.get_unchecked_mut(written)) = (0xD7C0 + (point >> 10)) as u16
-            };
-            unsafe {
-                *(dst.get_unchecked_mut(written + 1)) = (0xDC00 + (point & 0x3FF)) as u16
-            };
+            unsafe { *(dst.get_unchecked_mut(written)) = (0xD7C0 + (point >> 10)) as u16 };
+            unsafe { *(dst.get_unchecked_mut(written + 1)) = (0xDC00 + (point & 0x3FF)) as u16 };
             read += 4;
             written += 2;
         }
@@ -1095,15 +993,11 @@ pub fn convert_utf16_to_utf8_partial(src: &[u16], dst: &mut [u8]) -> (usize, usi
     if likely(read == src.len()) {
         return (read, written);
     }
-    let (tail_read, tail_written) =
-        convert_utf16_to_utf8_partial_tail(&src[read..], &mut dst[written..]);
+    let (tail_read, tail_written) = convert_utf16_to_utf8_partial_tail(&src[read..], &mut dst[written..]);
     (read + tail_read, written + tail_written)
 }
 
-pub fn convert_utf16_to_utf8(
-    src: &[u16],
-    dst: &mut [u8],
-) -> Result<usize, EncodingError> {
+pub fn convert_utf16_to_utf8(src: &[u16], dst: &mut [u8]) -> Result<usize, EncodingError> {
     let required = src.len().saturating_mul(3);
     if dst.len() < required {
         return Err(EncodingError::DestinationTooSmall {
@@ -1172,10 +1066,7 @@ pub fn decode_utf8(bytes: &[u8]) -> Cow<'_, str> {
         ) {
             Ok(written) => written,
             Err(_) => {
-                debug_assert!(
-                    false,
-                    "decode_utf8 buffer sizing guarantees conversion succeeds"
-                );
+                debug_assert!(false, "decode_utf8 buffer sizing guarantees conversion succeeds");
                 // Fail safe without panicking: return only the validated
                 // prefix rather than risk inconsistent lengths below.
                 return Cow::Borrowed(str::from_utf8_unchecked(head));
@@ -1186,9 +1077,7 @@ pub fn decode_utf8(bytes: &[u8]) -> Cow<'_, str> {
         debug_assert!(new_len <= vec.capacity());
         let new_len = new_len.min(vec.capacity());
         vec.set_len(new_len);
-        let mut bytes =
-            str::from_utf8_unchecked(spare_capacity[..new_len].assume_init_mut())
-                .to_string();
+        let mut bytes = str::from_utf8_unchecked(spare_capacity[..new_len].assume_init_mut()).to_string();
         bytes.shrink_to_fit();
         Cow::Owned(bytes)
     }

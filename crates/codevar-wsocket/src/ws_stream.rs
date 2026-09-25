@@ -163,9 +163,7 @@ where
             let mut buf = [0u8; 4096];
             let n = self.transport.read(&mut buf)?;
             if n == 0 {
-                return Err(WsError::handshake(
-                    "transport closed during WebSocket handshake",
-                ));
+                return Err(WsError::handshake("transport closed during WebSocket handshake"));
             }
             self.conn.feed(&buf[..n])?;
             self.conn.process()?;
@@ -327,11 +325,8 @@ mod tests {
 
     /// Builds a client stream whose transport already holds a valid 101
     /// response (the Upgrade request is drained to derive it).
-    fn open_client_stream(
-        max_read: Option<usize>,
-    ) -> WebSocketStream<MemTransport, ClientConnection> {
-        let mut client =
-            ClientConnection::connect("/", "localhost", None).expect("connect");
+    fn open_client_stream(max_read: Option<usize>) -> WebSocketStream<MemTransport, ClientConnection> {
+        let mut client = ClientConnection::connect("/", "localhost", None).expect("connect");
         let request = client.take_write();
         let mut server = ServerConnection::accept(None).expect("accept");
         server.feed(&request).expect("feed");
@@ -538,8 +533,7 @@ mod tests {
 
     #[test]
     fn write_before_handshake_completes_it_first() {
-        let mut client =
-            ClientConnection::connect("/", "localhost", None).expect("connect");
+        let mut client = ClientConnection::connect("/", "localhost", None).expect("connect");
         let request = client.take_write();
         let mut server = ServerConnection::accept(None).expect("accept");
         server.feed(&request).expect("feed");

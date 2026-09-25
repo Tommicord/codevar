@@ -28,9 +28,7 @@ use alloc::vec::Vec;
 use core::time::Duration;
 use libc::{c_int, sockaddr_un, socklen_t};
 
-use crate::dbus_addr::{
-    DbusAddress, SESSION_BUS_FILE, SYSTEM_BUS_SOCKET, SYSTEM_BUS_SOCKET_LEGACY,
-};
+use crate::dbus_addr::{DbusAddress, SESSION_BUS_FILE, SYSTEM_BUS_SOCKET, SYSTEM_BUS_SOCKET_LEGACY};
 use crate::dbus_error::{DbusError, DbusResult};
 use crate::dbus_transport::{DbusPollEvents, DbusTransport, close_fds};
 
@@ -52,11 +50,7 @@ pub const MAX_FDS_PER_MESSAGE: usize = 16;
 const CONTROL_SPACE: usize = {
     // SAFETY: `CMSG_SPACE` only aligns and adds its argument and the
     // header size; no memory is dereferenced.
-    unsafe {
-        libc::CMSG_SPACE(
-            (MAX_FDS_PER_MESSAGE * core::mem::size_of::<libc::c_int>()) as u32,
-        ) as usize
-    }
+    unsafe { libc::CMSG_SPACE((MAX_FDS_PER_MESSAGE * core::mem::size_of::<libc::c_int>()) as u32) as usize }
 };
 
 /// A [`DbusTransport`] backed by a Unix domain socket.
@@ -85,9 +79,7 @@ impl UnixTransport {
             None => match address.get("abstract") {
                 Some(_) => "abstract",
                 None => {
-                    return Err(DbusError::invalid_address(
-                        "unix address has no path or abstract",
-                    ));
+                    return Err(DbusError::invalid_address("unix address has no path or abstract"));
                 }
             },
         };
@@ -147,14 +139,10 @@ impl UnixTransport {
             )
         };
         if fd < 0 {
-            return Err(DbusError::io("socket", unsafe {
-                *libc::__errno_location()
-            }));
+            return Err(DbusError::io("socket", unsafe { *libc::__errno_location() }));
         }
-        let len = core::mem::size_of_val(&sun) as socklen_t
-            - (sun.sun_path.len() - copy_len) as socklen_t;
-        let err =
-            unsafe { libc::connect(fd, &sun as *const _ as *const libc::sockaddr, len) };
+        let len = core::mem::size_of_val(&sun) as socklen_t - (sun.sun_path.len() - copy_len) as socklen_t;
+        let err = unsafe { libc::connect(fd, &sun as *const _ as *const libc::sockaddr, len) };
         if err < 0 {
             let errno = unsafe { *libc::__errno_location() };
             if errno == libc::EINPROGRESS || errno == libc::EWOULDBLOCK {
@@ -222,14 +210,11 @@ unsafe fn collect_rights(message: &libc::msghdr) -> Vec<i32> {
     unsafe {
         let mut header = libc::CMSG_FIRSTHDR(message);
         while !header.is_null() {
-            if (*header).cmsg_level == libc::SOL_SOCKET
-                && (*header).cmsg_type == libc::SCM_RIGHTS
-            {
+            if (*header).cmsg_level == libc::SOL_SOCKET && (*header).cmsg_type == libc::SCM_RIGHTS {
                 let total = (*header).cmsg_len as usize;
                 let header_len = libc::CMSG_LEN(0) as usize;
                 if total >= header_len {
-                    let count =
-                        (total - header_len) / core::mem::size_of::<libc::c_int>();
+                    let count = (total - header_len) / core::mem::size_of::<libc::c_int>();
                     let data = libc::CMSG_DATA(header).cast::<libc::c_int>();
                     for index in 0..count {
                         fds.push(*data.add(index));
@@ -294,9 +279,7 @@ impl DbusTransport for UnixTransport {
 
     fn write(&mut self, buf: &[u8]) -> DbusResult<usize> {
         loop {
-            let n = unsafe {
-                libc::write(self.fd, buf.as_ptr() as *const libc::c_void, buf.len())
-            };
+            let n = unsafe { libc::write(self.fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
             if n >= 0 {
                 return Ok(n as usize);
             }
@@ -388,11 +371,7 @@ impl DbusTransport for UnixTransport {
         }
     }
 
-    fn wait(
-        &mut self,
-        timeout: Option<Duration>,
-        interest: DbusPollEvents,
-    ) -> DbusResult<DbusPollEvents> {
+    fn wait(&mut self, timeout: Option<Duration>, interest: DbusPollEvents) -> DbusResult<DbusPollEvents> {
         // SAFETY: `fd` is a valid Unix file descriptor opened by
         // `UnixTransport::connect_to`; `pollfd` is a trivial struct.
         let mut fds = [libc::pollfd {
@@ -516,9 +495,7 @@ pub fn resolve_session_addresses() -> DbusResult<Vec<DbusAddress>> {
         let path = alloc::format!("{runtime}/{SESSION_BUS_FILE}");
         return Ok(vec![DbusAddress::parse(&path)?]);
     }
-    Err(DbusError::invalid_address(
-        "no session bus address configured",
-    ))
+    Err(DbusError::invalid_address("no session bus address configured"))
 }
 
 #[cfg(test)]
@@ -620,23 +597,14 @@ mod tests {
         // order, which `SCM_RIGHTS` preserves.
         // SAFETY: the write ends are live, so each pipe accepts one
         // byte without blocking.
-        assert_eq!(
-            unsafe { libc::write(pipe_a[1], [42u8].as_ptr().cast(), 1) },
-            1
-        );
-        assert_eq!(
-            unsafe { libc::write(pipe_b[1], [43u8].as_ptr().cast(), 1) },
-            1
-        );
+        assert_eq!(unsafe { libc::write(pipe_a[1], [42u8].as_ptr().cast(), 1) }, 1);
+        assert_eq!(unsafe { libc::write(pipe_b[1], [43u8].as_ptr().cast(), 1) }, 1);
         for (index, &fd) in received.iter().enumerate() {
             let mut got = [0u8; 1];
             // SAFETY: `fd` is a live read end duplicated by the
             // kernel during `sendmsg` and its pipe already holds a
             // byte, so this read completes immediately.
-            assert_eq!(
-                unsafe { libc::read(fd, got.as_mut_ptr().cast(), got.len()) },
-                1
-            );
+            assert_eq!(unsafe { libc::read(fd, got.as_mut_ptr().cast(), got.len()) }, 1);
             // The first descriptor travels with the first payload.
             if index == 0 {
                 assert_eq!(got, [42u8]);
@@ -670,8 +638,7 @@ mod tests {
         });
         let pipe = pipe_pair();
 
-        let mut call =
-            DbusMessage::method_call("a.b.Service", "/a/b", "a.b.Iface", "Open").unwrap();
+        let mut call = DbusMessage::method_call("a.b.Service", "/a/b", "a.b.Iface", "Open").unwrap();
         call.build_body(|body| {
             body.write_fd(0)?;
             body.write_str("/tmp/file")

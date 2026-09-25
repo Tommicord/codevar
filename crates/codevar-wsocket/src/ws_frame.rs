@@ -103,9 +103,8 @@ impl WsFrameHeader {
                 if buf.len() < 10 {
                     return Ok(None);
                 }
-                let len = u64::from_be_bytes([
-                    buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8], buf[9],
-                ]);
+                let len =
+                    u64::from_be_bytes([buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8], buf[9]]);
                 // MSB must be 0 (RFC 6455 §5.2).
                 if len & 0x8000_0000_0000_0000 != 0 {
                     return Err(WsError::protocol(
@@ -336,10 +335,7 @@ pub fn random_mask_key() -> WsResult<[u8; 4]> {
 }
 
 /// Encodes an optional Close status code and UTF-8 reason into a payload.
-pub fn encode_close_payload(
-    code: Option<WsCloseCode>,
-    reason: &str,
-) -> WsResult<Vec<u8>> {
+pub fn encode_close_payload(code: Option<WsCloseCode>, reason: &str) -> WsResult<Vec<u8>> {
     match code {
         None => {
             if reason.is_empty() {
@@ -390,8 +386,7 @@ pub fn decode_close_payload(payload: &[u8]) -> WsResult<(WsCloseCode, String)> {
     let code = WsCloseCode::from_u16(u16::from_be_bytes([payload[0], payload[1]]))?;
     let reason_bytes = &payload[2..];
     crate::ws_utf8::validate_utf8(reason_bytes)?;
-    let reason =
-        String::from_utf8(reason_bytes.to_vec()).map_err(|_| WsError::InvalidUtf8)?;
+    let reason = String::from_utf8(reason_bytes.to_vec()).map_err(|_| WsError::InvalidUtf8)?;
     Ok((code, reason))
 }
 
@@ -399,11 +394,7 @@ pub fn decode_close_payload(payload: &[u8]) -> WsResult<(WsCloseCode, String)> {
 ///
 /// On success returns `(frame, bytes_consumed)`. Returns `Ok(None)` when
 /// more bytes are needed. The payload is unmasked before return.
-pub fn try_parse_frame(
-    buf: &[u8],
-    role: Role,
-    max_frame_size: usize,
-) -> WsResult<Option<(WsFrame, usize)>> {
+pub fn try_parse_frame(buf: &[u8], role: Role, max_frame_size: usize) -> WsResult<Option<(WsFrame, usize)>> {
     let Some(header) = WsFrameHeader::parse(buf, max_frame_size)? else {
         return Ok(None);
     };
@@ -516,10 +507,7 @@ mod tests {
     fn header_parse_waits_for_truncated_masked_header() {
         let full = [0x81, 0x85, 9, 8, 7, 6];
         for n in 0..full.len() {
-            assert!(
-                parse_header(&full[..n]).unwrap().is_none(),
-                "truncated at {n}"
-            );
+            assert!(parse_header(&full[..n]).unwrap().is_none(), "truncated at {n}");
         }
         let header = parse_header(&full).unwrap().unwrap();
         assert_eq!(header.mask_key, Some([9, 8, 7, 6]));
@@ -531,10 +519,7 @@ mod tests {
         let mut full = vec![0x81, 126];
         full.extend_from_slice(&126u16.to_be_bytes());
         for n in 2..full.len() {
-            assert!(
-                parse_header(&full[..n]).unwrap().is_none(),
-                "truncated at {n}"
-            );
+            assert!(parse_header(&full[..n]).unwrap().is_none(), "truncated at {n}");
         }
         let header = parse_header(&full).unwrap().unwrap();
         assert_eq!(header.payload_len, 126);
@@ -557,10 +542,7 @@ mod tests {
         let mut full = vec![0x81, 127];
         full.extend_from_slice(&0x1_0000u64.to_be_bytes());
         for n in 2..full.len() {
-            assert!(
-                parse_header(&full[..n]).unwrap().is_none(),
-                "truncated at {n}"
-            );
+            assert!(parse_header(&full[..n]).unwrap().is_none(), "truncated at {n}");
         }
         let header = parse_header(&full).unwrap().unwrap();
         assert_eq!(header.payload_len, 0x1_0000);
@@ -782,8 +764,7 @@ mod tests {
     #[test]
     fn try_parse_frame_round_trips_length_boundaries() {
         for len in [0usize, 1, 125, 126, 65535, 65536] {
-            let payload: Vec<u8> =
-                (0..len).map(|i| u8::try_from(i % 256).unwrap()).collect();
+            let payload: Vec<u8> = (0..len).map(|i| u8::try_from(i % 256).unwrap()).collect();
             let frame = WsFrame::new(true, WsOpcode::Binary, payload.clone());
             let encoded = encode_unmasked(&frame);
 
@@ -968,8 +949,7 @@ mod tests {
         assert_eq!(reason, "app");
 
         let max_reason = "r".repeat(123);
-        let full =
-            encode_close_payload(Some(WsCloseCode::GoingAway), &max_reason).unwrap();
+        let full = encode_close_payload(Some(WsCloseCode::GoingAway), &max_reason).unwrap();
         assert_eq!(full.len(), 125);
         let (code, reason) = decode_close_payload(&full).unwrap();
         assert_eq!(code, WsCloseCode::GoingAway);
@@ -1011,11 +991,7 @@ mod tests {
             &[0x03, 0xF7][..],
             &[0xFF, 0xFF][..],
         ] {
-            assert!(
-                decode_close_payload(bytes).is_err(),
-                "payload {:02x?}",
-                bytes
-            );
+            assert!(decode_close_payload(bytes).is_err(), "payload {:02x?}", bytes);
         }
 
         let (code, reason) = decode_close_payload(&[0x03, 0xE8]).unwrap();

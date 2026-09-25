@@ -24,8 +24,7 @@ const INDEX_LIMIT: usize = 256;
 
 /// Encodes `values` as a Bitward frame.
 pub fn bitward_encode(values: &[u16]) -> CompressorResult<Vec<u8>> {
-    let count =
-        u32::try_from(values.len()).map_err(|_| CompressorError::InputTooLarge)?;
+    let count = u32::try_from(values.len()).map_err(|_| CompressorError::InputTooLarge)?;
     let mut frequencies = vec![0u32; 65_536];
     for &value in values {
         // SAFETY: `value` is a `u16`, so the index is always in `0..65536`.
@@ -110,20 +109,15 @@ pub fn bitward_encode(values: &[u16]) -> CompressorResult<Vec<u8>> {
                 .filter(|byte| *byte != 0)
                 .collect::<Vec<_>>()
         };
-        let control = (mask << 5)
-            | (byte_exponent(high) << 3)
-            | byte_exponent(low).saturating_mul(2);
+        let control = (mask << 5) | (byte_exponent(high) << 3) | byte_exponent(low).saturating_mul(2);
         records.push(control);
         records.extend(payload);
         index += 1;
     }
-    let repeat_len =
-        u16::try_from(repeat_table.len()).map_err(|_| CompressorError::InputTooLarge)?;
-    let duplicate_len = u16::try_from(duplicate_bytes.len())
-        .map_err(|_| CompressorError::InputTooLarge)?;
-    let mut frame = Vec::with_capacity(
-        HEADER_SIZE + repeat_table.len() * 2 + duplicate_bytes.len() + records.len(),
-    );
+    let repeat_len = u16::try_from(repeat_table.len()).map_err(|_| CompressorError::InputTooLarge)?;
+    let duplicate_len = u16::try_from(duplicate_bytes.len()).map_err(|_| CompressorError::InputTooLarge)?;
+    let mut frame =
+        Vec::with_capacity(HEADER_SIZE + repeat_table.len() * 2 + duplicate_bytes.len() + records.len());
     frame.extend_from_slice(FrameKind::Bitward.magic());
     frame.extend_from_slice(&count.to_be_bytes());
     frame.extend_from_slice(&repeat_len.to_be_bytes());
@@ -143,9 +137,7 @@ fn byte_exponent(value: u8) -> u8 {
 
 /// Decodes a Bitward frame into `u16` values.
 pub fn bitward_decode(frame: &[u8]) -> CompressorResult<Vec<u16>> {
-    if frame.len() < HEADER_SIZE
-        || FrameKind::from_magic(frame) != Some(FrameKind::Bitward)
-    {
+    if frame.len() < HEADER_SIZE || FrameKind::from_magic(frame) != Some(FrameKind::Bitward) {
         return Err(CompressorError::InvalidFrame);
     }
     let expected = unsafe {
@@ -179,8 +171,7 @@ pub fn bitward_decode(frame: &[u8]) -> CompressorResult<Vec<u16>> {
         let control = *frame.get(position).ok_or(CompressorError::TruncatedFrame)?;
         position += 1;
         if control == DUPLICATE_MARKER {
-            let duplicate =
-                usize::from(*frame.get(position).ok_or(CompressorError::TruncatedFrame)?);
+            let duplicate = usize::from(*frame.get(position).ok_or(CompressorError::TruncatedFrame)?);
             position += 1;
             let byte = *duplicate_bytes
                 .get(duplicate)
@@ -209,8 +200,7 @@ pub fn bitward_decode(frame: &[u8]) -> CompressorResult<Vec<u16>> {
             output.push(u16::from_be_bytes([byte, byte]));
             continue;
         }
-        let payload_size =
-            2usize - usize::from(mask & 1 != 0) - usize::from(mask & 2 != 0);
+        let payload_size = 2usize - usize::from(mask & 1 != 0) - usize::from(mask & 2 != 0);
         let end = position
             .checked_add(payload_size)
             .ok_or(CompressorError::TruncatedFrame)?;

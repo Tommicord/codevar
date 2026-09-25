@@ -26,8 +26,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use codevar_wl_protocol::{
-    WlClientDisplay, WlClock, WlError, WlInterface, WlPollEntry, WlPollEvents, WlPoller,
-    WlRegistryEvent, WlResult, WlServerDisplay, WlTransport,
+    WlClientDisplay, WlClock, WlError, WlInterface, WlPollEntry, WlPollEvents, WlPoller, WlRegistryEvent,
+    WlResult, WlServerDisplay, WlTransport,
 };
 
 static TEST_INTERFACE: WlInterface = WlInterface::new("wl_test", 3, &[], &[]);
@@ -69,11 +69,7 @@ impl WlTransport for ServerEnd {
         Ok(data.len())
     }
 
-    fn wait(
-        &mut self,
-        _timeout: Option<Duration>,
-        mask: WlPollEvents,
-    ) -> WlResult<WlPollEvents> {
+    fn wait(&mut self, _timeout: Option<Duration>, mask: WlPollEvents) -> WlResult<WlPollEvents> {
         let wire = self.wire.borrow();
         let mut events = WlPollEvents::EMPTY;
         if wire.client_closed {
@@ -123,11 +119,7 @@ impl WlTransport for ClientEnd {
         Ok(data.len())
     }
 
-    fn wait(
-        &mut self,
-        _timeout: Option<Duration>,
-        mask: WlPollEvents,
-    ) -> WlResult<WlPollEvents> {
+    fn wait(&mut self, _timeout: Option<Duration>, mask: WlPollEvents) -> WlResult<WlPollEvents> {
         let wire = self.wire.borrow();
         let mut events = WlPollEvents::EMPTY;
         if wire.to_client_pos < wire.to_client.len() {
@@ -150,11 +142,7 @@ struct WirePoller {
 }
 
 impl WlPoller for WirePoller {
-    fn poll(
-        &mut self,
-        entries: &mut [WlPollEntry],
-        _timeout: Option<Duration>,
-    ) -> WlResult<usize> {
+    fn poll(&mut self, entries: &mut [WlPollEntry], _timeout: Option<Duration>) -> WlResult<usize> {
         let wire = self.wire.borrow();
         let mut ready = 0;
         for entry in entries.iter_mut() {
@@ -220,11 +208,7 @@ impl Fixture {
                 .map(|client| client.resource_count()),
             Some(1)
         );
-        Self {
-            wire,
-            server,
-            client,
-        }
+        Self { wire, server, client }
     }
 
     /// Writes every buffered client request to the server.

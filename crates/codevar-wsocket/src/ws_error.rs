@@ -133,10 +133,9 @@ impl fmt::Display for WsError {
             Self::RandomFailed => write!(f, "failed to generate secure random bytes"),
             Self::Handshake(m) => write!(f, "WebSocket handshake error: {m}"),
             Self::Decode(m) => write!(f, "WebSocket decode error: {m}"),
-            Self::Protocol {
-                message,
-                close_code,
-            } => write!(f, "WebSocket protocol error ({close_code}): {message}"),
+            Self::Protocol { message, close_code } => {
+                write!(f, "WebSocket protocol error ({close_code}): {message}")
+            }
             Self::InvalidUtf8 => write!(f, "invalid UTF-8 in WebSocket text payload"),
             Self::MessageTooBig { size, limit } => {
                 write!(f, "WebSocket message too big: {size} > {limit}")
@@ -171,10 +170,7 @@ mod tests {
     #[test]
     fn display_texts_for_unit_variants() {
         assert_eq!(WsError::Closed.to_string(), "WebSocket connection closed");
-        assert_eq!(
-            WsError::WouldBlock.to_string(),
-            "WebSocket operation would block"
-        );
+        assert_eq!(WsError::WouldBlock.to_string(), "WebSocket operation would block");
         assert_eq!(
             WsError::HandshakeNotComplete.to_string(),
             "WebSocket handshake not complete"
@@ -275,10 +271,7 @@ mod tests {
     #[test]
     fn constructors_build_expected_variants() {
         assert_eq!(WsError::decode("m"), WsError::Decode(String::from("m")));
-        assert_eq!(
-            WsError::handshake("m"),
-            WsError::Handshake(String::from("m"))
-        );
+        assert_eq!(WsError::handshake("m"), WsError::Handshake(String::from("m")));
         assert_eq!(
             WsError::invalid_state("m"),
             WsError::InvalidState(String::from("m"))
@@ -363,8 +356,7 @@ mod tests {
         }
         assert_eq!(ws_err.close_code(), None);
 
-        let kind_only =
-            WsError::from(std::io::Error::from(std::io::ErrorKind::ConnectionReset));
+        let kind_only = WsError::from(std::io::Error::from(std::io::ErrorKind::ConnectionReset));
         assert!(matches!(kind_only, WsError::Io(_)));
     }
 

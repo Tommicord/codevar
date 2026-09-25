@@ -17,8 +17,7 @@ use crate::tls_aead::{AeadKey, TlsAead};
 use crate::tls_alert::AlertDescription;
 use crate::tls_error::{TlsError, TlsResult};
 use crate::tls_ids::{
-    AeadAlgorithm, ContentType, MAX_CIPHERTEXT_LENGTH, MAX_FRAGMENT_LENGTH,
-    ProtocolVersion,
+    AeadAlgorithm, ContentType, MAX_CIPHERTEXT_LENGTH, MAX_FRAGMENT_LENGTH, ProtocolVersion,
 };
 
 /// Five-byte TLS record header: `type (1) || legacy_record_version (2) || length (2)`.
@@ -183,11 +182,7 @@ impl RecordLayer {
     }
 
     /// Encodes and (if keyed) protects a plaintext record, appending to the TX buffer.
-    pub fn write_raw(
-        &mut self,
-        content_type: ContentType,
-        plaintext: &[u8],
-    ) -> TlsResult<()> {
+    pub fn write_raw(&mut self, content_type: ContentType, plaintext: &[u8]) -> TlsResult<()> {
         if plaintext.len() > MAX_FRAGMENT_LENGTH {
             return Err(TlsError::Alert(AlertDescription::RecordOverflow));
         }
@@ -249,12 +244,8 @@ impl RecordLayer {
                 }
                 self.decrypt_tls13(&header, &payload)
             }
-            RecordProtection::Tls12Gcm => {
-                self.decrypt_tls12_gcm(content_type, &header, &payload)
-            }
-            RecordProtection::Tls12ChaCha => {
-                self.decrypt_tls12_chacha(content_type, &header, &payload)
-            }
+            RecordProtection::Tls12Gcm => self.decrypt_tls12_gcm(content_type, &header, &payload),
+            RecordProtection::Tls12ChaCha => self.decrypt_tls12_chacha(content_type, &header, &payload),
         }
     }
 
@@ -267,11 +258,7 @@ impl RecordLayer {
         self.tx_buf.extend_from_slice(plaintext);
     }
 
-    fn encrypt_tls13(
-        &mut self,
-        content_type: ContentType,
-        plaintext: &[u8],
-    ) -> TlsResult<()> {
+    fn encrypt_tls13(&mut self, content_type: ContentType, plaintext: &[u8]) -> TlsResult<()> {
         let keys = self
             .write_keys
             .as_mut()
@@ -297,11 +284,7 @@ impl RecordLayer {
         Ok(())
     }
 
-    fn decrypt_tls13(
-        &mut self,
-        header: &[u8; 5],
-        ciphertext: &[u8],
-    ) -> TlsResult<Option<PlainRecord>> {
+    fn decrypt_tls13(&mut self, header: &[u8; 5], ciphertext: &[u8]) -> TlsResult<Option<PlainRecord>> {
         let keys = self
             .read_keys
             .as_mut()
@@ -327,11 +310,7 @@ impl RecordLayer {
         }))
     }
 
-    fn encrypt_tls12_gcm(
-        &mut self,
-        content_type: ContentType,
-        plaintext: &[u8],
-    ) -> TlsResult<()> {
+    fn encrypt_tls12_gcm(&mut self, content_type: ContentType, plaintext: &[u8]) -> TlsResult<()> {
         let keys = self
             .write_keys
             .as_mut()
@@ -377,11 +356,7 @@ impl RecordLayer {
         }))
     }
 
-    fn encrypt_tls12_chacha(
-        &mut self,
-        content_type: ContentType,
-        plaintext: &[u8],
-    ) -> TlsResult<()> {
+    fn encrypt_tls12_chacha(&mut self, content_type: ContentType, plaintext: &[u8]) -> TlsResult<()> {
         let keys = self
             .write_keys
             .as_mut()
@@ -500,8 +475,7 @@ mod tests {
 
     #[test]
     fn partial_records_return_none_until_complete() {
-        let wire =
-            encode_cleartext_record(ContentType::Alert, ProtocolVersion::Tls12, &[1, 0]);
+        let wire = encode_cleartext_record(ContentType::Alert, ProtocolVersion::Tls12, &[1, 0]);
         let mut layer = RecordLayer::new();
         let last = wire.len() - 1;
         for (i, b) in wire.iter().enumerate() {
@@ -555,11 +529,7 @@ mod tests {
     #[test]
     fn cleartext_payload_above_fragment_max_rejected() {
         let payload = vec![0u8; MAX_CIPHERTEXT_LENGTH];
-        let wire = encode_cleartext_record(
-            ContentType::ApplicationData,
-            ProtocolVersion::Tls12,
-            &payload,
-        );
+        let wire = encode_cleartext_record(ContentType::ApplicationData, ProtocolVersion::Tls12, &payload);
         let mut layer = RecordLayer::new();
         layer.feed_ciphertext(&wire);
         let err = layer.read_raw().unwrap_err();
@@ -584,10 +554,7 @@ mod tests {
 
         let exact = vec![0u8; MAX_FRAGMENT_LENGTH];
         layer.write_raw(ContentType::Handshake, &exact).unwrap();
-        assert_eq!(
-            layer.pending_tx_len(),
-            RECORD_HEADER_LEN + MAX_FRAGMENT_LENGTH
-        );
+        assert_eq!(layer.pending_tx_len(), RECORD_HEADER_LEN + MAX_FRAGMENT_LENGTH);
     }
 
     #[test]
@@ -598,8 +565,7 @@ mod tests {
         let wire = tx.take_ciphertext();
         assert_eq!(&wire[1..3], &[0x03, 0x01]);
 
-        let foreign =
-            encode_cleartext_record(ContentType::Handshake, ProtocolVersion::Tls11, &[9]);
+        let foreign = encode_cleartext_record(ContentType::Handshake, ProtocolVersion::Tls11, &[9]);
         let mut rx = RecordLayer::new();
         rx.feed_ciphertext(&foreign);
         let rec = rx.read_raw().unwrap().unwrap();
@@ -726,14 +692,9 @@ mod tests {
 
     #[test]
     fn encode_cleartext_record_layout() {
-        let wire = encode_cleartext_record(
-            ContentType::ApplicationData,
-            ProtocolVersion::Tls12,
-            &[0xaa],
-        );
+        let wire = encode_cleartext_record(ContentType::ApplicationData, ProtocolVersion::Tls12, &[0xaa]);
         assert_eq!(wire, vec![23, 3, 3, 0, 1, 0xaa]);
-        let empty =
-            encode_cleartext_record(ContentType::Alert, ProtocolVersion::Tls10, &[]);
+        let empty = encode_cleartext_record(ContentType::Alert, ProtocolVersion::Tls10, &[]);
         assert_eq!(empty, vec![21, 3, 1, 0, 0]);
     }
 

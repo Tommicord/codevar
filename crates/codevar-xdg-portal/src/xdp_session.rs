@@ -32,7 +32,7 @@ use alloc::string::{String, ToString};
 
 use crate::xdp_app_info::AppInfo;
 use crate::xdp_error::{PortalError, XdpResult};
-use crate::xdp_utils::{is_valid_token, generate_token, OptionMap};
+use crate::xdp_utils::{OptionMap, generate_token, is_valid_token};
 
 pub const SESSION_BASE_PATH: &str = "/org/freedesktop/portal/desktop/session";
 
@@ -57,12 +57,7 @@ pub struct SessionHandle {
 
 impl SessionHandle {
     /// Creates a new session handle.
-    pub fn new(
-        sender: &str,
-        token: String,
-        app_info: AppInfo,
-        created_ms: u64,
-    ) -> Self {
+    pub fn new(sender: &str, token: String, app_info: AppInfo, created_ms: u64) -> Self {
         let sanitized = sanitize_sender(sender);
         let path = format!("{}/{}/{}", SESSION_BASE_PATH, sanitized, token);
         Self {
@@ -85,7 +80,7 @@ impl SessionHandle {
 
 /// Sanitizes a sender name for use in an object path: replaces `:` and `.` with `_`.
 fn sanitize_sender(sender: &str) -> String {
-    sender.replace(':', "_").replace('.', "_")
+    sender.replace([':', '.'], "_")
 }
 
 /// Extracts the `session_handle_token` from an option map, or generates one.
@@ -120,10 +115,7 @@ pub fn build_session_path(
     claimed_paths: &BTreeMap<String, SessionHandle>,
 ) -> XdpResult<String> {
     if !is_valid_token(token) {
-        return Err(PortalError::InvalidArgument(format!(
-            "Invalid token: {}",
-            token
-        )));
+        return Err(PortalError::InvalidArgument(format!("Invalid token: {}", token)));
     }
     let sanitized = sanitize_sender(sender);
     let path = format!("{}/{}/{}", SESSION_BASE_PATH, sanitized, token);
@@ -150,18 +142,18 @@ pub mod close_reason {
 mod tests {
     use super::*;
     use crate::xdp_app_info::AppInfo;
-    use crate::xdp_utils::{is_valid_token, generate_token, OptionMap, PortalValue};
+    use crate::xdp_utils::{OptionMap, PortalValue, is_valid_token};
 
     #[test]
     fn builds_session_path_with_token() {
-        let mut claimed = BTreeMap::new();
+        let claimed = BTreeMap::new();
         let path = build_session_path(":1.42", "abc123", &claimed).unwrap();
         assert_eq!(path, "/org/freedesktop/portal/desktop/session/_1_42/abc123");
     }
 
     #[test]
     fn rejects_invalid_token() {
-        let mut claimed = BTreeMap::new();
+        let claimed = BTreeMap::new();
         let err = build_session_path(":1.42", "has-dash", &claimed).unwrap_err();
         assert!(matches!(err, PortalError::InvalidArgument(_)));
     }
@@ -197,10 +189,7 @@ mod tests {
     #[test]
     fn rejects_non_string_session_token() {
         let mut options = OptionMap::new();
-        options.insert(
-            "session_handle_token".to_string(),
-            PortalValue::U32(42),
-        );
+        options.insert("session_handle_token".to_string(), PortalValue::U32(42));
         let err = extract_session_token(&options).unwrap_err();
         assert!(matches!(err, PortalError::InvalidArgument(_)));
     }
@@ -209,7 +198,10 @@ mod tests {
     fn session_handle_creation() {
         let app_info = AppInfo::host(":1.42");
         let handle = SessionHandle::new(":1.42", "test_token".to_string(), app_info, 12345);
-        assert_eq!(handle.path, "/org/freedesktop/portal/desktop/session/_1_42/test_token");
+        assert_eq!(
+            handle.path,
+            "/org/freedesktop/portal/desktop/session/_1_42/test_token"
+        );
         assert_eq!(handle.token, "test_token");
         assert_eq!(handle.sender, ":1.42");
         assert_eq!(handle.created_ms, 12345);

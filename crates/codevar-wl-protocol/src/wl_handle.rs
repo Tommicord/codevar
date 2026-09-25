@@ -71,8 +71,7 @@ impl WlPollEvents {
     /// An error occurred on the file descriptor.
     pub const ERROR: Self = Self(EVENT_ERROR);
     /// All event bits.
-    pub const ALL: Self =
-        Self(EVENT_READABLE | EVENT_WRITABLE | EVENT_HANGUP | EVENT_ERROR);
+    pub const ALL: Self = Self(EVENT_READABLE | EVENT_WRITABLE | EVENT_HANGUP | EVENT_ERROR);
 
     /// Creates an event set from raw bits.
     #[inline]
@@ -1166,9 +1165,7 @@ impl<T> WlMap<T> {
             }
             core::cmp::Ordering::Less => match &entries[index] {
                 WlMapEntry::Vacant => Ok(()),
-                _ => Err(WlError::invalid_argument(format!(
-                    "id {id} is already in use"
-                ))),
+                _ => Err(WlError::invalid_argument(format!("id {id} is already in use"))),
             },
         }
     }
@@ -1201,11 +1198,7 @@ impl<T> WlMap<T> {
     /// # Errors
     ///
     /// Returns [`WlError::InvalidObject`] when the id has no live object.
-    pub fn make_zombie(
-        &mut self,
-        id: u32,
-        interface: &'static WlInterface,
-    ) -> WlResult<()> {
+    pub fn make_zombie(&mut self, id: u32, interface: &'static WlInterface) -> WlResult<()> {
         let (entries, index) = self.parts_mut(id).ok_or(WlError::InvalidObject(id))?;
         match entries.get_mut(index) {
             Some(entry @ WlMapEntry::Live(_)) => {
@@ -1281,8 +1274,7 @@ impl<T> WlMap<T> {
     /// Returns `true` when the id refers to a destroyed client object.
     #[must_use]
     pub fn is_zombie(&self, id: u32) -> bool {
-        matches!(self.side, WlMapSide::Client)
-            && matches!(self.entry(id), Some(WlMapEntry::Zombie { .. }))
+        matches!(self.side, WlMapSide::Client) && matches!(self.entry(id), Some(WlMapEntry::Zombie { .. }))
     }
 
     /// Returns the interface of a zombie entry.

@@ -20,24 +20,18 @@ use crate::tls_crypto_random::SysRng;
 use crate::tls_error::{TlsError, TlsResult};
 use crate::tls_ids::SignatureScheme;
 use ecdsa::signature::Verifier as EcdsaVerifier;
-use ed25519_dalek::{
-    Signature as Ed25519Signature, Signer as Ed25519Signer, VerifyingKey,
-};
+use ed25519_dalek::{Signature as Ed25519Signature, Signer as Ed25519Signer, VerifyingKey};
 use p256::ecdsa::{
-    Signature as P256Signature, SigningKey as P256SigningKey,
-    VerifyingKey as P256VerifyingKey,
+    Signature as P256Signature, SigningKey as P256SigningKey, VerifyingKey as P256VerifyingKey,
 };
 use p384::ecdsa::{
-    Signature as P384Signature, SigningKey as P384SigningKey,
-    VerifyingKey as P384VerifyingKey,
+    Signature as P384Signature, SigningKey as P384SigningKey, VerifyingKey as P384VerifyingKey,
 };
 use rsa::pkcs1v15::{
-    Signature as RsaPkcs1Signature, SigningKey as RsaPkcs1SigningKey,
-    VerifyingKey as RsaPkcs1VerifyingKey,
+    Signature as RsaPkcs1Signature, SigningKey as RsaPkcs1SigningKey, VerifyingKey as RsaPkcs1VerifyingKey,
 };
 use rsa::pss::{
-    Signature as RsaPssSignature, SigningKey as RsaPssSigningKey,
-    VerifyingKey as RsaPssVerifyingKey,
+    Signature as RsaPssSignature, SigningKey as RsaPssSigningKey, VerifyingKey as RsaPssVerifyingKey,
 };
 use rsa::signature::{RandomizedSigner, SignatureEncoding};
 use rsa::{RsaPrivateKey, RsaPublicKey};
@@ -73,15 +67,12 @@ impl PrivateKey {
     pub fn from_pem(pem_bytes: &[u8]) -> TlsResult<Self> {
         let pem_str = std::str::from_utf8(pem_bytes)
             .map_err(|_| TlsError::certificate("private key PEM is not UTF-8"))?;
-        let parsed = pem::parse(pem_str)
-            .map_err(|e| TlsError::certificate(format!("PEM parse: {e}")))?;
+        let parsed = pem::parse(pem_str).map_err(|e| TlsError::certificate(format!("PEM parse: {e}")))?;
         match parsed.tag() {
             "PRIVATE KEY" => Self::from_pkcs8_der(parsed.contents()),
             "RSA PRIVATE KEY" => {
-                let key =
-                    RsaPrivateKey::from_pkcs1_der(parsed.contents()).map_err(|e| {
-                        TlsError::certificate(format!("RSA PKCS#1 parse: {e}"))
-                    })?;
+                let key = RsaPrivateKey::from_pkcs1_der(parsed.contents())
+                    .map_err(|e| TlsError::certificate(format!("RSA PKCS#1 parse: {e}")))?;
                 Ok(Self::Rsa(key))
             }
             "EC PRIVATE KEY" => Self::from_sec1_der(parsed.contents()),
@@ -133,10 +124,7 @@ impl PrivateKey {
     }
 
     /// Selects a signature scheme compatible with this key from the peer's list.
-    pub fn select_scheme(
-        &self,
-        offered: &[SignatureScheme],
-    ) -> TlsResult<SignatureScheme> {
+    pub fn select_scheme(&self, offered: &[SignatureScheme]) -> TlsResult<SignatureScheme> {
         let candidates: &[SignatureScheme] = match self.kind() {
             SignatureKind::Rsa => &[
                 SignatureScheme::RsaPssRsaeSha256,
@@ -317,42 +305,20 @@ pub fn verify_cert_signature(
             // sha256WithRSAEncryption — verify DigestInfo via PKCS#1
             verify_rsa_pkcs1_digest(issuer_spki, tbs, signature, HashChoice::Sha256)
         }
-        "1.2.840.113549.1.1.12" => {
-            verify_rsa_pkcs1_digest(issuer_spki, tbs, signature, HashChoice::Sha384)
+        "1.2.840.113549.1.1.12" => verify_rsa_pkcs1_digest(issuer_spki, tbs, signature, HashChoice::Sha384),
+        "1.2.840.10045.4.3.2" => {
+            verify_raw_signature(SignatureScheme::EcdsaSecp256r1Sha256, issuer_spki, tbs, signature)
         }
-        "1.2.840.10045.4.3.2" => verify_raw_signature(
-            SignatureScheme::EcdsaSecp256r1Sha256,
-            issuer_spki,
-            tbs,
-            signature,
-        ),
-        "1.2.840.10045.4.3.3" => verify_raw_signature(
-            SignatureScheme::EcdsaSecp384r1Sha384,
-            issuer_spki,
-            tbs,
-            signature,
-        ),
-        "1.3.101.112" => {
-            verify_raw_signature(SignatureScheme::Ed25519, issuer_spki, tbs, signature)
+        "1.2.840.10045.4.3.3" => {
+            verify_raw_signature(SignatureScheme::EcdsaSecp384r1Sha384, issuer_spki, tbs, signature)
         }
+        "1.3.101.112" => verify_raw_signature(SignatureScheme::Ed25519, issuer_spki, tbs, signature),
         "1.2.840.113549.1.1.10" => {
             // RSASSA-PSS — try SHA-256 then SHA-384
-            if verify_raw_signature(
-                SignatureScheme::RsaPssRsaeSha256,
-                issuer_spki,
-                tbs,
-                signature,
-            )
-            .is_ok()
-            {
+            if verify_raw_signature(SignatureScheme::RsaPssRsaeSha256, issuer_spki, tbs, signature).is_ok() {
                 Ok(())
             } else {
-                verify_raw_signature(
-                    SignatureScheme::RsaPssRsaeSha384,
-                    issuer_spki,
-                    tbs,
-                    signature,
-                )
+                verify_raw_signature(SignatureScheme::RsaPssRsaeSha384, issuer_spki, tbs, signature)
             }
         }
         other => Err(TlsError::certificate(format!(
@@ -366,20 +332,13 @@ enum HashChoice {
     Sha384,
 }
 
-fn verify_rsa_pkcs1_digest(
-    spki: &[u8],
-    tbs: &[u8],
-    signature: &[u8],
-    hash: HashChoice,
-) -> TlsResult<()> {
+fn verify_rsa_pkcs1_digest(spki: &[u8], tbs: &[u8], signature: &[u8], hash: HashChoice) -> TlsResult<()> {
     match hash {
         HashChoice::Sha256 => {
             // rsa crate VerifyingKey hashes the message itself
             verify_raw_signature(SignatureScheme::RsaPkcs1Sha256, spki, tbs, signature)
         }
-        HashChoice::Sha384 => {
-            verify_raw_signature(SignatureScheme::RsaPkcs1Sha384, spki, tbs, signature)
-        }
+        HashChoice::Sha384 => verify_raw_signature(SignatureScheme::RsaPkcs1Sha384, spki, tbs, signature),
     }
 }
 

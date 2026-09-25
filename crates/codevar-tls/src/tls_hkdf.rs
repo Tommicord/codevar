@@ -86,14 +86,14 @@ pub fn hkdf_expand_label(
     let mut out = vec![0u8; length];
     match alg {
         HashAlgorithm::Sha256 => {
-            let hk = Hkdf::<Sha256>::from_prk(secret)
-                .map_err(|_| TlsError::crypto("HKDF-SHA256 invalid PRK"))?;
+            let hk =
+                Hkdf::<Sha256>::from_prk(secret).map_err(|_| TlsError::crypto("HKDF-SHA256 invalid PRK"))?;
             hk.expand(&hkdf_label, &mut out)
                 .map_err(|_| TlsError::crypto("HKDF-SHA256 expand failed"))?;
         }
         HashAlgorithm::Sha384 => {
-            let hk = Hkdf::<Sha384>::from_prk(secret)
-                .map_err(|_| TlsError::crypto("HKDF-SHA384 invalid PRK"))?;
+            let hk =
+                Hkdf::<Sha384>::from_prk(secret).map_err(|_| TlsError::crypto("HKDF-SHA384 invalid PRK"))?;
             hk.expand(&hkdf_label, &mut out)
                 .map_err(|_| TlsError::crypto("HKDF-SHA384 expand failed"))?;
         }

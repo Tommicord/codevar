@@ -76,11 +76,7 @@ pub trait WlPoller {
     ///
     /// Returns [`WlError::Io`] when the underlying wait fails and
     /// [`WlError::Disconnected`] when the poller is gone.
-    fn poll(
-        &mut self,
-        entries: &mut [WlPollEntry],
-        timeout: Option<Duration>,
-    ) -> WlResult<usize>;
+    fn poll(&mut self, entries: &mut [WlPollEntry], timeout: Option<Duration>) -> WlResult<usize>;
 }
 
 /// Monotonic time source for timers.
@@ -124,8 +120,7 @@ impl WlEventSourceId {
 /// [`WlPollEvents::EMPTY`] when the source was dispatched through
 /// [`WlEventLoop::check`]. Returning non-zero keeps the source on the
 /// check list.
-type FdFunc<P, C> =
-    dyn FnMut(&mut WlEventLoop<P, C>, WlEventSourceId, WlPollEvents) -> i32;
+type FdFunc<P, C> = dyn FnMut(&mut WlEventLoop<P, C>, WlEventSourceId, WlPollEvents) -> i32;
 
 enum WlSourceKind<P, C> {
     Fd {
@@ -211,12 +206,7 @@ impl<P: WlPoller, C: WlClock> WlEventLoop<P, C> {
     ///
     /// Unlike libwayland the loop does not duplicate the handle: the
     /// transport that owns it stays responsible for closing it.
-    pub fn add_fd<F>(
-        &mut self,
-        handle: WlHandle,
-        interest: WlPollEvents,
-        callback: F,
-    ) -> WlEventSourceId
+    pub fn add_fd<F>(&mut self, handle: WlHandle, interest: WlPollEvents, callback: F) -> WlEventSourceId
     where
         F: FnMut(&mut Self, WlEventSourceId, WlPollEvents) -> i32 + 'static,
     {
@@ -288,11 +278,7 @@ impl<P: WlPoller, C: WlClock> WlEventLoop<P, C> {
     ///
     /// Returns [`WlError::InvalidState`] when `id` is stale or does not
     /// refer to a file descriptor source.
-    pub fn fd_update(
-        &mut self,
-        id: WlEventSourceId,
-        interest: WlPollEvents,
-    ) -> WlResult<()> {
+    pub fn fd_update(&mut self, id: WlEventSourceId, interest: WlPollEvents) -> WlResult<()> {
         match self.slot_mut(id) {
             Some(WlSourceKind::Fd {
                 interest: current, ..
@@ -316,11 +302,7 @@ impl<P: WlPoller, C: WlClock> WlEventLoop<P, C> {
     ///
     /// Returns [`WlError::InvalidState`] when `id` is stale or does not
     /// refer to a timer.
-    pub fn timer_update(
-        &mut self,
-        id: WlEventSourceId,
-        milliseconds: u32,
-    ) -> WlResult<()> {
+    pub fn timer_update(&mut self, id: WlEventSourceId, milliseconds: u32) -> WlResult<()> {
         let now = self.clock.now_ms();
         match self.slot_mut(id) {
             Some(WlSourceKind::Timer { deadline, .. }) => {
@@ -391,9 +373,7 @@ impl<P: WlPoller, C: WlClock> WlEventLoop<P, C> {
                 Some(limit.min(Duration::from_millis(deadline.saturating_sub(now))))
             }
             (Some(limit), None) => Some(limit),
-            (None, Some(deadline)) => {
-                Some(Duration::from_millis(deadline.saturating_sub(now)))
-            }
+            (None, Some(deadline)) => Some(Duration::from_millis(deadline.saturating_sub(now))),
             (None, None) => None,
         };
 
@@ -402,10 +382,7 @@ impl<P: WlPoller, C: WlClock> WlEventLoop<P, C> {
         for (index, slot) in self.slots.iter().enumerate() {
             if let WlSourceSlot::Live {
                 generation,
-                kind:
-                    WlSourceKind::Fd {
-                        handle, interest, ..
-                    },
+                kind: WlSourceKind::Fd { handle, interest, .. },
             } = slot
             {
                 entries.push(WlPollEntry {
@@ -503,8 +480,7 @@ impl<P: WlPoller, C: WlClock> WlEventLoop<P, C> {
     fn alloc_slot(&mut self, kind: WlSourceKind<P, C>) -> WlEventSourceId {
         if let Some(index) = self.free.pop() {
             let generation = match self.slots.get(index) {
-                Some(WlSourceSlot::Free { generation })
-                | Some(WlSourceSlot::Live { generation, .. }) => {
+                Some(WlSourceSlot::Free { generation }) | Some(WlSourceSlot::Live { generation, .. }) => {
                     generation.wrapping_add(1)
                 }
                 None => 1,
@@ -523,29 +499,21 @@ impl<P: WlPoller, C: WlClock> WlEventLoop<P, C> {
 
     fn slot(&self, id: WlEventSourceId) -> Option<&WlSourceKind<P, C>> {
         match self.slots.get(id.index)? {
-            WlSourceSlot::Live { generation, kind } if *generation == id.generation => {
-                Some(kind)
-            }
+            WlSourceSlot::Live { generation, kind } if *generation == id.generation => Some(kind),
             _ => None,
         }
     }
 
     fn slot_mut(&mut self, id: WlEventSourceId) -> Option<&mut WlSourceKind<P, C>> {
         match self.slots.get_mut(id.index)? {
-            WlSourceSlot::Live { generation, kind } if *generation == id.generation => {
-                Some(kind)
-            }
+            WlSourceSlot::Live { generation, kind } if *generation == id.generation => Some(kind),
             _ => None,
         }
     }
 
     fn free_source(&mut self, id: WlEventSourceId) -> bool {
         let generation = match self.slots.get(id.index) {
-            Some(WlSourceSlot::Live { generation, .. })
-                if *generation == id.generation =>
-            {
-                *generation
-            }
+            Some(WlSourceSlot::Live { generation, .. }) if *generation == id.generation => *generation,
             _ => return false,
         };
         self.slots[id.index] = WlSourceSlot::Free { generation };
@@ -646,11 +614,7 @@ mod tests {
     }
 
     impl WlPoller for FakePoller {
-        fn poll(
-            &mut self,
-            entries: &mut [WlPollEntry],
-            timeout: Option<Duration>,
-        ) -> WlResult<usize> {
+        fn poll(&mut self, entries: &mut [WlPollEntry], timeout: Option<Duration>) -> WlResult<usize> {
             self.polls += 1;
             self.last_timeout = timeout;
             self.last_interests = entries
@@ -697,16 +661,12 @@ mod tests {
         seen.borrow_mut().clear();
         event_loop.dispatch(Some(Duration::ZERO)).unwrap();
         assert!(seen.borrow().is_empty());
-        assert_eq!(
-            event_loop.poller().last_interests,
-            [(7, WlPollEvents::WRITABLE)]
-        );
+        assert_eq!(event_loop.poller().last_interests, [(7, WlPollEvents::WRITABLE)]);
     }
 
     #[test]
     fn timers_fire_once_after_their_deadline() {
-        let mut event_loop =
-            WlEventLoop::new(FakePoller::default(), FakeClock { now: 0 });
+        let mut event_loop = WlEventLoop::new(FakePoller::default(), FakeClock { now: 0 });
         let fired = Rc::new(Cell::new(0u32));
         let counter = Rc::clone(&fired);
         let timer = event_loop.add_timer(move |_, _| {
@@ -719,18 +679,12 @@ mod tests {
             .dispatch(Some(Duration::from_millis(50)))
             .unwrap();
         assert_eq!(fired.get(), 0);
-        assert_eq!(
-            event_loop.poller().last_timeout,
-            Some(Duration::from_millis(50))
-        );
+        assert_eq!(event_loop.poller().last_timeout, Some(Duration::from_millis(50)));
 
         event_loop
             .dispatch(Some(Duration::from_millis(1000)))
             .unwrap();
-        assert_eq!(
-            event_loop.poller().last_timeout,
-            Some(Duration::from_millis(100))
-        );
+        assert_eq!(event_loop.poller().last_timeout, Some(Duration::from_millis(100)));
 
         event_loop.clock_mut().now = 100;
         event_loop.dispatch(Some(Duration::ZERO)).unwrap();
@@ -743,8 +697,7 @@ mod tests {
 
     #[test]
     fn idle_tasks_run_before_the_poll_and_are_removed() {
-        let mut event_loop =
-            WlEventLoop::new(FakePoller::default(), FakeClock { now: 0 });
+        let mut event_loop = WlEventLoop::new(FakePoller::default(), FakeClock { now: 0 });
         let fired = Rc::new(Cell::new(0u32));
         let polls_when_run = Rc::new(Cell::new(usize::MAX));
         let counter = Rc::clone(&fired);
@@ -765,8 +718,7 @@ mod tests {
 
     #[test]
     fn checked_sources_recheck_until_they_return_zero() {
-        let mut event_loop =
-            WlEventLoop::new(FakePoller::default(), FakeClock { now: 0 });
+        let mut event_loop = WlEventLoop::new(FakePoller::default(), FakeClock { now: 0 });
         let calls = Rc::new(Cell::new(0u32));
         let events_seen = Rc::new(RefCell::new(Vec::new()));
         let counter = Rc::clone(&calls);
@@ -780,10 +732,7 @@ mod tests {
 
         event_loop.dispatch(Some(Duration::ZERO)).unwrap();
         assert_eq!(calls.get(), 2);
-        assert_eq!(
-            *events_seen.borrow(),
-            [WlPollEvents::EMPTY, WlPollEvents::EMPTY]
-        );
+        assert_eq!(*events_seen.borrow(), [WlPollEvents::EMPTY, WlPollEvents::EMPTY]);
 
         event_loop.dispatch(Some(Duration::ZERO)).unwrap();
         assert_eq!(calls.get(), 3);
@@ -798,12 +747,11 @@ mod tests {
         let mut event_loop = WlEventLoop::new(poller, FakeClock { now: 0 });
         let fired = Rc::new(Cell::new(0u32));
         let counter = Rc::clone(&fired);
-        let source =
-            event_loop.add_fd(9, WlPollEvents::READABLE, move |loop_, own, _| {
-                counter.set(counter.get() + 1);
-                loop_.remove_source(own).unwrap();
-                0
-            });
+        let source = event_loop.add_fd(9, WlPollEvents::READABLE, move |loop_, own, _| {
+            counter.set(counter.get() + 1);
+            loop_.remove_source(own).unwrap();
+            0
+        });
 
         event_loop.dispatch(Some(Duration::ZERO)).unwrap();
         assert_eq!(fired.get(), 1);

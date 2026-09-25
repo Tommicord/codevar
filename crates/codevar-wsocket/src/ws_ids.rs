@@ -239,10 +239,7 @@ impl WsCloseCode {
     /// Returns `true` when this code may legally appear in a Close frame body.
     #[must_use]
     pub const fn is_sendable(self) -> bool {
-        !matches!(
-            self,
-            Self::NoStatusReceived | Self::Abnormal | Self::TlsHandshake
-        )
+        !matches!(self, Self::NoStatusReceived | Self::Abnormal | Self::TlsHandshake)
     }
 }
 
@@ -350,10 +347,7 @@ mod tests {
             WsError::Protocol { message, .. } => message,
             other => format!("unexpected variant: {other:?}"),
         };
-        assert!(
-            non_control.contains("reserved non-control"),
-            "{non_control}"
-        );
+        assert!(non_control.contains("reserved non-control"), "{non_control}");
 
         let control = match WsOpcode::from_u8(0xB).unwrap_err() {
             WsError::Protocol { message, .. } => message,
@@ -475,8 +469,7 @@ mod tests {
     #[test]
     fn close_code_as_u16_round_trips_parseable_values() {
         for raw in [
-            1000u16, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014,
-            1016, 3000, 4999,
+            1000u16, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014, 1016, 3000, 4999,
         ] {
             let code = WsCloseCode::from_u16(raw).unwrap();
             assert_eq!(code.as_u16(), raw, "raw {raw}");
@@ -516,10 +509,7 @@ mod tests {
     #[test]
     fn close_code_display_formats_numeric_value_and_label() {
         assert_eq!(WsCloseCode::Normal.to_string(), "1000 (normal closure)");
-        assert_eq!(
-            WsCloseCode::ProtocolError.to_string(),
-            "1002 (protocol error)"
-        );
+        assert_eq!(WsCloseCode::ProtocolError.to_string(), "1002 (protocol error)");
         assert_eq!(WsCloseCode::Abnormal.to_string(), "1006 (abnormal closure)");
         assert_eq!(WsCloseCode::Other(3000).to_string(), "3000 (other)");
     }
