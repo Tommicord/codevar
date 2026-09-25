@@ -15,8 +15,8 @@
 
 //! Error types shared by the Wayland client and server ports.
 
-use core::fmt;
 use alloc::string::String;
+use core::fmt;
 
 /// Error reported by the peer through `wl_display.error`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,7 +35,12 @@ impl WlProtocolError {
     /// Creates a protocol error payload.
     #[inline]
     #[must_use]
-    pub fn new(code: u32, object_id: u32, interface: &'static str, message: String) -> Self {
+    pub fn new(
+        code: u32,
+        object_id: u32,
+        interface: &'static str,
+        message: String,
+    ) -> Self {
         Self {
             code,
             object_id,

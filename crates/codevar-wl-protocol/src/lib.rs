@@ -13,7 +13,7 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-//! Wayland client and server.
+//! Wayland protocol implementation
 //!
 //! The crate mirrors the API of libwayland ([`wl_client`] and
 //! [`wl_server`]) over pluggable transports and pollers so it can run
@@ -34,17 +34,20 @@
 
 extern crate alloc;
 
-pub mod wl_client;
-pub mod wl_conn;
-pub mod wl_error;
-pub mod wl_evloop;
-pub mod wl_handle;
-pub mod wl_server;
+mod wl_client;
+mod wl_conn;
+mod wl_error;
+mod wl_evloop;
+mod wl_handle;
+mod wl_server;
 
 pub use wl_client::{WlClientDisplay, WlProxyId, WlRegistryEvent};
 pub use wl_conn::{WlClosure, WlConnection, WlTransport};
 pub use wl_error::{WlError, WlProtocolError, WlResult};
-pub use wl_evloop::{WlClock, WlEventLoop, WlPoller, WlPollEvents};
+pub use wl_evloop::{
+    WlClock, WlEventLoop, WlEventSourceId, WlPollEntry, WlPollEvents, WlPoller,
+};
 pub use wl_handle::{
     WlArgument, WlArray, WlFixed, WlInterface, WlList, WlMap, WlMessage, WlSignal,
 };
+pub use wl_server::{WlClient, WlClientId, WlResource, WlServerDisplay, WlTaskQueue};

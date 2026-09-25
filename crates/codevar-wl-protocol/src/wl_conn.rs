@@ -28,8 +28,8 @@ use alloc::vec::Vec;
 
 use crate::wl_error::{WlError, WlResult};
 use crate::wl_handle::{
-    arg_count, get_next_argument, WlArgType, WlArgument, WlArray, WlFd, WlFixed, WlMap,
-    WlMessage, WlObject, WlPollEvents, MAX_MESSAGE_SIZE,
+    MAX_MESSAGE_SIZE, WlArgType, WlArgument, WlArray, WlFd, WlFixed, WlMap, WlMessage,
+    WlObject, WlPollEvents, arg_count, get_next_argument,
 };
 
 /// Opaque handle used to poll a transport from an event loop.
@@ -315,8 +315,9 @@ fn parse_args(
                         "string contains an embedded nul",
                     ));
                 }
-                let value = String::from_utf8(text.to_vec())
-                    .map_err(|_| WlError::invalid_argument("string is not valid utf-8"))?;
+                let value = String::from_utf8(text.to_vec()).map_err(|_| {
+                    WlError::invalid_argument("string is not valid utf-8")
+                })?;
                 pos = end;
                 args.push(WlArgument::Str(Some(value)));
             }
@@ -352,9 +353,10 @@ fn parse_args(
 pub fn reserve_new_ids<T>(closure: &WlClosure, map: &mut WlMap<T>) -> WlResult<()> {
     for (arg, details) in closure.args.iter().zip(closure.message.args()) {
         if details.details.ty == WlArgType::NewId
-            && let WlArgument::NewId(id) = arg {
-                map.reserve_new(*id)?;
-            }
+            && let WlArgument::NewId(id) = arg
+        {
+            map.reserve_new(*id)?;
+        }
     }
     Ok(())
 }
@@ -369,7 +371,10 @@ pub fn reserve_new_ids<T>(closure: &WlClosure, map: &mut WlMap<T>) -> WlResult<(
 /// Returns [`WlError::InvalidObject`] for unknown ids and
 /// [`WlError::InvalidArgument`] when the object type does not match the
 /// signature.
-pub fn lookup_objects<T: WlObject>(closure: &mut WlClosure, map: &WlMap<T>) -> WlResult<()> {
+pub fn lookup_objects<T: WlObject>(
+    closure: &mut WlClosure,
+    map: &WlMap<T>,
+) -> WlResult<()> {
     for (arg, details) in closure.args.iter_mut().zip(closure.message.args()) {
         if details.details.ty != WlArgType::Object {
             continue;
@@ -387,13 +392,14 @@ pub fn lookup_objects<T: WlObject>(closure: &mut WlClosure, map: &WlMap<T>) -> W
         }
         let object = map.lookup(id).ok_or(WlError::InvalidObject(id))?;
         if let Some(expected) = details.interface
-            && !expected.equal(object.interface()) {
-                return Err(WlError::invalid_argument(format!(
-                    "object {id} has interface {}, expected {}",
-                    object.interface().name,
-                    expected.name
-                )));
-            }
+            && !expected.equal(object.interface())
+        {
+            return Err(WlError::invalid_argument(format!(
+                "object {id} has interface {}, expected {}",
+                object.interface().name,
+                expected.name
+            )));
+        }
     }
     Ok(())
 }
@@ -673,10 +679,11 @@ impl<T: WlTransport> WlConnection<T> {
     pub fn release_argument_fds(&mut self, args: &mut [WlArgument]) {
         for arg in args {
             if let WlArgument::Fd(fd) = arg
-                && *fd >= 0 {
-                    let fd = core::mem::replace(fd, -1);
-                    self.transport.release_fd(fd);
-                }
+                && *fd >= 0
+            {
+                let fd = core::mem::replace(fd, -1);
+                self.transport.release_fd(fd);
+            }
         }
     }
 }
@@ -685,9 +692,9 @@ impl<T: WlTransport> WlConnection<T> {
 mod tests {
     use super::*;
     use crate::wl_handle::{
-        WlInterface, WlMapSide, CALLBACK_DONE, CALLBACK_INTERFACE,
-        DISPLAY_GET_REGISTRY, DISPLAY_INTERFACE, DISPLAY_SYNC, DISPLAY_ERROR,
-        REGISTRY_BIND, REGISTRY_INTERFACE,
+        CALLBACK_DONE, CALLBACK_INTERFACE, DISPLAY_ERROR, DISPLAY_GET_REGISTRY,
+        DISPLAY_INTERFACE, DISPLAY_SYNC, REGISTRY_BIND, REGISTRY_INTERFACE, WlInterface,
+        WlMapSide,
     };
 
     struct TestTransport {
@@ -758,13 +765,8 @@ mod tests {
         let message = &DISPLAY_INTERFACE.requests[DISPLAY_SYNC as usize];
         assert!(WlClosure::new(1, DISPLAY_SYNC, message, alloc::vec![]).is_err());
         assert!(
-            WlClosure::new(
-                1,
-                DISPLAY_SYNC,
-                message,
-                alloc::vec![WlArgument::Uint(1)],
-            )
-            .is_err()
+            WlClosure::new(1, DISPLAY_SYNC, message, alloc::vec![WlArgument::Uint(1)],)
+                .is_err()
         );
     }
 
@@ -805,7 +807,9 @@ mod tests {
         let message = &DISPLAY_INTERFACE.events[DISPLAY_ERROR as usize];
         let mut connection = WlConnection::new(TestTransport::new());
         // Header announces a four byte message, which cannot exist.
-        connection.input.extend_from_slice(&[1, 0, 0, 0, 4, 0, 0, 0]);
+        connection
+            .input
+            .extend_from_slice(&[1, 0, 0, 0, 4, 0, 0, 0]);
         assert!(connection.demarshal(message).is_err());
 
         let mut connection = WlConnection::new(TestTransport::new());
@@ -831,13 +835,9 @@ mod tests {
     fn flush_and_read_round_trip() {
         let mut connection = WlConnection::new(TestTransport::new());
         let message = &CALLBACK_INTERFACE.events[CALLBACK_DONE as usize];
-        let mut closure = WlClosure::new(
-            7,
-            CALLBACK_DONE,
-            message,
-            alloc::vec![WlArgument::Uint(3)],
-        )
-        .unwrap();
+        let mut closure =
+            WlClosure::new(7, CALLBACK_DONE, message, alloc::vec![WlArgument::Uint(3)])
+                .unwrap();
         connection.queue_closure(&mut closure).unwrap();
         assert!(connection.wants_write());
         let written = connection.flush().unwrap();
@@ -855,13 +855,9 @@ mod tests {
     #[test]
     fn reserves_new_ids_and_validates_objects() {
         let message = &DISPLAY_INTERFACE.requests[DISPLAY_SYNC as usize];
-        let closure = WlClosure::new(
-            1,
-            DISPLAY_SYNC,
-            message,
-            alloc::vec![WlArgument::NewId(3)],
-        )
-        .unwrap();
+        let closure =
+            WlClosure::new(1, DISPLAY_SYNC, message, alloc::vec![WlArgument::NewId(3)])
+                .unwrap();
         let mut map: WlMap<u32> = WlMap::new(WlMapSide::Server);
         // The client's id space grows densely, so ids 1 and 2 exist already.
         map.reserve_new(1).unwrap();

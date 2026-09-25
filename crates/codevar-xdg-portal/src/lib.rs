@@ -16,18 +16,18 @@
 #![cfg_attr(not(test), no_std)]
 extern crate alloc;
 
-pub mod portal_clipboard;
 pub mod portal_account;
-pub mod portal_network_monitor;
-pub mod portal_memory_monitor;
-pub mod portal_proxy_resolver;
-pub mod portal_remote_desktop;
-pub mod portal_usb;
-pub mod portal_trash;
-pub mod portal_wallpaper;
-pub mod portal_registry;
-pub mod portal_flatpak;
+pub mod portal_clipboard;
 pub mod portal_dynamic_launcher;
+pub mod portal_flatpak;
+pub mod portal_memory_monitor;
+pub mod portal_network_monitor;
 pub mod portal_notification;
-pub mod portal_uri;
+pub mod portal_proxy_resolver;
+pub mod portal_registry;
+pub mod portal_remote_desktop;
 pub mod portal_screenshot;
+pub mod portal_trash;
+pub mod portal_uri;
+pub mod portal_usb;
+pub mod portal_wallpaper;

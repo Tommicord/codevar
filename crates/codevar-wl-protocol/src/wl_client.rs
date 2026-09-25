@@ -48,13 +48,14 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::wl_conn::{lookup_objects, WlClosure, WlConnection, WlTransport};
+use crate::wl_conn::{WlClosure, WlConnection, WlTransport, lookup_objects};
 use crate::wl_error::{WlError, WlProtocolError, WlResult};
 use crate::wl_handle::{
-    WlArgType, WlArgument, WlInterface, WlMap, WlMapSide, WlMessage, WlObject, WlPollEvents,
-    CALLBACK_DONE, CALLBACK_INTERFACE, DISPLAY_DELETE_ID, DISPLAY_ERROR, DISPLAY_GET_REGISTRY,
-    DISPLAY_INTERFACE, DISPLAY_SYNC, MAX_MESSAGE_SIZE, REGISTRY_BIND, REGISTRY_GLOBAL,
-    REGISTRY_GLOBAL_REMOVE, REGISTRY_INTERFACE, SERVER_ID_START,
+    CALLBACK_DONE, CALLBACK_INTERFACE, DISPLAY_DELETE_ID, DISPLAY_ERROR,
+    DISPLAY_GET_REGISTRY, DISPLAY_INTERFACE, DISPLAY_SYNC, MAX_MESSAGE_SIZE,
+    REGISTRY_BIND, REGISTRY_GLOBAL, REGISTRY_GLOBAL_REMOVE, REGISTRY_INTERFACE,
+    SERVER_ID_START, WlArgType, WlArgument, WlInterface, WlMap, WlMapSide, WlMessage,
+    WlObject, WlPollEvents,
 };
 
 /// Id of the display proxy, which is always `1`.
@@ -342,14 +343,19 @@ impl<T: WlTransport> WlClientDisplay<T> {
     /// Returns [`WlError::InvalidObject`] when `id` is stale,
     /// [`WlError::InvalidArgument`] when `id` is not a registry and
     /// [`WlError::InvalidState`] when it already has a listener.
-    pub fn add_registry_listener<F>(&mut self, registry: WlProxyId, mut listener: F) -> WlResult<()>
+    pub fn add_registry_listener<F>(
+        &mut self,
+        registry: WlProxyId,
+        mut listener: F,
+    ) -> WlResult<()>
     where
         F: FnMut(&mut Self, WlRegistryEvent) -> i32 + 'static,
     {
         self.require_interface(registry, REGISTRY_INTERFACE.name)?;
         self.add_listener(registry, move |display, opcode, args| match opcode {
             REGISTRY_GLOBAL => {
-                let (Some(name), Some(version)) = (uint_arg(args, 0), uint_arg(args, 2)) else {
+                let (Some(name), Some(version)) = (uint_arg(args, 0), uint_arg(args, 2))
+                else {
                     return -1;
                 };
                 let Some(interface) = str_arg(args, 1) else {
@@ -379,7 +385,11 @@ impl<T: WlTransport> WlClientDisplay<T> {
     /// Returns [`WlError::InvalidObject`] when `id` is stale,
     /// [`WlError::InvalidArgument`] when `id` is not a callback and
     /// [`WlError::InvalidState`] when it already has a listener.
-    pub fn add_callback_listener<F>(&mut self, callback: WlProxyId, mut listener: F) -> WlResult<()>
+    pub fn add_callback_listener<F>(
+        &mut self,
+        callback: WlProxyId,
+        mut listener: F,
+    ) -> WlResult<()>
     where
         F: FnMut(&mut Self, u32) -> i32 + 'static,
     {
@@ -404,7 +414,9 @@ impl<T: WlTransport> WlClientDisplay<T> {
     /// [`WlError::InvalidState`] when `id` is the display proxy.
     pub fn proxy_destroy(&mut self, id: WlProxyId) -> WlResult<()> {
         if id.0 == DISPLAY_PROXY_ID {
-            return Err(WlError::invalid_state("the display proxy cannot be destroyed"));
+            return Err(WlError::invalid_state(
+                "the display proxy cannot be destroyed",
+            ));
         }
         let proxy = self
             .proxies
@@ -610,9 +622,7 @@ impl<T: WlTransport> WlClientDisplay<T> {
                 return Err(WlError::MessageTooBig(size));
             }
             if size < 8 {
-                return Err(WlError::invalid_argument(
-                    "message shorter than its header",
-                ));
+                return Err(WlError::invalid_argument("message shorter than its header"));
             }
             if self.connection.pending_input() < size {
                 return Ok(());
@@ -725,10 +735,7 @@ impl<T: WlTransport> WlClientDisplay<T> {
                 _ => {}
             }
         } else {
-            let listener = self
-                .proxies
-                .lookup_mut(id)
-                .and_then(WlProxy::take_listener);
+            let listener = self.proxies.lookup_mut(id).and_then(WlProxy::take_listener);
             if let Some(mut listener) = listener {
                 let _ = listener(self, opcode, &mut args);
                 if let Some(proxy) = self.proxies.lookup_mut(id)
@@ -772,14 +779,14 @@ impl<T: WlTransport> WlClientDisplay<T> {
             .proxies
             .lookup(object_id)
             .map(|proxy| proxy.interface.name)
-            .or_else(|| self.proxies.zombie_interface(object_id).map(|interface| interface.name))
+            .or_else(|| {
+                self.proxies
+                    .zombie_interface(object_id)
+                    .map(|interface| interface.name)
+            })
             .unwrap_or("wl_unknown");
-        self.protocol_error = Some(WlProtocolError::new(
-            code,
-            object_id,
-            interface,
-            message,
-        ));
+        self.protocol_error =
+            Some(WlProtocolError::new(code, object_id, interface, message));
     }
 }
 
@@ -840,9 +847,12 @@ mod tests {
                     break;
                 }
                 if sender == DISPLAY_PROXY_ID && opcode == DISPLAY_SYNC {
-                    let callback = u32::from_le_bytes(bytes[8..12].try_into().unwrap_or([0; 4]));
+                    let callback =
+                        u32::from_le_bytes(bytes[8..12].try_into().unwrap_or([0; 4]));
                     self.input.extend_from_slice(&callback.to_le_bytes());
-                    self.input.extend_from_slice(&((12u32 << 16) | CALLBACK_DONE).to_le_bytes());
+                    self.input.extend_from_slice(
+                        &((12u32 << 16) | CALLBACK_DONE).to_le_bytes(),
+                    );
                     self.input.extend_from_slice(&0u32.to_le_bytes());
                 }
                 self.output_pos += size;
@@ -939,12 +949,13 @@ mod tests {
 
     #[test]
     fn creates_registry_and_encodes_requests() {
-        let mut display =
-            WlClientDisplay::connect(MemoryTransport::default()).unwrap();
+        let mut display = WlClientDisplay::connect(MemoryTransport::default()).unwrap();
         let registry = display.get_registry().unwrap();
         assert_eq!(registry.id(), 2);
         assert_eq!(
-            display.proxy_interface(registry).map(|interface| interface.name),
+            display
+                .proxy_interface(registry)
+                .map(|interface| interface.name),
             Some("wl_registry")
         );
         assert!(display.connection().pending_output() > 0);
@@ -957,19 +968,20 @@ mod tests {
 
     #[test]
     fn rejects_listener_misuse() {
-        let mut display =
-            WlClientDisplay::connect(MemoryTransport::default()).unwrap();
+        let mut display = WlClientDisplay::connect(MemoryTransport::default()).unwrap();
         let registry = display.get_registry().unwrap();
-        display
-            .add_registry_listener(registry, |_, _| 0)
-            .unwrap();
-        assert!(display
-            .add_registry_listener(registry, |_, _| 0)
-            .is_err());
-        assert!(display
-            .add_listener(WlProxyId(DISPLAY_PROXY_ID), |_, _, _| 0)
-            .is_err());
-        assert!(display.add_registry_listener(WlProxyId(9), |_, _| 0).is_err());
+        display.add_registry_listener(registry, |_, _| 0).unwrap();
+        assert!(display.add_registry_listener(registry, |_, _| 0).is_err());
+        assert!(
+            display
+                .add_listener(WlProxyId(DISPLAY_PROXY_ID), |_, _, _| 0)
+                .is_err()
+        );
+        assert!(
+            display
+                .add_registry_listener(WlProxyId(9), |_, _| 0)
+                .is_err()
+        );
         assert!(display.proxy_destroy(WlProxyId(DISPLAY_PROXY_ID)).is_err());
         assert!(display.proxy_destroy(WlProxyId(9)).is_err());
     }
@@ -1034,16 +1046,12 @@ mod tests {
         assert_eq!(protocol.code, 2);
         assert_eq!(protocol.message, "no memory");
         assert!(display.protocol_error().is_some());
-        assert!(matches!(
-            display.dispatch(None),
-            Err(WlError::Protocol(_))
-        ));
+        assert!(matches!(display.dispatch(None), Err(WlError::Protocol(_))));
     }
 
     #[test]
     fn roundtrip_waits_for_the_sync_callback() {
-        let mut display =
-            WlClientDisplay::connect(MemoryTransport::default()).unwrap();
+        let mut display = WlClientDisplay::connect(MemoryTransport::default()).unwrap();
         let dispatched = display.roundtrip().unwrap();
         assert!(dispatched >= 1);
         assert!(!display.is_alive(WlProxyId(2)));
@@ -1052,25 +1060,26 @@ mod tests {
 
     #[test]
     fn binds_globals_through_the_registry() {
-        static TEST_INTERFACE: WlInterface =
-            WlInterface::new("wl_test", 1, &[], &[]);
+        static TEST_INTERFACE: WlInterface = WlInterface::new("wl_test", 1, &[], &[]);
 
-        let mut display =
-            WlClientDisplay::connect(MemoryTransport::default()).unwrap();
+        let mut display = WlClientDisplay::connect(MemoryTransport::default()).unwrap();
         let registry = display.get_registry().unwrap();
         let bound = display
             .registry_bind(registry, 7, &TEST_INTERFACE, 1)
             .unwrap();
         assert_eq!(bound.id(), 3);
+        assert_eq!(display.proxy_version(bound), Some(1));
         assert_eq!(
-            display.proxy_version(bound),
-            Some(1)
-        );
-        assert_eq!(
-            display.proxy_interface(bound).map(|interface| interface.name),
+            display
+                .proxy_interface(bound)
+                .map(|interface| interface.name),
             Some("wl_test")
         );
-        assert!(display.registry_bind(WlProxyId(9), 1, &TEST_INTERFACE, 1).is_err());
+        assert!(
+            display
+                .registry_bind(WlProxyId(9), 1, &TEST_INTERFACE, 1)
+                .is_err()
+        );
         assert!(display.flush().is_ok());
     }
 }

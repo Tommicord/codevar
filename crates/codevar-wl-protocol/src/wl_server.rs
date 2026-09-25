@@ -36,7 +36,7 @@
 //! use core::time::Duration;
 //!
 //! use codevar_wl_protocol::{
-//!     WlClock, WlError, WlInterface, WlPollEntry, WlPoller, WlResult, WlServerDisplay,
+//!     WlClock, WlInterface, WlPollEntry, WlPoller, WlResult, WlServerDisplay, WlTransport,
 //! };
 //!
 //! struct Never;
@@ -61,12 +61,15 @@
 //!
 //! static TEST_INTERFACE: WlInterface = WlInterface::new("wl_test", 1, &[], &[]);
 //!
+//! # fn demo<T: WlTransport + 'static>(transport: T) -> WlResult<()> {
 //! let mut server = WlServerDisplay::new(Never, Ticks);
 //! let name = server.add_global(&TEST_INTERFACE, 1)?;
 //! assert_eq!(name, 1);
 //! assert_eq!(server.client_count(), 0);
 //! server.terminate();
-//! # Ok::<(), WlError>(())
+//! let _client = server.create_client(transport)?;
+//! # Ok(())
+//! # }
 //! ```
 
 use core::cell::RefCell;
@@ -80,21 +83,23 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::wl_conn::{lookup_objects, WlClosure, WlConnection, WlTransport};
+use crate::wl_conn::{WlClosure, WlConnection, WlTransport, lookup_objects};
 use crate::wl_error::{WlError, WlResult};
 use crate::wl_evloop::{WlClock, WlEventLoop, WlEventSourceId, WlPoller};
 use crate::wl_handle::{
-    WlArgument, WlDisplayError, WlInterface, WlMap, WlMapIter, WlMapSide, WlObject, WlPollEvents,
-    CALLBACK_DONE, CALLBACK_INTERFACE, DISPLAY_DELETE_ID, DISPLAY_ERROR, DISPLAY_GET_REGISTRY,
-    DISPLAY_INTERFACE, DISPLAY_SYNC, MAX_MESSAGE_SIZE, REGISTRY_BIND, REGISTRY_GLOBAL,
-    REGISTRY_GLOBAL_REMOVE, REGISTRY_INTERFACE, SERVER_ID_START,
+    CALLBACK_DONE, CALLBACK_INTERFACE, DISPLAY_DELETE_ID, DISPLAY_ERROR,
+    DISPLAY_GET_REGISTRY, DISPLAY_INTERFACE, DISPLAY_SYNC, MAX_MESSAGE_SIZE,
+    REGISTRY_BIND, REGISTRY_GLOBAL, REGISTRY_GLOBAL_REMOVE, REGISTRY_INTERFACE,
+    SERVER_ID_START, WlArgument, WlDisplayError, WlInterface, WlMap, WlMapIter,
+    WlMapSide, WlObject, WlPollEvents,
 };
 
 /// Id of the display resource, which is always `1`.
 pub const DISPLAY_RESOURCE_ID: u32 = 1;
 
 type BindFn<T> = Box<dyn FnMut(&mut WlClient<T>, WlClientId, u32, u32)>;
-type RequestFn<T> = Box<dyn FnMut(&mut WlClient<T>, WlClientId, u32, u32, &mut [WlArgument])>;
+type RequestFn<T> =
+    Box<dyn FnMut(&mut WlClient<T>, WlClientId, u32, u32, &mut [WlArgument])>;
 type ScheduledTask<T, P, C> = Box<dyn FnOnce(&mut WlServerDisplay<T, P, C>)>;
 
 /// Handle to one connected client of a [`WlServerDisplay`].
@@ -222,13 +227,11 @@ impl<T: WlTransport> WlClient<T> {
         version: u32,
     ) -> WlResult<u32> {
         if id == 0 {
-            let allocated =
-                self.resources
-                    .insert_new(WlResource {
-                        id: 0,
-                        interface,
-                        version,
-                    })?;
+            let allocated = self.resources.insert_new(WlResource {
+                id: 0,
+                interface,
+                version,
+            })?;
             if let Some(resource) = self.resources.lookup_mut(allocated) {
                 resource.id = allocated;
             }
@@ -319,13 +322,10 @@ impl<T: WlTransport> WlClient<T> {
             .lookup(resource)
             .map(WlResource::interface)
             .ok_or(WlError::InvalidObject(resource))?;
-        let message =
-            interface
-                .event_at(opcode)
-                .ok_or(WlError::InvalidMethod {
-                    interface: interface.name,
-                    opcode,
-                })?;
+        let message = interface.event_at(opcode).ok_or(WlError::InvalidMethod {
+            interface: interface.name,
+            opcode,
+        })?;
         let mut closure = WlClosure::new(resource, opcode, message, args)?;
         self.connection.queue_closure(&mut closure)
     }
@@ -512,7 +512,11 @@ where
     /// Returns [`WlError::InvalidArgument`] when `version` is zero or
     /// exceeds the version of `interface` and [`WlError::InvalidState`]
     /// when no more global names are available.
-    pub fn add_global(&mut self, interface: &'static WlInterface, version: u32) -> WlResult<u32> {
+    pub fn add_global(
+        &mut self,
+        interface: &'static WlInterface,
+        version: u32,
+    ) -> WlResult<u32> {
         self.add_global_inner(interface, version, None)
     }
 
@@ -548,7 +552,8 @@ where
     ///
     /// Returns [`WlError::InvalidArgument`] when no global uses `name`.
     pub fn remove_global(&mut self, name: u32) -> WlResult<()> {
-        let Some(index) = self.globals.iter().position(|global| global.name == name) else {
+        let Some(index) = self.globals.iter().position(|global| global.name == name)
+        else {
             return Err(WlError::invalid_argument(format!(
                 "global {name} does not exist"
             )));
@@ -586,7 +591,11 @@ where
     ///
     /// Returns [`WlError::InvalidState`] when `interface` already has a
     /// handler.
-    pub fn add_request_handler<F>(&mut self, interface: &'static WlInterface, handler: F) -> WlResult<()>
+    pub fn add_request_handler<F>(
+        &mut self,
+        interface: &'static WlInterface,
+        handler: F,
+    ) -> WlResult<()>
     where
         F: FnMut(&mut WlClient<T>, WlClientId, u32, u32, &mut [WlArgument]) + 'static,
     {
@@ -635,32 +644,40 @@ where
             generation
         };
         let id = WlClientId { slot, generation };
-        let mut client = WlClient {
-            id,
-            connection: WlConnection::new(transport),
-            resources: WlMap::new(WlMapSide::Server),
-            error: false,
-            source: WlEventSourceId::from_parts(0, 0),
-        };
-        client.resources.insert_at(
+        let connection = WlConnection::new(transport);
+        let handle = connection.handle();
+        let mut resources = WlMap::new(WlMapSide::Server);
+        if let Err(err) = resources.insert_at(
             DISPLAY_RESOURCE_ID,
             WlResource {
                 id: DISPLAY_RESOURCE_ID,
                 interface: &DISPLAY_INTERFACE,
                 version: DISPLAY_INTERFACE.version,
             },
-        )?;
-        let handle = client.connection.handle();
+        ) {
+            self.free.push(slot);
+            return Err(err);
+        }
         let tasks = Rc::clone(&self.tasks);
-        client.source = self
-            .event_loop
-            .add_fd(handle, WlPollEvents::READABLE, move |_, _, events| {
+        let source = self.event_loop.add_fd(
+            handle,
+            WlPollEvents::READABLE,
+            move |_, _, events| {
                 tasks.borrow_mut().push_back(Box::new(
-                    move |display: &mut WlServerDisplay<T, P, C>| display.pump(id, events),
+                    move |display: &mut WlServerDisplay<T, P, C>| {
+                        display.pump(id, events)
+                    },
                 ));
                 0
-            });
-        self.clients[slot] = Some(client);
+            },
+        );
+        self.clients[slot] = Some(WlClient {
+            id,
+            connection,
+            resources,
+            error: false,
+            source,
+        });
         Ok(id)
     }
 
@@ -916,9 +933,10 @@ where
 
     fn put_client(&mut self, id: WlClientId, client: WlClient<T>) {
         if let Some(entry) = self.clients.get_mut(id.slot)
-            && entry.is_none() {
-                *entry = Some(client);
-            }
+            && entry.is_none()
+        {
+            *entry = Some(client);
+        }
     }
 
     /// Decodes and dispatches every complete request of the client.
@@ -1036,7 +1054,10 @@ where
         if interface.equal(&DISPLAY_INTERFACE) {
             match opcode {
                 DISPLAY_SYNC | DISPLAY_GET_REGISTRY => {
-                    let Some(new_id) = args.first().and_then(|arg0: &WlArgument| new_id_arg(Option::from(arg0))) else {
+                    let Some(new_id) = args
+                        .first()
+                        .and_then(|arg0: &WlArgument| new_id_arg(Option::from(arg0)))
+                    else {
                         post_invalid_arguments(client, sender, opcode, interface);
                         return;
                     };
@@ -1080,9 +1101,11 @@ where
 
     /// Answers `wl_display.sync` with a completed callback.
     fn handle_sync(&mut self, client: &mut WlClient<T>, new_id: u32) {
-        if let Err(error) =
-            client.create_resource(new_id, &CALLBACK_INTERFACE, CALLBACK_INTERFACE.version)
-        {
+        if let Err(error) = client.create_resource(
+            new_id,
+            &CALLBACK_INTERFACE,
+            CALLBACK_INTERFACE.version,
+        ) {
             post_create_failure(client, new_id, error);
             return;
         }
@@ -1098,9 +1121,11 @@ where
 
     /// Answers `wl_display.get_registry` and publishes every global.
     fn handle_get_registry(&mut self, client: &mut WlClient<T>, new_id: u32) {
-        if let Err(error) =
-            client.create_resource(new_id, &REGISTRY_INTERFACE, REGISTRY_INTERFACE.version)
-        {
+        if let Err(error) = client.create_resource(
+            new_id,
+            &REGISTRY_INTERFACE,
+            REGISTRY_INTERFACE.version,
+        ) {
             post_create_failure(client, new_id, error);
             return;
         }
@@ -1118,23 +1143,28 @@ where
     }
 
     /// Validates `wl_registry.bind` and runs the bind of the global.
-    fn handle_bind(&mut self, client: &mut WlClient<T>, registry: u32, args: &mut [WlArgument]) {
+    fn handle_bind(
+        &mut self,
+        client: &mut WlClient<T>,
+        registry: u32,
+        args: &mut [WlArgument],
+    ) {
         let interface_name = match args.get_mut(1) {
             Some(WlArgument::Str(slot)) => core::mem::take(slot),
             _ => None,
         };
-        let (Some(WlArgument::Uint(name)), Some(WlArgument::Uint(version)), Some(WlArgument::NewId(new_id))) =
-            (args.first(), args.get(2), args.get(3))
+        let (
+            Some(WlArgument::Uint(name)),
+            Some(WlArgument::Uint(version)),
+            Some(WlArgument::NewId(new_id)),
+        ) = (args.first(), args.get(2), args.get(3))
         else {
             post_invalid_arguments(client, registry, REGISTRY_BIND, &REGISTRY_INTERFACE);
             return;
         };
         let (name, version, new_id) = (*name, *version, *new_id);
         let requested = interface_name.as_deref().unwrap_or("");
-        let Some(index) = self
-            .globals
-            .iter()
-            .position(|global| global.name == name)
+        let Some(index) = self.globals.iter().position(|global| global.name == name)
         else {
             client.post_error(
                 registry,
@@ -1177,12 +1207,15 @@ where
         let client_id = client.id;
         if let Some(mut bind) = self.globals[index].bind.take() {
             bind(client, client_id, version, new_id);
-            if let Some(position) = self.globals.iter().position(|global| global.name == name)
+            if let Some(position) =
+                self.globals.iter().position(|global| global.name == name)
                 && self.globals[position].bind.is_none()
             {
                 self.globals[position].bind = Some(bind);
             }
-        } else if let Err(error) = client.create_resource(new_id, global_interface, version) {
+        } else if let Err(error) =
+            client.create_resource(new_id, global_interface, version)
+        {
             post_create_failure(client, new_id, error);
         }
     }
@@ -1211,7 +1244,11 @@ fn post_invalid_arguments<T: WlTransport>(
     );
 }
 
-fn post_create_failure<T: WlTransport>(client: &mut WlClient<T>, id: u32, error: WlError) {
+fn post_create_failure<T: WlTransport>(
+    client: &mut WlClient<T>,
+    id: u32,
+    error: WlError,
+) {
     match error {
         WlError::TooManyObjects => client.post_no_memory(),
         _ => client.post_error(

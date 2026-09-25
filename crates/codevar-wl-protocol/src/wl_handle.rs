@@ -71,9 +71,8 @@ impl WlPollEvents {
     /// An error occurred on the file descriptor.
     pub const ERROR: Self = Self(EVENT_ERROR);
     /// All event bits.
-    pub const ALL: Self = Self(
-        EVENT_READABLE | EVENT_WRITABLE | EVENT_HANGUP | EVENT_ERROR,
-    );
+    pub const ALL: Self =
+        Self(EVENT_READABLE | EVENT_WRITABLE | EVENT_HANGUP | EVENT_ERROR);
 
     /// Creates an event set from raw bits.
     #[inline]
@@ -1123,9 +1122,7 @@ impl<T> WlMap<T> {
     /// Returns [`WlError::TooManyObjects`] when `id` is out of range and
     /// [`WlError::InvalidArgument`] when `id` skips ahead in the id space.
     pub fn insert_at(&mut self, id: u32, data: T) -> WlResult<()> {
-        let (entries, index) = self
-            .parts_mut(id)
-            .ok_or(WlError::InvalidObject(id))?;
+        let (entries, index) = self.parts_mut(id).ok_or(WlError::InvalidObject(id))?;
         if index as u32 > MAP_MAX_OBJECTS {
             return Err(WlError::TooManyObjects);
         }
@@ -1155,9 +1152,7 @@ impl<T> WlMap<T> {
                 "id {id} belongs to the local id space"
             )));
         }
-        let (entries, index) = self
-            .parts_mut(id)
-            .ok_or(WlError::InvalidObject(id))?;
+        let (entries, index) = self.parts_mut(id).ok_or(WlError::InvalidObject(id))?;
         if index as u32 > MAP_MAX_OBJECTS {
             return Err(WlError::TooManyObjects);
         }
@@ -1184,9 +1179,7 @@ impl<T> WlMap<T> {
     ///
     /// Returns the same errors as [`WlMap::insert_at`].
     pub fn vacate_at(&mut self, id: u32) -> WlResult<()> {
-        let (entries, index) = self
-            .parts_mut(id)
-            .ok_or(WlError::InvalidObject(id))?;
+        let (entries, index) = self.parts_mut(id).ok_or(WlError::InvalidObject(id))?;
         if index as u32 > MAP_MAX_OBJECTS {
             return Err(WlError::TooManyObjects);
         }
@@ -1213,9 +1206,7 @@ impl<T> WlMap<T> {
         id: u32,
         interface: &'static WlInterface,
     ) -> WlResult<()> {
-        let (entries, index) = self
-            .parts_mut(id)
-            .ok_or(WlError::InvalidObject(id))?;
+        let (entries, index) = self.parts_mut(id).ok_or(WlError::InvalidObject(id))?;
         match entries.get_mut(index) {
             Some(entry @ WlMapEntry::Live(_)) => {
                 *entry = WlMapEntry::Zombie { interface };
@@ -1535,10 +1526,10 @@ impl Iterator for WlListIter {
 /// ```
 /// use codevar_wl_protocol::wl_container_of;
 ///
-/// struct Node { link: codevar_wl_protocol::wl_handle::WlList, value: u32 }
-/// let mut node = Node { link: codevar_wl_protocol::wl_handle::WlList::new(), value: 7 };
+/// struct Node { link: codevar_wl_protocol::WlList, value: u32 }
+/// let mut node = Node { link: codevar_wl_protocol::WlList::new(), value: 7 };
 /// node.link.init();
-/// let link: *mut codevar_wl_protocol::wl_handle::WlList = &mut node.link;
+/// let link: *mut codevar_wl_protocol::WlList = &mut node.link;
 /// let node_ptr = wl_container_of!(link, Node, link);
 /// assert_eq!(unsafe { (*node_ptr).value }, 7);
 /// ```
@@ -1700,11 +1691,7 @@ mod tests {
 
     #[test]
     fn builtin_interfaces_have_consistent_types() {
-        for interface in [
-            &DISPLAY_INTERFACE,
-            &REGISTRY_INTERFACE,
-            &CALLBACK_INTERFACE,
-        ] {
+        for interface in [&DISPLAY_INTERFACE, &REGISTRY_INTERFACE, &CALLBACK_INTERFACE] {
             for message in interface.requests.iter().chain(interface.events.iter()) {
                 assert_eq!(message.arg_count(), message.types.len());
             }
