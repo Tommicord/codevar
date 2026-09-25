@@ -28,7 +28,7 @@
 //! Detection is layered:
 //!
 //! 1. **Compile time** — [`compile_time_features`] and
-//!    `cpu_feature_compile_time!` report what was compiled into the binary
+//!    `cpu_feature_at_time!` report what was compiled into the binary
 //!    (`-C target-feature=…`, `#[target_feature]`).
 //! 2. **Run time** — [`detect`] executes the probes above; its result is
 //!    cached in a process-wide lock so the `CPUID`/`MRS`/`getauxval` work
@@ -52,7 +52,7 @@
 //! Const check, usable in `const` items and generic bounds:
 //!
 //! ```rust
-//! const SSE2_AT_BUILD_TIME: bool = codevar_base::cpu_feature_compile_time!(sse2);
+//! const SSE2_AT_BUILD_TIME: bool = codevar_base::cpu_feature_at_time!(sse2);
 //! let _ = SSE2_AT_BUILD_TIME;
 //! ```
 //!
@@ -83,7 +83,7 @@ const fn bytes_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// Builds [`Feature`], its lookup tables, [`compile_time_features`] and the
-/// `cpu_feature!` / `cpu_feature_compile_time!` macros from one feature
+/// `cpu_feature!` / `cpu_feature_at_time!` macros from one feature
 /// table, so the compile-time names, the run-time lookup and the macros can
 /// never drift apart.
 ///
@@ -237,14 +237,14 @@ macro_rules! define_features {
         /// The result is a `const bool`, usable in `const` items:
         ///
         /// ```rust
-        /// const HAS_SSE2: bool = codevar_base::cpu_feature_compile_time!(sse2);
+        /// const HAS_SSE2: bool = codevar_base::cpu_feature_at_time!(sse2);
         /// let _ = HAS_SSE2;
         /// ```
         ///
         /// Accepts the same identifiers and string literals as
         /// `cpu_feature!`. Unknown names are a compile error.
         #[macro_export]
-        macro_rules! cpu_feature_compile_time {
+        macro_rules! cpu_feature_at_time {
             $(
                 ($name) => {
                     $crate::basic_cpuid::Feature::$variant
@@ -1138,16 +1138,16 @@ mod tests {
         assert_eq!(cpu_feature!("sse4.1"), has(Feature::Sse41));
         assert_eq!(cpu_feature!("avx512"), has(Feature::Avx512));
         assert_eq!(
-            cpu_feature_compile_time!(sse2),
+            cpu_feature_at_time!(sse2),
             Feature::Sse2.compile_time_available()
         );
         assert_eq!(
-            cpu_feature_compile_time!("crc32"),
+            cpu_feature_at_time!("crc32"),
             Feature::Crc32.compile_time_available()
         );
     }
 
-    const COMPILE_TIME_SSE2: bool = cpu_feature_compile_time!(sse2);
+    const COMPILE_TIME_SSE2: bool = cpu_feature_at_time!(sse2);
 
     #[test]
     fn compile_time_macro_is_const_usable() {

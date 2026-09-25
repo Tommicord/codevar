@@ -194,6 +194,7 @@ version = "1.0.0"
 dependencies = [
  "arc-swap",
  "bsize",
+ "codevar-base",
  "codevar-textlike-encode",
  "codevar-tls",
  "getrandom",
@@ -206,6 +207,7 @@ name = "codevar-xdg-portal"
 version = "1.0.0"
 dependencies = [
  "cfg-if",
+ "codevar-base",
  "codevar-dbus",
  "libc",
  "log",

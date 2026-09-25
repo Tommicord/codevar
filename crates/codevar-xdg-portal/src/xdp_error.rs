@@ -72,7 +72,7 @@ impl PortalError {
     /// Returns the human readable message attached to the error.
     #[inline]
     #[must_use]
-    pub const fn message(&self) -> &str {
+    pub fn message(&self) -> &str {
         match self {
             Self::Failed(message)
             | Self::InvalidArgument(message)
@@ -93,12 +93,16 @@ impl PortalError {
     pub fn from_name(name: &str, message: String) -> Option<Self> {
         let error = match name {
             "org.freedesktop.portal.Error.Failed" => Self::Failed(message),
-            "org.freedesktop.portal.Error.InvalidArgument" => Self::InvalidArgument(message),
+            "org.freedesktop.portal.Error.InvalidArgument" => {
+                Self::InvalidArgument(message)
+            }
             "org.freedesktop.portal.Error.NotFound" => Self::NotFound(message),
             "org.freedesktop.portal.Error.Exists" => Self::Exists(message),
             "org.freedesktop.portal.Error.NotAllowed" => Self::NotAllowed(message),
             "org.freedesktop.portal.Error.Cancelled" => Self::Cancelled(message),
-            "org.freedesktop.portal.Error.WindowDestroyed" => Self::WindowDestroyed(message),
+            "org.freedesktop.portal.Error.WindowDestroyed" => {
+                Self::WindowDestroyed(message)
+            }
             _ => return None,
         };
         Some(error)
@@ -123,10 +127,10 @@ impl core::error::Error for PortalError {}
 
 impl From<DbusError> for PortalError {
     fn from(error: DbusError) -> Self {
-        if let DbusError::Remote { name, message } = &error {
-            if let Some(portal) = Self::from_name(name, message.clone()) {
-                return portal;
-            }
+        if let DbusError::Remote { name, message } = &error
+            && let Some(portal) = Self::from_name(name, message.clone())
+        {
+            return portal;
         }
         Self::Failed(error.to_string())
     }
@@ -147,15 +151,30 @@ mod tests {
     #[test]
     fn names_match_the_c_error_domain() {
         let pairs = [
-            (PortalError::Failed(String::new()), "org.freedesktop.portal.Error.Failed"),
+            (
+                PortalError::Failed(String::new()),
+                "org.freedesktop.portal.Error.Failed",
+            ),
             (
                 PortalError::InvalidArgument(String::new()),
                 "org.freedesktop.portal.Error.InvalidArgument",
             ),
-            (PortalError::NotFound(String::new()), "org.freedesktop.portal.Error.NotFound"),
-            (PortalError::Exists(String::new()), "org.freedesktop.portal.Error.Exists"),
-            (PortalError::NotAllowed(String::new()), "org.freedesktop.portal.Error.NotAllowed"),
-            (PortalError::Cancelled(String::new()), "org.freedesktop.portal.Error.Cancelled"),
+            (
+                PortalError::NotFound(String::new()),
+                "org.freedesktop.portal.Error.NotFound",
+            ),
+            (
+                PortalError::Exists(String::new()),
+                "org.freedesktop.portal.Error.Exists",
+            ),
+            (
+                PortalError::NotAllowed(String::new()),
+                "org.freedesktop.portal.Error.NotAllowed",
+            ),
+            (
+                PortalError::Cancelled(String::new()),
+                "org.freedesktop.portal.Error.Cancelled",
+            ),
             (
                 PortalError::WindowDestroyed(String::new()),
                 "org.freedesktop.portal.Error.WindowDestroyed",
@@ -164,13 +183,19 @@ mod tests {
         for (error, name) in pairs {
             assert_eq!(error.name(), name);
             let roundtrip = PortalError::from_name(name, String::from("m")).unwrap();
-            assert_eq!(roundtrip, PortalError::from_name(error.name(), String::from("m")).unwrap());
+            assert_eq!(
+                roundtrip,
+                PortalError::from_name(error.name(), String::from("m")).unwrap()
+            );
         }
     }
 
     #[test]
     fn from_name_rejects_foreign_errors() {
-        assert!(PortalError::from_name("org.freedesktop.DBus.Error.Failed", String::new()).is_none());
+        assert!(
+            PortalError::from_name("org.freedesktop.DBus.Error.Failed", String::new())
+                .is_none()
+        );
     }
 
     #[test]

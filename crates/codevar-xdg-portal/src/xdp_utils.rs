@@ -21,14 +21,16 @@
 //! generation, shell quoting helpers and document portal path
 //! remapping.
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use codevar_dbus::{
-    BodyWriter, DbusReader, DbusResult, DbusWriter, SignatureIter, single_complete_type_len,
-    type_alignment, validate_array_element_type, validate_signature, validate_single_type,
+    BodyWriter, DbusReader, DbusResult, DbusWriter, SignatureIter,
+    single_complete_type_len, type_alignment, validate_array_element_type,
+    validate_signature, validate_single_type,
 };
 use spin::Mutex;
 
@@ -125,20 +127,24 @@ impl KeyFile {
 
     /// Parses the contents of a key file.
     ///
+    /// Follows `GKeyFile` rules: leading whitespace is ignored,
+    /// comments start with `#`, keys and values are trimmed of
+    /// surrounding whitespace at the split point, a duplicate group
+    /// header re-opens the earlier group and duplicate keys keep both
+    /// entries (the last one wins on read).
+    ///
     /// # Errors
     ///
     /// Returns [`PortalError::InvalidArgument`] when a line is neither
     /// a comment, a group header nor a key/value pair, when a key line
-    /// appears before any group, or when a group is declared twice.
+    /// appears before any group, or when a group header is malformed.
     pub fn parse(data: &str) -> Result<Self, PortalError> {
         let mut file = Self::new();
         let mut current_group: Option<usize> = None;
         for (index, raw_line) in data.split('\n').enumerate() {
             let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
-            if line.trim().is_empty() {
-                continue;
-            }
-            if line.starts_with('#') || line.starts_with(';') {
+            let line = line.trim_start();
+            if line.is_empty() || line.starts_with('#') {
                 continue;
             }
             let line_number = index + 1;
@@ -153,13 +159,15 @@ impl KeyFile {
                         "line {line_number}: empty group name"
                     )));
                 }
-                if file.has_group(name) {
-                    return Err(PortalError::InvalidArgument(format!(
-                        "line {line_number}: duplicate group [{name}]"
-                    )));
-                }
-                file.groups.push((String::from(name), Vec::new()));
-                current_group = Some(file.groups.len() - 1);
+                current_group = Some(
+                    match file.groups.iter().position(|(entry, _)| entry == name) {
+                        Some(position) => position,
+                        None => {
+                            file.groups.push((String::from(name), Vec::new()));
+                            file.groups.len() - 1
+                        }
+                    },
+                );
                 continue;
             }
             let Some(eq) = line.find('=') else {
@@ -167,7 +175,7 @@ impl KeyFile {
                     "line {line_number}: not a key/value pair"
                 )));
             };
-            let key = &line[..eq];
+            let key = line[..eq].trim();
             if key.is_empty() {
                 return Err(PortalError::InvalidArgument(format!(
                     "line {line_number}: empty key"
@@ -178,8 +186,10 @@ impl KeyFile {
                     "line {line_number}: key/value pair outside of any group"
                 )));
             };
-            let value = &line[eq + 1..];
-            file.groups[group_index].1.push((String::from(key), String::from(value)));
+            let value = line[eq + 1..].trim_start();
+            file.groups[group_index]
+                .1
+                .push((String::from(key), String::from(value)));
         }
         Ok(file)
     }
@@ -191,40 +201,58 @@ impl KeyFile {
     }
 
     /// Iterates over `(group, entries)` in file order.
-    #[must_use]
     pub fn iter_groups(&self) -> impl Iterator<Item = (&str, &[(String, String)])> {
-        self.groups.iter().map(|(name, entries)| (name.as_str(), entries.as_slice()))
+        self.groups
+            .iter()
+            .map(|(name, entries)| (name.as_str(), entries.as_slice()))
     }
 
-    /// Returns the raw value stored under `key` without unescaping.
+    /// Returns the raw value stored under `key` without unescaping;
+    /// for duplicate keys the last entry wins, like
+    /// `g_key_file_get_value`.
     #[must_use]
     pub fn value(&self, group: &str, key: &str) -> Option<&str> {
         let entries = self.find_group(group)?;
-        entries.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+        entries
+            .iter()
+            .rev()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
     }
 
     /// Returns the value stored under `key`, resolving backslash
-    /// escapes like `g_key_file_get_string`.
+    /// escapes like `g_key_file_get_string`; `None` when the key is
+    /// missing or holds an invalid escape sequence.
     #[must_use]
     pub fn get(&self, group: &str, key: &str) -> Option<String> {
-        self.value(group, key).map(unescape)
+        self.value(group, key).and_then(unescape)
     }
 
     /// Returns the `;`-separated list stored under `key`, or `None`
-    /// when the key is absent (an empty value yields one empty
-    /// element), like `g_key_file_get_string_list`.
+    /// when the key is missing or an element holds an invalid escape.
+    ///
+    /// Follows `g_key_file_get_string_list`: a backslash escapes the
+    /// character that follows it for splitting purposes, one trailing
+    /// empty element is dropped (so `a;b;` yields two elements) and
+    /// every element is unescaped.
     #[must_use]
     pub fn list(&self, group: &str, key: &str) -> Option<Vec<String>> {
-        self.value(group, key).map(|raw| raw.split(';').map(unescape).collect())
+        let raw = self.value(group, key)?;
+        let mut parts = split_escaped_list(raw);
+        if parts.last().is_some_and(String::is_empty) {
+            parts.pop();
+        }
+        parts.iter().map(|part| unescape(part)).collect()
     }
 
     /// Returns the boolean stored under `key`, or `default` when the
-    /// key is missing or does not hold `true` or `false`.
+    /// key is missing or does not hold exactly `true` or `false`,
+    /// like `g_key_file_get_boolean`.
     #[must_use]
     pub fn boolean(&self, group: &str, key: &str, default: bool) -> bool {
         match self.value(group, key) {
-            Some(value) if value.eq_ignore_ascii_case("true") => true,
-            Some(value) if value.eq_ignore_ascii_case("false") => false,
+            Some("true") => true,
+            Some("false") => false,
             _ => default,
         }
     }
@@ -257,7 +285,8 @@ impl KeyFile {
     /// Removes the first occurrence of `key` from `group` and returns
     /// whether it existed.
     pub fn remove(&mut self, group: &str, key: &str) -> bool {
-        let Some(group_index) = self.groups.iter().position(|(name, _)| name == group) else {
+        let Some(group_index) = self.groups.iter().position(|(name, _)| name == group)
+        else {
             return false;
         };
         let entries = &mut self.groups[group_index].1;
@@ -291,15 +320,19 @@ impl KeyFile {
     }
 
     fn find_group(&self, group: &str) -> Option<&Vec<(String, String)>> {
-        self.groups.iter().find(|(name, _)| name == group).map(|(_, entries)| entries)
+        self.groups
+            .iter()
+            .find(|(name, _)| name == group)
+            .map(|(_, entries)| entries)
     }
 }
 
 /// Resolves the backslash escapes understood by `GKeyFile` string
-/// reads; unknown escapes are kept verbatim.
-fn unescape(value: &str) -> String {
+/// reads (`\s`, `\t`, `\r`, `\n`, `\\` and `\;`), returning `None` on
+/// an unknown or dangling escape, like `g_key_file_get_string`.
+fn unescape(value: &str) -> Option<String> {
     if !value.contains('\\') {
-        return String::from(value);
+        return Some(String::from(value));
     }
     let mut out = String::with_capacity(value.len());
     let mut chars = value.chars();
@@ -308,20 +341,41 @@ fn unescape(value: &str) -> String {
             out.push(c);
             continue;
         }
-        match chars.next() {
-            Some('s') => out.push(' '),
-            Some('n') => out.push('\n'),
-            Some('t') => out.push('\t'),
-            Some('r') => out.push('\r'),
-            Some('\\') => out.push('\\'),
-            Some(other) => {
-                out.push('\\');
-                out.push(other);
-            }
-            None => out.push('\\'),
+        match chars.next()? {
+            's' => out.push(' '),
+            'n' => out.push('\n'),
+            't' => out.push('\t'),
+            'r' => out.push('\r'),
+            '\\' => out.push('\\'),
+            ';' => out.push(';'),
+            _ => return None,
         }
     }
-    out
+    Some(out)
+}
+
+/// Splits a list value on `;`, treating `\x` as a single escaped
+/// character that cannot separate elements.
+fn split_escaped_list(value: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            current.push(c);
+            if let Some(next) = chars.next() {
+                current.push(next);
+            }
+            continue;
+        }
+        if c == ';' {
+            parts.push(core::mem::take(&mut current));
+            continue;
+        }
+        current.push(c);
+    }
+    parts.push(current);
+    parts
 }
 
 /// A decoded D-Bus variant payload, mirroring the subset of the wire
@@ -380,7 +434,10 @@ impl PortalValue {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        Self::Array(String::from("s"), values.into_iter().map(Into::into).map(Self::Str).collect())
+        Self::Array(
+            String::from("s"),
+            values.into_iter().map(Into::into).map(Self::Str).collect(),
+        )
     }
 
     /// Builds an array of an arbitrary element type after validating
@@ -391,10 +448,16 @@ impl PortalValue {
     /// Returns [`PortalError::InvalidArgument`] when
     /// `element_signature` is not a single valid D-Bus type or an
     /// element does not match it.
-    pub fn new_array(element_signature: &str, items: Vec<PortalValue>) -> Result<Self, PortalError> {
+    pub fn new_array(
+        element_signature: &str,
+        items: Vec<PortalValue>,
+    ) -> Result<Self, PortalError> {
         validate_array_element_type(element_signature)
             .map_err(|err| PortalError::InvalidArgument(err.to_string()))?;
-        if items.iter().any(|item| !item.matches_one(element_signature)) {
+        if items
+            .iter()
+            .any(|item| !item.matches_one(element_signature))
+        {
             return Err(PortalError::InvalidArgument(format!(
                 "array element does not match signature {element_signature}"
             )));
@@ -463,14 +526,12 @@ impl PortalValue {
             Self::Signature(_) => signature == "g",
             Self::Handle(_) => signature == "h",
             Self::Variant(_) => signature == "v",
-            Self::Array(element, items) => {
-                match signature.strip_prefix('a') {
-                    Some(rest) if rest == element => {
-                        items.iter().all(|item| item.matches_one(element))
-                    }
-                    _ => false,
+            Self::Array(element, items) => match signature.strip_prefix('a') {
+                Some(rest) if rest == element => {
+                    items.iter().all(|item| item.matches_one(element))
                 }
-            }
+                _ => false,
+            },
             Self::Struct(fields) => {
                 if !signature.starts_with('(') || !signature.ends_with(')') {
                     return false;
@@ -565,10 +626,14 @@ impl PortalValue {
                 reader.read_struct()?;
                 let mut iter = SignatureIter::new(&signature[1..signature.len() - 1]);
                 let key_signature = iter.next().ok_or_else(|| {
-                    codevar_dbus::DbusError::invalid_signature("dict entry without key type")
+                    codevar_dbus::DbusError::invalid_signature(
+                        "dict entry without key type",
+                    )
                 })?;
                 let value_signature = iter.next().ok_or_else(|| {
-                    codevar_dbus::DbusError::invalid_signature("dict entry without value type")
+                    codevar_dbus::DbusError::invalid_signature(
+                        "dict entry without value type",
+                    )
                 })?;
                 let key = Self::decode_one(reader, key_signature)?;
                 let value = Self::decode_one(reader, value_signature)?;
@@ -852,7 +917,8 @@ pub fn encode_options(writer: &mut BodyWriter, options: &OptionMap) -> DbusResul
         for (key, value) in options {
             inner.write_struct("sv", |entry| {
                 entry.write_str(key)?;
-                write_value(entry, value)
+                let signature = value.signature();
+                entry.write_variant(&signature, |slot| write_value(slot, value))
             })?;
         }
         Ok(())
@@ -866,12 +932,16 @@ pub fn encode_options(writer: &mut BodyWriter, options: &OptionMap) -> DbusResul
 ///
 /// Returns a `DbusError` when an option cannot be encoded, e.g. an
 /// object path or string that fails validation.
-pub fn encode_options_raw(writer: &mut DbusWriter, options: &OptionMap) -> DbusResult<()> {
-    writer.write_array("{sv}", |inner| {
+pub fn encode_options_raw(
+    writer: &mut DbusWriter,
+    options: &OptionMap,
+) -> DbusResult<()> {
+    <DbusWriter as ValueWriter>::write_array(writer, "{sv}", |inner| {
         for (key, value) in options {
-            inner.write_struct("sv", |entry| {
+            <DbusWriter as ValueWriter>::write_struct(inner, "sv", |entry| {
                 entry.write_str(key)?;
-                write_value(entry, value)
+                let signature = value.signature();
+                entry.write_variant(&signature, |slot| write_value(slot, value))
             })?;
         }
         Ok(())
@@ -897,6 +967,11 @@ pub fn decode_options(reader: &mut DbusReader<'_>) -> DbusResult<OptionMap> {
     Ok(options)
 }
 
+/// Semantic validation callback for one supported option key, called
+/// with the key, its value and the full incoming option map.
+pub type OptionKeyValidate =
+    fn(&str, &PortalValue, &OptionMap) -> Result<(), PortalError>;
+
 /// One supported option key, mirroring `XdpOptionKey` in the C
 /// reference.
 pub struct OptionKey {
@@ -905,14 +980,18 @@ pub struct OptionKey {
     /// D-Bus type the value must have, e.g. `b` or `a{sv}`.
     pub type_signature: &'static str,
     /// Optional semantic validation run after the type check.
-    pub validate: Option<fn(&str, &PortalValue, &OptionMap) -> Result<(), PortalError>>,
+    pub validate: Option<OptionKeyValidate>,
 }
 
 impl OptionKey {
     /// Creates a supported key that only checks the value type.
     #[must_use]
     pub const fn new(key: &'static str, type_signature: &'static str) -> Self {
-        Self { key, type_signature, validate: None }
+        Self {
+            key,
+            type_signature,
+            validate: None,
+        }
     }
 
     /// Creates a supported key with an extra validation callback.
@@ -920,9 +999,13 @@ impl OptionKey {
     pub const fn with_validate(
         key: &'static str,
         type_signature: &'static str,
-        validate: fn(&str, &PortalValue, &OptionMap) -> Result<(), PortalError>,
+        validate: OptionKeyValidate,
     ) -> Self {
-        Self { key, type_signature, validate: Some(validate) }
+        Self {
+            key,
+            type_signature,
+            validate: Some(validate),
+        }
     }
 }
 
@@ -958,13 +1041,13 @@ pub fn filter_options(
             }
             continue;
         }
-        if let Some(validate) = supported_key.validate {
-            if let Err(error) = validate(supported_key.key, value, options) {
-                if first_error.is_none() {
-                    first_error = Some(error);
-                }
-                continue;
+        if let Some(validate) = supported_key.validate
+            && let Err(error) = validate(supported_key.key, value, options)
+        {
+            if first_error.is_none() {
+                first_error = Some(error);
             }
+            continue;
         }
         filtered.insert(String::from(supported_key.key), value.clone());
     }
@@ -973,9 +1056,6 @@ pub fn filter_options(
         None => Ok(filtered),
     }
 }
-
-const BASE64_ALPHABET: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// Reads the environment variable `name`.
 ///
@@ -1052,38 +1132,16 @@ fn fill_random(buffer: &mut [u8]) -> Result<(), PortalError> {
 #[cfg(not(all(unix, not(target_arch = "wasm32"))))]
 fn fill_random(buffer: &mut [u8]) -> Result<(), PortalError> {
     let _ = buffer;
-    Err(PortalError::Failed(String::from("random data unavailable on this target")))
-}
-
-/// Encodes `data` with standard base64.
-fn base64_encode(data: &[u8]) -> String {
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let first = u32::from(chunk[0]);
-        let second = u32::from(*chunk.get(1).unwrap_or(&0));
-        let third = u32::from(*chunk.get(2).unwrap_or(&0));
-        let bits = (first << 16) | (second << 8) | third;
-        out.push(char::from(BASE64_ALPHABET[(((bits >> 18) & 0x3f) as usize)]));
-        out.push(char::from(BASE64_ALPHABET[(((bits >> 12) & 0x3f) as usize)]));
-        if chunk.len() > 1 {
-            out.push(char::from(BASE64_ALPHABET[(((bits >> 6) & 0x3f) as usize)]));
-        } else {
-            out.push('=');
-        }
-        if chunk.len() > 2 {
-            out.push(char::from(BASE64_ALPHABET[(bits & 0x3f) as usize]));
-        } else {
-            out.push('=');
-        }
-    }
-    out
+    Err(PortalError::Failed(String::from(
+        "random data unavailable on this target",
+    )))
 }
 
 /// Encodes bytes as D-Bus-path-safe base64 (`[A-Za-z0-9_]`, no
 /// padding): `+` and `/` alias to `_` and encoding stops at the first
 /// `=`.
 fn encode_base64_for_dbus(data: &[u8]) -> String {
-    let mut encoded = base64_encode(data);
+    let mut encoded = codevar_base::basic_base64::encode(data);
     if let Some(padding) = encoded.find('=') {
         encoded.truncate(padding);
     }
@@ -1250,7 +1308,9 @@ pub fn shell_parse_argv(command: &str) -> Result<Vec<String>, PortalError> {
         }
     }
     if state != State::Unquoted {
-        return Err(PortalError::InvalidArgument(String::from("unmatched quote")));
+        return Err(PortalError::InvalidArgument(String::from(
+            "unmatched quote",
+        )));
     }
     if escaped {
         current.push('\\');
@@ -1260,7 +1320,9 @@ pub fn shell_parse_argv(command: &str) -> Result<Vec<String>, PortalError> {
         words.push(current);
     }
     if words.is_empty() {
-        return Err(PortalError::InvalidArgument(String::from("empty command line")));
+        return Err(PortalError::InvalidArgument(String::from(
+            "empty command line",
+        )));
     }
     Ok(words)
 }
@@ -1339,14 +1401,17 @@ mod tests {
     #[test]
     fn parses_key_files_and_round_trips() {
         let file = KeyFile::parse(
-            "# comment\n[portal]\nDBusName=org.example.Portal\nInterfaces=a.b;c.d;\n\n; other\n[extra]\nflag=true\n",
+            "# comment\n[portal]\nDBusName=org.example.Portal\nInterfaces=a.b;c.d;\n\n# other\n[extra]\nflag=true\n",
         )
         .unwrap();
         assert!(file.has_group("portal"));
-        assert_eq!(file.get("portal", "DBusName").as_deref(), Some("org.example.Portal"));
+        assert_eq!(
+            file.get("portal", "DBusName").as_deref(),
+            Some("org.example.Portal")
+        );
         assert_eq!(
             file.list("portal", "Interfaces").unwrap(),
-            Vec::from([String::from("a.b"), String::from("c.d"), String::from("")])
+            Vec::from([String::from("a.b"), String::from("c.d")])
         );
         assert!(file.boolean("extra", "flag", false));
         assert!(!file.boolean("extra", "missing", false));
@@ -1356,7 +1421,10 @@ mod tests {
         edited.set("portal", "DBusName", "org.example.Other");
         edited.set("portal", "UseIn", "gnome");
         edited.set("new", "k", "v");
-        assert_eq!(edited.get("portal", "DBusName").as_deref(), Some("org.example.Other"));
+        assert_eq!(
+            edited.get("portal", "DBusName").as_deref(),
+            Some("org.example.Other")
+        );
         assert!(edited.remove("portal", "UseIn"));
         assert!(!edited.remove("portal", "UseIn"));
         assert!(edited.has_group("new"));
@@ -1372,14 +1440,35 @@ mod tests {
         assert!(KeyFile::parse("[portal]\nnovalue\n").is_err());
         assert!(KeyFile::parse("[portal\n").is_err());
         assert!(KeyFile::parse("[]\n").is_err());
-        assert!(KeyFile::parse("[a]\n[a]\n").is_err());
+        assert!(KeyFile::parse("[g]\n;semicolon comment\n").is_err());
         assert!(KeyFile::parse("[g]\n=v\n").is_err());
     }
 
     #[test]
     fn unescapes_glib_string_sequences() {
-        let file = KeyFile::parse("[g]\na=one\\stwo\\nline\\q\\z\n").unwrap();
-        assert_eq!(file.get("g", "a").unwrap(), "one two\nline\\q\\z");
+        let file = KeyFile::parse("[g]\na=one\\stwo\\nline\\;semi\\\\slash\n").unwrap();
+        assert_eq!(file.get("g", "a").unwrap(), "one two\nline;semi\\slash");
+
+        let invalid = KeyFile::parse("[g]\na=x\\qy\n").unwrap();
+        assert_eq!(invalid.get("g", "a"), None);
+        assert_eq!(invalid.list("g", "a"), None);
+
+        let escaped = KeyFile::parse("[g]\na=x\\;y;z;\n").unwrap();
+        assert_eq!(
+            escaped.list("g", "a").unwrap(),
+            Vec::from([String::from("x;y"), String::from("z")])
+        );
+
+        let empty = KeyFile::parse("[g]\na=\n").unwrap();
+        assert!(empty.list("g", "a").unwrap().is_empty());
+
+        let merged = KeyFile::parse("[g]\na=1\n[g]\nb=2\n").unwrap();
+        assert_eq!(merged.get("g", "a").as_deref(), Some("1"));
+        assert_eq!(merged.get("g", "b").as_deref(), Some("2"));
+
+        let duplicate = KeyFile::parse("[g]\nk=first\nk=last\n").unwrap();
+        assert_eq!(duplicate.get("g", "k").as_deref(), Some("last"));
+        assert_eq!(duplicate.entries("g").unwrap().len(), 2);
     }
 
     #[test]
@@ -1414,10 +1503,19 @@ mod tests {
         let mut options = OptionMap::new();
         options.insert(String::from("interactive"), PortalValue::Bool(true));
         options.insert(String::from("token"), PortalValue::string("abc"));
-        options.insert(String::from("handle"), PortalValue::ObjectPath(String::from("/h/1")));
+        options.insert(
+            String::from("handle"),
+            PortalValue::ObjectPath(String::from("/h/1")),
+        );
         options.insert(String::from("count"), PortalValue::U32(7));
-        options.insert(String::from("names"), PortalValue::string_array(Vec::from(["x"])));
-        options.insert(String::from("wrapped"), PortalValue::Variant(Box::new(PortalValue::F64(0.5))));
+        options.insert(
+            String::from("names"),
+            PortalValue::string_array(Vec::from(["x"])),
+        );
+        options.insert(
+            String::from("wrapped"),
+            PortalValue::Variant(Box::new(PortalValue::F64(0.5))),
+        );
 
         let mut body = BodyWriter::new(ByteOrder::Little);
         encode_options(&mut body, &options).unwrap();
@@ -1450,14 +1548,18 @@ mod tests {
         if *value == PortalValue::Bool(true) {
             Ok(())
         } else {
-            Err(PortalError::InvalidArgument(String::from("flag must be true")))
+            Err(PortalError::InvalidArgument(String::from(
+                "flag must be true",
+            )))
         }
     }
 
     #[test]
     fn filters_options_like_xdp_filter_options() {
-        let supported =
-            [OptionKey::new("interactive", "b"), OptionKey::with_validate("flag", "b", validate_flag)];
+        let supported = [
+            OptionKey::new("interactive", "b"),
+            OptionKey::with_validate("flag", "b", validate_flag),
+        ];
 
         let mut options = OptionMap::new();
         options.insert(String::from("interactive"), PortalValue::Bool(true));
@@ -1475,9 +1577,10 @@ mod tests {
         );
 
         let mut invalid = OptionMap::new();
-        invalid.insert(String::from("interactive"), PortalValue::Bool(false));
+        invalid.insert(String::from("flag"), PortalValue::Bool(false));
         let error = filter_options(&invalid, &supported).unwrap_err();
         assert!(matches!(error, PortalError::InvalidArgument(_)));
+        assert_eq!(error.message(), "flag must be true");
     }
 
     #[cfg(all(unix, not(target_arch = "wasm32")))]
@@ -1490,7 +1593,11 @@ mod tests {
         let key = generate_key().unwrap();
         assert_eq!(token.len(), 22);
         assert_eq!(key.len(), 22);
-        assert!(token.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_'));
+        assert!(
+            token
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'_')
+        );
         assert!(key.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_'));
         assert_ne!(token, generate_key().unwrap());
     }
@@ -1531,16 +1638,31 @@ mod tests {
     #[test]
     fn remaps_paths_inside_the_document_mount() {
         set_documents_mountpoint(Some("/run/user/1000/doc"));
-        assert_eq!(documents_mountpoint().as_deref(), Some("/run/user/1000/doc"));
         assert_eq!(
-            get_alternate_document_path("/run/user/1000/doc/abcd/file.txt", "org.example.App")
-                .as_deref(),
+            documents_mountpoint().as_deref(),
+            Some("/run/user/1000/doc")
+        );
+        assert_eq!(
+            get_alternate_document_path(
+                "/run/user/1000/doc/abcd/file.txt",
+                "org.example.App"
+            )
+            .as_deref(),
             Some("/run/user/1000/doc/by-app/org.example.App/abcd/file.txt")
         );
-        assert_eq!(get_alternate_document_path("/etc/passwd", "org.example.App"), None);
-        assert_eq!(get_alternate_document_path("/run/user/1000/doc/abcd/x", ""), None);
+        assert_eq!(
+            get_alternate_document_path("/etc/passwd", "org.example.App"),
+            None
+        );
+        assert_eq!(
+            get_alternate_document_path("/run/user/1000/doc/abcd/x", ""),
+            None
+        );
         set_documents_mountpoint(None);
         assert_eq!(documents_mountpoint(), None);
-        assert_eq!(get_alternate_document_path("/run/user/1000/doc/x", "a.b"), None);
+        assert_eq!(
+            get_alternate_document_path("/run/user/1000/doc/x", "a.b"),
+            None
+        );
     }
 }

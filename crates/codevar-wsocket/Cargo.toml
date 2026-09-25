@@ -11,6 +11,7 @@ repository.workspace = true
 name = "codevar_wsocket"
 
 [dependencies]
+codevar-base = { path = "../codevar-base" }
 codevar-textlike-encode = { path = "../codevar-textlike-encode" }
 codevar-tls = { path = "../codevar-tls" }
 getrandom = { workspace = true }

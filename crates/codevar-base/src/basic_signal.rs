@@ -1291,8 +1291,7 @@ mod windows {
     pub(super) fn install() -> Result<(), InstallError> {
         // SAFETY: `veh_handler` has the required ABI and stays loaded
         // for the process lifetime (uninstall removes it explicitly).
-        let veh =
-            unsafe { AddVectoredExceptionHandler(1, veh_handler as *const c_void) };
+        let veh = unsafe { AddVectoredExceptionHandler(1, veh_handler as *const c_void) };
         if veh.is_null() {
             // SAFETY: immediately after the failed call.
             let e = unsafe { GetLastError() } as i32;
