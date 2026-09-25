@@ -147,7 +147,7 @@ New Rust files must include the Apache 2.0 copyright header used elsewhere:
 
 ### Documentation Requirements
 
-- Public APIs must have doc comments (`#![warn(missing_docs)]` is enabled)
+- Public APIs must have doc comments
 - Document all unsafe blocks with safety invariants
 - Provide examples for complex algorithms
 - Document performance characteristics for public APIs

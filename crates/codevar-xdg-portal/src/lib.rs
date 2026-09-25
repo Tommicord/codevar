@@ -39,3 +39,4 @@ pub mod xdp_method_info;
 pub mod xdp_permissions;
 pub mod xdp_portal_config;
 pub mod xdp_utils;
+pub mod xdp_validate;

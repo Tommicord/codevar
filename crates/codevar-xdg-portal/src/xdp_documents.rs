@@ -54,13 +54,12 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::time::Duration;
 
-use codevar_dbus::{
-    BodyWriter, Connection, DbusError, DbusMessage, DbusResult, DbusTransport,
-};
-
 use crate::xdp_app_info::{AppInfo, AppInfoKind};
 use crate::xdp_error::PortalError;
 use crate::xdp_utils::{documents_mountpoint, env_var, set_documents_mountpoint};
+use codevar_dbus::{
+    BodyWriter, Connection, DbusError, DbusMessage, DbusResult, DbusTransport,
+};
 
 /// Bus name of the document portal service.
 pub const DOCUMENTS_DBUS_NAME: &str = "org.freedesktop.portal.Documents";
@@ -438,9 +437,7 @@ impl DocumentAddPlan {
             self.method_name(),
         )?;
         message.build_body(|writer| self.write_args(writer, 0))?;
-        let mut fds = Vec::new();
-        fds.push(fd);
-        message.set_fds(fds);
+        message.set_fds(alloc::vec![fd]);
         Ok(message)
     }
 }
@@ -1390,13 +1387,21 @@ mod tests {
         assert_eq!(reader.read_fd().unwrap(), 1);
         let mut filename = reader.read_array(1).unwrap();
         assert_eq!(filename.read_u8().unwrap(), b'f');
-        assert!(filename.is_empty());
+        let mut rest = Vec::new();
+        while !filename.is_empty() {
+            rest.push(filename.read_u8().unwrap());
+        }
+        assert_eq!(rest, b"ile.txt\0");
         assert_eq!(
             reader.read_u32().unwrap(),
             u32::from(plan.full_flags().bits())
         );
         assert_eq!(reader.read_str().unwrap(), "org.example.App");
-        assert!(reader.read_array(4).unwrap().is_empty());
+        let mut permissions = reader.read_array(4).unwrap();
+        assert_eq!(permissions.read_str().unwrap(), "read");
+        assert_eq!(permissions.read_str().unwrap(), "write");
+        assert_eq!(permissions.read_str().unwrap(), "grant-permissions");
+        assert!(permissions.is_empty());
         assert!(reader.is_empty());
     }
 
@@ -1592,13 +1597,14 @@ mod tests {
         std::fs::write(&path, b"x").unwrap();
         let uri = format!("file://{}", path.display());
 
-        // Without FOR_SAVE the file itself is opened.
+        // Without FOR_SAVE the file itself is opened, and the
+        // pre-version-2 portal still gets a plain `Add` call.
         let plan = plan_register_document(
             &uri,
             "org.example.App",
             &AppInfo::host("sender"),
             DocumentFlags::NONE,
-            5,
+            1,
         )
         .unwrap();
         let mut message = plan
@@ -1607,6 +1613,9 @@ mod tests {
         assert_eq!(message.member().unwrap(), "Add");
         assert_eq!(message.signature(), "hbb");
         assert_eq!(message.fds().len(), 1);
+        // The connection assigns the serial when it sends; give the
+        // message one here so the wire encoding can be checked.
+        message.set_serial(1).unwrap();
         assert!(!message.encode().unwrap().is_empty());
         // Close the descriptor the message still owns.
         for fd in message.take_fds() {
@@ -1626,7 +1635,8 @@ mod tests {
         .unwrap();
         assert_eq!(plan.open_path(), path.parent().unwrap().to_str().unwrap());
         let fd = plan.open_register_fd().unwrap();
-        drop(fd);
+        // SAFETY: the descriptor came out of `open_register_fd`.
+        unsafe { libc::close(fd) };
 
         // A missing target reports the C message and a not-found
         // style error.
