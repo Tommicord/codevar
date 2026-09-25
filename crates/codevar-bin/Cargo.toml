@@ -9,3 +9,7 @@ repository.workspace = true
 
 [dependencies]
 codevar-base = { path = "../codevar-base" }
+
+[[bin]]
+name = "codevar"
+path = "src/bin/main.rs"

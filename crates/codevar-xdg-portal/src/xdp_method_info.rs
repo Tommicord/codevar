@@ -15,8 +15,7 @@
 
 //! Generated metadata for every portal method.
 //!
-//! Port of `xdp-method-info.c` from the C reference. The table is
-//! produced with `desktop-portal/generate-method-info.py` over the
+//! The table is produced with `desktop-portal/generate-method-info.py` over the
 //! `org.freedesktop.portal.*` XML descriptions plus the host
 //! `Registry` interface, keeping the XML document order so entries of
 //! one interface stay contiguous.

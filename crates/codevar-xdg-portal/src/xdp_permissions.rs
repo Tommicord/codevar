@@ -13,7 +13,7 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-//! Permission store access, ported from `desktop-portal/xdp-permissions.c`.
+//! Permission store access
 //!
 //! Reads and writes per-application permissions through the
 //! `org.freedesktop.impl.portal.PermissionStore` service and converts

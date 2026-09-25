@@ -13,16 +13,14 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-//! Application identity for portal callers, ported from
-//! `shared/xdp-app-info*.c` and `shared/xdp-usb-query.c`.
+//! Application identity for portal callers
 //!
 //! An [`AppInfo`] describes the process behind a portal call: which
 //! sandbox engine (if any) hosts it, its application id, and the
 //! policies derived from that (network access, `O_PATH` support,
 //! USB queries, dynamic launcher rewriting).
-//!
-//! Deviations from the C implementation:
-//!
+//! 
+//! Notes:
 //! * Linyaps app infos are not detected (out of scope) and the
 //!   systemd unit lookup for host apps is skipped, so host apps get
 //!   the empty id unless registered explicitly.

@@ -56,6 +56,14 @@ gettid = "0.1.4"
 pem = "3"
 log = { version = "0.4", default-features = false }
 codevar-dbus = { path = "crates/codevar-dbus" }
+codevar-base = { path = "crates/codevar-base" }
+codevar-fcware = { path = "crates/codevar-fcware" }
+codevar-textlike-encode = { path = "crates/codevar-textlike-encode" }
+codevar-tls = { path = "crates/codevar-tls" }
+codevar-wl-protocol = { path = "crates/codevar-wl-protocol" }
+codevar-wredit = { path = "crates/codevar-wredit" }
+codevar-wsocket = { path = "crates/codevar-wsocket" }
+codevar-xdg-portal = { path = "crates/codevar-xdg-portal" }
 
 [profile.dev]
 opt-level = 0

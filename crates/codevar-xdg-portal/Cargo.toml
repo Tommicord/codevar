@@ -17,4 +17,4 @@ windows-link = { workspace = true }
 spin = { workspace = true }
 log = { workspace = true }
 codevar-dbus = { workspace = true }
-codevar-base = { path = "../codevar-base" }
+codevar-base = { workspace = true }
