@@ -100,7 +100,7 @@ impl UnixTransport {
         }
         let mut sun = sockaddr_un {
             sun_family: libc::AF_UNIX as libc::sa_family_t,
-            sun_path: [0i8; 108],
+            sun_path: [0; 108],
         };
         let bytes = raw.as_bytes();
         let copy_len = if kind == "abstract" && !bytes.starts_with(&[0]) {
@@ -115,7 +115,7 @@ impl UnixTransport {
             unsafe {
                 core::ptr::write_bytes(sun.sun_path.as_mut_ptr(), 0u8, 1);
                 core::ptr::copy_nonoverlapping(
-                    bytes.as_ptr() as *const i8,
+                    bytes.as_ptr() as *const libc::c_char,
                     sun.sun_path.as_mut_ptr().add(1),
                     bytes.len(),
                 );
@@ -132,7 +132,7 @@ impl UnixTransport {
             // is safe for trivially-copyable types.
             unsafe {
                 core::ptr::copy_nonoverlapping(
-                    bytes.as_ptr() as *const i8,
+                    bytes.as_ptr() as *const libc::c_char,
                     sun.sun_path.as_mut_ptr(),
                     bytes.len(),
                 );

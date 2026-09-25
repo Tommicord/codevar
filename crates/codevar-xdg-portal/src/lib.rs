@@ -32,6 +32,7 @@ pub mod xdp_uri;
 pub mod xdp_usb;
 pub mod xdp_wallpaper;
 
+pub mod xdp_app_info;
 pub mod xdp_error;
 pub mod xdp_method_info;
 pub mod xdp_permissions;

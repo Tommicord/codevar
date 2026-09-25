@@ -354,7 +354,7 @@ fn install_alt_stack_impl(_buf: &mut [u8]) -> Result<(), InstallError> {
 }
 
 #[cfg(not(any(unix, all(windows, not(target_vendor = "uwp")))))]
-fn install_impl(_opts: Options) -> Result<(), InstallError> {
+fn install_impl() -> Result<(), InstallError> {
     Err(InstallError::Unsupported)
 }
 
