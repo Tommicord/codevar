@@ -168,57 +168,66 @@ impl BodyWriter {
     }
 
     /// Appends a `BYTE` value.
-    pub fn write_u8(&mut self, value: u8) {
+    pub fn write_u8(&mut self, value: u8) -> DbusResult<()> {
         self.record(b'y');
         self.writer.write_u8(value);
+        Ok(())
     }
 
     /// Appends a `UINT16` value.
-    pub fn write_u16(&mut self, value: u16) {
+    pub fn write_u16(&mut self, value: u16) -> DbusResult<()> {
         self.record(b'q');
         self.writer.write_u16(value);
+        Ok(())
     }
 
     /// Appends a `UINT32` value.
-    pub fn write_u32(&mut self, value: u32) {
+    pub fn write_u32(&mut self, value: u32) -> DbusResult<()> {
         self.record(b'u');
         self.writer.write_u32(value);
+        Ok(())
     }
 
     /// Appends an `INT16` value.
-    pub fn write_i16(&mut self, value: i16) {
+    pub fn write_i16(&mut self, value: i16) -> DbusResult<()> {
         self.record(b'n');
         self.writer.write_i16(value);
+        Ok(())
     }
 
     /// Appends an `INT32` value.
-    pub fn write_i32(&mut self, value: i32) {
+    pub fn write_i32(&mut self, value: i32) -> DbusResult<()> {
         self.record(b'i');
         self.writer.write_i32(value);
+        Ok(())
     }
 
     /// Appends a `UINT64` value.
-    pub fn write_u64(&mut self, value: u64) {
+    pub fn write_u64(&mut self, value: u64) -> DbusResult<()> {
         self.record(b't');
         self.writer.write_u64(value);
+        Ok(())
     }
 
     /// Appends an `INT64` value.
-    pub fn write_i64(&mut self, value: i64) {
+    pub fn write_i64(&mut self, value: i64) -> DbusResult<()> {
         self.record(b'x');
         self.writer.write_i64(value);
+        Ok(())
     }
 
     /// Appends a `BOOLEAN` value.
-    pub fn write_bool(&mut self, value: bool) {
+    pub fn write_bool(&mut self, value: bool) -> DbusResult<()> {
         self.record(b'b');
         self.writer.write_bool(value);
+        Ok(())
     }
 
     /// Appends a `DOUBLE` value.
-    pub fn write_f64(&mut self, value: f64) {
+    pub fn write_f64(&mut self, value: f64) -> DbusResult<()> {
         self.record(b'd');
         self.writer.write_f64(value);
+        Ok(())
     }
 
     /// Appends a `STRING` value.
@@ -1186,14 +1195,14 @@ impl DbusMessageStream {
             }
             let fields_end = 24usize
                 .checked_add(fields_len)
-                .ok_or_else(|| DbusError::MessageTooBig(fields_len))?;
+                .ok_or(DbusError::MessageTooBig(fields_len))?;
             let header_end = fields_end
                 .checked_add(7)
                 .map(|value| value & !7)
-                .ok_or_else(|| DbusError::MessageTooBig(fields_len))?;
+                .ok_or(DbusError::MessageTooBig(fields_len))?;
             let total = header_end
                 .checked_add(body_len)
-                .ok_or_else(|| DbusError::MessageTooBig(body_len))?;
+                .ok_or(DbusError::MessageTooBig(body_len))?;
             if total > MAX_MESSAGE_LEN {
                 return Err(DbusError::MessageTooBig(total));
             }
@@ -1274,7 +1283,7 @@ mod tests {
         call.set_no_reply_expected();
         call.build_body(|body| {
             body.write_str("codevar")?;
-            body.write_u32(42);
+            body.write_u32(42)?;
             Ok(())
         })
         .unwrap();
@@ -1294,7 +1303,7 @@ mod tests {
 
         let mut reply = DbusMessage::method_return(7);
         reply.set_serial(9).unwrap();
-        reply.build_body(|body| Ok(body.write_bool(true))).unwrap();
+        reply.build_body(|body| body.write_bool(true)).unwrap();
         let decoded = DbusMessage::decode(&reply.encode().unwrap()).unwrap();
         assert_eq!(decoded.kind(), MessageKind::MethodReturn);
         assert_eq!(decoded.reply_serial(), Some(7));
@@ -1336,19 +1345,19 @@ mod tests {
         message.set_serial(3).unwrap();
         message
             .build_body(|body| {
-                body.write_i64(-5);
+                body.write_i64(-5)?;
                 body.write_array("s", |body| {
                     body.write_str("alpha")?;
                     body.write_str("beta")?;
                     Ok(())
                 })?;
                 body.write_struct("iu", |body| {
-                    body.write_u8(9);
-                    body.write_u32(1000);
+                    body.write_u8(9)?;
+                    body.write_u32(1000)?;
                     Ok(())
                 })?;
                 body.write_variant("d", |body| {
-                    body.write_f64(2.5);
+                    body.write_f64(2.5)?;
                     Ok(())
                 })?;
                 Ok(())

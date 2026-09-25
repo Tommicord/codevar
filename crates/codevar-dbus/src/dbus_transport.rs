@@ -134,6 +134,7 @@ mod tests {
     use super::*;
     use core::time::Duration;
 
+    #[allow(dead_code)]
     struct FakeTransport {
         events: DbusPollEvents,
         now: u64,

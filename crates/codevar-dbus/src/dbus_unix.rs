@@ -52,14 +52,16 @@ impl UnixTransport {
     /// [`DbusError::Io`] when the socket cannot be opened or
     /// connected.
     pub fn connect_to(address: &DbusAddress) -> DbusResult<Self> {
-        let kind = if address.get("path").is_some() {
-            "path"
-        } else if address.get("abstract").is_some() {
-            "abstract"
-        } else {
-            return Err(DbusError::invalid_address(
-                "unix address has no path or abstract",
-            ));
+        let kind = match address.get("path") {
+            Some(_) => "path",
+            None => match address.get("abstract") {
+                Some(_) => "abstract",
+                None => {
+                    return Err(DbusError::invalid_address(
+                        "unix address has no path or abstract",
+                    ));
+                }
+            },
         };
         let raw = address.get(kind).unwrap();
         if raw.is_empty() {
@@ -86,7 +88,7 @@ impl UnixTransport {
                 core::ptr::write_bytes(sun.sun_path.as_mut_ptr(), 0u8, 1);
                 core::ptr::copy_nonoverlapping(
                     bytes.as_ptr() as *const i8,
-                    sun.sun_path.as_mut_ptr().add(1) as *mut i8,
+                    sun.sun_path.as_mut_ptr().add(1),
                     bytes.len(),
                 );
             }
@@ -103,7 +105,7 @@ impl UnixTransport {
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     bytes.as_ptr() as *const i8,
-                    sun.sun_path.as_mut_ptr() as *mut i8,
+                    sun.sun_path.as_mut_ptr(),
                     bytes.len(),
                 );
             }
@@ -310,10 +312,10 @@ fn get_env(name: &str) -> Option<String> {
 /// Checks `DBUS_SYSTEM_BUS_ADDRESS` first, then falls back to
 /// the well-known socket paths.
 pub fn resolve_system_addresses() -> Vec<DbusAddress> {
-    if let Some(env) = get_env("DBUS_SYSTEM_BUS_ADDRESS") {
-        if let Ok(addresses) = DbusAddress::parse_all(&env) {
-            return addresses;
-        }
+    if let Some(env) = get_env("DBUS_SYSTEM_BUS_ADDRESS")
+        && let Ok(addresses) = DbusAddress::parse_all(&env)
+    {
+        return addresses;
     }
     [SYSTEM_BUS_SOCKET, SYSTEM_BUS_SOCKET_LEGACY]
         .iter()
@@ -326,10 +328,10 @@ pub fn resolve_system_addresses() -> Vec<DbusAddress> {
 /// Checks `DBUS_SESSION_BUS_ADDRESS` first, then falls back to
 /// `$XDG_RUNTIME_DIR/bus`.
 pub fn resolve_session_addresses() -> DbusResult<Vec<DbusAddress>> {
-    if let Some(env) = get_env("DBUS_SESSION_BUS_ADDRESS") {
-        if let Ok(addresses) = DbusAddress::parse_all(&env) {
-            return Ok(addresses);
-        }
+    if let Some(env) = get_env("DBUS_SESSION_BUS_ADDRESS")
+        && let Ok(addresses) = DbusAddress::parse_all(&env)
+    {
+        return Ok(addresses);
     }
     if let Some(runtime) = get_env("XDG_RUNTIME_DIR") {
         let path = alloc::format!("{runtime}/{SESSION_BUS_FILE}");

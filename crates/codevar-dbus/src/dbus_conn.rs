@@ -469,7 +469,7 @@ impl<T: DbusTransport> Connection<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dbus_message::{BodyWriter, DbusMessage};
+    use crate::dbus_message::DbusMessage;
     use core::time::Duration;
 
     struct MockTransport {
