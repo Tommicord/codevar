@@ -28,12 +28,6 @@ jobs:
       run: cargo fmt --all -- --check
     - name: Build
       run: cargo build --workspace --verbose
-    - name: Install cargo-llvm-cov
-      uses: taiki-e/install-action@cargo-llvm-cov
-    - name: Generate code coverage
-      run: cargo llvm-cov --workspace --all-targets --lcov --output-path lcov.info
-    - name: Upload coverage to GitHub PR summary
-      uses: mattallty/jest-github-action@v1
     - name: Run tests
       run: cargo test --workspace --verbose
     - name: Run clippy
