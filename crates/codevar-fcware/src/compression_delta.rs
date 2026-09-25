@@ -31,29 +31,13 @@ pub fn delta_encode(input: &[u8]) -> CompressorResult<Vec<u8>> {
     while index < rest.len() {
         // `rest[i]` == `input[i + 1]`; previous byte is `input[i]`.
         // SAFETY: `index < rest.len()` so `index + 1 < input.len()`.
-        let previous = unsafe {
-            *input
-                .as_ptr()
-                .add(index)
-        };
-        let current = unsafe {
-            *rest
-                .as_ptr()
-                .add(index)
-        };
+        let previous = unsafe { *input.as_ptr().add(index) };
+        let current = unsafe { *rest.as_ptr().add(index) };
         let difference = current.wrapping_sub(previous);
         let mut count = 1usize;
         while index + count < rest.len() {
-            let prior = unsafe {
-                *input
-                    .as_ptr()
-                    .add(index + count)
-            };
-            let next = unsafe {
-                *rest
-                    .as_ptr()
-                    .add(index + count)
-            };
+            let prior = unsafe { *input.as_ptr().add(index + count) };
+            let next = unsafe { *rest.as_ptr().add(index + count) };
             if next.wrapping_sub(prior) != difference {
                 break;
             }
@@ -81,9 +65,7 @@ pub fn delta_decode(frame: &[u8]) -> CompressorResult<Vec<u8>> {
     }
     // SAFETY: length >= 7.
     let expected = unsafe {
-        let p = frame
-            .as_ptr()
-            .add(3);
+        let p = frame.as_ptr().add(3);
         u32::from_be_bytes([*p, *p.add(1), *p.add(2), *p.add(3)]) as usize
     };
     if expected == 0 {
@@ -101,11 +83,7 @@ pub fn delta_decode(frame: &[u8]) -> CompressorResult<Vec<u8>> {
     let mut position = 8usize;
     while position < frame.len() {
         // SAFETY: `position < frame.len()`.
-        let marker = unsafe {
-            *frame
-                .as_ptr()
-                .add(position)
-        };
+        let marker = unsafe { *frame.as_ptr().add(position) };
         position += 1;
         let (difference, count) = if marker == 0 {
             let difference = *frame

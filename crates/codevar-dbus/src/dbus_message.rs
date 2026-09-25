@@ -152,97 +152,82 @@ impl BodyWriter {
     #[inline]
     #[must_use]
     pub fn position(&self) -> usize {
-        self.writer
-            .position()
+        self.writer.position()
     }
 
     /// Consumes the builder, returning the bytes and the signature.
     #[must_use]
     pub fn into_parts(self) -> (Vec<u8>, String) {
-        (
-            self.writer
-                .into_bytes(),
-            self.signature,
-        )
+        (self.writer.into_bytes(), self.signature)
     }
 
     #[inline]
     fn record(&mut self, code: u8) {
         if self.recording {
-            self.signature
-                .push(char::from(code));
+            self.signature.push(char::from(code));
         }
     }
 
     /// Appends a `BYTE` value.
     pub fn write_u8(&mut self, value: u8) -> DbusResult<()> {
         self.record(b'y');
-        self.writer
-            .write_u8(value);
+        self.writer.write_u8(value);
         Ok(())
     }
 
     /// Appends a `UINT16` value.
     pub fn write_u16(&mut self, value: u16) -> DbusResult<()> {
         self.record(b'q');
-        self.writer
-            .write_u16(value);
+        self.writer.write_u16(value);
         Ok(())
     }
 
     /// Appends a `UINT32` value.
     pub fn write_u32(&mut self, value: u32) -> DbusResult<()> {
         self.record(b'u');
-        self.writer
-            .write_u32(value);
+        self.writer.write_u32(value);
         Ok(())
     }
 
     /// Appends an `INT16` value.
     pub fn write_i16(&mut self, value: i16) -> DbusResult<()> {
         self.record(b'n');
-        self.writer
-            .write_i16(value);
+        self.writer.write_i16(value);
         Ok(())
     }
 
     /// Appends an `INT32` value.
     pub fn write_i32(&mut self, value: i32) -> DbusResult<()> {
         self.record(b'i');
-        self.writer
-            .write_i32(value);
+        self.writer.write_i32(value);
         Ok(())
     }
 
     /// Appends a `UINT64` value.
     pub fn write_u64(&mut self, value: u64) -> DbusResult<()> {
         self.record(b't');
-        self.writer
-            .write_u64(value);
+        self.writer.write_u64(value);
         Ok(())
     }
 
     /// Appends an `INT64` value.
     pub fn write_i64(&mut self, value: i64) -> DbusResult<()> {
         self.record(b'x');
-        self.writer
-            .write_i64(value);
+        self.writer.write_i64(value);
         Ok(())
     }
 
     /// Appends a `BOOLEAN` value.
     pub fn write_bool(&mut self, value: bool) -> DbusResult<()> {
         self.record(b'b');
-        self.writer
-            .write_bool(value);
+        self.writer.write_bool(value);
         Ok(())
     }
 
     /// Appends a `DOUBLE` value.
     pub fn write_f64(&mut self, value: f64) -> DbusResult<()> {
         self.record(b'd');
-        self.writer
-            .write_f64(value);
+        self.writer.write_f64(value);
         Ok(())
     }
 
@@ -253,8 +238,7 @@ impl BodyWriter {
     /// with [`DbusMessage::set_fds`].
     pub fn write_fd(&mut self, index: u32) -> DbusResult<()> {
         self.record(b'h');
-        self.writer
-            .write_fd(index);
+        self.writer.write_fd(index);
         Ok(())
     }
 
@@ -265,8 +249,7 @@ impl BodyWriter {
     /// Returns [`DbusError::InvalidMessage`] when `value` contains an
     /// embedded nul byte.
     pub fn write_str(&mut self, value: &str) -> DbusResult<()> {
-        self.writer
-            .write_str(value)?;
+        self.writer.write_str(value)?;
         self.record(b's');
         Ok(())
     }
@@ -278,8 +261,7 @@ impl BodyWriter {
     /// Returns [`DbusError::InvalidName`] when `path` is not a valid
     /// object path.
     pub fn write_object_path(&mut self, path: &str) -> DbusResult<()> {
-        self.writer
-            .write_object_path(path)?;
+        self.writer.write_object_path(path)?;
         self.record(b'o');
         Ok(())
     }
@@ -290,8 +272,7 @@ impl BodyWriter {
     ///
     /// Returns [`DbusError::InvalidSignature`] when `sig` is invalid.
     pub fn write_signature(&mut self, sig: &str) -> DbusResult<()> {
-        self.writer
-            .write_signature(sig)?;
+        self.writer.write_signature(sig)?;
         self.record(b'g');
         Ok(())
     }
@@ -316,38 +297,25 @@ impl BodyWriter {
         let alignment = type_alignment(code)
             .ok_or_else(|| DbusError::invalid_signature(alloc::format!("invalid type code: {code}")))?;
         if self.recording {
-            self.signature
-                .push('a');
-            self.signature
-                .push_str(element_sig);
+            self.signature.push('a');
+            self.signature.push_str(element_sig);
         }
-        self.writer
-            .align(8);
-        let length_pos = self
-            .writer
-            .position();
-        self.writer
-            .write_u32(0);
-        self.writer
-            .align(alignment);
-        let start = self
-            .writer
-            .position();
+        self.writer.align(8);
+        let length_pos = self.writer.position();
+        self.writer.write_u32(0);
+        self.writer.align(alignment);
+        let start = self.writer.position();
         let was_recording = core::mem::replace(&mut self.recording, false);
         let result = body(self);
         self.recording = was_recording;
         result?;
-        let length = self
-            .writer
-            .position()
-            .saturating_sub(start);
+        let length = self.writer.position().saturating_sub(start);
         if length > MAX_ARRAY_LEN {
             return Err(DbusError::invalid_message(alloc::format!(
                 "array of {length} bytes exceeds the limit of {MAX_ARRAY_LEN}"
             )));
         }
-        self.writer
-            .patch_u32(length_pos, length as u32)
+        self.writer.patch_u32(length_pos, length as u32)
     }
 
     /// Appends a struct whose field types are `fields_sig`.
@@ -368,15 +336,11 @@ impl BodyWriter {
         }
         validate_signature(fields_sig)?;
         if self.recording {
-            self.signature
-                .push('(');
-            self.signature
-                .push_str(fields_sig);
-            self.signature
-                .push(')');
+            self.signature.push('(');
+            self.signature.push_str(fields_sig);
+            self.signature.push(')');
         }
-        self.writer
-            .align(8);
+        self.writer.align(8);
         let was_recording = core::mem::replace(&mut self.recording, false);
         let result = body(self);
         self.recording = was_recording;
@@ -398,11 +362,9 @@ impl BodyWriter {
     {
         validate_single_type(sig)?;
         if self.recording {
-            self.signature
-                .push('v');
+            self.signature.push('v');
         }
-        self.writer
-            .write_signature(sig)?;
+        self.writer.write_signature(sig)?;
         let was_recording = core::mem::replace(&mut self.recording, false);
         let result = body(self);
         self.recording = was_recording;
@@ -611,32 +573,28 @@ impl DbusMessage {
     #[inline]
     #[must_use]
     pub fn path(&self) -> Option<&str> {
-        self.path
-            .as_deref()
+        self.path.as_deref()
     }
 
     /// Returns the interface, when present.
     #[inline]
     #[must_use]
     pub fn interface(&self) -> Option<&str> {
-        self.interface
-            .as_deref()
+        self.interface.as_deref()
     }
 
     /// Returns the member (method or signal name), when present.
     #[inline]
     #[must_use]
     pub fn member(&self) -> Option<&str> {
-        self.member
-            .as_deref()
+        self.member.as_deref()
     }
 
     /// Returns the error name, when present.
     #[inline]
     #[must_use]
     pub fn error_name(&self) -> Option<&str> {
-        self.error_name
-            .as_deref()
+        self.error_name.as_deref()
     }
 
     /// Returns the serial of the replied-to call, when present.
@@ -650,8 +608,7 @@ impl DbusMessage {
     #[inline]
     #[must_use]
     pub fn destination(&self) -> Option<&str> {
-        self.destination
-            .as_deref()
+        self.destination.as_deref()
     }
 
     /// Replaces the destination.
@@ -674,8 +631,7 @@ impl DbusMessage {
     #[inline]
     #[must_use]
     pub fn sender(&self) -> Option<&str> {
-        self.sender
-            .as_deref()
+        self.sender.as_deref()
     }
 
     /// Replaces the sender, which the connection sets to its unique
@@ -792,12 +748,8 @@ impl DbusMessage {
     /// message built with [`set_fds`](Self::set_fds) always announces
     /// the number of descriptors it actually carries.
     fn announced_fd_count(&self) -> u32 {
-        if !self
-            .fds
-            .is_empty()
-        {
-            self.fds
-                .len() as u32
+        if !self.fds.is_empty() {
+            self.fds.len() as u32
         } else {
             self.unix_fds
         }
@@ -807,12 +759,7 @@ impl DbusMessage {
         if self.serial == 0 {
             return Err(DbusError::invalid_state("message serial must not be zero"));
         }
-        if self
-            .signature
-            .as_bytes()
-            .contains(&b'h')
-            && self.announced_fd_count() == 0
-        {
+        if self.signature.as_bytes().contains(&b'h') && self.announced_fd_count() == 0 {
             return Err(DbusError::invalid_message(
                 "file descriptor argument without an announced UNIX_FDS header",
             ));
@@ -820,66 +767,35 @@ impl DbusMessage {
         validate_signature(&self.signature)?;
         match self.kind {
             MessageKind::MethodCall => {
-                if self
-                    .member
-                    .is_none()
-                {
+                if self.member.is_none() {
                     return Err(DbusError::invalid_state("method call needs a member"));
                 }
             }
             MessageKind::Signal => {
-                if self
-                    .path
-                    .is_none()
-                    || self
-                        .member
-                        .is_none()
-                {
+                if self.path.is_none() || self.member.is_none() {
                     return Err(DbusError::invalid_state("signal needs a path and a member"));
                 }
             }
             MessageKind::MethodReturn => {
-                if self
-                    .reply_serial
-                    .is_none()
-                {
+                if self.reply_serial.is_none() {
                     return Err(DbusError::invalid_state("reply needs a reply serial"));
                 }
             }
             MessageKind::Error => {
-                if self
-                    .reply_serial
-                    .is_none()
-                    || self
-                        .error_name
-                        .is_none()
-                {
+                if self.reply_serial.is_none() || self.error_name.is_none() {
                     return Err(DbusError::invalid_state(
                         "error reply needs a reply serial and an error name",
                     ));
                 }
             }
         }
-        if self
-            .body
-            .is_empty()
-            != self
-                .signature
-                .is_empty()
-        {
+        if self.body.is_empty() != self.signature.is_empty() {
             return Err(DbusError::invalid_message(
                 "body length does not match the signature",
             ));
         }
-        if self
-            .body
-            .len()
-            > MAX_MESSAGE_LEN
-        {
-            return Err(DbusError::MessageTooBig(
-                self.body
-                    .len(),
-            ));
+        if self.body.len() > MAX_MESSAGE_LEN {
+            return Err(DbusError::MessageTooBig(self.body.len()));
         }
         Ok(())
     }
@@ -901,18 +817,10 @@ impl DbusMessage {
     /// [`MAX_MESSAGE_LEN`].
     pub fn encode(&self) -> DbusResult<Vec<u8>> {
         self.validate_for_encode()?;
-        let body_len = self
-            .body
-            .len();
+        let body_len = self.body.len();
         let mut writer = DbusWriter::with_capacity(self.order, body_len + 64);
-        writer.write_u8(
-            self.order
-                .marker(),
-        );
-        writer.write_u8(
-            self.kind
-                .as_u8(),
-        );
+        writer.write_u8(self.order.marker());
+        writer.write_u8(self.kind.as_u8());
         writer.write_u8(self.flags);
         writer.write_u8(PROTOCOL_VERSION);
         writer.write_u32(body_len as u32);
@@ -961,13 +869,8 @@ impl DbusMessage {
             let sender = sender.clone();
             write_field(&mut writer, FIELD_SENDER, "s", |writer| writer.write_str(&sender))?;
         }
-        if !self
-            .signature
-            .is_empty()
-        {
-            let signature = self
-                .signature
-                .clone();
+        if !self.signature.is_empty() {
+            let signature = self.signature.clone();
             write_field(&mut writer, FIELD_SIGNATURE, "g", |writer| {
                 writer.write_signature(&signature)
             })?;
@@ -980,9 +883,7 @@ impl DbusMessage {
             })?;
         }
 
-        let fields_len = writer
-            .position()
-            .saturating_sub(fields_start);
+        let fields_len = writer.position().saturating_sub(fields_start);
         if fields_len > MAX_ARRAY_LEN {
             return Err(DbusError::MessageTooBig(fields_len));
         }
@@ -1025,10 +926,7 @@ impl DbusMessage {
     /// missing required fields, `h` arguments without an announced
     /// descriptor count or inconsistent bodies.
     pub fn decode(bytes: &[u8]) -> DbusResult<Self> {
-        let marker = bytes
-            .first()
-            .copied()
-            .ok_or_else(truncated)?;
+        let marker = bytes.first().copied().ok_or_else(truncated)?;
         let order = ByteOrder::from_marker(marker)
             .ok_or_else(|| DbusError::invalid_message("invalid endianness marker"))?;
         let mut reader = DbusReader::new(bytes, order);
@@ -1073,17 +971,11 @@ impl DbusMessage {
             match code {
                 FIELD_PATH => {
                     expect_signature(sig, b'o', code)?;
-                    message.path = Some(
-                        fields
-                            .read_object_path()?
-                            .to_string(),
-                    );
+                    message.path = Some(fields.read_object_path()?.to_string());
                 }
                 FIELD_INTERFACE => {
                     expect_signature(sig, b's', code)?;
-                    let value = fields
-                        .read_str()?
-                        .to_string();
+                    let value = fields.read_str()?.to_string();
                     if !is_valid_interface_name(&value) {
                         return Err(DbusError::invalid_name(alloc::format!(
                             "invalid interface in header: {value}"
@@ -1093,9 +985,7 @@ impl DbusMessage {
                 }
                 FIELD_MEMBER => {
                     expect_signature(sig, b's', code)?;
-                    let value = fields
-                        .read_str()?
-                        .to_string();
+                    let value = fields.read_str()?.to_string();
                     if !is_valid_member(&value) {
                         return Err(DbusError::invalid_name(alloc::format!(
                             "invalid member in header: {value}"
@@ -1105,9 +995,7 @@ impl DbusMessage {
                 }
                 FIELD_ERROR_NAME => {
                     expect_signature(sig, b's', code)?;
-                    let value = fields
-                        .read_str()?
-                        .to_string();
+                    let value = fields.read_str()?.to_string();
                     if !is_valid_error_name(&value) {
                         return Err(DbusError::invalid_name(alloc::format!(
                             "invalid error name in header: {value}"
@@ -1125,9 +1013,7 @@ impl DbusMessage {
                 }
                 FIELD_DESTINATION => {
                     expect_signature(sig, b's', code)?;
-                    let value = fields
-                        .read_str()?
-                        .to_string();
+                    let value = fields.read_str()?.to_string();
                     if !is_valid_bus_name(&value) {
                         return Err(DbusError::invalid_name(alloc::format!(
                             "invalid destination in header: {value}"
@@ -1137,9 +1023,7 @@ impl DbusMessage {
                 }
                 FIELD_SENDER => {
                     expect_signature(sig, b's', code)?;
-                    let value = fields
-                        .read_str()?
-                        .to_string();
+                    let value = fields.read_str()?.to_string();
                     if !is_valid_bus_name(&value) {
                         return Err(DbusError::invalid_name(alloc::format!(
                             "invalid sender in header: {value}"
@@ -1149,9 +1033,7 @@ impl DbusMessage {
                 }
                 FIELD_SIGNATURE => {
                     expect_signature(sig, b'g', code)?;
-                    message.signature = fields
-                        .read_signature()?
-                        .to_string();
+                    message.signature = fields.read_signature()?.to_string();
                 }
                 FIELD_UNIX_FDS => {
                     expect_signature(sig, b'u', code)?;
@@ -1162,9 +1044,7 @@ impl DbusMessage {
         }
 
         reader.align(8)?;
-        message.body = reader
-            .read_bytes(body_len)?
-            .to_vec();
+        message.body = reader.read_bytes(body_len)?.to_vec();
         if !reader.is_empty() {
             return Err(DbusError::invalid_message("trailing bytes after the message"));
         }
@@ -1209,63 +1089,34 @@ where
 fn validate_decode(message: &DbusMessage) -> DbusResult<()> {
     match message.kind {
         MessageKind::MethodCall => {
-            if message
-                .member
-                .is_none()
-            {
+            if message.member.is_none() {
                 return Err(DbusError::invalid_message("method call without a member"));
             }
         }
         MessageKind::Signal => {
-            if message
-                .path
-                .is_none()
-                || message
-                    .member
-                    .is_none()
-            {
+            if message.path.is_none() || message.member.is_none() {
                 return Err(DbusError::invalid_message("signal without a path or member"));
             }
         }
         MessageKind::MethodReturn => {
-            if message
-                .reply_serial
-                .is_none()
-            {
+            if message.reply_serial.is_none() {
                 return Err(DbusError::invalid_message("reply without a reply serial"));
             }
         }
         MessageKind::Error => {
-            if message
-                .reply_serial
-                .is_none()
-                || message
-                    .error_name
-                    .is_none()
-            {
+            if message.reply_serial.is_none() || message.error_name.is_none() {
                 return Err(DbusError::invalid_message(
                     "error reply without a reply serial or error name",
                 ));
             }
         }
     }
-    if message
-        .body
-        .is_empty()
-        != message
-            .signature
-            .is_empty()
-    {
+    if message.body.is_empty() != message.signature.is_empty() {
         return Err(DbusError::invalid_message(
             "body length does not match the signature",
         ));
     }
-    if message
-        .signature
-        .as_bytes()
-        .contains(&b'h')
-        && message.unix_fds == 0
-    {
+    if message.signature.as_bytes().contains(&b'h') && message.unix_fds == 0 {
         return Err(DbusError::invalid_message(
             "file descriptor argument without an announced UNIX_FDS header",
         ));
@@ -1382,8 +1233,7 @@ impl DbusMessageStream {
     /// empty descriptor list; use `feed_with_fds` whenever the read
     /// that produced `data` also carried descriptors.
     pub fn feed(&mut self, data: &[u8]) {
-        self.buffer
-            .extend_from_slice(data);
+        self.buffer.extend_from_slice(data);
     }
 
     /// Queues `fds` and then appends `data` read from the transport.
@@ -1397,18 +1247,15 @@ impl DbusMessageStream {
     /// belong to the application (see [`DbusMessage`] for the
     /// ownership rules).
     pub fn feed_with_fds(&mut self, data: &[u8], fds: Vec<i32>) {
-        self.pending_fds
-            .extend(fds);
-        self.buffer
-            .extend_from_slice(data);
+        self.pending_fds.extend(fds);
+        self.buffer.extend_from_slice(data);
     }
 
     /// Returns the number of buffered bytes.
     #[inline]
     #[must_use]
     pub fn buffered(&self) -> usize {
-        self.buffer
-            .len()
+        self.buffer.len()
     }
 
     /// Returns the number of descriptors queued but not yet attached
@@ -1416,15 +1263,13 @@ impl DbusMessageStream {
     #[inline]
     #[must_use]
     pub fn pending_fds(&self) -> usize {
-        self.pending_fds
-            .len()
+        self.pending_fds.len()
     }
 
     /// Drops all buffered bytes and closes queued descriptors that
     /// never reached a message.
     pub fn clear(&mut self) {
-        self.buffer
-            .clear();
+        self.buffer.clear();
         close_fds(core::mem::take(&mut self.pending_fds));
     }
 
@@ -1444,11 +1289,7 @@ impl DbusMessageStream {
     /// connection.
     pub fn next_message(&mut self) -> DbusResult<Option<DbusMessage>> {
         loop {
-            if self
-                .buffer
-                .len()
-                < FIXED_HEADER_LEN
-            {
+            if self.buffer.len() < FIXED_HEADER_LEN {
                 return Ok(None);
             }
             let marker = self.buffer[0];
@@ -1468,11 +1309,7 @@ impl DbusMessageStream {
             if body_len > MAX_MESSAGE_LEN {
                 return Err(DbusError::MessageTooBig(body_len));
             }
-            if self
-                .buffer
-                .len()
-                < 20
-            {
+            if self.buffer.len() < 20 {
                 return Ok(None);
             }
             let fields_len = read_u32_at(&self.buffer, 16, order)? as usize;
@@ -1492,11 +1329,7 @@ impl DbusMessageStream {
             if total > MAX_MESSAGE_LEN {
                 return Err(DbusError::MessageTooBig(total));
             }
-            if self
-                .buffer
-                .len()
-                < total
-            {
+            if self.buffer.len() < total {
                 return Ok(None);
             }
             let decoded = if MessageKind::from_u8(self.buffer[1]).is_some() {
@@ -1506,28 +1339,19 @@ impl DbusMessageStream {
             };
             if let Some(Ok(ref message)) = decoded {
                 let needed = message.unix_fds() as usize;
-                if self
-                    .pending_fds
-                    .len()
-                    < needed
-                {
+                if self.pending_fds.len() < needed {
                     return Err(DbusError::invalid_message(alloc::format!(
                         "message announces {needed} file descriptors but only {} are queued",
-                        self.pending_fds
-                            .len()
+                        self.pending_fds.len()
                     )));
                 }
             }
-            self.buffer
-                .drain(..total);
+            self.buffer.drain(..total);
             if let Some(result) = decoded {
                 let mut message = result?;
                 let needed = message.unix_fds() as usize;
                 if needed > 0 {
-                    let fds = self
-                        .pending_fds
-                        .drain(..needed)
-                        .collect();
+                    let fds = self.pending_fds.drain(..needed).collect();
                     message.set_fds(fds);
                 }
                 return Ok(Some(message));
@@ -1562,12 +1386,8 @@ mod tests {
     #[test]
     fn encodes_hello_call_with_golden_bytes() {
         let mut message = hello_call();
-        message
-            .set_serial(1)
-            .unwrap();
-        let bytes = message
-            .encode()
-            .unwrap();
+        message.set_serial(1).unwrap();
+        let bytes = message.encode().unwrap();
         let expected = vec![
             // Fixed header: 'l', METHOD_CALL, flags 0, version 1.
             0x6c, 0x01, 0x00, 0x01, // body length 0.
@@ -1599,8 +1419,7 @@ mod tests {
     #[test]
     fn round_trips_every_message_kind() {
         let mut call = hello_call();
-        call.set_serial(7)
-            .unwrap();
+        call.set_serial(7).unwrap();
         call.set_no_reply_expected();
         call.build_body(|body| {
             body.write_str("codevar")?;
@@ -1608,9 +1427,7 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        let bytes = call
-            .encode()
-            .unwrap();
+        let bytes = call.encode().unwrap();
         let decoded = DbusMessage::decode(&bytes).unwrap();
         assert_eq!(decoded.kind(), MessageKind::MethodCall);
         assert_eq!(decoded.serial(), 7);
@@ -1621,72 +1438,37 @@ mod tests {
         assert_eq!(decoded.signature(), "su");
         assert!(!decoded.is_reply_expected());
         let mut reader = decoded.body_reader();
-        assert_eq!(
-            reader
-                .read_str()
-                .unwrap(),
-            "codevar"
-        );
-        assert_eq!(
-            reader
-                .read_u32()
-                .unwrap(),
-            42
-        );
+        assert_eq!(reader.read_str().unwrap(), "codevar");
+        assert_eq!(reader.read_u32().unwrap(), 42);
 
         let mut reply = DbusMessage::method_return(7);
-        reply
-            .set_serial(9)
-            .unwrap();
+        reply.set_serial(9).unwrap();
         reply
             .build_body(|body| body.write_bool(true))
             .unwrap();
-        let decoded = DbusMessage::decode(
-            &reply
-                .encode()
-                .unwrap(),
-        )
-        .unwrap();
+        let decoded = DbusMessage::decode(&reply.encode().unwrap()).unwrap();
         assert_eq!(decoded.kind(), MessageKind::MethodReturn);
         assert_eq!(decoded.reply_serial(), Some(7));
         assert_eq!(decoded.signature(), "b");
 
         let mut error = DbusMessage::error(7, "org.freedesktop.DBus.Error.Failed").unwrap();
-        error
-            .set_serial(10)
-            .unwrap();
+        error.set_serial(10).unwrap();
         error
             .build_body(|body| body.write_str("boom"))
             .unwrap();
-        let decoded = DbusMessage::decode(
-            &error
-                .encode()
-                .unwrap(),
-        )
-        .unwrap();
+        let decoded = DbusMessage::decode(&error.encode().unwrap()).unwrap();
         assert_eq!(decoded.kind(), MessageKind::Error);
         assert_eq!(decoded.error_name(), Some("org.freedesktop.DBus.Error.Failed"));
         assert_eq!(decoded.reply_serial(), Some(7));
 
         let mut signal = DbusMessage::signal("/org/example", "org.example.Interface", "Changed").unwrap();
-        signal
-            .set_serial(11)
-            .unwrap();
-        let decoded = DbusMessage::decode(
-            &signal
-                .encode()
-                .unwrap(),
-        )
-        .unwrap();
+        signal.set_serial(11).unwrap();
+        let decoded = DbusMessage::decode(&signal.encode().unwrap()).unwrap();
         assert_eq!(decoded.kind(), MessageKind::Signal);
         assert_eq!(decoded.path(), Some("/org/example"));
         assert_eq!(decoded.member(), Some("Changed"));
         assert_eq!(decoded.signature(), "");
-        assert!(
-            decoded
-                .body()
-                .is_empty()
-        );
+        assert!(decoded.body().is_empty());
     }
 
     #[test]
@@ -1694,9 +1476,7 @@ mod tests {
         let mut message =
             DbusMessage::method_call("org.example.Service", "/org/example", "org.example.Iface", "Send")
                 .unwrap();
-        message
-            .set_serial(3)
-            .unwrap();
+        message.set_serial(3).unwrap();
         message
             .build_body(|body| {
                 body.write_i64(-5)?;
@@ -1719,100 +1499,40 @@ mod tests {
             .unwrap();
         assert_eq!(message.signature(), "xas(iu)v");
 
-        let bytes = message
-            .encode()
-            .unwrap();
+        let bytes = message.encode().unwrap();
         let decoded = DbusMessage::decode(&bytes).unwrap();
         assert_eq!(decoded.signature(), message.signature());
         let mut reader = decoded.body_reader();
-        assert_eq!(
-            reader
-                .read_i64()
-                .unwrap(),
-            -5
-        );
-        let mut array = reader
-            .read_array(4)
-            .unwrap();
-        assert_eq!(
-            array
-                .read_str()
-                .unwrap(),
-            "alpha"
-        );
-        assert_eq!(
-            array
-                .read_str()
-                .unwrap(),
-            "beta"
-        );
-        reader
-            .read_struct()
-            .unwrap();
-        assert_eq!(
-            reader
-                .read_u8()
-                .unwrap(),
-            9
-        );
-        assert_eq!(
-            reader
-                .read_u32()
-                .unwrap(),
-            1000
-        );
-        assert_eq!(
-            reader
-                .read_variant_signature()
-                .unwrap(),
-            "d"
-        );
-        assert_eq!(
-            reader
-                .read_f64()
-                .unwrap(),
-            2.5
-        );
+        assert_eq!(reader.read_i64().unwrap(), -5);
+        let mut array = reader.read_array(4).unwrap();
+        assert_eq!(array.read_str().unwrap(), "alpha");
+        assert_eq!(array.read_str().unwrap(), "beta");
+        reader.read_struct().unwrap();
+        assert_eq!(reader.read_u8().unwrap(), 9);
+        assert_eq!(reader.read_u32().unwrap(), 1000);
+        assert_eq!(reader.read_variant_signature().unwrap(), "d");
+        assert_eq!(reader.read_f64().unwrap(), 2.5);
     }
 
     #[test]
     fn rejects_missing_required_fields() {
         let mut call = DbusMessage::method_call("a.b", "/x", "a.b.C", "Go").unwrap();
-        call.set_serial(1)
-            .unwrap();
+        call.set_serial(1).unwrap();
         call.member = None;
-        assert!(
-            call.encode()
-                .is_err()
-        );
+        assert!(call.encode().is_err());
 
         let mut reply = DbusMessage::method_return(5);
-        reply
-            .set_serial(2)
-            .unwrap();
+        reply.set_serial(2).unwrap();
         reply.reply_serial = None;
-        assert!(
-            reply
-                .encode()
-                .is_err()
-        );
+        assert!(reply.encode().is_err());
 
         let mut signal = DbusMessage::signal("/x", "a.b.C", "Ping").unwrap();
-        signal
-            .set_serial(3)
-            .unwrap();
+        signal.set_serial(3).unwrap();
         signal.path = None;
-        assert!(
-            signal
-                .encode()
-                .is_err()
-        );
+        assert!(signal.encode().is_err());
 
         let call = hello_call();
-        assert!(
-            call.encode()
-                .is_err()
-        );
+        assert!(call.encode().is_err());
         assert_eq!(
             call.encode(),
             Err(DbusError::InvalidState(String::from(
@@ -1824,8 +1544,7 @@ mod tests {
     #[test]
     fn rejects_fd_arguments_without_an_announced_count() {
         let mut call = hello_call();
-        call.set_serial(1)
-            .unwrap();
+        call.set_serial(1).unwrap();
         call.signature = String::from("h");
         call.body = vec![0, 0, 0, 0];
         // Without a UNIX_FDS header the `h` index resolves nowhere.
@@ -1871,8 +1590,7 @@ mod tests {
     #[test]
     fn round_trips_the_unix_fds_header_and_body_index() {
         let mut call = hello_call();
-        call.set_serial(1)
-            .unwrap();
+        call.set_serial(1).unwrap();
         call.build_body(|body| {
             body.write_fd(0)?;
             body.write_str("payload")
@@ -1886,27 +1604,15 @@ mod tests {
         assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
         call.set_fds(vec![pipe[0]]);
 
-        let bytes = call
-            .encode()
-            .unwrap();
+        let bytes = call.encode().unwrap();
         // The header announces the count even though the descriptors
         // themselves travel out of band.
         let decoded = DbusMessage::decode(&bytes).unwrap();
         assert_eq!(decoded.unix_fds(), 1);
         assert_eq!(decoded.fds(), &[] as &[i32]);
         let mut reader = decoded.body_reader();
-        assert_eq!(
-            reader
-                .read_fd()
-                .unwrap(),
-            0
-        );
-        assert_eq!(
-            reader
-                .read_str()
-                .unwrap(),
-            "payload"
-        );
+        assert_eq!(reader.read_fd().unwrap(), 0);
+        assert_eq!(reader.read_str().unwrap(), "payload");
 
         // The original message still owns its descriptor and closes
         // it when it goes out of scope.
@@ -1925,29 +1631,19 @@ mod tests {
         // when messages are dropped, so no foreign descriptor can be
         // closed by accident.
         let mut first = hello_call();
-        first
-            .set_serial(1)
-            .unwrap();
-        first
-            .build_body(|body| body.write_fd(0))
-            .unwrap();
+        first.set_serial(1).unwrap();
+        first.build_body(|body| body.write_fd(0)).unwrap();
         first.set_fds(vec![-1]);
-        let first_bytes = first
-            .encode()
-            .unwrap();
+        let first_bytes = first.encode().unwrap();
         let first_fds = first.take_fds();
 
         let mut second = DbusMessage::signal("/a", "b.C", "Two").unwrap();
-        second
-            .set_serial(2)
-            .unwrap();
+        second.set_serial(2).unwrap();
         second
             .build_body(|body| body.write_fd(0))
             .unwrap();
         second.set_fds(vec![-2, -3]);
-        let second_bytes = second
-            .encode()
-            .unwrap();
+        let second_bytes = second.encode().unwrap();
         let second_fds = second.take_fds();
 
         let mut stream = DbusMessageStream::new();
@@ -1956,49 +1652,33 @@ mod tests {
         assert_eq!(stream.pending_fds(), 3);
 
         // Justified: both messages were encoded completely.
-        let decoded_first = stream
-            .next_message()
-            .unwrap()
-            .unwrap();
+        let decoded_first = stream.next_message().unwrap().unwrap();
         assert_eq!(decoded_first.member(), Some("Hello"));
         assert_eq!(decoded_first.fds(), &[-1]);
-        let decoded_second = stream
-            .next_message()
-            .unwrap()
-            .unwrap();
+        let decoded_second = stream.next_message().unwrap().unwrap();
         assert_eq!(decoded_second.member(), Some("Two"));
         assert_eq!(decoded_second.fds(), &[-2, -3]);
         assert_eq!(stream.pending_fds(), 0);
-        assert_eq!(
-            stream
-                .next_message()
-                .unwrap(),
-            None
-        );
+        assert_eq!(stream.next_message().unwrap(), None);
     }
 
     #[test]
     fn stream_reports_missing_fds_without_consuming_the_message() {
         // Placeholder descriptor numbers, see the test above.
         let mut call = hello_call();
-        call.set_serial(1)
-            .unwrap();
+        call.set_serial(1).unwrap();
         call.build_body(|body| {
             body.write_fd(0)?;
             body.write_fd(1)
         })
         .unwrap();
         call.set_fds(vec![-1, -2]);
-        let bytes = call
-            .encode()
-            .unwrap();
+        let bytes = call.encode().unwrap();
         let fds = call.take_fds();
 
         let mut stream = DbusMessageStream::new();
         stream.feed_with_fds(&bytes, fds[..1].to_vec());
-        let error = stream
-            .next_message()
-            .unwrap_err();
+        let error = stream.next_message().unwrap_err();
         assert!(matches!(error, DbusError::InvalidMessage(_)));
         // The bytes are kept, so supplying the missing descriptor
         // lets the caller recover.
@@ -2007,10 +1687,7 @@ mod tests {
 
         stream.feed_with_fds(&[], fds[1..].to_vec());
         // Justified: both descriptors are queued now.
-        let message = stream
-            .next_message()
-            .unwrap()
-            .unwrap();
+        let message = stream.next_message().unwrap().unwrap();
         assert_eq!(message.fds(), &[-1, -2]);
     }
 
@@ -2037,13 +1714,9 @@ mod tests {
     #[test]
     fn rejects_body_signature_mismatch() {
         let mut call = hello_call();
-        call.set_serial(1)
-            .unwrap();
+        call.set_serial(1).unwrap();
         call.signature = String::from("s");
-        assert!(
-            call.encode()
-                .is_err()
-        );
+        assert!(call.encode().is_err());
     }
 
     #[test]
@@ -2083,111 +1756,54 @@ mod tests {
         assert_eq!(decoded.kind(), MessageKind::MethodReturn);
         assert_eq!(decoded.reply_serial(), Some(4));
         assert_eq!(decoded.signature(), "u");
-        assert_eq!(
-            decoded
-                .body_reader()
-                .read_u32()
-                .unwrap(),
-            0x1122_3344
-        );
+        assert_eq!(decoded.body_reader().read_u32().unwrap(), 0x1122_3344);
     }
 
     #[test]
     fn stream_returns_none_until_complete() {
         let mut message = hello_call();
-        message
-            .set_serial(1)
-            .unwrap();
-        let bytes = message
-            .encode()
-            .unwrap();
+        message.set_serial(1).unwrap();
+        let bytes = message.encode().unwrap();
 
         let mut stream = DbusMessageStream::new();
         stream.feed(&bytes[..5]);
-        assert_eq!(
-            stream
-                .next_message()
-                .unwrap(),
-            None
-        );
+        assert_eq!(stream.next_message().unwrap(), None);
         stream.feed(&bytes[5..19]);
-        assert_eq!(
-            stream
-                .next_message()
-                .unwrap(),
-            None
-        );
+        assert_eq!(stream.next_message().unwrap(), None);
         stream.feed(&bytes[19..]);
-        let decoded = stream
-            .next_message()
-            .unwrap();
+        let decoded = stream.next_message().unwrap();
         assert!(decoded.is_some());
-        assert_eq!(
-            stream
-                .next_message()
-                .unwrap(),
-            None
-        );
+        assert_eq!(stream.next_message().unwrap(), None);
         assert_eq!(stream.buffered(), 0);
     }
 
     #[test]
     fn stream_decodes_back_to_back_messages() {
         let mut first = hello_call();
-        first
-            .set_serial(1)
-            .unwrap();
+        first.set_serial(1).unwrap();
         let mut second = DbusMessage::signal("/a", "b.C", "Ping").unwrap();
-        second
-            .set_serial(2)
-            .unwrap();
-        let mut data = first
-            .encode()
-            .unwrap();
-        data.extend_from_slice(
-            &second
-                .encode()
-                .unwrap(),
-        );
+        second.set_serial(2).unwrap();
+        let mut data = first.encode().unwrap();
+        data.extend_from_slice(&second.encode().unwrap());
 
         let mut stream = DbusMessageStream::new();
         stream.feed(&data);
-        let first_decoded = stream
-            .next_message()
-            .unwrap()
-            .unwrap();
+        let first_decoded = stream.next_message().unwrap().unwrap();
         assert_eq!(first_decoded.member(), Some("Hello"));
-        let second_decoded = stream
-            .next_message()
-            .unwrap()
-            .unwrap();
+        let second_decoded = stream.next_message().unwrap().unwrap();
         assert_eq!(second_decoded.kind(), MessageKind::Signal);
-        assert_eq!(
-            stream
-                .next_message()
-                .unwrap(),
-            None
-        );
+        assert_eq!(stream.next_message().unwrap(), None);
     }
 
     #[test]
     fn stream_skips_unknown_message_types() {
         let mut message = hello_call();
-        message
-            .set_serial(1)
-            .unwrap();
-        let mut bytes = message
-            .encode()
-            .unwrap();
+        message.set_serial(1).unwrap();
+        let mut bytes = message.encode().unwrap();
         bytes[1] = 9;
         let mut stream = DbusMessageStream::new();
         stream.feed(&bytes);
-        assert_eq!(
-            stream
-                .next_message()
-                .unwrap(),
-            None
-        );
+        assert_eq!(stream.next_message().unwrap(), None);
         assert_eq!(stream.buffered(), 0);
     }
 
@@ -2195,27 +1811,15 @@ mod tests {
     fn stream_rejects_broken_framing() {
         let mut stream = DbusMessageStream::new();
         stream.feed(&[0x78, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0]);
-        assert!(
-            stream
-                .next_message()
-                .is_err()
-        );
+        assert!(stream.next_message().is_err());
 
         let mut stream = DbusMessageStream::new();
         stream.feed(&[0x6c, 1, 0, 2, 0, 0, 0, 0, 1, 0, 0, 0]);
-        assert!(
-            stream
-                .next_message()
-                .is_err()
-        );
+        assert!(stream.next_message().is_err());
 
         let mut stream = DbusMessageStream::new();
         stream.feed(&[0x6c, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
-        assert!(
-            stream
-                .next_message()
-                .is_err()
-        );
+        assert!(stream.next_message().is_err());
 
         // A body beyond the size limit is reported without consuming.
         let mut stream = DbusMessageStream::new();
@@ -2285,35 +1889,20 @@ mod tests {
         assert_eq!(message.signature(), "a{sv}");
 
         let mut reader = message.body_reader();
-        let mut dict = reader
-            .read_array(8)
-            .unwrap();
+        let mut dict = reader.read_array(8).unwrap();
         let mut seen = 0;
         while dict.remaining() > 0 {
-            dict.read_struct()
-                .unwrap();
-            let key = dict
-                .read_str()
-                .unwrap();
-            let sig = dict
-                .read_variant_signature()
-                .unwrap();
+            dict.read_struct().unwrap();
+            let key = dict.read_str().unwrap();
+            let sig = dict.read_variant_signature().unwrap();
             match sig {
                 "s" => {
                     assert_eq!(key, "token");
-                    assert_eq!(
-                        dict.read_str()
-                            .unwrap(),
-                        "abc123"
-                    );
+                    assert_eq!(dict.read_str().unwrap(), "abc123");
                 }
                 "u" => {
                     assert_eq!(key, "count");
-                    assert_eq!(
-                        dict.read_u32()
-                            .unwrap(),
-                        7
-                    );
+                    assert_eq!(dict.read_u32().unwrap(), 7);
                 }
                 other => panic!("unexpected variant signature {other}"),
             }

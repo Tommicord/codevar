@@ -158,19 +158,17 @@ impl<T: WlTransport> WlClientDisplay<T> {
             protocol_error: None,
         };
         let serial = display.alloc_serial();
-        display
-            .proxies
-            .insert_at(
-                DISPLAY_PROXY_ID,
-                WlProxy {
-                    id: DISPLAY_PROXY_ID,
-                    interface: &DISPLAY_INTERFACE,
-                    version: DISPLAY_INTERFACE.version,
-                    serial,
-                    id_deleted: false,
-                    listener: None,
-                },
-            )?;
+        display.proxies.insert_at(
+            DISPLAY_PROXY_ID,
+            WlProxy {
+                id: DISPLAY_PROXY_ID,
+                interface: &DISPLAY_INTERFACE,
+                version: DISPLAY_INTERFACE.version,
+                serial,
+                id_deleted: false,
+                listener: None,
+            },
+        )?;
         Ok(display)
     }
 
@@ -197,34 +195,25 @@ impl<T: WlTransport> WlClientDisplay<T> {
     /// Returns the protocol error reported by the compositor, if any.
     #[must_use]
     pub fn protocol_error(&self) -> Option<&WlProtocolError> {
-        self.protocol_error
-            .as_ref()
+        self.protocol_error.as_ref()
     }
 
     /// Returns the number of events waiting to be dispatched.
     #[must_use]
     pub fn pending_events(&self) -> usize {
-        self.display_queue
-            .len()
-            + self
-                .default_queue
-                .len()
+        self.display_queue.len() + self.default_queue.len()
     }
 
     /// Returns `true` while `id` refers to a live proxy.
     #[must_use]
     pub fn is_alive(&self, id: WlProxyId) -> bool {
-        self.proxies
-            .lookup(id.0)
-            .is_some()
+        self.proxies.lookup(id.0).is_some()
     }
 
     /// Returns the interface of the proxy behind `id`.
     #[must_use]
     pub fn proxy_interface(&self, id: WlProxyId) -> Option<&'static WlInterface> {
-        self.proxies
-            .lookup(id.0)
-            .map(WlProxy::interface)
+        self.proxies.lookup(id.0).map(WlProxy::interface)
     }
 
     /// Returns the version of the proxy behind `id`.
@@ -250,8 +239,7 @@ impl<T: WlTransport> WlClientDisplay<T> {
             &DISPLAY_INTERFACE.requests[DISPLAY_GET_REGISTRY as usize],
             args,
         ) {
-            self.proxies
-                .remove(id);
+            self.proxies.remove(id);
             return Err(error);
         }
         Ok(WlProxyId(id))
@@ -272,8 +260,7 @@ impl<T: WlTransport> WlClientDisplay<T> {
             &DISPLAY_INTERFACE.requests[DISPLAY_SYNC as usize],
             args,
         ) {
-            self.proxies
-                .remove(id);
+            self.proxies.remove(id);
             return Err(error);
         }
         Ok(WlProxyId(id))
@@ -311,8 +298,7 @@ impl<T: WlTransport> WlClientDisplay<T> {
             &REGISTRY_INTERFACE.requests[REGISTRY_BIND as usize],
             args,
         ) {
-            self.proxies
-                .remove(id);
+            self.proxies.remove(id);
             return Err(error);
         }
         Ok(WlProxyId(id))
@@ -341,10 +327,7 @@ impl<T: WlTransport> WlClientDisplay<T> {
             .proxies
             .lookup_mut(id.0)
             .ok_or(WlError::InvalidObject(id.0))?;
-        if proxy
-            .listener
-            .is_some()
-        {
+        if proxy.listener.is_some() {
             return Err(WlError::invalid_state("proxy already has a listener"));
         }
         proxy.listener = Some(Box::new(listener));
@@ -429,19 +412,14 @@ impl<T: WlTransport> WlClientDisplay<T> {
         let (interface, id_deleted) = (proxy.interface, proxy.id_deleted);
         if id.0 < SERVER_ID_START {
             if id_deleted {
-                if !self
-                    .proxies
-                    .remove(id.0)
-                {
+                if !self.proxies.remove(id.0) {
                     return Err(WlError::InvalidObject(id.0));
                 }
             } else {
-                self.proxies
-                    .make_zombie(id.0, interface)?;
+                self.proxies.make_zombie(id.0, interface)?;
             }
         } else {
-            self.proxies
-                .vacate_at(id.0)?;
+            self.proxies.vacate_at(id.0)?;
         }
         Ok(())
     }
@@ -454,13 +432,8 @@ impl<T: WlTransport> WlClientDisplay<T> {
     /// part of the buffer and [`WlError::Disconnected`] when the peer is
     /// gone.
     pub fn flush(&mut self) -> WlResult<usize> {
-        let written = self
-            .connection
-            .flush()?;
-        if self
-            .connection
-            .wants_write()
-        {
+        let written = self.connection.flush()?;
+        if self.connection.wants_write() {
             Err(WlError::WouldBlock)
         } else {
             Ok(written)
@@ -488,9 +461,7 @@ impl<T: WlTransport> WlClientDisplay<T> {
         if self.pending_events() > 0 {
             return self.dispatch_pending();
         }
-        if let Err(error) = self
-            .connection
-            .flush()
+        if let Err(error) = self.connection.flush()
             && !matches!(error, WlError::WouldBlock)
         {
             return Err(error);
@@ -502,16 +473,10 @@ impl<T: WlTransport> WlClientDisplay<T> {
             let events = self
                 .connection
                 .wait(timeout, WlPollEvents::READABLE)?;
-            if events
-                .intersection(wake)
-                .is_empty()
-            {
+            if events.intersection(wake).is_empty() {
                 return Ok(0);
             }
-            match self
-                .connection
-                .read()
-            {
+            match self.connection.read() {
                 Ok(_) => {}
                 Err(WlError::WouldBlock) => continue,
                 Err(error) => return Err(error),
@@ -538,17 +503,11 @@ impl<T: WlTransport> WlClientDisplay<T> {
             return Err(WlError::Protocol(error.clone()));
         }
         let mut count = 0usize;
-        while let Some(event) = self
-            .display_queue
-            .pop_front()
-        {
+        while let Some(event) = self.display_queue.pop_front() {
             self.invoke_event(event);
             count += 1;
         }
-        while let Some(event) = self
-            .default_queue
-            .pop_front()
-        {
+        while let Some(event) = self.default_queue.pop_front() {
             self.invoke_event(event);
             count += 1;
         }
@@ -575,8 +534,7 @@ impl<T: WlTransport> WlClientDisplay<T> {
             flag.set(true);
             0
         }) {
-            self.proxies
-                .remove(callback.0);
+            self.proxies.remove(callback.0);
             return Err(error);
         }
         let mut total = 0usize;
@@ -601,20 +559,15 @@ impl<T: WlTransport> WlClientDisplay<T> {
 
     fn create_proxy(&mut self, interface: &'static WlInterface, version: u32) -> WlResult<u32> {
         let serial = self.alloc_serial();
-        let id = self
-            .proxies
-            .insert_new(WlProxy {
-                id: 0,
-                interface,
-                version,
-                serial,
-                id_deleted: false,
-                listener: None,
-            })?;
-        if let Some(proxy) = self
-            .proxies
-            .lookup_mut(id)
-        {
+        let id = self.proxies.insert_new(WlProxy {
+            id: 0,
+            interface,
+            version,
+            serial,
+            id_deleted: false,
+            listener: None,
+        })?;
+        if let Some(proxy) = self.proxies.lookup_mut(id) {
             proxy.id = id;
         }
         Ok(id)
@@ -628,8 +581,7 @@ impl<T: WlTransport> WlClientDisplay<T> {
         args: Vec<WlArgument>,
     ) -> WlResult<()> {
         let mut closure = WlClosure::new(sender, opcode, message, args)?;
-        self.connection
-            .queue_closure(&mut closure)
+        self.connection.queue_closure(&mut closure)
     }
 
     fn require_interface(&self, id: WlProxyId, name: &str) -> WlResult<()> {
@@ -637,29 +589,19 @@ impl<T: WlTransport> WlClientDisplay<T> {
             .proxies
             .lookup(id.0)
             .ok_or(WlError::InvalidObject(id.0))?;
-        if proxy
-            .interface
-            .name
-            == name
-        {
+        if proxy.interface.name == name {
             Ok(())
         } else {
             Err(WlError::invalid_argument(format!(
                 "expected a {} proxy, got {}",
-                name,
-                proxy
-                    .interface
-                    .name
+                name, proxy.interface.name
             )))
         }
     }
 
     /// Reads every complete message of the input buffer into a queue.
     fn queue_events(&mut self) -> WlResult<()> {
-        while let Some((sender, opcode, size)) = self
-            .connection
-            .peek()
-        {
+        while let Some((sender, opcode, size)) = self.connection.peek() {
             let size = size as usize;
             if size > MAX_MESSAGE_SIZE {
                 return Err(WlError::MessageTooBig(size));
@@ -667,17 +609,10 @@ impl<T: WlTransport> WlClientDisplay<T> {
             if size < 8 {
                 return Err(WlError::invalid_argument("message shorter than its header"));
             }
-            if self
-                .connection
-                .pending_input()
-                < size
-            {
+            if self.connection.pending_input() < size {
                 return Ok(());
             }
-            let interface = match self
-                .proxies
-                .lookup(sender)
-            {
+            let interface = match self.proxies.lookup(sender) {
                 Some(proxy) => proxy.interface,
                 None => {
                     let fds = self
@@ -685,8 +620,7 @@ impl<T: WlTransport> WlClientDisplay<T> {
                         .zombie_interface(sender)
                         .and_then(|interface| interface.event_at(opcode))
                         .map_or(0, WlMessage::fd_count);
-                    self.connection
-                        .skip_message(size, fds);
+                    self.connection.skip_message(size, fds);
                     continue;
                 }
             };
@@ -696,10 +630,7 @@ impl<T: WlTransport> WlClientDisplay<T> {
                     opcode,
                 });
             };
-            let mut closure = match self
-                .connection
-                .demarshal(message)
-            {
+            let mut closure = match self.connection.demarshal(message) {
                 Ok(closure) => closure,
                 Err(WlError::WouldBlock) => return Ok(()),
                 Err(error) => return Err(error),
@@ -716,11 +647,9 @@ impl<T: WlTransport> WlClientDisplay<T> {
                 closure,
             };
             if sender == DISPLAY_PROXY_ID {
-                self.display_queue
-                    .push_back(event);
+                self.display_queue.push_back(event);
             } else {
-                self.default_queue
-                    .push_back(event);
+                self.default_queue.push_back(event);
             }
         }
         Ok(())
@@ -731,20 +660,8 @@ impl<T: WlTransport> WlClientDisplay<T> {
     /// The new proxy inherits the version and the queue of the sender,
     /// like `wl_proxy_create_for_id` does.
     fn create_event_proxies(&mut self, closure: &WlClosure) -> WlResult<()> {
-        for (arg, details) in closure
-            .args
-            .iter()
-            .zip(
-                closure
-                    .message
-                    .args(),
-            )
-        {
-            if details
-                .details
-                .ty
-                != WlArgType::NewId
-            {
+        for (arg, details) in closure.args.iter().zip(closure.message.args()) {
+            if details.details.ty != WlArgType::NewId {
                 continue;
             }
             let WlArgument::NewId(id) = arg else {
@@ -761,18 +678,17 @@ impl<T: WlTransport> WlClientDisplay<T> {
                 .lookup(closure.sender_id)
                 .map_or(1, |proxy| proxy.version);
             let serial = self.alloc_serial();
-            self.proxies
-                .insert_at(
-                    *id,
-                    WlProxy {
-                        id: *id,
-                        interface,
-                        version,
-                        serial,
-                        id_deleted: false,
-                        listener: None,
-                    },
-                )?;
+            self.proxies.insert_at(
+                *id,
+                WlProxy {
+                    id: *id,
+                    interface,
+                    version,
+                    serial,
+                    id_deleted: false,
+                    listener: None,
+                },
+            )?;
         }
         Ok(())
     }
@@ -784,10 +700,7 @@ impl<T: WlTransport> WlClientDisplay<T> {
             serial,
             mut closure,
         } = event;
-        let current = match self
-            .proxies
-            .lookup(id)
-        {
+        let current = match self.proxies.lookup(id) {
             None => None,
             Some(proxy) if proxy.serial == serial => Some(proxy.serial),
             Some(_) => None,
@@ -817,20 +730,15 @@ impl<T: WlTransport> WlClientDisplay<T> {
                 .and_then(WlProxy::take_listener);
             if let Some(mut listener) = listener {
                 let _ = listener(self, opcode, &mut args);
-                if let Some(proxy) = self
-                    .proxies
-                    .lookup_mut(id)
+                if let Some(proxy) = self.proxies.lookup_mut(id)
                     && proxy.serial == serial
-                    && proxy
-                        .listener
-                        .is_none()
+                    && proxy.listener.is_none()
                 {
                     proxy.listener = Some(listener);
                 }
             }
         }
-        self.connection
-            .release_argument_fds(&mut args);
+        self.connection.release_argument_fds(&mut args);
     }
 
     /// Rewrites arguments of objects destroyed after the event was queued.
@@ -838,10 +746,7 @@ impl<T: WlTransport> WlClientDisplay<T> {
         for arg in args {
             if let WlArgument::Object(id) = arg
                 && *id != 0
-                && self
-                    .proxies
-                    .lookup(*id)
-                    .is_none()
+                && self.proxies.lookup(*id).is_none()
             {
                 *id = 0;
             }
@@ -850,16 +755,9 @@ impl<T: WlTransport> WlClientDisplay<T> {
 
     /// Handles `wl_display.delete_id`.
     fn handle_delete_id(&mut self, id: u32) {
-        if self
-            .proxies
-            .is_zombie(id)
-        {
-            self.proxies
-                .remove(id);
-        } else if let Some(proxy) = self
-            .proxies
-            .lookup_mut(id)
-        {
+        if self.proxies.is_zombie(id) {
+            self.proxies.remove(id);
+        } else if let Some(proxy) = self.proxies.lookup_mut(id) {
             proxy.id_deleted = true;
         }
     }
@@ -877,11 +775,7 @@ impl<T: WlTransport> WlClientDisplay<T> {
         let interface = self
             .proxies
             .lookup(object_id)
-            .map(|proxy| {
-                proxy
-                    .interface
-                    .name
-            })
+            .map(|proxy| proxy.interface.name)
             .or_else(|| {
                 self.proxies
                     .zombie_interface(object_id)
@@ -894,8 +788,7 @@ impl<T: WlTransport> WlClientDisplay<T> {
 
 impl<T: WlTransport> WlProxy<T> {
     fn take_listener(&mut self) -> Option<ProxyListener<T>> {
-        self.listener
-            .take()
+        self.listener.take()
     }
 }
 
@@ -940,39 +833,22 @@ mod tests {
 
         /// Answers every `wl_display.sync` request found in the output.
         fn respond(&mut self) {
-            while self.output_pos + 12
-                <= self
-                    .output
-                    .len()
-            {
+            while self.output_pos + 12 <= self.output.len() {
                 let bytes = &self.output[self.output_pos..];
-                let sender = u32::from_le_bytes(
-                    bytes[0..4]
-                        .try_into()
-                        .unwrap_or([0; 4]),
-                );
-                let header = u32::from_le_bytes(
-                    bytes[4..8]
-                        .try_into()
-                        .unwrap_or([0; 4]),
-                );
+                let sender = u32::from_le_bytes(bytes[0..4].try_into().unwrap_or([0; 4]));
+                let header = u32::from_le_bytes(bytes[4..8].try_into().unwrap_or([0; 4]));
                 let size = (header >> 16) as usize;
                 let opcode = header & 0xffff;
                 if size < 12 || size > bytes.len() {
                     break;
                 }
                 if sender == DISPLAY_PROXY_ID && opcode == DISPLAY_SYNC {
-                    let callback = u32::from_le_bytes(
-                        bytes[8..12]
-                            .try_into()
-                            .unwrap_or([0; 4]),
-                    );
+                    let callback = u32::from_le_bytes(bytes[8..12].try_into().unwrap_or([0; 4]));
                     self.input
                         .extend_from_slice(&callback.to_le_bytes());
                     self.input
                         .extend_from_slice(&((12u32 << 16) | CALLBACK_DONE).to_le_bytes());
-                    self.input
-                        .extend_from_slice(&0u32.to_le_bytes());
+                    self.input.extend_from_slice(&0u32.to_le_bytes());
                 }
                 self.output_pos += size;
             }
@@ -981,17 +857,10 @@ mod tests {
 
     impl WlTransport for MemoryTransport {
         fn recv(&mut self, buf: &mut [u8], fds: &mut Vec<WlFd>) -> WlResult<usize> {
-            if self.input_pos
-                >= self
-                    .input
-                    .len()
-            {
+            if self.input_pos >= self.input.len() {
                 return Err(WlError::WouldBlock);
             }
-            let available = self
-                .input
-                .len()
-                - self.input_pos;
+            let available = self.input.len() - self.input_pos;
             let count = available.min(buf.len());
             let start = self.input_pos;
             buf[..count].copy_from_slice(&self.input[start..start + count]);
@@ -1001,26 +870,17 @@ mod tests {
         }
 
         fn send(&mut self, data: &[u8], _fds: &[WlFd]) -> WlResult<usize> {
-            self.output
-                .extend_from_slice(data);
+            self.output.extend_from_slice(data);
             self.respond();
             Ok(data.len())
         }
 
         fn wait(&mut self, _timeout: Option<Duration>, mask: WlPollEvents) -> WlResult<WlPollEvents> {
             let mut events = WlPollEvents::EMPTY;
-            if self.input_pos
-                < self
-                    .input
-                    .len()
-            {
+            if self.input_pos < self.input.len() {
                 events.insert(WlPollEvents::READABLE);
             }
-            if self.output_pos
-                < self
-                    .output
-                    .len()
-            {
+            if self.output_pos < self.output.len() {
                 events.insert(WlPollEvents::WRITABLE);
             }
             Ok(events.intersection(mask))
@@ -1081,9 +941,7 @@ mod tests {
     #[test]
     fn creates_registry_and_encodes_requests() {
         let mut display = WlClientDisplay::connect(MemoryTransport::default()).unwrap();
-        let registry = display
-            .get_registry()
-            .unwrap();
+        let registry = display.get_registry().unwrap();
         assert_eq!(registry.id(), 2);
         assert_eq!(
             display
@@ -1091,36 +949,18 @@ mod tests {
                 .map(|interface| interface.name),
             Some("wl_registry")
         );
-        assert!(
-            display
-                .connection()
-                .pending_output()
-                > 0
-        );
-        assert!(
-            display
-                .flush()
-                .is_ok()
-        );
+        assert!(display.connection().pending_output() > 0);
+        assert!(display.flush().is_ok());
 
-        let callback = display
-            .sync()
-            .unwrap();
+        let callback = display.sync().unwrap();
         assert_eq!(callback.id(), 3);
-        assert!(
-            display
-                .connection()
-                .pending_output()
-                > 0
-        );
+        assert!(display.connection().pending_output() > 0);
     }
 
     #[test]
     fn rejects_listener_misuse() {
         let mut display = WlClientDisplay::connect(MemoryTransport::default()).unwrap();
-        let registry = display
-            .get_registry()
-            .unwrap();
+        let registry = display.get_registry().unwrap();
         display
             .add_registry_listener(registry, |_, _| 0)
             .unwrap();
@@ -1144,11 +984,7 @@ mod tests {
                 .proxy_destroy(WlProxyId(DISPLAY_PROXY_ID))
                 .is_err()
         );
-        assert!(
-            display
-                .proxy_destroy(WlProxyId(9))
-                .is_err()
-        );
+        assert!(display.proxy_destroy(WlProxyId(9)).is_err());
     }
 
     #[test]
@@ -1156,9 +992,7 @@ mod tests {
         let event = global_event(1, "wl_seat", 3);
         let transport = MemoryTransport::with_input(&event);
         let mut display = WlClientDisplay::connect(transport).unwrap();
-        let registry = display
-            .get_registry()
-            .unwrap();
+        let registry = display.get_registry().unwrap();
         let seen = Rc::new(Cell::new(None));
         let slot = Rc::clone(&seen);
         display
@@ -1168,9 +1002,7 @@ mod tests {
             })
             .unwrap();
 
-        let dispatched = display
-            .dispatch(Some(Duration::ZERO))
-            .unwrap();
+        let dispatched = display.dispatch(Some(Duration::ZERO)).unwrap();
         assert_eq!(dispatched, 1);
         assert_eq!(
             seen.take(),
@@ -1187,26 +1019,16 @@ mod tests {
     fn delete_id_frees_zombies() {
         let transport = MemoryTransport::with_input(&delete_id_event(2));
         let mut display = WlClientDisplay::connect(transport).unwrap();
-        let registry = display
-            .get_registry()
-            .unwrap();
-        display
-            .proxy_destroy(registry)
-            .unwrap();
+        let registry = display.get_registry().unwrap();
+        display.proxy_destroy(registry).unwrap();
         assert!(!display.is_alive(registry));
 
         // The zombie still owns id 2, so the next proxy takes id 3.
-        let second = display
-            .get_registry()
-            .unwrap();
+        let second = display.get_registry().unwrap();
         assert_eq!(second.id(), 3);
 
-        display
-            .dispatch(Some(Duration::ZERO))
-            .unwrap();
-        let third = display
-            .get_registry()
-            .unwrap();
+        display.dispatch(Some(Duration::ZERO)).unwrap();
+        let third = display.get_registry().unwrap();
         assert_eq!(third.id(), 2);
     }
 
@@ -1226,27 +1048,17 @@ mod tests {
         };
         assert_eq!(protocol.code, 2);
         assert_eq!(protocol.message, "no memory");
-        assert!(
-            display
-                .protocol_error()
-                .is_some()
-        );
+        assert!(display.protocol_error().is_some());
         assert!(matches!(display.dispatch(None), Err(WlError::Protocol(_))));
     }
 
     #[test]
     fn roundtrip_waits_for_the_sync_callback() {
         let mut display = WlClientDisplay::connect(MemoryTransport::default()).unwrap();
-        let dispatched = display
-            .roundtrip()
-            .unwrap();
+        let dispatched = display.roundtrip().unwrap();
         assert!(dispatched >= 1);
         assert!(!display.is_alive(WlProxyId(2)));
-        assert!(
-            !display
-                .connection()
-                .is_disconnected()
-        );
+        assert!(!display.connection().is_disconnected());
     }
 
     #[test]
@@ -1254,9 +1066,7 @@ mod tests {
         static TEST_INTERFACE: WlInterface = WlInterface::new("wl_test", 1, &[], &[]);
 
         let mut display = WlClientDisplay::connect(MemoryTransport::default()).unwrap();
-        let registry = display
-            .get_registry()
-            .unwrap();
+        let registry = display.get_registry().unwrap();
         let bound = display
             .registry_bind(registry, 7, &TEST_INTERFACE, 1)
             .unwrap();
@@ -1273,10 +1083,6 @@ mod tests {
                 .registry_bind(WlProxyId(9), 1, &TEST_INTERFACE, 1)
                 .is_err()
         );
-        assert!(
-            display
-                .flush()
-                .is_ok()
-        );
+        assert!(display.flush().is_ok());
     }
 }

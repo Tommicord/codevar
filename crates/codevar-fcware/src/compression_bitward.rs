@@ -33,10 +33,7 @@ pub fn bitward_encode(values: &[u16]) -> CompressorResult<Vec<u8>> {
     }
 
     let mut repeat_table = Vec::new();
-    for (value, frequency) in frequencies
-        .iter()
-        .enumerate()
-    {
+    for (value, frequency) in frequencies.iter().enumerate() {
         if *frequency > 1 && repeat_table.len() < INDEX_LIMIT {
             repeat_table.push(value as u16);
         }
@@ -48,10 +45,7 @@ pub fn bitward_encode(values: &[u16]) -> CompressorResult<Vec<u8>> {
         .collect();
 
     let mut duplicate_bytes = Vec::new();
-    for (value, frequency) in frequencies
-        .iter()
-        .enumerate()
-    {
+    for (value, frequency) in frequencies.iter().enumerate() {
         if *frequency > 1 {
             let value = value as u16;
             let [high, low] = value.to_be_bytes();
@@ -70,26 +64,14 @@ pub fn bitward_encode(values: &[u16]) -> CompressorResult<Vec<u8>> {
         .map(|(index, &value)| (value, index as u8))
         .collect();
 
-    let mut records = Vec::with_capacity(
-        values
-            .len()
-            .saturating_mul(2),
-    );
+    let mut records = Vec::with_capacity(values.len().saturating_mul(2));
     let mut index = 0usize;
     while index < values.len() {
         // SAFETY: `index < values.len()`.
-        let value = unsafe {
-            *values
-                .as_ptr()
-                .add(index)
-        };
+        let value = unsafe { *values.as_ptr().add(index) };
         let mut run_length = 1usize;
         while index + run_length < values.len()
-            && unsafe {
-                *values
-                    .as_ptr()
-                    .add(index + run_length)
-            } == value
+            && unsafe { *values.as_ptr().add(index + run_length) } == value
         {
             run_length += 1;
         }
@@ -159,9 +141,7 @@ pub fn bitward_decode(frame: &[u8]) -> CompressorResult<Vec<u16>> {
         return Err(CompressorError::InvalidFrame);
     }
     let expected = unsafe {
-        let p = frame
-            .as_ptr()
-            .add(3);
+        let p = frame.as_ptr().add(3);
         u32::from_be_bytes([*p, *p.add(1), *p.add(2), *p.add(3)]) as usize
     };
     let repeat_len = u16::from_be_bytes([frame[7], frame[8]]) as usize;

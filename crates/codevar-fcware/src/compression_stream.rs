@@ -137,16 +137,7 @@ fn match_length(input: &[u8], a: usize, b: usize, limit: usize) -> usize {
     while length + 16 <= limit {
         // SAFETY: `a + length + 16 <= a + limit` and both regions are within `input`
         // because `limit <= input.len() - b` and `a + limit <= input.len()` from caller.
-        let equal = unsafe {
-            load_cmp16(
-                input
-                    .as_ptr()
-                    .add(a + length),
-                input
-                    .as_ptr()
-                    .add(b + length),
-            )
-        };
+        let equal = unsafe { load_cmp16(input.as_ptr().add(a + length), input.as_ptr().add(b + length)) };
         if equal != 16 {
             return length + equal;
         }

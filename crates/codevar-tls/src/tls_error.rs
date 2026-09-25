@@ -251,12 +251,8 @@ mod tests {
         );
         assert_ne!(TlsError::Closed, TlsError::WouldBlock);
         assert_ne!(
-            TlsError::Closed
-                .alert_description()
-                .is_some(),
-            TlsError::WouldBlock
-                .alert_description()
-                .is_some()
+            TlsError::Closed.alert_description().is_some(),
+            TlsError::WouldBlock.alert_description().is_some()
         );
         let cloned = TlsError::crypto("same").clone();
         assert_eq!(cloned, TlsError::crypto("same"));
@@ -265,15 +261,8 @@ mod tests {
     #[test]
     fn error_source_chain_is_none() {
         let err: Box<dyn StdError> = Box::new(TlsError::decode("deep"));
-        assert!(
-            err.source()
-                .is_none()
-        );
-        assert!(
-            TlsError::Closed
-                .source()
-                .is_none()
-        );
+        assert!(err.source().is_none());
+        assert!(TlsError::Closed.source().is_none());
     }
 
     #[test]

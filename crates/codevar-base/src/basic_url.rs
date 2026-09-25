@@ -95,9 +95,7 @@ pub fn parse(input: &str) -> Result<Url<'_>, UrlError> {
         return Err(UrlError::EmptyInput);
     }
 
-    let scheme_end = input
-        .find(':')
-        .ok_or(UrlError::MissingScheme)?;
+    let scheme_end = input.find(':').ok_or(UrlError::MissingScheme)?;
     validate_scheme(&input[..scheme_end])?;
 
     let hier_start = scheme_end + 1;
@@ -330,15 +328,13 @@ impl<'a> Url<'a> {
     /// `mailto:user@example.com`.
     #[must_use]
     pub fn authority(&self) -> Option<&Authority<'a>> {
-        self.authority
-            .as_ref()
+        self.authority.as_ref()
     }
 
     /// The host of the authority, or `None` when there is no authority.
     #[must_use]
     pub fn host(&self) -> Option<Host<'a>> {
-        self.authority
-            .map(|authority| authority.host)
+        self.authority.map(|authority| authority.host)
     }
 
     /// The path, possibly empty (for example `http://example.com`).
@@ -417,11 +413,7 @@ impl<'a> Authority<'a> {
     /// The port as a number, or `None` when the URL has no port.
     #[must_use]
     pub fn port_number(&self) -> Option<u16> {
-        self.port
-            .and_then(|port| {
-                port.parse()
-                    .ok()
-            })
+        self.port.and_then(|port| port.parse().ok())
     }
 }
 
@@ -584,10 +576,7 @@ fn validate_port(port: &str, base: usize) -> Result<(), UrlError> {
         return Err(UrlError::InvalidPort);
     }
     let mut value: u32 = 0;
-    for (offset, &byte) in bytes
-        .iter()
-        .enumerate()
-    {
+    for (offset, &byte) in bytes.iter().enumerate() {
         if !byte.is_ascii_digit() {
             return Err(UrlError::InvalidCharacter(base + offset));
         }
@@ -637,9 +626,7 @@ fn split_host_port<'a>(
     allow_empty_host: bool,
 ) -> Result<(Host<'a>, Option<&'a str>), UrlError> {
     if let Some(after) = hostport.strip_prefix('[') {
-        let close = after
-            .find(']')
-            .ok_or(UrlError::InvalidIpv6)?;
+        let close = after.find(']').ok_or(UrlError::InvalidIpv6)?;
         let raw = &after[..close];
         if !is_valid_ipv6(raw) {
             return Err(UrlError::InvalidIpv6);
@@ -930,9 +917,7 @@ mod tests {
         let input = "https://user:pass@example.com:8443/a/b%20c?x=1&y=2#frag";
         let url = parse(input).unwrap();
         assert_eq!(url.scheme(), "https");
-        let authority = url
-            .authority()
-            .unwrap();
+        let authority = url.authority().unwrap();
         assert_eq!(authority.userinfo(), Some("user:pass"));
         assert_eq!(authority.host(), Host::Domain("example.com"));
         assert_eq!(authority.port(), Some("8443"));
@@ -948,63 +933,31 @@ mod tests {
     fn parses_urls_without_authority() {
         let mailto = parse("mailto:someone@example.com").unwrap();
         assert_eq!(mailto.scheme(), "mailto");
-        assert!(
-            mailto
-                .authority()
-                .is_none()
-        );
-        assert!(
-            mailto
-                .host()
-                .is_none()
-        );
+        assert!(mailto.authority().is_none());
+        assert!(mailto.host().is_none());
         assert_eq!(mailto.path(), "someone@example.com");
-        assert!(
-            mailto
-                .query()
-                .is_none()
-        );
-        assert!(
-            mailto
-                .fragment()
-                .is_none()
-        );
+        assert!(mailto.query().is_none());
+        assert!(mailto.fragment().is_none());
 
-        assert_eq!(
-            parse("urn:isbn:0451450523")
-                .unwrap()
-                .path(),
-            "isbn:0451450523"
-        );
+        assert_eq!(parse("urn:isbn:0451450523").unwrap().path(), "isbn:0451450523");
         assert_eq!(
             parse("data:text/plain,hello%20world")
                 .unwrap()
                 .path(),
             "text/plain,hello%20world"
         );
-        assert_eq!(
-            parse("mailto:a@b")
-                .unwrap()
-                .to_string(),
-            "mailto:a@b"
-        );
+        assert_eq!(parse("mailto:a@b").unwrap().to_string(), "mailto:a@b");
     }
 
     #[test]
     fn parses_empty_query_and_fragment() {
         let url = parse("http://example.com?").unwrap();
         assert_eq!(url.query(), Some(""));
-        assert!(
-            url.fragment()
-                .is_none()
-        );
+        assert!(url.fragment().is_none());
 
         let url = parse("http://example.com#").unwrap();
         assert_eq!(url.fragment(), Some(""));
-        assert!(
-            url.query()
-                .is_none()
-        );
+        assert!(url.query().is_none());
 
         let url = parse("http://example.com/?a#").unwrap();
         assert_eq!(url.query(), Some("a"));
@@ -1019,12 +972,7 @@ mod tests {
     #[test]
     fn parses_file_urls_with_empty_host() {
         let url = parse("file:///etc/hosts").unwrap();
-        assert_eq!(
-            url.authority()
-                .unwrap()
-                .host(),
-            Host::Domain("")
-        );
+        assert_eq!(url.authority().unwrap().host(), Host::Domain(""));
         assert_eq!(url.path(), "/etc/hosts");
         assert_eq!(url.to_string(), "file:///etc/hosts");
         assert!(is_valid("FILE:///tmp"));
@@ -1035,23 +983,14 @@ mod tests {
     #[test]
     fn classifies_hosts_by_their_validated_form() {
         assert_eq!(
-            parse("http://example.com/")
-                .unwrap()
-                .host(),
+            parse("http://example.com/").unwrap().host(),
             Some(Host::Domain("example.com"))
         );
         assert_eq!(
-            parse("http://192.168.0.1/")
-                .unwrap()
-                .host(),
+            parse("http://192.168.0.1/").unwrap().host(),
             Some(Host::Ipv4("192.168.0.1"))
         );
-        assert_eq!(
-            parse("http://[::1]/")
-                .unwrap()
-                .host(),
-            Some(Host::Ipv6("::1"))
-        );
+        assert_eq!(parse("http://[::1]/").unwrap().host(), Some(Host::Ipv6("::1")));
         assert_eq!(Host::Ipv6("::1").as_str(), "::1");
         assert_eq!(Host::Domain("a.b").as_str(), "a.b");
     }
@@ -1069,9 +1008,7 @@ mod tests {
         ] {
             let input = alloc::format!("https://[{host}]/");
             assert_eq!(
-                parse(&input)
-                    .unwrap()
-                    .host(),
+                parse(&input).unwrap().host(),
                 Some(Host::Ipv6(host)),
                 "host {host}"
             );
@@ -1245,10 +1182,8 @@ mod tests {
         for component in [
             url.scheme(),
             url.path(),
-            url.query()
-                .unwrap_or(""),
-            url.fragment()
-                .unwrap_or(""),
+            url.query().unwrap_or(""),
+            url.fragment().unwrap_or(""),
         ] {
             let offset = component.as_ptr() as usize;
             assert!(offset >= start && offset + component.len() <= end);

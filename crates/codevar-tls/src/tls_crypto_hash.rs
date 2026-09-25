@@ -61,12 +61,8 @@ impl HashCtx {
     /// Feeds more handshake bytes.
     pub fn update(&mut self, data: &[u8]) {
         match self.alg {
-            HashAlgorithm::Sha256 => self
-                .sha256
-                .update(data),
-            HashAlgorithm::Sha384 => self
-                .sha384
-                .update(data),
+            HashAlgorithm::Sha256 => self.sha256.update(data),
+            HashAlgorithm::Sha384 => self.sha384.update(data),
         }
     }
 
@@ -74,16 +70,8 @@ impl HashCtx {
     #[must_use]
     pub fn current(&self) -> Vec<u8> {
         match self.alg {
-            HashAlgorithm::Sha256 => self
-                .sha256
-                .clone()
-                .finalize()
-                .to_vec(),
-            HashAlgorithm::Sha384 => self
-                .sha384
-                .clone()
-                .finalize()
-                .to_vec(),
+            HashAlgorithm::Sha256 => self.sha256.clone().finalize().to_vec(),
+            HashAlgorithm::Sha384 => self.sha384.clone().finalize().to_vec(),
         }
     }
 }

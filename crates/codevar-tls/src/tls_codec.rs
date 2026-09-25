@@ -33,15 +33,13 @@ impl<'a> Reader<'a> {
     /// Remaining unread bytes.
     #[must_use]
     pub const fn remaining(&self) -> usize {
-        self.buf
-            .len()
+        self.buf.len()
     }
 
     /// Returns true when no bytes remain.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.buf
-            .is_empty()
+        self.buf.is_empty()
     }
 
     /// Returns the unread slice.
@@ -52,37 +50,25 @@ impl<'a> Reader<'a> {
 
     /// Fails if any bytes remain.
     pub fn expect_empty(&self, ctx: &str) -> TlsResult<()> {
-        if self
-            .buf
-            .is_empty()
-        {
+        if self.buf.is_empty() {
             Ok(())
         } else {
             Err(TlsError::decode(format!(
                 "{ctx}: {n} trailing bytes",
-                n = self
-                    .buf
-                    .len()
+                n = self.buf.len()
             )))
         }
     }
 
     /// Reads `n` bytes.
     pub fn bytes(&mut self, n: usize) -> TlsResult<&'a [u8]> {
-        if self
-            .buf
-            .len()
-            < n
-        {
+        if self.buf.len() < n {
             return Err(TlsError::decode(format!(
                 "need {n} bytes, have {}",
-                self.buf
-                    .len()
+                self.buf.len()
             )));
         }
-        let (head, tail) = self
-            .buf
-            .split_at(n);
+        let (head, tail) = self.buf.split_at(n);
         self.buf = tail;
         Ok(head)
     }
@@ -189,9 +175,7 @@ pub fn start_u16_vec(out: &mut Vec<u8>) -> usize {
 
 /// Writes the length of bytes after `idx+2` into a previously reserved u16 prefix.
 pub fn fill_u16_len(out: &mut [u8], idx: usize) -> TlsResult<()> {
-    let len = out
-        .len()
-        .saturating_sub(idx + 2);
+    let len = out.len().saturating_sub(idx + 2);
     if len > 65535 {
         return Err(TlsError::Internal("vector exceeds u16 length prefix".into()));
     }
@@ -213,9 +197,7 @@ pub fn start_u24_vec(out: &mut Vec<u8>) -> usize {
 
 /// Writes the length of bytes after `idx+3` into a previously reserved u24 prefix.
 pub fn fill_u24_len(out: &mut [u8], idx: usize) -> TlsResult<()> {
-    let len = out
-        .len()
-        .saturating_sub(idx + 3);
+    let len = out.len().saturating_sub(idx + 3);
     if len > 0xff_ffff {
         return Err(TlsError::Internal("vector exceeds u24 length prefix".into()));
     }
@@ -235,9 +217,7 @@ pub fn start_u8_vec(out: &mut Vec<u8>) -> usize {
 
 /// Fills a previously reserved u8 length prefix.
 pub fn fill_u8_len(out: &mut [u8], idx: usize) -> TlsResult<()> {
-    let len = out
-        .len()
-        .saturating_sub(idx + 1);
+    let len = out.len().saturating_sub(idx + 1);
     if len > 255 {
         return Err(TlsError::Internal("vector exceeds u8 length prefix".into()));
     }
@@ -254,39 +234,14 @@ mod tests {
         let mut r = Reader::new(&[]);
         assert!(r.is_empty());
         assert_eq!(r.remaining(), 0);
-        assert!(
-            r.rest()
-                .is_empty()
-        );
-        assert!(
-            r.expect_empty("empty")
-                .is_ok()
-        );
-        assert!(
-            r.u8()
-                .is_err()
-        );
-        assert!(
-            r.u16()
-                .is_err()
-        );
-        assert!(
-            r.u24()
-                .is_err()
-        );
-        assert!(
-            r.u32()
-                .is_err()
-        );
-        assert!(
-            r.bytes(1)
-                .is_err()
-        );
-        assert!(
-            r.bytes(0)
-                .unwrap()
-                .is_empty()
-        );
+        assert!(r.rest().is_empty());
+        assert!(r.expect_empty("empty").is_ok());
+        assert!(r.u8().is_err());
+        assert!(r.u16().is_err());
+        assert!(r.u24().is_err());
+        assert!(r.u32().is_err());
+        assert!(r.bytes(1).is_err());
+        assert!(r.bytes(0).unwrap().is_empty());
     }
 
     #[test]
@@ -297,90 +252,33 @@ mod tests {
         put_u24(&mut out, 0xab_cdef);
         put_u32(&mut out, 0xdead_beef);
         let mut r = Reader::new(&out);
-        assert_eq!(
-            r.u8()
-                .unwrap(),
-            0x7f
-        );
-        assert_eq!(
-            r.u16()
-                .unwrap(),
-            0x1234
-        );
-        assert_eq!(
-            r.u24()
-                .unwrap(),
-            0xab_cdef
-        );
-        assert_eq!(
-            r.u32()
-                .unwrap(),
-            0xdead_beef
-        );
+        assert_eq!(r.u8().unwrap(), 0x7f);
+        assert_eq!(r.u16().unwrap(), 0x1234);
+        assert_eq!(r.u24().unwrap(), 0xab_cdef);
+        assert_eq!(r.u32().unwrap(), 0xdead_beef);
         assert_eq!(r.remaining(), 0);
-        assert!(
-            r.expect_empty("primitives")
-                .is_ok()
-        );
+        assert!(r.expect_empty("primitives").is_ok());
     }
 
     #[test]
     fn truncated_primitive_reads_error_at_every_offset() {
         let data = [0x11u8, 0x22, 0x33, 0x44];
-        assert!(
-            Reader::new(&data[..0])
-                .u8()
-                .is_err()
-        );
+        assert!(Reader::new(&data[..0]).u8().is_err());
         for n in 0..2 {
-            assert!(
-                Reader::new(&data[..n])
-                    .u16()
-                    .is_err(),
-                "u16 n={n}"
-            );
+            assert!(Reader::new(&data[..n]).u16().is_err(), "u16 n={n}");
         }
         for n in 0..3 {
-            assert!(
-                Reader::new(&data[..n])
-                    .u24()
-                    .is_err(),
-                "u24 n={n}"
-            );
+            assert!(Reader::new(&data[..n]).u24().is_err(), "u24 n={n}");
         }
         for n in 0..4 {
-            assert!(
-                Reader::new(&data[..n])
-                    .u32()
-                    .is_err(),
-                "u32 n={n}"
-            );
+            assert!(Reader::new(&data[..n]).u32().is_err(), "u32 n={n}");
         }
         let mut exact = Reader::new(&data);
-        assert_eq!(
-            exact
-                .u8()
-                .unwrap(),
-            0x11
-        );
-        assert_eq!(
-            exact
-                .u16()
-                .unwrap(),
-            0x2233
-        );
-        assert_eq!(
-            exact
-                .u8()
-                .unwrap(),
-            0x44
-        );
+        assert_eq!(exact.u8().unwrap(), 0x11);
+        assert_eq!(exact.u16().unwrap(), 0x2233);
+        assert_eq!(exact.u8().unwrap(), 0x44);
         assert!(exact.is_empty());
-        assert!(
-            exact
-                .u8()
-                .is_err()
-        );
+        assert!(exact.u8().is_err());
     }
 
     #[test]
@@ -390,11 +288,7 @@ mod tests {
             let mut out = Vec::new();
             put_vec_u8(&mut out, &payload).unwrap();
             let mut r = Reader::new(&out);
-            assert_eq!(
-                r.vec_u8()
-                    .unwrap(),
-                payload.as_slice()
-            );
+            assert_eq!(r.vec_u8().unwrap(), payload.as_slice());
             assert!(r.is_empty());
         }
         for len in [0usize, 1, 65535] {
@@ -402,22 +296,14 @@ mod tests {
             let mut out = Vec::new();
             put_vec_u16(&mut out, &payload).unwrap();
             let mut r = Reader::new(&out);
-            assert_eq!(
-                r.vec_u16()
-                    .unwrap(),
-                payload.as_slice()
-            );
+            assert_eq!(r.vec_u16().unwrap(), payload.as_slice());
             assert!(r.is_empty());
         }
         let payload = vec![0x3Cu8; 0x01_0000];
         let mut out = Vec::new();
         put_vec_u24(&mut out, &payload).unwrap();
         let mut r = Reader::new(&out);
-        assert_eq!(
-            r.vec_u24()
-                .unwrap(),
-            payload.as_slice()
-        );
+        assert_eq!(r.vec_u24().unwrap(), payload.as_slice());
         assert!(r.is_empty());
     }
 
@@ -440,66 +326,31 @@ mod tests {
         put_vec_u24(&mut out, &payload).unwrap();
         assert_eq!(out.len(), 3 + 0xff_ffff);
         let mut r = Reader::new(&out);
-        assert_eq!(
-            r.vec_u24()
-                .unwrap()
-                .len(),
-            0xff_ffff
-        );
+        assert_eq!(r.vec_u24().unwrap().len(), 0xff_ffff);
     }
 
     #[test]
     fn declared_lengths_beyond_buffer_rejected_with_tiny_input() {
         let mut r16 = Reader::new(&[0xff, 0xff, 0x01, 0x02]);
-        assert!(
-            r16.vec_u16()
-                .is_err()
-        );
+        assert!(r16.vec_u16().is_err());
         let mut r24 = Reader::new(&[0xff, 0xff, 0xff, 0x01]);
-        assert!(
-            r24.vec_u24()
-                .is_err()
-        );
+        assert!(r24.vec_u24().is_err());
         let mut r8 = Reader::new(&[0xff]);
-        assert!(
-            r8.vec_u8()
-                .is_err()
-        );
+        assert!(r8.vec_u8().is_err());
         let mut none = Reader::new(&[]);
-        assert!(
-            none.vec_u8()
-                .is_err()
-        );
-        assert!(
-            none.vec_u16()
-                .is_err()
-        );
-        assert!(
-            none.vec_u24()
-                .is_err()
-        );
+        assert!(none.vec_u8().is_err());
+        assert!(none.vec_u16().is_err());
+        assert!(none.vec_u24().is_err());
     }
 
     #[test]
     fn zero_length_vectors_yield_empty_slices() {
         let mut r8 = Reader::new(&[0x00]);
-        assert!(
-            r8.vec_u8()
-                .unwrap()
-                .is_empty()
-        );
+        assert!(r8.vec_u8().unwrap().is_empty());
         let mut r16 = Reader::new(&[0x00, 0x00]);
-        assert!(
-            r16.vec_u16()
-                .unwrap()
-                .is_empty()
-        );
+        assert!(r16.vec_u16().unwrap().is_empty());
         let mut r24 = Reader::new(&[0x00, 0x00, 0x00]);
-        assert!(
-            r24.vec_u24()
-                .unwrap()
-                .is_empty()
-        );
+        assert!(r24.vec_u24().unwrap().is_empty());
         assert!(r8.is_empty());
         assert!(r16.is_empty());
         assert!(r24.is_empty());
@@ -509,70 +360,34 @@ mod tests {
     fn truncated_vector_body_errors_at_every_offset() {
         let wire = [0x00, 0x03, 0xaa, 0xbb, 0xcc];
         for n in 0..5 {
-            assert!(
-                Reader::new(&wire[..n])
-                    .vec_u16()
-                    .is_err(),
-                "n={n}"
-            );
+            assert!(Reader::new(&wire[..n]).vec_u16().is_err(), "n={n}");
         }
         let mut exact = Reader::new(&wire);
-        assert_eq!(
-            exact
-                .vec_u16()
-                .unwrap(),
-            &[0xaa, 0xbb, 0xcc]
-        );
+        assert_eq!(exact.vec_u16().unwrap(), &[0xaa, 0xbb, 0xcc]);
         assert!(exact.is_empty());
     }
 
     #[test]
     fn expect_empty_reports_trailing_bytes() {
         let mut r = Reader::new(&[1, 2, 3]);
-        let err = r
-            .expect_empty("frame")
-            .unwrap_err();
+        let err = r.expect_empty("frame").unwrap_err();
         let text = err.to_string();
         assert!(text.contains("frame"), "text={text}");
         assert!(text.contains("3 trailing bytes"), "text={text}");
-        assert!(
-            r.u8()
-                .is_ok()
-        );
-        assert!(
-            r.expect_empty("frame")
-                .is_err()
-        );
-        assert!(
-            r.u8()
-                .is_ok()
-        );
-        let _ = r
-            .u8()
-            .unwrap();
-        assert!(
-            r.expect_empty("frame")
-                .is_ok()
-        );
+        assert!(r.u8().is_ok());
+        assert!(r.expect_empty("frame").is_err());
+        assert!(r.u8().is_ok());
+        let _ = r.u8().unwrap();
+        assert!(r.expect_empty("frame").is_ok());
     }
 
     #[test]
     fn bytes_read_past_end_errors_without_consuming() {
         let mut r = Reader::new(&[1, 2]);
-        assert!(
-            r.bytes(3)
-                .is_err()
-        );
+        assert!(r.bytes(3).is_err());
         assert_eq!(r.remaining(), 2);
-        assert_eq!(
-            r.bytes(2)
-                .unwrap(),
-            &[1, 2]
-        );
-        assert!(
-            r.bytes(1)
-                .is_err()
-        );
+        assert_eq!(r.bytes(2).unwrap(), &[1, 2]);
+        assert!(r.bytes(1).is_err());
         assert_eq!(r.remaining(), 0);
     }
 
@@ -580,9 +395,7 @@ mod tests {
     fn rest_returns_unread_suffix() {
         let mut r = Reader::new(&[1, 2, 3, 4]);
         assert_eq!(r.rest(), &[1, 2, 3, 4]);
-        let head = r
-            .bytes(2)
-            .unwrap();
+        let head = r.bytes(2).unwrap();
         assert_eq!(head, &[1, 2]);
         assert_eq!(r.rest(), &[3, 4]);
         assert_eq!(r.remaining(), 2);
@@ -659,31 +472,11 @@ mod tests {
             put_u24(&mut out, i);
             put_u32(&mut out, 0xfeed_face);
             let mut r = Reader::new(&out);
-            assert_eq!(
-                r.u16()
-                    .unwrap(),
-                0x1234
-            );
-            assert_eq!(
-                r.vec_u16()
-                    .unwrap()
-                    .len(),
-                payload.len()
-            );
-            assert_eq!(
-                r.u24()
-                    .unwrap(),
-                i
-            );
-            assert_eq!(
-                r.u32()
-                    .unwrap(),
-                0xfeed_face
-            );
-            assert!(
-                r.expect_empty("iter")
-                    .is_ok()
-            );
+            assert_eq!(r.u16().unwrap(), 0x1234);
+            assert_eq!(r.vec_u16().unwrap().len(), payload.len());
+            assert_eq!(r.u24().unwrap(), i);
+            assert_eq!(r.u32().unwrap(), 0xfeed_face);
+            assert!(r.expect_empty("iter").is_ok());
         }
         assert!(out.capacity() >= 1024 * 1024);
     }

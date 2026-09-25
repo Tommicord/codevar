@@ -60,9 +60,7 @@ pub fn is_valid_app_id(app_id: &str) -> bool {
     if bytes[0] == b'.' {
         return false;
     }
-    let last_dot = bytes
-        .iter()
-        .rposition(|&b| b == b'.');
+    let last_dot = bytes.iter().rposition(|&b| b == b'.');
     let mut dot_count = 0u32;
     let mut last_element = false;
     let mut index = 0;
@@ -91,10 +89,7 @@ pub fn is_valid_token(token: &str) -> bool {
     if token.is_empty() {
         return false;
     }
-    if !token
-        .bytes()
-        .all(|c| is_name_character(c, false))
-    {
+    if !token.bytes().all(|c| is_name_character(c, false)) {
         return false;
     }
     let path = format!("/foo/{token}");
@@ -145,24 +140,17 @@ impl KeyFile {
     pub fn parse(data: &str) -> Result<Self, PortalError> {
         let mut file = Self::new();
         let mut current_group: Option<usize> = None;
-        for (index, raw_line) in data
-            .split('\n')
-            .enumerate()
-        {
-            let line = raw_line
-                .strip_suffix('\r')
-                .unwrap_or(raw_line);
+        for (index, raw_line) in data.split('\n').enumerate() {
+            let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
             let line = line.trim_start();
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
             let line_number = index + 1;
             if let Some(rest) = line.strip_prefix('[') {
-                let name = rest
-                    .strip_suffix(']')
-                    .ok_or_else(|| {
-                        PortalError::InvalidArgument(format!("line {line_number}: unterminated group header"))
-                    })?;
+                let name = rest.strip_suffix(']').ok_or_else(|| {
+                    PortalError::InvalidArgument(format!("line {line_number}: unterminated group header"))
+                })?;
                 if name.is_empty() {
                     return Err(PortalError::InvalidArgument(format!(
                         "line {line_number}: empty group name"
@@ -176,11 +164,8 @@ impl KeyFile {
                     {
                         Some(position) => position,
                         None => {
-                            file.groups
-                                .push((String::from(name), Vec::new()));
-                            file.groups
-                                .len()
-                                - 1
+                            file.groups.push((String::from(name), Vec::new()));
+                            file.groups.len() - 1
                         }
                     },
                 );
@@ -213,9 +198,7 @@ impl KeyFile {
     /// Returns whether `group` exists.
     #[must_use]
     pub fn has_group(&self, group: &str) -> bool {
-        self.groups
-            .iter()
-            .any(|(name, _)| name == group)
+        self.groups.iter().any(|(name, _)| name == group)
     }
 
     /// Iterates over `(group, entries)` in file order.
@@ -243,8 +226,7 @@ impl KeyFile {
     /// missing or holds an invalid escape sequence.
     #[must_use]
     pub fn get(&self, group: &str, key: &str) -> Option<String> {
-        self.value(group, key)
-            .and_then(unescape)
+        self.value(group, key).and_then(unescape)
     }
 
     /// Returns the `;`-separated list stored under `key`, or `None`
@@ -258,16 +240,10 @@ impl KeyFile {
     pub fn list(&self, group: &str, key: &str) -> Option<Vec<String>> {
         let raw = self.value(group, key)?;
         let mut parts = split_escaped_list(raw);
-        if parts
-            .last()
-            .is_some_and(String::is_empty)
-        {
+        if parts.last().is_some_and(String::is_empty) {
             parts.pop();
         }
-        parts
-            .iter()
-            .map(|part| unescape(part))
-            .collect()
+        parts.iter().map(|part| unescape(part)).collect()
     }
 
     /// Returns the boolean stored under `key`, or `default` when the
@@ -285,8 +261,7 @@ impl KeyFile {
     /// Returns the raw entries of `group` in file order.
     #[must_use]
     pub fn entries(&self, group: &str) -> Option<&[(String, String)]> {
-        self.find_group(group)
-            .map(Vec::as_slice)
+        self.find_group(group).map(Vec::as_slice)
     }
 
     /// Sets `key` to `value` inside `group`, creating the group when
@@ -302,16 +277,11 @@ impl KeyFile {
             None => {
                 self.groups
                     .push((String::from(group), Vec::new()));
-                self.groups
-                    .len()
-                    - 1
+                self.groups.len() - 1
             }
         };
         let entries = &mut self.groups[group_index].1;
-        match entries
-            .iter_mut()
-            .find(|(k, _)| k == key)
-        {
+        match entries.iter_mut().find(|(k, _)| k == key) {
             Some(entry) => entry.1 = String::from(value),
             None => entries.push((String::from(key), String::from(value))),
         }
@@ -328,10 +298,7 @@ impl KeyFile {
             return false;
         };
         let entries = &mut self.groups[group_index].1;
-        let Some(entry_index) = entries
-            .iter()
-            .position(|(k, _)| k == key)
-        else {
+        let Some(entry_index) = entries.iter().position(|(k, _)| k == key) else {
             return false;
         };
         entries.remove(entry_index);
@@ -343,11 +310,7 @@ impl KeyFile {
     #[must_use]
     pub fn to_data(&self) -> String {
         let mut out = String::new();
-        for (index, (name, entries)) in self
-            .groups
-            .iter()
-            .enumerate()
-        {
+        for (index, (name, entries)) in self.groups.iter().enumerate() {
             if index > 0 {
                 out.push('\n');
             }
@@ -573,9 +536,7 @@ impl PortalValue {
             Self::Handle(_) => signature == "h",
             Self::Variant(_) => signature == "v",
             Self::Array(element, items) => match signature.strip_prefix('a') {
-                Some(rest) if rest == element => items
-                    .iter()
-                    .all(|item| item.matches_one(element)),
+                Some(rest) if rest == element => items.iter().all(|item| item.matches_one(element)),
                 _ => false,
             },
             Self::Struct(fields) => {
@@ -589,8 +550,7 @@ impl PortalValue {
                         _ => return false,
                     }
                 }
-                iter.next()
-                    .is_none()
+                iter.next().is_none()
             }
             Self::DictEntry(key, value) => {
                 if !signature.starts_with('{') || !signature.ends_with('}') {
@@ -641,21 +601,9 @@ impl PortalValue {
             b'x' => Self::I64(reader.read_i64()?),
             b't' => Self::U64(reader.read_u64()?),
             b'd' => Self::F64(reader.read_f64()?),
-            b's' => Self::Str(
-                reader
-                    .read_str()?
-                    .to_string(),
-            ),
-            b'o' => Self::ObjectPath(
-                reader
-                    .read_object_path()?
-                    .to_string(),
-            ),
-            b'g' => Self::Signature(
-                reader
-                    .read_signature()?
-                    .to_string(),
-            ),
+            b's' => Self::Str(reader.read_str()?.to_string()),
+            b'o' => Self::ObjectPath(reader.read_object_path()?.to_string()),
+            b'g' => Self::Signature(reader.read_signature()?.to_string()),
             b'h' => Self::Handle(reader.read_fd()?),
             b'v' => Self::Variant(Box::new(Self::decode_variant(reader)?)),
             b'a' => {
@@ -686,16 +634,12 @@ impl PortalValue {
             b'{' => {
                 reader.read_struct()?;
                 let mut iter = SignatureIter::new(&signature[1..signature.len() - 1]);
-                let key_signature = iter
-                    .next()
-                    .ok_or_else(|| {
-                        codevar_dbus::DbusError::invalid_signature("dict entry without key type")
-                    })?;
-                let value_signature = iter
-                    .next()
-                    .ok_or_else(|| {
-                        codevar_dbus::DbusError::invalid_signature("dict entry without value type")
-                    })?;
+                let key_signature = iter.next().ok_or_else(|| {
+                    codevar_dbus::DbusError::invalid_signature("dict entry without key type")
+                })?;
+                let value_signature = iter.next().ok_or_else(|| {
+                    codevar_dbus::DbusError::invalid_signature("dict entry without value type")
+                })?;
                 let key = Self::decode_one(reader, key_signature)?;
                 let value = Self::decode_one(reader, value_signature)?;
                 Self::DictEntry(Box::new(key), Box::new(value))
@@ -1018,9 +962,7 @@ pub fn decode_options(reader: &mut DbusReader<'_>) -> DbusResult<OptionMap> {
     let mut options = OptionMap::new();
     while !array.is_empty() {
         array.read_struct()?;
-        let key = array
-            .read_str()?
-            .to_string();
+        let key = array.read_str()?.to_string();
         let value = PortalValue::decode_variant(&mut array)?;
         options.insert(key, value);
     }
@@ -1144,21 +1086,14 @@ pub fn env_var(name: &str) -> Option<String> {
         // SAFETY: `name` is a valid NUL-terminated C string; `getenv`
         // returns either null or a pointer to a string that outlives
         // this call, which is copied before returning.
-        let ptr = unsafe {
-            libc::getenv(
-                name.as_ptr()
-                    .cast::<libc::c_char>(),
-            )
-        };
+        let ptr = unsafe { libc::getenv(name.as_ptr().cast::<libc::c_char>()) };
         if ptr.is_null() {
             return None;
         }
         // SAFETY: the pointer is non-null and stays valid while no
         // environment mutation happens; it is copied immediately.
         let cstr = unsafe { core::ffi::CStr::from_ptr(ptr) };
-        cstr.to_str()
-            .ok()
-            .map(String::from)
+        cstr.to_str().ok().map(String::from)
     }
     #[cfg(not(all(unix, not(target_arch = "wasm32"))))]
     {
@@ -1304,10 +1239,7 @@ pub fn maybe_quote(arg: &str, quote_escape: bool) -> String {
 #[must_use]
 pub fn maybe_quote_argv(args: &[&str], quote_escape: bool) -> String {
     let mut out = String::new();
-    for (index, arg) in args
-        .iter()
-        .enumerate()
-    {
+    for (index, arg) in args.iter().enumerate() {
         if index > 0 {
             out.push(' ');
         }
@@ -1339,9 +1271,7 @@ pub fn shell_parse_argv(command: &str) -> Result<Vec<String>, PortalError> {
     let mut in_word = false;
     let mut escaped = false;
     let mut state = State::Unquoted;
-    let mut chars = command
-        .chars()
-        .peekable();
+    let mut chars = command.chars().peekable();
     while let Some(c) = chars.next() {
         match state {
             State::Unquoted => {
@@ -1424,9 +1354,7 @@ pub fn set_documents_mountpoint(path: Option<&str>) {
 /// Returns the cached document portal mount point.
 #[must_use]
 pub fn documents_mountpoint() -> Option<String> {
-    DOCUMENTS_MOUNTPOINT
-        .lock()
-        .clone()
+    DOCUMENTS_MOUNTPOINT.lock().clone()
 }
 
 /// Converts `path` into its `/by-app/{app_id}` alias when it lives
@@ -1491,13 +1419,11 @@ mod tests {
         .unwrap();
         assert!(file.has_group("portal"));
         assert_eq!(
-            file.get("portal", "DBusName")
-                .as_deref(),
+            file.get("portal", "DBusName").as_deref(),
             Some("org.example.Portal")
         );
         assert_eq!(
-            file.list("portal", "Interfaces")
-                .unwrap(),
+            file.list("portal", "Interfaces").unwrap(),
             Vec::from([String::from("a.b"), String::from("c.d")])
         );
         assert!(file.boolean("extra", "flag", false));
@@ -1509,9 +1435,7 @@ mod tests {
         edited.set("portal", "UseIn", "gnome");
         edited.set("new", "k", "v");
         assert_eq!(
-            edited
-                .get("portal", "DBusName")
-                .as_deref(),
+            edited.get("portal", "DBusName").as_deref(),
             Some("org.example.Other")
         );
         assert!(edited.remove("portal", "UseIn"));
@@ -1536,11 +1460,7 @@ mod tests {
     #[test]
     fn unescapes_glib_string_sequences() {
         let file = KeyFile::parse("[g]\na=one\\stwo\\nline\\;semi\\\\slash\n").unwrap();
-        assert_eq!(
-            file.get("g", "a")
-                .unwrap(),
-            "one two\nline;semi\\slash"
-        );
+        assert_eq!(file.get("g", "a").unwrap(), "one two\nline;semi\\slash");
 
         let invalid = KeyFile::parse("[g]\na=x\\qy\n").unwrap();
         assert_eq!(invalid.get("g", "a"), None);
@@ -1548,48 +1468,20 @@ mod tests {
 
         let escaped = KeyFile::parse("[g]\na=x\\;y;z;\n").unwrap();
         assert_eq!(
-            escaped
-                .list("g", "a")
-                .unwrap(),
+            escaped.list("g", "a").unwrap(),
             Vec::from([String::from("x;y"), String::from("z")])
         );
 
         let empty = KeyFile::parse("[g]\na=\n").unwrap();
-        assert!(
-            empty
-                .list("g", "a")
-                .unwrap()
-                .is_empty()
-        );
+        assert!(empty.list("g", "a").unwrap().is_empty());
 
         let merged = KeyFile::parse("[g]\na=1\n[g]\nb=2\n").unwrap();
-        assert_eq!(
-            merged
-                .get("g", "a")
-                .as_deref(),
-            Some("1")
-        );
-        assert_eq!(
-            merged
-                .get("g", "b")
-                .as_deref(),
-            Some("2")
-        );
+        assert_eq!(merged.get("g", "a").as_deref(), Some("1"));
+        assert_eq!(merged.get("g", "b").as_deref(), Some("2"));
 
         let duplicate = KeyFile::parse("[g]\nk=first\nk=last\n").unwrap();
-        assert_eq!(
-            duplicate
-                .get("g", "k")
-                .as_deref(),
-            Some("last")
-        );
-        assert_eq!(
-            duplicate
-                .entries("g")
-                .unwrap()
-                .len(),
-            2
-        );
+        assert_eq!(duplicate.get("g", "k").as_deref(), Some("last"));
+        assert_eq!(duplicate.entries("g").unwrap().len(), 2);
     }
 
     #[test]

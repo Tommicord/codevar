@@ -51,16 +51,13 @@ impl Transcript {
         }
         self.alg = alg;
         self.hasher = HashCtx::new(alg);
-        self.hasher
-            .update(&self.bytes);
+        self.hasher.update(&self.bytes);
     }
 
     /// Appends a complete handshake message (`type || uint24 length || body`).
     pub fn add_message(&mut self, message: &[u8]) {
-        self.hasher
-            .update(message);
-        self.bytes
-            .extend_from_slice(message);
+        self.hasher.update(message);
+        self.bytes.extend_from_slice(message);
     }
 
     /// Replaces the first ClientHello with a TLS 1.3 `message_hash` after HRR
@@ -75,8 +72,7 @@ impl Transcript {
         synthetic.extend_from_slice(&ch_hash);
 
         // Rebuild: drop original ClientHello bytes, keep anything after it is not expected yet.
-        self.bytes
-            .clear();
+        self.bytes.clear();
         self.hasher = HashCtx::new(self.alg);
         self.add_message(&synthetic);
     }
@@ -84,8 +80,7 @@ impl Transcript {
     /// Current transcript hash.
     #[must_use]
     pub fn hash(&self) -> Vec<u8> {
-        self.hasher
-            .current()
+        self.hasher.current()
     }
 
     /// Raw concatenated handshake bytes.

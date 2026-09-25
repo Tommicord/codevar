@@ -40,19 +40,14 @@ fn handle_request_clipboard<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let session_handle = reader
-        .read_object_path()?
-        .to_string();
+    let session_handle = reader.read_object_path()?.to_string();
     let options = crate::xdp_utils::decode_options(&mut reader)?;
 
     let filtered = filter_options(&options, REQUEST_CLIPBOARD_OPTIONS)?;
 
     let handle = ctx.begin_session(inv, &filtered)?;
 
-    let app_id = handle
-        .app_info
-        .id()
-        .to_string();
+    let app_id = handle.app_info.id().to_string();
 
     ctx.call_impl(
         CLIPBOARD_IMPL_INTERFACE,
@@ -75,9 +70,7 @@ fn handle_set_selection<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let session_handle = reader
-        .read_object_path()?
-        .to_string();
+    let session_handle = reader.read_object_path()?.to_string();
     let options = crate::xdp_utils::decode_options(&mut reader)?;
 
     let filtered = filter_options(&options, SET_SELECTION_OPTIONS)?;
@@ -104,9 +97,7 @@ fn handle_selection_write<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let session_handle = reader
-        .read_object_path()?
-        .to_string();
+    let session_handle = reader.read_object_path()?.to_string();
     let serial = reader.read_u32()?;
 
     let handle = ctx
@@ -144,9 +135,7 @@ fn handle_selection_write_done<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let session_handle = reader
-        .read_object_path()?
-        .to_string();
+    let session_handle = reader.read_object_path()?.to_string();
     let serial = reader.read_u32()?;
     let success = reader.read_bool()?;
 
@@ -173,12 +162,8 @@ fn handle_selection_read<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let session_handle = reader
-        .read_object_path()?
-        .to_string();
-    let mime_type = reader
-        .read_str()?
-        .to_string();
+    let session_handle = reader.read_object_path()?.to_string();
+    let mime_type = reader.read_str()?.to_string();
 
     let handle = ctx
         .take_session(&session_handle)

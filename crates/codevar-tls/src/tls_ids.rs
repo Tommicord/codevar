@@ -54,8 +54,7 @@ impl ProtocolVersion {
     /// Encodes as two big-endian bytes.
     #[must_use]
     pub const fn to_be_bytes(self) -> [u8; 2] {
-        self.as_u16()
-            .to_be_bytes()
+        self.as_u16().to_be_bytes()
     }
 }
 
@@ -866,16 +865,8 @@ mod tests {
     fn default_offered_cipher_suites_are_complete_and_ordered() {
         let offered = CipherSuite::default_offered();
         assert_eq!(offered.len(), 9);
-        assert!(
-            offered[..3]
-                .iter()
-                .all(|s| s.is_tls13())
-        );
-        assert!(
-            offered[3..]
-                .iter()
-                .all(|s| s.is_tls12())
-        );
+        assert!(offered[..3].iter().all(|s| s.is_tls13()));
+        assert!(offered[3..].iter().all(|s| s.is_tls12()));
         let mut set = HashSet::new();
         for cs in offered {
             assert!(set.insert(*cs), "dup for {cs:?}");

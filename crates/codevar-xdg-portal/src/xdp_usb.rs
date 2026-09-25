@@ -110,9 +110,7 @@ fn handle_enumerate_devices<T: codevar_dbus::DbusTransport + 'static>(
         let mut device_id = String::new();
         let mut device_properties = OptionMap::new();
         while !device_dict.is_empty() {
-            let key = device_dict
-                .read_str()?
-                .to_string();
+            let key = device_dict.read_str()?.to_string();
             let value = crate::xdp_utils::decode_variant(&mut device_dict)?;
             if key == "id" {
                 device_id = value.to_string();
@@ -141,9 +139,7 @@ fn handle_acquire_devices<T: codevar_dbus::DbusTransport + 'static>(
     inv: &crate::xdp_context::MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let parent_window = reader
-        .read_str()?
-        .to_string();
+    let parent_window = reader.read_str()?.to_string();
     let mut devices_array = reader.read_array(1)?;
     let options = crate::xdp_utils::decode_options(&mut reader)?;
 
@@ -155,9 +151,7 @@ fn handle_acquire_devices<T: codevar_dbus::DbusTransport + 'static>(
         let mut device_id = String::new();
         let mut device_options = OptionMap::new();
         while !device_dict.is_empty() {
-            let key = device_dict
-                .read_str()?
-                .to_string();
+            let key = device_dict.read_str()?.to_string();
             let value = crate::xdp_utils::PortalValue::decode_variant(&mut device_dict)?;
             if key == "id" {
                 device_id = value.to_string();
@@ -169,10 +163,7 @@ fn handle_acquire_devices<T: codevar_dbus::DbusTransport + 'static>(
     }
 
     let handle = ctx.begin_request(inv, &_filtered)?;
-    let app_id = handle
-        .app_info
-        .id()
-        .to_string();
+    let app_id = handle.app_info.id().to_string();
     ctx.call_impl(
         "org.freedesktop.impl.portal.Usb",
         "AcquireDevices",
@@ -204,9 +195,7 @@ fn handle_finish_acquire_devices<T: codevar_dbus::DbusTransport + 'static>(
     inv: &crate::xdp_context::MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let handle_path = reader
-        .read_object_path()?
-        .to_string();
+    let handle_path = reader.read_object_path()?.to_string();
     let _options = crate::xdp_utils::decode_options(&mut reader)?;
 
     let handle = ctx
@@ -230,9 +219,7 @@ fn handle_finish_acquire_devices<T: codevar_dbus::DbusTransport + 'static>(
         let mut device_id = String::new();
         let mut result = String::new();
         while !result_dict.is_empty() {
-            let key = result_dict
-                .read_str()?
-                .to_string();
+            let key = result_dict.read_str()?.to_string();
             let value = crate::xdp_utils::PortalValue::decode_variant(&mut result_dict)?;
             if key == "id" {
                 device_id = value.to_string();
@@ -242,9 +229,7 @@ fn handle_finish_acquire_devices<T: codevar_dbus::DbusTransport + 'static>(
         }
         results.push((device_id, result));
     }
-    finished = reply_reader
-        .read_bool()
-        .unwrap_or(false);
+    finished = reply_reader.read_bool().unwrap_or(false);
     ctx.complete_request(&handle, 0, &OptionMap::new())?;
     ctx.reply(inv, |bw| {
         bw.write_array("(sa{sv})", |inner| {
@@ -283,9 +268,7 @@ fn handle_release_devices<T: codevar_dbus::DbusTransport + 'static>(
             bw.write_array("{sv}", |_| Ok(()))
         },
     )?;
-    let _ = ctx
-        .conn
-        .recv_timeout(CALL_TIMEOUT);
+    let _ = ctx.conn.recv_timeout(CALL_TIMEOUT);
     let _ = device_id;
     ctx.reply_empty(inv)
 }

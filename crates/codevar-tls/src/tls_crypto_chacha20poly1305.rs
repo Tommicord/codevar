@@ -116,34 +116,13 @@ unsafe fn read_key_words(key: &[u8]) -> [u32; 8] {
         let p = key.as_ptr();
         [
             u32::from_le(core::ptr::read_unaligned(p.cast())),
-            u32::from_le(core::ptr::read_unaligned(
-                p.add(4)
-                    .cast(),
-            )),
-            u32::from_le(core::ptr::read_unaligned(
-                p.add(8)
-                    .cast(),
-            )),
-            u32::from_le(core::ptr::read_unaligned(
-                p.add(12)
-                    .cast(),
-            )),
-            u32::from_le(core::ptr::read_unaligned(
-                p.add(16)
-                    .cast(),
-            )),
-            u32::from_le(core::ptr::read_unaligned(
-                p.add(20)
-                    .cast(),
-            )),
-            u32::from_le(core::ptr::read_unaligned(
-                p.add(24)
-                    .cast(),
-            )),
-            u32::from_le(core::ptr::read_unaligned(
-                p.add(28)
-                    .cast(),
-            )),
+            u32::from_le(core::ptr::read_unaligned(p.add(4).cast())),
+            u32::from_le(core::ptr::read_unaligned(p.add(8).cast())),
+            u32::from_le(core::ptr::read_unaligned(p.add(12).cast())),
+            u32::from_le(core::ptr::read_unaligned(p.add(16).cast())),
+            u32::from_le(core::ptr::read_unaligned(p.add(20).cast())),
+            u32::from_le(core::ptr::read_unaligned(p.add(24).cast())),
+            u32::from_le(core::ptr::read_unaligned(p.add(28).cast())),
         ]
     }
 }
@@ -309,9 +288,7 @@ fn poly1305(key: &[u8; 32], msg: &[u8]) -> [u8; 16] {
         c = g[i] >> 26;
         g[i] &= 0x3ff_ffff;
     }
-    g[4] = h[4]
-        .wrapping_add(c)
-        .wrapping_sub(1 << 26);
+    g[4] = h[4].wrapping_add(c).wrapping_sub(1 << 26);
 
     let mask = (g[4] >> 31).wrapping_sub(1);
     let not_mask = !mask;

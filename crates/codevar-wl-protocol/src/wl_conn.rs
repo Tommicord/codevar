@@ -125,11 +125,7 @@ impl WlClosure {
             return Err(WlError::MessageTooBig(size));
         }
         let mut bytes = Vec::with_capacity(size);
-        bytes.extend_from_slice(
-            &self
-                .sender_id
-                .to_le_bytes(),
-        );
+        bytes.extend_from_slice(&self.sender_id.to_le_bytes());
         let header = ((size as u32) << 16) | (self.opcode & 0x0000_ffff);
         bytes.extend_from_slice(&header.to_le_bytes());
         for arg in &self.args {
@@ -139,11 +135,7 @@ impl WlClosure {
                     bytes.extend_from_slice(&value.to_le_bytes());
                 }
                 WlArgument::Fixed(value) => {
-                    bytes.extend_from_slice(
-                        &value
-                            .to_raw()
-                            .to_le_bytes(),
-                    );
+                    bytes.extend_from_slice(&value.to_raw().to_le_bytes());
                 }
                 WlArgument::Object(id) => bytes.extend_from_slice(&id.to_le_bytes()),
                 WlArgument::Str(None) => bytes.extend_from_slice(&0u32.to_le_bytes()),
@@ -201,10 +193,7 @@ fn validate_args(message: &'static WlMessage, args: &[WlArgument]) -> WlResult<(
             args.len()
         )));
     }
-    for (arg, msg_arg) in args
-        .iter()
-        .zip(message.args())
-    {
+    for (arg, msg_arg) in args.iter().zip(message.args()) {
         arg.validate(msg_arg.details)?;
     }
     Ok(())
@@ -233,10 +222,7 @@ const fn align_up(length: usize) -> usize {
 }
 
 fn pad_to_word(bytes: &mut Vec<u8>) {
-    while !bytes
-        .len()
-        .is_multiple_of(4)
-    {
+    while !bytes.len().is_multiple_of(4) {
         bytes.push(0);
     }
 }
@@ -247,9 +233,7 @@ fn truncated() -> WlError {
 
 fn read_u32(bytes: &[u8], pos: usize) -> WlResult<u32> {
     let end = pos.saturating_add(4);
-    let slice = bytes
-        .get(pos..end)
-        .ok_or_else(truncated)?;
+    let slice = bytes.get(pos..end).ok_or_else(truncated)?;
     let mut value = [0u8; 4];
     value.copy_from_slice(slice);
     Ok(u32::from_le_bytes(value))
@@ -314,12 +298,8 @@ fn parse_args(
                 }
                 let words = length.div_ceil(4);
                 let end = pos.saturating_add(words * 4);
-                let data = bytes
-                    .get(pos..end)
-                    .ok_or_else(truncated)?;
-                let payload = data
-                    .get(..length)
-                    .ok_or_else(truncated)?;
+                let data = bytes.get(pos..end).ok_or_else(truncated)?;
+                let payload = data.get(..length).ok_or_else(truncated)?;
                 if payload.last() != Some(&0) {
                     return Err(WlError::invalid_argument("string is not nul terminated"));
                 }
@@ -337,12 +317,8 @@ fn parse_args(
                 pos += 4;
                 let words = length.div_ceil(4);
                 let end = pos.saturating_add(words * 4);
-                let data = bytes
-                    .get(pos..end)
-                    .ok_or_else(truncated)?;
-                let payload = data
-                    .get(..length)
-                    .ok_or_else(truncated)?;
+                let data = bytes.get(pos..end).ok_or_else(truncated)?;
+                let payload = data.get(..length).ok_or_else(truncated)?;
                 pos = end;
                 args.push(WlArgument::Array(Some(WlArray::from_bytes(payload))));
             }
@@ -366,19 +342,8 @@ fn parse_args(
 /// space or is already in use, and [`WlError::TooManyObjects`] when the id
 /// space is exhausted.
 pub fn reserve_new_ids<T>(closure: &WlClosure, map: &mut WlMap<T>) -> WlResult<()> {
-    for (arg, details) in closure
-        .args
-        .iter()
-        .zip(
-            closure
-                .message
-                .args(),
-        )
-    {
-        if details
-            .details
-            .ty
-            == WlArgType::NewId
+    for (arg, details) in closure.args.iter().zip(closure.message.args()) {
+        if details.details.ty == WlArgType::NewId
             && let WlArgument::NewId(id) = arg
         {
             map.reserve_new(*id)?;
@@ -401,17 +366,9 @@ pub fn lookup_objects<T: WlObject>(closure: &mut WlClosure, map: &WlMap<T>) -> W
     for (arg, details) in closure
         .args
         .iter_mut()
-        .zip(
-            closure
-                .message
-                .args(),
-        )
+        .zip(closure.message.args())
     {
-        if details
-            .details
-            .ty
-            != WlArgType::Object
-        {
+        if details.details.ty != WlArgType::Object {
             continue;
         }
         let id = match arg {
@@ -425,17 +382,13 @@ pub fn lookup_objects<T: WlObject>(closure: &mut WlClosure, map: &WlMap<T>) -> W
             *arg = WlArgument::Object(0);
             continue;
         }
-        let object = map
-            .lookup(id)
-            .ok_or(WlError::InvalidObject(id))?;
+        let object = map.lookup(id).ok_or(WlError::InvalidObject(id))?;
         if let Some(expected) = details.interface
             && !expected.equal(object.interface())
         {
             return Err(WlError::invalid_argument(format!(
                 "object {id} has interface {}, expected {}",
-                object
-                    .interface()
-                    .name,
+                object.interface().name,
                 expected.name
             )));
         }
@@ -492,8 +445,7 @@ impl<T: WlTransport> WlConnection<T> {
     #[inline]
     #[must_use]
     pub fn handle(&self) -> WlHandle {
-        self.transport
-            .handle()
+        self.transport.handle()
     }
 
     /// Returns `true` once the peer closed the connection.
@@ -515,17 +467,13 @@ impl<T: WlTransport> WlConnection<T> {
         }
         let mut buf = [0u8; MAX_MESSAGE_SIZE];
         let mut fds = Vec::new();
-        let read = self
-            .transport
-            .recv(&mut buf, &mut fds)?;
+        let read = self.transport.recv(&mut buf, &mut fds)?;
         if read == 0 {
             self.disconnected = true;
             return Err(WlError::Disconnected);
         }
-        self.input
-            .extend_from_slice(&buf[..read]);
-        self.input_fds
-            .extend(fds);
+        self.input.extend_from_slice(&buf[..read]);
+        self.input_fds.extend(fds);
         Ok(read)
     }
 
@@ -533,25 +481,21 @@ impl<T: WlTransport> WlConnection<T> {
     #[inline]
     #[must_use]
     pub fn pending_input(&self) -> usize {
-        self.input
-            .len()
+        self.input.len()
     }
 
     /// Returns the number of buffered output bytes.
     #[inline]
     #[must_use]
     pub fn pending_output(&self) -> usize {
-        self.output
-            .len()
+        self.output.len()
     }
 
     /// Returns `true` when buffered output waits to be flushed.
     #[inline]
     #[must_use]
     pub fn wants_write(&self) -> bool {
-        !self
-            .output
-            .is_empty()
+        !self.output.is_empty()
     }
 
     /// Peeks at the header of the next message.
@@ -560,34 +504,18 @@ impl<T: WlTransport> WlConnection<T> {
     /// full header is buffered.
     #[must_use]
     pub fn peek(&self) -> Option<(u32, u32, u32)> {
-        if self
-            .input
-            .len()
-            < 8
-        {
+        if self.input.len() < 8 {
             return None;
         }
-        let sender = u32::from_le_bytes(
-            self.input[0..4]
-                .try_into()
-                .ok()?,
-        );
-        let header = u32::from_le_bytes(
-            self.input[4..8]
-                .try_into()
-                .ok()?,
-        );
+        let sender = u32::from_le_bytes(self.input[0..4].try_into().ok()?);
+        let header = u32::from_le_bytes(self.input[4..8].try_into().ok()?);
         Some((sender, header & 0x0000_ffff, header >> 16))
     }
 
     /// Drops `size` buffered input bytes without decoding them.
     pub fn consume(&mut self, size: usize) {
-        let size = size.min(
-            self.input
-                .len(),
-        );
-        self.input
-            .drain(..size);
+        let size = size.min(self.input.len());
+        self.input.drain(..size);
     }
 
     /// Drops a message and releases the next `fd_count` file descriptors.
@@ -596,31 +524,19 @@ impl<T: WlTransport> WlConnection<T> {
     pub fn skip_message(&mut self, size: usize, fd_count: usize) {
         self.consume(size);
         for _ in 0..fd_count {
-            if let Some(fd) = self
-                .input_fds
-                .pop_front()
-            {
-                self.transport
-                    .release_fd(fd);
+            if let Some(fd) = self.input_fds.pop_front() {
+                self.transport.release_fd(fd);
             }
         }
     }
 
     /// Releases all file descriptors held by the connection.
     pub fn release_fds(&mut self) {
-        while let Some(fd) = self
-            .input_fds
-            .pop_front()
-        {
-            self.transport
-                .release_fd(fd);
+        while let Some(fd) = self.input_fds.pop_front() {
+            self.transport.release_fd(fd);
         }
-        for fd in self
-            .output_fds
-            .drain(..)
-        {
-            self.transport
-                .release_fd(fd);
+        for fd in self.output_fds.drain(..) {
+            self.transport.release_fd(fd);
         }
     }
 
@@ -647,11 +563,7 @@ impl<T: WlTransport> WlConnection<T> {
         if size > MAX_MESSAGE_SIZE {
             return Err(WlError::MessageTooBig(size));
         }
-        if self
-            .input
-            .len()
-            < size
-        {
+        if self.input.len() < size {
             return Err(WlError::WouldBlock);
         }
         let mut taken_fds = Vec::new();
@@ -669,8 +581,7 @@ impl<T: WlTransport> WlConnection<T> {
             }),
             Err(error) => {
                 for fd in taken_fds {
-                    self.transport
-                        .release_fd(fd);
+                    self.transport.release_fd(fd);
                 }
                 Err(error)
             }
@@ -690,10 +601,8 @@ impl<T: WlTransport> WlConnection<T> {
         let bytes = closure.encode()?;
         let fds = closure.fd_args();
         closure.clear_fds();
-        self.output
-            .extend_from_slice(&bytes);
-        self.output_fds
-            .extend(fds);
+        self.output.extend_from_slice(&bytes);
+        self.output_fds.extend(fds);
         Ok(())
     }
 
@@ -709,27 +618,17 @@ impl<T: WlTransport> WlConnection<T> {
     /// [`WlError::Io`] for transport failures.
     pub fn flush(&mut self) -> WlResult<usize> {
         let mut written = 0usize;
-        while !self
-            .output
-            .is_empty()
-        {
+        while !self.output.is_empty() {
             let fds = core::mem::take(&mut self.output_fds);
-            match self
-                .transport
-                .send(&self.output, &fds)
-            {
+            match self.transport.send(&self.output, &fds) {
                 Ok(0) => {
                     self.output_fds = fds;
                     break;
                 }
                 Ok(count) => {
-                    let count = count.min(
-                        self.output
-                            .len(),
-                    );
+                    let count = count.min(self.output.len());
                     written += count;
-                    self.output
-                        .drain(..count);
+                    self.output.drain(..count);
                 }
                 Err(WlError::WouldBlock) => {
                     self.output_fds = fds;
@@ -756,14 +655,12 @@ impl<T: WlTransport> WlConnection<T> {
         if self.disconnected {
             return Err(WlError::Disconnected);
         }
-        self.transport
-            .wait(timeout, mask)
+        self.transport.wait(timeout, mask)
     }
 
     /// Releases a file descriptor the caller does not want to keep.
     pub fn release_fd(&mut self, fd: WlFd) {
-        self.transport
-            .release_fd(fd);
+        self.transport.release_fd(fd);
     }
 
     /// Releases leftover file descriptor arguments after a dispatch.
@@ -773,8 +670,7 @@ impl<T: WlTransport> WlConnection<T> {
                 && *fd >= 0
             {
                 let fd = core::mem::replace(fd, -1);
-                self.transport
-                    .release_fd(fd);
+                self.transport.release_fd(fd);
             }
         }
     }
@@ -804,18 +700,12 @@ mod tests {
 
     impl WlTransport for TestTransport {
         fn recv(&mut self, buf: &mut [u8], _fds: &mut Vec<WlFd>) -> WlResult<usize> {
-            if self
-                .input
-                .is_empty()
-            {
+            if self.input.is_empty() {
                 return Err(WlError::WouldBlock);
             }
             let mut count = 0;
             while count < buf.len() {
-                match self
-                    .input
-                    .pop_front()
-                {
+                match self.input.pop_front() {
                     Some(byte) => {
                         buf[count] = byte;
                         count += 1;
@@ -827,8 +717,7 @@ mod tests {
         }
 
         fn send(&mut self, data: &[u8], _fds: &[WlFd]) -> WlResult<usize> {
-            self.sent
-                .extend_from_slice(data);
+            self.sent.extend_from_slice(data);
             Ok(data.len())
         }
 
@@ -850,9 +739,7 @@ mod tests {
             alloc::vec![WlArgument::NewId(2)],
         )
         .unwrap();
-        let bytes = closure
-            .encode()
-            .unwrap();
+        let bytes = closure.encode().unwrap();
         assert_eq!(bytes, alloc::vec![1, 0, 0, 0, 1, 0, 12, 0, 2, 0, 0, 0]);
     }
 
@@ -878,18 +765,12 @@ mod tests {
             ],
         )
         .unwrap();
-        let bytes = closure
-            .encode()
-            .unwrap();
+        let bytes = closure.encode().unwrap();
         assert_eq!(bytes.len() % 4, 0);
 
         let mut connection = WlConnection::new(TestTransport::new());
-        connection
-            .input
-            .extend_from_slice(&bytes);
-        let decoded = connection
-            .demarshal(message)
-            .unwrap();
+        connection.input.extend_from_slice(&bytes);
+        let decoded = connection.demarshal(message).unwrap();
         assert_eq!(decoded.sender_id, 2);
         assert_eq!(decoded.opcode, REGISTRY_BIND);
         assert_eq!(decoded.args[0], WlArgument::Uint(4));
@@ -906,11 +787,7 @@ mod tests {
         connection
             .input
             .extend_from_slice(&[1, 0, 0, 0, 4, 0, 0, 0]);
-        assert!(
-            connection
-                .demarshal(message)
-                .is_err()
-        );
+        assert!(connection.demarshal(message).is_err());
 
         let mut connection = WlConnection::new(TestTransport::new());
         // Complete header for a twenty byte message, payload missing.
@@ -934,31 +811,16 @@ mod tests {
         let message = &CALLBACK_INTERFACE.events[CALLBACK_DONE as usize];
         let mut closure =
             WlClosure::new(7, CALLBACK_DONE, message, alloc::vec![WlArgument::Uint(3)]).unwrap();
-        connection
-            .queue_closure(&mut closure)
-            .unwrap();
+        connection.queue_closure(&mut closure).unwrap();
         assert!(connection.wants_write());
-        let written = connection
-            .flush()
-            .unwrap();
+        let written = connection.flush().unwrap();
         assert_eq!(written, 12);
         assert!(!connection.wants_write());
 
-        let sent = core::mem::take(
-            &mut connection
-                .transport
-                .sent,
-        );
-        connection
-            .transport
-            .input
-            .extend(sent);
-        connection
-            .read()
-            .unwrap();
-        let decoded = connection
-            .demarshal(message)
-            .unwrap();
+        let sent = core::mem::take(&mut connection.transport.sent);
+        connection.transport.input.extend(sent);
+        connection.read().unwrap();
+        let decoded = connection.demarshal(message).unwrap();
         assert_eq!(decoded.sender_id, 7);
         assert_eq!(decoded.args[0], WlArgument::Uint(3));
     }
@@ -969,16 +831,13 @@ mod tests {
         let closure = WlClosure::new(1, DISPLAY_SYNC, message, alloc::vec![WlArgument::NewId(3)]).unwrap();
         let mut map: WlMap<u32> = WlMap::new(WlMapSide::Server);
         // The client's id space grows densely, so ids 1 and 2 exist already.
-        map.reserve_new(1)
-            .unwrap();
-        map.reserve_new(2)
-            .unwrap();
+        map.reserve_new(1).unwrap();
+        map.reserve_new(2).unwrap();
         reserve_new_ids(&closure, &mut map).unwrap();
         assert!(map.is_vacant(3));
 
         let mut map: WlMap<WlProbe> = WlMap::new(WlMapSide::Client);
-        map.insert_at(1, WlProbe)
-            .unwrap();
+        map.insert_at(1, WlProbe).unwrap();
         let mut closure = WlClosure::new(
             1,
             DISPLAY_ERROR,

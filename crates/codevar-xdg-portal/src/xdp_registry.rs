@@ -118,9 +118,7 @@ fn handle_register<T: codevar_dbus::DbusTransport + 'static>(
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
 
-    let app_id = reader
-        .read_str()?
-        .to_string();
+    let app_id = reader.read_str()?.to_string();
     let options = decode_options(&mut reader)?;
 
     let filtered = filter_options_map(&options, REGISTER_OPTION_KEYS)?;

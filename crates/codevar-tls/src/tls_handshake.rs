@@ -36,11 +36,7 @@ impl HandshakeMessage {
     /// Encodes `type || uint24(length) || body`.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(
-            4 + self
-                .body
-                .len(),
-        );
+        let mut out = Vec::with_capacity(4 + self.body.len());
         out.push(self.msg_type as u8);
         put_u24_len_body(&mut out, &self.body);
         out
@@ -70,23 +66,17 @@ pub struct HandshakeReassembly {
 impl HandshakeReassembly {
     /// Appends decrypted handshake bytes.
     pub fn push(&mut self, data: &[u8]) {
-        self.buf
-            .extend_from_slice(data);
+        self.buf.extend_from_slice(data);
     }
 
     /// Clears buffered bytes.
     pub fn clear(&mut self) {
-        self.buf
-            .clear();
+        self.buf.clear();
     }
 
     /// Pops the next complete handshake message, if available.
     pub fn pop_message(&mut self) -> TlsResult<Option<HandshakeMessage>> {
-        if self
-            .buf
-            .len()
-            < 4
-        {
+        if self.buf.len() < 4 {
             return Ok(None);
         }
         let msg_type = HandshakeType::from_u8(self.buf[0])?;
@@ -94,25 +84,18 @@ impl HandshakeReassembly {
         if len > 256 * 1024 {
             return Err(TlsError::Alert(AlertDescription::DecodeError));
         }
-        if self
-            .buf
-            .len()
-            < 4 + len
-        {
+        if self.buf.len() < 4 + len {
             return Ok(None);
         }
         let body = self.buf[4..4 + len].to_vec();
-        self.buf
-            .drain(..4 + len);
+        self.buf.drain(..4 + len);
         Ok(Some(HandshakeMessage { msg_type, body }))
     }
 
     /// Returns true if buffered data remains.
     #[must_use]
     pub fn has_buffered(&self) -> bool {
-        !self
-            .buf
-            .is_empty()
+        !self.buf.is_empty()
     }
 }
 
@@ -143,18 +126,12 @@ impl ClientHello {
             .bytes(32)?
             .try_into()
             .map_err(|_| TlsError::decode("client random"))?;
-        let session_id = r
-            .vec_u8()?
-            .to_vec();
+        let session_id = r.vec_u8()?.to_vec();
         if session_id.len() > 32 {
             return Err(TlsError::Alert(AlertDescription::IllegalParameter));
         }
         let suites = r.vec_u16()?;
-        if suites.len() < 2
-            || !suites
-                .len()
-                .is_multiple_of(2)
-        {
+        if suites.len() < 2 || !suites.len().is_multiple_of(2) {
             return Err(TlsError::Alert(AlertDescription::DecodeError));
         }
         let mut cipher_suites = Vec::new();
@@ -186,16 +163,10 @@ impl ClientHello {
     /// Negotiated version preference from extensions or legacy field.
     #[must_use]
     pub fn offered_versions(&self) -> Vec<ProtocolVersion> {
-        if self
-            .extensions
-            .supported_versions
-            .is_empty()
-        {
+        if self.extensions.supported_versions.is_empty() {
             vec![self.legacy_version]
         } else {
-            self.extensions
-                .supported_versions
-                .clone()
+            self.extensions.supported_versions.clone()
         }
     }
 }
@@ -226,9 +197,7 @@ impl ServerHello {
             .bytes(32)?
             .try_into()
             .map_err(|_| TlsError::decode("server random"))?;
-        let session_id_echo = r
-            .vec_u8()?
-            .to_vec();
+        let session_id_echo = r.vec_u8()?.to_vec();
         let suite_code = r.u16()?;
         let cipher_suite =
             CipherSuite::from_u16(suite_code).ok_or(TlsError::Alert(AlertDescription::HandshakeFailure))?;
@@ -261,11 +230,7 @@ impl ServerHello {
 
     /// Negotiated protocol version.
     pub fn negotiated_version(&self) -> TlsResult<ProtocolVersion> {
-        if let Some(v) = self
-            .extensions
-            .supported_versions
-            .first()
-        {
+        if let Some(v) = self.extensions.supported_versions.first() {
             return Ok(*v);
         }
         // No supported_versions => TLS 1.2 ServerHello
@@ -335,17 +300,13 @@ impl CertificateTls13 {
     /// Parses a TLS 1.3 Certificate body.
     pub fn parse(body: &[u8]) -> TlsResult<Self> {
         let mut r = Reader::new(body);
-        let request_context = r
-            .vec_u8()?
-            .to_vec();
+        let request_context = r.vec_u8()?.to_vec();
         let list = r.vec_u24()?;
         r.expect_empty("certificate")?;
         let mut lr = Reader::new(list);
         let mut cert_chain = Vec::new();
         while !lr.is_empty() {
-            let cert = lr
-                .vec_u24()?
-                .to_vec();
+            let cert = lr.vec_u24()?.to_vec();
             let _exts = lr.vec_u16()?; // certificate extensions
             cert_chain.push(cert);
         }
@@ -385,10 +346,7 @@ impl CertificateTls12 {
         let mut lr = Reader::new(list);
         let mut cert_chain = Vec::new();
         while !lr.is_empty() {
-            cert_chain.push(
-                lr.vec_u24()?
-                    .to_vec(),
-            );
+            cert_chain.push(lr.vec_u24()?.to_vec());
         }
         Ok(Self { cert_chain })
     }
@@ -420,9 +378,7 @@ impl CertificateVerify {
         let mut r = Reader::new(body);
         let scheme =
             SignatureScheme::from_u16(r.u16()?).ok_or(TlsError::Alert(AlertDescription::IllegalParameter))?;
-        let signature = r
-            .vec_u16()?
-            .to_vec();
+        let signature = r.vec_u16()?.to_vec();
         r.expect_empty("certificate_verify")?;
         Ok(Self { scheme, signature })
     }
@@ -498,14 +454,10 @@ impl ServerKeyExchangeEcdhe {
         }
         let curve = crate::tls_ids::NamedGroup::from_u16(r.u16()?)
             .ok_or(TlsError::Alert(AlertDescription::IllegalParameter))?;
-        let public_key = r
-            .vec_u8()?
-            .to_vec();
+        let public_key = r.vec_u8()?.to_vec();
         let scheme =
             SignatureScheme::from_u16(r.u16()?).ok_or(TlsError::Alert(AlertDescription::IllegalParameter))?;
-        let signature = r
-            .vec_u16()?
-            .to_vec();
+        let signature = r.vec_u16()?.to_vec();
         r.expect_empty("server_key_exchange")?;
         Ok(Self {
             curve,
@@ -543,11 +495,7 @@ impl ServerKeyExchangeEcdhe {
         out.extend_from_slice(client_random);
         out.extend_from_slice(server_random);
         out.push(3);
-        out.extend_from_slice(
-            &curve
-                .as_u16()
-                .to_be_bytes(),
-        );
+        out.extend_from_slice(&curve.as_u16().to_be_bytes());
         out.push(public_key.len() as u8);
         out.extend_from_slice(public_key);
         out
@@ -565,9 +513,7 @@ impl ClientKeyExchangeEcdhe {
     /// Parses ClientKeyExchange.
     pub fn parse(body: &[u8]) -> TlsResult<Self> {
         let mut r = Reader::new(body);
-        let public_key = r
-            .vec_u8()?
-            .to_vec();
+        let public_key = r.vec_u8()?.to_vec();
         r.expect_empty("client_key_exchange")?;
         Ok(Self { public_key })
     }
@@ -659,9 +605,7 @@ mod tests {
         let mut ra = HandshakeReassembly::default();
         // u24 length 0xFFFFFF with only the 4-byte header present.
         ra.push(&[1, 0xFF, 0xFF, 0xFF]);
-        let err = ra
-            .pop_message()
-            .unwrap_err();
+        let err = ra.pop_message().unwrap_err();
         assert_eq!(err, TlsError::Alert(AlertDescription::DecodeError));
         // Header is retained; no body bytes were ever supplied.
         assert!(ra.has_buffered());
@@ -671,32 +615,21 @@ mod tests {
     fn reassembly_rejects_unknown_handshake_type() {
         let mut ra = HandshakeReassembly::default();
         ra.push(&[99, 0, 0, 0]);
-        let err = ra
-            .pop_message()
-            .unwrap_err();
+        let err = ra.pop_message().unwrap_err();
         assert!(matches!(err, TlsError::Decode(_)));
         // Type 3 is also unassigned.
         let mut ra2 = HandshakeReassembly::default();
         ra2.push(&[3, 0, 0, 1, 0xFF]);
-        assert!(
-            ra2.pop_message()
-                .is_err()
-        );
+        assert!(ra2.pop_message().is_err());
     }
 
     #[test]
     fn reassembly_zero_length_message() {
         let mut ra = HandshakeReassembly::default();
         ra.push(&[20, 0, 0, 0]);
-        let msg = ra
-            .pop_message()
-            .unwrap()
-            .unwrap();
+        let msg = ra.pop_message().unwrap().unwrap();
         assert_eq!(msg.msg_type, HandshakeType::Finished);
-        assert!(
-            msg.body
-                .is_empty()
-        );
+        assert!(msg.body.is_empty());
         assert!(!ra.has_buffered());
     }
 
@@ -704,23 +637,12 @@ mod tests {
     fn reassembly_waits_while_declared_length_exceeds_buffer() {
         let mut ra = HandshakeReassembly::default();
         ra.push(&[11, 0, 0, 10, 1, 2, 3]);
-        assert!(
-            ra.pop_message()
-                .unwrap()
-                .is_none()
-        );
+        assert!(ra.pop_message().unwrap().is_none());
         assert!(ra.has_buffered());
         ra.push(&[4, 5, 6, 7, 8, 9, 10]);
-        let msg = ra
-            .pop_message()
-            .unwrap()
-            .unwrap();
+        let msg = ra.pop_message().unwrap().unwrap();
         assert_eq!(msg.msg_type, HandshakeType::Certificate);
-        assert_eq!(
-            msg.body
-                .len(),
-            10
-        );
+        assert_eq!(msg.body.len(), 10);
         assert!(!ra.has_buffered());
     }
 
@@ -728,24 +650,13 @@ mod tests {
     fn reassembly_fragmented_message_fed_byte_by_byte() {
         let full = encode_handshake(HandshakeType::EncryptedExtensions, &[0x0A; 20]);
         let mut ra = HandshakeReassembly::default();
-        for (i, byte) in full
-            .iter()
-            .enumerate()
-        {
+        for (i, byte) in full.iter().enumerate() {
             ra.push(&[*byte]);
             if i + 1 < full.len() {
-                assert!(
-                    ra.pop_message()
-                        .unwrap()
-                        .is_none(),
-                    "early pop at {i}"
-                );
+                assert!(ra.pop_message().unwrap().is_none(), "early pop at {i}");
             }
         }
-        let msg = ra
-            .pop_message()
-            .unwrap()
-            .unwrap();
+        let msg = ra.pop_message().unwrap().unwrap();
         assert_eq!(msg.msg_type, HandshakeType::EncryptedExtensions);
         assert_eq!(msg.body, vec![0x0A; 20]);
         assert!(!ra.has_buffered());
@@ -760,22 +671,12 @@ mod tests {
         combined.extend_from_slice(&b);
         combined.extend_from_slice(&[20, 0, 0]); // partial trailer
         ra.push(&combined);
-        let m1 = ra
-            .pop_message()
-            .unwrap()
-            .unwrap();
+        let m1 = ra.pop_message().unwrap().unwrap();
         assert_eq!(m1.msg_type, HandshakeType::NewSessionTicket);
-        let m2 = ra
-            .pop_message()
-            .unwrap()
-            .unwrap();
+        let m2 = ra.pop_message().unwrap().unwrap();
         assert_eq!(m2.msg_type, HandshakeType::KeyUpdate);
         assert_eq!(m2.body, vec![0]);
-        assert!(
-            ra.pop_message()
-                .unwrap()
-                .is_none()
-        );
+        assert!(ra.pop_message().unwrap().is_none());
         assert!(ra.has_buffered());
         ra.clear();
         assert!(!ra.has_buffered());
@@ -785,24 +686,13 @@ mod tests {
     fn reassembly_streams_ten_thousand_small_messages() {
         let mut ra = HandshakeReassembly::default();
         for i in 0..10_000u32 {
-            let msg = HandshakeMessage::new(
-                HandshakeType::NewSessionTicket,
-                i.to_be_bytes()
-                    .to_vec(),
-            );
+            let msg = HandshakeMessage::new(HandshakeType::NewSessionTicket, i.to_be_bytes().to_vec());
             ra.push(&msg.encode());
         }
         let mut count = 0usize;
-        while let Some(msg) = ra
-            .pop_message()
-            .unwrap()
-        {
+        while let Some(msg) = ra.pop_message().unwrap() {
             assert_eq!(msg.msg_type, HandshakeType::NewSessionTicket);
-            assert_eq!(
-                msg.body
-                    .len(),
-                4
-            );
+            assert_eq!(msg.body.len(), 4);
             count += 1;
         }
         assert_eq!(count, 10_000);
@@ -832,12 +722,7 @@ mod tests {
         assert_eq!(ch.random, random);
         assert_eq!(ch.session_id, session_id);
         assert_eq!(ch.cipher_suites, vec![0x1301, 0xC02F]);
-        assert_eq!(
-            ch.extensions
-                .server_name
-                .as_deref(),
-            Some("example.com")
-        );
+        assert_eq!(ch.extensions.server_name.as_deref(), Some("example.com"));
         assert_eq!(
             ch.offered_versions(),
             vec![ProtocolVersion::Tls13, ProtocolVersion::Tls12]
@@ -965,12 +850,7 @@ mod tests {
             let extensions = ext_block(&[(ExtensionType::ServerName as u16, sni)]);
             let body = manual_ch_body(0x0303, &random, &[0], &[0x13, 0x01], &[0], Some(&extensions));
             let ch = ClientHello::parse(&body, Vec::new()).unwrap();
-            assert_eq!(
-                ch.extensions
-                    .server_name
-                    .as_deref(),
-                Some(host)
-            );
+            assert_eq!(ch.extensions.server_name.as_deref(), Some(host));
         }
     }
 
@@ -986,11 +866,7 @@ mod tests {
         let extensions = ext_block(&[(ExtensionType::SupportedVersions as u16, vec![2, 0x99, 0x99])]);
         let body = manual_ch_body(0x0303, &random, &[0], &[0x13, 0x01], &[0], Some(&extensions));
         let ch = ClientHello::parse(&body, Vec::new()).unwrap();
-        assert!(
-            ch.extensions
-                .supported_versions
-                .is_empty()
-        );
+        assert!(ch.extensions.supported_versions.is_empty());
         assert_eq!(ch.offered_versions(), vec![ProtocolVersion::Tls12]);
         // Odd-length list rejected.
         let extensions = ext_block(&[(ExtensionType::SupportedVersions as u16, vec![1, 3])]);
@@ -1005,34 +881,20 @@ mod tests {
         let exts = ext_block(&[(ExtensionType::SupportedVersions as u16, vec![3, 4])]);
         let body = manual_sh_body(0x0303, &random, &[0; 32], 0x1301, 0, Some(&exts));
         let sh = ServerHello::parse(&body, Vec::new()).unwrap();
-        assert_eq!(
-            sh.negotiated_version()
-                .unwrap(),
-            ProtocolVersion::Tls13
-        );
+        assert_eq!(sh.negotiated_version().unwrap(), ProtocolVersion::Tls13);
         // No extension + legacy TLS 1.2.
         let body = manual_sh_body(0x0303, &random, &[0; 32], 0xC02F, 0, None);
         let sh = ServerHello::parse(&body, Vec::new()).unwrap();
-        assert_eq!(
-            sh.negotiated_version()
-                .unwrap(),
-            ProtocolVersion::Tls12
-        );
+        assert_eq!(sh.negotiated_version().unwrap(), ProtocolVersion::Tls12);
         // Unknown legacy version falls back to TLS 1.2 (quirk).
         let body = manual_sh_body(0xABCD, &random, &[0; 32], 0xC02F, 0, None);
         let sh = ServerHello::parse(&body, Vec::new()).unwrap();
         assert_eq!(sh.legacy_version, ProtocolVersion::Tls12);
-        assert_eq!(
-            sh.negotiated_version()
-                .unwrap(),
-            ProtocolVersion::Tls12
-        );
+        assert_eq!(sh.negotiated_version().unwrap(), ProtocolVersion::Tls12);
         // Legacy TLS 1.3 without supported_versions is a protocol error.
         let body = manual_sh_body(0x0304, &random, &[0; 32], 0x1301, 0, None);
         let sh = ServerHello::parse(&body, Vec::new()).unwrap();
-        let err = sh
-            .negotiated_version()
-            .unwrap_err();
+        let err = sh.negotiated_version().unwrap_err();
         assert_eq!(err, TlsError::Alert(AlertDescription::ProtocolVersion));
     }
 
@@ -1087,11 +949,7 @@ mod tests {
         let chain = vec![vec![1u8, 2, 3], vec![4, 5, 6, 7]];
         let body = CertificateTls13::encode(&[], &chain).unwrap();
         let parsed = CertificateTls13::parse(&body).unwrap();
-        assert!(
-            parsed
-                .request_context
-                .is_empty()
-        );
+        assert!(parsed.request_context.is_empty());
         assert_eq!(parsed.cert_chain, chain);
 
         // Request context round trip.
@@ -1102,11 +960,7 @@ mod tests {
         // Empty chain.
         let body = CertificateTls13::encode(&[], &[]).unwrap();
         let parsed = CertificateTls13::parse(&body).unwrap();
-        assert!(
-            parsed
-                .cert_chain
-                .is_empty()
-        );
+        assert!(parsed.cert_chain.is_empty());
 
         // Truncation.
         let full = CertificateTls13::encode(&[], &chain).unwrap();
@@ -1125,11 +979,7 @@ mod tests {
 
         let empty = CertificateTls12::encode(&[]).unwrap();
         let parsed = CertificateTls12::parse(&empty).unwrap();
-        assert!(
-            parsed
-                .cert_chain
-                .is_empty()
-        );
+        assert!(parsed.cert_chain.is_empty());
 
         // Trailing garbage after the list.
         let mut bad = empty.clone();
@@ -1173,31 +1023,18 @@ mod tests {
         let wrong = Finished::parse(&[0u8; 32]);
         assert_ne!(wrong.verify_data, vd);
         let empty = Finished::parse(&[]);
-        assert!(
-            empty
-                .verify_data
-                .is_empty()
-        );
+        assert!(empty.verify_data.is_empty());
     }
 
     #[test]
     fn encrypted_extensions_round_trip_and_trailing() {
         let default = parse_encrypted_extensions(&[]).unwrap();
-        assert!(
-            default
-                .raw
-                .is_empty()
-        );
+        assert!(default.raw.is_empty());
 
         let entries = ext_block(&[(0x1234, vec![7, 7])]);
         let body = encode_encrypted_extensions(&entries).unwrap();
         let parsed = parse_encrypted_extensions(&body).unwrap();
-        assert_eq!(
-            parsed
-                .raw
-                .len(),
-            1
-        );
+        assert_eq!(parsed.raw.len(), 1);
         assert_eq!(parsed.raw[0].ext_type, 0x1234);
 
         // Trailing byte after the u16 extension vector.
@@ -1262,10 +1099,7 @@ mod tests {
         // Empty public key accepted by the parser (RFC says 1..255; quirk).
         let empty = ClientKeyExchangeEcdhe::encode(&[]).unwrap();
         let cke = ClientKeyExchangeEcdhe::parse(&empty).unwrap();
-        assert!(
-            cke.public_key
-                .is_empty()
-        );
+        assert!(cke.public_key.is_empty());
 
         // Declared u8 length exceeds buffer.
         assert!(ClientKeyExchangeEcdhe::parse(&[5, 1, 2]).is_err());

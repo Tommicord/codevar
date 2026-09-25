@@ -77,19 +77,14 @@ fn handle_add_notification<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let id = reader
-        .read_str()?
-        .to_string();
+    let id = reader.read_str()?.to_string();
     let notification = crate::xdp_utils::decode_options(&mut reader)?;
 
     let filtered = filter_options(&notification, NOTIFICATION_OPTIONS)?;
 
     let handle = ctx.begin_request(inv, &filtered)?;
 
-    let app_id = handle
-        .app_info
-        .id()
-        .to_string();
+    let app_id = handle.app_info.id().to_string();
 
     ctx.call_impl(
         NOTIFICATION_IMPL_INTERFACE,
@@ -111,9 +106,7 @@ fn handle_remove_notification<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let id = reader
-        .read_str()?
-        .to_string();
+    let id = reader.read_str()?.to_string();
 
     let app_info = crate::xdp_app_info::AppInfo::host(&inv.sender);
 

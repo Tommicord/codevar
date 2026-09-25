@@ -151,52 +151,36 @@ impl PrivateKey {
             (Self::Rsa(key), SignatureScheme::RsaPssRsaeSha256) => {
                 let signing_key = RsaPssSigningKey::<Sha256>::new(key.clone());
                 let sig = signing_key.sign_with_rng(&mut rng, message);
-                Ok(sig
-                    .to_bytes()
-                    .into())
+                Ok(sig.to_bytes().into())
             }
             (Self::Rsa(key), SignatureScheme::RsaPssRsaeSha384) => {
                 let signing_key = RsaPssSigningKey::<Sha384>::new(key.clone());
                 let sig = signing_key.sign_with_rng(&mut rng, message);
-                Ok(sig
-                    .to_bytes()
-                    .into())
+                Ok(sig.to_bytes().into())
             }
             (Self::Rsa(key), SignatureScheme::RsaPkcs1Sha256) => {
                 let signing_key = RsaPkcs1SigningKey::<Sha256>::new(key.clone());
                 let sig = signing_key.sign_with_rng(&mut rng, message);
-                Ok(sig
-                    .to_bytes()
-                    .into())
+                Ok(sig.to_bytes().into())
             }
             (Self::Rsa(key), SignatureScheme::RsaPkcs1Sha384) => {
                 let signing_key = RsaPkcs1SigningKey::<Sha384>::new(key.clone());
                 let sig = signing_key.sign_with_rng(&mut rng, message);
-                Ok(sig
-                    .to_bytes()
-                    .into())
+                Ok(sig.to_bytes().into())
             }
             (Self::EcdsaP256(key), SignatureScheme::EcdsaSecp256r1Sha256) => {
                 use ecdsa::signature::RandomizedSigner;
                 let sig: P256Signature = key.sign_with_rng(&mut rng, message);
-                Ok(sig
-                    .to_der()
-                    .as_bytes()
-                    .to_vec())
+                Ok(sig.to_der().as_bytes().to_vec())
             }
             (Self::EcdsaP384(key), SignatureScheme::EcdsaSecp384r1Sha384) => {
                 use ecdsa::signature::RandomizedSigner;
                 let sig: P384Signature = key.sign_with_rng(&mut rng, message);
-                Ok(sig
-                    .to_der()
-                    .as_bytes()
-                    .to_vec())
+                Ok(sig.to_der().as_bytes().to_vec())
             }
             (Self::Ed25519(key), SignatureScheme::Ed25519) => {
                 let sig = key.sign(message);
-                Ok(sig
-                    .to_bytes()
-                    .to_vec())
+                Ok(sig.to_bytes().to_vec())
             }
             _ => Err(TlsError::Unsupported(
                 "signature scheme does not match private key".into(),

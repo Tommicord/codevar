@@ -45,38 +45,22 @@ impl Encoding {
 
     #[inline]
     pub fn new_decoder(&'static self) -> Decoder {
-        Decoder::new(
-            self,
-            self.variant
-                .new_variant_decoder(),
-            BomHandling::Off,
-        )
+        Decoder::new(self, self.variant.new_variant_decoder(), BomHandling::Off)
     }
 
     #[inline]
     pub fn new_decoder_with_bom_removal(&'static self) -> Decoder {
-        Decoder::new(
-            self,
-            self.variant
-                .new_variant_decoder(),
-            BomHandling::Remove,
-        )
+        Decoder::new(self, self.variant.new_variant_decoder(), BomHandling::Remove)
     }
 
     #[inline]
     pub fn new_decoder_without_bom_handling(&'static self) -> Decoder {
-        Decoder::new(
-            self,
-            self.variant
-                .new_variant_decoder(),
-            BomHandling::Off,
-        )
+        Decoder::new(self, self.variant.new_variant_decoder(), BomHandling::Off)
     }
 
     #[inline]
     pub fn new_encoder(&'static self) -> Encoder {
-        self.variant
-            .new_encoder(self)
+        self.variant.new_encoder(self)
     }
 }
 
@@ -356,10 +340,7 @@ impl Encoder {
 
     pub fn max_buffer_length_from_utf8_if_no_unmappables(&self, byte_length: usize) -> Option<usize> {
         checked_add(
-            if self
-                .encoding()
-                .can_encode_everything()
-            {
+            if self.encoding().can_encode_everything() {
                 0
             } else {
                 NCR_EXTRA
@@ -380,10 +361,7 @@ impl Encoder {
         last: bool,
     ) -> (CoderResult, usize, usize, bool) {
         let dst_len = dst.len();
-        let effective_dst_len = if self
-            .encoding()
-            .can_encode_everything()
-        {
+        let effective_dst_len = if self.encoding().can_encode_everything() {
             dst_len
         } else {
             if dst_len < NCR_EXTRA {
@@ -452,16 +430,12 @@ impl Encoder {
         dst: &mut [u8],
         last: bool,
     ) -> (EncoderResult, usize, usize) {
-        self.variant
-            .encode_from_utf8_raw(src, dst, last)
+        self.variant.encode_from_utf8_raw(src, dst, last)
     }
 
     pub fn max_buffer_length_from_utf16_if_no_unmappables(&self, u16_length: usize) -> Option<usize> {
         checked_add(
-            if self
-                .encoding()
-                .can_encode_everything()
-            {
+            if self.encoding().can_encode_everything() {
                 0
             } else {
                 NCR_EXTRA
@@ -482,10 +456,7 @@ impl Encoder {
         last: bool,
     ) -> (CoderResult, usize, usize, bool) {
         let dst_len = dst.len();
-        let effective_dst_len = if self
-            .encoding()
-            .can_encode_everything()
-        {
+        let effective_dst_len = if self.encoding().can_encode_everything() {
             dst_len
         } else {
             if dst_len < NCR_EXTRA {
@@ -554,14 +525,12 @@ impl Encoder {
         dst: &mut [u8],
         last: bool,
     ) -> (EncoderResult, usize, usize) {
-        self.variant
-            .encode_from_utf16_raw(src, dst, last)
+        self.variant.encode_from_utf16_raw(src, dst, last)
     }
 
     #[inline]
     pub fn has_pending_state(&self) -> bool {
-        self.variant
-            .has_pending_state()
+        self.variant.has_pending_state()
     }
 }
 
@@ -605,9 +574,7 @@ impl Decoder {
             | DecoderLifeCycle::AtUtf8Start
             | DecoderLifeCycle::AtUtf16LeStart
             | DecoderLifeCycle::AtUtf16BeStart => {
-                return self
-                    .variant
-                    .max_utf8_buffer_length(byte_length);
+                return self.variant.max_utf8_buffer_length(byte_length);
             }
             _ => {}
         }
@@ -635,9 +602,7 @@ impl Decoder {
             | DecoderLifeCycle::AtUtf8Start
             | DecoderLifeCycle::AtUtf16LeStart
             | DecoderLifeCycle::AtUtf16BeStart => {
-                return self
-                    .variant
-                    .max_utf16_buffer_length(byte_length);
+                return self.variant.max_utf16_buffer_length(byte_length);
             }
             _ => {}
         }
@@ -684,8 +649,7 @@ impl Decoder {
         dst: &mut [u8],
         last: bool,
     ) -> (DecoderResult, usize, usize) {
-        self.variant
-            .decode_to_utf8_raw(src, dst, last)
+        self.variant.decode_to_utf8_raw(src, dst, last)
     }
 
     pub fn decode_to_utf16(
@@ -724,8 +688,7 @@ impl Decoder {
         dst: &mut [u16],
         last: bool,
     ) -> (DecoderResult, usize, usize) {
-        self.variant
-            .decode_to_utf16_raw(src, dst, last)
+        self.variant.decode_to_utf16_raw(src, dst, last)
     }
 }
 
@@ -929,9 +892,7 @@ pub fn convert_latin1_to_utf8_partial(src: &[u8], dst: &mut [u8]) -> (usize, usi
 pub fn convert_utf8_to_utf16(src: &[u8], dst: &mut [u16]) -> Result<usize, EncodingError> {
     if dst.len() <= src.len() {
         return Err(EncodingError::DestinationTooSmall {
-            required: src
-                .len()
-                .saturating_add(1),
+            required: src.len().saturating_add(1),
             actual: dst.len(),
         });
     }
@@ -1039,9 +1000,7 @@ pub fn convert_utf16_to_utf8_partial(src: &[u16], dst: &mut [u8]) -> (usize, usi
 }
 
 pub fn convert_utf16_to_utf8(src: &[u16], dst: &mut [u8]) -> Result<usize, EncodingError> {
-    let required = src
-        .len()
-        .saturating_mul(3);
+    let required = src.len().saturating_mul(3);
     if dst.len() < required {
         return Err(EncodingError::DestinationTooSmall {
             required,
@@ -1076,9 +1035,7 @@ pub fn convert_latin1_to_str_partial(src: &[u8], dst: &mut str) -> (usize, usize
 }
 
 pub fn convert_latin1_to_str(src: &[u8], dst: &mut str) -> Result<usize, EncodingError> {
-    let required = src
-        .len()
-        .saturating_mul(2);
+    let required = src.len().saturating_mul(2);
     if dst.len() < required {
         return Err(EncodingError::DestinationTooSmall {
             required,
@@ -1278,10 +1235,7 @@ fn validate_bmp_stride(stride: &[u16; STRIDE]) -> Option<usize> {
     {
         return None;
     }
-    for (i, c) in stride
-        .iter()
-        .enumerate()
-    {
+    for (i, c) in stride.iter().enumerate() {
         if c & 0xF800 == 0xD800 {
             return Some(i);
         }
@@ -1297,10 +1251,7 @@ fn validate_latin1_str_stride(stride: &[u8; STRIDE]) -> Option<usize> {
     {
         return None;
     }
-    for (i, b) in stride
-        .iter()
-        .enumerate()
-    {
+    for (i, b) in stride.iter().enumerate() {
         if *b >= 0x80 && (*b > 0xC3 || *b & 0xC0 == 0x80) {
             return Some(i);
         }
@@ -1322,9 +1273,7 @@ pub fn convert_utf16_to_str_partial(src: &[u16], dst: &mut str) -> (usize, usize
 }
 
 pub fn convert_utf16_to_str(src: &[u16], dst: &mut str) -> Result<usize, EncodingError> {
-    let required = src
-        .len()
-        .saturating_mul(3);
+    let required = src.len().saturating_mul(3);
     if dst.len() < required {
         return Err(EncodingError::DestinationTooSmall {
             required,
@@ -1346,9 +1295,7 @@ mod tests {
         let mut dst: Vec<u16> = vec![0; src.len() + 1];
         let len = convert_utf8_to_utf16(src.as_bytes(), &mut dst[..]).unwrap();
         dst.truncate(len);
-        let reference: Vec<u16> = src
-            .encode_utf16()
-            .collect();
+        let reference: Vec<u16> = src.encode_utf16().collect();
         assert_eq!(dst, reference);
     }
 
@@ -1358,17 +1305,13 @@ mod tests {
         let mut dst: Vec<u16> = vec![0; src.len()];
         let len = convert_str_to_utf16(src, &mut dst[..]).unwrap();
         dst.truncate(len);
-        let reference: Vec<u16> = src
-            .encode_utf16()
-            .collect();
+        let reference: Vec<u16> = src.encode_utf16().collect();
         assert_eq!(dst, reference);
     }
 
     #[test]
     fn test_convert_utf16_to_utf8() {
-        let src: Vec<u16> = "abc\u{1F4A9}"
-            .encode_utf16()
-            .collect();
+        let src: Vec<u16> = "abc\u{1F4A9}".encode_utf16().collect();
         let mut dst: Vec<u8> = vec![0; src.len() * 3];
         let len = convert_utf16_to_utf8(&src[..], &mut dst[..]).unwrap();
         dst.truncate(len);
@@ -1391,9 +1334,7 @@ mod tests {
 
     #[test]
     fn test_convert_utf16_to_utf8_destination_too_small() {
-        let src: Vec<u16> = "hello"
-            .encode_utf16()
-            .collect();
+        let src: Vec<u16> = "hello".encode_utf16().collect();
         let mut dst: Vec<u8> = vec![0; 4];
         let err = convert_utf16_to_utf8(&src[..], &mut dst[..]).unwrap_err();
         assert_eq!(

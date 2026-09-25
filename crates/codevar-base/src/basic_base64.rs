@@ -123,14 +123,8 @@ pub fn encode(input: &[u8]) -> String {
 /// assert!(decode("-w==").is_err());
 /// ```
 pub fn decode(input: &str) -> Result<Vec<u8>, Base64Error> {
-    let mut bytes = input
-        .bytes()
-        .filter(|b| !b.is_ascii_whitespace());
-    if !bytes
-        .clone()
-        .count()
-        .is_multiple_of(4)
-    {
+    let mut bytes = input.bytes().filter(|b| !b.is_ascii_whitespace());
+    if !bytes.clone().count().is_multiple_of(4) {
         return Err(Base64Error::InvalidLength);
     }
 
@@ -393,11 +387,7 @@ mod ssse3 {
             // function, and the loop condition guarantees 16 writable
             // bytes at `out[o..]`.
             unsafe {
-                let bytes = core::ptr::read_unaligned(
-                    staging
-                        .as_ptr()
-                        .cast::<__m128i>(),
-                );
+                let bytes = core::ptr::read_unaligned(staging.as_ptr().cast::<__m128i>());
                 let chars = translate(reshuffle(bytes));
                 let dst = out[o..o + OUT_BLOCK]
                     .as_mut_ptr()
@@ -485,11 +475,7 @@ mod neon {
             // SAFETY: `staging` is a readable 16-byte local; the loop
             // condition guarantees 16 writable bytes at `out[o..]`.
             unsafe {
-                let bytes = core::ptr::read_unaligned(
-                    staging
-                        .as_ptr()
-                        .cast::<uint8x16_t>(),
-                );
+                let bytes = core::ptr::read_unaligned(staging.as_ptr().cast::<uint8x16_t>());
                 let chars = translate(reshuffle(bytes));
                 let dst = out[o..o + OUT_BLOCK]
                     .as_mut_ptr()
@@ -564,13 +550,7 @@ mod neon {
         debug_assert_eq!(core::mem::size_of::<T>(), 16);
         // SAFETY: `T` is a 16-byte NEON vector (checked above) and
         // `bytes` is a readable 16-byte table.
-        unsafe {
-            core::ptr::read_unaligned(
-                bytes
-                    .as_ptr()
-                    .cast::<T>(),
-            )
-        }
+        unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast::<T>()) }
     }
 }
 
@@ -607,15 +587,9 @@ mod wasm_simd {
             // SAFETY: `staging` is a readable 16-byte local; the loop
             // condition guarantees 16 writable bytes at `out[o..]`.
             unsafe {
-                let bytes = core::ptr::read_unaligned(
-                    staging
-                        .as_ptr()
-                        .cast::<v128>(),
-                );
+                let bytes = core::ptr::read_unaligned(staging.as_ptr().cast::<v128>());
                 let chars = translate(reshuffle(bytes));
-                let dst = out[o..o + OUT_BLOCK]
-                    .as_mut_ptr()
-                    .cast::<v128>();
+                let dst = out[o..o + OUT_BLOCK].as_mut_ptr().cast::<v128>();
                 core::ptr::write_unaligned(dst, chars);
             }
             i += BLOCK;
@@ -675,13 +649,7 @@ mod wasm_simd {
     unsafe fn load16(bytes: &[u8; 16]) -> v128 {
         // SAFETY: `v128` is 16 bytes wide and `bytes` is a readable
         // 16-byte table.
-        unsafe {
-            core::ptr::read_unaligned(
-                bytes
-                    .as_ptr()
-                    .cast::<v128>(),
-            )
-        }
+        unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast::<v128>()) }
     }
 }
 
@@ -696,16 +664,8 @@ mod tests {
         let mut out = String::new();
         for chunk in input.chunks(3) {
             let n = (u32::from(chunk[0]) << 16)
-                | (u32::from(
-                    *chunk
-                        .get(1)
-                        .unwrap_or(&0),
-                ) << 8)
-                | u32::from(
-                    *chunk
-                        .get(2)
-                        .unwrap_or(&0),
-                );
+                | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+                | u32::from(*chunk.get(2).unwrap_or(&0));
             out.push(char::from(ENCODE_TABLE[((n >> 18) & 0x3f) as usize]));
             out.push(char::from(ENCODE_TABLE[((n >> 12) & 0x3f) as usize]));
             if chunk.len() > 1 {
@@ -871,9 +831,7 @@ mod tests {
             match error {
                 Base64Error::InvalidCharacter(byte) => {
                     assert!(
-                        error
-                            .to_string()
-                            .contains("invalid base64"),
+                        error.to_string().contains("invalid base64"),
                         "input {input:?}: {error}"
                     );
                     assert_eq!(
@@ -930,12 +888,7 @@ mod tests {
             .map(|i| u8::try_from(i % 256).unwrap())
             .collect();
         let encoded = encode(&data);
-        assert_eq!(
-            encoded.len(),
-            data.len()
-                .div_ceil(3)
-                * 4
-        );
+        assert_eq!(encoded.len(), data.len().div_ceil(3) * 4);
         assert_eq!(decode(&encoded).unwrap(), data);
     }
 
@@ -956,11 +909,7 @@ mod tests {
             .map(|i| u8::try_from(i).unwrap())
             .collect();
         let encoded = encode(&data);
-        assert!(
-            !encoded
-                .chars()
-                .any(char::is_whitespace)
-        );
+        assert!(!encoded.chars().any(char::is_whitespace));
         assert!(
             encoded
                 .chars()

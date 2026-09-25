@@ -82,133 +82,88 @@ impl ClientConnection {
     /// Negotiated subprotocol after a successful handshake.
     #[must_use]
     pub fn protocol(&self) -> Option<&str> {
-        self.common
-            .protocol
-            .as_deref()
+        self.common.protocol.as_deref()
     }
 
     /// Current connection lifecycle state.
     #[must_use]
     pub fn state(&self) -> ConnectionState {
-        self.common
-            .state
+        self.common.state
     }
 
     /// Returns `true` when the opening handshake has completed.
     #[must_use]
     pub fn is_open(&self) -> bool {
-        self.common
-            .is_open()
+        self.common.is_open()
     }
 
     /// Returns `true` while the handshake is in progress.
     #[must_use]
     pub fn is_handshaking(&self) -> bool {
-        self.common
-            .is_connecting()
+        self.common.is_connecting()
     }
 
     /// Returns `true` when the connection is fully closed.
     #[must_use]
     pub fn is_closed(&self) -> bool {
-        self.common
-            .is_closed()
+        self.common.is_closed()
     }
 
     /// Returns `true` when outbound bytes are pending.
     #[must_use]
     pub fn wants_write(&self) -> bool {
-        self.common
-            .wants_write()
+        self.common.wants_write()
     }
 
     /// Returns `true` when more network input may be useful.
     #[must_use]
     pub fn wants_read(&self) -> bool {
-        self.common
-            .wants_read()
+        self.common.wants_read()
     }
 
     /// Feeds transport bytes received from the peer.
     pub fn feed(&mut self, data: &[u8]) -> WsResult<()> {
-        if self
-            .common
-            .is_closed()
-            && data.is_empty()
-        {
+        if self.common.is_closed() && data.is_empty() {
             return Ok(());
         }
-        if self
-            .common
-            .is_closed()
-        {
+        if self.common.is_closed() {
             return Err(WsError::Closed);
         }
-        self.common
-            .feed(data);
+        self.common.feed(data);
         Ok(())
     }
 
     /// Drains all buffered outbound transport bytes.
     pub fn take_write(&mut self) -> Vec<u8> {
-        self.common
-            .take_write()
+        self.common.take_write()
     }
 
     /// Processes buffered input: completes the handshake and/or parses frames.
     pub fn process(&mut self) -> WsResult<IoState> {
-        if self
-            .common
-            .is_connecting()
-        {
+        if self.common.is_connecting() {
             self.process_handshake()?;
         }
-        if self
-            .common
-            .is_open()
-            || self
-                .common
-                .state
-                == ConnectionState::Closing
-        {
-            return self
-                .common
-                .process_frames();
+        if self.common.is_open() || self.common.state == ConnectionState::Closing {
+            return self.common.process_frames();
         }
         Ok(IoState {
-            pending_rx: self
-                .common
-                .rx_buf()
-                .len(),
-            pending_tx: self
-                .common
-                .pending_tx_len(),
-            pending_messages: self
-                .common
-                .pending_messages(),
+            pending_rx: self.common.rx_buf().len(),
+            pending_tx: self.common.pending_tx_len(),
+            pending_messages: self.common.pending_messages(),
         })
     }
 
     fn process_handshake(&mut self) -> WsResult<()> {
-        match try_parse_response(
-            self.common
-                .rx_buf(),
-        )? {
+        match try_parse_response(self.common.rx_buf())? {
             Some((response, consumed)) => {
-                self.common
-                    .consume_rx(consumed);
+                self.common.consume_rx(consumed);
                 self.handshake
                     .validate_response(&response)
                     .inspect_err(|_| {
-                        self.common
-                            .state = ConnectionState::Closed;
+                        self.common.state = ConnectionState::Closed;
                     })?;
                 self.common
-                    .mark_open(
-                        self.handshake
-                            .selected_protocol
-                            .clone(),
-                    );
+                    .mark_open(self.handshake.selected_protocol.clone());
                 Ok(())
             }
             None => Ok(()),
@@ -217,66 +172,52 @@ impl ClientConnection {
 
     /// Sends a UTF-8 text message.
     pub fn send_text(&mut self, text: &str) -> WsResult<()> {
-        self.common
-            .send_text(text)
+        self.common.send_text(text)
     }
 
     /// Sends a binary message.
     pub fn send_binary(&mut self, data: &[u8]) -> WsResult<()> {
-        self.common
-            .send_binary(data)
+        self.common.send_binary(data)
     }
 
     /// Sends a Ping control frame.
     pub fn send_ping(&mut self, payload: &[u8]) -> WsResult<()> {
-        self.common
-            .send_ping(payload)
+        self.common.send_ping(payload)
     }
 
     /// Sends a Pong control frame.
     pub fn send_pong(&mut self, payload: &[u8]) -> WsResult<()> {
-        self.common
-            .send_pong(payload)
+        self.common.send_pong(payload)
     }
 
     /// Sends an arbitrary frame (advanced use; prefer the typed senders).
     pub fn send_frame(&mut self, frame: &WsFrame) -> WsResult<()> {
-        self.common
-            .send_frame(frame)
+        self.common.send_frame(frame)
     }
 
     /// Starts the closing handshake.
     pub fn close(&mut self, code: WsCloseCode, reason: &str) -> WsResult<()> {
-        self.common
-            .close(code, reason)
+        self.common.close(code, reason)
     }
 
     /// Pops the next complete message, if any.
     pub fn read_message(&mut self) -> WsResult<Option<WsMessage>> {
-        if let Some(ref e) = self
-            .common
-            .error
-        {
+        if let Some(ref e) = self.common.error {
             return Err(e.clone());
         }
-        Ok(self
-            .common
-            .read_message())
+        Ok(self.common.read_message())
     }
 
     /// Peer close code from the first received Close frame.
     #[must_use]
     pub fn peer_close_code(&self) -> Option<WsCloseCode> {
-        self.common
-            .peer_close_code
+        self.common.peer_close_code
     }
 
     /// Peer close reason from the first received Close frame.
     #[must_use]
     pub fn peer_close_reason(&self) -> Option<&str> {
-        self.common
-            .peer_close_reason
-            .as_deref()
+        self.common.peer_close_reason.as_deref()
     }
 
     /// Immutable access to shared state (for diagnostics).
@@ -311,17 +252,13 @@ mod tests {
             .expect("parse")
             .expect("complete");
         let mut hs = WsServerHandshake::new(vec![]);
-        hs.accept_request(req)
-            .expect("accept");
-        hs.encode_response()
-            .expect("encode")
+        hs.accept_request(req).expect("accept");
+        hs.encode_response().expect("encode")
     }
 
     fn unmasked(frame: &WsFrame) -> Vec<u8> {
         let mut out = Vec::new();
-        frame
-            .encode(&mut out, None)
-            .expect("encode");
+        frame.encode(&mut out, None).expect("encode");
         out
     }
 
@@ -334,11 +271,7 @@ mod tests {
         assert!(client.wants_write());
         assert!(client.wants_read());
         assert_eq!(client.state(), ConnectionState::Connecting);
-        assert!(
-            client
-                .protocol()
-                .is_none()
-        );
+        assert!(client.protocol().is_none());
 
         let wire = client.take_write();
         let text = String::from_utf8(wire.clone()).expect("utf8");
@@ -350,9 +283,7 @@ mod tests {
         assert!(!client.wants_write());
 
         // Processing with no response bytes keeps the handshake pending.
-        let io = client
-            .process()
-            .expect("process");
+        let io = client.process().expect("process");
         assert_eq!(io.pending_rx, 0);
         assert!(client.is_handshaking());
     }
@@ -375,21 +306,13 @@ mod tests {
         let mut server = ServerConnection::accept(Some(vec!["chat".to_string()])).expect("accept");
 
         let request = client.take_write();
-        server
-            .feed(&request)
-            .expect("feed");
-        server
-            .process()
-            .expect("server process");
+        server.feed(&request).expect("feed");
+        server.process().expect("server process");
         assert!(server.is_open());
 
         let response = server.take_write();
-        client
-            .feed(&response)
-            .expect("feed");
-        client
-            .process()
-            .expect("client process");
+        client.feed(&response).expect("feed");
+        client.process().expect("client process");
         assert!(client.is_open());
         assert!(!client.is_handshaking());
         assert_eq!(client.protocol(), Some("chat"));
@@ -403,16 +326,9 @@ mod tests {
     fn handshake_byte_by_byte_matches_all_at_once() {
         let mut incremental = ClientConnection::connect("/", "h", None).expect("connect");
         let response = server_accept_response(&mut incremental);
-        for (i, b) in response
-            .iter()
-            .enumerate()
-        {
-            incremental
-                .feed(&[*b])
-                .expect("feed");
-            incremental
-                .process()
-                .expect("process");
+        for (i, b) in response.iter().enumerate() {
+            incremental.feed(&[*b]).expect("feed");
+            incremental.process().expect("process");
             if i + 1 < response.len() {
                 assert!(incremental.is_handshaking(), "opened early at byte {i}");
             }
@@ -422,12 +338,8 @@ mod tests {
         let mut at_once = ClientConnection::connect("/", "h", None).expect("connect");
         let response2 = server_accept_response(&mut at_once);
         assert_eq!(response.len(), response2.len());
-        at_once
-            .feed(&response2)
-            .expect("feed");
-        at_once
-            .process()
-            .expect("process");
+        at_once.feed(&response2).expect("feed");
+        at_once.process().expect("process");
         assert!(at_once.is_open());
         assert_eq!(at_once.state(), incremental.state());
     }
@@ -437,21 +349,13 @@ mod tests {
         let mut client = ClientConnection::connect("/", "h", None).expect("connect");
         let response = server_accept_response(&mut client);
         let split = response.len() / 2;
-        client
-            .feed(&response[..split])
-            .expect("feed");
-        let io = client
-            .process()
-            .expect("process");
+        client.feed(&response[..split]).expect("feed");
+        let io = client.process().expect("process");
         assert_eq!(io.pending_rx, split);
         assert!(client.is_handshaking());
 
-        client
-            .feed(&response[split..])
-            .expect("feed");
-        client
-            .process()
-            .expect("process");
+        client.feed(&response[split..]).expect("feed");
+        client.process().expect("process");
         assert!(client.is_open());
         assert_eq!(client.state(), ConnectionState::Open);
     }
@@ -461,17 +365,10 @@ mod tests {
         let mut client = ClientConnection::connect("/", "h", None).expect("connect");
         let mut payload = server_accept_response(&mut client);
         payload.extend(unmasked(&WsFrame::text(b"early")));
-        client
-            .feed(&payload)
-            .expect("feed");
-        client
-            .process()
-            .expect("process");
+        client.feed(&payload).expect("feed");
+        client.process().expect("process");
         assert!(client.is_open());
-        match client
-            .read_message()
-            .expect("read")
-        {
+        match client.read_message().expect("read") {
             Some(WsMessage::Text(t)) => assert_eq!(t, "early"),
             other => panic!("unexpected {other:?}"),
         }
@@ -481,22 +378,14 @@ mod tests {
     fn handshake_rejects_bad_status() {
         let mut client = ClientConnection::connect("/", "h", None).expect("connect");
         let resp = raw_response("HTTP/1.1 400 Bad Request", &[("Content-Length", "0")]);
-        client
-            .feed(&resp)
-            .expect("feed");
-        let err = client
-            .process()
-            .expect_err("bad status");
+        client.feed(&resp).expect("feed");
+        let err = client.process().expect_err("bad status");
         assert!(matches!(err, WsError::Handshake(_)));
         assert!(client.is_closed());
         // Empty feed after close is tolerated; non-empty is rejected.
-        client
-            .feed(&[])
-            .expect("empty feed");
+        client.feed(&[]).expect("empty feed");
         assert!(matches!(client.feed(&[0u8]), Err(WsError::Closed)));
-        let io = client
-            .process()
-            .expect("closed process");
+        let io = client.process().expect("closed process");
         assert_eq!(io.pending_rx, 0);
     }
 
@@ -506,20 +395,13 @@ mod tests {
         let response = server_accept_response(&mut client);
         let response = String::from_utf8(response).expect("utf8");
         let key = "Sec-WebSocket-Accept: ";
-        let start = response
-            .find(key)
-            .expect("accept header")
-            + key.len();
+        let start = response.find(key).expect("accept header") + key.len();
         let original = response.as_bytes()[start];
         let tampered = if original == b'A' { b'B' } else { b'A' };
         let mut bytes = response.into_bytes();
         bytes[start] = tampered;
-        client
-            .feed(&bytes)
-            .expect("feed");
-        let err = client
-            .process()
-            .expect_err("accept mismatch");
+        client.feed(&bytes).expect("feed");
+        let err = client.process().expect_err("accept mismatch");
         assert!(matches!(err, WsError::Handshake(_)));
         assert!(client.is_closed());
     }
@@ -536,9 +418,7 @@ mod tests {
                 ("Sec-WebSocket-Accept", "AAAAAAAAAAAAAAAAAAAAAAAAAAAA="),
             ],
         );
-        client
-            .feed(&resp)
-            .expect("feed");
+        client.feed(&resp).expect("feed");
         assert!(matches!(client.process(), Err(WsError::Handshake(_))));
         assert!(client.is_closed());
 
@@ -551,9 +431,7 @@ mod tests {
                 ("Sec-WebSocket-Accept", "AAAAAAAAAAAAAAAAAAAAAAAAAAAA="),
             ],
         );
-        client
-            .feed(&resp)
-            .expect("feed");
+        client.feed(&resp).expect("feed");
         assert!(matches!(client.process(), Err(WsError::Handshake(_))));
 
         // Connection without the Upgrade token.
@@ -566,9 +444,7 @@ mod tests {
                 ("Sec-WebSocket-Accept", "AAAAAAAAAAAAAAAAAAAAAAAAAAAA="),
             ],
         );
-        client
-            .feed(&resp)
-            .expect("feed");
+        client.feed(&resp).expect("feed");
         assert!(matches!(client.process(), Err(WsError::Handshake(_))));
     }
 
@@ -578,9 +454,7 @@ mod tests {
         client
             .feed(b"NOT-HTTP-AT-ALL\r\n\r\n")
             .expect("feed");
-        let err = client
-            .process()
-            .expect_err("garbage");
+        let err = client.process().expect_err("garbage");
         assert!(matches!(err, WsError::Handshake(_)));
         // Quirk: parse-level failures propagate without closing the state.
         assert!(client.is_handshaking());
@@ -601,17 +475,11 @@ mod tests {
     fn outbound_client_frames_are_masked() {
         let mut client = ClientConnection::connect("/", "h", None).expect("connect");
         let response = server_accept_response(&mut client);
-        client
-            .feed(&response)
-            .expect("feed");
-        client
-            .process()
-            .expect("process");
+        client.feed(&response).expect("feed");
+        client.process().expect("process");
         assert!(client.is_open());
 
-        client
-            .send_text("hello")
-            .expect("send");
+        client.send_text("hello").expect("send");
         let wire = client.take_write();
         assert_eq!(wire[0], 0x81);
         assert_ne!(wire[1] & 0x80, 0);
@@ -626,12 +494,8 @@ mod tests {
     fn inbound_text_binary_and_controls_are_delivered() {
         let mut client = ClientConnection::connect("/", "h", None).expect("connect");
         let response = server_accept_response(&mut client);
-        client
-            .feed(&response)
-            .expect("feed");
-        client
-            .process()
-            .expect("process");
+        client.feed(&response).expect("feed");
+        client.process().expect("process");
         assert!(client.is_open());
 
         let mut input = unmasked(&WsFrame::text(b"hi"));
@@ -640,12 +504,8 @@ mod tests {
         input.extend(unmasked(&ping));
         let pong = WsFrame::pong(b"q").expect("pong frame");
         input.extend(unmasked(&pong));
-        client
-            .feed(&input)
-            .expect("feed");
-        client
-            .process()
-            .expect("process");
+        client.feed(&input).expect("feed");
+        client.process().expect("process");
 
         assert!(matches!(
             client.read_message().expect("read"),
@@ -663,12 +523,7 @@ mod tests {
             client.read_message().expect("read"),
             Some(WsMessage::Pong(p)) if p == b"q"
         ));
-        assert!(
-            client
-                .read_message()
-                .expect("read")
-                .is_none()
-        );
+        assert!(client.read_message().expect("read").is_none());
         // The auto-pong for the server ping is queued.
         let pong = client.take_write();
         assert_eq!(pong[0], 0x8A);
@@ -678,30 +533,20 @@ mod tests {
     fn inbound_masked_frame_fails_protocol_and_sticks() {
         let mut client = ClientConnection::connect("/", "h", None).expect("connect");
         let response = server_accept_response(&mut client);
-        client
-            .feed(&response)
-            .expect("feed");
-        client
-            .process()
-            .expect("process");
+        client.feed(&response).expect("feed");
+        client.process().expect("process");
 
         let mut masked = Vec::new();
         WsFrame::text(b"x")
             .encode(&mut masked, Some([1, 2, 3, 4]))
             .expect("encode");
-        client
-            .feed(&masked)
-            .expect("feed");
-        let err = client
-            .process()
-            .expect_err("masked inbound");
+        client.feed(&masked).expect("feed");
+        let err = client.process().expect_err("masked inbound");
         assert!(matches!(err, WsError::Protocol { .. }));
         assert!(client.is_closed());
 
         // The error is sticky for readers.
-        let read_err = client
-            .read_message()
-            .expect_err("sticky");
+        let read_err = client.read_message().expect_err("sticky");
         assert!(matches!(read_err, WsError::Protocol { .. }));
 
         // A fail-close frame (masked, client role) was queued.
@@ -714,19 +559,13 @@ mod tests {
     fn invalid_utf8_text_frame_fails_connection() {
         let mut client = ClientConnection::connect("/", "h", None).expect("connect");
         let response = server_accept_response(&mut client);
-        client
-            .feed(&response)
-            .expect("feed");
-        client
-            .process()
-            .expect("process");
+        client.feed(&response).expect("feed");
+        client.process().expect("process");
 
         client
             .feed(&unmasked(&WsFrame::text(vec![0xC0, 0x80])))
             .expect("feed");
-        let err = client
-            .process()
-            .expect_err("bad utf8");
+        let err = client.process().expect_err("bad utf8");
         assert_eq!(err, WsError::InvalidUtf8);
         assert!(client.is_closed());
     }
@@ -735,12 +574,8 @@ mod tests {
     fn close_handshake_and_peer_close_accessors() {
         let mut client = ClientConnection::connect("/", "h", None).expect("connect");
         let response = server_accept_response(&mut client);
-        client
-            .feed(&response)
-            .expect("feed");
-        client
-            .process()
-            .expect("process");
+        client.feed(&response).expect("feed");
+        client.process().expect("process");
         assert!(client.is_open());
 
         client
@@ -751,31 +586,19 @@ mod tests {
         assert_eq!(tx[0] & 0x0F, 0x8); // close opcode
 
         let close = WsFrame::close(Some(WsCloseCode::GoingAway), "bye").expect("close frame");
-        client
-            .feed(&unmasked(&close))
-            .expect("feed");
-        client
-            .process()
-            .expect("peer close");
+        client.feed(&unmasked(&close)).expect("feed");
+        client.process().expect("peer close");
         assert!(client.is_closed());
         assert_eq!(client.peer_close_code(), Some(WsCloseCode::GoingAway));
         assert_eq!(client.peer_close_reason(), Some("bye"));
-        match client
-            .read_message()
-            .expect("read")
-        {
+        match client.read_message().expect("read") {
             Some(WsMessage::Close { code, reason }) => {
                 assert_eq!(code, WsCloseCode::GoingAway);
                 assert_eq!(reason, "bye");
             }
             other => panic!("unexpected {other:?}"),
         }
-        assert!(
-            client
-                .read_message()
-                .expect("read")
-                .is_none()
-        );
+        assert!(client.read_message().expect("read").is_none());
         assert!(!client.wants_read());
     }
 
@@ -787,13 +610,9 @@ mod tests {
             .expect("close while connecting");
         assert!(client.is_closed());
         assert!(!client.is_handshaking());
-        client
-            .feed(&[])
-            .expect("empty feed");
+        client.feed(&[]).expect("empty feed");
         assert!(matches!(client.feed(b"x"), Err(WsError::Closed)));
-        let io = client
-            .process()
-            .expect("closed process");
+        let io = client.process().expect("closed process");
         assert_eq!(io.pending_rx, 0);
     }
 }

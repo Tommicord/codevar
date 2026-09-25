@@ -145,20 +145,17 @@ impl RecordLayer {
 
     /// Returns a mutable reference to write keys (for KeyUpdate).
     pub fn write_keys_mut(&mut self) -> Option<&mut TrafficKeys> {
-        self.write_keys
-            .as_mut()
+        self.write_keys.as_mut()
     }
 
     /// Returns a mutable reference to read keys (for KeyUpdate).
     pub fn read_keys_mut(&mut self) -> Option<&mut TrafficKeys> {
-        self.read_keys
-            .as_mut()
+        self.read_keys.as_mut()
     }
 
     /// Appends ciphertext received from the network.
     pub fn feed_ciphertext(&mut self, data: &[u8]) {
-        self.rx_buf
-            .extend_from_slice(data);
+        self.rx_buf.extend_from_slice(data);
     }
 
     /// Drains all buffered outbound ciphertext.
@@ -169,23 +166,19 @@ impl RecordLayer {
     /// Returns true when outbound ciphertext is pending.
     #[must_use]
     pub fn wants_write(&self) -> bool {
-        !self
-            .tx_buf
-            .is_empty()
+        !self.tx_buf.is_empty()
     }
 
     /// Number of outbound ciphertext bytes pending.
     #[must_use]
     pub fn pending_tx_len(&self) -> usize {
-        self.tx_buf
-            .len()
+        self.tx_buf.len()
     }
 
     /// Returns the number of buffered inbound ciphertext bytes.
     #[must_use]
     pub fn pending_rx(&self) -> usize {
-        self.rx_buf
-            .len()
+        self.rx_buf.len()
     }
 
     /// Encodes and (if keyed) protects a plaintext record, appending to the TX buffer.
@@ -212,11 +205,7 @@ impl RecordLayer {
 
     /// Parses and decrypts the next complete record from the RX buffer, if available.
     pub fn read_raw(&mut self) -> TlsResult<Option<PlainRecord>> {
-        if self
-            .rx_buf
-            .len()
-            < RECORD_HEADER_LEN
-        {
+        if self.rx_buf.len() < RECORD_HEADER_LEN {
             return Ok(None);
         }
         let content_type = ContentType::from_u8(self.rx_buf[0])?;
@@ -224,19 +213,14 @@ impl RecordLayer {
         if length > MAX_CIPHERTEXT_LENGTH {
             return Err(TlsError::Alert(AlertDescription::RecordOverflow));
         }
-        if self
-            .rx_buf
-            .len()
-            < RECORD_HEADER_LEN + length
-        {
+        if self.rx_buf.len() < RECORD_HEADER_LEN + length {
             return Ok(None);
         }
         let header: [u8; 5] = self.rx_buf[..RECORD_HEADER_LEN]
             .try_into()
             .map_err(|_| TlsError::Internal("record header".into()))?;
         let payload = self.rx_buf[RECORD_HEADER_LEN..RECORD_HEADER_LEN + length].to_vec();
-        self.rx_buf
-            .drain(..RECORD_HEADER_LEN + length);
+        self.rx_buf.drain(..RECORD_HEADER_LEN + length);
 
         match self.read_mode {
             RecordProtection::Cleartext => {
@@ -266,19 +250,12 @@ impl RecordLayer {
     }
 
     fn encode_cleartext(&mut self, content_type: ContentType, plaintext: &[u8]) {
+        self.tx_buf.push(content_type.as_u8());
         self.tx_buf
-            .push(content_type.as_u8());
-        self.tx_buf
-            .extend_from_slice(
-                &self
-                    .legacy_version
-                    .to_be_bytes(),
-            );
+            .extend_from_slice(&self.legacy_version.to_be_bytes());
         let len = plaintext.len() as u16;
-        self.tx_buf
-            .extend_from_slice(&len.to_be_bytes());
-        self.tx_buf
-            .extend_from_slice(plaintext);
+        self.tx_buf.extend_from_slice(&len.to_be_bytes());
+        self.tx_buf.extend_from_slice(plaintext);
     }
 
     fn encrypt_tls13(&mut self, content_type: ContentType, plaintext: &[u8]) -> TlsResult<()> {
@@ -291,11 +268,7 @@ impl RecordLayer {
         inner.extend_from_slice(plaintext);
         inner.push(content_type.as_u8());
 
-        let ciphertext_len = inner.len()
-            + keys
-                .aead
-                .algorithm()
-                .tag_len();
+        let ciphertext_len = inner.len() + keys.aead.algorithm().tag_len();
         if ciphertext_len > MAX_CIPHERTEXT_LENGTH {
             return Err(TlsError::Alert(AlertDescription::RecordOverflow));
         }
@@ -306,10 +279,8 @@ impl RecordLayer {
         header[3..5].copy_from_slice(&(ciphertext_len as u16).to_be_bytes());
 
         let sealed = TlsAead::encrypt_tls13(&keys.aead, seq, &header, &inner)?;
-        self.tx_buf
-            .extend_from_slice(&header);
-        self.tx_buf
-            .extend_from_slice(&sealed);
+        self.tx_buf.extend_from_slice(&header);
+        self.tx_buf.extend_from_slice(&sealed);
         Ok(())
     }
 
@@ -346,26 +317,15 @@ impl RecordLayer {
             .ok_or_else(|| TlsError::Internal("TLS 1.2 write keys missing".into()))?;
         let seq = keys.next_seq()?;
         let explicit = seq.to_be_bytes();
-        let ciphertext_len = 8
-            + plaintext.len()
-            + keys
-                .aead
-                .algorithm()
-                .tag_len();
+        let ciphertext_len = 8 + plaintext.len() + keys.aead.algorithm().tag_len();
         let mut header = [0u8; 5];
         header[0] = content_type.as_u8();
-        header[1..3].copy_from_slice(
-            &self
-                .legacy_version
-                .to_be_bytes(),
-        );
+        header[1..3].copy_from_slice(&self.legacy_version.to_be_bytes());
         header[3..5].copy_from_slice(&(ciphertext_len as u16).to_be_bytes());
         let aad = tls12_aad(seq, content_type, self.legacy_version, plaintext.len());
         let sealed = TlsAead::encrypt_tls12_gcm(&keys.aead, explicit, &aad, plaintext)?;
-        self.tx_buf
-            .extend_from_slice(&header);
-        self.tx_buf
-            .extend_from_slice(&sealed);
+        self.tx_buf.extend_from_slice(&header);
+        self.tx_buf.extend_from_slice(&sealed);
         Ok(())
     }
 
@@ -402,25 +362,15 @@ impl RecordLayer {
             .as_mut()
             .ok_or_else(|| TlsError::Internal("TLS 1.2 write keys missing".into()))?;
         let seq = keys.next_seq()?;
-        let ciphertext_len = plaintext.len()
-            + keys
-                .aead
-                .algorithm()
-                .tag_len();
+        let ciphertext_len = plaintext.len() + keys.aead.algorithm().tag_len();
         let mut header = [0u8; 5];
         header[0] = content_type.as_u8();
-        header[1..3].copy_from_slice(
-            &self
-                .legacy_version
-                .to_be_bytes(),
-        );
+        header[1..3].copy_from_slice(&self.legacy_version.to_be_bytes());
         header[3..5].copy_from_slice(&(ciphertext_len as u16).to_be_bytes());
         let aad = tls12_aad(seq, content_type, self.legacy_version, plaintext.len());
         let sealed = TlsAead::encrypt_tls12_chacha(&keys.aead, seq, &aad, plaintext)?;
-        self.tx_buf
-            .extend_from_slice(&header);
-        self.tx_buf
-            .extend_from_slice(&sealed);
+        self.tx_buf.extend_from_slice(&header);
+        self.tx_buf.extend_from_slice(&sealed);
         Ok(())
     }
 
@@ -504,10 +454,7 @@ mod tests {
 
         let mut rx = RecordLayer::new();
         rx.feed_ciphertext(&wire);
-        let rec = rx
-            .read_raw()
-            .unwrap()
-            .unwrap();
+        let rec = rx.read_raw().unwrap().unwrap();
         assert_eq!(rec.content_type, ContentType::Handshake);
         assert_eq!(rec.payload, vec![1, 2, 3]);
         assert_eq!(rx.pending_rx(), 0);
@@ -516,22 +463,15 @@ mod tests {
     #[test]
     fn zero_length_record_round_trips() {
         let mut tx = RecordLayer::new();
-        tx.write_raw(ContentType::Alert, &[])
-            .unwrap();
+        tx.write_raw(ContentType::Alert, &[]).unwrap();
         let wire = tx.take_ciphertext();
         assert_eq!(wire, vec![21, 3, 3, 0, 0]);
 
         let mut rx = RecordLayer::new();
         rx.feed_ciphertext(&wire);
-        let rec = rx
-            .read_raw()
-            .unwrap()
-            .unwrap();
+        let rec = rx.read_raw().unwrap().unwrap();
         assert_eq!(rec.content_type, ContentType::Alert);
-        assert!(
-            rec.payload
-                .is_empty()
-        );
+        assert!(rec.payload.is_empty());
     }
 
     #[test]
@@ -539,14 +479,9 @@ mod tests {
         let wire = encode_cleartext_record(ContentType::Alert, ProtocolVersion::Tls12, &[1, 0]);
         let mut layer = RecordLayer::new();
         let last = wire.len() - 1;
-        for (i, b) in wire
-            .iter()
-            .enumerate()
-        {
+        for (i, b) in wire.iter().enumerate() {
             layer.feed_ciphertext(std::slice::from_ref(b));
-            let got = layer
-                .read_raw()
-                .unwrap();
+            let got = layer.read_raw().unwrap();
             if i < last {
                 assert!(got.is_none(), "premature record at byte {i}");
             } else {
@@ -562,9 +497,7 @@ mod tests {
     fn corrupted_content_type_rejected_once_header_present() {
         let mut layer = RecordLayer::new();
         layer.feed_ciphertext(&[0x07, 3, 3, 0, 1]);
-        let err = layer
-            .read_raw()
-            .unwrap_err();
+        let err = layer.read_raw().unwrap_err();
         assert!(matches!(err, TlsError::Decode(_)), "err={err:?}");
         assert_eq!(layer.pending_rx(), 5);
     }
@@ -573,9 +506,7 @@ mod tests {
     fn declared_length_above_max_rejected_before_payload() {
         let mut layer = RecordLayer::new();
         layer.feed_ciphertext(&[23, 3, 3, 0xff, 0xff]);
-        let err = layer
-            .read_raw()
-            .unwrap_err();
+        let err = layer.read_raw().unwrap_err();
         assert!(
             matches!(err, TlsError::Alert(AlertDescription::RecordOverflow)),
             "err={err:?}"
@@ -584,11 +515,7 @@ mod tests {
 
         let mut layer2 = RecordLayer::new();
         layer2.feed_ciphertext(&[23, 3, 3, 0x41, 0x01]);
-        assert!(
-            layer2
-                .read_raw()
-                .is_err()
-        );
+        assert!(layer2.read_raw().is_err());
         assert_eq!(layer2.pending_rx(), 5);
     }
 
@@ -606,9 +533,7 @@ mod tests {
         let wire = encode_cleartext_record(ContentType::ApplicationData, ProtocolVersion::Tls12, &payload);
         let mut layer = RecordLayer::new();
         layer.feed_ciphertext(&wire);
-        let err = layer
-            .read_raw()
-            .unwrap_err();
+        let err = layer.read_raw().unwrap_err();
         assert!(
             matches!(err, TlsError::Alert(AlertDescription::RecordOverflow)),
             "err={err:?}"
@@ -639,18 +564,14 @@ mod tests {
     fn legacy_version_written_and_read_is_not_validated() {
         let mut tx = RecordLayer::new();
         tx.set_legacy_version(ProtocolVersion::Tls10);
-        tx.write_raw(ContentType::Alert, &[0])
-            .unwrap();
+        tx.write_raw(ContentType::Alert, &[0]).unwrap();
         let wire = tx.take_ciphertext();
         assert_eq!(&wire[1..3], &[0x03, 0x01]);
 
         let foreign = encode_cleartext_record(ContentType::Handshake, ProtocolVersion::Tls11, &[9]);
         let mut rx = RecordLayer::new();
         rx.feed_ciphertext(&foreign);
-        let rec = rx
-            .read_raw()
-            .unwrap()
-            .unwrap();
+        let rec = rx.read_raw().unwrap().unwrap();
         assert_eq!(rec.content_type, ContentType::Handshake);
         assert_eq!(rec.payload, vec![9]);
     }
@@ -666,23 +587,13 @@ mod tests {
 
         let mut rx = RecordLayer::new();
         rx.feed_ciphertext(&wire);
-        let first = rx
-            .read_raw()
-            .unwrap()
-            .unwrap();
-        let second = rx
-            .read_raw()
-            .unwrap()
-            .unwrap();
+        let first = rx.read_raw().unwrap().unwrap();
+        let second = rx.read_raw().unwrap().unwrap();
         assert_eq!(first.content_type, ContentType::Handshake);
         assert_eq!(first.payload, vec![1]);
         assert_eq!(second.content_type, ContentType::ApplicationData);
         assert_eq!(second.payload, vec![2, 3]);
-        assert!(
-            rx.read_raw()
-                .unwrap()
-                .is_none()
-        );
+        assert!(rx.read_raw().unwrap().is_none());
     }
 
     #[test]
@@ -698,11 +609,7 @@ mod tests {
         assert_eq!(first.len(), 7);
         assert!(!layer.wants_write());
         assert_eq!(layer.pending_tx_len(), 0);
-        assert!(
-            layer
-                .take_ciphertext()
-                .is_empty()
-        );
+        assert!(layer.take_ciphertext().is_empty());
     }
 
     #[test]
@@ -710,37 +617,19 @@ mod tests {
         let mut layer = RecordLayer::default();
         assert_eq!(layer.pending_rx(), 0);
         assert!(!layer.wants_write());
-        assert!(
-            layer
-                .write_keys_mut()
-                .is_none()
-        );
-        assert!(
-            layer
-                .read_keys_mut()
-                .is_none()
-        );
+        assert!(layer.write_keys_mut().is_none());
+        assert!(layer.read_keys_mut().is_none());
     }
 
     #[test]
     fn traffic_keys_sequence_increments_until_wrap() {
         let mut keys = TrafficKeys::new(aead_key());
         assert_eq!(keys.seq, 0);
-        assert_eq!(
-            keys.next_seq()
-                .unwrap(),
-            0
-        );
-        assert_eq!(
-            keys.next_seq()
-                .unwrap(),
-            1
-        );
+        assert_eq!(keys.next_seq().unwrap(), 0);
+        assert_eq!(keys.next_seq().unwrap(), 1);
         assert_eq!(keys.seq, 2);
         keys.seq = u64::MAX;
-        let err = keys
-            .next_seq()
-            .unwrap_err();
+        let err = keys.next_seq().unwrap_err();
         assert!(
             matches!(err, TlsError::Alert(AlertDescription::InternalError)),
             "err={err:?}"
@@ -832,25 +721,12 @@ mod tests {
         let mut rx = RecordLayer::new();
         rx.set_read_keys(TrafficKeys::new(key), RecordProtection::Tls13);
         rx.feed_ciphertext(&wire);
-        let rec = rx
-            .read_raw()
-            .unwrap()
-            .unwrap();
+        let rec = rx.read_raw().unwrap().unwrap();
         assert_eq!(rec.content_type, ContentType::Handshake);
         assert_eq!(rec.payload, vec![0xAA; 10]);
         assert_eq!(rx.pending_rx(), 0);
-        assert_eq!(
-            rx.read_keys_mut()
-                .unwrap()
-                .seq,
-            1
-        );
-        assert_eq!(
-            tx.write_keys_mut()
-                .unwrap()
-                .seq,
-            1
-        );
+        assert_eq!(rx.read_keys_mut().unwrap().seq, 1);
+        assert_eq!(tx.write_keys_mut().unwrap().seq, 1);
     }
 
     #[test]
@@ -859,11 +735,7 @@ mod tests {
         let mut rx = RecordLayer::new();
         rx.set_read_keys(TrafficKeys::new(key), RecordProtection::Tls13);
         rx.feed_ciphertext(&[20, 3, 3, 0, 1, 1]);
-        assert!(
-            rx.read_raw()
-                .unwrap()
-                .is_none()
-        );
+        assert!(rx.read_raw().unwrap().is_none());
         assert_eq!(rx.pending_rx(), 0);
     }
 
@@ -873,9 +745,7 @@ mod tests {
         let mut rx = RecordLayer::new();
         rx.set_read_keys(TrafficKeys::new(key), RecordProtection::Tls13);
         rx.feed_ciphertext(&[22, 3, 3, 0, 0]);
-        let err = rx
-            .read_raw()
-            .unwrap_err();
+        let err = rx.read_raw().unwrap_err();
         assert!(
             matches!(err, TlsError::Alert(AlertDescription::UnexpectedMessage)),
             "err={err:?}"
@@ -896,9 +766,7 @@ mod tests {
         let mut rx = RecordLayer::new();
         rx.set_read_keys(TrafficKeys::new(key), RecordProtection::Tls13);
         rx.feed_ciphertext(&wire);
-        let err = rx
-            .read_raw()
-            .unwrap_err();
+        let err = rx.read_raw().unwrap_err();
         assert!(
             matches!(err, TlsError::Alert(AlertDescription::BadRecordMac)),
             "err={err:?}"
@@ -920,10 +788,7 @@ mod tests {
         let mut rx = RecordLayer::new();
         rx.set_read_keys(TrafficKeys::new(key), RecordProtection::Tls12Gcm);
         rx.feed_ciphertext(&wire);
-        let rec = rx
-            .read_raw()
-            .unwrap()
-            .unwrap();
+        let rec = rx.read_raw().unwrap().unwrap();
         assert_eq!(rec.content_type, ContentType::ApplicationData);
         assert_eq!(rec.payload, vec![1, 2, 3, 4]);
     }
@@ -942,16 +807,9 @@ mod tests {
         let mut rx = RecordLayer::new();
         rx.set_read_keys(TrafficKeys::new(key), RecordProtection::Tls12ChaCha);
         rx.feed_ciphertext(&wire);
-        let rec = rx
-            .read_raw()
-            .unwrap()
-            .unwrap();
+        let rec = rx.read_raw().unwrap().unwrap();
         assert_eq!(rec.content_type, ContentType::Handshake);
-        assert_eq!(
-            rec.payload
-                .as_slice(),
-            &b"payload"[..]
-        );
+        assert_eq!(rec.payload.as_slice(), &b"payload"[..]);
     }
 
     #[test]
@@ -960,9 +818,7 @@ mod tests {
         let mut rx = RecordLayer::new();
         rx.set_read_keys(TrafficKeys::new(key), RecordProtection::Tls12Gcm);
         rx.feed_ciphertext(&[23, 3, 3, 0, 8, 1, 2, 3, 4, 5, 6, 7, 8]);
-        let err = rx
-            .read_raw()
-            .unwrap_err();
+        let err = rx.read_raw().unwrap_err();
         assert!(
             matches!(err, TlsError::Alert(AlertDescription::BadRecordMac)),
             "err={err:?}"

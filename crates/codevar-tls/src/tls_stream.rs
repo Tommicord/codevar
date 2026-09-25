@@ -132,15 +132,9 @@ where
 
     /// Drives the handshake to completion.
     pub fn complete_handshake(&mut self) -> io::Result<()> {
-        while self
-            .conn
-            .is_handshaking()
-        {
+        while self.conn.is_handshaking() {
             self.flush_tls()?;
-            if self
-                .conn
-                .is_handshaking()
-            {
+            if self.conn.is_handshaking() {
                 self.absorb_tls()?;
                 self.conn
                     .process_new_packets()
@@ -152,38 +146,27 @@ where
     }
 
     fn flush_tls(&mut self) -> io::Result<()> {
-        while self
-            .conn
-            .wants_write()
-        {
-            let buf = self
-                .conn
-                .write_tls();
+        while self.conn.wants_write() {
+            let buf = self.conn.write_tls();
             if buf.is_empty() {
                 break;
             }
-            self.transport
-                .write_all(&buf)?;
+            self.transport.write_all(&buf)?;
         }
-        self.transport
-            .flush()?;
+        self.transport.flush()?;
         Ok(())
     }
 
     fn absorb_tls(&mut self) -> io::Result<()> {
         let mut buf = [0u8; 16_384];
-        let n = self
-            .transport
-            .read(&mut buf)?;
+        let n = self.transport.read(&mut buf)?;
         if n == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "TLS transport closed during handshake",
             ));
         }
-        self.conn
-            .read_tls(&buf[..n])
-            .map_err(tls_to_io)?;
+        self.conn.read_tls(&buf[..n]).map_err(tls_to_io)?;
         Ok(())
     }
 }
@@ -196,10 +179,7 @@ where
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.complete_handshake()?;
         loop {
-            match self
-                .conn
-                .read_app(buf)
-            {
+            match self.conn.read_app(buf) {
                 Ok(n) => return Ok(n),
                 Err(TlsError::WouldBlock) => {
                     self.absorb_tls()?;
@@ -221,9 +201,7 @@ where
 {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.complete_handshake()?;
-        self.conn
-            .write_app(buf)
-            .map_err(tls_to_io)?;
+        self.conn.write_app(buf).map_err(tls_to_io)?;
         self.flush_tls()?;
         Ok(buf.len())
     }

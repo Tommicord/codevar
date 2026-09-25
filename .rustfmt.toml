@@ -5,4 +5,3 @@ tab_spaces = 4
 reorder_imports = true
 use_field_init_shorthand = true
 chain_width = 50
-indent_style = "Block"

@@ -287,9 +287,7 @@ fn handle_can_reach<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let hostname = reader
-        .read_str()?
-        .to_string();
+    let hostname = reader.read_str()?.to_string();
     let port = reader.read_u32()?;
     let options = decode_options(&mut reader)?;
 

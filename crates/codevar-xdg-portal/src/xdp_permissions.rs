@@ -341,18 +341,8 @@ mod tests {
         let (bytes, signature) = body.into_parts();
         assert_eq!(signature, "ss");
         let mut reader = DbusReader::new(&bytes, ByteOrder::Little);
-        assert_eq!(
-            reader
-                .read_str()
-                .unwrap(),
-            "notifications"
-        );
-        assert_eq!(
-            reader
-                .read_str()
-                .unwrap(),
-            "remind"
-        );
+        assert_eq!(reader.read_str().unwrap(), "notifications");
+        assert_eq!(reader.read_str().unwrap(), "remind");
         assert!(reader.is_empty());
 
         let permissions = Vec::from([String::from("yes")]);
@@ -368,39 +358,14 @@ mod tests {
         let (bytes, signature) = body.into_parts();
         assert_eq!(signature, "sbssas");
         let mut reader = DbusReader::new(&bytes, ByteOrder::Little);
-        assert_eq!(
-            reader
-                .read_str()
-                .unwrap(),
-            "notifications"
-        );
-        assert!(
-            reader
-                .read_bool()
-                .unwrap()
-        );
-        assert_eq!(
-            reader
-                .read_str()
-                .unwrap(),
-            "remind"
-        );
-        assert_eq!(
-            reader
-                .read_str()
-                .unwrap(),
-            "org.example.App"
-        );
-        let mut array = reader
-            .read_array(4)
-            .unwrap();
+        assert_eq!(reader.read_str().unwrap(), "notifications");
+        assert!(reader.read_bool().unwrap());
+        assert_eq!(reader.read_str().unwrap(), "remind");
+        assert_eq!(reader.read_str().unwrap(), "org.example.App");
+        let mut array = reader.read_array(4).unwrap();
         let mut stored = Vec::new();
         while !array.is_empty() {
-            stored.push(String::from(
-                array
-                    .read_str()
-                    .unwrap(),
-            ));
+            stored.push(String::from(array.read_str().unwrap()));
         }
         assert_eq!(stored, permissions);
         assert!(reader.is_empty());
@@ -410,35 +375,11 @@ mod tests {
         let (bytes, signature) = body.into_parts();
         assert_eq!(signature, "sbssas");
         let mut reader = DbusReader::new(&bytes, ByteOrder::Little);
-        assert_eq!(
-            reader
-                .read_str()
-                .unwrap(),
-            "t"
-        );
-        assert!(
-            reader
-                .read_bool()
-                .unwrap()
-        );
-        assert_eq!(
-            reader
-                .read_str()
-                .unwrap(),
-            "id"
-        );
-        assert_eq!(
-            reader
-                .read_str()
-                .unwrap(),
-            "app"
-        );
-        assert!(
-            reader
-                .read_array(4)
-                .unwrap()
-                .is_empty()
-        );
+        assert_eq!(reader.read_str().unwrap(), "t");
+        assert!(reader.read_bool().unwrap());
+        assert_eq!(reader.read_str().unwrap(), "id");
+        assert_eq!(reader.read_str().unwrap(), "app");
+        assert!(reader.read_array(4).unwrap().is_empty());
         assert!(reader.is_empty());
 
         let reply = DbusMessage::method_call(
@@ -448,11 +389,6 @@ mod tests {
             "Lookup",
         )
         .unwrap();
-        assert_eq!(
-            reply
-                .interface()
-                .unwrap(),
-            PERMISSION_STORE_INTERFACE
-        );
+        assert_eq!(reply.interface().unwrap(), PERMISSION_STORE_INTERFACE);
     }
 }

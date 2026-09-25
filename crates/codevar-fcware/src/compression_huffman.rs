@@ -48,9 +48,7 @@ fn huffman_tree(frequencies: &[u32; 256]) -> Option<HuffmanNode> {
             HuffmanNode::Branch(Box::new(left), Box::new(right)),
         ));
     }
-    nodes
-        .pop()
-        .map(|(_, _, node)| node)
+    nodes.pop().map(|(_, _, node)| node)
 }
 
 fn huffman_codes(node: &HuffmanNode, prefix: u32, length: u8, codes: &mut [(u32, u8); 256]) {
@@ -117,22 +115,15 @@ pub fn huffman_decode(frame: &[u8]) -> CompressorResult<Vec<u8>> {
         return Err(CompressorError::InvalidFrame);
     }
     let expected = unsafe {
-        let p = frame
-            .as_ptr()
-            .add(3);
+        let p = frame.as_ptr().add(3);
         u32::from_be_bytes([*p, *p.add(1), *p.add(2), *p.add(3)]) as usize
     };
     let mut frequencies = [0u32; 256];
-    for (index, frequency) in frequencies
-        .iter_mut()
-        .enumerate()
-    {
+    for (index, frequency) in frequencies.iter_mut().enumerate() {
         let start = 7 + index * 4;
         // SAFETY: `7 + 256*4 = 1031`, and frame.len() >= 1032.
         unsafe {
-            let p = frame
-                .as_ptr()
-                .add(start);
+            let p = frame.as_ptr().add(start);
             *frequency = u32::from_be_bytes([*p, *p.add(1), *p.add(2), *p.add(3)]);
         }
     }

@@ -204,10 +204,6 @@ mod tests {
         assert_eq!(handle.sender, ":1.42");
         assert_eq!(handle.created_ms, 12345);
         assert!(!handle.is_closed);
-        assert!(
-            handle
-                .impl_request_path
-                .is_none()
-        );
+        assert!(handle.impl_request_path.is_none());
     }
 }

@@ -54,15 +54,9 @@ fn handle_install<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let token = reader
-        .read_str()?
-        .to_string();
-    let desktop_file_id = reader
-        .read_str()?
-        .to_string();
-    let desktop_entry = reader
-        .read_str()?
-        .to_string();
+    let token = reader.read_str()?.to_string();
+    let desktop_file_id = reader.read_str()?.to_string();
+    let desktop_entry = reader.read_str()?.to_string();
     let options = crate::xdp_utils::decode_options(&mut reader)?;
 
     let filtered = filter_options(&options, INSTALL_OPTIONS)?;
@@ -91,20 +85,13 @@ fn handle_prepare_install<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let parent_window = reader
-        .read_str()?
-        .to_string();
-    let name = reader
-        .read_str()?
-        .to_string();
+    let parent_window = reader.read_str()?.to_string();
+    let name = reader.read_str()?.to_string();
     let icon_v = crate::xdp_utils::PortalValue::decode_variant(&mut reader)?;
     let options = crate::xdp_utils::decode_options(&mut reader)?;
     let filtered = filter_options(&options, PREPARE_INSTALL_OPTIONS)?;
     let handle = ctx.begin_request(inv, &filtered)?;
-    let app_id = handle
-        .app_info
-        .id()
-        .to_string();
+    let app_id = handle.app_info.id().to_string();
 
     ctx.call_impl(
         DYNAMIC_LAUNCHER_IMPL_INTERFACE,
@@ -130,9 +117,7 @@ fn handle_request_install_token<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let name = reader
-        .read_str()?
-        .to_string();
+    let name = reader.read_str()?.to_string();
     let icon_v = crate::xdp_utils::PortalValue::decode_variant(&mut reader)?;
     let options = crate::xdp_utils::decode_options(&mut reader)?;
 
@@ -140,10 +125,7 @@ fn handle_request_install_token<T: codevar_dbus::DbusTransport + 'static>(
 
     let handle = ctx.begin_request(inv, &filtered)?;
 
-    let app_id = handle
-        .app_info
-        .id()
-        .to_string();
+    let app_id = handle.app_info.id().to_string();
 
     ctx.call_impl(
         DYNAMIC_LAUNCHER_IMPL_INTERFACE,
@@ -168,9 +150,7 @@ fn handle_uninstall<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let desktop_file_id = reader
-        .read_str()?
-        .to_string();
+    let desktop_file_id = reader.read_str()?.to_string();
     let options = crate::xdp_utils::decode_options(&mut reader)?;
 
     let filtered = filter_options(&options, UNINSTALL_OPTIONS)?;
@@ -198,19 +178,14 @@ fn handle_get_desktop_entry<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let desktop_file_id = reader
-        .read_str()?
-        .to_string();
+    let desktop_file_id = reader.read_str()?.to_string();
     let options = crate::xdp_utils::decode_options(&mut reader)?;
 
     let filtered = filter_options(&options, GET_DESKTOP_ENTRY_OPTIONS)?;
 
     let handle = ctx.begin_request(inv, &filtered)?;
 
-    let app_id = handle
-        .app_info
-        .id()
-        .to_string();
+    let app_id = handle.app_info.id().to_string();
 
     ctx.call_impl(
         DYNAMIC_LAUNCHER_IMPL_INTERFACE,
@@ -234,19 +209,14 @@ fn handle_get_icon<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let desktop_file_id = reader
-        .read_str()?
-        .to_string();
+    let desktop_file_id = reader.read_str()?.to_string();
     let options = crate::xdp_utils::decode_options(&mut reader)?;
 
     let filtered = filter_options(&options, GET_ICON_OPTIONS)?;
 
     let handle = ctx.begin_request(inv, &filtered)?;
 
-    let app_id = handle
-        .app_info
-        .id()
-        .to_string();
+    let app_id = handle.app_info.id().to_string();
 
     ctx.call_impl(
         DYNAMIC_LAUNCHER_IMPL_INTERFACE,
@@ -270,9 +240,7 @@ fn handle_launch<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let desktop_file_id = reader
-        .read_str()?
-        .to_string();
+    let desktop_file_id = reader.read_str()?.to_string();
     let options = crate::xdp_utils::decode_options(&mut reader)?;
 
     let filtered = filter_options(&options, LAUNCH_OPTIONS)?;

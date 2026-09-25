@@ -306,35 +306,11 @@ mod tests {
     fn bit_reader_smoke() {
         let data = [0b1010_0000];
         let mut reader = bit_reader(&data, 4);
-        assert_eq!(
-            reader
-                .next_bit()
-                .expect("b0"),
-            1
-        );
-        assert_eq!(
-            reader
-                .next_bit()
-                .expect("b1"),
-            0
-        );
-        assert_eq!(
-            reader
-                .next_bit()
-                .expect("b2"),
-            1
-        );
-        assert_eq!(
-            reader
-                .next_bit()
-                .expect("b3"),
-            0
-        );
-        assert!(
-            reader
-                .next_bit()
-                .is_err()
-        );
+        assert_eq!(reader.next_bit().expect("b0"), 1);
+        assert_eq!(reader.next_bit().expect("b1"), 0);
+        assert_eq!(reader.next_bit().expect("b2"), 1);
+        assert_eq!(reader.next_bit().expect("b3"), 0);
+        assert!(reader.next_bit().is_err());
     }
 
     #[test]

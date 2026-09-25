@@ -76,9 +76,7 @@ impl UnalignedU16Slice {
     #[inline(always)]
     pub fn trim_last(&mut self) {
         debug_assert!(self.len > 0);
-        self.len = self
-            .len
-            .saturating_sub(1);
+        self.len = self.len.saturating_sub(1);
     }
     #[inline(always)]
     pub fn at(&self, i: usize) -> u16 {
@@ -86,12 +84,7 @@ impl UnalignedU16Slice {
         if i >= self.len {
             return 0;
         }
-        unsafe {
-            core::ptr::read_unaligned(
-                self.ptr
-                    .add(i * 2) as *const u16,
-            )
-        }
+        unsafe { core::ptr::read_unaligned(self.ptr.add(i * 2) as *const u16) }
     }
     #[inline(always)]
     pub fn len(&self) -> usize {
@@ -104,25 +97,14 @@ impl UnalignedU16Slice {
     pub fn tail(&self, from: usize) -> UnalignedU16Slice {
         debug_assert!(from <= self.len);
         let from = from.min(self.len);
-        unsafe {
-            UnalignedU16Slice::new(
-                self.ptr
-                    .add(from * 2),
-                self.len - from,
-            )
-        }
+        unsafe { UnalignedU16Slice::new(self.ptr.add(from * 2), self.len - from) }
     }
     #[inline(always)]
     pub fn copy_bmp_to<E: Endian>(&self, dst: &mut [u16]) -> Option<(u16, usize)> {
         let n = min(self.len, dst.len());
-        for (i, unit) in dst
-            .iter_mut()
-            .take(n)
-            .enumerate()
-        {
+        for (i, unit) in dst.iter_mut().take(n).enumerate() {
             let value = if E::OPPOSITE_ENDIAN {
-                self.at(i)
-                    .swap_bytes()
+                self.at(i).swap_bytes()
             } else {
                 self.at(i)
             };
@@ -147,11 +129,7 @@ impl<'a> ByteSource<'a> {
     }
     #[inline(always)]
     pub fn check_available<'b>(&'b mut self) -> Space<ByteReadHandle<'b, 'a>> {
-        if self.pos
-            < self
-                .slice
-                .len()
-        {
+        if self.pos < self.slice.len() {
             Space::Available(ByteReadHandle::new(self))
         } else {
             Space::Full(self.consumed())
@@ -184,8 +162,7 @@ impl<'a, 'b> ByteReadHandle<'a, 'b> {
     }
     #[inline(always)]
     pub fn consumed(&self) -> usize {
-        self.source
-            .consumed()
+        self.source.consumed()
     }
 }
 
@@ -199,17 +176,13 @@ where
 impl<'a, 'b> ByteUnreadHandle<'a, 'b> {
     #[inline(always)]
     pub fn unread(self) -> usize {
-        let pos = self
-            .source
-            .pos;
-        self.source
-            .pos = self.old_pos;
+        let pos = self.source.pos;
+        self.source.pos = self.old_pos;
         pos
     }
     #[inline(always)]
     pub fn consumed(&self) -> usize {
-        self.source
-            .consumed()
+        self.source.consumed()
     }
     #[inline(always)]
     pub fn commit(self) -> &'a mut ByteSource<'b> {
@@ -230,37 +203,31 @@ impl<'a, 'b> Utf16BmpHandle<'a, 'b> {
     }
     #[inline(always)]
     pub fn written(&self) -> usize {
-        self.dest
-            .written()
+        self.dest.written()
     }
     #[inline(always)]
     pub fn write_ascii(self, ascii: u8) -> &'a mut Utf16Destination<'b> {
-        self.dest
-            .write_ascii(ascii);
+        self.dest.write_ascii(ascii);
         self.dest
     }
     #[inline(always)]
     pub fn write_bmp(self, bmp: u16) -> &'a mut Utf16Destination<'b> {
-        self.dest
-            .write_bmp(bmp);
+        self.dest.write_bmp(bmp);
         self.dest
     }
     #[inline(always)]
     pub fn write_bmp_excl_ascii(self, bmp: u16) -> &'a mut Utf16Destination<'b> {
-        self.dest
-            .write_bmp_excl_ascii(bmp);
+        self.dest.write_bmp_excl_ascii(bmp);
         self.dest
     }
     #[inline(always)]
     pub fn write_astral(self, astral: u32) -> &'a mut Utf16Destination<'b> {
-        self.dest
-            .write_astral(astral);
+        self.dest.write_astral(astral);
         self.dest
     }
     #[inline(always)]
     pub fn write_surrogate_pair(self, high: u16, low: u16) -> &'a mut Utf16Destination<'b> {
-        self.dest
-            .write_surrogate_pair(high, low);
+        self.dest.write_surrogate_pair(high, low);
         self.dest
     }
     #[inline(always)]
@@ -282,37 +249,31 @@ impl<'a, 'b> Utf16AstralHandle<'a, 'b> {
     }
     #[inline(always)]
     pub fn written(&self) -> usize {
-        self.dest
-            .written()
+        self.dest.written()
     }
     #[inline(always)]
     pub fn write_ascii(self, ascii: u8) -> &'a mut Utf16Destination<'b> {
-        self.dest
-            .write_ascii(ascii);
+        self.dest.write_ascii(ascii);
         self.dest
     }
     #[inline(always)]
     pub fn write_bmp(self, bmp: u16) -> &'a mut Utf16Destination<'b> {
-        self.dest
-            .write_bmp(bmp);
+        self.dest.write_bmp(bmp);
         self.dest
     }
     #[inline(always)]
     pub fn write_bmp_excl_ascii(self, bmp: u16) -> &'a mut Utf16Destination<'b> {
-        self.dest
-            .write_bmp_excl_ascii(bmp);
+        self.dest.write_bmp_excl_ascii(bmp);
         self.dest
     }
     #[inline(always)]
     pub fn write_astral(self, astral: u32) -> &'a mut Utf16Destination<'b> {
-        self.dest
-            .write_astral(astral);
+        self.dest.write_astral(astral);
         self.dest
     }
     #[inline(always)]
     pub fn write_surrogate_pair(self, high: u16, low: u16) -> &'a mut Utf16Destination<'b> {
-        self.dest
-            .write_surrogate_pair(high, low);
+        self.dest.write_surrogate_pair(high, low);
         self.dest
     }
     #[inline(always)]
@@ -332,11 +293,7 @@ impl<'a> Utf16Destination<'a> {
     }
     #[inline(always)]
     pub fn check_space_bmp<'b>(&'b mut self) -> Space<Utf16BmpHandle<'b, 'a>> {
-        if self.pos
-            < self
-                .slice
-                .len()
-        {
+        if self.pos < self.slice.len() {
             Space::Available(Utf16BmpHandle::new(self))
         } else {
             Space::Full(self.written())
@@ -344,11 +301,7 @@ impl<'a> Utf16Destination<'a> {
     }
     #[inline(always)]
     pub fn check_space_astral<'b>(&'b mut self) -> Space<Utf16AstralHandle<'b, 'a>> {
-        if self.pos + 1
-            < self
-                .slice
-                .len()
-        {
+        if self.pos + 1 < self.slice.len() {
             Space::Available(Utf16AstralHandle::new(self))
         } else {
             Space::Full(self.written())
@@ -361,9 +314,7 @@ impl<'a> Utf16Destination<'a> {
     #[inline(always)]
     fn write_code_unit(&mut self, u: u16) {
         unsafe {
-            *(self
-                .slice
-                .get_unchecked_mut(self.pos)) = u;
+            *(self.slice.get_unchecked_mut(self.pos)) = u;
         }
         self.pos += 1;
     }
@@ -468,9 +419,7 @@ impl<'a> Utf16Destination<'a> {
                     return Some((source.pos, self.pos));
                 }
                 let second = if E::OPPOSITE_ENDIAN {
-                    src_unaligned
-                        .at(second_pos)
-                        .swap_bytes()
+                    src_unaligned.at(second_pos).swap_bytes()
                 } else {
                     src_unaligned.at(second_pos)
                 };
@@ -503,37 +452,31 @@ impl<'a, 'b> Utf8BmpHandle<'a, 'b> {
     }
     #[inline(always)]
     pub fn written(&self) -> usize {
-        self.dest
-            .written()
+        self.dest.written()
     }
     #[inline(always)]
     pub fn write_ascii(self, ascii: u8) -> &'a mut Utf8Destination<'b> {
-        self.dest
-            .write_ascii(ascii);
+        self.dest.write_ascii(ascii);
         self.dest
     }
     #[inline(always)]
     pub fn write_bmp(self, bmp: u16) -> &'a mut Utf8Destination<'b> {
-        self.dest
-            .write_bmp(bmp);
+        self.dest.write_bmp(bmp);
         self.dest
     }
     #[inline(always)]
     pub fn write_bmp_excl_ascii(self, bmp: u16) -> &'a mut Utf8Destination<'b> {
-        self.dest
-            .write_bmp_excl_ascii(bmp);
+        self.dest.write_bmp_excl_ascii(bmp);
         self.dest
     }
     #[inline(always)]
     pub fn write_astral(self, astral: u32) -> &'a mut Utf8Destination<'b> {
-        self.dest
-            .write_astral(astral);
+        self.dest.write_astral(astral);
         self.dest
     }
     #[inline(always)]
     pub fn write_surrogate_pair(self, high: u16, low: u16) -> &'a mut Utf8Destination<'b> {
-        self.dest
-            .write_surrogate_pair(high, low);
+        self.dest.write_surrogate_pair(high, low);
         self.dest
     }
     #[inline(always)]
@@ -555,37 +498,31 @@ impl<'a, 'b> Utf8AstralHandle<'a, 'b> {
     }
     #[inline(always)]
     pub fn written(&self) -> usize {
-        self.dest
-            .written()
+        self.dest.written()
     }
     #[inline(always)]
     pub fn write_ascii(self, ascii: u8) -> &'a mut Utf8Destination<'b> {
-        self.dest
-            .write_ascii(ascii);
+        self.dest.write_ascii(ascii);
         self.dest
     }
     #[inline(always)]
     pub fn write_bmp(self, bmp: u16) -> &'a mut Utf8Destination<'b> {
-        self.dest
-            .write_bmp(bmp);
+        self.dest.write_bmp(bmp);
         self.dest
     }
     #[inline(always)]
     pub fn write_bmp_excl_ascii(self, bmp: u16) -> &'a mut Utf8Destination<'b> {
-        self.dest
-            .write_bmp_excl_ascii(bmp);
+        self.dest.write_bmp_excl_ascii(bmp);
         self.dest
     }
     #[inline(always)]
     pub fn write_astral(self, astral: u32) -> &'a mut Utf8Destination<'b> {
-        self.dest
-            .write_astral(astral);
+        self.dest.write_astral(astral);
         self.dest
     }
     #[inline(always)]
     pub fn write_surrogate_pair(self, high: u16, low: u16) -> &'a mut Utf8Destination<'b> {
-        self.dest
-            .write_surrogate_pair(high, low);
+        self.dest.write_surrogate_pair(high, low);
         self.dest
     }
     #[inline(always)]
@@ -605,11 +542,7 @@ impl<'a> Utf8Destination<'a> {
     }
     #[inline(always)]
     pub fn check_space_bmp<'b>(&'b mut self) -> Space<Utf8BmpHandle<'b, 'a>> {
-        if self.pos + 2
-            < self
-                .slice
-                .len()
-        {
+        if self.pos + 2 < self.slice.len() {
             Space::Available(Utf8BmpHandle::new(self))
         } else {
             Space::Full(self.written())
@@ -617,11 +550,7 @@ impl<'a> Utf8Destination<'a> {
     }
     #[inline(always)]
     pub fn check_space_astral<'b>(&'b mut self) -> Space<Utf8AstralHandle<'b, 'a>> {
-        if self.pos + 3
-            < self
-                .slice
-                .len()
-        {
+        if self.pos + 3 < self.slice.len() {
             Space::Available(Utf8AstralHandle::new(self))
         } else {
             Space::Full(self.written())
@@ -634,9 +563,7 @@ impl<'a> Utf8Destination<'a> {
     #[inline(always)]
     fn write_code_unit(&mut self, u: u8) {
         unsafe {
-            *(self
-                .slice
-                .get_unchecked_mut(self.pos)) = u;
+            *(self.slice.get_unchecked_mut(self.pos)) = u;
         }
         self.pos += 1;
     }
@@ -696,9 +623,7 @@ impl<'a> Utf8Destination<'a> {
         source: &mut ByteSource,
     ) -> CopyAsciiResult<(DecoderResult, usize, usize), (u8, Utf8BmpHandle<'b, 'a>)> {
         let non_ascii_ret = {
-            let dst_len = self
-                .slice
-                .len();
+            let dst_len = self.slice.len();
             let src_remaining = &source.slice[source.pos..];
             let dst_remaining = &mut self.slice[self.pos..];
             let (pending, length) = if dst_remaining.len() < src_remaining.len() {
@@ -732,9 +657,7 @@ impl<'a> Utf8Destination<'a> {
         source: &mut ByteSource,
     ) -> CopyAsciiResult<(DecoderResult, usize, usize), (u8, Utf8AstralHandle<'b, 'a>)> {
         let non_ascii_ret = {
-            let dst_len = self
-                .slice
-                .len();
+            let dst_len = self.slice.len();
             let src_remaining = &source.slice[source.pos..];
             let dst_remaining = &mut self.slice[self.pos..];
             let (pending, length) = if dst_remaining.len() < src_remaining.len() {
@@ -810,11 +733,7 @@ impl<'a> Utf16Source<'a> {
     }
     #[inline(always)]
     pub fn check_available<'b>(&'b mut self) -> Space<Utf16ReadHandle<'b, 'a>> {
-        if self.pos
-            < self
-                .slice
-                .len()
-        {
+        if self.pos < self.slice.len() {
             Space::Available(Utf16ReadHandle::new(self))
         } else {
             Space::Full(self.consumed())
@@ -828,12 +747,7 @@ impl<'a> Utf16Source<'a> {
         if unit_minus_surrogate_start > (0xDFFF - 0xD800) {
             return unsafe { char::from_u32_unchecked(u32::from(unit)) };
         }
-        if unit_minus_surrogate_start <= (0xDBFF - 0xD800)
-            && self.pos
-                < self
-                    .slice
-                    .len()
-        {
+        if unit_minus_surrogate_start <= (0xDBFF - 0xD800) && self.pos < self.slice.len() {
             let second = self.slice[self.pos];
             let second_minus_low_surrogate_start = second.wrapping_sub(0xDC00);
             if second_minus_low_surrogate_start <= (0xDFFF - 0xDC00) {
@@ -874,8 +788,7 @@ impl<'a, 'b> Utf16ReadHandle<'a, 'b> {
     }
     #[inline(always)]
     pub fn consumed(&self) -> usize {
-        self.source
-            .consumed()
+        self.source.consumed()
     }
 }
 
@@ -889,17 +802,13 @@ where
 impl<'a, 'b> Utf16UnreadHandle<'a, 'b> {
     #[inline(always)]
     pub fn unread(self) -> usize {
-        let pos = self
-            .source
-            .pos;
-        self.source
-            .pos = self.old_pos;
+        let pos = self.source.pos;
+        self.source.pos = self.old_pos;
         pos
     }
     #[inline(always)]
     pub fn consumed(&self) -> usize {
-        self.source
-            .consumed()
+        self.source.consumed()
     }
     #[inline(always)]
     pub fn commit(self) -> &'a mut Utf16Source<'b> {
@@ -921,11 +830,7 @@ impl<'a> Utf8Source<'a> {
     }
     #[inline(always)]
     pub fn check_available<'b>(&'b mut self) -> Space<Utf8ReadHandle<'b, 'a>> {
-        if self.pos
-            < self
-                .slice
-                .len()
-        {
+        if self.pos < self.slice.len() {
             Space::Available(Utf8ReadHandle::new(self))
         } else {
             Space::Full(self.consumed())
@@ -933,10 +838,7 @@ impl<'a> Utf8Source<'a> {
     }
     #[inline(always)]
     fn read(&mut self) -> char {
-        let Some(remaining) = self
-            .slice
-            .get(self.pos..)
-        else {
+        let Some(remaining) = self.slice.get(self.pos..) else {
             return char::REPLACEMENT_CHARACTER;
         };
         if remaining.is_empty() {
@@ -945,10 +847,7 @@ impl<'a> Utf8Source<'a> {
         // Decode at most one scalar from the next up-to-4 bytes.
         let take = &remaining[..core::cmp::min(4, remaining.len())];
         match core::str::from_utf8(take) {
-            Ok(s) => match s
-                .chars()
-                .next()
-            {
+            Ok(s) => match s.chars().next() {
                 Some(c) => {
                     self.pos += c.len_utf8();
                     c
@@ -958,10 +857,7 @@ impl<'a> Utf8Source<'a> {
             Err(e) if e.valid_up_to() > 0 => {
                 // The leading bytes form a valid scalar; consume just that.
                 match core::str::from_utf8(&take[..e.valid_up_to()]) {
-                    Ok(s) => match s
-                        .chars()
-                        .next()
-                    {
+                    Ok(s) => match s.chars().next() {
                         Some(c) => {
                             self.pos += c.len_utf8();
                             c
@@ -1013,8 +909,7 @@ impl<'a, 'b> Utf8ReadHandle<'a, 'b> {
     }
     #[inline(always)]
     pub fn consumed(&self) -> usize {
-        self.source
-            .consumed()
+        self.source.consumed()
     }
 }
 
@@ -1028,17 +923,13 @@ where
 impl<'a, 'b> Utf8UnreadHandle<'a, 'b> {
     #[inline(always)]
     pub fn unread(self) -> usize {
-        let pos = self
-            .source
-            .pos;
-        self.source
-            .pos = self.old_pos;
+        let pos = self.source.pos;
+        self.source.pos = self.old_pos;
         pos
     }
     #[inline(always)]
     pub fn consumed(&self) -> usize {
-        self.source
-            .consumed()
+        self.source.consumed()
     }
     #[inline(always)]
     pub fn commit(self) -> &'a mut Utf8Source<'b> {
@@ -1069,11 +960,7 @@ impl<'a> ByteDestination<'a> {
     }
     #[inline(always)]
     pub fn check_space_two<'b>(&'b mut self) -> Space<ByteTwoHandle<'b, 'a>> {
-        if self.pos + 2
-            <= self
-                .slice
-                .len()
-        {
+        if self.pos + 2 <= self.slice.len() {
             Space::Available(ByteTwoHandle::new(self))
         } else {
             Space::Full(self.written())
@@ -1081,11 +968,7 @@ impl<'a> ByteDestination<'a> {
     }
     #[inline(always)]
     pub fn check_space_four<'b>(&'b mut self) -> Space<ByteFourHandle<'b, 'a>> {
-        if self.pos + 4
-            <= self
-                .slice
-                .len()
-        {
+        if self.pos + 4 <= self.slice.len() {
             Space::Available(ByteFourHandle::new(self))
         } else {
             Space::Full(self.written())
@@ -1094,9 +977,7 @@ impl<'a> ByteDestination<'a> {
     #[inline(always)]
     pub fn write_byte(&mut self, b: u8) {
         unsafe {
-            *(self
-                .slice
-                .get_unchecked_mut(self.pos)) = b;
+            *(self.slice.get_unchecked_mut(self.pos)) = b;
         }
         self.pos += 1;
     }
@@ -1115,8 +996,7 @@ impl<'a, 'b> ByteTwoHandle<'a, 'b> {
     }
     #[inline(always)]
     pub fn written(&self) -> usize {
-        self.dest
-            .written()
+        self.dest.written()
     }
     #[inline(always)]
     pub fn commit(self) -> &'a mut ByteDestination<'b> {
@@ -1137,8 +1017,7 @@ impl<'a, 'b> ByteFourHandle<'a, 'b> {
     }
     #[inline(always)]
     pub fn written(&self) -> usize {
-        self.dest
-            .written()
+        self.dest.written()
     }
     #[inline(always)]
     pub fn commit(self) -> &'a mut ByteDestination<'b> {
@@ -1157,8 +1036,7 @@ pub fn copy_unaligned_basic_latin_to_ascii<E: Endian>(
             return CopyAsciiResult::Stop(i);
         }
         let unit = if E::OPPOSITE_ENDIAN {
-            src.at(i)
-                .swap_bytes()
+            src.at(i).swap_bytes()
         } else {
             src.at(i)
         };
@@ -1216,8 +1094,7 @@ pub fn convert_unaligned_utf16_to_utf8<E: Endian>(
             } else if non_ascii_minus_surrogate_start <= (0xDBFF - 0xD800) {
                 if src_pos < src_len {
                     let second = if E::OPPOSITE_ENDIAN {
-                        src.at(src_pos)
-                            .swap_bytes()
+                        src.at(src_pos).swap_bytes()
                     } else {
                         src.at(src_pos)
                     };
@@ -1247,8 +1124,7 @@ pub fn convert_unaligned_utf16_to_utf8<E: Endian>(
                 break 'outer;
             }
             let unit = if E::OPPOSITE_ENDIAN {
-                src.at(src_pos)
-                    .swap_bytes()
+                src.at(src_pos).swap_bytes()
             } else {
                 src.at(src_pos)
             };
@@ -1266,16 +1142,10 @@ pub fn convert_unaligned_utf16_to_utf8<E: Endian>(
 }
 const STRIDE: usize = 16;
 pub fn validate_bmp_stride(stride: &[u16; STRIDE]) -> Option<usize> {
-    if stride
-        .iter()
-        .all(|&c| c & 0xF800 != 0xD800)
-    {
+    if stride.iter().all(|&c| c & 0xF800 != 0xD800) {
         return None;
     }
-    for (i, c) in stride
-        .iter()
-        .enumerate()
-    {
+    for (i, c) in stride.iter().enumerate() {
         if c & 0xF800 == 0xD800 {
             return Some(i);
         }
@@ -1291,10 +1161,7 @@ pub fn validate_latin1_str_stride(stride: &[u8; STRIDE]) -> Option<usize> {
     {
         return None;
     }
-    for (i, b) in stride
-        .iter()
-        .enumerate()
-    {
+    for (i, b) in stride.iter().enumerate() {
         if *b >= 0x80 && (*b > 0xC3 || *b & 0xC0 == 0x80) {
             return Some(i);
         }

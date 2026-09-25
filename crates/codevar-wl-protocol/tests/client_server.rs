@@ -49,18 +49,9 @@ struct ServerEnd {
 
 impl WlTransport for ServerEnd {
     fn recv(&mut self, buf: &mut [u8], _fds: &mut Vec<i32>) -> WlResult<usize> {
-        let mut wire = self
-            .wire
-            .borrow_mut();
-        if wire.to_server_pos
-            < wire
-                .to_server
-                .len()
-        {
-            let available = wire
-                .to_server
-                .len()
-                - wire.to_server_pos;
+        let mut wire = self.wire.borrow_mut();
+        if wire.to_server_pos < wire.to_server.len() {
+            let available = wire.to_server.len() - wire.to_server_pos;
             let count = available.min(buf.len());
             let start = wire.to_server_pos;
             buf[..count].copy_from_slice(&wire.to_server[start..start + count]);
@@ -82,18 +73,12 @@ impl WlTransport for ServerEnd {
     }
 
     fn wait(&mut self, _timeout: Option<Duration>, mask: WlPollEvents) -> WlResult<WlPollEvents> {
-        let wire = self
-            .wire
-            .borrow();
+        let wire = self.wire.borrow();
         let mut events = WlPollEvents::EMPTY;
         if wire.client_closed {
             events.insert(WlPollEvents::HANGUP);
         }
-        if wire.to_server_pos
-            < wire
-                .to_server
-                .len()
-        {
+        if wire.to_server_pos < wire.to_server.len() {
             events.insert(WlPollEvents::READABLE);
         }
         Ok(events.intersection(mask))
@@ -114,28 +99,17 @@ struct ClientEnd {
 
 impl Drop for ClientEnd {
     fn drop(&mut self) {
-        self.wire
-            .borrow_mut()
-            .client_closed = true;
+        self.wire.borrow_mut().client_closed = true;
     }
 }
 
 impl WlTransport for ClientEnd {
     fn recv(&mut self, buf: &mut [u8], _fds: &mut Vec<i32>) -> WlResult<usize> {
-        let mut wire = self
-            .wire
-            .borrow_mut();
-        if wire.to_client_pos
-            >= wire
-                .to_client
-                .len()
-        {
+        let mut wire = self.wire.borrow_mut();
+        if wire.to_client_pos >= wire.to_client.len() {
             return Err(WlError::WouldBlock);
         }
-        let available = wire
-            .to_client
-            .len()
-            - wire.to_client_pos;
+        let available = wire.to_client.len() - wire.to_client_pos;
         let count = available.min(buf.len());
         let start = wire.to_client_pos;
         buf[..count].copy_from_slice(&wire.to_client[start..start + count]);
@@ -152,15 +126,9 @@ impl WlTransport for ClientEnd {
     }
 
     fn wait(&mut self, _timeout: Option<Duration>, mask: WlPollEvents) -> WlResult<WlPollEvents> {
-        let wire = self
-            .wire
-            .borrow();
+        let wire = self.wire.borrow();
         let mut events = WlPollEvents::EMPTY;
-        if wire.to_client_pos
-            < wire
-                .to_client
-                .len()
-        {
+        if wire.to_client_pos < wire.to_client.len() {
             events.insert(WlPollEvents::READABLE);
         }
         Ok(events.intersection(mask))
@@ -181,26 +149,17 @@ struct WirePoller {
 
 impl WlPoller for WirePoller {
     fn poll(&mut self, entries: &mut [WlPollEntry], _timeout: Option<Duration>) -> WlResult<usize> {
-        let wire = self
-            .wire
-            .borrow();
+        let wire = self.wire.borrow();
         let mut ready = 0;
         for entry in entries.iter_mut() {
             let mut events = WlPollEvents::EMPTY;
             if wire.client_closed {
                 events.insert(WlPollEvents::HANGUP);
             }
-            if wire.to_server_pos
-                < wire
-                    .to_server
-                    .len()
-            {
+            if wire.to_server_pos < wire.to_server.len() {
                 events.insert(WlPollEvents::READABLE);
             }
-            if entry
-                .interest
-                .contains(WlPollEvents::WRITABLE)
-            {
+            if entry.interest.contains(WlPollEvents::WRITABLE) {
                 events.insert(WlPollEvents::WRITABLE);
             }
             entry.revents = events;
@@ -260,9 +219,7 @@ impl Fixture {
 
     /// Writes every buffered client request to the server.
     fn flush_client(&mut self) {
-        self.client
-            .flush()
-            .unwrap();
+        self.client.flush().unwrap();
     }
 
     /// Lets the server read requests and flush its events.
@@ -289,10 +246,7 @@ fn registry_announces_globals_and_binds() {
         .add_global(&TEST_INTERFACE, 3)
         .unwrap();
 
-    let registry = fixture
-        .client
-        .get_registry()
-        .unwrap();
+    let registry = fixture.client.get_registry().unwrap();
     let seen = Rc::clone(&globals);
     fixture
         .client
@@ -303,8 +257,7 @@ fn registry_announces_globals_and_binds() {
                 version,
             } = event
             {
-                seen.borrow_mut()
-                    .push((name, interface, version));
+                seen.borrow_mut().push((name, interface, version));
             }
             0
         })
@@ -322,11 +275,7 @@ fn registry_announces_globals_and_binds() {
     fixture.flush_client();
     fixture.dispatch_server();
 
-    let (_, server_client) = fixture
-        .server
-        .clients()
-        .next()
-        .unwrap();
+    let (_, server_client) = fixture.server.clients().next().unwrap();
     assert_eq!(server_client.resource_count(), 3);
     assert_eq!(
         server_client
@@ -346,17 +295,13 @@ fn remove_global_reaches_the_client() {
         .add_global(&TEST_INTERFACE, 3)
         .unwrap();
 
-    let registry = fixture
-        .client
-        .get_registry()
-        .unwrap();
+    let registry = fixture.client.get_registry().unwrap();
     let seen = Rc::clone(&removed);
     fixture
         .client
         .add_registry_listener(registry, move |_, event| {
             if let WlRegistryEvent::GlobalRemove { name } = event {
-                seen.borrow_mut()
-                    .push(name);
+                seen.borrow_mut().push(name);
             }
             0
         })
@@ -365,13 +310,8 @@ fn remove_global_reaches_the_client() {
     fixture.dispatch_server();
     fixture.dispatch_client();
 
-    fixture
-        .server
-        .remove_global(1)
-        .unwrap();
-    fixture
-        .server
-        .flush_clients();
+    fixture.server.remove_global(1).unwrap();
+    fixture.server.flush_clients();
     fixture.dispatch_client();
 
     assert_eq!(*removed.borrow(), [1u32]);
@@ -382,10 +322,7 @@ fn sync_delivers_done_and_delete_id() {
     let serial = Rc::new(Cell::new(None));
     let mut fixture = Fixture::new();
 
-    let callback = fixture
-        .client
-        .sync()
-        .unwrap();
+    let callback = fixture.client.sync().unwrap();
     let seen = Rc::clone(&serial);
     fixture
         .client
@@ -399,26 +336,11 @@ fn sync_delivers_done_and_delete_id() {
     fixture.dispatch_client();
 
     assert_eq!(serial.get(), Some(1));
-    assert!(
-        fixture
-            .client
-            .is_alive(callback)
-    );
-    fixture
-        .client
-        .proxy_destroy(callback)
-        .unwrap();
-    assert!(
-        !fixture
-            .client
-            .is_alive(callback)
-    );
+    assert!(fixture.client.is_alive(callback));
+    fixture.client.proxy_destroy(callback).unwrap();
+    assert!(!fixture.client.is_alive(callback));
 
-    let (_, server_client) = fixture
-        .server
-        .clients()
-        .next()
-        .unwrap();
+    let (_, server_client) = fixture.server.clients().next().unwrap();
     assert_eq!(server_client.resource_count(), 1);
     assert!(
         server_client
@@ -453,16 +375,8 @@ fn protocol_error_from_a_bogus_request_reaches_the_client() {
     assert_eq!(info.code, 0);
     assert_eq!(info.object_id, 1);
     assert_eq!(info.interface, "wl_display");
-    assert!(
-        info.message
-            .contains("invalid object 42")
-    );
-    assert_eq!(
-        fixture
-            .server
-            .client_count(),
-        0
-    );
+    assert!(info.message.contains("invalid object 42"));
+    assert_eq!(fixture.server.client_count(), 0);
 }
 
 #[test]
@@ -486,8 +400,6 @@ fn dropping_the_client_removes_it_from_the_server() {
     assert_eq!(server.client_count(), 1);
 
     drop(client);
-    server
-        .dispatch(Some(Duration::ZERO))
-        .unwrap();
+    server.dispatch(Some(Duration::ZERO)).unwrap();
     assert_eq!(server.client_count(), 0);
 }

@@ -83,9 +83,7 @@ impl UnixTransport {
                 }
             },
         };
-        let raw = address
-            .get(kind)
-            .unwrap();
+        let raw = address.get(kind).unwrap();
         if raw.is_empty() {
             return Err(DbusError::invalid_address("empty unix socket name"));
         }
@@ -98,11 +96,7 @@ impl UnixTransport {
         };
         let bytes = raw.as_bytes();
         let copy_len = if kind == "abstract" && !bytes.starts_with(&[0]) {
-            if bytes.len() + 1
-                >= sun
-                    .sun_path
-                    .len()
-            {
+            if bytes.len() + 1 >= sun.sun_path.len() {
                 return Err(DbusError::invalid_address(alloc::format!(
                     "abstract socket name too long: {raw}"
                 )));
@@ -111,27 +105,16 @@ impl UnixTransport {
             // leading NUL plus the bytes is valid for
             // trivially-copyable types.
             unsafe {
-                core::ptr::write_bytes(
-                    sun.sun_path
-                        .as_mut_ptr(),
-                    0u8,
-                    1,
-                );
+                core::ptr::write_bytes(sun.sun_path.as_mut_ptr(), 0u8, 1);
                 core::ptr::copy_nonoverlapping(
                     bytes.as_ptr() as *const libc::c_char,
-                    sun.sun_path
-                        .as_mut_ptr()
-                        .add(1),
+                    sun.sun_path.as_mut_ptr().add(1),
                     bytes.len(),
                 );
             }
             bytes.len() + 1
         } else {
-            if bytes.len()
-                >= sun
-                    .sun_path
-                    .len()
-            {
+            if bytes.len() >= sun.sun_path.len() {
                 return Err(DbusError::invalid_address(alloc::format!(
                     "socket path too long: {raw}"
                 )));
@@ -142,8 +125,7 @@ impl UnixTransport {
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     bytes.as_ptr() as *const libc::c_char,
-                    sun.sun_path
-                        .as_mut_ptr(),
+                    sun.sun_path.as_mut_ptr(),
                     bytes.len(),
                 );
             }
@@ -159,11 +141,7 @@ impl UnixTransport {
         if fd < 0 {
             return Err(DbusError::io("socket", unsafe { *libc::__errno_location() }));
         }
-        let len = core::mem::size_of_val(&sun) as socklen_t
-            - (sun
-                .sun_path
-                .len()
-                - copy_len) as socklen_t;
+        let len = core::mem::size_of_val(&sun) as socklen_t - (sun.sun_path.len() - copy_len) as socklen_t;
         let err = unsafe { libc::connect(fd, &sun as *const _ as *const libc::sockaddr, len) };
         if err < 0 {
             let errno = unsafe { *libc::__errno_location() };
@@ -253,18 +231,14 @@ impl DbusTransport for UnixTransport {
     fn read(&mut self, buf: &mut [u8]) -> DbusResult<usize> {
         loop {
             let mut iov = libc::iovec {
-                iov_base: buf
-                    .as_mut_ptr()
-                    .cast(),
+                iov_base: buf.as_mut_ptr().cast(),
                 iov_len: buf.len(),
             };
             let mut control = [0u8; CONTROL_SPACE];
             let mut message: libc::msghdr = unsafe { core::mem::zeroed() };
             message.msg_iov = &mut iov;
             message.msg_iovlen = 1;
-            message.msg_control = control
-                .as_mut_ptr()
-                .cast();
+            message.msg_control = control.as_mut_ptr().cast();
             message.msg_controllen = control.len();
             // SAFETY: `iov` points into `buf`, `control` is a valid
             // writable array and `message` references both with their
@@ -298,8 +272,7 @@ impl DbusTransport for UnixTransport {
             // connection feeds them to the stream only after `read`
             // returns) keeps descriptor order aligned with message
             // order.
-            self.pending_fds
-                .extend(collected);
+            self.pending_fds.extend(collected);
             return Ok(n as usize);
         }
     }
@@ -338,19 +311,14 @@ impl DbusTransport for UnixTransport {
         }
         loop {
             let mut iov = libc::iovec {
-                iov_base: buf
-                    .as_ptr()
-                    .cast_mut()
-                    .cast(),
+                iov_base: buf.as_ptr().cast_mut().cast(),
                 iov_len: buf.len(),
             };
             let mut control = [0u8; CONTROL_SPACE];
             let mut message: libc::msghdr = unsafe { core::mem::zeroed() };
             message.msg_iov = &mut iov;
             message.msg_iovlen = 1;
-            message.msg_control = control
-                .as_mut_ptr()
-                .cast();
+            message.msg_control = control.as_mut_ptr().cast();
             message.msg_controllen = control.len();
             // SAFETY: `control` is at least `CMSG_SPACE` bytes long,
             // which always fits one `cmsghdr`, so `CMSG_FIRSTHDR`
@@ -496,9 +464,7 @@ fn get_env(name: &str) -> Option<String> {
     // SAFETY: `getenv` returns a NUL-terminated C string or a
     // null pointer; we checked for null above.
     let cstr = unsafe { core::ffi::CStr::from_ptr(ptr) };
-    cstr.to_str()
-        .ok()
-        .map(String::from)
+    cstr.to_str().ok().map(String::from)
 }
 
 /// Resolves default addresses for the system bus.
@@ -604,9 +570,7 @@ mod tests {
 
         let payload = b"a method call carrying descriptors";
         // Justified: the socket buffer is empty, so this must succeed.
-        let written = sender
-            .write_with_fds(payload, &fds)
-            .unwrap();
+        let written = sender.write_with_fds(payload, &fds).unwrap();
         assert_eq!(written, payload.len());
         // SAFETY: the kernel took its own references during
         // `sendmsg`, so the sender copies can be released now.
@@ -617,9 +581,7 @@ mod tests {
 
         let mut buf = [0u8; 64];
         // Justified: the payload is already queued in the socket.
-        let n = receiver
-            .read(&mut buf)
-            .unwrap();
+        let n = receiver.read(&mut buf).unwrap();
         assert_eq!(&buf[..n], payload);
         // Descriptors arrive in the order they were sent. Their
         // numbers are chosen by the kernel, so only identity and
@@ -637,49 +599,14 @@ mod tests {
         // order, which `SCM_RIGHTS` preserves.
         // SAFETY: the write ends are live, so each pipe accepts one
         // byte without blocking.
-        assert_eq!(
-            unsafe {
-                libc::write(
-                    pipe_a[1],
-                    [42u8]
-                        .as_ptr()
-                        .cast(),
-                    1,
-                )
-            },
-            1
-        );
-        assert_eq!(
-            unsafe {
-                libc::write(
-                    pipe_b[1],
-                    [43u8]
-                        .as_ptr()
-                        .cast(),
-                    1,
-                )
-            },
-            1
-        );
-        for (index, &fd) in received
-            .iter()
-            .enumerate()
-        {
+        assert_eq!(unsafe { libc::write(pipe_a[1], [42u8].as_ptr().cast(), 1,) }, 1);
+        assert_eq!(unsafe { libc::write(pipe_b[1], [43u8].as_ptr().cast(), 1,) }, 1);
+        for (index, &fd) in received.iter().enumerate() {
             let mut got = [0u8; 1];
             // SAFETY: `fd` is a live read end duplicated by the
             // kernel during `sendmsg` and its pipe already holds a
             // byte, so this read completes immediately.
-            assert_eq!(
-                unsafe {
-                    libc::read(
-                        fd,
-                        got.as_mut_ptr()
-                            .cast(),
-                        got.len(),
-                    )
-                },
-                1
-            );
+            assert_eq!(unsafe { libc::read(fd, got.as_mut_ptr().cast(), got.len(),) }, 1);
             // The first descriptor travels with the first payload.
             if index == 0 {
                 assert_eq!(got, [42u8]);
@@ -722,71 +649,35 @@ mod tests {
         .unwrap();
         call.set_fds(vec![pipe[0]]);
         // Justified: the message encodes and the socket is empty.
-        sender
-            .send_message(call)
-            .unwrap();
-        sender
-            .flush()
-            .unwrap();
+        sender.send_message(call).unwrap();
+        sender.flush().unwrap();
 
         // Justified: the bytes are already queued on the socket.
         // SAFETY: `fcntl` only inspects the descriptor.
         assert_eq!(unsafe { libc::fcntl(pipe[0], libc::F_GETFD) }, -1);
 
         // Justified: the complete message is queued on the socket.
-        let message = receiver
-            .try_recv()
-            .unwrap()
-            .unwrap();
+        let message = receiver.try_recv().unwrap().unwrap();
         assert_eq!(message.member(), Some("Open"));
         assert_eq!(message.unix_fds(), 1);
-        assert_eq!(
-            message
-                .fds()
-                .len(),
-            1
-        );
+        assert_eq!(message.fds().len(), 1);
         let received = message.fds()[0];
         let mut reader = message.body_reader();
-        assert_eq!(
-            reader
-                .read_fd()
-                .unwrap(),
-            0
-        );
-        assert_eq!(
-            reader
-                .read_str()
-                .unwrap(),
-            "/tmp/file"
-        );
+        assert_eq!(reader.read_fd().unwrap(), 0);
+        assert_eq!(reader.read_str().unwrap(), "/tmp/file");
 
         // Data flows through the descriptor that crossed the socket.
         let byte = [9u8];
         // SAFETY: `pipe[1]` is the write end of a live pipe.
         assert_eq!(
-            unsafe {
-                libc::write(
-                    pipe[1],
-                    byte.as_ptr()
-                        .cast(),
-                    byte.len(),
-                )
-            },
+            unsafe { libc::write(pipe[1], byte.as_ptr().cast(), byte.len(),) },
             1
         );
         let mut got = [0u8; 1];
         // SAFETY: `received` is a live read end duplicated by the
         // kernel when the message was sent.
         assert_eq!(
-            unsafe {
-                libc::read(
-                    received,
-                    got.as_mut_ptr()
-                        .cast(),
-                    got.len(),
-                )
-            },
+            unsafe { libc::read(received, got.as_mut_ptr().cast(), got.len(),) },
             1
         );
         assert_eq!(got, byte);

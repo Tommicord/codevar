@@ -251,11 +251,7 @@ mod tests {
         let result = transport.write_with_fds(b"abc", &[3]);
         assert!(matches!(result, Err(DbusError::Unsupported(_))));
         // Plain transports never queue descriptors.
-        assert!(
-            transport
-                .take_fds()
-                .is_empty()
-        );
+        assert!(transport.take_fds().is_empty());
     }
 
     #[test]

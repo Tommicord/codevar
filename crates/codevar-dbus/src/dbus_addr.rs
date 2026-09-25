@@ -78,13 +78,11 @@ impl DbusAddress {
     /// Returns [`DbusError::InvalidAddress`] when the transport or a key
     /// is missing or an escape sequence is malformed.
     pub fn parse(entry: &str) -> DbusResult<Self> {
-        let (transport, rest) = entry
-            .split_once(':')
-            .ok_or_else(|| {
-                DbusError::invalid_address(alloc::format!(
-                    "address `{entry}` is missing the transport separator"
-                ))
-            })?;
+        let (transport, rest) = entry.split_once(':').ok_or_else(|| {
+            DbusError::invalid_address(alloc::format!(
+                "address `{entry}` is missing the transport separator"
+            ))
+        })?;
         if transport.is_empty() {
             return Err(DbusError::invalid_address("transport name is empty"));
         }
@@ -98,11 +96,9 @@ impl DbusAddress {
             if pair.is_empty() {
                 continue;
             }
-            let (key, value) = pair
-                .split_once('=')
-                .ok_or_else(|| {
-                    DbusError::invalid_address(alloc::format!("address entry `{pair}` is missing `=`"))
-                })?;
+            let (key, value) = pair.split_once('=').ok_or_else(|| {
+                DbusError::invalid_address(alloc::format!("address entry `{pair}` is missing `=`"))
+            })?;
             if key.is_empty() {
                 return Err(DbusError::invalid_address("address key is empty"));
             }

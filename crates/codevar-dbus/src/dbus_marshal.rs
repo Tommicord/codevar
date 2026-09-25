@@ -141,8 +141,7 @@ impl<'a> DbusReader<'a> {
     #[inline]
     #[must_use]
     pub const fn remaining(&self) -> usize {
-        self.end
-            .saturating_sub(self.pos)
+        self.end.saturating_sub(self.pos)
     }
 
     /// Returns `true` when no bytes remain in the range.
@@ -163,9 +162,7 @@ impl<'a> DbusReader<'a> {
             return Ok(());
         }
         let padding = (alignment - (self.pos % alignment)) % alignment;
-        let target = self
-            .pos
-            .saturating_add(padding);
+        let target = self.pos.saturating_add(padding);
         if target > self.end {
             return Err(truncated());
         }
@@ -180,9 +177,7 @@ impl<'a> DbusReader<'a> {
     /// Returns [`DbusError::InvalidMessage`] when the bytes do not fit
     /// in the range.
     pub fn read_bytes(&mut self, len: usize) -> DbusResult<&'a [u8]> {
-        let target = self
-            .pos
-            .saturating_add(len);
+        let target = self.pos.saturating_add(len);
         if target > self.end {
             return Err(truncated());
         }
@@ -216,9 +211,7 @@ impl<'a> DbusReader<'a> {
         let bytes = self.read_bytes(2)?;
         let mut array = [0u8; 2];
         array.copy_from_slice(bytes);
-        Ok(self
-            .order
-            .read_u16(array))
+        Ok(self.order.read_u16(array))
     }
 
     /// Reads a `BOOLEAN`, `INT32` or `UINT32` value.
@@ -232,9 +225,7 @@ impl<'a> DbusReader<'a> {
         let bytes = self.read_bytes(4)?;
         let mut array = [0u8; 4];
         array.copy_from_slice(bytes);
-        Ok(self
-            .order
-            .read_u32(array))
+        Ok(self.order.read_u32(array))
     }
 
     /// Reads an `INT64` or `UINT64` value.
@@ -248,9 +239,7 @@ impl<'a> DbusReader<'a> {
         let bytes = self.read_bytes(8)?;
         let mut array = [0u8; 8];
         array.copy_from_slice(bytes);
-        Ok(self
-            .order
-            .read_u64(array))
+        Ok(self.order.read_u64(array))
     }
 
     /// Reads an `INT16` value.
@@ -477,8 +466,7 @@ impl DbusWriter {
     #[inline]
     #[must_use]
     pub fn position(&self) -> usize {
-        self.data
-            .len()
+        self.data.len()
     }
 
     /// Returns the bytes written so far.
@@ -499,38 +487,27 @@ impl DbusWriter {
         if alignment == 0 {
             return;
         }
-        while !self
-            .data
-            .len()
-            .is_multiple_of(alignment)
-        {
-            self.data
-                .push(0);
+        while !self.data.len().is_multiple_of(alignment) {
+            self.data.push(0);
         }
     }
 
     /// Appends raw bytes.
     pub fn write_bytes(&mut self, bytes: &[u8]) {
-        self.data
-            .extend_from_slice(bytes);
+        self.data.extend_from_slice(bytes);
     }
 
     /// Appends a `BYTE` value.
     pub fn write_u8(&mut self, value: u8) {
-        self.data
-            .push(value);
+        self.data.push(value);
     }
 
     /// Appends an `INT16` or `UINT16` value.
     pub fn write_u16(&mut self, value: u16) {
         self.align(2);
         match self.order {
-            ByteOrder::Little => self
-                .data
-                .extend_from_slice(&value.to_le_bytes()),
-            ByteOrder::Big => self
-                .data
-                .extend_from_slice(&value.to_be_bytes()),
+            ByteOrder::Little => self.data.extend_from_slice(&value.to_le_bytes()),
+            ByteOrder::Big => self.data.extend_from_slice(&value.to_be_bytes()),
         }
     }
 
@@ -538,12 +515,8 @@ impl DbusWriter {
     pub fn write_u32(&mut self, value: u32) {
         self.align(4);
         match self.order {
-            ByteOrder::Little => self
-                .data
-                .extend_from_slice(&value.to_le_bytes()),
-            ByteOrder::Big => self
-                .data
-                .extend_from_slice(&value.to_be_bytes()),
+            ByteOrder::Little => self.data.extend_from_slice(&value.to_le_bytes()),
+            ByteOrder::Big => self.data.extend_from_slice(&value.to_be_bytes()),
         }
     }
 
@@ -551,12 +524,8 @@ impl DbusWriter {
     pub fn write_u64(&mut self, value: u64) {
         self.align(8);
         match self.order {
-            ByteOrder::Little => self
-                .data
-                .extend_from_slice(&value.to_le_bytes()),
-            ByteOrder::Big => self
-                .data
-                .extend_from_slice(&value.to_be_bytes()),
+            ByteOrder::Little => self.data.extend_from_slice(&value.to_le_bytes()),
+            ByteOrder::Big => self.data.extend_from_slice(&value.to_be_bytes()),
         }
     }
 
@@ -600,10 +569,7 @@ impl DbusWriter {
     /// Returns [`DbusError::InvalidMessage`] when `value` contains an
     /// embedded nul byte.
     pub fn write_str(&mut self, value: &str) -> DbusResult<()> {
-        if value
-            .as_bytes()
-            .contains(&0)
-        {
+        if value.as_bytes().contains(&0) {
             return Err(DbusError::invalid_message("string contains an embedded nul"));
         }
         self.align(4);
@@ -663,19 +629,12 @@ impl DbusWriter {
         F: FnOnce(&mut Self) -> DbusResult<()>,
     {
         self.align(8);
-        let length_pos = self
-            .data
-            .len();
+        let length_pos = self.data.len();
         self.write_u32(0);
         self.align(element_alignment);
-        let start = self
-            .data
-            .len();
+        let start = self.data.len();
         body(self)?;
-        let length = self
-            .data
-            .len()
-            .saturating_sub(start);
+        let length = self.data.len().saturating_sub(start);
         if length > MAX_ARRAY_LEN {
             return Err(DbusError::invalid_message(alloc::format!(
                 "array of {length} bytes exceeds the limit of {MAX_ARRAY_LEN}"
@@ -775,52 +734,14 @@ mod tests {
 
         let bytes = writer.into_bytes();
         let mut reader = DbusReader::new(&bytes, ByteOrder::Little);
-        assert_eq!(
-            reader
-                .read_u8()
-                .unwrap(),
-            0x7f
-        );
-        assert_eq!(
-            reader
-                .read_u16()
-                .unwrap(),
-            0x1234
-        );
-        assert_eq!(
-            reader
-                .read_i32()
-                .unwrap(),
-            -42
-        );
-        assert_eq!(
-            reader
-                .read_u64()
-                .unwrap(),
-            0x0102_0304_0506_0708
-        );
-        assert!(
-            reader
-                .read_bool()
-                .unwrap()
-        );
-        assert!(
-            !reader
-                .read_bool()
-                .unwrap()
-        );
-        assert_eq!(
-            reader
-                .read_f64()
-                .unwrap(),
-            0.5
-        );
-        assert_eq!(
-            reader
-                .read_i16()
-                .unwrap(),
-            -2
-        );
+        assert_eq!(reader.read_u8().unwrap(), 0x7f);
+        assert_eq!(reader.read_u16().unwrap(), 0x1234);
+        assert_eq!(reader.read_i32().unwrap(), -42);
+        assert_eq!(reader.read_u64().unwrap(), 0x0102_0304_0506_0708);
+        assert!(reader.read_bool().unwrap());
+        assert!(!reader.read_bool().unwrap());
+        assert_eq!(reader.read_f64().unwrap(), 0.5);
+        assert_eq!(reader.read_i16().unwrap(), -2);
         assert!(reader.is_empty());
     }
 
@@ -833,49 +754,25 @@ mod tests {
         assert_eq!(bytes, vec![0xde, 0xad, 0xbe, 0xef, 0x12, 0x34]);
 
         let mut reader = DbusReader::new(&bytes, ByteOrder::Big);
-        assert_eq!(
-            reader
-                .read_u32()
-                .unwrap(),
-            0xdead_beef
-        );
-        assert_eq!(
-            reader
-                .read_u16()
-                .unwrap(),
-            0x1234
-        );
+        assert_eq!(reader.read_u32().unwrap(), 0xdead_beef);
+        assert_eq!(reader.read_u16().unwrap(), 0x1234);
     }
 
     #[test]
     fn rejects_invalid_boolean_encoding() {
         let bytes = vec![2u8, 0, 0, 0];
         let mut reader = DbusReader::new(&bytes, ByteOrder::Little);
-        assert!(
-            reader
-                .read_bool()
-                .is_err()
-        );
+        assert!(reader.read_bool().is_err());
     }
 
     #[test]
     fn writes_and_reads_strings() {
         let mut writer = DbusWriter::new(ByteOrder::Little);
-        writer
-            .write_str("foo")
-            .unwrap();
-        writer
-            .write_str("+")
-            .unwrap();
-        writer
-            .write_str("")
-            .unwrap();
-        writer
-            .write_object_path("/a/b")
-            .unwrap();
-        writer
-            .write_signature("a{sv}")
-            .unwrap();
+        writer.write_str("foo").unwrap();
+        writer.write_str("+").unwrap();
+        writer.write_str("").unwrap();
+        writer.write_object_path("/a/b").unwrap();
+        writer.write_signature("a{sv}").unwrap();
 
         let bytes = writer.into_bytes();
         assert_eq!(
@@ -892,36 +789,11 @@ mod tests {
         );
 
         let mut reader = DbusReader::new(&bytes, ByteOrder::Little);
-        assert_eq!(
-            reader
-                .read_str()
-                .unwrap(),
-            "foo"
-        );
-        assert_eq!(
-            reader
-                .read_str()
-                .unwrap(),
-            "+"
-        );
-        assert_eq!(
-            reader
-                .read_str()
-                .unwrap(),
-            ""
-        );
-        assert_eq!(
-            reader
-                .read_object_path()
-                .unwrap(),
-            "/a/b"
-        );
-        assert_eq!(
-            reader
-                .read_signature()
-                .unwrap(),
-            "a{sv}"
-        );
+        assert_eq!(reader.read_str().unwrap(), "foo");
+        assert_eq!(reader.read_str().unwrap(), "+");
+        assert_eq!(reader.read_str().unwrap(), "");
+        assert_eq!(reader.read_object_path().unwrap(), "/a/b");
+        assert_eq!(reader.read_signature().unwrap(), "a{sv}");
         assert!(reader.is_empty());
     }
 
@@ -930,53 +802,29 @@ mod tests {
         // Length 3 without a trailing nul.
         let bytes = vec![3, 0, 0, 0, b'a', b'b', b'c'];
         let mut reader = DbusReader::new(&bytes, ByteOrder::Little);
-        assert!(
-            reader
-                .read_str()
-                .is_err()
-        );
+        assert!(reader.read_str().is_err());
 
         // Embedded nul inside the text.
         let bytes = vec![3, 0, 0, 0, b'a', 0, b'c', 0];
         let mut reader = DbusReader::new(&bytes, ByteOrder::Little);
-        assert!(
-            reader
-                .read_str()
-                .is_err()
-        );
+        assert!(reader.read_str().is_err());
 
         // Invalid UTF-8.
         let bytes = vec![1, 0, 0, 0, 0xff, 0];
         let mut reader = DbusReader::new(&bytes, ByteOrder::Little);
-        assert!(
-            reader
-                .read_str()
-                .is_err()
-        );
+        assert!(reader.read_str().is_err());
 
         // Invalid object path.
         let mut writer = DbusWriter::new(ByteOrder::Little);
-        assert!(
-            writer
-                .write_object_path("nope")
-                .is_err()
-        );
-        assert!(
-            writer
-                .write_str("bad\0string")
-                .is_err()
-        );
+        assert!(writer.write_object_path("nope").is_err());
+        assert!(writer.write_str("bad\0string").is_err());
     }
 
     #[test]
     fn rejects_invalid_signatures_on_the_wire() {
         let bytes = vec![1, b'z', 0];
         let mut reader = DbusReader::new(&bytes, ByteOrder::Little);
-        assert!(
-            reader
-                .read_signature()
-                .is_err()
-        );
+        assert!(reader.read_signature().is_err());
     }
 
     #[test]
@@ -994,21 +842,9 @@ mod tests {
         assert_eq!(&bytes[0..4], &[16, 0, 0, 0]);
 
         let mut reader = DbusReader::new(&bytes, ByteOrder::Little);
-        let mut elements = reader
-            .read_array(4)
-            .unwrap();
-        assert_eq!(
-            elements
-                .read_str()
-                .unwrap(),
-            "one"
-        );
-        assert_eq!(
-            elements
-                .read_str()
-                .unwrap(),
-            "two"
-        );
+        let mut elements = reader.read_array(4).unwrap();
+        assert_eq!(elements.read_str().unwrap(), "one");
+        assert_eq!(elements.read_str().unwrap(), "two");
         assert!(elements.is_empty());
         assert!(reader.is_empty());
     }
@@ -1016,18 +852,14 @@ mod tests {
     #[test]
     fn empty_array_keeps_element_alignment_padding() {
         let mut writer = DbusWriter::new(ByteOrder::Little);
-        writer
-            .write_array(8, |_writer| Ok(()))
-            .unwrap();
+        writer.write_array(8, |_writer| Ok(())).unwrap();
         let bytes = writer.into_bytes();
         // 4 bytes length then 4 bytes of padding to the 8 byte boundary.
         assert_eq!(bytes.len(), 8);
         assert_eq!(&bytes[0..4], &[0, 0, 0, 0]);
 
         let mut reader = DbusReader::new(&bytes, ByteOrder::Little);
-        let elements = reader
-            .read_array(8)
-            .unwrap();
+        let elements = reader.read_array(8).unwrap();
         assert!(elements.is_empty());
         assert_eq!(reader.position(), 8);
     }
@@ -1044,84 +876,35 @@ mod tests {
         let bytes = writer.into_bytes();
 
         let mut reader = DbusReader::new(&bytes, ByteOrder::Little);
-        reader
-            .read_struct()
-            .unwrap();
-        assert_eq!(
-            reader
-                .read_u8()
-                .unwrap(),
-            1
-        );
-        assert_eq!(
-            reader
-                .read_variant_signature()
-                .unwrap(),
-            "s"
-        );
-        assert_eq!(
-            reader
-                .read_str()
-                .unwrap(),
-            "hello"
-        );
+        reader.read_struct().unwrap();
+        assert_eq!(reader.read_u8().unwrap(), 1);
+        assert_eq!(reader.read_variant_signature().unwrap(), "s");
+        assert_eq!(reader.read_str().unwrap(), "hello");
     }
 
     #[test]
     fn reader_never_escapes_its_range() {
         let bytes = vec![4u8, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8];
         let mut reader = DbusReader::new(&bytes, ByteOrder::Little);
-        let mut nested = reader
-            .read_array(1)
-            .unwrap();
-        assert_eq!(
-            nested
-                .read_u8()
-                .unwrap(),
-            1
-        );
-        assert_eq!(
-            nested
-                .read_u8()
-                .unwrap(),
-            2
-        );
+        let mut nested = reader.read_array(1).unwrap();
+        assert_eq!(nested.read_u8().unwrap(), 1);
+        assert_eq!(nested.read_u8().unwrap(), 2);
         assert_eq!(nested.position(), 6);
         assert_eq!(reader.position(), 8);
 
         // The announced length runs past the end of the buffer.
         let mut short = DbusReader::new(&bytes[..6], ByteOrder::Little);
-        assert!(
-            short
-                .read_array(1)
-                .is_err()
-        );
-        assert!(
-            short
-                .align(8)
-                .is_err()
-        );
-        assert!(
-            short
-                .read_bytes(4)
-                .is_err()
-        );
+        assert!(short.read_array(1).is_err());
+        assert!(short.align(8).is_err());
+        assert!(short.read_bytes(4).is_err());
     }
 
     #[test]
     fn patch_rejects_out_of_bounds_positions() {
         let mut writer = DbusWriter::new(ByteOrder::Little);
         writer.write_u32(1);
-        assert!(
-            writer
-                .patch_u32(0, 2)
-                .is_ok()
-        );
-        assert!(
-            writer
-                .patch_u32(1, 2)
-                .is_err()
-        );
+        assert!(writer.patch_u32(0, 2).is_ok());
+        assert!(writer.patch_u32(1, 2).is_err());
         assert_eq!(writer.bytes(), &[2, 0, 0, 0]);
     }
 
@@ -1145,36 +928,12 @@ mod tests {
         assert_eq!(bytes.len() % 4, 0);
 
         let mut reader = DbusReader::new(&bytes, ByteOrder::Little);
-        assert_eq!(
-            reader
-                .read_u8()
-                .unwrap(),
-            1
-        );
-        assert_eq!(
-            reader
-                .read_fd()
-                .unwrap(),
-            3
-        );
-        let mut array = reader
-            .read_array(8)
-            .unwrap();
-        array
-            .read_struct()
-            .unwrap();
-        assert_eq!(
-            array
-                .read_fd()
-                .unwrap(),
-            0
-        );
-        assert_eq!(
-            array
-                .read_u32()
-                .unwrap(),
-            42
-        );
+        assert_eq!(reader.read_u8().unwrap(), 1);
+        assert_eq!(reader.read_fd().unwrap(), 3);
+        let mut array = reader.read_array(8).unwrap();
+        array.read_struct().unwrap();
+        assert_eq!(array.read_fd().unwrap(), 0);
+        assert_eq!(array.read_u32().unwrap(), 42);
         assert!(array.is_empty());
         assert!(reader.is_empty());
     }

@@ -45,13 +45,7 @@ fn is_readable(addr: usize) -> bool {
         // `mincore` only writes the queried residency bytes and retains no
         // pointer. The pointer type differs per libc (`*mut u8` on Linux,
         // `*mut c_char` on the BSDs/macOS), hence the inferred cast.
-        libc::mincore(
-            page as *mut c_void,
-            PAGE_SIZE,
-            vec.as_mut_ptr()
-                .cast(),
-        ) == 0
-            && (vec[0] & 1) != 0
+        libc::mincore(page as *mut c_void, PAGE_SIZE, vec.as_mut_ptr().cast()) == 0 && (vec[0] & 1) != 0
     }
 }
 
@@ -212,9 +206,7 @@ pub fn trace(cb: &mut dyn FnMut(&Frame) -> bool) {
 /// Stack-only; the cost is one unwind walk bounded by
 /// `min(out.len(), MAX_FRAMES)`.
 pub fn capture_frames(out: &mut [Frame]) -> usize {
-    let limit = out
-        .len()
-        .min(MAX_FRAMES);
+    let limit = out.len().min(MAX_FRAMES);
     let mut count = 0usize;
     trace(&mut |frame| {
         if count >= limit {
@@ -290,9 +282,7 @@ mod capture {
     pub(super) fn current() -> Option<UnwindState> {
         let mut state = UnwindState::new();
         capture_arch(&mut state.regs)?;
-        state.sp = state
-            .regs
-            .gpr[sp_index()];
+        state.sp = state.regs.gpr[sp_index()];
         Some(state)
     }
 
@@ -337,9 +327,7 @@ mod capture {
     fn capture_arch(regs: &mut Regs) -> Option<()> {
         let ip: usize;
         let sp: usize;
-        let gpr = regs
-            .gpr
-            .as_mut_ptr();
+        let gpr = regs.gpr.as_mut_ptr();
         // Safety: all outputs are stack locals; no memory is written through
         // pointers other than `gpr` (64 × usize, in bounds). `nostack` is
         // valid because the block only reads registers and PC.
@@ -374,9 +362,7 @@ mod capture {
     fn capture_arch(regs: &mut Regs) -> Option<()> {
         let ip: usize;
         let sp: usize;
-        let gpr = regs
-            .gpr
-            .as_mut_ptr();
+        let gpr = regs.gpr.as_mut_ptr();
         // Safety: outputs are locals; `gpr` points at the 64-word register
         // file and all indexed stores stay in bounds. No stack adjustment.
         unsafe {
@@ -424,9 +410,7 @@ mod capture {
     fn capture_arch(regs: &mut Regs) -> Option<()> {
         let ip: usize;
         let sp: usize;
-        let gpr = regs
-            .gpr
-            .as_mut_ptr();
+        let gpr = regs.gpr.as_mut_ptr();
         // Safety: locals only; `gpr` indexes into the register file. The
         // `call` pushes a return address (stack is written) so `nostack` is
         // intentionally omitted.
@@ -458,9 +442,7 @@ mod capture {
     fn capture_arch(regs: &mut Regs) -> Option<()> {
         let ip: usize;
         let sp: usize;
-        let gpr = regs
-            .gpr
-            .as_mut_ptr();
+        let gpr = regs.gpr.as_mut_ptr();
         // Safety: locals only; `gpr` points at the register file with all
         // stores in bounds. `adr` does not touch the stack.
         unsafe {
@@ -526,9 +508,7 @@ mod fp {
     pub(super) fn step(state: &mut super::UnwindState) -> bool {
         #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
         {
-            let fp = state
-                .regs
-                .gpr[FP];
+            let fp = state.regs.gpr[FP];
             let sp = state.sp;
             if fp == 0 || !fp.is_multiple_of(16) {
                 return false;
@@ -549,12 +529,8 @@ mod fp {
             if next_fp != 0 && next_fp <= fp {
                 return false;
             }
-            state
-                .regs
-                .gpr[FP] = next_fp;
-            state
-                .regs
-                .ip = next_ip;
+            state.regs.gpr[FP] = next_fp;
+            state.regs.ip = next_ip;
             state.sp = next_sp;
             true
         }
@@ -663,31 +639,22 @@ mod cfi {
         }
 
         fn remaining(&self) -> usize {
-            self.data
-                .len()
-                .saturating_sub(self.pos)
+            self.data.len().saturating_sub(self.pos)
         }
 
         fn addr(&self) -> usize {
-            self.base
-                .wrapping_add(self.pos)
+            self.base.wrapping_add(self.pos)
         }
 
         fn byte(&mut self) -> Option<u8> {
-            let b = *self
-                .data
-                .get(self.pos)?;
+            let b = *self.data.get(self.pos)?;
             self.pos += 1;
             Some(b)
         }
 
         fn bytes(&mut self, n: usize) -> Option<&'a [u8]> {
-            let end = self
-                .pos
-                .checked_add(n)?;
-            let s = self
-                .data
-                .get(self.pos..end)?;
+            let end = self.pos.checked_add(n)?;
+            let s = self.data.get(self.pos..end)?;
             self.pos = end;
             Some(s)
         }
@@ -715,18 +682,10 @@ mod cfi {
 
         fn usize_native(&mut self, width: u8) -> Option<usize> {
             match width {
-                8 => self
-                    .u64()
-                    .map(|v| v as usize),
-                4 => self
-                    .u32()
-                    .map(|v| v as usize),
-                2 => self
-                    .u16()
-                    .map(|v| v as usize),
-                1 => self
-                    .u8()
-                    .map(|v| v as usize),
+                8 => self.u64().map(|v| v as usize),
+                4 => self.u32().map(|v| v as usize),
+                2 => self.u16().map(|v| v as usize),
+                1 => self.u8().map(|v| v as usize),
                 _ => None,
             }
         }
@@ -774,9 +733,7 @@ mod cfi {
             loop {
                 let b = self.u8()?;
                 if b == 0 {
-                    return self
-                        .data
-                        .get(start..self.pos - 1);
+                    return self.data.get(start..self.pos - 1);
                 }
             }
         }
@@ -807,30 +764,14 @@ mod cfi {
         fn read_encoded_raw(&mut self, enc: u8) -> Option<usize> {
             match enc & 0x0f {
                 0x00 => self.usize_native(core::mem::size_of::<usize>() as u8),
-                0x01 => self
-                    .uleb()
-                    .map(|v| v as usize),
-                0x02 => self
-                    .u16()
-                    .map(|v| v as usize),
-                0x03 => self
-                    .u32()
-                    .map(|v| v as usize),
-                0x04 => self
-                    .u64()
-                    .map(|v| v as usize),
-                0x09 => self
-                    .sleb()
-                    .map(|v| v as usize),
-                0x0a => self
-                    .u16()
-                    .map(|v| v as i16 as usize),
-                0x0b => self
-                    .u32()
-                    .map(|v| v as i32 as usize),
-                0x0c => self
-                    .u64()
-                    .map(|v| v as i64 as usize),
+                0x01 => self.uleb().map(|v| v as usize),
+                0x02 => self.u16().map(|v| v as usize),
+                0x03 => self.u32().map(|v| v as usize),
+                0x04 => self.u64().map(|v| v as usize),
+                0x09 => self.sleb().map(|v| v as usize),
+                0x0a => self.u16().map(|v| v as i16 as usize),
+                0x0b => self.u32().map(|v| v as i32 as usize),
+                0x0c => self.u64().map(|v| v as i64 as usize),
                 _ => None,
             }
         }
@@ -930,11 +871,7 @@ mod cfi {
             }
         }
         let insts_off = reader.pos;
-        let insts_end = entry_end.min(
-            reader
-                .data
-                .len(),
-        );
+        let insts_end = entry_end.min(reader.data.len());
         if insts_off > insts_end {
             return None;
         }
@@ -1004,11 +941,7 @@ mod cfi {
         }
 
         let insts_off = reader.pos;
-        let insts_end = entry_end.min(
-            reader
-                .data
-                .len(),
-        );
+        let insts_end = entry_end.min(reader.data.len());
         if insts_off > insts_end {
             return None;
         }
@@ -1165,9 +1098,7 @@ mod cfi {
         let fde_addr = er.read_encoded(table_enc, fde_field)?;
 
         // Map absolute FDE address into `frame`.
-        let frame_addr = tables
-            .eh_frame
-            .0;
+        let frame_addr = tables.eh_frame.0;
         if fde_addr < frame_addr {
             return None;
         }
@@ -1222,14 +1153,7 @@ mod cfi {
         if let Some(fde) = hdr_find_fde(tables, ip, frame) {
             return Some(fde);
         }
-        scan_eh_frame(
-            frame,
-            tables
-                .eh_frame
-                .0,
-            tables.datarel_base,
-            ip,
-        )
+        scan_eh_frame(frame, tables.eh_frame.0, tables.datarel_base, ip)
     }
 
     fn eval_expr(
@@ -1502,10 +1426,7 @@ mod cfi {
                     } else {
                         let bytes = unsafe { core::slice::from_raw_parts(a as *const u8, size.min(8)) };
                         let mut v = 0usize;
-                        for (i, &b) in bytes
-                            .iter()
-                            .enumerate()
-                        {
+                        for (i, &b) in bytes.iter().enumerate() {
                             v |= usize::from(b) << (8 * i);
                         }
                         stack[sp - 1] = v;
@@ -1677,11 +1598,7 @@ mod cfi {
                         let len = reader.uleb()? as usize;
                         let start = reader.pos;
                         let end = start.checked_add(len)?;
-                        if end
-                            > reader
-                                .data
-                                .len()
-                        {
+                        if end > reader.data.len() {
                             return None;
                         }
                         state.cfa = CfaRule::Expr(start, end);
@@ -1695,11 +1612,7 @@ mod cfi {
                         }
                         let start = reader.pos;
                         let end = start.checked_add(len)?;
-                        if end
-                            > reader
-                                .data
-                                .len()
-                        {
+                        if end > reader.data.len() {
                             return None;
                         }
                         state.rules[reg] = RegRule::Expr(start, end);
@@ -1753,11 +1666,7 @@ mod cfi {
                         }
                         let start = reader.pos;
                         let end = start.checked_add(len)?;
-                        if end
-                            > reader
-                                .data
-                                .len()
-                        {
+                        if end > reader.data.len() {
                             return None;
                         }
                         state.rules[reg] = RegRule::ValExpr(start, end);
@@ -1788,9 +1697,7 @@ mod cfi {
         let old = *regs;
         let cfa = match state.cfa {
             CfaRule::RegOff(reg, off) => {
-                let v = *old
-                    .gpr
-                    .get(reg)?;
+                let v = *old.gpr.get(reg)?;
                 (v as i64).wrapping_add(off) as usize
             }
             CfaRule::Expr(start, end) => {
@@ -1810,11 +1717,7 @@ mod cfi {
         }
 
         let mut new_regs = old;
-        for (i, rule) in state
-            .rules
-            .iter()
-            .enumerate()
-        {
+        for (i, rule) in state.rules.iter().enumerate() {
             let value = match *rule {
                 RegRule::SameValue => old.gpr[i],
                 RegRule::Undefined => 0,
@@ -1823,9 +1726,7 @@ mod cfi {
                     unsafe { read_word(addr) }?
                 }
                 RegRule::ValOffset(off) => (cfa as i64).wrapping_add(off) as usize,
-                RegRule::Register(r) => *old
-                    .gpr
-                    .get(r)?,
+                RegRule::Register(r) => *old.gpr.get(r)?,
                 RegRule::Expr(start, end) => {
                     let end = end.min(frame_data.len());
                     if start > end {
@@ -1848,16 +1749,13 @@ mod cfi {
         }
 
         new_regs.gpr[ret_sp_index()] = cfa;
-        let next_ip = *new_regs
-            .gpr
-            .get(cie.ret_reg)?;
+        let next_ip = *new_regs.gpr.get(cie.ret_reg)?;
         if next_ip == 0 {
             return None;
         }
         let mut out = UnwindState::new();
         out.regs = new_regs;
-        out.regs
-            .ip = next_ip;
+        out.regs.ip = next_ip;
         out.sp = cfa;
         Some(out)
     }
@@ -1881,9 +1779,7 @@ mod cfi {
         tables: &UnwindTables,
         frame: &[u8],
     ) -> Result<Option<UnwindState>, bool> {
-        let ip = state
-            .regs
-            .ip;
+        let ip = state.regs.ip;
         let Some(fde) = find_fde(tables, frame, ip) else {
             return Err(false);
         };
@@ -1895,33 +1791,14 @@ mod cfi {
 
         // CIE initial instructions.
         let cie_insts = frame
-            .get(
-                fde.cie
-                    .insts_off
-                    ..fde
-                        .cie
-                        .insts_end,
-            )
+            .get(fde.cie.insts_off..fde.cie.insts_end)
             .unwrap_or(&[]);
-        if cie_insts.is_empty()
-            && fde
-                .cie
-                .insts_off
-                < fde
-                    .cie
-                    .insts_end
-        {
+        if cie_insts.is_empty() && fde.cie.insts_off < fde.cie.insts_end {
             return Err(false);
         }
         let mut cie_reader = SliceReader::new(
             cie_insts,
-            tables
-                .eh_frame
-                .0
-                .wrapping_add(
-                    fde.cie
-                        .insts_off,
-                ),
+            tables.eh_frame.0.wrapping_add(fde.cie.insts_off),
             tables.datarel_base,
         );
         if exec_cfa(
@@ -1930,12 +1807,9 @@ mod cfi {
             &base,
             &mut stack_buf,
             &mut stack_len,
-            fde.cie
-                .code_factor,
-            fde.cie
-                .data_factor,
-            fde.cie
-                .address_size,
+            fde.cie.code_factor,
+            fde.cie.data_factor,
+            fde.cie.address_size,
             0,
             0,
             false,
@@ -1956,12 +1830,9 @@ mod cfi {
             &base,
             &mut stack_buf,
             &mut stack_len,
-            fde.cie
-                .code_factor,
-            fde.cie
-                .data_factor,
-            fde.cie
-                .address_size,
+            fde.cie.code_factor,
+            fde.cie.data_factor,
+            fde.cie.address_size,
             fde.initial_location,
             ip,
             true,
@@ -1971,20 +1842,8 @@ mod cfi {
             return Err(false);
         }
 
-        let mut next = apply_rules(
-            &cf,
-            &state.regs,
-            fde.cie,
-            frame,
-            tables
-                .eh_frame
-                .0,
-        )
-        .ok_or(true)?;
-        if fde
-            .cie
-            .is_signal
-        {
+        let mut next = apply_rules(&cf, &state.regs, fde.cie, frame, tables.eh_frame.0).ok_or(true)?;
+        if fde.cie.is_signal {
             next.stop = true;
         }
         Ok(Some(next))
@@ -2041,9 +1900,7 @@ mod elf {
     }
 
     fn load_range(info: &DlPhdrInfo, ph: &Phdr) -> (usize, usize) {
-        let start = info
-            .dlpi_addr
-            .wrapping_add(ph.p_vaddr as usize);
+        let start = info.dlpi_addr.wrapping_add(ph.p_vaddr as usize);
         let end = start.wrapping_add(ph.p_memsz as usize);
         (start, end)
     }
@@ -2054,18 +1911,10 @@ mod elf {
         }
         let info = unsafe { &*info };
         let search = unsafe { &mut *(data as *mut Search) };
-        if search
-            .found
-            .base
-            .is_some()
-        {
+        if search.found.base.is_some() {
             return 1;
         }
-        if info
-            .dlpi_phdr
-            .is_null()
-            || info.dlpi_phnum == 0
-        {
+        if info.dlpi_phdr.is_null() || info.dlpi_phnum == 0 {
             return 0;
         }
         let phdrs = unsafe { core::slice::from_raw_parts(info.dlpi_phdr, usize::from(info.dlpi_phnum)) };
@@ -2085,9 +1934,7 @@ mod elf {
                     }
                 }
                 PT_GNU_EH_FRAME => {
-                    let start = info
-                        .dlpi_addr
-                        .wrapping_add(ph.p_vaddr as usize);
+                    let start = info.dlpi_addr.wrapping_add(ph.p_vaddr as usize);
                     let len = ph.p_memsz as usize;
                     if len > 0 && len < (1 << 24) {
                         eh_hdr = Some((start, len));
@@ -2121,8 +1968,7 @@ mod elf {
                 eh_frame = t.0;
                 if eh_frame.is_some() {
                     if datarel_base == 0 {
-                        datarel_base =
-                            t.1.unwrap_or(0);
+                        datarel_base = t.1.unwrap_or(0);
                     }
                     eh_hdr = eh_hdr.or(t.2);
                 }
@@ -2181,11 +2027,7 @@ mod elf {
                     return None;
                 }
                 let mut v = 0usize;
-                for (i, &byte) in data
-                    .iter()
-                    .enumerate()
-                    .take(n)
-                {
+                for (i, &byte) in data.iter().enumerate().take(n) {
                     v |= usize::from(byte) << (8 * i);
                 }
                 pos = n;
@@ -2227,33 +2069,21 @@ mod elf {
                     return None;
                 }
                 pos = 8;
-                u64::from_le_bytes(
-                    data[..8]
-                        .try_into()
-                        .ok()?,
-                ) as usize
+                u64::from_le_bytes(data[..8].try_into().ok()?) as usize
             }
             0x0b => {
                 if data.len() < 4 {
                     return None;
                 }
                 pos = 4;
-                i32::from_le_bytes(
-                    data[..4]
-                        .try_into()
-                        .ok()?,
-                ) as usize
+                i32::from_le_bytes(data[..4].try_into().ok()?) as usize
             }
             0x0c => {
                 if data.len() < 8 {
                     return None;
                 }
                 pos = 8;
-                i64::from_le_bytes(
-                    data[..8]
-                        .try_into()
-                        .ok()?,
-                ) as usize
+                i64::from_le_bytes(data[..8].try_into().ok()?) as usize
             }
             _ => return None,
         };
@@ -2290,26 +2120,10 @@ mod elf {
         if ehdr.len() < 64 || ehdr[0..4] != [0x7f, b'E', b'L', b'F'] {
             return None;
         }
-        let shoff = u64::from_le_bytes(
-            ehdr[40..48]
-                .try_into()
-                .ok()?,
-        ) as usize;
-        let shentsize = u16::from_le_bytes(
-            ehdr[58..60]
-                .try_into()
-                .ok()?,
-        ) as usize;
-        let shnum = u16::from_le_bytes(
-            ehdr[60..62]
-                .try_into()
-                .ok()?,
-        ) as usize;
-        let shstrndx = u16::from_le_bytes(
-            ehdr[62..64]
-                .try_into()
-                .ok()?,
-        ) as usize;
+        let shoff = u64::from_le_bytes(ehdr[40..48].try_into().ok()?) as usize;
+        let shentsize = u16::from_le_bytes(ehdr[58..60].try_into().ok()?) as usize;
+        let shnum = u16::from_le_bytes(ehdr[60..62].try_into().ok()?) as usize;
+        let shstrndx = u16::from_le_bytes(ehdr[62..64].try_into().ok()?) as usize;
         if shentsize < 64 || shnum == 0 || shnum > 4096 {
             return None;
         }
@@ -2322,16 +2136,8 @@ mod elf {
         };
         let strtab = get(shstrndx)?;
         // ELF64 Shdr: sh_addr at 16, sh_size at 32.
-        let str_addr = bias.wrapping_add(u64::from_le_bytes(
-            strtab[16..24]
-                .try_into()
-                .ok()?,
-        ) as usize);
-        let str_size = u64::from_le_bytes(
-            strtab[32..40]
-                .try_into()
-                .ok()?,
-        ) as usize;
+        let str_addr = bias.wrapping_add(u64::from_le_bytes(strtab[16..24].try_into().ok()?) as usize);
+        let str_size = u64::from_le_bytes(strtab[32..40].try_into().ok()?) as usize;
         if str_addr < 4096 || str_size > (1 << 24) {
             return None;
         }
@@ -2341,21 +2147,9 @@ mod elf {
         let mut hdr = None;
         for i in 0..shnum {
             let sh = get(i)?;
-            let name_off = u32::from_le_bytes(
-                sh[0..4]
-                    .try_into()
-                    .ok()?,
-            ) as usize;
-            let sh_addr = bias.wrapping_add(u64::from_le_bytes(
-                sh[16..24]
-                    .try_into()
-                    .ok()?,
-            ) as usize);
-            let sh_size = u64::from_le_bytes(
-                sh[32..40]
-                    .try_into()
-                    .ok()?,
-            ) as usize;
+            let name_off = u32::from_le_bytes(sh[0..4].try_into().ok()?) as usize;
+            let sh_addr = bias.wrapping_add(u64::from_le_bytes(sh[16..24].try_into().ok()?) as usize);
+            let sh_size = u64::from_le_bytes(sh[32..40].try_into().ok()?) as usize;
             let name = cstr_at(strtab_bytes, name_off)?;
             if name == b".eh_frame" && sh_size > 0 && sh_size < (1 << 28) {
                 eh_frame = Some((sh_addr, sh_size));
@@ -2369,9 +2163,7 @@ mod elf {
 
     fn cstr_at(data: &[u8], off: usize) -> Option<&[u8]> {
         let rest = data.get(off..)?;
-        let end = rest
-            .iter()
-            .position(|&b| b == 0)?;
+        let end = rest.iter().position(|&b| b == 0)?;
         Some(&rest[..end])
     }
 
@@ -2395,9 +2187,7 @@ mod elf {
     }
 
     fn cfi_or_fp(state: &mut UnwindState) -> bool {
-        let ip = state
-            .regs
-            .ip;
+        let ip = state.regs.ip;
         let found = find(ip);
         if let Some((ef, elen)) = found.eh_frame
             && ef >= 4096
@@ -2510,14 +2300,7 @@ mod apple {
             if cmd == LC_SEGMENT_64 {
                 let seg = unsafe { &*(cmd_addr as *const SegmentCommand64) };
                 let vmaddr = (seg.vmaddr as isize + slide) as usize;
-                if found
-                    .base
-                    .is_none()
-                    || vmaddr
-                        < found
-                            .base
-                            .unwrap_or(usize::MAX)
-                {
+                if found.base.is_none() || vmaddr < found.base.unwrap_or(usize::MAX) {
                     found.base = Some(vmaddr);
                 }
                 if seg.nsects > 0 && seg.nsects < 1024 {
@@ -2560,9 +2343,7 @@ mod apple {
             // Without phdr text ranges, accept the first image that has
             // unwind info when we cannot test containment precisely; refine
             // by checking FDE later. Prefer images with eh_frame.
-            if f.eh_frame
-                .is_some()
-            {
+            if f.eh_frame.is_some() {
                 return f;
             }
         }
@@ -2582,11 +2363,7 @@ mod apple {
         super::walk(
             cb,
             Some(|state: &mut UnwindState| {
-                let found = find(
-                    state
-                        .regs
-                        .ip,
-                );
+                let found = find(state.regs.ip);
                 if let Some((ef, elen)) = found.eh_frame {
                     let frame = unsafe { core::slice::from_raw_parts(ef as *const u8, elen) };
                     let tables = cfi::UnwindTables {
@@ -2662,10 +2439,7 @@ mod windows {
         }
 
         fn zero(&mut self) {
-            for b in self
-                .0
-                .iter_mut()
-            {
+            for b in self.0.iter_mut() {
                 *b = 0;
             }
         }
@@ -2711,9 +2485,7 @@ mod windows {
         }
 
         fn as_ptr(&mut self) -> *mut c_void {
-            self.0
-                .as_mut_ptr()
-                .cast()
+            self.0.as_mut_ptr().cast()
         }
     }
 
@@ -2756,45 +2528,27 @@ mod windows {
             if entry.is_null() {
                 // Leaf / no pdata: try a frame-pointer step on a shadow state.
                 let mut st = UnwindState::new();
-                st.regs
-                    .ip = ip;
+                st.regs.ip = ip;
                 st.sp = sp;
                 #[cfg(target_arch = "x86_64")]
                 {
-                    st.regs
-                        .gpr[6] = ctx.fp();
-                    st.regs
-                        .gpr[7] = sp;
+                    st.regs.gpr[6] = ctx.fp();
+                    st.regs.gpr[7] = sp;
                 }
                 #[cfg(target_arch = "aarch64")]
                 {
-                    st.regs
-                        .gpr[29] = ctx.fp();
-                    st.regs
-                        .gpr[31] = sp;
+                    st.regs.gpr[29] = ctx.fp();
+                    st.regs.gpr[31] = sp;
                 }
                 if !fp::step(&mut st) {
                     break;
                 }
-                ctx.set_ip(
-                    st.regs
-                        .ip,
-                );
+                ctx.set_ip(st.regs.ip);
                 write_u64(&mut ctx.0, sp_offset(), st.sp as u64);
                 #[cfg(target_arch = "x86_64")]
-                write_u64(
-                    &mut ctx.0,
-                    0xa0,
-                    st.regs
-                        .gpr[6] as u64,
-                );
+                write_u64(&mut ctx.0, 0xa0, st.regs.gpr[6] as u64);
                 #[cfg(target_arch = "aarch64")]
-                write_u64(
-                    &mut ctx.0,
-                    0xf0,
-                    st.regs
-                        .gpr[29] as u64,
-                );
+                write_u64(&mut ctx.0, 0xf0, st.regs.gpr[29] as u64);
             } else {
                 let mut handler_data: *mut c_void = ptr::null_mut();
                 let mut establisher = 0usize;
@@ -2871,23 +2625,13 @@ fn walk(cb: &mut dyn FnMut(&Frame) -> bool, step_fn: Option<fn(&mut UnwindState)
     };
 
     for _ in 0..MAX_FRAMES {
-        if state
-            .regs
-            .ip
-            == 0
-        {
+        if state.regs.ip == 0 {
             break;
         }
         let frame = Frame {
-            ip: state
-                .regs
-                .ip,
+            ip: state.regs.ip,
             sp: state.sp,
-            module_base: module_base(
-                state
-                    .regs
-                    .ip,
-            ),
+            module_base: module_base(state.regs.ip),
         };
         if !cb(&frame) {
             return;
@@ -3010,11 +2754,7 @@ mod tests {
         level_a(&mut list);
         let frames = list.as_slice();
         assert!(frames.len() >= 3, "expected >= 3 frames, got {}", frames.len());
-        assert!(
-            frames
-                .iter()
-                .all(|f| f.ip() != 0)
-        );
+        assert!(frames.iter().all(|f| f.ip() != 0));
     }
 
     #[test]
@@ -3024,9 +2764,7 @@ mod tests {
         let frames = list.as_slice();
         assert!(frames.len() >= 2, "expected >= 2 frames, got {}", frames.len());
         assert!(
-            frames
-                .windows(2)
-                .all(|w| w[1].sp() > w[0].sp()),
+            frames.windows(2).all(|w| w[1].sp() > w[0].sp()),
             "SP must increase toward callers"
         );
     }
@@ -3042,11 +2780,7 @@ mod tests {
         let mut out = [Frame::new(0, 0, None); 3];
         let n = capture_frames(&mut out);
         assert_eq!(n, 3, "must fill the whole slice before stopping");
-        assert!(
-            out[..n]
-                .iter()
-                .all(|f| f.ip() != 0)
-        );
+        assert!(out[..n].iter().all(|f| f.ip() != 0));
     }
 
     #[test]
@@ -3076,9 +2810,7 @@ mod tests {
     fn symbol_address_is_non_null_when_traced() {
         let mut ok = false;
         trace(&mut |f| {
-            ok = !f
-                .symbol_address()
-                .is_null();
+            ok = !f.symbol_address().is_null();
             false
         });
         assert!(ok);
@@ -3117,12 +2849,7 @@ mod tests {
         let Some(state) = capture::current() else {
             return;
         };
-        assert_ne!(
-            state
-                .regs
-                .ip,
-            0
-        );
+        assert_ne!(state.regs.ip, 0);
         assert!(state.sp >= 4096, "sp should be a real stack address");
     }
 
@@ -3165,10 +2892,8 @@ mod tests {
 
         fn state_with(fp_val: usize, sp: usize) -> UnwindState {
             let mut st = UnwindState::new();
-            st.regs
-                .gpr[FP] = fp_val;
-            st.regs
-                .ip = 0x1000;
+            st.regs.gpr[FP] = fp_val;
+            st.regs.ip = 0x1000;
             st.sp = sp;
             st
         }
@@ -3205,17 +2930,9 @@ mod tests {
             assert_eq!(fp_val % 16, 0);
             let mut st = state_with(fp_val, fp_val.wrapping_sub(16));
             assert!(fp::step(&mut st));
-            assert_eq!(
-                st.regs
-                    .ip,
-                0x1234_0000
-            );
+            assert_eq!(st.regs.ip, 0x1234_0000);
             assert_eq!(st.sp, fp_val + 16);
-            assert_eq!(
-                st.regs
-                    .gpr[FP],
-                0
-            );
+            assert_eq!(st.regs.gpr[FP], 0);
             // Next step hits fp == 0 and stops.
             assert!(!fp::step(&mut st));
         }
@@ -3281,8 +2998,7 @@ mod tests {
         #[test]
         fn empty_frame_rejects_invalid_ip() {
             let mut st = UnwindState::new();
-            st.regs
-                .ip = 0;
+            st.regs.ip = 0;
             st.sp = 0x7fff_0000;
             let empty: [u8; 0] = [];
             assert_err_false(cfi::step(&mut st, &tables_for(&empty), &empty), "empty frame");
@@ -3291,16 +3007,12 @@ mod tests {
         #[test]
         fn garbage_eh_frame_does_not_panic() {
             let mut st = UnwindState::new();
-            st.regs
-                .ip = 0xdead_beef;
+            st.regs.ip = 0xdead_beef;
             st.sp = 0x7fff_0000;
             let pattern_a = [0x00u8; 64];
             let pattern_b = [0xffu8; 64];
             let mut pattern_c = [0u8; 64];
-            for (i, b) in pattern_c
-                .iter_mut()
-                .enumerate()
-            {
+            for (i, b) in pattern_c.iter_mut().enumerate() {
                 *b = [0xaa, 0x55, 0x01, 0x7f][i & 3];
             }
             for pattern in [pattern_a.as_slice(), pattern_b.as_slice(), pattern_c.as_slice()] {
@@ -3319,14 +3031,11 @@ mod tests {
             let flen = synthetic_eh_frame(&mut frame, fde_start, 0x100);
             let frame = &frame[..flen];
             let tables = tables_for(frame);
-            st.regs
-                .ip = fde_start + 0x200;
+            st.regs.ip = fde_start + 0x200;
             assert_err_false(cfi::step(&mut st, &tables, frame), "past range");
-            st.regs
-                .ip = fde_start.wrapping_sub(1);
+            st.regs.ip = fde_start.wrapping_sub(1);
             assert_err_false(cfi::step(&mut st, &tables, frame), "before range");
-            st.regs
-                .ip = 0;
+            st.regs.ip = 0;
             assert_err_false(cfi::step(&mut st, &tables, frame), "ip=0");
         }
 
@@ -3354,18 +3063,12 @@ mod tests {
                 pad: [0; 13],
             };
             let base = (&raw mut stack).addr();
-            st.regs
-                .gpr[7] = base + 8;
-            st.regs
-                .ip = fde_start + 16;
+            st.regs.gpr[7] = base + 8;
+            st.regs.ip = fde_start + 16;
             st.sp = base + 8;
             match cfi::step(&mut st, &tables, frame) {
                 Ok(Some(next)) => {
-                    assert_eq!(
-                        next.regs
-                            .ip,
-                        0x1000_0180
-                    );
+                    assert_eq!(next.regs.ip, 0x1000_0180);
                 }
                 Ok(None) => panic!("synthetic step returned Ok(None)"),
                 Err(false) => panic!("synthetic FDE not found"),
@@ -3382,10 +3085,8 @@ mod tests {
             assert_eq!(frame[12], 0x10);
             frame[12] = 0x40; // 64 — first invalid index
             let mut st = UnwindState::new();
-            st.regs
-                .ip = 0x1000_0010;
-            st.regs
-                .gpr[7] = 0x2_0000;
+            st.regs.ip = 0x1000_0010;
+            st.regs.gpr[7] = 0x2_0000;
             st.sp = 0x2_0000;
             let tables = tables_for(frame);
             if let Ok(Some(_)) = cfi::step(&mut st, &tables, frame) {
@@ -3402,10 +3103,8 @@ mod tests {
             let frame = &frame[..flen];
             let tables = tables_for(frame);
             let frame_ptr = frame.as_ptr() as usize;
-            st.regs
-                .gpr[7] = frame_ptr;
-            st.regs
-                .ip = fde_start + 8;
+            st.regs.gpr[7] = frame_ptr;
+            st.regs.ip = fde_start + 8;
             st.sp = frame_ptr;
             match cfi::step(&mut st, &tables, frame) {
                 Ok(Some(_)) => {}
@@ -3423,10 +3122,7 @@ mod tests {
             let Some(mut st) = capture::current() else {
                 return;
             };
-            let found = elf::find(
-                st.regs
-                    .ip,
-            );
+            let found = elf::find(st.regs.ip);
             let Some((ef, elen)) = found.eh_frame else {
                 return;
             };
@@ -3440,11 +3136,7 @@ mod tests {
             };
             match cfi::step(&mut st, &tables, frame) {
                 Ok(Some(next)) => {
-                    assert_ne!(
-                        next.regs
-                            .ip,
-                        0
-                    );
+                    assert_ne!(next.regs.ip, 0);
                     assert!(next.sp >= 4096);
                 }
                 Err(false) => panic!("live IP must have an FDE"),
@@ -3461,10 +3153,7 @@ mod tests {
             let Some(mut st) = capture::current() else {
                 return;
             };
-            let found = elf::find(
-                st.regs
-                    .ip,
-            );
+            let found = elf::find(st.regs.ip);
             let Some((ef, elen)) = found.eh_frame else {
                 return;
             };
@@ -3475,8 +3164,7 @@ mod tests {
                 datarel_base: found.datarel_base,
             };
             for bad in [0usize, 1, 0xdead, usize::MAX, 0xdead_beef_dead_beef] {
-                st.regs
-                    .ip = bad;
+                st.regs.ip = bad;
                 assert_err_false(cfi::step(&mut st, &tables, frame), "corrupt ip must miss FDE");
             }
         }
@@ -3538,10 +3226,7 @@ mod tests {
             collect(&mut list);
             let frames = list.as_slice();
             std::eprintln!("frames={}", frames.len());
-            for (i, f) in frames
-                .iter()
-                .enumerate()
-            {
+            for (i, f) in frames.iter().enumerate() {
                 std::eprintln!(
                     "  [{i}] ip={:#x} sp={:#x} base={:?}",
                     f.ip(),
@@ -3555,10 +3240,7 @@ mod tests {
         let Some(mut st) = capture::current() else {
             return;
         };
-        let found = elf::find(
-            st.regs
-                .ip,
-        );
+        let found = elf::find(st.regs.ip);
         std::eprintln!("eh_frame={:?}", found.eh_frame);
         if let Some((ef, elen)) = found.eh_frame {
             let frame = unsafe { core::slice::from_raw_parts(ef as *const u8, elen) };
@@ -3568,9 +3250,7 @@ mod tests {
                 datarel_base: found.datarel_base,
             };
             {
-                let ip = st
-                    .regs
-                    .ip;
+                let ip = st.regs.ip;
                 {
                     // re-parse via step internals isn't exposed; print encodings from hdr
                     if let Some((ha, hl)) = tables.eh_frame_hdr {
@@ -3579,9 +3259,7 @@ mod tests {
                     }
                     std::eprintln!(
                         "frame addr={:#x} len={} datarel={:#x}",
-                        tables
-                            .eh_frame
-                            .0,
+                        tables.eh_frame.0,
                         frame.len(),
                         tables.datarel_base
                     );
@@ -3589,26 +3267,17 @@ mod tests {
                 }
             }
             for step in 0..6 {
-                let ip = st
-                    .regs
-                    .ip;
-                let fp = st
-                    .regs
-                    .gpr[6];
+                let ip = st.regs.ip;
+                let fp = st.regs.gpr[6];
                 let sp = st.sp;
                 match cfi::step(&mut st, &tables, frame) {
                     Ok(Some(next)) => {
                         std::eprintln!(
                             "cfi step {step}: {ip:#x}->{:#x} sp {sp:#x}->{:#x} fp {fp:#x}->{:#x} next_base={:?}",
-                            next.regs
-                                .ip,
+                            next.regs.ip,
                             next.sp,
-                            next.regs
-                                .gpr[6],
-                            elf::module_base(
-                                next.regs
-                                    .ip
-                            )
+                            next.regs.gpr[6],
+                            elf::module_base(next.regs.ip)
                         );
                         st = next;
                     }
@@ -3616,11 +3285,7 @@ mod tests {
                         std::eprintln!("cfi step {step}: Err({e}) at ip={ip:#x} sp={sp:#x} fp={fp:#x}");
                         // try FP from here
                         if fp::step(&mut st) {
-                            std::eprintln!(
-                                "  fp fallback ok ip={:#x}",
-                                st.regs
-                                    .ip
-                            );
+                            std::eprintln!("  fp fallback ok ip={:#x}", st.regs.ip);
                         } else {
                             std::eprintln!("  fp fallback fail");
                             break;
@@ -3639,20 +3304,16 @@ mod tests {
         };
         std::eprintln!(
             "FP start ip={:#x} fp={:#x} sp={:#x}",
-            st.regs
-                .ip,
-            st.regs
-                .gpr[6],
+            st.regs.ip,
+            st.regs.gpr[6],
             st.sp
         );
         for step in 0..8 {
             if fp::step(&mut st) {
                 std::eprintln!(
                     "fp step {step}: ip={:#x} fp={:#x} sp={:#x}",
-                    st.regs
-                        .ip,
-                    st.regs
-                        .gpr[6],
+                    st.regs.ip,
+                    st.regs.gpr[6],
                     st.sp
                 );
             } else {
@@ -3677,10 +3338,6 @@ mod tests {
         let frames = list.as_slice();
         assert!(!frames.is_empty());
         assert!(frames.len() <= MAX_FRAMES);
-        assert!(
-            frames
-                .iter()
-                .all(|f| f.ip() != 0)
-        );
+        assert!(frames.iter().all(|f| f.ip() != 0));
     }
 }

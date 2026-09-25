@@ -487,9 +487,7 @@ impl SingleByteEncoder {
 
 #[inline(always)]
 fn position(slice: &[u16], needle: u16) -> Option<usize> {
-    slice
-        .iter()
-        .position(|&x| x == needle)
+    slice.iter().position(|&x| x == needle)
 }
 
 fn write_ncr(unmappable: char, dst: &mut [u8]) -> usize {

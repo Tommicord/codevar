@@ -69,12 +69,7 @@ struct TxSegment {
 impl TxSegment {
     /// Returns the unwritten tail of the segment.
     fn remaining(&self) -> &[u8] {
-        &self.bytes[self
-            .pos
-            .min(
-                self.bytes
-                    .len(),
-            )..]
+        &self.bytes[self.pos.min(self.bytes.len())..]
     }
 }
 
@@ -148,10 +143,7 @@ impl<T: DbusTransport> Connection<T> {
                 crate::dbus_auth::AuthPoll::Write(bytes) => {
                     let mut cursor = &bytes[..];
                     while !cursor.is_empty() {
-                        match self
-                            .transport
-                            .write(cursor)
-                        {
+                        match self.transport.write(cursor) {
                             Ok(0) => return Err(DbusError::Disconnected),
                             Ok(n) => cursor = &cursor[n..],
                             Err(DbusError::WouldBlock) => {
@@ -163,10 +155,7 @@ impl<T: DbusTransport> Connection<T> {
                 }
                 crate::dbus_auth::AuthPoll::Read => {
                     let mut buf = [0u8; 4096];
-                    match self
-                        .transport
-                        .read(&mut buf)
-                    {
+                    match self.transport.read(&mut buf) {
                         Ok(0) => return Err(DbusError::Disconnected),
                         Ok(n) => session.feed(&buf[..n])?,
                         Err(DbusError::WouldBlock) => {
@@ -207,8 +196,7 @@ impl<T: DbusTransport> Connection<T> {
     /// Returns the unique bus name advertised by the server.
     #[must_use]
     pub fn unique_name(&self) -> Option<&str> {
-        self.unique_name
-            .as_deref()
+        self.unique_name.as_deref()
     }
 
     /// Sends a method call and waits for its reply.
@@ -377,9 +365,7 @@ impl<T: DbusTransport> Connection<T> {
     /// connection.
     pub fn try_recv(&mut self) -> DbusResult<Option<DbusMessage>> {
         self.drain_available()?;
-        Ok(self
-            .incoming
-            .pop_front())
+        Ok(self.incoming.pop_front())
     }
 
     /// Receives the next signal or method return, blocking until
@@ -395,16 +381,10 @@ impl<T: DbusTransport> Connection<T> {
             .now_ms()
             .saturating_add(timeout.as_millis() as u64);
         loop {
-            if let Some(message) = self
-                .incoming
-                .pop_front()
-            {
+            if let Some(message) = self.incoming.pop_front() {
                 return Ok(message);
             }
-            let remaining = deadline.saturating_sub(
-                self.transport
-                    .now_ms(),
-            );
+            let remaining = deadline.saturating_sub(self.transport.now_ms());
             if remaining == 0 {
                 return Err(DbusError::Timeout);
             }
@@ -434,12 +414,11 @@ impl<T: DbusTransport> Connection<T> {
             message.set_serial(serial)?;
         }
         let bytes = message.encode()?;
-        self.tx
-            .push_back(TxSegment {
-                bytes,
-                pos: 0,
-                fds: message.take_fds(),
-            });
+        self.tx.push_back(TxSegment {
+            bytes,
+            pos: 0,
+            fds: message.take_fds(),
+        });
         self.needs_write = true;
         Ok(())
     }
@@ -462,28 +441,17 @@ impl<T: DbusTransport> Connection<T> {
     /// segments are dropped (closing descriptors that were never
     /// sent) so nothing leaks.
     fn flush_writable(&mut self) -> DbusResult<()> {
-        while let Some(front) = self
-            .tx
-            .front()
-        {
-            if front.pos
-                >= front
-                    .bytes
-                    .len()
-            {
-                self.tx
-                    .pop_front();
+        while let Some(front) = self.tx.front() {
+            if front.pos >= front.bytes.len() {
+                self.tx.pop_front();
                 continue;
             }
-            let had_fds = !front
-                .fds
-                .is_empty();
+            let had_fds = !front.fds.is_empty();
             let outcome = if had_fds {
                 self.transport
                     .write_with_fds(front.remaining(), &front.fds)
             } else {
-                self.transport
-                    .write(front.remaining())
+                self.transport.write(front.remaining())
             };
             match outcome {
                 Ok(0) => {
@@ -491,13 +459,8 @@ impl<T: DbusTransport> Connection<T> {
                     return Err(DbusError::Disconnected);
                 }
                 Ok(written) => {
-                    if let Some(segment) = self
-                        .tx
-                        .front_mut()
-                    {
-                        segment.pos = segment
-                            .pos
-                            .saturating_add(written);
+                    if let Some(segment) = self.tx.front_mut() {
+                        segment.pos = segment.pos.saturating_add(written);
                         if had_fds {
                             // The kernel took its own references with
                             // the first bytes of the segment; the
@@ -520,8 +483,7 @@ impl<T: DbusTransport> Connection<T> {
     /// Drops every queued segment, closing descriptors that were
     /// never handed to the kernel.
     fn drop_tx_segments(&mut self) {
-        self.tx
-            .clear();
+        self.tx.clear();
         self.needs_write = false;
     }
 
@@ -538,9 +500,7 @@ impl<T: DbusTransport> Connection<T> {
         timeout: Option<core::time::Duration>,
         interest: DbusPollEvents,
     ) -> DbusResult<()> {
-        let _ = self
-            .transport
-            .wait(timeout, interest)?;
+        let _ = self.transport.wait(timeout, interest)?;
         Ok(())
     }
 
@@ -552,28 +512,19 @@ impl<T: DbusTransport> Connection<T> {
                 break;
             }
             let mut buf = [0u8; 4096];
-            match self
-                .transport
-                .read(&mut buf)
-            {
+            match self.transport.read(&mut buf) {
                 Ok(0) => return Err(DbusError::Disconnected),
                 Ok(n) => {
                     // Queue the descriptors the read reported before
                     // feeding its bytes, so descriptor order always
                     // matches message order in the stream.
-                    let fds = self
-                        .transport
-                        .take_fds();
-                    self.stream
-                        .feed_with_fds(&buf[..n], fds);
+                    let fds = self.transport.take_fds();
+                    self.stream.feed_with_fds(&buf[..n], fds);
                 }
                 Err(DbusError::WouldBlock) => break,
                 Err(e) => return Err(e),
             }
-            while let Some(message) = self
-                .stream
-                .next_message()?
-            {
+            while let Some(message) = self.stream.next_message()? {
                 self.dispatch(message);
             }
         }
@@ -584,16 +535,13 @@ impl<T: DbusTransport> Connection<T> {
         match message.kind() {
             MessageKind::MethodReturn | MessageKind::Error => {
                 if let Some(serial) = message.reply_serial() {
-                    self.pending_replies
-                        .push((serial, message));
+                    self.pending_replies.push((serial, message));
                 } else {
-                    self.incoming
-                        .push_back(message);
+                    self.incoming.push_back(message);
                 }
             }
             _ => {
-                self.incoming
-                    .push_back(message);
+                self.incoming.push_back(message);
             }
         }
     }
@@ -609,19 +557,14 @@ impl<T: DbusTransport> Connection<T> {
                 .iter()
                 .position(|(s, _)| *s == serial)
             {
-                let (_, message) = self
-                    .pending_replies
-                    .remove(pos);
+                let (_, message) = self.pending_replies.remove(pos);
                 return if message.kind() == MessageKind::Error {
                     Err(self.remote_error(message))
                 } else {
                     Ok(message)
                 };
             }
-            let remaining = deadline.saturating_sub(
-                self.transport
-                    .now_ms(),
-            );
+            let remaining = deadline.saturating_sub(self.transport.now_ms());
             if remaining == 0 {
                 return Err(DbusError::Timeout);
             }
@@ -644,9 +587,7 @@ impl<T: DbusTransport> Connection<T> {
 
     fn next_serial(&mut self) -> DbusResult<u32> {
         let serial = self.next_serial;
-        self.next_serial = self
-            .next_serial
-            .wrapping_add(1);
+        self.next_serial = self.next_serial.wrapping_add(1);
         if self.next_serial == 0 {
             self.next_serial = 1;
         }
@@ -654,14 +595,10 @@ impl<T: DbusTransport> Connection<T> {
     }
 
     fn remote_error(&self, message: DbusMessage) -> DbusError {
-        let name = message
-            .error_name()
-            .unwrap_or_default();
+        let name = message.error_name().unwrap_or_default();
         let message_text = {
             let mut reader = message.body_reader();
-            reader
-                .read_str()
-                .unwrap_or_default()
+            reader.read_str().unwrap_or_default()
         };
         DbusError::remote(name, message_text)
     }
@@ -695,23 +632,15 @@ mod tests {
 
     impl DbusTransport for MockTransport {
         fn read(&mut self, buf: &mut [u8]) -> DbusResult<usize> {
-            if let Some(data) = self
-                .rx
-                .front()
-            {
-                let n = data
-                    .len()
-                    .min(buf.len());
+            if let Some(data) = self.rx.front() {
+                let n = data.len().min(buf.len());
                 buf[..n].copy_from_slice(&data[..n]);
                 if n == data.len() {
-                    self.rx
-                        .pop_front();
+                    self.rx.pop_front();
                 } else {
                     let remaining = data[n..].to_vec();
-                    self.rx
-                        .pop_front();
-                    self.rx
-                        .push_back(remaining);
+                    self.rx.pop_front();
+                    self.rx.push_back(remaining);
                 }
                 Ok(n)
             } else {
@@ -721,8 +650,7 @@ mod tests {
         fn write(&mut self, buf: &[u8]) -> DbusResult<usize> {
             if self.writable {
                 let n = buf.len();
-                self.tx
-                    .push((buf.to_vec(), Vec::new()));
+                self.tx.push((buf.to_vec(), Vec::new()));
                 Ok(n)
             } else {
                 Err(DbusError::WouldBlock)
@@ -730,8 +658,7 @@ mod tests {
         }
         fn write_with_fds(&mut self, buf: &[u8], fds: &[i32]) -> DbusResult<usize> {
             if self.writable {
-                self.tx
-                    .push((buf.to_vec(), fds.to_vec()));
+                self.tx.push((buf.to_vec(), fds.to_vec()));
                 Ok(buf.len())
             } else {
                 Err(DbusError::WouldBlock)
@@ -766,28 +693,17 @@ mod tests {
             .rx
             .push_back(b"OK deadbeef\r\n".to_vec());
         let mut conn = Connection::new(transport);
-        conn.authenticate(0)
-            .unwrap();
-        assert!(
-            conn.unique_name()
-                .is_none()
-        );
+        conn.authenticate(0).unwrap();
+        assert!(conn.unique_name().is_none());
         let mut hello_reply = DbusMessage::method_return(1);
-        hello_reply
-            .set_serial(1)
-            .unwrap();
+        hello_reply.set_serial(1).unwrap();
         hello_reply
             .build_body(|body| body.write_str(":1"))
             .unwrap();
         conn.transport
             .rx
-            .push_back(
-                hello_reply
-                    .encode()
-                    .unwrap(),
-            );
-        conn.hello()
-            .unwrap();
+            .push_back(hello_reply.encode().unwrap());
+        conn.hello().unwrap();
         assert_eq!(conn.unique_name(), Some(":1"));
     }
 
@@ -795,19 +711,11 @@ mod tests {
     fn request_name_sends_flags_and_returns_reply_code() {
         let mut transport = MockTransport::new();
         let mut reply = DbusMessage::method_return(1);
-        reply
-            .set_serial(100)
-            .unwrap();
+        reply.set_serial(100).unwrap();
         reply
             .build_body(|body| body.write_u32(NAME_REPLY_IN_QUEUE))
             .unwrap();
-        transport
-            .rx
-            .push_back(
-                reply
-                    .encode()
-                    .unwrap(),
-            );
+        transport.rx.push_back(reply.encode().unwrap());
         let mut conn = Connection::new(transport);
 
         let code = conn
@@ -821,25 +729,14 @@ mod tests {
         assert_eq!(code, NAME_REPLY_IN_QUEUE);
 
         // The outgoing message must carry the requested flags.
-        let (bytes, fds) = conn
-            .transport
-            .tx
-            .first()
-            .unwrap();
+        let (bytes, fds) = conn.transport.tx.first().unwrap();
         assert!(fds.is_empty());
         let sent = DbusMessage::decode(bytes).unwrap();
         assert_eq!(sent.member(), Some("RequestName"));
         let mut reader = sent.body_reader();
+        assert_eq!(reader.read_str().unwrap(), "org.example.Service");
         assert_eq!(
-            reader
-                .read_str()
-                .unwrap(),
-            "org.example.Service"
-        );
-        assert_eq!(
-            reader
-                .read_u32()
-                .unwrap(),
+            reader.read_u32().unwrap(),
             NAME_FLAG_ALLOW_REPLACEMENT | NAME_FLAG_DO_NOT_QUEUE
         );
     }
@@ -848,23 +745,15 @@ mod tests {
     fn send_message_preserves_preassigned_serial() {
         let mut conn = Connection::new(MockTransport::new());
         let mut message = DbusMessage::method_return(7);
-        message
-            .set_serial(42)
-            .unwrap();
+        message.set_serial(42).unwrap();
         // Justified: fixed inputs cannot fail.
-        conn.send_message(message)
-            .unwrap();
-        conn.flush()
-            .unwrap();
+        conn.send_message(message).unwrap();
+        conn.flush().unwrap();
 
         // The serial on the wire must match the one assigned by the
         // caller, otherwise `wait_reply` can never match the reply of
         // a real bus (which echoes the wire serial).
-        let (bytes, _) = conn
-            .transport
-            .tx
-            .first()
-            .unwrap();
+        let (bytes, _) = conn.transport.tx.first().unwrap();
         let sent = DbusMessage::decode(bytes).unwrap();
         assert_eq!(sent.serial(), 42);
         assert_eq!(sent.reply_serial(), Some(7));
@@ -875,16 +764,10 @@ mod tests {
         let mut conn = Connection::new(MockTransport::new());
         let message = DbusMessage::method_return(7);
         // Justified: fixed inputs cannot fail.
-        conn.send_message(message)
-            .unwrap();
-        conn.flush()
-            .unwrap();
+        conn.send_message(message).unwrap();
+        conn.flush().unwrap();
 
-        let (bytes, _) = conn
-            .transport
-            .tx
-            .first()
-            .unwrap();
+        let (bytes, _) = conn.transport.tx.first().unwrap();
         let sent = DbusMessage::decode(bytes).unwrap();
         assert_ne!(sent.serial(), 0);
     }
@@ -893,19 +776,11 @@ mod tests {
     fn request_name_maps_bus_errors_to_remote_errors() {
         let mut transport = MockTransport::new();
         let mut error = DbusMessage::error(1, "org.freedesktop.DBus.Error.NameHasNoOwner").unwrap();
-        error
-            .set_serial(100)
-            .unwrap();
+        error.set_serial(100).unwrap();
         error
             .build_body(|body| body.write_str("no such name"))
             .unwrap();
-        transport
-            .rx
-            .push_back(
-                error
-                    .encode()
-                    .unwrap(),
-            );
+        transport.rx.push_back(error.encode().unwrap());
         let mut conn = Connection::new(transport);
 
         let Err(DbusError::Remote { name, .. }) =
@@ -930,36 +805,22 @@ mod tests {
         let mut conn = Connection::new(MockTransport::new());
 
         let first = DbusMessage::signal("/a", "b.C", "One").unwrap();
-        conn.send_message(first)
-            .unwrap();
+        conn.send_message(first).unwrap();
 
         let mut second = DbusMessage::method_call("a.b", "/a", "b.C", "Two").unwrap();
         second
             .build_body(|body| body.write_fd(0))
             .unwrap();
         second.set_fds(vec![fd]);
-        conn.send_message(second)
-            .unwrap();
+        conn.send_message(second).unwrap();
 
-        conn.flush()
-            .unwrap();
+        conn.flush().unwrap();
 
-        let sent = &conn
-            .transport
-            .tx;
+        let sent = &conn.transport.tx;
         assert_eq!(sent.len(), 2);
         // First message travels plain, the second one carries the fd.
-        assert!(
-            sent[0]
-                .1
-                .is_empty()
-        );
-        assert_eq!(
-            DbusMessage::decode(&sent[0].0)
-                .unwrap()
-                .member(),
-            Some("One")
-        );
+        assert!(sent[0].1.is_empty());
+        assert_eq!(DbusMessage::decode(&sent[0].0).unwrap().member(), Some("One"));
         assert_eq!(sent[1].1, vec![fd]);
         let decoded = DbusMessage::decode(&sent[1].0).unwrap();
         assert_eq!(decoded.member(), Some("Two"));
@@ -982,44 +843,25 @@ mod tests {
         let fd = pipe[0];
 
         let mut call = DbusMessage::method_call("a.b", "/a", "b.C", "Open").unwrap();
-        call.set_serial(1)
-            .unwrap();
-        call.build_body(|body| body.write_fd(0))
-            .unwrap();
+        call.set_serial(1).unwrap();
+        call.build_body(|body| body.write_fd(0)).unwrap();
         call.set_fds(vec![fd]);
-        let bytes = call
-            .encode()
-            .unwrap();
+        let bytes = call.encode().unwrap();
         // Keep the descriptor alive: it now travels out of band via
         // the transport instead of through the message.
         let attached = call.take_fds();
 
         let mut transport = MockTransport::new();
-        transport
-            .rx
-            .push_back(bytes);
+        transport.rx.push_back(bytes);
         transport.rx_fds = attached;
         let mut conn = Connection::new(transport);
 
         // Justified: the queued message is complete and well formed.
-        let message = conn
-            .try_recv()
-            .unwrap()
-            .unwrap();
+        let message = conn.try_recv().unwrap().unwrap();
         assert_eq!(message.member(), Some("Open"));
         assert_eq!(message.fds(), &[fd]);
-        assert_eq!(
-            message
-                .body_reader()
-                .read_fd()
-                .unwrap(),
-            0
-        );
-        assert_eq!(
-            conn.try_recv()
-                .unwrap(),
-            None
-        );
+        assert_eq!(message.body_reader().read_fd().unwrap(), 0);
+        assert_eq!(conn.try_recv().unwrap(), None);
 
         // Dropping the message closes the descriptor it owns.
         drop(message);

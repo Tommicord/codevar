@@ -371,42 +371,12 @@ unsafe fn aes_encrypt_block_ni(key: &AesKey, input: &[u8; 16], output: &mut [u8;
     // SAFETY: callers ensure AES-NI is present; unaligned load/store are valid for any
     // 16-byte buffer; `round_keys` has length `nr + 1`.
     unsafe {
-        let mut state = _mm_loadu_si128(
-            input
-                .as_ptr()
-                .cast::<__m128i>(),
-        );
-        state = _mm_xor_si128(
-            state,
-            _mm_loadu_si128(
-                key.round_keys[0]
-                    .as_ptr()
-                    .cast(),
-            ),
-        );
+        let mut state = _mm_loadu_si128(input.as_ptr().cast::<__m128i>());
+        state = _mm_xor_si128(state, _mm_loadu_si128(key.round_keys[0].as_ptr().cast()));
         for round in 1..key.nr {
-            state = _mm_aesenc_si128(
-                state,
-                _mm_loadu_si128(
-                    key.round_keys[round]
-                        .as_ptr()
-                        .cast(),
-                ),
-            );
+            state = _mm_aesenc_si128(state, _mm_loadu_si128(key.round_keys[round].as_ptr().cast()));
         }
-        state = _mm_aesenclast_si128(
-            state,
-            _mm_loadu_si128(
-                key.round_keys[key.nr]
-                    .as_ptr()
-                    .cast(),
-            ),
-        );
-        _mm_storeu_si128(
-            output
-                .as_mut_ptr()
-                .cast::<__m128i>(),
-            state,
-        );
+        state = _mm_aesenclast_si128(state, _mm_loadu_si128(key.round_keys[key.nr].as_ptr().cast()));
+        _mm_storeu_si128(output.as_mut_ptr().cast::<__m128i>(), state);
     }
 }

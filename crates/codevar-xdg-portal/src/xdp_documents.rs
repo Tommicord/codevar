@@ -273,8 +273,7 @@ impl DocumentAddPlan {
     /// `None` when it cannot be determined yet.
     #[must_use]
     pub fn mountpoint(&self) -> Option<&str> {
-        self.mountpoint
-            .as_deref()
+        self.mountpoint.as_deref()
     }
 
     /// Returns the D-Bus method name of the registration.
@@ -324,20 +323,14 @@ impl DocumentAddPlan {
             }
             DocumentAddMethod::AddFull => {
                 writer.write_array("h", |writer| writer.write_fd(fd_index))?;
-                writer.write_u32(u32::from(
-                    self.full_flags
-                        .bits(),
-                ))?;
+                writer.write_u32(u32::from(self.full_flags.bits()))?;
                 writer.write_str(&self.app_id)?;
                 write_string_array(writer, &self.permissions)?;
             }
             DocumentAddMethod::AddNamedFull => {
                 writer.write_fd(fd_index)?;
                 write_byte_string(writer, &self.basename)?;
-                writer.write_u32(u32::from(
-                    self.full_flags
-                        .bits(),
-                ))?;
+                writer.write_u32(u32::from(self.full_flags.bits()))?;
                 writer.write_str(&self.app_id)?;
                 write_string_array(writer, &self.permissions)?;
             }
@@ -376,12 +369,9 @@ impl DocumentAddPlan {
         if doc_id.is_empty() {
             return filename_to_uri(&self.path);
         }
-        let mountpoint = self
-            .mountpoint
-            .as_deref()
-            .ok_or_else(|| {
-                PortalError::Failed(String::from("Cannot determine the document portal mount point"))
-            })?;
+        let mountpoint = self.mountpoint.as_deref().ok_or_else(|| {
+            PortalError::Failed(String::from("Cannot determine the document portal mount point"))
+        })?;
         filename_to_uri(&build_filename(&[mountpoint, doc_id, &self.basename]))
     }
 
@@ -402,11 +392,8 @@ impl DocumentAddPlan {
     pub fn open_register_fd(&self) -> Result<i32, PortalError> {
         use alloc::ffi::CString;
 
-        let target = CString::new(
-            self.open_path
-                .as_str(),
-        )
-        .map_err(|_| PortalError::InvalidArgument(String::from("path contains a nul byte")))?;
+        let target = CString::new(self.open_path.as_str())
+            .map_err(|_| PortalError::InvalidArgument(String::from("path contains a nul byte")))?;
         // SAFETY: `target` is a valid NUL-terminated path string and
         // the returned descriptor is checked for failure before use.
         let raw_fd = unsafe { libc::open(target.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
@@ -586,9 +573,7 @@ pub fn parse_document_portal_path<'a>(path: &'a str, runtime_dir: &str) -> Optio
     if runtime_dir.is_empty() || !path.starts_with(runtime_dir) {
         return None;
     }
-    let rest = path
-        .split_once("/doc/")?
-        .1;
+    let rest = path.split_once("/doc/")?.1;
     let (doc_id, tail) = match rest.split_once('/') {
         Some((doc_id, tail)) => (doc_id, tail),
         None => (rest, ""),
@@ -953,10 +938,7 @@ fn path_dirname(path: &str) -> String {
 /// parts already carry, like `g_build_filename()`.
 fn build_filename(parts: &[&str]) -> String {
     let mut out = String::new();
-    for part in parts
-        .iter()
-        .filter(|part| !part.is_empty())
-    {
+    for part in parts.iter().filter(|part| !part.is_empty()) {
         if out.is_empty() {
             out.push_str(part);
         } else {
@@ -1257,14 +1239,9 @@ mod tests {
         assert_eq!(plan.basename(), "my file.txt");
         assert_eq!(plan.app_id(), "org.example.App");
         assert_eq!(plan.mountpoint(), Some("/run/flatpak/doc"));
+        assert_eq!(plan.result_uri("").unwrap(), "file:///tmp/my%20file.txt");
         assert_eq!(
-            plan.result_uri("")
-                .unwrap(),
-            "file:///tmp/my%20file.txt"
-        );
-        assert_eq!(
-            plan.result_uri("abc123")
-                .unwrap(),
+            plan.result_uri("abc123").unwrap(),
             "file:///run/flatpak/doc/abc123/my%20file.txt"
         );
 
@@ -1299,196 +1276,78 @@ mod tests {
             orphaned.result_uri("abc123"),
             Err(PortalError::Failed(_))
         ));
-        assert!(
-            orphaned
-                .result_uri("")
-                .is_ok()
-        );
+        assert!(orphaned.result_uri("").is_ok());
     }
 
     #[test]
     fn marshals_the_add_calls() {
         let plan = plan_with("file:///tmp/dir/file.txt", DocumentFlags::NONE, 1);
         let mut body = BodyWriter::new(ByteOrder::Little);
-        plan.write_args(&mut body, 3)
-            .unwrap();
+        plan.write_args(&mut body, 3).unwrap();
         let (bytes, signature) = body.into_parts();
         assert_eq!(signature, plan.arg_signature());
         assert_eq!(signature, "hbb");
         let mut reader = DbusReader::new(&bytes, ByteOrder::Little);
-        assert_eq!(
-            reader
-                .read_fd()
-                .unwrap(),
-            3
-        );
-        assert!(
-            reader
-                .read_bool()
-                .unwrap()
-        );
-        assert!(
-            reader
-                .read_bool()
-                .unwrap()
-        );
+        assert_eq!(reader.read_fd().unwrap(), 3);
+        assert!(reader.read_bool().unwrap());
+        assert!(reader.read_bool().unwrap());
         assert!(reader.is_empty());
 
         let plan = plan_with("file:///tmp/dir/file.txt", DocumentFlags::FOR_SAVE, 2);
         let mut body = BodyWriter::new(ByteOrder::Little);
-        plan.write_args(&mut body, 0)
-            .unwrap();
+        plan.write_args(&mut body, 0).unwrap();
         let (bytes, signature) = body.into_parts();
         assert_eq!(signature, "haybb");
         let mut reader = DbusReader::new(&bytes, ByteOrder::Little);
-        assert_eq!(
-            reader
-                .read_fd()
-                .unwrap(),
-            0
-        );
-        let mut filename = reader
-            .read_array(1)
-            .unwrap();
+        assert_eq!(reader.read_fd().unwrap(), 0);
+        let mut filename = reader.read_array(1).unwrap();
         let mut name = Vec::new();
         while !filename.is_empty() {
-            name.push(
-                filename
-                    .read_u8()
-                    .unwrap(),
-            );
+            name.push(filename.read_u8().unwrap());
         }
         // The filename travels as a NUL terminated bytestring.
         assert_eq!(name, b"file.txt\0");
-        assert!(
-            reader
-                .read_bool()
-                .unwrap()
-        );
-        assert!(
-            reader
-                .read_bool()
-                .unwrap()
-        );
+        assert!(reader.read_bool().unwrap());
+        assert!(reader.read_bool().unwrap());
         assert!(reader.is_empty());
 
         let plan = plan_with("file:///tmp/dir/file.txt", DocumentFlags::DIRECTORY, 4);
         let mut body = BodyWriter::new(ByteOrder::Little);
-        plan.write_args(&mut body, 2)
-            .unwrap();
+        plan.write_args(&mut body, 2).unwrap();
         let (bytes, signature) = body.into_parts();
         assert_eq!(signature, "ahusas");
         let mut reader = DbusReader::new(&bytes, ByteOrder::Little);
-        let mut handles = reader
-            .read_array(4)
-            .unwrap();
-        assert_eq!(
-            handles
-                .read_fd()
-                .unwrap(),
-            2
-        );
+        let mut handles = reader.read_array(4).unwrap();
+        assert_eq!(handles.read_fd().unwrap(), 2);
         assert!(handles.is_empty());
-        assert_eq!(
-            reader
-                .read_u32()
-                .unwrap(),
-            u32::from(
-                plan.full_flags()
-                    .bits()
-            )
-        );
-        assert_eq!(
-            reader
-                .read_str()
-                .unwrap(),
-            "org.example.App"
-        );
-        let mut permissions = reader
-            .read_array(4)
-            .unwrap();
-        assert_eq!(
-            permissions
-                .read_str()
-                .unwrap(),
-            "read"
-        );
-        assert_eq!(
-            permissions
-                .read_str()
-                .unwrap(),
-            "grant-permissions"
-        );
+        assert_eq!(reader.read_u32().unwrap(), u32::from(plan.full_flags().bits()));
+        assert_eq!(reader.read_str().unwrap(), "org.example.App");
+        let mut permissions = reader.read_array(4).unwrap();
+        assert_eq!(permissions.read_str().unwrap(), "read");
+        assert_eq!(permissions.read_str().unwrap(), "grant-permissions");
         assert!(permissions.is_empty());
         assert!(reader.is_empty());
 
         let plan = plan_with("file:///tmp/dir/file.txt", DocumentFlags::FOR_SAVE, 3);
         let mut body = BodyWriter::new(ByteOrder::Little);
-        plan.write_args(&mut body, 1)
-            .unwrap();
+        plan.write_args(&mut body, 1).unwrap();
         let (bytes, signature) = body.into_parts();
         assert_eq!(signature, "hayusas");
         let mut reader = DbusReader::new(&bytes, ByteOrder::Little);
-        assert_eq!(
-            reader
-                .read_fd()
-                .unwrap(),
-            1
-        );
-        let mut filename = reader
-            .read_array(1)
-            .unwrap();
-        assert_eq!(
-            filename
-                .read_u8()
-                .unwrap(),
-            b'f'
-        );
+        assert_eq!(reader.read_fd().unwrap(), 1);
+        let mut filename = reader.read_array(1).unwrap();
+        assert_eq!(filename.read_u8().unwrap(), b'f');
         let mut rest = Vec::new();
         while !filename.is_empty() {
-            rest.push(
-                filename
-                    .read_u8()
-                    .unwrap(),
-            );
+            rest.push(filename.read_u8().unwrap());
         }
         assert_eq!(rest, b"ile.txt\0");
-        assert_eq!(
-            reader
-                .read_u32()
-                .unwrap(),
-            u32::from(
-                plan.full_flags()
-                    .bits()
-            )
-        );
-        assert_eq!(
-            reader
-                .read_str()
-                .unwrap(),
-            "org.example.App"
-        );
-        let mut permissions = reader
-            .read_array(4)
-            .unwrap();
-        assert_eq!(
-            permissions
-                .read_str()
-                .unwrap(),
-            "read"
-        );
-        assert_eq!(
-            permissions
-                .read_str()
-                .unwrap(),
-            "write"
-        );
-        assert_eq!(
-            permissions
-                .read_str()
-                .unwrap(),
-            "grant-permissions"
-        );
+        assert_eq!(reader.read_u32().unwrap(), u32::from(plan.full_flags().bits()));
+        assert_eq!(reader.read_str().unwrap(), "org.example.App");
+        let mut permissions = reader.read_array(4).unwrap();
+        assert_eq!(permissions.read_str().unwrap(), "read");
+        assert_eq!(permissions.read_str().unwrap(), "write");
+        assert_eq!(permissions.read_str().unwrap(), "grant-permissions");
         assert!(permissions.is_empty());
         assert!(reader.is_empty());
     }
@@ -1501,33 +1360,11 @@ mod tests {
         let (bytes, signature) = body.into_parts();
         assert_eq!(signature, "ssas");
         let mut reader = DbusReader::new(&bytes, ByteOrder::Little);
-        assert_eq!(
-            reader
-                .read_str()
-                .unwrap(),
-            "abc123"
-        );
-        assert_eq!(
-            reader
-                .read_str()
-                .unwrap(),
-            "org.example.App"
-        );
-        let mut granted = reader
-            .read_array(4)
-            .unwrap();
-        assert_eq!(
-            granted
-                .read_str()
-                .unwrap(),
-            "read"
-        );
-        assert_eq!(
-            granted
-                .read_str()
-                .unwrap(),
-            "delete"
-        );
+        assert_eq!(reader.read_str().unwrap(), "abc123");
+        assert_eq!(reader.read_str().unwrap(), "org.example.App");
+        let mut granted = reader.read_array(4).unwrap();
+        assert_eq!(granted.read_str().unwrap(), "read");
+        assert_eq!(granted.read_str().unwrap(), "delete");
         assert!(granted.is_empty());
         assert!(reader.is_empty());
     }
@@ -1537,12 +1374,8 @@ mod tests {
         F: FnOnce(&mut BodyWriter) -> DbusResult<()>,
     {
         let mut reply = DbusMessage::method_return(7);
-        reply
-            .set_serial(1000)
-            .unwrap();
-        reply
-            .build_body(body)
-            .unwrap();
+        reply.set_serial(1000).unwrap();
+        reply.build_body(body).unwrap();
         assert_eq!(reply.signature(), signature);
         reply
     }
@@ -1695,35 +1528,15 @@ mod tests {
         )
         .unwrap();
         let mut message = plan
-            .build_add_message(
-                plan.open_register_fd()
-                    .unwrap(),
-            )
+            .build_add_message(plan.open_register_fd().unwrap())
             .unwrap();
-        assert_eq!(
-            message
-                .member()
-                .unwrap(),
-            "Add"
-        );
+        assert_eq!(message.member().unwrap(), "Add");
         assert_eq!(message.signature(), "hbb");
-        assert_eq!(
-            message
-                .fds()
-                .len(),
-            1
-        );
+        assert_eq!(message.fds().len(), 1);
         // The connection assigns the serial when it sends; give the
         // message one here so the wire encoding can be checked.
-        message
-            .set_serial(1)
-            .unwrap();
-        assert!(
-            !message
-                .encode()
-                .unwrap()
-                .is_empty()
-        );
+        message.set_serial(1).unwrap();
+        assert!(!message.encode().unwrap().is_empty());
         // Close the descriptor the message still owns.
         for fd in message.take_fds() {
             // SAFETY: the descriptor came out of `open_register_fd`.
@@ -1740,16 +1553,8 @@ mod tests {
             5,
         )
         .unwrap();
-        assert_eq!(
-            plan.open_path(),
-            path.parent()
-                .unwrap()
-                .to_str()
-                .unwrap()
-        );
-        let fd = plan
-            .open_register_fd()
-            .unwrap();
+        assert_eq!(plan.open_path(), path.parent().unwrap().to_str().unwrap());
+        let fd = plan.open_register_fd().unwrap();
         // SAFETY: the descriptor came out of `open_register_fd`.
         unsafe { libc::close(fd) };
 
@@ -1768,14 +1573,8 @@ mod tests {
             5,
         )
         .unwrap();
-        let error = plan
-            .open_register_fd()
-            .unwrap_err();
-        assert!(
-            error
-                .message()
-                .starts_with("Failed to open ")
-        );
+        let error = plan.open_register_fd().unwrap_err();
+        assert!(error.message().starts_with("Failed to open "));
         assert!(matches!(error, PortalError::NotFound(_)));
 
         std::fs::remove_file(&path).unwrap();

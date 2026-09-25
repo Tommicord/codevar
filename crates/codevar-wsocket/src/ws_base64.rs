@@ -208,12 +208,7 @@ mod tests {
             .map(|i| u8::try_from(i % 256).unwrap())
             .collect();
         let encoded = encode(&data);
-        assert_eq!(
-            encoded.len(),
-            data.len()
-                .div_ceil(3)
-                * 4
-        );
+        assert_eq!(encoded.len(), data.len().div_ceil(3) * 4);
         let decoded = decode(&encoded).unwrap();
         assert_eq!(decoded, data);
     }
@@ -236,11 +231,7 @@ mod tests {
             .map(|i| u8::try_from(i).unwrap())
             .collect();
         let encoded = encode(&data);
-        assert!(
-            !encoded
-                .chars()
-                .any(char::is_whitespace)
-        );
+        assert!(!encoded.chars().any(char::is_whitespace));
         assert!(
             encoded
                 .chars()

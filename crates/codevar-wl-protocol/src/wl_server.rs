@@ -185,16 +185,13 @@ impl<T: WlTransport> WlClient<T> {
     #[inline]
     #[must_use]
     pub fn resources(&self) -> WlMapIter<'_, WlResource> {
-        self.resources
-            .iter()
+        self.resources.iter()
     }
 
     /// Returns the number of live resources of the client.
     #[must_use]
     pub fn resource_count(&self) -> usize {
-        self.resources
-            .iter()
-            .count()
+        self.resources.iter().count()
     }
 
     /// Returns the interface of the resource behind `id`.
@@ -232,43 +229,19 @@ impl<T: WlTransport> WlClient<T> {
         version: u32,
     ) -> WlResult<u32> {
         if id == 0 {
-            let allocated = self
-                .resources
-                .insert_new(WlResource {
-                    id: 0,
-                    interface,
-                    version,
-                })?;
-            if let Some(resource) = self
-                .resources
-                .lookup_mut(allocated)
-            {
+            let allocated = self.resources.insert_new(WlResource {
+                id: 0,
+                interface,
+                version,
+            })?;
+            if let Some(resource) = self.resources.lookup_mut(allocated) {
                 resource.id = allocated;
             }
             return Ok(allocated);
         }
         if id < SERVER_ID_START {
-            self.resources
-                .reserve_new(id)?;
-            self.resources
-                .insert_at(
-                    id,
-                    WlResource {
-                        id,
-                        interface,
-                        version,
-                    },
-                )?;
-            return Ok(id);
-        }
-        if self
-            .resources
-            .contains(id)
-        {
-            return Err(WlError::invalid_argument(format!("id {id} is already in use")));
-        }
-        self.resources
-            .insert_at(
+            self.resources.reserve_new(id)?;
+            self.resources.insert_at(
                 id,
                 WlResource {
                     id,
@@ -276,6 +249,19 @@ impl<T: WlTransport> WlClient<T> {
                     version,
                 },
             )?;
+            return Ok(id);
+        }
+        if self.resources.contains(id) {
+            return Err(WlError::invalid_argument(format!("id {id} is already in use")));
+        }
+        self.resources.insert_at(
+            id,
+            WlResource {
+                id,
+                interface,
+                version,
+            },
+        )?;
         Ok(id)
     }
 
@@ -293,11 +279,7 @@ impl<T: WlTransport> WlClient<T> {
         if id == DISPLAY_RESOURCE_ID {
             return Err(WlError::invalid_state("the display resource cannot be destroyed"));
         }
-        if self
-            .resources
-            .lookup(id)
-            .is_none()
-        {
+        if self.resources.lookup(id).is_none() {
             return Err(WlError::InvalidObject(id));
         }
         if id < SERVER_ID_START {
@@ -311,11 +293,9 @@ impl<T: WlTransport> WlClient<T> {
             {
                 self.error = true;
             }
-            self.resources
-                .vacate_at(id)?;
+            self.resources.vacate_at(id)?;
         } else {
-            self.resources
-                .remove(id);
+            self.resources.remove(id);
         }
         Ok(())
     }
@@ -341,8 +321,7 @@ impl<T: WlTransport> WlClient<T> {
                 opcode,
             })?;
         let mut closure = WlClosure::new(resource, opcode, message, args)?;
-        self.connection
-            .queue_closure(&mut closure)
+        self.connection.queue_closure(&mut closure)
     }
 
     /// Reports a protocol error with `wl_display.error` and marks the
@@ -382,8 +361,7 @@ impl<T: WlTransport> WlClient<T> {
     /// part of the buffer and [`WlError::Disconnected`] when the peer is
     /// gone.
     pub fn flush(&mut self) -> WlResult<usize> {
-        self.connection
-            .flush()
+        self.connection.flush()
     }
 }
 
@@ -435,9 +413,7 @@ where
 {
     /// Queues `task` for the next dispatch of the display.
     pub fn push(&self, task: impl FnOnce(&mut WlServerDisplay<T, P, C>) + 'static) {
-        self.tasks
-            .borrow_mut()
-            .push_back(Box::new(task));
+        self.tasks.borrow_mut().push_back(Box::new(task));
     }
 }
 
@@ -512,9 +488,7 @@ where
 
     /// Queues `task` for the next dispatch of the display.
     pub fn schedule(&self, task: impl FnOnce(&mut Self) + 'static) {
-        self.tasks
-            .borrow_mut()
-            .push_back(Box::new(task));
+        self.tasks.borrow_mut().push_back(Box::new(task));
     }
 
     /// Announces `interface` at `version` on every `wl_registry`.
@@ -571,19 +545,14 @@ where
         else {
             return Err(WlError::invalid_argument(format!("global {name} does not exist")));
         };
-        self.globals
-            .remove(index);
+        self.globals.remove(index);
         for slot in &mut self.clients {
             let Some(client) = slot.as_mut() else {
                 continue;
             };
             let registries: Vec<u32> = client
                 .resources()
-                .filter(|(_, resource)| {
-                    resource
-                        .interface
-                        .equal(&REGISTRY_INTERFACE)
-                })
+                .filter(|(_, resource)| resource.interface.equal(&REGISTRY_INTERFACE))
                 .map(|(id, _)| id)
                 .collect();
             for id in registries {
@@ -616,21 +585,16 @@ where
         if self
             .handlers
             .iter()
-            .any(|existing| {
-                existing
-                    .interface
-                    .equal(interface)
-            })
+            .any(|existing| existing.interface.equal(interface))
         {
             return Err(WlError::invalid_state(format!(
                 "{interface} already has a request handler"
             )));
         }
-        self.handlers
-            .push(WlHandler {
-                interface,
-                callback: Some(Box::new(handler)),
-            });
+        self.handlers.push(WlHandler {
+            interface,
+            callback: Some(Box::new(handler)),
+        });
         Ok(())
     }
 
@@ -645,35 +609,19 @@ where
     /// Returns [`WlError::TooManyObjects`] when the id map cannot install
     /// the display resource.
     pub fn create_client(&mut self, transport: T) -> WlResult<WlClientId> {
-        let slot = match self
-            .free
-            .pop()
-        {
+        let slot = match self.free.pop() {
             Some(slot) => slot,
             None => {
-                self.clients
-                    .push(None);
-                self.generations
-                    .push(0);
-                self.clients
-                    .len()
-                    - 1
+                self.clients.push(None);
+                self.generations.push(0);
+                self.clients.len() - 1
             }
         };
         let generation = {
-            let current = self
-                .generations
-                .get(slot)
-                .copied()
-                .unwrap_or(0);
+            let current = self.generations.get(slot).copied().unwrap_or(0);
             let generation = current.wrapping_add(1);
-            if self
-                .generations
-                .len()
-                <= slot
-            {
-                self.generations
-                    .resize(slot + 1, 0);
+            if self.generations.len() <= slot {
+                self.generations.resize(slot + 1, 0);
             }
             self.generations[slot] = generation;
             generation
@@ -690,8 +638,7 @@ where
                 version: DISPLAY_INTERFACE.version,
             },
         ) {
-            self.free
-                .push(slot);
+            self.free.push(slot);
             return Err(err);
         }
         let tasks = Rc::clone(&self.tasks);
@@ -726,15 +673,8 @@ where
     /// Returns the client behind `id`.
     #[must_use]
     pub fn client(&self, id: WlClientId) -> Option<&WlClient<T>> {
-        let client = self
-            .clients
-            .get(id.slot)?
-            .as_ref()?;
-        (client
-            .id
-            .generation
-            == id.generation)
-            .then_some(client)
+        let client = self.clients.get(id.slot)?.as_ref()?;
+        (client.id.generation == id.generation).then_some(client)
     }
 
     /// Mutably returns the client behind `id`.
@@ -743,15 +683,8 @@ where
     /// slot; handlers receive it as their argument instead.
     #[must_use]
     pub fn client_mut(&mut self, id: WlClientId) -> Option<&mut WlClient<T>> {
-        let client = self
-            .clients
-            .get_mut(id.slot)?
-            .as_mut()?;
-        (client
-            .id
-            .generation
-            == id.generation)
-            .then_some(client)
+        let client = self.clients.get_mut(id.slot)?.as_mut()?;
+        (client.id.generation == id.generation).then_some(client)
     }
 
     /// Returns the number of connected clients.
@@ -767,10 +700,7 @@ where
     pub fn clients(&self) -> impl Iterator<Item = (WlClientId, &WlClient<T>)> {
         self.clients
             .iter()
-            .filter_map(|slot| {
-                slot.as_ref()
-                    .map(|client| (client.id, client))
-            })
+            .filter_map(|slot| slot.as_ref().map(|client| (client.id, client)))
     }
 
     /// Iterates over the published globals with name, interface and
@@ -816,10 +746,7 @@ where
     /// Matches `wl_display_flush_clients`.
     pub fn flush_clients(&mut self) {
         let mut dead = Vec::new();
-        for slot in 0..self
-            .clients
-            .len()
-        {
+        for slot in 0..self.clients.len() {
             let Some(client) = self.clients[slot].as_mut() else {
                 continue;
             };
@@ -831,23 +758,15 @@ where
                 dead.push(slot);
                 continue;
             }
-            let interest = if client
-                .connection
-                .wants_write()
-            {
+            let interest = if client.connection.wants_write() {
                 WlPollEvents::READABLE.union(WlPollEvents::WRITABLE)
             } else {
                 WlPollEvents::READABLE
             };
-            let _ = self
-                .event_loop
-                .fd_update(client.source, interest);
+            let _ = self.event_loop.fd_update(client.source, interest);
         }
         for slot in dead {
-            let client = match self
-                .clients
-                .get_mut(slot)
-            {
+            let client = match self.clients.get_mut(slot) {
                 Some(entry) => entry.take(),
                 None => None,
             };
@@ -869,8 +788,7 @@ where
     /// Returns [`WlError::Io`] when the poller fails.
     pub fn dispatch(&mut self, timeout: Option<Duration>) -> WlResult<()> {
         self.drain_tasks();
-        self.event_loop
-            .dispatch(timeout)?;
+        self.event_loop.dispatch(timeout)?;
         self.drain_tasks();
         self.flush_clients();
         Ok(())
@@ -914,22 +832,18 @@ where
         self.next_global_name = name
             .checked_add(1)
             .ok_or_else(|| WlError::invalid_state("global names are exhausted"))?;
-        self.globals
-            .push(WlGlobal {
-                name,
-                interface,
-                version,
-                bind,
-            });
+        self.globals.push(WlGlobal {
+            name,
+            interface,
+            version,
+            bind,
+        });
         Ok(name)
     }
 
     fn drain_tasks(&mut self) {
         loop {
-            let task = self
-                .tasks
-                .borrow_mut()
-                .pop_front();
+            let task = self.tasks.borrow_mut().pop_front();
             let Some(task) = task else {
                 break;
             };
@@ -938,36 +852,20 @@ where
     }
 
     fn take_client(&mut self, id: WlClientId) -> Option<WlClient<T>> {
-        let current = self
-            .clients
-            .get(id.slot)?
-            .as_ref()?;
-        if current
-            .id
-            .generation
-            != id.generation
-        {
+        let current = self.clients.get(id.slot)?.as_ref()?;
+        if current.id.generation != id.generation {
             return None;
         }
         self.clients[id.slot].take()
     }
 
     fn retire_client(&mut self, slot: usize, client: WlClient<T>) {
-        let _ = self
-            .event_loop
-            .remove_source(client.source);
-        if let Some(entry) = self
-            .clients
-            .get_mut(slot)
-        {
+        let _ = self.event_loop.remove_source(client.source);
+        if let Some(entry) = self.clients.get_mut(slot) {
             *entry = None;
         }
-        if !self
-            .free
-            .contains(&slot)
-        {
-            self.free
-                .push(slot);
+        if !self.free.contains(&slot) {
+            self.free.push(slot);
         }
     }
 
@@ -994,10 +892,7 @@ where
         }
         if events.contains(WlPollEvents::READABLE) {
             loop {
-                match client
-                    .connection
-                    .read()
-                {
+                match client.connection.read() {
                     Ok(_) => {
                         self.process_requests(&mut client);
                         if client.error {
@@ -1013,9 +908,7 @@ where
             }
         }
         if client.error {
-            let _ = client
-                .connection
-                .flush();
+            let _ = client.connection.flush();
             self.retire_client(id.slot, client);
             return;
         }
@@ -1023,9 +916,7 @@ where
     }
 
     fn put_client(&mut self, id: WlClientId, client: WlClient<T>) {
-        if let Some(entry) = self
-            .clients
-            .get_mut(id.slot)
+        if let Some(entry) = self.clients.get_mut(id.slot)
             && entry.is_none()
         {
             *entry = Some(client);
@@ -1035,10 +926,7 @@ where
     /// Decodes and dispatches every complete request of the client.
     fn process_requests(&mut self, client: &mut WlClient<T>) {
         loop {
-            let Some((sender, opcode, size)) = client
-                .connection
-                .peek()
-            else {
+            let Some((sender, opcode, size)) = client.connection.peek() else {
                 return;
             };
             let size = size as usize;
@@ -1058,11 +946,7 @@ where
                 );
                 return;
             }
-            if client
-                .connection
-                .pending_input()
-                < size
-            {
+            if client.connection.pending_input() < size {
                 return;
             }
             let Some((interface, version)) = client
@@ -1097,10 +981,7 @@ where
                 );
                 return;
             }
-            let mut closure = match client
-                .connection
-                .demarshal(message)
-            {
+            let mut closure = match client.connection.demarshal(message) {
                 Ok(closure) => closure,
                 Err(WlError::WouldBlock) => return,
                 Err(_) => {
@@ -1126,9 +1007,7 @@ where
             let opcode = closure.opcode;
             let mut args = closure.args;
             self.invoke_request(client, sender, opcode, &mut args);
-            client
-                .connection
-                .release_argument_fds(&mut args);
+            client.connection.release_argument_fds(&mut args);
             if client.error {
                 return;
             }
@@ -1179,11 +1058,7 @@ where
         let Some(index) = self
             .handlers
             .iter()
-            .position(|handler| {
-                handler
-                    .interface
-                    .equal(interface)
-            })
+            .position(|handler| handler.interface.equal(interface))
         else {
             client.post_error(
                 DISPLAY_RESOURCE_ID,
@@ -1192,22 +1067,13 @@ where
             );
             return;
         };
-        let Some(mut handler) = self.handlers[index]
-            .callback
-            .take()
-        else {
+        let Some(mut handler) = self.handlers[index].callback.take() else {
             return;
         };
         handler(client, client.id, sender, opcode, args);
-        if let Some(slot) = self
-            .handlers
-            .get_mut(index)
-            && slot
-                .interface
-                .equal(interface)
-            && slot
-                .callback
-                .is_none()
+        if let Some(slot) = self.handlers.get_mut(index)
+            && slot.interface.equal(interface)
+            && slot.callback.is_none()
         {
             slot.callback = Some(handler);
         }
@@ -1223,9 +1089,7 @@ where
         if client
             .post_event(new_id, CALLBACK_DONE, vec![WlArgument::Uint(serial as u32)])
             .is_err()
-            || client
-                .destroy_resource(new_id)
-                .is_err()
+            || client.destroy_resource(new_id).is_err()
         {
             client.post_no_memory();
         }
@@ -1240,11 +1104,7 @@ where
         for global in &self.globals {
             let args = vec![
                 WlArgument::Uint(global.name),
-                WlArgument::Str(Some(String::from(
-                    global
-                        .interface
-                        .name,
-                ))),
+                WlArgument::Str(Some(String::from(global.interface.name))),
                 WlArgument::Uint(global.version),
             ];
             if client
@@ -1270,9 +1130,7 @@ where
             return;
         };
         let (name, version, new_id) = (*name, *version, *new_id);
-        let requested = interface_name
-            .as_deref()
-            .unwrap_or("");
+        let requested = interface_name.as_deref().unwrap_or("");
         let Some(index) = self
             .globals
             .iter()
@@ -1286,10 +1144,7 @@ where
             return;
         };
         let (global_interface, global_version) = (self.globals[index].interface, self.globals[index].version);
-        if !global_interface
-            .name
-            .eq(requested)
-        {
+        if !global_interface.name.eq(requested) {
             client.post_error(
                 registry,
                 WlDisplayError::InvalidObject.code(),
@@ -1319,18 +1174,13 @@ where
             return;
         }
         let client_id = client.id;
-        if let Some(mut bind) = self.globals[index]
-            .bind
-            .take()
-        {
+        if let Some(mut bind) = self.globals[index].bind.take() {
             bind(client, client_id, version, new_id);
             if let Some(position) = self
                 .globals
                 .iter()
                 .position(|global| global.name == name)
-                && self.globals[position]
-                    .bind
-                    .is_none()
+                && self.globals[position].bind.is_none()
             {
                 self.globals[position].bind = Some(bind);
             }
@@ -1413,23 +1263,14 @@ mod tests {
 
     impl WlTransport for ServerPipe {
         fn recv(&mut self, buf: &mut [u8], _fds: &mut Vec<WlFd>) -> WlResult<usize> {
-            let mut state = self
-                .state
-                .borrow_mut();
+            let mut state = self.state.borrow_mut();
             if state.peer_closed {
                 return Ok(0);
             }
-            if state.input_pos
-                >= state
-                    .input
-                    .len()
-            {
+            if state.input_pos >= state.input.len() {
                 return Err(WlError::WouldBlock);
             }
-            let available = state
-                .input
-                .len()
-                - state.input_pos;
+            let available = state.input.len() - state.input_pos;
             let count = available.min(buf.len());
             let start = state.input_pos;
             buf[..count].copy_from_slice(&state.input[start..start + count]);
@@ -1446,18 +1287,12 @@ mod tests {
         }
 
         fn wait(&mut self, _timeout: Option<Duration>, mask: WlPollEvents) -> WlResult<WlPollEvents> {
-            let state = self
-                .state
-                .borrow();
+            let state = self.state.borrow();
             let mut events = WlPollEvents::EMPTY;
             if state.peer_closed {
                 events.insert(WlPollEvents::HANGUP);
             }
-            if state.input_pos
-                < state
-                    .input
-                    .len()
-            {
+            if state.input_pos < state.input.len() {
                 events.insert(WlPollEvents::READABLE);
             }
             Ok(events.intersection(mask))
@@ -1478,9 +1313,7 @@ mod tests {
 
     impl WlPoller for PipePoller {
         fn poll(&mut self, entries: &mut [WlPollEntry], _timeout: Option<Duration>) -> WlResult<usize> {
-            let mut state = self
-                .state
-                .borrow_mut();
+            let mut state = self.state.borrow_mut();
             if state.task_ran {
                 state.polls_after_task += 1;
             }
@@ -1490,17 +1323,10 @@ mod tests {
                 if state.peer_closed {
                     events.insert(WlPollEvents::HANGUP);
                 }
-                if state.input_pos
-                    < state
-                        .input
-                        .len()
-                {
+                if state.input_pos < state.input.len() {
                     events.insert(WlPollEvents::READABLE);
                 }
-                if entry
-                    .interest
-                    .contains(WlPollEvents::WRITABLE)
-                {
+                if entry.interest.contains(WlPollEvents::WRITABLE) {
                     events.insert(WlPollEvents::WRITABLE);
                 }
                 entry.revents = events;
@@ -1573,21 +1399,15 @@ mod tests {
 
         /// Returns the events flushed since the previous call.
         fn take_messages(&self) -> Vec<u8> {
-            let mut state = self
-                .state
-                .borrow_mut();
+            let mut state = self.state.borrow_mut();
             let bytes = state.output[state.output_pos..].to_vec();
-            state.output_pos = state
-                .output
-                .len();
+            state.output_pos = state.output.len();
             bytes
         }
 
         /// Closes the test end of the pipe.
         fn close_peer(&self) {
-            self.state
-                .borrow_mut()
-                .peer_closed = true;
+            self.state.borrow_mut().peer_closed = true;
         }
     }
 
@@ -1628,11 +1448,7 @@ mod tests {
         let mut messages = Vec::new();
         let mut pos = 0;
         while pos + 8 <= bytes.len() {
-            let sender = u32::from_le_bytes(
-                bytes[pos..pos + 4]
-                    .try_into()
-                    .unwrap_or([0; 4]),
-            );
+            let sender = u32::from_le_bytes(bytes[pos..pos + 4].try_into().unwrap_or([0; 4]));
             let header = u32::from_le_bytes(
                 bytes[pos + 4..pos + 8]
                     .try_into()
@@ -1655,11 +1471,7 @@ mod tests {
         if end > payload.len() {
             return 0;
         }
-        u32::from_le_bytes(
-            payload[at..end]
-                .try_into()
-                .unwrap_or([0; 4]),
-        )
+        u32::from_le_bytes(payload[at..end].try_into().unwrap_or([0; 4]))
     }
 
     /// Decodes a `wl_registry.global` payload.
@@ -1704,27 +1516,16 @@ mod tests {
         );
         assert_eq!(word(&messages[1].2, 0), 2);
 
-        let client = fixture
-            .display
-            .client(fixture.client_id)
-            .unwrap();
+        let client = fixture.display.client(fixture.client_id).unwrap();
         assert_eq!(client.resource_count(), 1);
-        assert!(
-            client
-                .resource_interface(2)
-                .is_none()
-        );
+        assert!(client.resource_interface(2).is_none());
     }
 
     #[test]
     fn get_registry_publishes_globals() {
         let mut fixture = Fixture::with_setup(|display| {
-            display
-                .add_global(&TEST_INTERFACE, 3)
-                .unwrap();
-            display
-                .add_global(&OTHER_INTERFACE, 2)
-                .unwrap();
+            display.add_global(&TEST_INTERFACE, 3).unwrap();
+            display.add_global(&OTHER_INTERFACE, 2).unwrap();
         });
         fixture.send(&fixed_request(DISPLAY_RESOURCE_ID, DISPLAY_GET_REGISTRY, &[2]));
         fixture.dispatch();
@@ -1745,9 +1546,7 @@ mod tests {
             move |display| {
                 display
                     .add_global_with(&TEST_INTERFACE, 3, move |client, _, version, id| {
-                        calls
-                            .borrow_mut()
-                            .push((version, id));
+                        calls.borrow_mut().push((version, id));
                         let created = client.create_resource(id, &TEST_INTERFACE, version);
                         assert!(created.is_ok());
                     })
@@ -1762,16 +1561,8 @@ mod tests {
         let messages = split_messages(&fixture.take_messages());
         assert_eq!(messages.len(), 1);
         assert_eq!((messages[0].0, messages[0].1), (2, REGISTRY_GLOBAL));
-        assert_eq!(
-            fixture
-                .display
-                .client_count(),
-            1
-        );
-        let client = fixture
-            .display
-            .client(fixture.client_id)
-            .unwrap();
+        assert_eq!(fixture.display.client_count(), 1);
+        let client = fixture.display.client(fixture.client_id).unwrap();
         assert_eq!(
             client
                 .resource_interface(3)
@@ -1784,9 +1575,7 @@ mod tests {
     #[test]
     fn bind_rejects_versions_above_the_global() {
         let mut fixture = Fixture::with_setup(|display| {
-            display
-                .add_global(&TEST_INTERFACE, 1)
-                .unwrap();
+            display.add_global(&TEST_INTERFACE, 1).unwrap();
         });
         fixture.send(&fixed_request(DISPLAY_RESOURCE_ID, DISPLAY_GET_REGISTRY, &[2]));
         fixture.send(&bind_request(2, 1, "wl_test", 2, 3));
@@ -1802,12 +1591,7 @@ mod tests {
         assert_eq!(object, 2);
         assert_eq!(code, WlDisplayError::InvalidObject.code());
         assert!(message.contains("expected at most 1, got 2"), "{message}");
-        assert_eq!(
-            fixture
-                .display
-                .client_count(),
-            0
-        );
+        assert_eq!(fixture.display.client_count(), 0);
     }
 
     #[test]
@@ -1826,12 +1610,7 @@ mod tests {
         assert_eq!(object, DISPLAY_RESOURCE_ID);
         assert_eq!(code, WlDisplayError::InvalidObject.code());
         assert_eq!(message, "invalid object 42");
-        assert_eq!(
-            fixture
-                .display
-                .client_count(),
-            0
-        );
+        assert_eq!(fixture.display.client_count(), 0);
     }
 
     #[test]
@@ -1852,9 +1631,7 @@ mod tests {
                             Some(WlArgument::Uint(value)) => *value,
                             _ => 0,
                         };
-                        calls
-                            .borrow_mut()
-                            .push((sender, opcode, value));
+                        calls.borrow_mut().push((sender, opcode, value));
                         let reply = vec![WlArgument::Uint(9)];
                         let sent = client.post_event(sender, PONG_OPCODE, reply);
                         assert!(sent.is_ok());
@@ -1878,22 +1655,15 @@ mod tests {
     #[test]
     fn remove_global_announces_global_remove() {
         let mut fixture = Fixture::with_setup(|display| {
-            display
-                .add_global(&TEST_INTERFACE, 3)
-                .unwrap();
+            display.add_global(&TEST_INTERFACE, 3).unwrap();
         });
         fixture.send(&fixed_request(DISPLAY_RESOURCE_ID, DISPLAY_GET_REGISTRY, &[2]));
         fixture.dispatch();
         let globals = split_messages(&fixture.take_messages());
         assert_eq!(globals.len(), 1);
 
-        fixture
-            .display
-            .remove_global(1)
-            .unwrap();
-        fixture
-            .display
-            .flush_clients();
+        fixture.display.remove_global(1).unwrap();
+        fixture.display.flush_clients();
         let messages = split_messages(&fixture.take_messages());
         assert_eq!(messages.len(), 1);
         assert_eq!((messages[0].0, messages[0].1), (2, REGISTRY_GLOBAL_REMOVE));
@@ -1903,21 +1673,11 @@ mod tests {
     #[test]
     fn closed_peer_removes_the_client() {
         let mut fixture = Fixture::new();
-        assert_eq!(
-            fixture
-                .display
-                .client_count(),
-            1
-        );
+        assert_eq!(fixture.display.client_count(), 1);
 
         fixture.close_peer();
         fixture.dispatch();
-        assert_eq!(
-            fixture
-                .display
-                .client_count(),
-            0
-        );
+        assert_eq!(fixture.display.client_count(), 0);
         fixture.dispatch();
     }
 
@@ -1925,19 +1685,12 @@ mod tests {
     fn scheduled_tasks_run_before_the_poll() {
         let mut fixture = Fixture::new();
         let state = Rc::clone(&fixture.state);
-        fixture
-            .display
-            .tasks()
-            .push(move |_| {
-                state
-                    .borrow_mut()
-                    .task_ran = true;
-            });
+        fixture.display.tasks().push(move |_| {
+            state.borrow_mut().task_ran = true;
+        });
         fixture.dispatch();
 
-        let state = fixture
-            .state
-            .borrow();
+        let state = fixture.state.borrow();
         assert!(state.task_ran);
         assert_eq!(state.polls_after_task, 1);
     }

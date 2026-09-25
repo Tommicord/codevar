@@ -144,81 +144,62 @@ impl TlsClientConnection {
     /// Negotiated protocol version after the handshake completes.
     #[must_use]
     pub fn protocol_version(&self) -> Option<ProtocolVersion> {
-        self.common
-            .version
+        self.common.version
     }
 
     /// Negotiated cipher suite.
     #[must_use]
     pub fn negotiated_cipher_suite(&self) -> Option<CipherSuite> {
-        self.common
-            .suite
+        self.common.suite
     }
 
     /// Selected ALPN protocol.
     #[must_use]
     pub fn alpn_protocol(&self) -> Option<&[u8]> {
-        self.common
-            .alpn
-            .as_deref()
+        self.common.alpn.as_deref()
     }
 
     /// Whether the handshake is still running.
     #[must_use]
     pub fn is_handshaking(&self) -> bool {
-        self.common
-            .is_handshaking()
+        self.common.is_handshaking()
     }
 
     /// Whether outbound TLS bytes are pending.
     #[must_use]
     pub fn wants_write(&self) -> bool {
-        self.common
-            .wants_write()
+        self.common.wants_write()
     }
 
     /// Whether more network input is needed.
     #[must_use]
     pub fn wants_read(&self) -> bool {
-        self.common
-            .wants_read()
+        self.common.wants_read()
     }
 
     /// Feeds ciphertext from the transport.
     pub fn read_tls(&mut self, data: &[u8]) -> TlsResult<()> {
-        self.common
-            .record
-            .feed_ciphertext(data);
+        self.common.record.feed_ciphertext(data);
         Ok(())
     }
 
     /// Drains ciphertext destined for the transport.
     pub fn write_tls(&mut self) -> Vec<u8> {
-        self.common
-            .record
-            .take_ciphertext()
+        self.common.record.take_ciphertext()
     }
 
     /// Processes buffered records and advances the handshake / decrypts app data.
     pub fn process_new_packets(&mut self) -> TlsResult<IoState> {
         loop {
-            let record = match self
-                .common
-                .record
-                .read_raw()
-            {
+            let record = match self.common.record.read_raw() {
                 Ok(Some(r)) => r,
                 Ok(None) => break,
                 Err(e) => {
-                    return Err(self
-                        .common
-                        .fail(e));
+                    return Err(self.common.fail(e));
                 }
             };
             if let Err(e) = self.dispatch_record(record.content_type, &record.payload) {
-                return Err(self
-                    .common
-                    .fail(e));
+                return Err(self.common.fail(e));
             }
         }
         Ok(self.io_state())
@@ -226,27 +207,22 @@ impl TlsClientConnection {
 
     /// Reads decrypted application data.
     pub fn reader_read(&mut self, buf: &mut [u8]) -> TlsResult<usize> {
-        self.common
-            .read_app(buf)
+        self.common.read_app(buf)
     }
 
     /// Encrypts application data.
     pub fn writer_write(&mut self, data: &[u8]) -> TlsResult<()> {
-        self.common
-            .write_app(data)
+        self.common.write_app(data)
     }
 
     /// Sends `close_notify`.
     pub fn send_close_notify(&mut self) -> TlsResult<()> {
-        self.common
-            .send_close_notify()
+        self.common.send_close_notify()
     }
 
     fn dispatch_record(&mut self, ty: ContentType, payload: &[u8]) -> TlsResult<()> {
         match ty {
-            ContentType::Alert => self
-                .common
-                .handle_alert(payload),
+            ContentType::Alert => self.common.handle_alert(payload),
             ContentType::ChangeCipherSpec => {
                 if payload != [1] {
                     return Err(TlsError::Alert(AlertDescription::UnexpectedMessage));
@@ -259,27 +235,17 @@ impl TlsClientConnection {
                 Ok(())
             }
             ContentType::Handshake => {
-                self.common
-                    .hs_rx
-                    .push(payload);
-                while let Some(msg) = self
-                    .common
-                    .hs_rx
-                    .pop_message()?
-                {
+                self.common.hs_rx.push(payload);
+                while let Some(msg) = self.common.hs_rx.pop_message()? {
                     self.process_handshake(msg)?;
                 }
                 Ok(())
             }
             ContentType::ApplicationData => {
-                if self
-                    .common
-                    .is_handshaking()
-                {
+                if self.common.is_handshaking() {
                     return Err(TlsError::Alert(AlertDescription::UnexpectedMessage));
                 }
-                self.common
-                    .queue_appdata(payload);
+                self.common.queue_appdata(payload);
                 Ok(())
             }
         }
@@ -290,39 +256,24 @@ impl TlsClientConnection {
         match (self.hs, msg.msg_type) {
             (ClientHs::ExpectServerHello, HandshakeType::ServerHello) => self.on_server_hello(&msg.body, raw),
             (ClientHs::Tls13ExpectEe, HandshakeType::EncryptedExtensions) => {
-                self.common
-                    .transcript
-                    .add_message(&raw);
+                self.common.transcript.add_message(&raw);
                 let exts = parse_encrypted_extensions(&msg.body)?;
                 if let Some(alpn) = exts
                     .selected_alpn
-                    .or_else(|| {
-                        exts.alpn
-                            .first()
-                            .cloned()
-                    })
+                    .or_else(|| exts.alpn.first().cloned())
                 {
-                    self.common
-                        .alpn = Some(alpn);
+                    self.common.alpn = Some(alpn);
                 }
                 self.hs = ClientHs::Tls13ExpectCertificate;
                 Ok(())
             }
             (ClientHs::Tls13ExpectCertificate, HandshakeType::Certificate) => {
-                self.common
-                    .transcript
-                    .add_message(&raw);
+                self.common.transcript.add_message(&raw);
                 let cert = CertificateTls13::parse(&msg.body)?;
                 let leaf = self
                     .config
                     .verifier
-                    .verify_server_cert(
-                        &cert.cert_chain,
-                        Some(
-                            self.server_name
-                                .as_str(),
-                        ),
-                    )?;
+                    .verify_server_cert(&cert.cert_chain, Some(self.server_name.as_str()))?;
                 self.leaf_spki = Some(leaf.spki_der);
                 self.hs = ClientHs::Tls13ExpectCertVerify;
                 Ok(())
@@ -334,29 +285,19 @@ impl TlsClientConnection {
                 self.on_tls13_finished(&msg.body, raw)
             }
             (ClientHs::Tls12ExpectCertificate, HandshakeType::Certificate) => {
-                self.common
-                    .transcript
-                    .add_message(&raw);
+                self.common.transcript.add_message(&raw);
                 let cert = CertificateTls12::parse(&msg.body)?;
                 let leaf = self
                     .config
                     .verifier
-                    .verify_server_cert(
-                        &cert.cert_chain,
-                        Some(
-                            self.server_name
-                                .as_str(),
-                        ),
-                    )?;
+                    .verify_server_cert(&cert.cert_chain, Some(self.server_name.as_str()))?;
                 self.leaf_spki = Some(leaf.spki_der);
                 self.hs = ClientHs::Tls12ExpectSke;
                 Ok(())
             }
             (ClientHs::Tls12ExpectSke, HandshakeType::ServerKeyExchange) => self.on_tls12_ske(&msg.body, raw),
             (ClientHs::Tls12ExpectShd, HandshakeType::ServerHelloDone) => {
-                self.common
-                    .transcript
-                    .add_message(&raw);
+                self.common.transcript.add_message(&raw);
                 self.send_tls12_client_flight()
             }
             (ClientHs::Tls12ExpectFinished, HandshakeType::Finished) => {
@@ -377,64 +318,36 @@ impl TlsClientConnection {
         put_extension(
             &mut ext_payload,
             ExtensionType::ServerName,
-            &encode_server_name(
-                self.server_name
-                    .as_str(),
-            )?,
+            &encode_server_name(self.server_name.as_str())?,
         )?;
         put_extension(
             &mut ext_payload,
             ExtensionType::SupportedVersions,
-            &encode_supported_versions_client(
-                &self
-                    .config
-                    .versions,
-            )?,
+            &encode_supported_versions_client(&self.config.versions)?,
         )?;
         put_extension(
             &mut ext_payload,
             ExtensionType::SupportedGroups,
-            &encode_supported_groups(
-                &self
-                    .config
-                    .named_groups,
-            )?,
+            &encode_supported_groups(&self.config.named_groups)?,
         )?;
         put_extension(
             &mut ext_payload,
             ExtensionType::KeyShare,
             &encode_key_share_client(&[KeySharePublic {
-                group: kx
-                    .public
-                    .group,
-                key_exchange: kx
-                    .public
-                    .key_exchange
-                    .clone(),
+                group: kx.public.group,
+                key_exchange: kx.public.key_exchange.clone(),
             }])?,
         )?;
         put_extension(
             &mut ext_payload,
             ExtensionType::SignatureAlgorithms,
-            &encode_signature_algorithms(
-                &self
-                    .config
-                    .signature_schemes,
-            )?,
+            &encode_signature_algorithms(&self.config.signature_schemes)?,
         )?;
-        if !self
-            .config
-            .alpn_protocols
-            .is_empty()
-        {
+        if !self.config.alpn_protocols.is_empty() {
             put_extension(
                 &mut ext_payload,
                 ExtensionType::ApplicationLayerProtocolNegotiation,
-                &encode_alpn(
-                    &self
-                        .config
-                        .alpn_protocols,
-                )?,
+                &encode_alpn(&self.config.alpn_protocols)?,
             )?;
         }
         // TLS 1.2 helpers
@@ -478,8 +391,7 @@ impl TlsClientConnection {
         if !self.hrr_seen {
             self.first_client_hello = Some(message.clone());
         }
-        self.common
-            .send_handshake_raw(&message)?;
+        self.common.send_handshake_raw(&message)?;
         Ok(())
     }
 
@@ -490,11 +402,7 @@ impl TlsClientConnection {
         }
 
         let version = sh.negotiated_version()?;
-        if !self
-            .config
-            .versions
-            .contains(&version)
-        {
+        if !self.config.versions.contains(&version) {
             return Err(TlsError::Alert(AlertDescription::ProtocolVersion));
         }
         // Downgrade sentinels (RFC 8446 §4.1.3)
@@ -512,32 +420,19 @@ impl TlsClientConnection {
             }
         }
 
-        self.common
-            .version = Some(version);
-        self.common
-            .suite = Some(sh.cipher_suite);
+        self.common.version = Some(version);
+        self.common.suite = Some(sh.cipher_suite);
         self.server_random = Some(sh.random);
         self.common
             .transcript
-            .rebind_hash(
-                sh.cipher_suite
-                    .hash_algorithm(),
-            );
-        self.common
-            .transcript
-            .add_message(&raw);
-        self.ems = sh
-            .extensions
-            .extended_master_secret;
+            .rebind_hash(sh.cipher_suite.hash_algorithm());
+        self.common.transcript.add_message(&raw);
+        self.ems = sh.extensions.extended_master_secret;
 
         match version {
             ProtocolVersion::Tls13 => self.enter_tls13(&sh),
             ProtocolVersion::Tls12 => {
-                if self
-                    .config
-                    .require_ems
-                    && !self.ems
-                {
+                if self.config.require_ems && !self.ems {
                     return Err(TlsError::Alert(AlertDescription::HandshakeFailure));
                 }
                 self.hs = ClientHs::Tls12ExpectCertificate;
@@ -556,17 +451,10 @@ impl TlsClientConnection {
             .extensions
             .selected_group
             .ok_or(TlsError::Alert(AlertDescription::MissingExtension))?;
-        if !self
-            .config
-            .named_groups
-            .contains(&selected)
-        {
+        if !self.config.named_groups.contains(&selected) {
             return Err(TlsError::Alert(AlertDescription::IllegalParameter));
         }
-        self.cookie = sh
-            .extensions
-            .cookie
-            .clone();
+        self.cookie = sh.extensions.cookie.clone();
 
         // Transcript: replace ClientHello with message_hash, then add HRR.
         let first = self
@@ -575,16 +463,11 @@ impl TlsClientConnection {
             .ok_or_else(|| TlsError::Internal("missing first ClientHello".into()))?;
         self.common
             .transcript
-            .rebind_hash(
-                sh.cipher_suite
-                    .hash_algorithm(),
-            );
+            .rebind_hash(sh.cipher_suite.hash_algorithm());
         self.common
             .transcript
             .replace_client_hello_with_hash(&first);
-        self.common
-            .transcript
-            .add_message(&raw);
+        self.common.transcript.add_message(&raw);
 
         let (private, public) = generate_key_share(selected)?;
         self.kx = Some(ClientKx {
@@ -593,8 +476,7 @@ impl TlsClientConnection {
             public,
         });
         // Middlebox CCS before second ClientHello
-        self.common
-            .send_ccs()?;
+        self.common.send_ccs()?;
         self.send_client_hello()?;
         self.hs = ClientHs::ExpectServerHello;
         Ok(())
@@ -614,21 +496,15 @@ impl TlsClientConnection {
             return Err(TlsError::Alert(AlertDescription::IllegalParameter));
         }
         let secret = shared_secret(&kx.private, peer)?;
-        let hello_hash = self
-            .common
-            .transcript
-            .hash();
+        let hello_hash = self.common.transcript.hash();
         let schedule = Tls13KeySchedule::from_handshake(sh.cipher_suite, &secret, &hello_hash)?;
 
         // Read keys = server handshake; write keys installed after we send Finished.
-        self.common
-            .install_read_keys(
-                schedule
-                    .server_handshake
-                    .traffic_keys(),
-                ProtocolVersion::Tls13,
-                sh.cipher_suite,
-            );
+        self.common.install_read_keys(
+            schedule.server_handshake.traffic_keys(),
+            ProtocolVersion::Tls13,
+            sh.cipher_suite,
+        );
         self.tls13 = Some(schedule);
         self.hs = ClientHs::Tls13ExpectEe;
         // Optional middlebox CCS
@@ -637,25 +513,17 @@ impl TlsClientConnection {
 
     fn on_tls13_cert_verify(&mut self, body: &[u8], raw: Vec<u8>) -> TlsResult<()> {
         let cv = CertificateVerify::parse(body)?;
-        if !cv
-            .scheme
-            .allowed_in_tls13_cert_verify()
-        {
+        if !cv.scheme.allowed_in_tls13_cert_verify() {
             return Err(TlsError::Alert(AlertDescription::IllegalParameter));
         }
         let spki = self
             .leaf_spki
             .as_ref()
             .ok_or_else(|| TlsError::Internal("missing leaf SPKI".into()))?;
-        let th = self
-            .common
-            .transcript
-            .hash();
+        let th = self.common.transcript.hash();
         let content = tls13_cert_verify_content(true, &th);
         verify_handshake_signature(cv.scheme, spki, &content, &cv.signature)?;
-        self.common
-            .transcript
-            .add_message(&raw);
+        self.common.transcript.add_message(&raw);
         self.hs = ClientHs::Tls13ExpectFinished;
         Ok(())
     }
@@ -666,24 +534,14 @@ impl TlsClientConnection {
             .tls13
             .as_ref()
             .ok_or_else(|| TlsError::Internal("missing TLS1.3 schedule".into()))?;
-        let expected = schedule.server_finished_verify(
-            &self
-                .common
-                .transcript
-                .hash(),
-        )?;
+        let expected = schedule.server_finished_verify(&self.common.transcript.hash())?;
         if !ct_eq(&expected, &finished.verify_data) {
             return Err(TlsError::Alert(AlertDescription::DecryptError));
         }
-        self.common
-            .transcript
-            .add_message(&raw);
+        self.common.transcript.add_message(&raw);
 
         // Derive application secrets with hash including server Finished.
-        let hash_after_sf = self
-            .common
-            .transcript
-            .hash();
+        let hash_after_sf = self.common.transcript.hash();
         let suite = self
             .common
             .suite
@@ -697,30 +555,20 @@ impl TlsClientConnection {
         }
 
         // Send CCS (middlebox) + client Finished under handshake keys.
-        self.common
-            .send_ccs()?;
+        self.common.send_ccs()?;
         {
             let schedule = self
                 .tls13
                 .as_ref()
                 .ok_or_else(|| TlsError::Internal("missing schedule".into()))?;
-            self.common
-                .install_write_keys(
-                    schedule
-                        .client_handshake
-                        .traffic_keys(),
-                    ProtocolVersion::Tls13,
-                    suite,
-                );
-            let vd = schedule.client_finished_verify(
-                &self
-                    .common
-                    .transcript
-                    .hash(),
-            )?;
+            self.common.install_write_keys(
+                schedule.client_handshake.traffic_keys(),
+                ProtocolVersion::Tls13,
+                suite,
+            );
+            let vd = schedule.client_finished_verify(&self.common.transcript.hash())?;
             let fin = encode_handshake(HandshakeType::Finished, &Finished::encode(&vd));
-            self.common
-                .send_handshake_raw(&fin)?;
+            self.common.send_handshake_raw(&fin)?;
         }
 
         // Switch both directions to application traffic keys.
@@ -728,10 +576,7 @@ impl TlsClientConnection {
             .tls13
             .as_mut()
             .ok_or_else(|| TlsError::Internal("missing schedule".into()))?;
-        let hash_after_cf = self
-            .common
-            .transcript
-            .hash();
+        let hash_after_cf = self.common.transcript.hash();
         schedule.derive_resumption_master(&hash_after_cf)?;
         let client_app = schedule
             .client_application
@@ -749,8 +594,7 @@ impl TlsClientConnection {
             .install_read_keys(server_app, ProtocolVersion::Tls13, suite);
 
         self.hs = ClientHs::Complete;
-        self.common
-            .state = ConnectionState::Connected;
+        self.common.state = ConnectionState::Connected;
         Ok(())
     }
 
@@ -775,12 +619,7 @@ impl TlsClientConnection {
             key_exchange: ske.public_key,
         });
         // Regenerate client share for the negotiated curve if needed.
-        if self
-            .kx
-            .as_ref()
-            .map(|k| k.group)
-            != Some(ske.curve)
-        {
+        if self.kx.as_ref().map(|k| k.group) != Some(ske.curve) {
             let (private, public) = generate_key_share(ske.curve)?;
             self.kx = Some(ClientKx {
                 group: ske.curve,
@@ -788,9 +627,7 @@ impl TlsClientConnection {
                 public,
             });
         }
-        self.common
-            .transcript
-            .add_message(&raw);
+        self.common.transcript.add_message(&raw);
         self.hs = ClientHs::Tls12ExpectShd;
         Ok(())
     }
@@ -807,13 +644,9 @@ impl TlsClientConnection {
         let pms = shared_secret(&kx.private, peer)?;
         let cke = encode_handshake(
             HandshakeType::ClientKeyExchange,
-            &ClientKeyExchangeEcdhe::encode(
-                &kx.public
-                    .key_exchange,
-            )?,
+            &ClientKeyExchangeEcdhe::encode(&kx.public.key_exchange)?,
         );
-        self.common
-            .send_handshake_raw(&cke)?;
+        self.common.send_handshake_raw(&cke)?;
 
         let suite = self
             .common
@@ -823,11 +656,7 @@ impl TlsClientConnection {
             .server_random
             .ok_or_else(|| TlsError::Internal("missing server random".into()))?;
         let session_hash = if self.ems {
-            Some(
-                self.common
-                    .transcript
-                    .hash(),
-            )
+            Some(self.common.transcript.hash())
         } else {
             None
         };
@@ -839,21 +668,13 @@ impl TlsClientConnection {
             session_hash.as_deref(),
         )?;
 
-        self.common
-            .send_ccs()?;
+        self.common.send_ccs()?;
         self.common
             .install_write_keys(keys.client_traffic(), ProtocolVersion::Tls12, suite);
 
-        let vd = keys.finished_verify(
-            finished_label::CLIENT,
-            &self
-                .common
-                .transcript
-                .hash(),
-        )?;
+        let vd = keys.finished_verify(finished_label::CLIENT, &self.common.transcript.hash())?;
         let fin = encode_handshake(HandshakeType::Finished, &Finished::encode(&vd));
-        self.common
-            .send_handshake_raw(&fin)?;
+        self.common.send_handshake_raw(&fin)?;
 
         // Keep reading cleartext until the server CCS arrives, then arm AEAD.
         self.tls12 = Some(keys);
@@ -867,22 +688,13 @@ impl TlsClientConnection {
             .tls12
             .as_ref()
             .ok_or_else(|| TlsError::Internal("missing TLS1.2 keys".into()))?;
-        let expected = keys.finished_verify(
-            finished_label::SERVER,
-            &self
-                .common
-                .transcript
-                .hash(),
-        )?;
+        let expected = keys.finished_verify(finished_label::SERVER, &self.common.transcript.hash())?;
         if !ct_eq(&expected, &finished.verify_data) {
             return Err(TlsError::Alert(AlertDescription::DecryptError));
         }
-        self.common
-            .transcript
-            .add_message(&raw);
+        self.common.transcript.add_message(&raw);
         self.hs = ClientHs::Complete;
-        self.common
-            .state = ConnectionState::Connected;
+        self.common.state = ConnectionState::Connected;
         Ok(())
     }
 }
@@ -892,17 +704,9 @@ impl TlsClientConnection {
     #[must_use]
     pub fn io_state(&self) -> IoState {
         IoState {
-            plaintext_bytes_to_read: self
-                .common
-                .app_rx
-                .len(),
-            tls_bytes_to_write: self
-                .common
-                .record
-                .pending_tx_len(),
-            handshaking: self
-                .common
-                .is_handshaking(),
+            plaintext_bytes_to_read: self.common.app_rx.len(),
+            tls_bytes_to_write: self.common.record.pending_tx_len(),
+            handshaking: self.common.is_handshaking(),
         }
     }
 

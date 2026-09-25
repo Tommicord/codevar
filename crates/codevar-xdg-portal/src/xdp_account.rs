@@ -48,19 +48,14 @@ fn handle_get_user_information<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let _window = reader
-        .read_str()?
-        .to_string();
+    let _window = reader.read_str()?.to_string();
     let options = crate::xdp_utils::decode_options(&mut reader)?;
 
     let filtered = filter_options(&options, USER_INFORMATION_OPTIONS)?;
 
     let handle = ctx.begin_request(inv, &filtered)?;
 
-    let app_id = handle
-        .app_info
-        .id()
-        .to_string();
+    let app_id = handle.app_info.id().to_string();
 
     ctx.call_impl(
         ACCOUNT_IMPL_INTERFACE,

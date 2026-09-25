@@ -61,22 +61,15 @@ fn handle_open_uri<T: codevar_dbus::DbusTransport + 'static>(
     inv: &crate::xdp_context::MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let parent_window = reader
-        .read_str()?
-        .to_string();
-    let uri = reader
-        .read_str()?
-        .to_string();
+    let parent_window = reader.read_str()?.to_string();
+    let uri = reader.read_str()?.to_string();
     let options = crate::xdp_utils::decode_options(&mut reader)?;
 
     let filtered = filter_options(&options, OPEN_URI_OPTIONS)?;
 
     let handle = ctx.begin_request(inv, &filtered)?;
 
-    let app_id = handle
-        .app_info
-        .id()
-        .to_string();
+    let app_id = handle.app_info.id().to_string();
 
     ctx.call_impl(
         APP_CHOOSER_IMPL_INTERFACE,
@@ -101,9 +94,7 @@ fn handle_open_file<T: codevar_dbus::DbusTransport + 'static>(
     inv: &crate::xdp_context::MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let parent_window = reader
-        .read_str()?
-        .to_string();
+    let parent_window = reader.read_str()?.to_string();
     let fd = reader.read_fd()?;
     let options = crate::xdp_utils::decode_options(&mut reader)?;
 
@@ -111,10 +102,7 @@ fn handle_open_file<T: codevar_dbus::DbusTransport + 'static>(
 
     let handle = ctx.begin_request(inv, &filtered)?;
 
-    let app_id = handle
-        .app_info
-        .id()
-        .to_string();
+    let app_id = handle.app_info.id().to_string();
 
     ctx.call_impl(
         APP_CHOOSER_IMPL_INTERFACE,
@@ -139,9 +127,7 @@ fn handle_open_directory<T: codevar_dbus::DbusTransport + 'static>(
     inv: &crate::xdp_context::MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let parent_window = reader
-        .read_str()?
-        .to_string();
+    let parent_window = reader.read_str()?.to_string();
     let fd = reader.read_fd()?;
     let options = crate::xdp_utils::decode_options(&mut reader)?;
 
@@ -149,10 +135,7 @@ fn handle_open_directory<T: codevar_dbus::DbusTransport + 'static>(
 
     let handle = ctx.begin_request(inv, &filtered)?;
 
-    let app_id = handle
-        .app_info
-        .id()
-        .to_string();
+    let app_id = handle.app_info.id().to_string();
 
     ctx.call_impl(
         APP_CHOOSER_IMPL_INTERFACE,
@@ -177,9 +160,7 @@ fn handle_scheme_supported<T: codevar_dbus::DbusTransport + 'static>(
     inv: &crate::xdp_context::MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let scheme = reader
-        .read_str()?
-        .to_string();
+    let scheme = reader.read_str()?.to_string();
     let _options = crate::xdp_utils::decode_options(&mut reader)?;
 
     let _filtered = filter_options(&_options, SCHEME_SUPPORTED_OPTIONS)?;

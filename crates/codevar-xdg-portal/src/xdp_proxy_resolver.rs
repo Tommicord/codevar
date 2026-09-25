@@ -118,9 +118,7 @@ fn handle_lookup<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let uri = reader
-        .read_str()?
-        .to_string();
+    let uri = reader.read_str()?.to_string();
     let options = decode_options(&mut reader)?;
     let _filtered = filter_options_map(&options, EMPTY_OPTION_KEYS)?;
 
@@ -143,9 +141,7 @@ fn handle_lookup<T: codevar_dbus::DbusTransport + 'static>(
     let mut proxies_array = reply_reader.read_array(1)?;
     let mut proxies = Vec::new();
     while !proxies_array.is_empty() {
-        let proxy = proxies_array
-            .read_str()?
-            .to_string();
+        let proxy = proxies_array.read_str()?.to_string();
         proxies.push(proxy);
     }
     ctx.reply(inv, |bw| {

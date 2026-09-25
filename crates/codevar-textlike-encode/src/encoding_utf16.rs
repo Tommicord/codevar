@@ -37,14 +37,7 @@ impl Utf16Decoder {
     }
 
     pub fn additional_from_state(&self) -> usize {
-        1 + if self
-            .lead_byte
-            .is_some()
-        {
-            1
-        } else {
-            0
-        } + if self.lead_surrogate == 0 { 0 } else { 2 }
+        1 + if self.lead_byte.is_some() { 1 } else { 0 } + if self.lead_surrogate == 0 { 0 } else { 2 }
     }
 
     pub fn max_utf16_buffer_length(&self, byte_length: usize) -> Option<usize> {
@@ -93,11 +86,7 @@ impl Utf16Decoder {
                     }
                 }
             }
-            if self
-                .lead_byte
-                .is_none()
-                && self.lead_surrogate == 0
-            {
+            if self.lead_byte.is_none() && self.lead_surrogate == 0 {
                 let result = if self.be {
                     dest.copy_utf16_from::<BigEndian>(&mut source)
                 } else {
@@ -109,12 +98,7 @@ impl Utf16Decoder {
             }
             match source.check_available() {
                 Space::Full(src_consumed) => {
-                    if last
-                        && (self.lead_surrogate != 0
-                            || self
-                                .lead_byte
-                                .is_some())
-                    {
+                    if last && (self.lead_surrogate != 0 || self.lead_byte.is_some()) {
                         match dest.check_space_bmp() {
                             Space::Full(_) => {
                                 return (DecoderResult::OutputFull, 0, 0);
@@ -140,10 +124,7 @@ impl Utf16Decoder {
                                         }
                                     }
                                 }
-                                debug_assert!(
-                                    self.lead_byte
-                                        .is_some()
-                                );
+                                debug_assert!(self.lead_byte.is_some());
                                 self.lead_byte = None;
                                 return (DecoderResult::Malformed(1, 0), src_consumed, dest.written());
                             }
@@ -232,11 +213,7 @@ impl Utf16Decoder {
                     }
                 }
             }
-            if self
-                .lead_byte
-                .is_none()
-                && self.lead_surrogate == 0
-            {
+            if self.lead_byte.is_none() && self.lead_surrogate == 0 {
                 let result = if self.be {
                     dest.copy_utf16_from::<BigEndian>(&mut source)
                 } else {
@@ -248,12 +225,7 @@ impl Utf16Decoder {
             }
             match source.check_available() {
                 Space::Full(src_consumed) => {
-                    if last
-                        && (self.lead_surrogate != 0
-                            || self
-                                .lead_byte
-                                .is_some())
-                    {
+                    if last && (self.lead_surrogate != 0 || self.lead_byte.is_some()) {
                         return match dest.check_space_bmp() {
                             Space::Full(_) => (DecoderResult::OutputFull, 0, 0),
                             Space::Available(_) => {
@@ -269,10 +241,7 @@ impl Utf16Decoder {
                                         }
                                     };
                                 }
-                                debug_assert!(
-                                    self.lead_byte
-                                        .is_some()
-                                );
+                                debug_assert!(self.lead_byte.is_some());
                                 self.lead_byte = None;
                                 (DecoderResult::Malformed(1, 0), src_consumed, dest.written())
                             }

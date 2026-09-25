@@ -109,9 +109,7 @@ pub fn frame_read_u16(frame: &[u8], position: &mut usize) -> CompressorResult<u1
     }
     // SAFETY: `end <= frame.len()` and the two bytes at `start` are in-bounds.
     let value = unsafe {
-        let p = frame
-            .as_ptr()
-            .add(start);
+        let p = frame.as_ptr().add(start);
         u16::from_be_bytes([*p, *p.add(1)])
     };
     *position = end;
@@ -130,9 +128,7 @@ pub fn frame_read_u32(frame: &[u8], position: &mut usize) -> CompressorResult<u3
     }
     // SAFETY: `end <= frame.len()` and four bytes at `start` are in-bounds.
     let value = unsafe {
-        let p = frame
-            .as_ptr()
-            .add(start);
+        let p = frame.as_ptr().add(start);
         u32::from_be_bytes([*p, *p.add(1), *p.add(2), *p.add(3)])
     };
     *position = end;
@@ -152,13 +148,7 @@ pub fn write_bytes(output: &mut [u8], cursor: &mut usize, bytes: &[u8]) -> Compr
     // SAFETY: `start..end` fits in `output`; regions are non-overlapping with `bytes`
     // because `bytes` is a shared borrow of a different allocation (or disjoint slice).
     unsafe {
-        core::ptr::copy_nonoverlapping(
-            bytes.as_ptr(),
-            output
-                .as_mut_ptr()
-                .add(start),
-            bytes.len(),
-        );
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), output.as_mut_ptr().add(start), bytes.len());
     }
     *cursor = end;
     Ok(())
@@ -173,12 +163,7 @@ pub fn extend_bytes(dst: &mut Vec<u8>, src: &[u8]) {
     // SAFETY: reserved capacity covers `new_len`; `src` does not alias `dst`'s buffer
     // because `src` is a shared slice from a distinct allocation or a prior snapshot.
     unsafe {
-        core::ptr::copy_nonoverlapping(
-            src.as_ptr(),
-            dst.as_mut_ptr()
-                .add(old_len),
-            src.len(),
-        );
+        core::ptr::copy_nonoverlapping(src.as_ptr(), dst.as_mut_ptr().add(old_len), src.len());
         dst.set_len(new_len);
     }
 }

@@ -84,11 +84,7 @@ pub fn valmap_encode(values: &[u16]) -> CompressorResult<Vec<u8>> {
     if values.is_empty() {
         return Ok(Vec::new());
     }
-    let mut output = Vec::with_capacity(
-        values
-            .len()
-            .saturating_mul(3),
-    );
+    let mut output = Vec::with_capacity(values.len().saturating_mul(3));
     // SAFETY: `values` is non-empty.
     let first = unsafe { *values.as_ptr() };
     if first < 0x80 {
@@ -99,16 +95,7 @@ pub fn valmap_encode(values: &[u16]) -> CompressorResult<Vec<u8>> {
     }
     for index in 1..values.len() {
         // SAFETY: `index` and `index - 1` are in-bounds.
-        let (previous, current) = unsafe {
-            (
-                *values
-                    .as_ptr()
-                    .add(index - 1),
-                *values
-                    .as_ptr()
-                    .add(index),
-            )
-        };
+        let (previous, current) = unsafe { (*values.as_ptr().add(index - 1), *values.as_ptr().add(index)) };
         let mut best: Option<(u16, u8, u8, u32, u16)> = None;
         for first_multiplier in 0u8..4 {
             for next_multiplier in 0u8..4 {

@@ -189,10 +189,7 @@ pub fn dump_backtrace() {
 fn dump_frames() {
     let mut frames = [Frame::new(0, 0, None); DUMP_FRAMES];
     let n = capture_frames(&mut frames);
-    for (i, frame) in frames[..n]
-        .iter()
-        .enumerate()
-    {
+    for (i, frame) in frames[..n].iter().enumerate() {
         let mut line = LineWriter::new();
         let _ = line.write_char('#');
         let _ = write_frame(&mut line, frame, i);
@@ -230,13 +227,8 @@ impl LineWriter {
 impl fmt::Write for LineWriter {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         let src = s.as_bytes();
-        let space = self
-            .buf
-            .len()
-            - self.len;
-        let take = src
-            .len()
-            .min(space);
+        let space = self.buf.len() - self.len;
+        let take = src.len().min(space);
         self.buf[self.len..self.len + take].copy_from_slice(&src[..take]);
         self.len += take;
         // Silent truncation is fine: this is a crash-dump path.
@@ -385,9 +377,7 @@ fn write_console(bytes: &[u8]) {
         let n = unsafe {
             libc::write(
                 libc::STDERR_FILENO,
-                bytes[off..]
-                    .as_ptr()
-                    .cast(),
+                bytes[off..].as_ptr().cast(),
                 bytes.len() - off,
             )
         };
@@ -660,10 +650,7 @@ mod unix {
             (*ptr::addr_of_mut!(SAVED)).count = 0;
         }
 
-        for (installed, &sig) in sigs[..n]
-            .iter()
-            .enumerate()
-        {
+        for (installed, &sig) in sigs[..n].iter().enumerate() {
             let mut old: libc::sigaction = unsafe { mem::zeroed() };
             // SAFETY: `sig` is a valid signal number; `action` is fully
             // initialized; `old` receives the previous disposition.
@@ -696,9 +683,7 @@ mod unix {
             });
         }
         let ss = libc::stack_t {
-            ss_sp: buf
-                .as_mut_ptr()
-                .cast::<c_void>(),
+            ss_sp: buf.as_mut_ptr().cast::<c_void>(),
             ss_size: buf.len(),
             ss_flags: 0,
         };
@@ -753,9 +738,7 @@ mod unix {
         }
         // SAFETY: caller guarantees `uc` is a kernel-supplied ucontext.
         let uc = unsafe { &*(uc.cast::<libc::ucontext_t>()) };
-        let rip = uc
-            .uc_mcontext
-            .gregs[libc::REG_RIP as usize] as usize;
+        let rip = uc.uc_mcontext.gregs[libc::REG_RIP as usize] as usize;
         (rip != 0).then_some(rip)
     }
 
@@ -771,9 +754,7 @@ mod unix {
         }
         // SAFETY: caller guarantees `uc` is a kernel-supplied ucontext.
         let uc = unsafe { &*(uc.cast::<libc::ucontext_t>()) };
-        let pc = uc
-            .uc_mcontext
-            .pc as usize;
+        let pc = uc.uc_mcontext.pc as usize;
         (pc != 0).then_some(pc)
     }
 
@@ -796,11 +777,7 @@ mod unix {
             return None;
         }
         // SAFETY: non-null mcontext pointer from the kernel.
-        let rip = unsafe {
-            (*mc)
-                .__ss
-                .__rip as usize
-        };
+        let rip = unsafe { (*mc).__ss.__rip as usize };
         (rip != 0).then_some(rip)
     }
 
@@ -821,11 +798,7 @@ mod unix {
             return None;
         }
         // SAFETY: non-null mcontext pointer from the kernel.
-        let pc = unsafe {
-            (*mc)
-                .__ss
-                .__pc as usize
-        };
+        let pc = unsafe { (*mc).__ss.__pc as usize };
         (pc != 0).then_some(pc)
     }
 
@@ -1127,10 +1100,7 @@ mod windows {
         // touch these statics concurrently.
         let frames = unsafe { &mut *core::ptr::addr_of_mut!(SCRATCH_FRAMES) };
         let n = capture_frames(&mut frames[..16]);
-        for (i, frame) in frames[..n]
-            .iter()
-            .enumerate()
-        {
+        for (i, frame) in frames[..n].iter().enumerate() {
             // SAFETY: exclusive access as above.
             let buf = unsafe { &mut *core::ptr::addr_of_mut!(SCRATCH_LINE) };
             let mut w = SliceWriter { buf, len: 0 };
@@ -1158,13 +1128,8 @@ mod windows {
     impl fmt::Write for SliceWriter<'_> {
         fn write_str(&mut self, s: &str) -> fmt::Result {
             let src = s.as_bytes();
-            let space = self
-                .buf
-                .len()
-                - self.len;
-            let take = src
-                .len()
-                .min(space);
+            let space = self.buf.len() - self.len;
+            let take = src.len().min(space);
             self.buf[self.len..self.len + take].copy_from_slice(&src[..take]);
             self.len += take;
             Ok(())
@@ -1398,11 +1363,7 @@ mod tests {
     #[test]
     fn install_error_display_formats() {
         let unsupported = InstallError::Unsupported;
-        assert!(
-            !unsupported
-                .to_string()
-                .is_empty()
-        );
+        assert!(!unsupported.to_string().is_empty());
         let syscall = InstallError::Syscall {
             op: "sigaction",
             errno: 22,
@@ -1439,11 +1400,7 @@ mod tests {
         let mut line = LineWriter::new();
         let long = "x".repeat(600);
         let _ = line.write_str(&long);
-        assert_eq!(
-            line.len,
-            line.buf
-                .len()
-        );
+        assert_eq!(line.len, line.buf.len());
         // Flushing twice must not re-emit stale bytes.
         line.flush();
         line.flush();

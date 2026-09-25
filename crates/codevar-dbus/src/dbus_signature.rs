@@ -95,9 +95,7 @@ fn parse_one(
     structs: usize,
     allow_dict: bool,
 ) -> Result<(), ParseError> {
-    let code = *bytes
-        .get(*pos)
-        .ok_or(ParseError::Truncated)?;
+    let code = *bytes.get(*pos).ok_or(ParseError::Truncated)?;
     match code {
         b'y' | b'b' | b'n' | b'q' | b'i' | b'u' | b'x' | b't' | b'd' | b's' | b'o' | b'g' | b'h' => {
             *pos += 1;
@@ -117,9 +115,7 @@ fn parse_one(
             *pos += 1;
             let mut fields = 0usize;
             loop {
-                let next = *bytes
-                    .get(*pos)
-                    .ok_or(ParseError::Truncated)?;
+                let next = *bytes.get(*pos).ok_or(ParseError::Truncated)?;
                 if next == b')' {
                     break;
                 }
@@ -140,17 +136,13 @@ fn parse_one(
                 return Err(ParseError::Depth);
             }
             *pos += 1;
-            let key = *bytes
-                .get(*pos)
-                .ok_or(ParseError::Truncated)?;
+            let key = *bytes.get(*pos).ok_or(ParseError::Truncated)?;
             if !is_basic_type(key) {
                 return Err(ParseError::Invalid);
             }
             parse_one(bytes, pos, arrays, structs + 1, false)?;
             parse_one(bytes, pos, arrays, structs + 1, false)?;
-            let close = *bytes
-                .get(*pos)
-                .ok_or(ParseError::Truncated)?;
+            let close = *bytes.get(*pos).ok_or(ParseError::Truncated)?;
             if close != b'}' {
                 return Err(ParseError::Invalid);
             }
@@ -201,9 +193,7 @@ impl<'a> Iterator for SignatureIter<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let length = single_complete_type_len(self.rest)?;
-        let (item, rest) = self
-            .rest
-            .split_at(length);
+        let (item, rest) = self.rest.split_at(length);
         self.rest = rest;
         Some(item)
     }

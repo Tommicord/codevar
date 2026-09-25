@@ -242,8 +242,7 @@ impl<P: WlPoller, C: WlClock> WlEventLoop<P, C> {
         let id = self.alloc_slot(WlSourceKind::Idle {
             callback: Some(Box::new(callback)),
         });
-        self.idle
-            .push_back(id);
+        self.idle.push_back(id);
         id
     }
 
@@ -267,12 +266,8 @@ impl<P: WlPoller, C: WlClock> WlEventLoop<P, C> {
             }
             None => return Err(stale_source()),
         }
-        if !self
-            .check
-            .contains(&id)
-        {
-            self.check
-                .push(id);
+        if !self.check.contains(&id) {
+            self.check.push(id);
         }
         Ok(())
     }
@@ -308,9 +303,7 @@ impl<P: WlPoller, C: WlClock> WlEventLoop<P, C> {
     /// Returns [`WlError::InvalidState`] when `id` is stale or does not
     /// refer to a timer.
     pub fn timer_update(&mut self, id: WlEventSourceId, milliseconds: u32) -> WlResult<()> {
-        let now = self
-            .clock
-            .now_ms();
+        let now = self.clock.now_ms();
         match self.slot_mut(id) {
             Some(WlSourceKind::Timer { deadline, .. }) => {
                 *deadline = if milliseconds == 0 {
@@ -344,8 +337,7 @@ impl<P: WlPoller, C: WlClock> WlEventLoop<P, C> {
     /// Returns `true` while `id` refers to a live source.
     #[must_use]
     pub fn is_active(&self, id: WlEventSourceId) -> bool {
-        self.slot(id)
-            .is_some()
+        self.slot(id).is_some()
     }
 
     /// Runs all pending idle tasks.
@@ -353,10 +345,7 @@ impl<P: WlPoller, C: WlClock> WlEventLoop<P, C> {
     /// Every idle source is dispatched once and removed afterwards; tasks
     /// queued while draining run in the same pass.
     pub fn dispatch_idle(&mut self) {
-        while let Some(id) = self
-            .idle
-            .pop_front()
-        {
+        while let Some(id) = self.idle.pop_front() {
             let Some(mut callback) = self.take_idle(id) else {
                 continue;
             };
@@ -378,9 +367,7 @@ impl<P: WlPoller, C: WlClock> WlEventLoop<P, C> {
     pub fn dispatch(&mut self, timeout: Option<Duration>) -> WlResult<()> {
         self.dispatch_idle();
 
-        let now = self
-            .clock
-            .now_ms();
+        let now = self.clock.now_ms();
         let wait = match (timeout, self.next_deadline()) {
             (Some(limit), Some(deadline)) => {
                 Some(limit.min(Duration::from_millis(deadline.saturating_sub(now))))
@@ -392,11 +379,7 @@ impl<P: WlPoller, C: WlClock> WlEventLoop<P, C> {
 
         let mut entries = Vec::new();
         let mut pending = Vec::new();
-        for (index, slot) in self
-            .slots
-            .iter()
-            .enumerate()
-        {
+        for (index, slot) in self.slots.iter().enumerate() {
             if let WlSourceSlot::Live {
                 generation,
                 kind: WlSourceKind::Fd { handle, interest, .. },
@@ -414,24 +397,15 @@ impl<P: WlPoller, C: WlClock> WlEventLoop<P, C> {
             }
         }
 
-        self.poller
-            .poll(&mut entries, wait)?;
+        self.poller.poll(&mut entries, wait)?;
 
-        let now = self
-            .clock
-            .now_ms();
+        let now = self.clock.now_ms();
         for id in self.take_expired_timers(now) {
             self.invoke_timer(id);
         }
 
-        for (entry, id) in entries
-            .iter()
-            .zip(&pending)
-        {
-            if !entry
-                .revents
-                .is_empty()
-            {
+        for (entry, id) in entries.iter().zip(&pending) {
+            if !entry.revents.is_empty() {
                 self.invoke_fd(*id, entry.revents);
             }
         }
@@ -463,11 +437,7 @@ impl<P: WlPoller, C: WlClock> WlEventLoop<P, C> {
     /// the ordering guarantees of `wl_timer_heap_dispatch`.
     fn take_expired_timers(&mut self, now: u64) -> Vec<WlEventSourceId> {
         let mut expired = Vec::new();
-        for (index, slot) in self
-            .slots
-            .iter_mut()
-            .enumerate()
-        {
+        for (index, slot) in self.slots.iter_mut().enumerate() {
             if let WlSourceSlot::Live {
                 generation,
                 kind:
@@ -494,9 +464,7 @@ impl<P: WlPoller, C: WlClock> WlEventLoop<P, C> {
     /// Returns `true` while any callback returned non-zero or new sources
     /// were checked during the pass.
     fn post_dispatch_check(&mut self) -> bool {
-        let snapshot = self
-            .check
-            .clone();
+        let snapshot = self.check.clone();
         let mut recheck = false;
         for id in snapshot.clone() {
             let result = match self.slot(id) {
@@ -510,14 +478,8 @@ impl<P: WlPoller, C: WlClock> WlEventLoop<P, C> {
     }
 
     fn alloc_slot(&mut self, kind: WlSourceKind<P, C>) -> WlEventSourceId {
-        if let Some(index) = self
-            .free
-            .pop()
-        {
-            let generation = match self
-                .slots
-                .get(index)
-            {
+        if let Some(index) = self.free.pop() {
+            let generation = match self.slots.get(index) {
                 Some(WlSourceSlot::Free { generation }) | Some(WlSourceSlot::Live { generation, .. }) => {
                     generation.wrapping_add(1)
                 }
@@ -530,50 +492,35 @@ impl<P: WlPoller, C: WlClock> WlEventLoop<P, C> {
             self.slots
                 .push(WlSourceSlot::Live { generation, kind });
             WlEventSourceId {
-                index: self
-                    .slots
-                    .len()
-                    - 1,
+                index: self.slots.len() - 1,
                 generation,
             }
         }
     }
 
     fn slot(&self, id: WlEventSourceId) -> Option<&WlSourceKind<P, C>> {
-        match self
-            .slots
-            .get(id.index)?
-        {
+        match self.slots.get(id.index)? {
             WlSourceSlot::Live { generation, kind } if *generation == id.generation => Some(kind),
             _ => None,
         }
     }
 
     fn slot_mut(&mut self, id: WlEventSourceId) -> Option<&mut WlSourceKind<P, C>> {
-        match self
-            .slots
-            .get_mut(id.index)?
-        {
+        match self.slots.get_mut(id.index)? {
             WlSourceSlot::Live { generation, kind } if *generation == id.generation => Some(kind),
             _ => None,
         }
     }
 
     fn free_source(&mut self, id: WlEventSourceId) -> bool {
-        let generation = match self
-            .slots
-            .get(id.index)
-        {
+        let generation = match self.slots.get(id.index) {
             Some(WlSourceSlot::Live { generation, .. }) if *generation == id.generation => *generation,
             _ => return false,
         };
         self.slots[id.index] = WlSourceSlot::Free { generation };
-        self.free
-            .push(id.index);
-        self.idle
-            .retain(|other| *other != id);
-        self.check
-            .retain(|other| *other != id);
+        self.free.push(id.index);
+        self.idle.retain(|other| *other != id);
+        self.check.retain(|other| *other != id);
         true
     }
 
@@ -683,10 +630,7 @@ mod tests {
                     .find(|(handle, _)| *handle == entry.handle)
                     .map_or(WlPollEvents::EMPTY, |(_, events)| *events);
                 entry.revents = events.intersection(entry.interest);
-                if !entry
-                    .revents
-                    .is_empty()
-                {
+                if !entry.revents.is_empty() {
                     ready += 1;
                 }
             }
@@ -704,40 +648,21 @@ mod tests {
         let seen = Rc::new(RefCell::new(Vec::new()));
         let log = Rc::clone(&seen);
         let source = event_loop.add_fd(7, WlPollEvents::READABLE, move |_, _, events| {
-            log.borrow_mut()
-                .push(events);
+            log.borrow_mut().push(events);
             0
         });
 
-        event_loop
-            .dispatch(Some(Duration::ZERO))
-            .unwrap();
+        event_loop.dispatch(Some(Duration::ZERO)).unwrap();
         assert_eq!(*seen.borrow(), [WlPollEvents::READABLE]);
-        assert_eq!(
-            event_loop
-                .poller()
-                .polls,
-            1
-        );
+        assert_eq!(event_loop.poller().polls, 1);
 
         event_loop
             .fd_update(source, WlPollEvents::WRITABLE)
             .unwrap();
-        seen.borrow_mut()
-            .clear();
-        event_loop
-            .dispatch(Some(Duration::ZERO))
-            .unwrap();
-        assert!(
-            seen.borrow()
-                .is_empty()
-        );
-        assert_eq!(
-            event_loop
-                .poller()
-                .last_interests,
-            [(7, WlPollEvents::WRITABLE)]
-        );
+        seen.borrow_mut().clear();
+        event_loop.dispatch(Some(Duration::ZERO)).unwrap();
+        assert!(seen.borrow().is_empty());
+        assert_eq!(event_loop.poller().last_interests, [(7, WlPollEvents::WRITABLE)]);
     }
 
     #[test]
@@ -749,45 +674,25 @@ mod tests {
             counter.set(counter.get() + 1);
             0
         });
-        event_loop
-            .timer_update(timer, 100)
-            .unwrap();
+        event_loop.timer_update(timer, 100).unwrap();
 
         event_loop
             .dispatch(Some(Duration::from_millis(50)))
             .unwrap();
         assert_eq!(fired.get(), 0);
-        assert_eq!(
-            event_loop
-                .poller()
-                .last_timeout,
-            Some(Duration::from_millis(50))
-        );
+        assert_eq!(event_loop.poller().last_timeout, Some(Duration::from_millis(50)));
 
         event_loop
             .dispatch(Some(Duration::from_millis(1000)))
             .unwrap();
-        assert_eq!(
-            event_loop
-                .poller()
-                .last_timeout,
-            Some(Duration::from_millis(100))
-        );
+        assert_eq!(event_loop.poller().last_timeout, Some(Duration::from_millis(100)));
 
-        event_loop
-            .clock_mut()
-            .now = 100;
-        event_loop
-            .dispatch(Some(Duration::ZERO))
-            .unwrap();
+        event_loop.clock_mut().now = 100;
+        event_loop.dispatch(Some(Duration::ZERO)).unwrap();
         assert_eq!(fired.get(), 1);
 
-        event_loop
-            .clock_mut()
-            .now = 10_000;
-        event_loop
-            .dispatch(Some(Duration::ZERO))
-            .unwrap();
+        event_loop.clock_mut().now = 10_000;
+        event_loop.dispatch(Some(Duration::ZERO)).unwrap();
         assert_eq!(fired.get(), 1);
     }
 
@@ -799,30 +704,17 @@ mod tests {
         let counter = Rc::clone(&fired);
         let polls = Rc::clone(&polls_when_run);
         event_loop.add_idle(move |loop_, _| {
-            polls.set(
-                loop_
-                    .poller()
-                    .polls,
-            );
+            polls.set(loop_.poller().polls);
             counter.set(counter.get() + 1);
         });
 
-        event_loop
-            .dispatch(Some(Duration::ZERO))
-            .unwrap();
+        event_loop.dispatch(Some(Duration::ZERO)).unwrap();
         assert_eq!(fired.get(), 1);
         assert_eq!(polls_when_run.get(), 0);
 
-        event_loop
-            .dispatch(Some(Duration::ZERO))
-            .unwrap();
+        event_loop.dispatch(Some(Duration::ZERO)).unwrap();
         assert_eq!(fired.get(), 1);
-        assert_eq!(
-            event_loop
-                .poller()
-                .polls,
-            2
-        );
+        assert_eq!(event_loop.poller().polls, 2);
     }
 
     #[test]
@@ -834,23 +726,16 @@ mod tests {
         let log = Rc::clone(&events_seen);
         let source = event_loop.add_fd(3, WlPollEvents::READABLE, move |_, _, events| {
             counter.set(counter.get() + 1);
-            log.borrow_mut()
-                .push(events);
+            log.borrow_mut().push(events);
             if counter.get() == 1 { 1 } else { 0 }
         });
-        event_loop
-            .check(source)
-            .unwrap();
+        event_loop.check(source).unwrap();
 
-        event_loop
-            .dispatch(Some(Duration::ZERO))
-            .unwrap();
+        event_loop.dispatch(Some(Duration::ZERO)).unwrap();
         assert_eq!(calls.get(), 2);
         assert_eq!(*events_seen.borrow(), [WlPollEvents::EMPTY, WlPollEvents::EMPTY]);
 
-        event_loop
-            .dispatch(Some(Duration::ZERO))
-            .unwrap();
+        event_loop.dispatch(Some(Duration::ZERO)).unwrap();
         assert_eq!(calls.get(), 3);
     }
 
@@ -865,26 +750,16 @@ mod tests {
         let counter = Rc::clone(&fired);
         let source = event_loop.add_fd(9, WlPollEvents::READABLE, move |loop_, own, _| {
             counter.set(counter.get() + 1);
-            loop_
-                .remove_source(own)
-                .unwrap();
+            loop_.remove_source(own).unwrap();
             0
         });
 
-        event_loop
-            .dispatch(Some(Duration::ZERO))
-            .unwrap();
+        event_loop.dispatch(Some(Duration::ZERO)).unwrap();
         assert_eq!(fired.get(), 1);
         assert!(!event_loop.is_active(source));
-        assert!(
-            event_loop
-                .remove_source(source)
-                .is_err()
-        );
+        assert!(event_loop.remove_source(source).is_err());
 
-        event_loop
-            .dispatch(Some(Duration::ZERO))
-            .unwrap();
+        event_loop.dispatch(Some(Duration::ZERO)).unwrap();
         assert_eq!(fired.get(), 1);
     }
 }

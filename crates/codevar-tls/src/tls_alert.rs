@@ -178,11 +178,7 @@ impl Alert {
     /// Encodes the alert payload.
     #[must_use]
     pub fn encode(self) -> [u8; 2] {
-        [
-            self.level as u8,
-            self.description
-                .as_u8(),
-        ]
+        [self.level as u8, self.description.as_u8()]
     }
 
     /// Decodes an alert payload.
@@ -346,9 +342,6 @@ mod tests {
     fn truncated_single_byte_alert_is_rejected() {
         let err = Alert::decode(&[2]).unwrap_err();
         assert!(matches!(err, TlsError::Decode(_)));
-        assert!(
-            err.to_string()
-                .contains("exactly 2 bytes")
-        );
+        assert!(err.to_string().contains("exactly 2 bytes"));
     }
 }
