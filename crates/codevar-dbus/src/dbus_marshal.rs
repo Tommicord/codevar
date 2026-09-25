@@ -271,6 +271,20 @@ impl<'a> DbusReader<'a> {
         Ok(self.read_u64()? as i64)
     }
 
+    /// Reads an `UNIX_FD` (`h`) value.
+    ///
+    /// The value is the index of the file descriptor inside the list
+    /// announced by the `UNIX_FDS` header field; resolving the index
+    /// to a real descriptor is the caller's job.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbusError::InvalidMessage`] when the value does not
+    /// fit in the range.
+    pub fn read_fd(&mut self) -> DbusResult<u32> {
+        self.read_u32()
+    }
+
     /// Reads a `BOOLEAN` value, rejecting encodings other than 0 and 1.
     ///
     /// # Errors
@@ -542,6 +556,14 @@ impl DbusWriter {
     /// Appends a `DOUBLE` value.
     pub fn write_f64(&mut self, value: f64) {
         self.write_u64(value.to_bits());
+    }
+
+    /// Appends an `UNIX_FD` (`h`) value as its 4-byte index.
+    ///
+    /// `index` selects the descriptor inside the list announced by
+    /// the `UNIX_FDS` header field of the message being encoded.
+    pub fn write_fd(&mut self, index: u32) {
+        self.write_u32(index);
     }
 
     /// Appends a `STRING` value.
@@ -894,8 +916,39 @@ mod tests {
     }
 
     #[test]
+    fn fd_values_round_trip_with_alignment() {
+        let mut writer = DbusWriter::new(ByteOrder::Little);
+        writer.write_u8(1);
+        // The `h` value must be padded to the 4 byte boundary.
+        writer.write_fd(3);
+        writer
+            .write_array(8, |writer| {
+                writer.write_struct(|writer| {
+                    writer.write_fd(0);
+                    writer.write_u32(42);
+                    Ok(())
+                })
+            })
+            .unwrap();
+
+        let bytes = writer.into_bytes();
+        assert_eq!(bytes.len() % 4, 0);
+
+        let mut reader = DbusReader::new(&bytes, ByteOrder::Little);
+        assert_eq!(reader.read_u8().unwrap(), 1);
+        assert_eq!(reader.read_fd().unwrap(), 3);
+        let mut array = reader.read_array(8).unwrap();
+        array.read_struct().unwrap();
+        assert_eq!(array.read_fd().unwrap(), 0);
+        assert_eq!(array.read_u32().unwrap(), 42);
+        assert!(array.is_empty());
+        assert!(reader.is_empty());
+    }
+
+    #[test]
     fn first_type_alignment_reports_element_alignment() {
         assert_eq!(DbusWriter::first_type_alignment("i"), Ok(4));
+        assert_eq!(DbusWriter::first_type_alignment("h"), Ok(4));
         assert_eq!(DbusWriter::first_type_alignment("x"), Ok(8));
         assert_eq!(DbusWriter::first_type_alignment("(ii)"), Ok(8));
         assert!(DbusWriter::first_type_alignment("").is_err());

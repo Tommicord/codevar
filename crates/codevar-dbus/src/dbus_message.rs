@@ -20,6 +20,7 @@
 //! splits a byte stream back into messages, returning `Ok(None)` while
 //! a message is still incomplete.
 
+use alloc::collections::VecDeque;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -30,8 +31,10 @@ use crate::dbus_names::{
     validate_object_path,
 };
 use crate::dbus_signature::{
-    SignatureIter, type_alignment, validate_signature, validate_single_type,
+    SignatureIter, type_alignment, validate_array_element_type, validate_signature,
+    validate_single_type,
 };
+use crate::dbus_transport::{DbusTransport, close_fds};
 
 /// Major protocol version carried by every message.
 pub const PROTOCOL_VERSION: u8 = 1;
@@ -80,7 +83,7 @@ fn read_u32_at(bytes: &[u8], position: usize, order: ByteOrder) -> DbusResult<u3
     })
 }
 
-/// Type of a D-Bus message.
+/// Type of D-Bus message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum MessageKind {
@@ -230,6 +233,17 @@ impl BodyWriter {
         Ok(())
     }
 
+    /// Appends an `UNIX_FD` (`h`) value carrying `index`.
+    ///
+    /// `index` selects the descriptor inside the list attached to the
+    /// message; it must be less than the number of descriptors set
+    /// with [`DbusMessage::set_fds`].
+    pub fn write_fd(&mut self, index: u32) -> DbusResult<()> {
+        self.record(b'h');
+        self.writer.write_fd(index);
+        Ok(())
+    }
+
     /// Appends a `STRING` value.
     ///
     /// # Errors
@@ -280,7 +294,7 @@ impl BodyWriter {
     where
         F: FnOnce(&mut Self) -> DbusResult<()>,
     {
-        validate_single_type(element_sig)?;
+        validate_array_element_type(element_sig)?;
         let code = element_sig.as_bytes()[0];
         let alignment = type_alignment(code).ok_or_else(|| {
             DbusError::invalid_signature(alloc::format!("invalid type code: {code}"))
@@ -367,7 +381,26 @@ impl BodyWriter {
 ///
 /// Header values are owned, so a message can be queued independently
 /// of the buffer it was decoded from.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// # File descriptors
+///
+/// The `fds` list holds raw Unix descriptors announced by the
+/// `UNIX_FDS` header field. The message **owns** them: they are
+/// closed when the message is dropped unless they were moved out
+/// first with [`take_fds`](Self::take_fds), which transfers
+/// ownership to the caller.
+///
+/// - when *sending*, [`DbusMessage::send`] and
+///   [`Connection::send_message`](crate::Connection::send_message)
+///   take the descriptors out and either hand them to the kernel or
+///   keep them queued for a later flush;
+/// - when *receiving*, descriptors moved in by
+///   [`DbusMessageStream::feed_with_fds`] are owned by the message
+///   and by the application once it takes them.
+///
+/// The type deliberately does not implement `Clone`: a shallow copy
+/// would duplicate descriptor numbers and end in a double close.
+#[derive(Debug, PartialEq, Eq)]
 pub struct DbusMessage {
     kind: MessageKind,
     flags: u8,
@@ -382,6 +415,7 @@ pub struct DbusMessage {
     sender: Option<String>,
     signature: String,
     unix_fds: u32,
+    fds: Vec<i32>,
     body: Vec<u8>,
 }
 
@@ -401,6 +435,7 @@ impl DbusMessage {
             sender: None,
             signature: String::new(),
             unix_fds: 0,
+            fds: Vec::new(),
             body: Vec::new(),
         }
     }
@@ -655,6 +690,42 @@ impl DbusMessage {
         self.unix_fds
     }
 
+    /// Returns the raw file descriptors attached to this message.
+    ///
+    /// The list is empty when no descriptors are attached (including
+    /// plain messages and messages whose descriptors were moved out
+    /// by [`take_fds`](Self::take_fds)). See the type-level
+    /// documentation for the ownership rules.
+    #[inline]
+    #[must_use]
+    pub fn fds(&self) -> &[i32] {
+        &self.fds
+    }
+
+    /// Moves the attached descriptors out of the message, transferring
+    /// ownership to the caller.
+    ///
+    /// The caller must close the returned descriptors exactly once.
+    /// The announced count from [`unix_fds`](Self::unix_fds) is kept,
+    /// so re-encoding a received message still announces the same
+    /// number of descriptors even though they are no longer attached;
+    /// attach replacements with [`set_fds`](Self::set_fds) before
+    /// forwarding.
+    pub fn take_fds(&mut self) -> Vec<i32> {
+        core::mem::take(&mut self.fds)
+    }
+
+    /// Attaches `fds` to the message and announces `fds.len()`
+    /// descriptors in the `UNIX_FDS` header field.
+    ///
+    /// The message takes ownership of the raw descriptors and closes
+    /// them on drop unless they are moved out again with
+    /// [`take_fds`](Self::take_fds).
+    pub fn set_fds(&mut self, fds: Vec<i32>) {
+        self.unix_fds = fds.len() as u32;
+        self.fds = fds;
+    }
+
     /// Returns the byte order used when encoding this message.
     #[inline]
     #[must_use]
@@ -681,18 +752,27 @@ impl DbusMessage {
         Ok(())
     }
 
+    /// Returns the descriptor count announced by the `UNIX_FDS`
+    /// header field when encoding.
+    ///
+    /// Attached descriptors win over the decoded count so that a
+    /// message built with [`set_fds`](Self::set_fds) always announces
+    /// the number of descriptors it actually carries.
+    fn announced_fd_count(&self) -> u32 {
+        if !self.fds.is_empty() {
+            self.fds.len() as u32
+        } else {
+            self.unix_fds
+        }
+    }
+
     fn validate_for_encode(&self) -> DbusResult<()> {
         if self.serial == 0 {
             return Err(DbusError::invalid_state("message serial must not be zero"));
         }
-        if self.unix_fds > 0 {
-            return Err(DbusError::unsupported(
-                "file descriptor passing is not supported",
-            ));
-        }
-        if self.signature.as_bytes().contains(&b'h') {
-            return Err(DbusError::unsupported(
-                "file descriptor arguments are not supported",
+        if self.signature.as_bytes().contains(&b'h') && self.announced_fd_count() == 0 {
+            return Err(DbusError::invalid_message(
+                "file descriptor argument without an announced UNIX_FDS header",
             ));
         }
         validate_signature(&self.signature)?;
@@ -735,12 +815,17 @@ impl DbusMessage {
 
     /// Encodes the message into wire format.
     ///
+    /// When descriptors are attached (or a `UNIX_FDS` count was
+    /// decoded earlier) the `UNIX_FDS` header field is included so
+    /// the peer knows how many descriptors accompany the message.
+    ///
     /// # Errors
     ///
     /// Returns [`DbusError::InvalidState`] when a required header
     /// field of the message kind is missing, [`DbusError::InvalidName`]
     /// or [`DbusError::InvalidSignature`] for invalid fields,
-    /// [`DbusError::Unsupported`] for file descriptors and
+    /// [`DbusError::InvalidMessage`] when `h` arguments are used
+    /// without an announced descriptor count, and
     /// [`DbusError::MessageTooBig`] when the message exceeds
     /// [`MAX_MESSAGE_LEN`].
     pub fn encode(&self) -> DbusResult<Vec<u8>> {
@@ -807,6 +892,13 @@ impl DbusMessage {
                 writer.write_signature(&signature)
             })?;
         }
+        let fd_count = self.announced_fd_count();
+        if fd_count > 0 {
+            write_field(&mut writer, FIELD_UNIX_FDS, "u", |writer| {
+                writer.write_u32(fd_count);
+                Ok(())
+            })?;
+        }
 
         let fields_len = writer.position().saturating_sub(fields_start);
         if fields_len > MAX_ARRAY_LEN {
@@ -823,13 +915,33 @@ impl DbusMessage {
         Ok(writer.into_bytes())
     }
 
+    /// Encodes the message and writes it to `transport`, attaching
+    /// any descriptors from [`fds`](Self::fds) to the stream position
+    /// where the message starts.
+    ///
+    /// Returns the number of bytes written, or an error if the
+    /// message exceeds [`MAX_MESSAGE_LEN`] or the transport reports
+    /// a failure. When descriptors were attached and the result is
+    /// `Ok(n)` with `n > 0`, the kernel has taken its own reference
+    /// to them and the caller should close its copies; otherwise the
+    /// caller keeps ownership.
+    pub fn send(&self, transport: &mut dyn DbusTransport) -> DbusResult<usize> {
+        let bytes = self.encode()?;
+        transport.write_with_fds(&bytes, &self.fds)
+    }
+
     /// Decodes a complete message from `bytes`.
+    ///
+    /// The `UNIX_FDS` header field is parsed into
+    /// [`unix_fds`](Self::unix_fds); the descriptors themselves are
+    /// not part of the byte stream and are supplied separately, e.g.
+    /// through [`DbusMessageStream::feed_with_fds`].
     ///
     /// # Errors
     ///
     /// Returns [`DbusError::InvalidMessage`] for malformed headers,
-    /// missing required fields or inconsistent bodies, and
-    /// [`DbusError::Unsupported`] for file descriptor passing.
+    /// missing required fields, `h` arguments without an announced
+    /// descriptor count or inconsistent bodies.
     pub fn decode(bytes: &[u8]) -> DbusResult<Self> {
         let marker = bytes.first().copied().ok_or_else(truncated)?;
         let order = ByteOrder::from_marker(marker)
@@ -965,6 +1077,14 @@ impl DbusMessage {
     }
 }
 
+impl Drop for DbusMessage {
+    fn drop(&mut self) {
+        // A message that still holds descriptors nobody took owns
+        // them, so release them here to keep the RAII contract.
+        close_fds(core::mem::take(&mut self.fds));
+    }
+}
+
 fn truncated() -> DbusError {
     DbusError::invalid_message("message truncated while decoding")
 }
@@ -1026,14 +1146,9 @@ fn validate_decode(message: &DbusMessage) -> DbusResult<()> {
             "body length does not match the signature",
         ));
     }
-    if message.unix_fds > 0 {
-        return Err(DbusError::unsupported(
-            "file descriptor passing is not supported",
-        ));
-    }
-    if message.signature.as_bytes().contains(&b'h') {
-        return Err(DbusError::unsupported(
-            "file descriptor arguments are not supported",
+    if message.signature.as_bytes().contains(&b'h') && message.unix_fds == 0 {
+        return Err(DbusError::invalid_message(
+            "file descriptor argument without an announced UNIX_FDS header",
         ));
     }
     Ok(())
@@ -1122,20 +1237,49 @@ fn skip_value(reader: &mut DbusReader<'_>, sig: &str) -> DbusResult<()> {
 }
 
 /// Incremental decoder that splits a byte stream into messages.
-#[derive(Debug, Clone, Default)]
+///
+/// Descriptors sent with messages are queued first by
+/// [`feed_with_fds`](Self::feed_with_fds) and moved into each message
+/// as soon as it is complete, so the queue order always matches the
+/// message order. Queued descriptors that never reach a message are
+/// closed when the stream is [`clear`](Self::clear)ed or dropped.
+#[derive(Debug, Default)]
 pub struct DbusMessageStream {
     buffer: Vec<u8>,
+    pending_fds: VecDeque<i32>,
 }
 
 impl DbusMessageStream {
     /// Creates an empty stream decoder.
     #[must_use]
     pub fn new() -> Self {
-        Self { buffer: Vec::new() }
+        Self {
+            buffer: Vec::new(),
+            pending_fds: VecDeque::new(),
+        }
     }
 
     /// Appends bytes read from the transport.
+    ///
+    /// Equivalent to [`feed_with_fds`](Self::feed_with_fds) with an
+    /// empty descriptor list; use `feed_with_fds` whenever the read
+    /// that produced `data` also carried descriptors.
     pub fn feed(&mut self, data: &[u8]) {
+        self.buffer.extend_from_slice(data);
+    }
+
+    /// Queues `fds` and then appends `data` read from the transport.
+    ///
+    /// The descriptors must come from the *same* transport read as
+    /// `data`: on Linux `SCM_RIGHTS` descriptors attach to a byte
+    /// position and are returned by the read that reaches it, so
+    /// queueing them before the bytes keeps descriptor order aligned
+    /// with message order. Descriptors are owned by the stream until
+    /// they are moved into a completed message, after which they
+    /// belong to the application (see [`DbusMessage`] for the
+    /// ownership rules).
+    pub fn feed_with_fds(&mut self, data: &[u8], fds: Vec<i32>) {
+        self.pending_fds.extend(fds);
         self.buffer.extend_from_slice(data);
     }
 
@@ -1146,9 +1290,19 @@ impl DbusMessageStream {
         self.buffer.len()
     }
 
-    /// Drops all buffered bytes.
+    /// Returns the number of descriptors queued but not yet attached
+    /// to a message.
+    #[inline]
+    #[must_use]
+    pub fn pending_fds(&self) -> usize {
+        self.pending_fds.len()
+    }
+
+    /// Drops all buffered bytes and closes queued descriptors that
+    /// never reached a message.
     pub fn clear(&mut self) {
         self.buffer.clear();
+        close_fds(core::mem::take(&mut self.pending_fds));
     }
 
     /// Returns the next complete message, `Ok(None)` while incomplete.
@@ -1158,7 +1312,10 @@ impl DbusMessageStream {
     ///
     /// # Errors
     ///
-    /// Returns [`DbusError::InvalidMessage`] for malformed framing and
+    /// Returns [`DbusError::InvalidMessage`] for malformed framing,
+    /// a message whose `UNIX_FDS` count exceeds the number of
+    /// queued descriptors (the message bytes are kept so the caller
+    /// may queue the missing descriptors and retry), and
     /// [`DbusError::MessageTooBig`] for oversized messages without
     /// consuming the offending bytes, so the caller can drop the
     /// connection.
@@ -1214,11 +1371,34 @@ impl DbusMessageStream {
             } else {
                 None
             };
+            if let Some(Ok(ref message)) = decoded {
+                let needed = message.unix_fds() as usize;
+                if self.pending_fds.len() < needed {
+                    return Err(DbusError::invalid_message(alloc::format!(
+                        "message announces {needed} file descriptors but only {} are queued",
+                        self.pending_fds.len()
+                    )));
+                }
+            }
             self.buffer.drain(..total);
             if let Some(result) = decoded {
-                return result.map(Some);
+                let mut message = result?;
+                let needed = message.unix_fds() as usize;
+                if needed > 0 {
+                    let fds = self.pending_fds.drain(..needed).collect();
+                    message.set_fds(fds);
+                }
+                return Ok(Some(message));
             }
         }
+    }
+}
+
+impl Drop for DbusMessageStream {
+    fn drop(&mut self) {
+        // Descriptors never attached to a message are still owned by
+        // the stream; release them so they cannot leak.
+        close_fds(core::mem::take(&mut self.pending_fds));
     }
 }
 
@@ -1408,17 +1588,173 @@ mod tests {
     }
 
     #[test]
-    fn rejects_file_descriptors() {
+    fn rejects_fd_arguments_without_an_announced_count() {
         let mut call = hello_call();
         call.set_serial(1).unwrap();
         call.signature = String::from("h");
-        call.body = vec![1, 0, 0, 0];
-        assert!(matches!(call.encode(), Err(DbusError::Unsupported(_))));
+        call.body = vec![0, 0, 0, 0];
+        // Without a UNIX_FDS header the `h` index resolves nowhere.
+        assert!(matches!(call.encode(), Err(DbusError::InvalidMessage(_))));
 
-        let mut message = hello_call();
-        message.set_serial(1).unwrap();
-        message.unix_fds = 1;
-        assert!(matches!(message.encode(), Err(DbusError::Unsupported(_))));
+        // A message decoded from the wire with `h` arguments but no
+        // UNIX_FDS header is rejected the same way. The header field
+        // is private, so craft the frame directly.
+        let mut writer = DbusWriter::new(ByteOrder::Little);
+        writer.write_u8(b'l');
+        writer.write_u8(MessageKind::MethodCall.as_u8());
+        writer.write_u8(0);
+        writer.write_u8(PROTOCOL_VERSION);
+        writer.write_u32(4);
+        writer.write_u32(1);
+        writer.align(8);
+        let length_pos = writer.position();
+        writer.write_u32(0);
+        writer.align(8);
+        let fields_start = writer.position();
+        write_field(&mut writer, FIELD_MEMBER, "s", |writer| {
+            writer.write_str("Open")
+        })
+        // Justified: the field is well formed by construction.
+        .unwrap();
+        write_field(&mut writer, FIELD_SIGNATURE, "g", |writer| {
+            writer.write_signature("h")
+        })
+        // Justified: the field is well formed by construction.
+        .unwrap();
+        let fields_len = writer.position() - fields_start;
+        writer
+            .patch_u32(length_pos, fields_len as u32)
+            // Justified: `length_pos` was just reserved.
+            .unwrap();
+        writer.align(8);
+        writer.write_fd(0);
+        let bytes = writer.into_bytes();
+        assert!(matches!(
+            DbusMessage::decode(&bytes),
+            Err(DbusError::InvalidMessage(_))
+        ));
+    }
+
+    #[test]
+    fn round_trips_the_unix_fds_header_and_body_index() {
+        let mut call = hello_call();
+        call.set_serial(1).unwrap();
+        call.build_body(|body| {
+            body.write_fd(0)?;
+            body.write_str("payload")
+        })
+        .unwrap();
+        assert_eq!(call.signature(), "hs");
+        // A real descriptor: dropping the message below closes it.
+        let mut pipe = [-1i32; 2];
+        // SAFETY: `pipe` is a valid two element array; on success the
+        // kernel fills both entries with open descriptors.
+        assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
+        call.set_fds(vec![pipe[0]]);
+
+        let bytes = call.encode().unwrap();
+        // The header announces the count even though the descriptors
+        // themselves travel out of band.
+        let decoded = DbusMessage::decode(&bytes).unwrap();
+        assert_eq!(decoded.unix_fds(), 1);
+        assert_eq!(decoded.fds(), &[] as &[i32]);
+        let mut reader = decoded.body_reader();
+        assert_eq!(reader.read_fd().unwrap(), 0);
+        assert_eq!(reader.read_str().unwrap(), "payload");
+
+        // The original message still owns its descriptor and closes
+        // it when it goes out of scope.
+        assert_eq!(call.fds(), &[pipe[0]]);
+        drop(call);
+        drop(decoded);
+        // SAFETY: `fcntl` only inspects the descriptor.
+        assert_eq!(unsafe { libc::fcntl(pipe[0], libc::F_GETFD) }, -1);
+        // SAFETY: closing the write end this test still owns.
+        unsafe { libc::close(pipe[1]) };
+    }
+
+    #[test]
+    fn stream_moves_queued_fds_into_completed_messages() {
+        // Placeholder descriptor numbers: negative values are skipped
+        // when messages are dropped, so no foreign descriptor can be
+        // closed by accident.
+        let mut first = hello_call();
+        first.set_serial(1).unwrap();
+        first.build_body(|body| body.write_fd(0)).unwrap();
+        first.set_fds(vec![-1]);
+        let first_bytes = first.encode().unwrap();
+        let first_fds = first.take_fds();
+
+        let mut second = DbusMessage::signal("/a", "b.C", "Two").unwrap();
+        second.set_serial(2).unwrap();
+        second.build_body(|body| body.write_fd(0)).unwrap();
+        second.set_fds(vec![-2, -3]);
+        let second_bytes = second.encode().unwrap();
+        let second_fds = second.take_fds();
+
+        let mut stream = DbusMessageStream::new();
+        stream.feed_with_fds(&first_bytes, first_fds);
+        stream.feed_with_fds(&second_bytes, second_fds);
+        assert_eq!(stream.pending_fds(), 3);
+
+        // Justified: both messages were encoded completely.
+        let decoded_first = stream.next_message().unwrap().unwrap();
+        assert_eq!(decoded_first.member(), Some("Hello"));
+        assert_eq!(decoded_first.fds(), &[-1]);
+        let decoded_second = stream.next_message().unwrap().unwrap();
+        assert_eq!(decoded_second.member(), Some("Two"));
+        assert_eq!(decoded_second.fds(), &[-2, -3]);
+        assert_eq!(stream.pending_fds(), 0);
+        assert_eq!(stream.next_message().unwrap(), None);
+    }
+
+    #[test]
+    fn stream_reports_missing_fds_without_consuming_the_message() {
+        // Placeholder descriptor numbers, see the test above.
+        let mut call = hello_call();
+        call.set_serial(1).unwrap();
+        call.build_body(|body| {
+            body.write_fd(0)?;
+            body.write_fd(1)
+        })
+        .unwrap();
+        call.set_fds(vec![-1, -2]);
+        let bytes = call.encode().unwrap();
+        let fds = call.take_fds();
+
+        let mut stream = DbusMessageStream::new();
+        stream.feed_with_fds(&bytes, fds[..1].to_vec());
+        let error = stream.next_message().unwrap_err();
+        assert!(matches!(error, DbusError::InvalidMessage(_)));
+        // The bytes are kept, so supplying the missing descriptor
+        // lets the caller recover.
+        assert_eq!(stream.buffered(), bytes.len());
+        assert_eq!(stream.pending_fds(), 1);
+
+        stream.feed_with_fds(&[], fds[1..].to_vec());
+        // Justified: both descriptors are queued now.
+        let message = stream.next_message().unwrap().unwrap();
+        assert_eq!(message.fds(), &[-1, -2]);
+    }
+
+    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    #[test]
+    fn stream_closes_fds_that_never_reach_a_message() {
+        // Justified: the pipe cannot legitimately fail here.
+        let mut pipe = [-1i32; 2];
+        // SAFETY: `pipe` is a valid two element array; on success the
+        // kernel fills both entries with open descriptors.
+        assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
+        {
+            let mut stream = DbusMessageStream::new();
+            // Bytes of a message that never completes plus its fd.
+            stream.feed_with_fds(&[0x6c], vec![pipe[0]]);
+            assert_eq!(stream.pending_fds(), 1);
+        }
+        // SAFETY: `fcntl` only inspects the descriptor.
+        assert_eq!(unsafe { libc::fcntl(pipe[0], libc::F_GETFD) }, -1);
+        // SAFETY: closing the write end this test still owns.
+        unsafe { libc::close(pipe[1]) };
     }
 
     #[test]
@@ -1575,5 +1911,54 @@ mod tests {
         assert_eq!(MessageKind::from_u8(0), None);
         assert_eq!(MessageKind::from_u8(5), None);
         assert_eq!(MessageKind::Signal.as_u8(), 4);
+    }
+
+    #[test]
+    fn body_writer_encodes_dict_entry_arrays() {
+        // Justified: these fixed arguments cannot fail to build.
+        let mut message = DbusMessage::method_call(
+            "org.example.Test",
+            "/org/example/Test",
+            "org.example.Test",
+            "Options",
+        )
+        .unwrap();
+        message
+            .build_body(|body| {
+                body.write_array("{sv}", |body| {
+                    body.write_struct("sv", |body| {
+                        body.write_str("token")?;
+                        body.write_variant("s", |body| body.write_str("abc123"))
+                    })?;
+                    body.write_struct("sv", |body| {
+                        body.write_str("count")?;
+                        body.write_variant("u", |body| body.write_u32(7))
+                    })
+                })
+            })
+            .unwrap();
+        assert_eq!(message.signature(), "a{sv}");
+
+        let mut reader = message.body_reader();
+        let mut dict = reader.read_array(8).unwrap();
+        let mut seen = 0;
+        while dict.remaining() > 0 {
+            dict.read_struct().unwrap();
+            let key = dict.read_str().unwrap();
+            let sig = dict.read_variant_signature().unwrap();
+            match sig {
+                "s" => {
+                    assert_eq!(key, "token");
+                    assert_eq!(dict.read_str().unwrap(), "abc123");
+                }
+                "u" => {
+                    assert_eq!(key, "count");
+                    assert_eq!(dict.read_u32().unwrap(), 7);
+                }
+                other => panic!("unexpected variant signature {other}"),
+            }
+            seen += 1;
+        }
+        assert_eq!(seen, 2);
     }
 }

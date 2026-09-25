@@ -20,9 +20,38 @@
 //! daemon. Implementations provide [`wait`] so that callers can
 //! block until the transport is ready without spinning.
 
+use alloc::vec::Vec;
 use core::time::Duration;
 
-use crate::dbus_error::DbusResult;
+use crate::dbus_error::{DbusError, DbusResult};
+
+/// Closes every descriptor in `fds`, ignoring errors.
+///
+/// Descriptors that are already closed or were never valid (`fd < 0`
+/// is skipped) do not cause failures, so this is safe to call from
+/// cleanup paths.
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+pub(crate) fn close_fds(fds: impl IntoIterator<Item = i32>) {
+    for fd in fds {
+        if fd >= 0 {
+            // SAFETY: `fd` comes from the kernel (`recvmsg`) or from
+            // the caller that created it; `close` releases that
+            // descriptor exactly once because ownership was
+            // transferred to this function. Errors are ignored, the
+            // descriptor is unusable afterwards either way.
+            unsafe { libc::close(fd) };
+        }
+    }
+}
+
+/// Closes every descriptor in `fds`, ignoring errors.
+///
+/// Platforms without Unix file descriptors never produce descriptors,
+/// so this is a no-op there.
+#[cfg(not(all(unix, not(target_arch = "wasm32"))))]
+pub(crate) fn close_fds(fds: impl IntoIterator<Item = i32>) {
+    let _ = fds;
+}
 
 /// Readiness bits reported by a transport.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -127,6 +156,48 @@ pub trait DbusTransport {
     /// The value only increases and is used to enforce
     /// round-trip deadlines in [`Connection`].
     fn now_ms(&self) -> u64;
+
+    /// Takes the file descriptors received by the transport, if any.
+    ///
+    /// Implementations that support `SCM_RIGHTS` collect the
+    /// descriptors reported by the most recent [`read`](Self::read)
+    /// calls and return them here in arrival order. The returned
+    /// descriptors are owned by the caller, which is responsible for
+    /// closing them. The default implementation returns an empty
+    /// list.
+    fn take_fds(&mut self) -> Vec<i32> {
+        Vec::new()
+    }
+
+    /// Writes `buf` to the transport, attaching `fds` to the byte
+    /// position where `buf` starts in the stream.
+    ///
+    /// When `fds` is empty this is equivalent to [`write`](Self::write).
+    /// Otherwise, on `Ok(n)` with `n > 0` the kernel has taken its own
+    /// reference to every descriptor in `fds`, so the caller must
+    /// close its copies; on [`DbusError::WouldBlock`], `Ok(0)` or an
+    /// error the caller keeps ownership of `fds` and must retry with
+    /// them. Transports never close the descriptors themselves.
+    ///
+    /// The default implementation forwards to [`write`](Self::write)
+    /// when `fds` is empty and reports [`DbusError::Unsupported`]
+    /// otherwise, so transports without descriptor passing keep
+    /// compiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbusError::Unsupported`] when `fds` is not empty and
+    /// the transport cannot pass descriptors, plus whatever
+    /// [`write`](Self::write) returns.
+    fn write_with_fds(&mut self, buf: &[u8], fds: &[i32]) -> DbusResult<usize> {
+        if fds.is_empty() {
+            self.write(buf)
+        } else {
+            Err(DbusError::unsupported(
+                "this transport does not support file descriptor passing",
+            ))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -169,5 +240,28 @@ mod tests {
             DbusPollEvents::READABLE | DbusPollEvents::WRITABLE,
             DbusPollEvents::from_bits(3)
         );
+    }
+
+    #[test]
+    fn default_fd_methods_keep_plain_transports_working() {
+        let mut transport = FakeTransport {
+            events: DbusPollEvents::EMPTY,
+            now: 0,
+        };
+        // Writing without descriptors forwards to `write`.
+        assert_eq!(transport.write_with_fds(b"abc", &[]), Ok(0));
+        // A transport without descriptor passing refuses fd writes
+        // but keeps the descriptors (it never closes them).
+        let result = transport.write_with_fds(b"abc", &[3]);
+        assert!(matches!(result, Err(DbusError::Unsupported(_))));
+        // Plain transports never queue descriptors.
+        assert!(transport.take_fds().is_empty());
+    }
+
+    #[test]
+    fn close_fds_ignores_negative_placeholders() {
+        // Negative values are placeholders, never real descriptors.
+        close_fds([-1, -2]);
+        close_fds(core::iter::empty::<i32>());
     }
 }

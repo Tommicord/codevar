@@ -52,6 +52,8 @@ subtle = "2.6"
 zeroize = { version = "1.8", features = ["derive"] }
 gettid = "0.1.4"
 pem = "3"
+log = { version = "0.4", default-features = false }
+codevar-dbus = { path = "crates/codevar-dbus" }
 
 [profile.dev]
 opt-level = 0

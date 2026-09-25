@@ -9,7 +9,3 @@ repository.workspace = true
 
 [lib]
 name = "codevar_wredit"
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-webpki-roots = { workspace = true }
-arc-swap = { workspace = true }

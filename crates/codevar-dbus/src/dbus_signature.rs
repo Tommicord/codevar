@@ -269,6 +269,37 @@ pub fn validate_single_type(sig: &str) -> DbusResult<()> {
     Ok(())
 }
 
+/// Validates a signature that must contain exactly one type usable as
+/// the element type of an array.
+///
+/// Unlike [`validate_single_type`], this accepts a dict entry (`{...}`),
+/// which the D-Bus specification allows only as an array element type.
+///
+/// # Errors
+///
+/// Returns [`DbusError::InvalidSignature`] when `sig` does not describe
+/// exactly one valid array element type.
+pub fn validate_array_element_type(sig: &str) -> DbusResult<()> {
+    if sig.len() > MAX_SIGNATURE_LEN {
+        return Err(DbusError::invalid_signature(alloc::format!(
+            "signature of {} bytes exceeds the limit of {MAX_SIGNATURE_LEN}",
+            sig.len()
+        )));
+    }
+    let mut pos = 0usize;
+    if parse_one(sig.as_bytes(), &mut pos, 0, 0, true).is_err() {
+        return Err(DbusError::invalid_signature(alloc::format!(
+            "invalid array element signature: {sig}"
+        )));
+    }
+    if pos != sig.len() {
+        return Err(DbusError::invalid_signature(alloc::format!(
+            "array element signature must hold exactly one type: {sig}"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,6 +310,7 @@ mod tests {
         assert_eq!(type_alignment(b'g'), Some(1));
         assert_eq!(type_alignment(b'n'), Some(2));
         assert_eq!(type_alignment(b'i'), Some(4));
+        assert_eq!(type_alignment(b'h'), Some(4));
         assert_eq!(type_alignment(b's'), Some(4));
         assert_eq!(type_alignment(b'x'), Some(8));
         assert_eq!(type_alignment(b'a'), Some(8));
@@ -286,6 +318,7 @@ mod tests {
         assert_eq!(type_alignment(b'z'), None);
 
         assert_eq!(type_fixed_size(b'b'), Some(4));
+        assert_eq!(type_fixed_size(b'h'), Some(4));
         assert_eq!(type_fixed_size(b'd'), Some(8));
         assert_eq!(type_fixed_size(b's'), None);
         assert_eq!(type_fixed_size(b'a'), None);
@@ -321,6 +354,9 @@ mod tests {
     fn validates_full_signatures() {
         assert!(validate_signature("").is_ok());
         assert!(validate_signature("sus").is_ok());
+        assert!(validate_signature("h").is_ok());
+        assert!(validate_signature("ah").is_ok());
+        assert!(validate_signature("a{hu}").is_ok());
         assert!(validate_signature("a{sv}").is_ok());
         assert!(validate_signature("a(sao)").is_ok());
         assert!(validate_signature("((ii)a{sd})").is_ok());
@@ -334,6 +370,18 @@ mod tests {
         assert!(validate_signature("{sv}").is_err());
         assert!(validate_signature("a{is}").is_ok());
         assert!(validate_signature("a{(is)}").is_err());
+    }
+
+    #[test]
+    fn array_element_validation_accepts_dict_entries() {
+        assert!(validate_array_element_type("{sv}").is_ok());
+        assert!(validate_array_element_type("s").is_ok());
+        assert!(validate_array_element_type("a{sv}").is_ok());
+        assert!(validate_array_element_type("(is)").is_ok());
+        assert!(validate_array_element_type("sv").is_err());
+        assert!(validate_array_element_type("{zv}").is_err());
+        assert!(validate_array_element_type("{s}").is_err());
+        assert!(validate_array_element_type("").is_err());
     }
 
     #[test]
@@ -362,6 +410,7 @@ mod tests {
     #[test]
     fn validates_variant_signatures() {
         assert!(validate_single_type("i").is_ok());
+        assert!(validate_single_type("h").is_ok());
         assert!(validate_single_type("a{sv}").is_ok());
         assert!(validate_single_type("(ii)").is_ok());
         assert!(validate_single_type("").is_err());

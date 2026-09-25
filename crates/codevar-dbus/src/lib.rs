@@ -61,7 +61,11 @@ pub use dbus_addr::{
     percent_decode,
 };
 pub use dbus_auth::{AuthPoll, AuthSession};
-pub use dbus_conn::{Connection, DEFAULT_CALL_TIMEOUT};
+pub use dbus_conn::{
+    Connection, DEFAULT_CALL_TIMEOUT, NAME_FLAG_ALLOW_REPLACEMENT,
+    NAME_FLAG_DO_NOT_QUEUE, NAME_FLAG_REPLACE_EXISTING, NAME_REPLY_ALREADY_OWNER,
+    NAME_REPLY_EXISTS, NAME_REPLY_IN_QUEUE, NAME_REPLY_PRIMARY_OWNER,
+};
 pub use dbus_error::{DbusError, DbusResult};
 pub use dbus_marshal::{ByteOrder, DbusReader, DbusWriter, MAX_ARRAY_LEN};
 pub use dbus_message::{
@@ -79,7 +83,7 @@ pub use dbus_names::{
 pub use dbus_signature::{
     MAX_ARRAY_DEPTH, MAX_SIGNATURE_LEN, MAX_STRUCT_DEPTH, SignatureIter, is_basic_type,
     is_container_type, single_complete_type_len, type_alignment, type_fixed_size,
-    validate_signature, validate_single_type,
+    validate_array_element_type, validate_signature, validate_single_type,
 };
 pub use dbus_transport::{DbusPollEvents, DbusTransport};
 
