@@ -26,7 +26,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::wnd_wl_error::{WlError, WlResult};
+use crate::wl_error::{WlError, WlResult};
 
 /// Maximum size of a protocol message, including the 8 byte header.
 pub const MAX_MESSAGE_SIZE: usize = 4096;
@@ -972,10 +972,10 @@ impl WlMapSide {
     /// Returns `true` when the id belongs to this side.
     #[inline]
     pub const fn owns(self, id: u32) -> bool {
-        match (self, id < SERVER_ID_START) {
-            (Self::Client, true) | (Self::Server, false) => true,
-            _ => false,
-        }
+        matches!(
+            (self, id < SERVER_ID_START),
+            (Self::Client, true) | (Self::Server, false)
+        )
     }
 }
 
@@ -1125,7 +1125,7 @@ impl<T> WlMap<T> {
     pub fn insert_at(&mut self, id: u32, data: T) -> WlResult<()> {
         let (entries, index) = self
             .parts_mut(id)
-            .ok_or_else(|| WlError::InvalidObject(id))?;
+            .ok_or(WlError::InvalidObject(id))?;
         if index as u32 > MAP_MAX_OBJECTS {
             return Err(WlError::TooManyObjects);
         }
@@ -1157,7 +1157,7 @@ impl<T> WlMap<T> {
         }
         let (entries, index) = self
             .parts_mut(id)
-            .ok_or_else(|| WlError::InvalidObject(id))?;
+            .ok_or(WlError::InvalidObject(id))?;
         if index as u32 > MAP_MAX_OBJECTS {
             return Err(WlError::TooManyObjects);
         }
@@ -1186,7 +1186,7 @@ impl<T> WlMap<T> {
     pub fn vacate_at(&mut self, id: u32) -> WlResult<()> {
         let (entries, index) = self
             .parts_mut(id)
-            .ok_or_else(|| WlError::InvalidObject(id))?;
+            .ok_or(WlError::InvalidObject(id))?;
         if index as u32 > MAP_MAX_OBJECTS {
             return Err(WlError::TooManyObjects);
         }
@@ -1215,7 +1215,7 @@ impl<T> WlMap<T> {
     ) -> WlResult<()> {
         let (entries, index) = self
             .parts_mut(id)
-            .ok_or_else(|| WlError::InvalidObject(id))?;
+            .ok_or(WlError::InvalidObject(id))?;
         match entries.get_mut(index) {
             Some(entry @ WlMapEntry::Live(_)) => {
                 *entry = WlMapEntry::Zombie { interface };
@@ -1533,12 +1533,12 @@ impl Iterator for WlListIter {
 /// # Examples
 ///
 /// ```
-/// use codevar_ui_core::wl_container_of;
+/// use codevar_wl_protocol::wl_container_of;
 ///
-/// struct Node { link: codevar_ui_core::WlList, value: u32 }
-/// let mut node = Node { link: codevar_ui_core::WlList::new(), value: 7 };
+/// struct Node { link: codevar_wl_protocol::wl_handle::WlList, value: u32 }
+/// let mut node = Node { link: codevar_wl_protocol::wl_handle::WlList::new(), value: 7 };
 /// node.link.init();
-/// let link: *mut codevar_ui_core::WlList = &mut node.link;
+/// let link: *mut codevar_wl_protocol::wl_handle::WlList = &mut node.link;
 /// let node_ptr = wl_container_of!(link, Node, link);
 /// assert_eq!(unsafe { (*node_ptr).value }, 7);
 /// ```
@@ -1555,6 +1555,9 @@ macro_rules! wl_container_of {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WlListenerId(u64);
 
+/// A single listener registered on a [`WlSignal`].
+type WlListener<C, T> = Box<dyn FnMut(&mut C, &T)>;
+
 /// Listener registry mirroring `wl_signal`.
 ///
 /// A signal is stored inside the object it belongs to. Because listeners
@@ -1562,7 +1565,7 @@ pub struct WlListenerId(u64);
 /// object before it is emitted; use the [`wl_signal_emit!`] macro for that.
 pub struct WlSignal<C, T> {
     next_id: u64,
-    listeners: Vec<(WlListenerId, Box<dyn FnMut(&mut C, &T)>)>,
+    listeners: Vec<(WlListenerId, WlListener<C, T>)>,
 }
 
 impl<C, T> fmt::Debug for WlSignal<C, T> {
@@ -1647,7 +1650,7 @@ impl<C, T> Default for WlSignal<C, T> {
 /// # Examples
 ///
 /// ```
-/// use codevar_ui_core::{WlSignal, wl_signal_emit};
+/// use codevar_wl_protocol::{WlSignal, wl_signal_emit};
 ///
 /// struct Display { destroy: WlSignal<Display, ()> }
 /// let mut display = Display { destroy: WlSignal::new() };
@@ -1659,7 +1662,7 @@ impl<C, T> Default for WlSignal<C, T> {
 macro_rules! wl_signal_emit {
     ($container:expr, $field:ident, $payload:expr) => {{
         let mut taken = ::core::mem::take(&mut $container.$field);
-        taken.emit(&mut $container, $payload);
+        taken.emit(&mut $container, &$payload);
         taken.absorb(&mut $container.$field);
         $container.$field = taken;
     }};
@@ -1742,8 +1745,12 @@ mod tests {
     #[test]
     fn map_reserves_peer_ids_only() {
         let mut map: WlMap<u32> = WlMap::new(WlMapSide::Server);
-        assert!(map.reserve_new(7).is_ok());
+        // Reserve the whole dense prefix the peer could have allocated.
+        for id in 1..=7 {
+            map.reserve_new(id).unwrap();
+        }
         assert!(map.is_vacant(7));
+        assert!(map.reserve_new(9).is_err());
         assert!(map.reserve_new(SERVER_ID_START).is_err());
 
         map.insert_at(7, 42).unwrap();

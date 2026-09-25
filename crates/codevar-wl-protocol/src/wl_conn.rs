@@ -26,8 +26,8 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::wnd_wl_error::{WlError, WlResult};
-use crate::wnd_wl_handle::{
+use crate::wl_error::{WlError, WlResult};
+use crate::wl_handle::{
     arg_count, get_next_argument, WlArgType, WlArgument, WlArray, WlFd, WlFixed, WlMap,
     WlMessage, WlObject, WlPollEvents, MAX_MESSAGE_SIZE,
 };
@@ -226,7 +226,7 @@ const fn align_up(length: usize) -> usize {
 }
 
 fn pad_to_word(bytes: &mut Vec<u8>) {
-    while bytes.len() % 4 != 0 {
+    while !bytes.len().is_multiple_of(4) {
         bytes.push(0);
     }
 }
@@ -351,11 +351,10 @@ fn parse_args(
 /// space is exhausted.
 pub fn reserve_new_ids<T>(closure: &WlClosure, map: &mut WlMap<T>) -> WlResult<()> {
     for (arg, details) in closure.args.iter().zip(closure.message.args()) {
-        if details.details.ty == WlArgType::NewId {
-            if let WlArgument::NewId(id) = arg {
+        if details.details.ty == WlArgType::NewId
+            && let WlArgument::NewId(id) = arg {
                 map.reserve_new(*id)?;
             }
-        }
     }
     Ok(())
 }
@@ -387,15 +386,14 @@ pub fn lookup_objects<T: WlObject>(closure: &mut WlClosure, map: &WlMap<T>) -> W
             continue;
         }
         let object = map.lookup(id).ok_or(WlError::InvalidObject(id))?;
-        if let Some(expected) = details.interface {
-            if !expected.equal(object.interface()) {
+        if let Some(expected) = details.interface
+            && !expected.equal(object.interface()) {
                 return Err(WlError::invalid_argument(format!(
                     "object {id} has interface {}, expected {}",
                     object.interface().name,
                     expected.name
                 )));
             }
-        }
     }
     Ok(())
 }
@@ -674,12 +672,11 @@ impl<T: WlTransport> WlConnection<T> {
     /// Releases leftover file descriptor arguments after a dispatch.
     pub fn release_argument_fds(&mut self, args: &mut [WlArgument]) {
         for arg in args {
-            if let WlArgument::Fd(fd) = arg {
-                if *fd >= 0 {
+            if let WlArgument::Fd(fd) = arg
+                && *fd >= 0 {
                     let fd = core::mem::replace(fd, -1);
                     self.transport.release_fd(fd);
                 }
-            }
         }
     }
 }
@@ -687,7 +684,7 @@ impl<T: WlTransport> WlConnection<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wnd_wl_handle::{
+    use crate::wl_handle::{
         WlInterface, WlMapSide, CALLBACK_DONE, CALLBACK_INTERFACE,
         DISPLAY_GET_REGISTRY, DISPLAY_INTERFACE, DISPLAY_SYNC, DISPLAY_ERROR,
         REGISTRY_BIND, REGISTRY_INTERFACE,
@@ -774,7 +771,7 @@ mod tests {
     #[test]
     fn encodes_and_demarshals_registry_bind() {
         let message = &REGISTRY_INTERFACE.requests[REGISTRY_BIND as usize];
-        let mut closure = WlClosure::new(
+        let closure = WlClosure::new(
             2,
             REGISTRY_BIND,
             message,
@@ -822,12 +819,12 @@ mod tests {
         let mut connection = WlConnection::new(TestTransport::new());
         connection
             .input
-            .extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 8]);
+            .extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0x80]);
         assert_eq!(
             connection.demarshal(message),
-            Err(WlError::MessageTooBig(0x80000))
+            Err(WlError::MessageTooBig(0x8000))
         );
-        assert_eq!(connection.pending_input(), 12);
+        assert_eq!(connection.pending_input(), 8);
     }
 
     #[test]
@@ -849,6 +846,7 @@ mod tests {
 
         let sent = core::mem::take(&mut connection.transport.sent);
         connection.transport.input.extend(sent);
+        connection.read().unwrap();
         let decoded = connection.demarshal(message).unwrap();
         assert_eq!(decoded.sender_id, 7);
         assert_eq!(decoded.args[0], WlArgument::Uint(3));
@@ -865,6 +863,9 @@ mod tests {
         )
         .unwrap();
         let mut map: WlMap<u32> = WlMap::new(WlMapSide::Server);
+        // The client's id space grows densely, so ids 1 and 2 exist already.
+        map.reserve_new(1).unwrap();
+        map.reserve_new(2).unwrap();
         reserve_new_ids(&closure, &mut map).unwrap();
         assert!(map.is_vacant(3));
 
