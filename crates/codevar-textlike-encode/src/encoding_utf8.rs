@@ -66,7 +66,11 @@ pub fn utf8_valid_up_to(src: &[u8]) -> usize {
                         let second = unsafe { *(src.get_unchecked(read + 1)) };
                         let third = unsafe { *(src.get_unchecked(read + 2)) };
                         if ((UTF8_DATA.table[usize::from(second)]
-                            & unsafe { *(UTF8_DATA.table.get_unchecked(byte as usize + 0x80)) })
+                            & unsafe {
+                                *(UTF8_DATA
+                                    .table
+                                    .get_unchecked(byte as usize + 0x80))
+                            })
                             | (third >> 6))
                             != 2
                         {
@@ -92,7 +96,11 @@ pub fn utf8_valid_up_to(src: &[u8]) -> usize {
                 let fourth = unsafe { *(src.get_unchecked(read + 3)) };
                 if (u16::from(
                     UTF8_DATA.table[usize::from(second)]
-                        & unsafe { *(UTF8_DATA.table.get_unchecked(byte as usize + 0x80)) },
+                        & unsafe {
+                            *(UTF8_DATA
+                                .table
+                                .get_unchecked(byte as usize + 0x80))
+                        },
                 ) | u16::from(third >> 6)
                     | (u16::from(fourth & 0xC0) << 2))
                     != 0x202
@@ -140,7 +148,11 @@ pub fn utf8_valid_up_to(src: &[u8]) -> usize {
                 let second = src[read + 1];
                 let third = src[read + 2];
                 if ((UTF8_DATA.table[usize::from(second)]
-                    & unsafe { *(UTF8_DATA.table.get_unchecked(byte as usize + 0x80)) })
+                    & unsafe {
+                        *(UTF8_DATA
+                            .table
+                            .get_unchecked(byte as usize + 0x80))
+                    })
                     | (third >> 6))
                     != 2
                 {
@@ -211,7 +223,11 @@ pub fn convert_utf8_to_utf16_up_to_invalid(src: &[u8], dst: &mut [u16]) -> (usiz
                         let second = unsafe { *(src.get_unchecked(read + 1)) };
                         let third = unsafe { *(src.get_unchecked(read + 2)) };
                         if ((UTF8_DATA.table[usize::from(second)]
-                            & unsafe { *(UTF8_DATA.table.get_unchecked(byte as usize + 0x80)) })
+                            & unsafe {
+                                *(UTF8_DATA
+                                    .table
+                                    .get_unchecked(byte as usize + 0x80))
+                            })
                             | (third >> 6))
                             != 2
                         {
@@ -254,7 +270,11 @@ pub fn convert_utf8_to_utf16_up_to_invalid(src: &[u8], dst: &mut [u16]) -> (usiz
                 let fourth = unsafe { *(src.get_unchecked(read + 3)) };
                 if (u16::from(
                     UTF8_DATA.table[usize::from(second)]
-                        & unsafe { *(UTF8_DATA.table.get_unchecked(byte as usize + 0x80)) },
+                        & unsafe {
+                            *(UTF8_DATA
+                                .table
+                                .get_unchecked(byte as usize + 0x80))
+                        },
                 ) | u16::from(third >> 6)
                     | (u16::from(fourth & 0xC0) << 2))
                     != 0x202
@@ -324,7 +344,11 @@ pub fn convert_utf8_to_utf16_up_to_invalid(src: &[u8], dst: &mut [u16]) -> (usiz
                 let second = src[read + 1];
                 let third = src[read + 2];
                 if ((UTF8_DATA.table[usize::from(second)]
-                    & unsafe { *(UTF8_DATA.table.get_unchecked(byte as usize + 0x80)) })
+                    & unsafe {
+                        *(UTF8_DATA
+                            .table
+                            .get_unchecked(byte as usize + 0x80))
+                    })
                     | (third >> 6))
                     != 2
                 {
@@ -876,7 +900,11 @@ pub fn encode_text(text: &str) -> Vec<u8> {
             CoderResult::InputEmpty => break,
             CoderResult::OutputFull => {
                 let needed = written + (text.len() - read);
-                let new_len = buf.len().max(needed).saturating_mul(2).max(16);
+                let new_len = buf
+                    .len()
+                    .max(needed)
+                    .saturating_mul(2)
+                    .max(16);
                 buf.resize(new_len, 0);
             }
         }
@@ -1027,7 +1055,9 @@ mod tests {
     #[test]
     fn test_utf8_encode_from_utf16() {
         let mut encoder = Utf8Encoder;
-        let src: Vec<u16> = "\u{1F4A9}".encode_utf16().collect();
+        let src: Vec<u16> = "\u{1F4A9}"
+            .encode_utf16()
+            .collect();
         let mut dst = [0u8; 4];
         let (result, read, written) = encoder.encode_from_utf16_raw(&src, &mut dst, true);
         assert_eq!(result, EncoderResult::InputEmpty);
@@ -1042,12 +1072,18 @@ mod tests {
         let mut dst: Vec<u16> = vec![0; src.len() + 1];
         let (read, written) = convert_utf8_to_utf16_up_to_invalid(src.as_bytes(), &mut dst[..]);
         assert_eq!(read, src.len());
-        assert_eq!(written, src.encode_utf16().count());
+        assert_eq!(
+            written,
+            src.encode_utf16()
+                .count()
+        );
     }
 
     #[test]
     fn test_convert_utf16_to_utf8() {
-        let src: Vec<u16> = "abc\u{1F4A9}".encode_utf16().collect();
+        let src: Vec<u16> = "abc\u{1F4A9}"
+            .encode_utf16()
+            .collect();
         let mut dst = [0u8; 32];
         let (read, written) = convert_utf16_to_utf8_partial_inner(&src, &mut dst);
         assert_eq!(read, src.len());

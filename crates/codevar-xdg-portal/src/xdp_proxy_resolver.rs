@@ -83,22 +83,22 @@ pub fn register<T: codevar_dbus::DbusTransport + 'static>(ctx: &mut PortalContex
     let iface_xml = XmlBuilder::new("interface")
         .attr("name", "org.freedesktop.portal.ProxyResolver")
         .child("method")
-            .attr("name", "Lookup")
-            .child("arg")
-                .attr("type", "s")
-                .attr("name", "uri")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "as")
-                .attr("name", "proxies")
-                .attr("direction", "out")
-            .end()
+        .attr("name", "Lookup")
+        .child("arg")
+        .attr("type", "s")
+        .attr("name", "uri")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "as")
+        .attr("name", "proxies")
+        .attr("direction", "out")
+        .end()
         .end()
         .child("property")
-            .attr("name", "version")
-            .attr("type", "u")
-            .attr("access", "read")
+        .attr("name", "version")
+        .attr("type", "u")
+        .attr("access", "read")
         .end()
         .build();
 
@@ -118,7 +118,9 @@ fn handle_lookup<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let uri = reader.read_str()?.to_string();
+    let uri = reader
+        .read_str()?
+        .to_string();
     let options = decode_options(&mut reader)?;
     let _filtered = filter_options_map(&options, EMPTY_OPTION_KEYS)?;
 
@@ -141,7 +143,9 @@ fn handle_lookup<T: codevar_dbus::DbusTransport + 'static>(
     let mut proxies_array = reply_reader.read_array(1)?;
     let mut proxies = Vec::new();
     while !proxies_array.is_empty() {
-        let proxy = proxies_array.read_str()?.to_string();
+        let proxy = proxies_array
+            .read_str()?
+            .to_string();
         proxies.push(proxy);
     }
     ctx.reply(inv, |bw| {

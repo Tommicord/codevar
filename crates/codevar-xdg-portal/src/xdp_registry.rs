@@ -82,22 +82,22 @@ pub fn register<T: codevar_dbus::DbusTransport + 'static>(ctx: &mut PortalContex
     let iface_xml = XmlBuilder::new("interface")
         .attr("name", "org.freedesktop.host.portal.Registry")
         .child("method")
-            .attr("name", "Register")
-            .child("arg")
-                .attr("type", "s")
-                .attr("name", "app_id")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "a{sv}")
-                .attr("name", "options")
-                .attr("direction", "in")
-            .end()
+        .attr("name", "Register")
+        .child("arg")
+        .attr("type", "s")
+        .attr("name", "app_id")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "a{sv}")
+        .attr("name", "options")
+        .attr("direction", "in")
+        .end()
         .end()
         .child("property")
-            .attr("name", "version")
-            .attr("type", "u")
-            .attr("access", "read")
+        .attr("name", "version")
+        .attr("type", "u")
+        .attr("access", "read")
         .end()
         .build();
 
@@ -118,7 +118,9 @@ fn handle_register<T: codevar_dbus::DbusTransport + 'static>(
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
 
-    let app_id = reader.read_str()?.to_string();
+    let app_id = reader
+        .read_str()?
+        .to_string();
     let options = decode_options(&mut reader)?;
 
     let filtered = filter_options_map(&options, REGISTER_OPTION_KEYS)?;
@@ -127,17 +129,12 @@ fn handle_register<T: codevar_dbus::DbusTransport + 'static>(
 
     let app_info = AppInfo::host(&inv.sender);
 
-    ctx.call_impl(
-        REGISTRY_IMPL_INTERFACE,
-        "Register",
-        IMPL_TIMEOUT,
-        |bw| {
-            bw.write_object_path(&handle.path)?;
-            bw.write_str(app_info.id())?;
-            bw.write_str(&app_id)?;
-            encode_options(bw, &filtered)
-        },
-    )?;
+    ctx.call_impl(REGISTRY_IMPL_INTERFACE, "Register", IMPL_TIMEOUT, |bw| {
+        bw.write_object_path(&handle.path)?;
+        bw.write_str(app_info.id())?;
+        bw.write_str(&app_id)?;
+        encode_options(bw, &filtered)
+    })?;
 
     ctx.reply(inv, |bw| bw.write_object_path(&handle.path))?;
 

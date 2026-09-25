@@ -137,7 +137,16 @@ fn match_length(input: &[u8], a: usize, b: usize, limit: usize) -> usize {
     while length + 16 <= limit {
         // SAFETY: `a + length + 16 <= a + limit` and both regions are within `input`
         // because `limit <= input.len() - b` and `a + limit <= input.len()` from caller.
-        let equal = unsafe { load_cmp16(input.as_ptr().add(a + length), input.as_ptr().add(b + length)) };
+        let equal = unsafe {
+            load_cmp16(
+                input
+                    .as_ptr()
+                    .add(a + length),
+                input
+                    .as_ptr()
+                    .add(b + length),
+            )
+        };
         if equal != 16 {
             return length + equal;
         }
@@ -243,7 +252,9 @@ mod tests {
         let mut encoder = StreamingEncoder::new(&mut heads, &mut previous).expect("workspace");
         let input = b"stream-stream-stream-data-stream";
         let mut output = vec![0u8; input.len() * 2 + 64];
-        let written = encoder.encode_block(input, &mut output).expect("encode");
+        let written = encoder
+            .encode_block(input, &mut output)
+            .expect("encode");
         assert_eq!(lz_match_decode(&output[..written]).expect("decode"), input);
     }
 

@@ -77,14 +77,19 @@ fn handle_add_notification<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let id = reader.read_str()?.to_string();
+    let id = reader
+        .read_str()?
+        .to_string();
     let notification = crate::xdp_utils::decode_options(&mut reader)?;
 
     let filtered = filter_options(&notification, NOTIFICATION_OPTIONS)?;
 
     let handle = ctx.begin_request(inv, &filtered)?;
 
-    let app_id = handle.app_info.id().to_string();
+    let app_id = handle
+        .app_info
+        .id()
+        .to_string();
 
     ctx.call_impl(
         NOTIFICATION_IMPL_INTERFACE,
@@ -106,7 +111,9 @@ fn handle_remove_notification<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let id = reader.read_str()?.to_string();
+    let id = reader
+        .read_str()?
+        .to_string();
 
     let app_info = crate::xdp_app_info::AppInfo::host(&inv.sender);
 
@@ -127,58 +134,58 @@ pub fn register<T: codevar_dbus::DbusTransport + 'static>(ctx: &mut PortalContex
     let iface_xml = XmlBuilder::new("interface")
         .attr("name", "org.freedesktop.portal.Notification")
         .child("method")
-            .attr("name", "AddNotification")
-            .child("annotation")
-                .attr("name", "org.gtk.GDBus.C.UnixFD")
-                .attr("value", "true")
-            .end()
-            .child("arg")
-                .attr("type", "s")
-                .attr("name", "id")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "a{sv}")
-                .attr("name", "notification")
-                .attr("direction", "in")
-            .end()
+        .attr("name", "AddNotification")
+        .child("annotation")
+        .attr("name", "org.gtk.GDBus.C.UnixFD")
+        .attr("value", "true")
+        .end()
+        .child("arg")
+        .attr("type", "s")
+        .attr("name", "id")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "a{sv}")
+        .attr("name", "notification")
+        .attr("direction", "in")
+        .end()
         .end()
         .child("method")
-            .attr("name", "RemoveNotification")
-            .child("arg")
-                .attr("type", "s")
-                .attr("name", "id")
-                .attr("direction", "in")
-            .end()
+        .attr("name", "RemoveNotification")
+        .child("arg")
+        .attr("type", "s")
+        .attr("name", "id")
+        .attr("direction", "in")
+        .end()
         .end()
         .child("property")
-            .attr("name", "SupportedOptions")
-            .attr("type", "a{sv}")
-            .attr("access", "read")
-            .child("annotation")
-                .attr("name", "org.qtproject.QtDBus.QtTypeName")
-                .attr("value", "QVariantMap")
-            .end()
+        .attr("name", "SupportedOptions")
+        .attr("type", "a{sv}")
+        .attr("access", "read")
+        .child("annotation")
+        .attr("name", "org.qtproject.QtDBus.QtTypeName")
+        .attr("value", "QVariantMap")
+        .end()
         .end()
         .child("signal")
-            .attr("name", "ActionInvoked")
-            .child("arg")
-                .attr("type", "s")
-                .attr("name", "id")
-            .end()
-            .child("arg")
-                .attr("type", "s")
-                .attr("name", "action")
-            .end()
-            .child("arg")
-                .attr("type", "av")
-                .attr("name", "parameter")
-            .end()
+        .attr("name", "ActionInvoked")
+        .child("arg")
+        .attr("type", "s")
+        .attr("name", "id")
+        .end()
+        .child("arg")
+        .attr("type", "s")
+        .attr("name", "action")
+        .end()
+        .child("arg")
+        .attr("type", "av")
+        .attr("name", "parameter")
+        .end()
         .end()
         .child("property")
-            .attr("name", "version")
-            .attr("type", "u")
-            .attr("access", "read")
+        .attr("name", "version")
+        .attr("type", "u")
+        .attr("access", "read")
         .end()
         .build();
 

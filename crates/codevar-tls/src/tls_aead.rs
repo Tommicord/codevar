@@ -32,8 +32,10 @@ pub struct AeadKey {
 
 impl Drop for AeadKey {
     fn drop(&mut self) {
-        self.key.zeroize();
-        self.iv.zeroize();
+        self.key
+            .zeroize();
+        self.iv
+            .zeroize();
     }
 }
 
@@ -73,7 +75,9 @@ impl AeadKey {
 #[must_use]
 pub fn nonce_xor_seq(iv: &[u8], seq: u64) -> [u8; 12] {
     let mut nonce = [0u8; 12];
-    let copy_len = iv.len().min(12);
+    let copy_len = iv
+        .len()
+        .min(12);
     nonce[12 - copy_len..].copy_from_slice(&iv[iv.len() - copy_len..]);
     let seq_bytes = seq.to_be_bytes();
     for i in 0..8 {
@@ -106,7 +110,11 @@ impl TlsAead {
         plaintext: &[u8],
     ) -> TlsResult<Vec<u8>> {
         let mut nonce = [0u8; 12];
-        if keys.iv.len() < 4 {
+        if keys
+            .iv
+            .len()
+            < 4
+        {
             return Err(TlsError::Internal("GCM salt too short".into()));
         }
         nonce[..4].copy_from_slice(&keys.iv[..4]);

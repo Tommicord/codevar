@@ -79,13 +79,31 @@ impl MethodInvocation {
         }
         Ok(Self {
             serial: message.serial(),
-            sender: message.sender().unwrap_or_default().to_string(),
-            path: message.path().unwrap_or_default().to_string(),
-            interface: message.interface().unwrap_or_default().to_string(),
-            member: message.member().unwrap_or_default().to_string(),
-            body_signature: message.signature().to_string(),
-            body: message.body().to_vec(),
-            fds: message.fds().to_vec(),
+            sender: message
+                .sender()
+                .unwrap_or_default()
+                .to_string(),
+            path: message
+                .path()
+                .unwrap_or_default()
+                .to_string(),
+            interface: message
+                .interface()
+                .unwrap_or_default()
+                .to_string(),
+            member: message
+                .member()
+                .unwrap_or_default()
+                .to_string(),
+            body_signature: message
+                .signature()
+                .to_string(),
+            body: message
+                .body()
+                .to_vec(),
+            fds: message
+                .fds()
+                .to_vec(),
         })
     }
 
@@ -139,7 +157,10 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
     /// The connection must already be authenticated and have called
     /// `Hello` to obtain its unique name.
     pub fn new(conn: Connection<T>, verbose: bool) -> XdpResult<Self> {
-        if conn.unique_name().is_none() {
+        if conn
+            .unique_name()
+            .is_none()
+        {
             return Err(PortalError::InvalidArgument(String::from(
                 "connection must have a unique name (call hello())",
             )));
@@ -158,7 +179,8 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
 
     /// Registers a portal interface.
     pub fn register_interface(&mut self, iface: PortalInterface<T>) {
-        self.interfaces.push(iface);
+        self.interfaces
+            .push(iface);
     }
 
     /// Sends a successful method reply with the given body builder.
@@ -168,14 +190,16 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
     {
         let mut reply = DbusMessage::method_return(inv.serial);
         reply.build_body(body)?;
-        self.conn.send_message(reply)?;
+        self.conn
+            .send_message(reply)?;
         Ok(())
     }
 
     /// Sends an empty successful method reply.
     pub fn reply_empty(&mut self, inv: &MethodInvocation) -> XdpResult<()> {
         let reply = DbusMessage::method_return(inv.serial);
-        self.conn.send_message(reply)?;
+        self.conn
+            .send_message(reply)?;
         Ok(())
     }
 
@@ -183,13 +207,16 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
     pub fn reply_err(&mut self, inv: &MethodInvocation, name: &str, message: &str) -> XdpResult<()> {
         let mut reply = DbusMessage::error(inv.serial, name)?;
         reply.build_body(|bw| bw.write_str(message))?;
-        self.conn.send_message(reply)?;
+        self.conn
+            .send_message(reply)?;
         Ok(())
     }
 
     /// Sends an error reply from a `PortalError`.
     pub fn reply_portal_err(&mut self, inv: &MethodInvocation, error: &PortalError) -> XdpResult<()> {
-        let dbus_error = error.clone().into_dbus_error();
+        let dbus_error = error
+            .clone()
+            .into_dbus_error();
         let (name, message) = match dbus_error {
             DbusError::Remote { name, message } => (name, message),
             _ => (
@@ -199,7 +226,8 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
         };
         let mut reply = DbusMessage::error(inv.serial, &name)?;
         reply.build_body(|bw| bw.write_str(&message))?;
-        self.conn.send_message(reply)?;
+        self.conn
+            .send_message(reply)?;
         Ok(())
     }
 
@@ -210,7 +238,8 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
     {
         let mut signal = DbusMessage::signal(path, interface, member)?;
         signal.build_body(body)?;
-        self.conn.send_message(signal)?;
+        self.conn
+            .send_message(signal)?;
         Ok(())
     }
 
@@ -225,20 +254,25 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
     where
         F: FnOnce(&mut BodyWriter) -> DbusResult<()>,
     {
-        let Some(impl_config) = self.config.find(impl_iface) else {
+        let Some(impl_config) = self
+            .config
+            .find(impl_iface)
+        else {
             return Err(PortalError::NotFound(format!(
                 "no implementation for {}",
                 impl_iface
             )));
         };
-        let reply = self.conn.call(
-            &impl_config.dbus_name,
-            DESKTOP_PATH,
-            impl_iface,
-            member,
-            body,
-            timeout,
-        )?;
+        let reply = self
+            .conn
+            .call(
+                &impl_config.dbus_name,
+                DESKTOP_PATH,
+                impl_iface,
+                member,
+                body,
+                timeout,
+            )?;
         Ok(reply)
     }
 
@@ -250,9 +284,13 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
         let token = extract_handle_token(options)?;
         let path = build_request_path(&inv.sender, &token, &self.requests)?;
         let app_info = crate::xdp_app_info::AppInfo::host(&inv.sender);
-        let created_ms = self.conn.transport().now_ms();
+        let created_ms = self
+            .conn
+            .transport()
+            .now_ms();
         let handle = RequestHandle::new(&inv.sender, token, app_info, created_ms);
-        self.requests.insert(path.clone(), handle.clone());
+        self.requests
+            .insert(path.clone(), handle.clone());
         Ok(handle)
     }
 
@@ -273,7 +311,8 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
             bw.write_u32(response)?;
             encode_options(bw, results)
         })?;
-        self.requests.remove(&handle.path);
+        self.requests
+            .remove(&handle.path);
         Ok(())
     }
 
@@ -285,9 +324,13 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
         let token = extract_session_token(options)?;
         let path = build_session_path(&inv.sender, &token, &self.sessions)?;
         let app_info = crate::xdp_app_info::AppInfo::host(&inv.sender);
-        let created_ms = self.conn.transport().now_ms();
+        let created_ms = self
+            .conn
+            .transport()
+            .now_ms();
         let handle = SessionHandle::new(&inv.sender, token, app_info, created_ms);
-        self.sessions.insert(path.clone(), handle.clone());
+        self.sessions
+            .insert(path.clone(), handle.clone());
         Ok(handle)
     }
 
@@ -299,7 +342,8 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
         self.emit_signal(&handle.path, "org.freedesktop.portal.Session", "Closed", |bw| {
             bw.write_u32(reason)
         })?;
-        self.sessions.remove(&handle.path);
+        self.sessions
+            .remove(&handle.path);
         Ok(())
     }
 
@@ -313,11 +357,17 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
         self.register_match_rules()?;
 
         loop {
-            if let Some(status) = self.quit_status.take() {
+            if let Some(status) = self
+                .quit_status
+                .take()
+            {
                 return Ok(status);
             }
 
-            match self.conn.recv_timeout(Duration::from_millis(100)) {
+            match self
+                .conn
+                .recv_timeout(Duration::from_millis(100))
+            {
                 Ok(message) => {
                     if let Err(e) = self.handle_message(message) {
                         log::error!("Error handling message: {}", e);
@@ -334,7 +384,10 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
                 }
             }
 
-            if let Err(e) = self.conn.flush() {
+            if let Err(e) = self
+                .conn
+                .flush()
+            {
                 log::error!("Error flushing connection: {}", e);
             }
         }
@@ -357,12 +410,14 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
 
     /// Takes and removes a request handle by path.
     pub fn take_request(&mut self, path: &str) -> Option<RequestHandle> {
-        self.requests.remove(path)
+        self.requests
+            .remove(path)
     }
 
     /// Takes and removes a session handle by path.
     pub fn take_session(&mut self, path: &str) -> Option<SessionHandle> {
-        self.sessions.remove(path)
+        self.sessions
+            .remove(path)
     }
 
     /// Registers match rules for all registered interfaces.
@@ -374,7 +429,8 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
             format!("type='method_call',path_namespace='{}'", SESSION_BASE_PATH),
         ];
         for rule in rules {
-            self.conn.add_match(&rule, Duration::from_secs(5))?;
+            self.conn
+                .add_match(&rule, Duration::from_secs(5))?;
         }
         Ok(())
     }
@@ -479,89 +535,93 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
         let iface_xmls: String = self
             .interfaces
             .iter()
-            .map(|iface| iface.introspect_xml.to_string())
+            .map(|iface| {
+                iface
+                    .introspect_xml
+                    .to_string()
+            })
             .collect();
         let xml = XmlBuilder::new("node")
             .child("interface")
-                .attr("name", "org.freedesktop.DBus.Introspectable")
-                .child("method")
-                    .attr("name", "Introspect")
-                    .child("arg")
-                        .attr("name", "data")
-                        .attr("type", "s")
-                        .attr("direction", "out")
-                    .end()
-                .end()
+            .attr("name", "org.freedesktop.DBus.Introspectable")
+            .child("method")
+            .attr("name", "Introspect")
+            .child("arg")
+            .attr("name", "data")
+            .attr("type", "s")
+            .attr("direction", "out")
+            .end()
+            .end()
             .end()
             .child("interface")
-                .attr("name", "org.freedesktop.DBus.Properties")
-                .child("method")
-                    .attr("name", "Get")
-                    .child("arg")
-                        .attr("name", "interface")
-                        .attr("type", "s")
-                        .attr("direction", "in")
-                    .end()
-                    .child("arg")
-                        .attr("name", "property")
-                        .attr("type", "s")
-                        .attr("direction", "in")
-                    .end()
-                    .child("arg")
-                        .attr("name", "value")
-                        .attr("type", "v")
-                        .attr("direction", "out")
-                    .end()
-                .end()
-                .child("method")
-                    .attr("name", "GetAll")
-                    .child("arg")
-                        .attr("name", "interface")
-                        .attr("type", "s")
-                        .attr("direction", "in")
-                    .end()
-                    .child("arg")
-                        .attr("name", "props")
-                        .attr("type", "a{sv}")
-                        .attr("direction", "out")
-                    .end()
-                .end()
+            .attr("name", "org.freedesktop.DBus.Properties")
+            .child("method")
+            .attr("name", "Get")
+            .child("arg")
+            .attr("name", "interface")
+            .attr("type", "s")
+            .attr("direction", "in")
+            .end()
+            .child("arg")
+            .attr("name", "property")
+            .attr("type", "s")
+            .attr("direction", "in")
+            .end()
+            .child("arg")
+            .attr("name", "value")
+            .attr("type", "v")
+            .attr("direction", "out")
+            .end()
+            .end()
+            .child("method")
+            .attr("name", "GetAll")
+            .child("arg")
+            .attr("name", "interface")
+            .attr("type", "s")
+            .attr("direction", "in")
+            .end()
+            .child("arg")
+            .attr("name", "props")
+            .attr("type", "a{sv}")
+            .attr("direction", "out")
+            .end()
+            .end()
             .end()
             .push(&iface_xmls)
             .child("interface")
-                .attr("name", "org.freedesktop.portal.Request")
-                .child("method")
-                    .attr("name", "Close")
-                .end()
-                .child("signal")
-                    .attr("name", "Response")
-                    .child("arg")
-                        .attr("name", "response")
-                        .attr("type", "u")
-                    .end()
-                    .child("arg")
-                        .attr("name", "results")
-                        .attr("type", "a{sv}")
-                    .end()
-                .end()
+            .attr("name", "org.freedesktop.portal.Request")
+            .child("method")
+            .attr("name", "Close")
+            .end()
+            .child("signal")
+            .attr("name", "Response")
+            .child("arg")
+            .attr("name", "response")
+            .attr("type", "u")
+            .end()
+            .child("arg")
+            .attr("name", "results")
+            .attr("type", "a{sv}")
+            .end()
+            .end()
             .end()
             .child("interface")
-                .attr("name", "org.freedesktop.portal.Session")
-                .child("method")
-                    .attr("name", "Close")
-                    .child("arg")
-                        .attr("name", "reason")
-                        .attr("type", "u")
-                        .attr("direction", "in")
-                    .end()
-                .end()
-                .child("signal")
-                    .attr("name", "Closed")
-                    .child("arg")
-                        .attr("name", "reason")
-                        .attr("type", "u")
-                    .end()
-                .end()
+            .attr("name", "org.freedesktop.portal.Session")
+            .child("method")
+            .attr("name", "Close")
+            .child("arg")
+            .attr("name", "reason")
+            .attr("type", "u")
+            .attr("direction", "in")
+            .end()
+            .end()
+            .child("signal")
+            .attr("name", "Closed")
+            .child("arg")
+            .attr("name", "reason")
+            .attr("type", "u")
+            .end()
+            .end()
             .end()
             .build();
         self.reply(&inv, |bw| bw.write_str(xml.to_string()))
@@ -631,7 +691,8 @@ mod tests {
 
     fn make_test_message(destination: &str, path: &str, interface: &str, member: &str) -> DbusMessage {
         let mut msg = DbusMessage::method_call(destination, path, interface, member).unwrap();
-        msg.set_serial(1).unwrap();
+        msg.set_serial(1)
+            .unwrap();
         msg
     }
 
@@ -705,15 +766,23 @@ mod tests {
 
     impl DbusTransport for MockTransport {
         fn read(&mut self, buf: &mut [u8]) -> DbusResult<usize> {
-            if let Some(data) = self.rx.front() {
-                let n = data.len().min(buf.len());
+            if let Some(data) = self
+                .rx
+                .front()
+            {
+                let n = data
+                    .len()
+                    .min(buf.len());
                 buf[..n].copy_from_slice(&data[..n]);
                 if n == data.len() {
-                    self.rx.pop_front();
+                    self.rx
+                        .pop_front();
                 } else {
                     let remaining = data[n..].to_vec();
-                    self.rx.pop_front();
-                    self.rx.push_back(remaining);
+                    self.rx
+                        .pop_front();
+                    self.rx
+                        .push_back(remaining);
                 }
                 Ok(n)
             } else {
@@ -722,7 +791,8 @@ mod tests {
         }
         fn write(&mut self, buf: &[u8]) -> DbusResult<usize> {
             if self.writable {
-                self.tx.push((buf.to_vec(), Vec::new()));
+                self.tx
+                    .push((buf.to_vec(), Vec::new()));
                 Ok(buf.len())
             } else {
                 Err(DbusError::WouldBlock)
@@ -750,7 +820,8 @@ mod tests {
         }
         fn write_with_fds(&mut self, buf: &[u8], fds: &[i32]) -> DbusResult<usize> {
             if self.writable {
-                self.tx.push((buf.to_vec(), fds.to_vec()));
+                self.tx
+                    .push((buf.to_vec(), fds.to_vec()));
                 Ok(buf.len())
             } else {
                 Err(DbusError::WouldBlock)

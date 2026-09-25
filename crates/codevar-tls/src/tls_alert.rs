@@ -178,7 +178,11 @@ impl Alert {
     /// Encodes the alert payload.
     #[must_use]
     pub fn encode(self) -> [u8; 2] {
-        [self.level as u8, self.description.as_u8()]
+        [
+            self.level as u8,
+            self.description
+                .as_u8(),
+        ]
     }
 
     /// Decodes an alert payload.
@@ -243,7 +247,10 @@ mod tests {
         for bad in [0u8, 3, 4, 127, 128, 255] {
             let err = AlertLevel::from_u8(bad).unwrap_err();
             assert!(matches!(err, TlsError::Decode(_)), "bad={bad}");
-            assert!(err.to_string().contains(&format!("alert level {bad}")));
+            assert!(
+                err.to_string()
+                    .contains(&format!("alert level {bad}"))
+            );
         }
     }
 
@@ -314,7 +321,8 @@ mod tests {
             let err = Alert::decode(&data).unwrap_err();
             assert!(matches!(err, TlsError::Decode(_)), "len={len}");
             assert!(
-                err.to_string().contains("alert must be exactly 2 bytes"),
+                err.to_string()
+                    .contains("alert must be exactly 2 bytes"),
                 "len={len}"
             );
         }
@@ -338,6 +346,9 @@ mod tests {
     fn truncated_single_byte_alert_is_rejected() {
         let err = Alert::decode(&[2]).unwrap_err();
         assert!(matches!(err, TlsError::Decode(_)));
-        assert!(err.to_string().contains("exactly 2 bytes"));
+        assert!(
+            err.to_string()
+                .contains("exactly 2 bytes")
+        );
     }
 }

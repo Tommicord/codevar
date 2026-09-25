@@ -111,7 +111,9 @@ impl PortalError {
     /// back to a caller with `Connection::send`.
     #[must_use]
     pub fn into_dbus_error(self) -> DbusError {
-        let name = self.name().to_string();
+        let name = self
+            .name()
+            .to_string();
         DbusError::remote(name, self.message())
     }
 }
@@ -197,7 +199,9 @@ mod tests {
     #[test]
     fn converts_to_and_from_dbus_errors() {
         let error = PortalError::InvalidArgument(String::from("bad option"));
-        let dbus = error.clone().into_dbus_error();
+        let dbus = error
+            .clone()
+            .into_dbus_error();
         assert!(matches!(dbus, DbusError::Remote { .. }));
         if let DbusError::Remote { name, message } = &dbus {
             assert_eq!(name, "org.freedesktop.portal.Error.InvalidArgument");

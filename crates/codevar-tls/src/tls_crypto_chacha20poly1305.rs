@@ -116,13 +116,34 @@ unsafe fn read_key_words(key: &[u8]) -> [u32; 8] {
         let p = key.as_ptr();
         [
             u32::from_le(core::ptr::read_unaligned(p.cast())),
-            u32::from_le(core::ptr::read_unaligned(p.add(4).cast())),
-            u32::from_le(core::ptr::read_unaligned(p.add(8).cast())),
-            u32::from_le(core::ptr::read_unaligned(p.add(12).cast())),
-            u32::from_le(core::ptr::read_unaligned(p.add(16).cast())),
-            u32::from_le(core::ptr::read_unaligned(p.add(20).cast())),
-            u32::from_le(core::ptr::read_unaligned(p.add(24).cast())),
-            u32::from_le(core::ptr::read_unaligned(p.add(28).cast())),
+            u32::from_le(core::ptr::read_unaligned(
+                p.add(4)
+                    .cast(),
+            )),
+            u32::from_le(core::ptr::read_unaligned(
+                p.add(8)
+                    .cast(),
+            )),
+            u32::from_le(core::ptr::read_unaligned(
+                p.add(12)
+                    .cast(),
+            )),
+            u32::from_le(core::ptr::read_unaligned(
+                p.add(16)
+                    .cast(),
+            )),
+            u32::from_le(core::ptr::read_unaligned(
+                p.add(20)
+                    .cast(),
+            )),
+            u32::from_le(core::ptr::read_unaligned(
+                p.add(24)
+                    .cast(),
+            )),
+            u32::from_le(core::ptr::read_unaligned(
+                p.add(28)
+                    .cast(),
+            )),
         ]
     }
 }
@@ -288,7 +309,9 @@ fn poly1305(key: &[u8; 32], msg: &[u8]) -> [u8; 16] {
         c = g[i] >> 26;
         g[i] &= 0x3ff_ffff;
     }
-    g[4] = h[4].wrapping_add(c).wrapping_sub(1 << 26);
+    g[4] = h[4]
+        .wrapping_add(c)
+        .wrapping_sub(1 << 26);
 
     let mask = (g[4] >> 31).wrapping_sub(1);
     let not_mask = !mask;
@@ -308,9 +331,15 @@ fn poly1305(key: &[u8; 32], msg: &[u8]) -> [u8; 16] {
     let s3 = u32::from_le_bytes([key[28], key[29], key[30], key[31]]);
 
     f0 = f0.wrapping_add(u64::from(s0));
-    f1 = f1.wrapping_add(u64::from(s1)).wrapping_add(f0 >> 32);
-    f2 = f2.wrapping_add(u64::from(s2)).wrapping_add(f1 >> 32);
-    f3 = f3.wrapping_add(u64::from(s3)).wrapping_add(f2 >> 32);
+    f1 = f1
+        .wrapping_add(u64::from(s1))
+        .wrapping_add(f0 >> 32);
+    f2 = f2
+        .wrapping_add(u64::from(s2))
+        .wrapping_add(f1 >> 32);
+    f3 = f3
+        .wrapping_add(u64::from(s3))
+        .wrapping_add(f2 >> 32);
 
     let mut tag = [0u8; 16];
     tag[0..4].copy_from_slice(&(f0 as u32).to_le_bytes());

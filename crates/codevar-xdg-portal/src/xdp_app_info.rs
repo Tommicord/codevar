@@ -166,7 +166,10 @@ pub fn validate_hex_uint16(value: &str, expected_length: usize) -> Option<u16> {
     if value.len() != expected_length || expected_length == 0 || !value.is_ascii() {
         return None;
     }
-    if !value.bytes().all(|c| c.is_ascii_hexdigit()) {
+    if !value
+        .bytes()
+        .all(|c| c.is_ascii_hexdigit())
+    {
         return None;
     }
     let parsed = u16::from_str_radix(value, 16).ok()?;
@@ -180,7 +183,9 @@ pub fn validate_hex_uint16(value: &str, expected_length: usize) -> Option<u16> {
 /// `xdp_usb_rule_from_string`.
 #[must_use]
 pub fn usb_rule_from_string(string: &str) -> Option<UsbRule> {
-    let parts: Vec<&str> = string.split(':').collect();
+    let parts: Vec<&str> = string
+        .split(':')
+        .collect();
     if parts.len() > 3 {
         return None;
     }
@@ -323,12 +328,18 @@ impl AppInfo {
                 ".flatpak-info name '{id}' is not a valid app id"
             )));
         }
-        let instance = key_file.get("Instance", "instance-id").ok_or_else(|| {
-            PortalError::NotFound(String::from(".flatpak-info has no Instance instance-id key"))
-        })?;
+        let instance = key_file
+            .get("Instance", "instance-id")
+            .ok_or_else(|| {
+                PortalError::NotFound(String::from(".flatpak-info has no Instance instance-id key"))
+            })?;
         let has_network = key_file
             .list("Context", "shared")
-            .is_some_and(|shared| shared.iter().any(|entry| entry == "network"));
+            .is_some_and(|shared| {
+                shared
+                    .iter()
+                    .any(|entry| entry == "network")
+            });
 
         let mut flags = AppInfoFlags::SUPPORTS_OPATH;
         if has_network {
@@ -403,14 +414,16 @@ impl AppInfo {
     /// Returns the sandbox instance id (flatpak instance id).
     #[must_use]
     pub fn instance(&self) -> Option<&str> {
-        self.instance.as_deref()
+        self.instance
+            .as_deref()
     }
 
     /// Returns the engine id (`org.flatpak`, `io.snapcraft`) or
     /// `None` for host applications.
     #[must_use]
     pub fn engine(&self) -> Option<&str> {
-        self.engine.as_deref()
+        self.engine
+            .as_deref()
     }
 
     /// Returns the D-Bus name the application called from.
@@ -429,21 +442,24 @@ impl AppInfo {
     /// `xdp_app_info_has_network`.
     #[must_use]
     pub fn has_network(&self) -> bool {
-        self.flags.contains(AppInfoFlags::HAS_NETWORK)
+        self.flags
+            .contains(AppInfoFlags::HAS_NETWORK)
     }
 
     /// Returns whether the application runs unconfined, like
     /// `xdp_app_info_is_host`.
     #[must_use]
     pub fn is_host(&self) -> bool {
-        self.engine.is_none()
+        self.engine
+            .is_none()
     }
 
     /// Returns the snap desktop file id when the environment
     /// provided `SNAP_DESKTOP_FILE`.
     #[must_use]
     pub fn desktop_file(&self) -> Option<&str> {
-        self.desktop_file.as_deref()
+        self.desktop_file
+            .as_deref()
     }
 
     /// Returns a human readable application name, like
@@ -453,16 +469,28 @@ impl AppInfo {
     /// is unavailable here, so the application id is used instead.
     #[must_use]
     pub fn app_display_name(&self) -> Option<&str> {
-        if self.id.is_empty() { None } else { Some(&self.id) }
+        if self
+            .id
+            .is_empty()
+        {
+            None
+        } else {
+            Some(&self.id)
+        }
     }
 
     /// Returns a human readable engine name, like
     /// `xdp_app_info_get_engine_display_name`.
     #[must_use]
     pub fn engine_display_name(&self) -> &str {
-        match self.engine.as_deref() {
+        match self
+            .engine
+            .as_deref()
+        {
             Some(engine) if !engine.is_empty() => engine,
-            _ => self.kind.type_name(),
+            _ => self
+                .kind
+                .type_name(),
         }
     }
 
@@ -471,7 +499,8 @@ impl AppInfo {
     /// does not define any (snap) or the id is unset.
     #[must_use]
     pub fn usb_queries(&self) -> Option<&[UsbQuery]> {
-        self.usb_queries.as_deref()
+        self.usb_queries
+            .as_deref()
     }
 
     /// Returns whether `sub_app_id` may act as `id`'s sub
@@ -490,7 +519,14 @@ impl AppInfo {
                 if !sub_app_id.starts_with(&self.id) {
                     return false;
                 }
-                if sub_app_id.as_bytes().get(self.id.len()) != Some(&b'.') {
+                if sub_app_id
+                    .as_bytes()
+                    .get(
+                        self.id
+                            .len(),
+                    )
+                    != Some(&b'.')
+                {
                     return false;
                 }
                 is_flatpak_name(sub_app_id)
@@ -505,7 +541,9 @@ impl AppInfo {
     pub fn remap_path(&self, path: &str) -> String {
         match self.kind {
             AppInfoKind::Flatpak => {
-                let info = self.flatpak_info.as_ref();
+                let info = self
+                    .flatpak_info
+                    .as_ref();
                 flatpak_remap_path(info, &self.id, path)
             }
             _ => String::from(path),
@@ -597,7 +635,10 @@ impl AppInfo {
                     "O_PATH fd was opened O_NOFOLLOW",
                 )));
             }
-            if !self.flags.contains(AppInfoFlags::SUPPORTS_OPATH) {
+            if !self
+                .flags
+                .contains(AppInfoFlags::SUPPORTS_OPATH)
+            {
                 return Err(PortalError::NotAllowed(format!(
                     "App \"{}\" of type {} does not support O_PATH fd passing",
                     self.id,
@@ -673,7 +714,10 @@ impl AppInfo {
                 "Desktop entry given to Install() has invalid Exec line",
             ))
         })?;
-        if exec_strv.iter().any(|arg| arg == "--file-forwarding") {
+        if exec_strv
+            .iter()
+            .any(|arg| arg == "--file-forwarding")
+        {
             return Err(PortalError::InvalidArgument(String::from(
                 "Desktop entry given to Install() must not use --file-forwarding",
             )));
@@ -696,7 +740,9 @@ impl AppInfo {
     /// like `get_tryexec_path`; `None` when it cannot be derived
     /// or is not executable.
     fn flatpak_tryexec_path(&self) -> Option<String> {
-        let info = self.flatpak_info.as_ref()?;
+        let info = self
+            .flatpak_info
+            .as_ref()?;
         let original_app_path = info.get("Instance", "original-app-path");
         let app_path = info.get("Instance", "app-path");
         let path = original_app_path.or(app_path)?;
@@ -728,7 +774,9 @@ fn is_flatpak_name(string: &str) -> bool {
     if bytes[0] == b'.' {
         return false;
     }
-    let last_dot = bytes.iter().rposition(|&b| b == b'.');
+    let last_dot = bytes
+        .iter()
+        .rposition(|&b| b == b'.');
     let mut dot_count = 0u32;
     let mut last_element = false;
     let mut index = 0;
@@ -793,7 +841,10 @@ fn rewrite_commandline(app_id: &str, commandline: &[String], quote_escape: bool)
 /// Joins rewritten command line arguments with spaces.
 fn join_args(args: &[String]) -> String {
     let mut out = String::new();
-    for (index, arg) in args.iter().enumerate() {
+    for (index, arg) in args
+        .iter()
+        .enumerate()
+    {
         if index > 0 {
             out.push(' ');
         }
@@ -919,7 +970,15 @@ fn verify_proc_self_fd(proc_path: &str) -> Result<String, PortalError> {
     let mut buffer = [0u8; 4096];
     // SAFETY: `c_path` is a valid C string and `buffer` is writable
     // for its full length.
-    let size = unsafe { libc::readlink(c_path.as_ptr(), buffer.as_mut_ptr().cast(), buffer.len()) };
+    let size = unsafe {
+        libc::readlink(
+            c_path.as_ptr(),
+            buffer
+                .as_mut_ptr()
+                .cast(),
+            buffer.len(),
+        )
+    };
     if size < 0 {
         // SAFETY: the call failed, so `errno` is live.
         let errno = unsafe { *libc::__errno_location() };
@@ -1105,7 +1164,15 @@ fn read_fd_all(fd: i32, label: &str) -> Result<Vec<u8>, PortalError> {
     let mut buffer = [0u8; 4096];
     loop {
         // SAFETY: `fd` is open and `buffer` is writable.
-        let count = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
+        let count = unsafe {
+            libc::read(
+                fd,
+                buffer
+                    .as_mut_ptr()
+                    .cast(),
+                buffer.len(),
+            )
+        };
         if count < 0 {
             // SAFETY: the call failed, so `errno` is live.
             let errno = unsafe { *libc::__errno_location() };
@@ -1146,8 +1213,14 @@ mod tests {
         assert_eq!(app.sender(), "org.test.Sender");
         assert!(!app.is_host());
         assert!(app.has_network());
-        assert!(app.flags().contains(AppInfoFlags::SUPPORTS_OPATH));
-        assert!(!app.flags().contains(AppInfoFlags::REQUIRE_GAPPINFO));
+        assert!(
+            app.flags()
+                .contains(AppInfoFlags::SUPPORTS_OPATH)
+        );
+        assert!(
+            !app.flags()
+                .contains(AppInfoFlags::REQUIRE_GAPPINFO)
+        );
         assert_eq!(app.app_display_name(), Some("org.example.App"));
         assert_eq!(app.engine_display_name(), "org.flatpak");
 
@@ -1246,9 +1319,18 @@ mod tests {
         assert_eq!(host.app_display_name(), None);
         assert_eq!(host.engine_display_name(), "XdpAppInfoHost");
         assert!(host.has_network());
-        assert!(host.flags().contains(AppInfoFlags::SUPPORTS_OPATH));
-        assert!(!host.flags().contains(AppInfoFlags::REQUIRE_GAPPINFO));
-        let queries = host.usb_queries().unwrap();
+        assert!(
+            host.flags()
+                .contains(AppInfoFlags::SUPPORTS_OPATH)
+        );
+        assert!(
+            !host
+                .flags()
+                .contains(AppInfoFlags::REQUIRE_GAPPINFO)
+        );
+        let queries = host
+            .usb_queries()
+            .unwrap();
         assert_eq!(queries.len(), 1);
         assert_eq!(queries[0].query_type, UsbQueryType::Enumerable);
         assert_eq!(queries[0].rules, Vec::from([UsbRule::All]));
@@ -1256,7 +1338,11 @@ mod tests {
         let registered = AppInfo::host_registered("s", "org.example.App");
         assert_eq!(registered.id(), "org.example.App");
         assert_eq!(registered.app_display_name(), Some("org.example.App"));
-        assert!(registered.flags().contains(AppInfoFlags::REQUIRE_GAPPINFO));
+        assert!(
+            registered
+                .flags()
+                .contains(AppInfoFlags::REQUIRE_GAPPINFO)
+        );
     }
 
     #[test]
@@ -1269,7 +1355,11 @@ mod tests {
         assert_eq!(snap.engine_display_name(), "io.snapcraft");
         assert_eq!(snap.desktop_file(), Some("x.desktop"));
         assert!(!snap.has_network());
-        assert!(!snap.flags().contains(AppInfoFlags::SUPPORTS_OPATH));
+        assert!(
+            !snap
+                .flags()
+                .contains(AppInfoFlags::SUPPORTS_OPATH)
+        );
         assert_eq!(snap.usb_queries(), None);
 
         let networked =
@@ -1357,17 +1447,24 @@ mod tests {
     fn validates_dynamic_launcher_entries() {
         let host = AppInfo::host("s");
         let mut entry = KeyFile::parse("[Desktop Entry]\nExec=true\n").unwrap();
-        host.validate_dynamic_launcher(&mut entry).unwrap();
+        host.validate_dynamic_launcher(&mut entry)
+            .unwrap();
 
         let flatpak = AppInfo::from_flatpak_info("s", flatpak_info()).unwrap();
         let mut entry = KeyFile::parse("[Desktop Entry]\nName=Calc\nExec=gnome-calculator --open\n").unwrap();
-        flatpak.validate_dynamic_launcher(&mut entry).unwrap();
+        flatpak
+            .validate_dynamic_launcher(&mut entry)
+            .unwrap();
         assert_eq!(
-            entry.get("Desktop Entry", "Exec").unwrap(),
+            entry
+                .get("Desktop Entry", "Exec")
+                .unwrap(),
             "flatpak run --command=gnome-calculator 'org.example.App' --open"
         );
         assert_eq!(
-            entry.get("Desktop Entry", "X-Flatpak").unwrap(),
+            entry
+                .get("Desktop Entry", "X-Flatpak")
+                .unwrap(),
             "org.example.App"
         );
         assert_eq!(entry.get("Desktop Entry", "TryExec"), None);
@@ -1434,7 +1531,9 @@ mod tests {
         // a plain read-only open.
         let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
         assert!(fd >= 0, "opening /dev/null must succeed");
-        let resolved = host.path_for_fd(fd, 0).unwrap();
+        let resolved = host
+            .path_for_fd(fd, 0)
+            .unwrap();
         assert_eq!(resolved.path, "/dev/null");
         assert!(resolved.writable, "host apps may write");
         assert!(
@@ -1462,7 +1561,9 @@ mod tests {
         // SAFETY: `path` is a valid C string.
         let fd = unsafe { libc::open(path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
         assert!(fd >= 0, "opening an O_PATH fd must succeed");
-        let resolved = host.path_for_fd(fd, 0).unwrap();
+        let resolved = host
+            .path_for_fd(fd, 0)
+            .unwrap();
         assert_eq!(resolved.path, "/dev/null");
         assert!(resolved.writable);
         // SAFETY: `fd` is open and will be closed.
@@ -1471,13 +1572,23 @@ mod tests {
         // A real regular file satisfies the S_IFREG requirement.
         let temp = std::env::temp_dir().join(format!("codevar-xdp-app-info-{}", std::process::id()));
         std::fs::write(&temp, b"codevar").unwrap();
-        let temp_c = CString::new(temp.to_str().unwrap()).unwrap();
+        let temp_c = CString::new(
+            temp.to_str()
+                .unwrap(),
+        )
+        .unwrap();
         // SAFETY: `temp_c` is a valid C string; O_RDWR matches the
         // "writable" expectation tested below.
         let fd = unsafe { libc::open(temp_c.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
         assert!(fd >= 0, "opening the temp file must succeed");
-        let resolved = host.path_for_fd(fd, libc::S_IFREG).unwrap();
-        assert_eq!(resolved.path, temp.to_str().unwrap());
+        let resolved = host
+            .path_for_fd(fd, libc::S_IFREG)
+            .unwrap();
+        assert_eq!(
+            resolved.path,
+            temp.to_str()
+                .unwrap()
+        );
         assert!(resolved.writable, "O_RDWR fd is writable");
         // SAFETY: `fd` is open and will be closed.
         unsafe { libc::close(fd) };

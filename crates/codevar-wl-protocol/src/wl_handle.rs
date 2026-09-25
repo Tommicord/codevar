@@ -452,7 +452,11 @@ impl Iterator for WlMessageArgs {
         let item = WlMessageArg {
             index: self.index,
             details,
-            interface: self.types.get(self.index).copied().flatten(),
+            interface: self
+                .types
+                .get(self.index)
+                .copied()
+                .flatten(),
         };
         self.pos = next;
         self.index += 1;
@@ -530,7 +534,10 @@ impl WlMessage {
     #[inline]
     #[must_use]
     pub fn type_at(&self, index: usize) -> Option<&'static WlInterface> {
-        self.types.get(index).copied().flatten()
+        self.types
+            .get(index)
+            .copied()
+            .flatten()
     }
 }
 
@@ -588,14 +595,16 @@ impl WlInterface {
     #[inline]
     #[must_use]
     pub fn request_at(&self, opcode: u32) -> Option<&WlMessage> {
-        self.requests.get(opcode as usize)
+        self.requests
+            .get(opcode as usize)
     }
 
     /// Returns the event registered at `opcode`.
     #[inline]
     #[must_use]
     pub fn event_at(&self, opcode: u32) -> Option<&WlMessage> {
-        self.events.get(opcode as usize)
+        self.events
+            .get(opcode as usize)
     }
 
     /// Returns `true` when both descriptions refer to the same interface.
@@ -730,32 +739,37 @@ impl WlArray {
     #[inline]
     #[must_use]
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.0
+            .len()
     }
 
     /// Returns `true` when the array holds no bytes.
     #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.0
+            .is_empty()
     }
 
     /// Appends a single byte.
     #[inline]
     pub fn push(&mut self, byte: u8) {
-        self.0.push(byte);
+        self.0
+            .push(byte);
     }
 
     /// Appends the contents of `bytes`.
     #[inline]
     pub fn extend_from_slice(&mut self, bytes: &[u8]) {
-        self.0.extend_from_slice(bytes);
+        self.0
+            .extend_from_slice(bytes);
     }
 
     /// Removes all bytes from the array.
     #[inline]
     pub fn clear(&mut self) {
-        self.0.clear();
+        self.0
+            .clear();
     }
 
     /// Consumes the array, returning its bytes.
@@ -1036,7 +1050,11 @@ impl<T> WlMap<T> {
     /// Returns the total number of tracked ids.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.client.len() + self.server.len()
+        self.client
+            .len()
+            + self
+                .server
+                .len()
     }
 
     /// Returns `true` when no id has ever been allocated.
@@ -1108,7 +1126,10 @@ impl<T> WlMap<T> {
                 entries.len() - 1
             }
         };
-        Ok(index as u32 + self.side.base())
+        Ok(index as u32
+            + self
+                .side
+                .base())
     }
 
     /// Inserts an object at a caller chosen id.
@@ -1121,7 +1142,9 @@ impl<T> WlMap<T> {
     /// Returns [`WlError::TooManyObjects`] when `id` is out of range and
     /// [`WlError::InvalidArgument`] when `id` skips ahead in the id space.
     pub fn insert_at(&mut self, id: u32, data: T) -> WlResult<()> {
-        let (entries, index) = self.parts_mut(id).ok_or(WlError::InvalidObject(id))?;
+        let (entries, index) = self
+            .parts_mut(id)
+            .ok_or(WlError::InvalidObject(id))?;
         if index as u32 > MAP_MAX_OBJECTS {
             return Err(WlError::TooManyObjects);
         }
@@ -1146,12 +1169,17 @@ impl<T> WlMap<T> {
     /// allocating side of the map or is already in use, and
     /// [`WlError::TooManyObjects`] when the id is out of range.
     pub fn reserve_new(&mut self, id: u32) -> WlResult<()> {
-        if self.side.owns(id) {
+        if self
+            .side
+            .owns(id)
+        {
             return Err(WlError::invalid_argument(format!(
                 "id {id} belongs to the local id space"
             )));
         }
-        let (entries, index) = self.parts_mut(id).ok_or(WlError::InvalidObject(id))?;
+        let (entries, index) = self
+            .parts_mut(id)
+            .ok_or(WlError::InvalidObject(id))?;
         if index as u32 > MAP_MAX_OBJECTS {
             return Err(WlError::TooManyObjects);
         }
@@ -1176,7 +1204,9 @@ impl<T> WlMap<T> {
     ///
     /// Returns the same errors as [`WlMap::insert_at`].
     pub fn vacate_at(&mut self, id: u32) -> WlResult<()> {
-        let (entries, index) = self.parts_mut(id).ok_or(WlError::InvalidObject(id))?;
+        let (entries, index) = self
+            .parts_mut(id)
+            .ok_or(WlError::InvalidObject(id))?;
         if index as u32 > MAP_MAX_OBJECTS {
             return Err(WlError::TooManyObjects);
         }
@@ -1199,7 +1229,9 @@ impl<T> WlMap<T> {
     ///
     /// Returns [`WlError::InvalidObject`] when the id has no live object.
     pub fn make_zombie(&mut self, id: u32, interface: &'static WlInterface) -> WlResult<()> {
-        let (entries, index) = self.parts_mut(id).ok_or(WlError::InvalidObject(id))?;
+        let (entries, index) = self
+            .parts_mut(id)
+            .ok_or(WlError::InvalidObject(id))?;
         match entries.get_mut(index) {
             Some(entry @ WlMapEntry::Live(_)) => {
                 *entry = WlMapEntry::Zombie { interface };
@@ -1213,7 +1245,10 @@ impl<T> WlMap<T> {
     ///
     /// Returns `true` when the id was present.
     pub fn remove(&mut self, id: u32) -> bool {
-        if !self.side.owns(id) {
+        if !self
+            .side
+            .owns(id)
+        {
             return false;
         }
         let index = if id < SERVER_ID_START {
@@ -1406,7 +1441,13 @@ impl WlList {
 
     /// Unlinks the node from its list and re-initializes it.
     pub fn remove(&mut self) {
-        if self.prev.is_null() || self.next.is_null() {
+        if self
+            .prev
+            .is_null()
+            || self
+                .next
+                .is_null()
+        {
             self.init();
             return;
         }
@@ -1497,7 +1538,11 @@ impl Iterator for WlListIter {
     type Item = *mut WlList;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if core::ptr::eq(self.next.cast_const(), self.head) {
+        if core::ptr::eq(
+            self.next
+                .cast_const(),
+            self.head,
+        ) {
             return None;
         }
         let current = self.next;
@@ -1554,7 +1599,12 @@ pub struct WlSignal<C, T> {
 impl<C, T> fmt::Debug for WlSignal<C, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WlSignal")
-            .field("listeners", &self.listeners.len())
+            .field(
+                "listeners",
+                &self
+                    .listeners
+                    .len(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -1573,27 +1623,35 @@ impl<C, T> WlSignal<C, T> {
     pub fn add(&mut self, listener: impl FnMut(&mut C, &T) + 'static) -> WlListenerId {
         self.next_id += 1;
         let id = WlListenerId(self.next_id);
-        self.listeners.push((id, Box::new(listener)));
+        self.listeners
+            .push((id, Box::new(listener)));
         id
     }
 
     /// Removes a listener, returning `true` when it was registered.
     pub fn remove(&mut self, id: WlListenerId) -> bool {
-        let before = self.listeners.len();
-        self.listeners.retain(|(listener_id, _)| *listener_id != id);
-        self.listeners.len() != before
+        let before = self
+            .listeners
+            .len();
+        self.listeners
+            .retain(|(listener_id, _)| *listener_id != id);
+        self.listeners
+            .len()
+            != before
     }
 
     /// Returns the number of registered listeners.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.listeners.len()
+        self.listeners
+            .len()
     }
 
     /// Returns `true` when no listener is registered.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.listeners.is_empty()
+        self.listeners
+            .is_empty()
     }
 
     /// Calls every listener with mutable access to `container`.
@@ -1603,8 +1661,14 @@ impl<C, T> WlSignal<C, T> {
     /// while it is emitted are merged back by
     /// [`WlSignal::absorb`].
     pub fn emit(&mut self, container: &mut C, payload: &T) {
-        for index in 0..self.listeners.len() {
-            if let Some((_, listener)) = self.listeners.get_mut(index) {
+        for index in 0..self
+            .listeners
+            .len()
+        {
+            if let Some((_, listener)) = self
+                .listeners
+                .get_mut(index)
+            {
                 listener(container, payload);
             }
         }
@@ -1612,8 +1676,11 @@ impl<C, T> WlSignal<C, T> {
 
     /// Merges listeners registered on `pending` while the signal was emitted.
     pub fn absorb(&mut self, pending: &mut Self) {
-        self.listeners.append(&mut pending.listeners);
-        self.next_id = self.next_id.max(pending.next_id);
+        self.listeners
+            .append(&mut pending.listeners);
+        self.next_id = self
+            .next_id
+            .max(pending.next_id);
         pending.next_id = self.next_id;
     }
 }
@@ -1684,12 +1751,33 @@ mod tests {
     #[test]
     fn builtin_interfaces_have_consistent_types() {
         for interface in [&DISPLAY_INTERFACE, &REGISTRY_INTERFACE, &CALLBACK_INTERFACE] {
-            for message in interface.requests.iter().chain(interface.events.iter()) {
-                assert_eq!(message.arg_count(), message.types.len());
+            for message in interface
+                .requests
+                .iter()
+                .chain(
+                    interface
+                        .events
+                        .iter(),
+                )
+            {
+                assert_eq!(
+                    message.arg_count(),
+                    message
+                        .types
+                        .len()
+                );
             }
         }
-        assert!(DISPLAY_INTERFACE.request("sync").is_some());
-        assert!(DISPLAY_INTERFACE.event("delete_id").is_some());
+        assert!(
+            DISPLAY_INTERFACE
+                .request("sync")
+                .is_some()
+        );
+        assert!(
+            DISPLAY_INTERFACE
+                .event("delete_id")
+                .is_some()
+        );
         assert_eq!(REGISTRY_INTERFACE.requests[0].name, "bind");
         assert!(DISPLAY_INTERFACE.equal(&DISPLAY_INTERFACE));
         assert!(!DISPLAY_INTERFACE.equal(&REGISTRY_INTERFACE));
@@ -1699,23 +1787,41 @@ mod tests {
     fn argument_validation_checks_type_and_nullability() {
         let nullable = WlArgDetails::new(WlArgType::String, true);
         let strict = WlArgDetails::new(WlArgType::String, false);
-        assert!(WlArgument::Str(None).validate(nullable).is_ok());
-        assert!(WlArgument::Str(None).validate(strict).is_err());
-        assert!(WlArgument::Uint(1).validate(strict).is_err());
+        assert!(
+            WlArgument::Str(None)
+                .validate(nullable)
+                .is_ok()
+        );
+        assert!(
+            WlArgument::Str(None)
+                .validate(strict)
+                .is_err()
+        );
+        assert!(
+            WlArgument::Uint(1)
+                .validate(strict)
+                .is_err()
+        );
     }
 
     #[test]
     fn map_allocates_frees_and_reuses_client_ids() {
         let mut map: WlMap<u32> = WlMap::new(WlMapSide::Client);
-        let first = map.insert_new(10).unwrap();
+        let first = map
+            .insert_new(10)
+            .unwrap();
         assert_eq!(first, 1);
-        let second = map.insert_new(20).unwrap();
+        let second = map
+            .insert_new(20)
+            .unwrap();
         assert_eq!(second, 2);
         assert_eq!(map.lookup(1), Some(&10));
 
         assert!(map.remove(1));
         assert_eq!(map.lookup(1), None);
-        let reused = map.insert_new(30).unwrap();
+        let reused = map
+            .insert_new(30)
+            .unwrap();
         assert_eq!(reused, 1);
         assert_eq!(map.lookup(1), Some(&30));
         assert_eq!(map.lookup(2), Some(&20));
@@ -1726,17 +1832,30 @@ mod tests {
         let mut map: WlMap<u32> = WlMap::new(WlMapSide::Server);
         // Reserve the whole dense prefix the peer could have allocated.
         for id in 1..=7 {
-            map.reserve_new(id).unwrap();
+            map.reserve_new(id)
+                .unwrap();
         }
         assert!(map.is_vacant(7));
-        assert!(map.reserve_new(9).is_err());
-        assert!(map.reserve_new(SERVER_ID_START).is_err());
+        assert!(
+            map.reserve_new(9)
+                .is_err()
+        );
+        assert!(
+            map.reserve_new(SERVER_ID_START)
+                .is_err()
+        );
 
-        map.insert_at(7, 42).unwrap();
+        map.insert_at(7, 42)
+            .unwrap();
         assert_eq!(map.lookup(7), Some(&42));
-        assert!(map.reserve_new(7).is_err());
+        assert!(
+            map.reserve_new(7)
+                .is_err()
+        );
 
-        let server_id = map.insert_new(99).unwrap();
+        let server_id = map
+            .insert_new(99)
+            .unwrap();
         assert_eq!(server_id, SERVER_ID_START);
         assert_eq!(map.lookup(server_id), Some(&99));
     }
@@ -1744,8 +1863,11 @@ mod tests {
     #[test]
     fn map_tracks_zombies_until_removed() {
         let mut map: WlMap<u32> = WlMap::new(WlMapSide::Client);
-        let id = map.insert_new(1).unwrap();
-        map.make_zombie(id, &REGISTRY_INTERFACE).unwrap();
+        let id = map
+            .insert_new(1)
+            .unwrap();
+        map.make_zombie(id, &REGISTRY_INTERFACE)
+            .unwrap();
         assert!(map.is_zombie(id));
         assert_eq!(map.lookup(id), None);
         assert_eq!(map.zombie_interface(id), Some(&REGISTRY_INTERFACE));
@@ -1757,19 +1879,26 @@ mod tests {
     fn map_take_leaves_vacant_entry() {
         let mut map: WlMap<u32> = WlMap::new(WlMapSide::Server);
         assert_eq!(map.take(1), None);
-        map.insert_at(1, 5).unwrap();
+        map.insert_at(1, 5)
+            .unwrap();
         assert_eq!(map.take(1), Some(5));
         assert!(map.is_vacant(1));
-        map.insert_at(1, 6).unwrap();
+        map.insert_at(1, 6)
+            .unwrap();
         assert_eq!(map.lookup(1), Some(&6));
     }
 
     #[test]
     fn map_iterates_live_entries_in_id_order() {
         let mut map: WlMap<u32> = WlMap::new(WlMapSide::Server);
-        map.insert_at(1, 10).unwrap();
-        let server_id = map.insert_new(20).unwrap();
-        let collected: Vec<(u32, &u32)> = map.iter().collect();
+        map.insert_at(1, 10)
+            .unwrap();
+        let server_id = map
+            .insert_new(20)
+            .unwrap();
+        let collected: Vec<(u32, &u32)> = map
+            .iter()
+            .collect();
         assert_eq!(collected, alloc::vec![(1, &10), (server_id, &20)]);
     }
 
@@ -1803,7 +1932,9 @@ mod tests {
             value: 77,
             link: WlList::new(),
         });
-        holder.link.init();
+        holder
+            .link
+            .init();
         let owner: *mut Holder = &mut *holder;
         unsafe {
             let link = core::ptr::addr_of_mut!((*owner).link);
@@ -1823,12 +1954,18 @@ mod tests {
             signal: WlSignal::new(),
             seen: 0,
         };
-        let id = source.signal.add(|container, payload| {
-            container.seen += payload;
-        });
+        let id = source
+            .signal
+            .add(|container, payload| {
+                container.seen += payload;
+            });
         wl_signal_emit!(source, signal, &3);
         assert_eq!(source.seen, 3);
-        assert!(source.signal.remove(id));
+        assert!(
+            source
+                .signal
+                .remove(id)
+        );
         wl_signal_emit!(source, signal, &5);
         assert_eq!(source.seen, 3);
     }

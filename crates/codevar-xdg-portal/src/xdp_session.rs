@@ -206,6 +206,10 @@ mod tests {
         assert_eq!(handle.sender, ":1.42");
         assert_eq!(handle.created_ms, 12345);
         assert!(!handle.is_closed);
-        assert!(handle.reason.is_none());
+        assert!(
+            handle
+                .reason
+                .is_none()
+        );
     }
 }

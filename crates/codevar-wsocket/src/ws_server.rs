@@ -60,102 +60,161 @@ impl ServerConnection {
     /// Request-target path from the client's Upgrade request, if accepted.
     #[must_use]
     pub fn path(&self) -> Option<&str> {
-        self.handshake.request.as_ref().map(|r| r.path.as_str())
+        self.handshake
+            .request
+            .as_ref()
+            .map(|r| {
+                r.path
+                    .as_str()
+            })
     }
 
     /// Negotiated subprotocol after a successful handshake.
     #[must_use]
     pub fn protocol(&self) -> Option<&str> {
-        self.common.protocol.as_deref()
+        self.common
+            .protocol
+            .as_deref()
     }
 
     /// Current connection lifecycle state.
     #[must_use]
     pub fn state(&self) -> ConnectionState {
-        self.common.state
+        self.common
+            .state
     }
 
     /// Returns `true` when the opening handshake has completed.
     #[must_use]
     pub fn is_open(&self) -> bool {
-        self.common.is_open()
+        self.common
+            .is_open()
     }
 
     /// Returns `true` while waiting for / processing the Upgrade request.
     #[must_use]
     pub fn is_handshaking(&self) -> bool {
-        self.common.is_connecting()
+        self.common
+            .is_connecting()
     }
 
     /// Returns `true` when the connection is fully closed.
     #[must_use]
     pub fn is_closed(&self) -> bool {
-        self.common.is_closed()
+        self.common
+            .is_closed()
     }
 
     /// Returns `true` when outbound bytes are pending.
     #[must_use]
     pub fn wants_write(&self) -> bool {
-        self.common.wants_write()
+        self.common
+            .wants_write()
     }
 
     /// Returns `true` when more network input may be useful.
     #[must_use]
     pub fn wants_read(&self) -> bool {
-        self.common.wants_read()
+        self.common
+            .wants_read()
     }
 
     /// Feeds transport bytes received from the peer.
     pub fn feed(&mut self, data: &[u8]) -> WsResult<()> {
-        if self.common.is_closed() && data.is_empty() {
+        if self
+            .common
+            .is_closed()
+            && data.is_empty()
+        {
             return Ok(());
         }
-        if self.common.is_closed() {
+        if self
+            .common
+            .is_closed()
+        {
             return Err(WsError::Closed);
         }
-        self.common.feed(data);
+        self.common
+            .feed(data);
         Ok(())
     }
 
     /// Drains all buffered outbound transport bytes.
     pub fn take_write(&mut self) -> Vec<u8> {
-        self.common.take_write()
+        self.common
+            .take_write()
     }
 
     /// Processes buffered input: completes the handshake and/or parses frames.
     pub fn process(&mut self) -> WsResult<IoState> {
-        if self.common.is_connecting() {
+        if self
+            .common
+            .is_connecting()
+        {
             self.process_handshake()?;
         }
-        if self.common.is_open() || self.common.state == ConnectionState::Closing {
-            return self.common.process_frames();
+        if self
+            .common
+            .is_open()
+            || self
+                .common
+                .state
+                == ConnectionState::Closing
+        {
+            return self
+                .common
+                .process_frames();
         }
         Ok(IoState {
-            pending_rx: self.common.rx_buf().len(),
-            pending_tx: self.common.pending_tx_len(),
-            pending_messages: self.common.pending_messages(),
+            pending_rx: self
+                .common
+                .rx_buf()
+                .len(),
+            pending_tx: self
+                .common
+                .pending_tx_len(),
+            pending_messages: self
+                .common
+                .pending_messages(),
         })
     }
 
     fn process_handshake(&mut self) -> WsResult<()> {
-        match try_parse_request(self.common.rx_buf())? {
+        match try_parse_request(
+            self.common
+                .rx_buf(),
+        )? {
             Some((request, consumed)) => {
-                self.common.consume_rx(consumed);
-                match self.handshake.accept_request(request) {
+                self.common
+                    .consume_rx(consumed);
+                match self
+                    .handshake
+                    .accept_request(request)
+                {
                     Ok(()) => {
-                        let response = self.handshake.encode_response()?;
-                        self.common.queue_raw(&response);
+                        let response = self
+                            .handshake
+                            .encode_response()?;
                         self.common
-                            .mark_open(self.handshake.selected_protocol.clone());
+                            .queue_raw(&response);
+                        self.common
+                            .mark_open(
+                                self.handshake
+                                    .selected_protocol
+                                    .clone(),
+                            );
                         Ok(())
                     }
                     Err(e) => {
                         // Advertise supported version on version mismatch.
-                        if e.to_string().contains("Sec-WebSocket-Version") {
+                        if e.to_string()
+                            .contains("Sec-WebSocket-Version")
+                        {
                             self.common
                                 .queue_raw(&WsServerHandshake::encode_version_rejection());
                         }
-                        self.common.state = ConnectionState::Closed;
+                        self.common
+                            .state = ConnectionState::Closed;
                         Err(e)
                     }
                 }
@@ -166,52 +225,66 @@ impl ServerConnection {
 
     /// Sends a UTF-8 text message.
     pub fn send_text(&mut self, text: &str) -> WsResult<()> {
-        self.common.send_text(text)
+        self.common
+            .send_text(text)
     }
 
     /// Sends a binary message.
     pub fn send_binary(&mut self, data: &[u8]) -> WsResult<()> {
-        self.common.send_binary(data)
+        self.common
+            .send_binary(data)
     }
 
     /// Sends a Ping control frame.
     pub fn send_ping(&mut self, payload: &[u8]) -> WsResult<()> {
-        self.common.send_ping(payload)
+        self.common
+            .send_ping(payload)
     }
 
     /// Sends a Pong control frame.
     pub fn send_pong(&mut self, payload: &[u8]) -> WsResult<()> {
-        self.common.send_pong(payload)
+        self.common
+            .send_pong(payload)
     }
 
     /// Sends an arbitrary frame (advanced use; prefer the typed senders).
     pub fn send_frame(&mut self, frame: &WsFrame) -> WsResult<()> {
-        self.common.send_frame(frame)
+        self.common
+            .send_frame(frame)
     }
 
     /// Starts the closing handshake.
     pub fn close(&mut self, code: WsCloseCode, reason: &str) -> WsResult<()> {
-        self.common.close(code, reason)
+        self.common
+            .close(code, reason)
     }
 
     /// Pops the next complete message, if any.
     pub fn read_message(&mut self) -> WsResult<Option<WsMessage>> {
-        if let Some(ref e) = self.common.error {
+        if let Some(ref e) = self
+            .common
+            .error
+        {
             return Err(e.clone());
         }
-        Ok(self.common.read_message())
+        Ok(self
+            .common
+            .read_message())
     }
 
     /// Peer close code from the first received Close frame.
     #[must_use]
     pub fn peer_close_code(&self) -> Option<WsCloseCode> {
-        self.common.peer_close_code
+        self.common
+            .peer_close_code
     }
 
     /// Peer close reason from the first received Close frame.
     #[must_use]
     pub fn peer_close_reason(&self) -> Option<&str> {
-        self.common.peer_close_reason.as_deref()
+        self.common
+            .peer_close_reason
+            .as_deref()
     }
 
     /// Immutable access to shared state (for diagnostics).
@@ -245,7 +318,9 @@ mod tests {
 
     fn masked(frame: &WsFrame, key: [u8; 4]) -> Vec<u8> {
         let mut out = Vec::new();
-        frame.encode(&mut out, Some(key)).expect("encode");
+        frame
+            .encode(&mut out, Some(key))
+            .expect("encode");
         out
     }
 
@@ -257,10 +332,20 @@ mod tests {
         assert!(!server.is_closed());
         assert!(!server.wants_write());
         assert!(server.wants_read());
-        assert!(server.path().is_none());
-        assert!(server.protocol().is_none());
+        assert!(
+            server
+                .path()
+                .is_none()
+        );
+        assert!(
+            server
+                .protocol()
+                .is_none()
+        );
 
-        let io = server.process().expect("process");
+        let io = server
+            .process()
+            .expect("process");
         assert_eq!(io.pending_rx, 0);
         assert_eq!(io.pending_tx, 0);
         assert!(server.is_handshaking());
@@ -270,8 +355,12 @@ mod tests {
     fn upgrade_request_completes_handshake_and_queues_101() {
         let mut server = ServerConnection::accept(None).expect("accept");
         let request = upgrade_request("/chat", "13", VALID_KEY, "");
-        server.feed(&request).expect("feed");
-        server.process().expect("process");
+        server
+            .feed(&request)
+            .expect("feed");
+        server
+            .process()
+            .expect("process");
         assert!(server.is_open());
         assert!(!server.is_handshaking());
         assert_eq!(server.path(), Some("/chat"));
@@ -297,7 +386,9 @@ mod tests {
         // Rebuild with the same key the request used.
         client.key_b64 = VALID_KEY.to_string();
         client.expected_accept = crate::ws_handshake::compute_accept_key(VALID_KEY);
-        client.validate_response(&resp).expect("validate");
+        client
+            .validate_response(&resp)
+            .expect("validate");
     }
 
     #[test]
@@ -305,9 +396,16 @@ mod tests {
         let request = upgrade_request("/", "13", VALID_KEY, "");
 
         let mut incremental = ServerConnection::accept(None).expect("accept");
-        for (i, b) in request.iter().enumerate() {
-            incremental.feed(&[*b]).expect("feed");
-            incremental.process().expect("process");
+        for (i, b) in request
+            .iter()
+            .enumerate()
+        {
+            incremental
+                .feed(&[*b])
+                .expect("feed");
+            incremental
+                .process()
+                .expect("process");
             if i + 1 < request.len() {
                 assert!(incremental.is_handshaking(), "opened early at byte {i}");
             }
@@ -315,8 +413,12 @@ mod tests {
         assert!(incremental.is_open());
 
         let mut at_once = ServerConnection::accept(None).expect("accept");
-        at_once.feed(&request).expect("feed");
-        at_once.process().expect("process");
+        at_once
+            .feed(&request)
+            .expect("feed");
+        at_once
+            .process()
+            .expect("process");
         assert!(at_once.is_open());
         assert_eq!(at_once.state(), incremental.state());
         assert_eq!(at_once.path(), incremental.path());
@@ -327,10 +429,17 @@ mod tests {
         let mut server = ServerConnection::accept(None).expect("accept");
         let mut payload = upgrade_request("/", "13", VALID_KEY, "");
         payload.extend(masked(&WsFrame::text(b"early"), [9, 9, 9, 9]));
-        server.feed(&payload).expect("feed");
-        server.process().expect("process");
+        server
+            .feed(&payload)
+            .expect("feed");
+        server
+            .process()
+            .expect("process");
         assert!(server.is_open());
-        match server.read_message().expect("read") {
+        match server
+            .read_message()
+            .expect("read")
+        {
             Some(WsMessage::Text(t)) => assert_eq!(t, "early"),
             other => panic!("unexpected {other:?}"),
         }
@@ -341,14 +450,22 @@ mod tests {
         let mut server = ServerConnection::accept(None).expect("accept");
         let request = upgrade_request("/", "13", VALID_KEY, "");
         let split = request.len() / 2;
-        server.feed(&request[..split]).expect("feed");
-        let io = server.process().expect("process");
+        server
+            .feed(&request[..split])
+            .expect("feed");
+        let io = server
+            .process()
+            .expect("process");
         assert_eq!(io.pending_rx, split);
         assert!(server.is_handshaking());
         assert!(!server.wants_write());
 
-        server.feed(&request[split..]).expect("feed");
-        server.process().expect("process");
+        server
+            .feed(&request[split..])
+            .expect("feed");
+        server
+            .process()
+            .expect("process");
         assert!(server.is_open());
     }
 
@@ -356,9 +473,16 @@ mod tests {
     fn wrong_version_gets_400_rejection_and_closes() {
         let mut server = ServerConnection::accept(None).expect("accept");
         let request = upgrade_request("/", "12", VALID_KEY, "");
-        server.feed(&request).expect("feed");
-        let err = server.process().expect_err("bad version");
-        assert!(err.to_string().contains("Sec-WebSocket-Version"));
+        server
+            .feed(&request)
+            .expect("feed");
+        let err = server
+            .process()
+            .expect_err("bad version");
+        assert!(
+            err.to_string()
+                .contains("Sec-WebSocket-Version")
+        );
         assert!(server.is_closed());
 
         let rejection = server.take_write();
@@ -367,7 +491,9 @@ mod tests {
         assert!(text.contains("Sec-WebSocket-Version: 13\r\n"));
         assert!(text.contains("Content-Length: 0\r\n"));
 
-        server.feed(&[]).expect("empty feed");
+        server
+            .feed(&[])
+            .expect("empty feed");
         assert!(matches!(server.feed(&[1u8]), Err(WsError::Closed)));
     }
 
@@ -377,15 +503,21 @@ mod tests {
         // connecting (mirrors the client-side parse-error quirk).
         let mut server = ServerConnection::accept(None).expect("accept");
         let post = b"POST / HTTP/1.1\r\nHost: h\r\n\r\n".to_vec();
-        server.feed(&post).expect("feed");
-        let err = server.process().expect_err("non-get");
+        server
+            .feed(&post)
+            .expect("feed");
+        let err = server
+            .process()
+            .expect_err("non-get");
         assert!(matches!(err, WsError::Handshake(_)));
         assert!(server.is_handshaking());
         assert!(!server.wants_write());
 
         // Garbage request line behaves the same way.
         let mut server2 = ServerConnection::accept(None).expect("accept");
-        server2.feed(b"GARBAGE\r\n\r\n").expect("feed");
+        server2
+            .feed(b"GARBAGE\r\n\r\n")
+            .expect("feed");
         assert!(matches!(server2.process(), Err(WsError::Handshake(_))));
         assert!(server2.is_handshaking());
     }
@@ -400,26 +532,44 @@ mod tests {
              Connection: Upgrade\r\n\
              Sec-WebSocket-Version: 13\r\n\r\n"
             .to_string();
-        server.feed(no_key.as_bytes()).expect("feed");
-        let err = server.process().expect_err("missing key");
-        assert!(err.to_string().contains("Sec-WebSocket-Key"));
+        server
+            .feed(no_key.as_bytes())
+            .expect("feed");
+        let err = server
+            .process()
+            .expect_err("missing key");
+        assert!(
+            err.to_string()
+                .contains("Sec-WebSocket-Key")
+        );
         assert!(server.is_closed());
         assert!(!server.wants_write());
 
         // Key that decodes to 8 bytes instead of 16.
         let mut server2 = ServerConnection::accept(None).expect("accept");
         let short_key = upgrade_request("/", "13", "MTIzNDU2Nzg=", "");
-        server2.feed(&short_key).expect("feed");
-        let err2 = server2.process().expect_err("short key");
-        assert!(err2.to_string().contains("16 bytes"));
+        server2
+            .feed(&short_key)
+            .expect("feed");
+        let err2 = server2
+            .process()
+            .expect_err("short key");
+        assert!(
+            err2.to_string()
+                .contains("16 bytes")
+        );
         assert!(server2.is_closed());
         assert!(!server2.wants_write());
 
         // Malformed Base64 key surfaces a decode error and closes.
         let mut server3 = ServerConnection::accept(None).expect("accept");
         let bad_key = upgrade_request("/", "13", "****", "");
-        server3.feed(&bad_key).expect("feed");
-        let err3 = server3.process().expect_err("bad key");
+        server3
+            .feed(&bad_key)
+            .expect("feed");
+        let err3 = server3
+            .process()
+            .expect_err("bad key");
         assert!(matches!(err3, WsError::Decode(_)));
         assert!(server3.is_closed());
         assert!(!server3.wants_write());
@@ -430,8 +580,12 @@ mod tests {
         let mut server =
             ServerConnection::accept(Some(vec!["a".to_string(), "b".to_string()])).expect("accept");
         let request = upgrade_request("/", "13", VALID_KEY, "Sec-WebSocket-Protocol: b, a\r\n");
-        server.feed(&request).expect("feed");
-        server.process().expect("process");
+        server
+            .feed(&request)
+            .expect("feed");
+        server
+            .process()
+            .expect("process");
         assert!(server.is_open());
         assert_eq!(server.protocol(), Some("b"));
 
@@ -441,8 +595,12 @@ mod tests {
         // No mutual protocol -> none selected, no protocol header.
         let mut server2 = ServerConnection::accept(Some(vec!["z".to_string()])).expect("accept");
         let request2 = upgrade_request("/", "13", VALID_KEY, "Sec-WebSocket-Protocol: a\r\n");
-        server2.feed(&request2).expect("feed");
-        server2.process().expect("process");
+        server2
+            .feed(&request2)
+            .expect("feed");
+        server2
+            .process()
+            .expect("process");
         assert_eq!(server2.protocol(), None);
         let response2 = String::from_utf8(server2.take_write()).expect("utf8");
         assert!(!response2.contains("Sec-WebSocket-Protocol"));
@@ -452,21 +610,32 @@ mod tests {
     fn masked_text_from_client_is_delivered_and_server_replies_unmasked() {
         let mut server = ServerConnection::accept(None).expect("accept");
         let request = upgrade_request("/", "13", VALID_KEY, "");
-        server.feed(&request).expect("feed");
-        server.process().expect("process");
+        server
+            .feed(&request)
+            .expect("feed");
+        server
+            .process()
+            .expect("process");
         assert!(server.is_open());
         server.take_write(); // drain the 101 handshake response
 
         server
             .feed(&masked(&WsFrame::text(b"hi"), [1, 2, 3, 4]))
             .expect("feed");
-        server.process().expect("process");
-        match server.read_message().expect("read") {
+        server
+            .process()
+            .expect("process");
+        match server
+            .read_message()
+            .expect("read")
+        {
             Some(WsMessage::Text(t)) => assert_eq!(t, "hi"),
             other => panic!("unexpected {other:?}"),
         }
 
-        server.send_text("yo").expect("send");
+        server
+            .send_text("yo")
+            .expect("send");
         let wire = server.take_write();
         assert_eq!(wire[0], 0x81);
         assert_eq!(wire[1] & 0x80, 0, "server frames must be unmasked");
@@ -480,18 +649,28 @@ mod tests {
     fn unmasked_frame_from_client_is_rejected() {
         let mut server = ServerConnection::accept(None).expect("accept");
         let request = upgrade_request("/", "13", VALID_KEY, "");
-        server.feed(&request).expect("feed");
-        server.process().expect("process");
+        server
+            .feed(&request)
+            .expect("feed");
+        server
+            .process()
+            .expect("process");
 
         let mut unmasked_frame = Vec::new();
         WsFrame::text(b"x")
             .encode(&mut unmasked_frame, None)
             .expect("encode");
-        server.feed(&unmasked_frame).expect("feed");
-        let err = server.process().expect_err("unmasked");
+        server
+            .feed(&unmasked_frame)
+            .expect("feed");
+        let err = server
+            .process()
+            .expect_err("unmasked");
         assert!(matches!(err, WsError::Protocol { .. }));
         assert!(server.is_closed());
-        let read_err = server.read_message().expect_err("sticky");
+        let read_err = server
+            .read_message()
+            .expect_err("sticky");
         assert!(matches!(read_err, WsError::Protocol { .. }));
     }
 
@@ -499,13 +678,21 @@ mod tests {
     fn ping_from_client_gets_unmasked_pong() {
         let mut server = ServerConnection::accept(None).expect("accept");
         let request = upgrade_request("/", "13", VALID_KEY, "");
-        server.feed(&request).expect("feed");
-        server.process().expect("process");
+        server
+            .feed(&request)
+            .expect("feed");
+        server
+            .process()
+            .expect("process");
         server.take_write(); // drain the 101 handshake response
 
         let ping = WsFrame::ping(b"tick").expect("ping frame");
-        server.feed(&masked(&ping, [5, 5, 5, 5])).expect("feed");
-        server.process().expect("process");
+        server
+            .feed(&masked(&ping, [5, 5, 5, 5]))
+            .expect("feed");
+        server
+            .process()
+            .expect("process");
         assert!(matches!(
             server.read_message().expect("read"),
             Some(WsMessage::Ping(p)) if p == b"tick"
@@ -524,14 +711,25 @@ mod tests {
     fn close_handshake_replies_unmasked_and_surfaces_message() {
         let mut server = ServerConnection::accept(None).expect("accept");
         let request = upgrade_request("/", "13", VALID_KEY, "");
-        server.feed(&request).expect("feed");
-        server.process().expect("process");
+        server
+            .feed(&request)
+            .expect("feed");
+        server
+            .process()
+            .expect("process");
         server.take_write();
 
         let close = WsFrame::close(Some(WsCloseCode::Normal), "done").expect("close frame");
-        server.feed(&masked(&close, [7, 7, 7, 7])).expect("feed");
-        server.process().expect("process");
-        match server.read_message().expect("read") {
+        server
+            .feed(&masked(&close, [7, 7, 7, 7]))
+            .expect("feed");
+        server
+            .process()
+            .expect("process");
+        match server
+            .read_message()
+            .expect("read")
+        {
             Some(WsMessage::Close { code, reason }) => {
                 assert_eq!(code, WsCloseCode::Normal);
                 assert_eq!(reason, "done");
@@ -566,15 +764,21 @@ mod tests {
         };
         let mut server = ServerConnection::accept_with_config(vec![], config).expect("accept");
         let request = upgrade_request("/", "13", VALID_KEY, "");
-        server.feed(&request).expect("feed");
-        server.process().expect("process");
+        server
+            .feed(&request)
+            .expect("feed");
+        server
+            .process()
+            .expect("process");
         assert!(server.is_open());
 
         // Feed only a 64-bit length header claiming 1 MiB (> 512 limit).
         server
             .feed(&[0x82u8, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00])
             .expect("feed");
-        let err = server.process().expect_err("too big");
+        let err = server
+            .process()
+            .expect_err("too big");
         assert_eq!(
             err,
             WsError::MessageTooBig {

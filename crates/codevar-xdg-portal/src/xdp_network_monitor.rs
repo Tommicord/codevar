@@ -75,10 +75,7 @@ fn filter_options_map(options: &OptionMap, supported: &[OptionKey]) -> Result<Op
     }
 }
 
-const CAN_REACH_OPTIONS: &[OptionKey] = &[
-    OptionKey::new("hostname", "s"),
-    OptionKey::new("port", "u"),
-];
+const CAN_REACH_OPTIONS: &[OptionKey] = &[OptionKey::new("hostname", "s"), OptionKey::new("port", "u")];
 
 /// Registers the NetworkMonitor portal interface.
 pub fn register<T: codevar_dbus::DbusTransport + 'static>(ctx: &mut PortalContext<T>) -> XdpResult<()> {
@@ -93,62 +90,62 @@ pub fn register<T: codevar_dbus::DbusTransport + 'static>(ctx: &mut PortalContex
     let iface_xml = XmlBuilder::new("interface")
         .attr("name", "org.freedesktop.portal.NetworkMonitor")
         .child("signal")
-            .attr("name", "changed")
+        .attr("name", "changed")
         .end()
         .child("method")
-            .attr("name", "GetAvailable")
-            .child("arg")
-                .attr("type", "b")
-                .attr("name", "available")
-                .attr("direction", "out")
-            .end()
+        .attr("name", "GetAvailable")
+        .child("arg")
+        .attr("type", "b")
+        .attr("name", "available")
+        .attr("direction", "out")
+        .end()
         .end()
         .child("method")
-            .attr("name", "GetMetered")
-            .child("arg")
-                .attr("type", "b")
-                .attr("name", "metered")
-                .attr("direction", "out")
-            .end()
+        .attr("name", "GetMetered")
+        .child("arg")
+        .attr("type", "b")
+        .attr("name", "metered")
+        .attr("direction", "out")
+        .end()
         .end()
         .child("method")
-            .attr("name", "GetConnectivity")
-            .child("arg")
-                .attr("type", "u")
-                .attr("name", "connectivity")
-                .attr("direction", "out")
-            .end()
+        .attr("name", "GetConnectivity")
+        .child("arg")
+        .attr("type", "u")
+        .attr("name", "connectivity")
+        .attr("direction", "out")
+        .end()
         .end()
         .child("method")
-            .attr("name", "GetStatus")
-            .child("arg")
-                .attr("type", "a{sv}")
-                .attr("name", "status")
-                .attr("direction", "out")
-            .end()
+        .attr("name", "GetStatus")
+        .child("arg")
+        .attr("type", "a{sv}")
+        .attr("name", "status")
+        .attr("direction", "out")
+        .end()
         .end()
         .child("method")
-            .attr("name", "CanReach")
-            .child("arg")
-                .attr("type", "s")
-                .attr("name", "hostname")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "u")
-                .attr("name", "port")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "b")
-                .attr("name", "reachable")
-                .attr("direction", "out")
-            .end()
+        .attr("name", "CanReach")
+        .child("arg")
+        .attr("type", "s")
+        .attr("name", "hostname")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "u")
+        .attr("name", "port")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "b")
+        .attr("name", "reachable")
+        .attr("direction", "out")
+        .end()
         .end()
         .child("property")
-            .attr("name", "version")
-            .attr("type", "u")
-            .attr("access", "read")
+        .attr("name", "version")
+        .attr("type", "u")
+        .attr("access", "read")
         .end()
         .build();
 
@@ -212,16 +209,11 @@ fn handle_get_metered<T: codevar_dbus::DbusTransport + 'static>(
         )));
     }
 
-    let reply = ctx.call_impl(
-        NETWORK_MONITOR_IMPL_INTERFACE,
-        "GetMetered",
-        IMPL_TIMEOUT,
-        |bw| {
-            bw.write_str("")?; // app_id
-            bw.write_str("")?; // parent_window
-            bw.write_array("{sv}", |_| Ok(())) // empty options
-        },
-    )?;
+    let reply = ctx.call_impl(NETWORK_MONITOR_IMPL_INTERFACE, "GetMetered", IMPL_TIMEOUT, |bw| {
+        bw.write_str("")?; // app_id
+        bw.write_str("")?; // parent_window
+        bw.write_array("{sv}", |_| Ok(())) // empty options
+    })?;
 
     let mut reply_reader = reply.body_reader();
     let metered = reply_reader.read_bool()?;
@@ -278,16 +270,11 @@ fn handle_get_status<T: codevar_dbus::DbusTransport + 'static>(
         )));
     }
 
-    let reply = ctx.call_impl(
-        NETWORK_MONITOR_IMPL_INTERFACE,
-        "GetStatus",
-        IMPL_TIMEOUT,
-        |bw| {
-            bw.write_str("")?; // app_id
-            bw.write_str("")?; // parent_window
-            bw.write_array("{sv}", |_| Ok(())) // empty options
-        },
-    )?;
+    let reply = ctx.call_impl(NETWORK_MONITOR_IMPL_INTERFACE, "GetStatus", IMPL_TIMEOUT, |bw| {
+        bw.write_str("")?; // app_id
+        bw.write_str("")?; // parent_window
+        bw.write_array("{sv}", |_| Ok(())) // empty options
+    })?;
 
     let mut reply_reader = reply.body_reader();
     let status = crate::xdp_utils::decode_options(&mut reply_reader)?;
@@ -300,7 +287,9 @@ fn handle_can_reach<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let hostname = reader.read_str()?.to_string();
+    let hostname = reader
+        .read_str()?
+        .to_string();
     let port = reader.read_u32()?;
     let options = decode_options(&mut reader)?;
 

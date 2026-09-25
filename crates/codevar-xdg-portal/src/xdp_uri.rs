@@ -53,25 +53,30 @@ const OPEN_DIRECTORY_OPTIONS: &[OptionKey] = &[
     OptionKey::new("handle_token", "s"),
 ];
 
-const SCHEME_SUPPORTED_OPTIONS: &[OptionKey] = &[
-    OptionKey::new("scheme", "s"),
-    OptionKey::new("options", "a{sv}"),
-];
+const SCHEME_SUPPORTED_OPTIONS: &[OptionKey] =
+    &[OptionKey::new("scheme", "s"), OptionKey::new("options", "a{sv}")];
 
 fn handle_open_uri<T: codevar_dbus::DbusTransport + 'static>(
     ctx: &mut PortalContext<T>,
     inv: &crate::xdp_context::MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let parent_window = reader.read_str()?.to_string();
-    let uri = reader.read_str()?.to_string();
+    let parent_window = reader
+        .read_str()?
+        .to_string();
+    let uri = reader
+        .read_str()?
+        .to_string();
     let options = crate::xdp_utils::decode_options(&mut reader)?;
 
     let filtered = filter_options(&options, OPEN_URI_OPTIONS)?;
 
     let handle = ctx.begin_request(inv, &filtered)?;
 
-    let app_id = handle.app_info.id().to_string();
+    let app_id = handle
+        .app_info
+        .id()
+        .to_string();
 
     ctx.call_impl(
         APP_CHOOSER_IMPL_INTERFACE,
@@ -96,7 +101,9 @@ fn handle_open_file<T: codevar_dbus::DbusTransport + 'static>(
     inv: &crate::xdp_context::MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let parent_window = reader.read_str()?.to_string();
+    let parent_window = reader
+        .read_str()?
+        .to_string();
     let fd = reader.read_fd()?;
     let options = crate::xdp_utils::decode_options(&mut reader)?;
 
@@ -104,7 +111,10 @@ fn handle_open_file<T: codevar_dbus::DbusTransport + 'static>(
 
     let handle = ctx.begin_request(inv, &filtered)?;
 
-    let app_id = handle.app_info.id().to_string();
+    let app_id = handle
+        .app_info
+        .id()
+        .to_string();
 
     ctx.call_impl(
         APP_CHOOSER_IMPL_INTERFACE,
@@ -129,7 +139,9 @@ fn handle_open_directory<T: codevar_dbus::DbusTransport + 'static>(
     inv: &crate::xdp_context::MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let parent_window = reader.read_str()?.to_string();
+    let parent_window = reader
+        .read_str()?
+        .to_string();
     let fd = reader.read_fd()?;
     let options = crate::xdp_utils::decode_options(&mut reader)?;
 
@@ -137,7 +149,10 @@ fn handle_open_directory<T: codevar_dbus::DbusTransport + 'static>(
 
     let handle = ctx.begin_request(inv, &filtered)?;
 
-    let app_id = handle.app_info.id().to_string();
+    let app_id = handle
+        .app_info
+        .id()
+        .to_string();
 
     ctx.call_impl(
         APP_CHOOSER_IMPL_INTERFACE,
@@ -162,24 +177,27 @@ fn handle_scheme_supported<T: codevar_dbus::DbusTransport + 'static>(
     inv: &crate::xdp_context::MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let scheme = reader.read_str()?.to_string();
+    let scheme = reader
+        .read_str()?
+        .to_string();
     let _options = crate::xdp_utils::decode_options(&mut reader)?;
 
     let _filtered = filter_options(&_options, SCHEME_SUPPORTED_OPTIONS)?;
 
     let app_info = crate::xdp_app_info::AppInfo::host(&inv.sender);
 
-    let reply = ctx.call_impl(
-        APP_CHOOSER_IMPL_INTERFACE,
-        "SchemeSupported",
-        CALL_TIMEOUT,
-        |bw| {
-            bw.write_str(app_info.id())?;
-            bw.write_str(&scheme)?;
-            bw.write_array("{sv}", |_| Ok(()))
-        },
-    )
-    .map_err(|e| PortalError::InvalidArgument(format!("Failed to call backend: {}", e)))?;
+    let reply = ctx
+        .call_impl(
+            APP_CHOOSER_IMPL_INTERFACE,
+            "SchemeSupported",
+            CALL_TIMEOUT,
+            |bw| {
+                bw.write_str(app_info.id())?;
+                bw.write_str(&scheme)?;
+                bw.write_array("{sv}", |_| Ok(()))
+            },
+        )
+        .map_err(|e| PortalError::InvalidArgument(format!("Failed to call backend: {}", e)))?;
 
     let mut reply_reader = reply.body_reader();
     let supported = !scheme.is_empty();
@@ -190,96 +208,96 @@ pub fn register<T: codevar_dbus::DbusTransport + 'static>(ctx: &mut PortalContex
     let iface_xml = XmlBuilder::new("interface")
         .attr("name", "org.freedesktop.portal.OpenURI")
         .child("method")
-            .attr("name", "OpenURI")
-            .child("arg")
-                .attr("type", "s")
-                .attr("name", "parent_window")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "s")
-                .attr("name", "uri")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "a{sv}")
-                .attr("name", "options")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "o")
-                .attr("name", "handle")
-                .attr("direction", "out")
-            .end()
+        .attr("name", "OpenURI")
+        .child("arg")
+        .attr("type", "s")
+        .attr("name", "parent_window")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "s")
+        .attr("name", "uri")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "a{sv}")
+        .attr("name", "options")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "o")
+        .attr("name", "handle")
+        .attr("direction", "out")
+        .end()
         .end()
         .child("method")
-            .attr("name", "OpenFile")
-            .child("arg")
-                .attr("type", "s")
-                .attr("name", "parent_window")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "h")
-                .attr("name", "fd")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "a{sv}")
-                .attr("name", "options")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "o")
-                .attr("name", "handle")
-                .attr("direction", "out")
-            .end()
+        .attr("name", "OpenFile")
+        .child("arg")
+        .attr("type", "s")
+        .attr("name", "parent_window")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "h")
+        .attr("name", "fd")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "a{sv}")
+        .attr("name", "options")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "o")
+        .attr("name", "handle")
+        .attr("direction", "out")
+        .end()
         .end()
         .child("method")
-            .attr("name", "OpenDirectory")
-            .child("arg")
-                .attr("type", "s")
-                .attr("name", "parent_window")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "h")
-                .attr("name", "fd")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "a{sv}")
-                .attr("name", "options")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "o")
-                .attr("name", "handle")
-                .attr("direction", "out")
-            .end()
+        .attr("name", "OpenDirectory")
+        .child("arg")
+        .attr("type", "s")
+        .attr("name", "parent_window")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "h")
+        .attr("name", "fd")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "a{sv}")
+        .attr("name", "options")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "o")
+        .attr("name", "handle")
+        .attr("direction", "out")
+        .end()
         .end()
         .child("method")
-            .attr("name", "SchemeSupported")
-            .child("arg")
-                .attr("type", "s")
-                .attr("name", "scheme")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "a{sv}")
-                .attr("name", "options")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "b")
-                .attr("name", "supported")
-                .attr("direction", "out")
-            .end()
+        .attr("name", "SchemeSupported")
+        .child("arg")
+        .attr("type", "s")
+        .attr("name", "scheme")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "a{sv}")
+        .attr("name", "options")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "b")
+        .attr("name", "supported")
+        .attr("direction", "out")
+        .end()
         .end()
         .child("property")
-            .attr("name", "version")
-            .attr("type", "u")
-            .attr("access", "read")
+        .attr("name", "version")
+        .attr("type", "u")
+        .attr("access", "read")
         .end()
         .build();
 
@@ -310,7 +328,10 @@ mod tests {
     fn filters_open_uri_options() {
         let mut options = OptionMap::new();
         options.insert("parent_window".to_string(), PortalValue::Str("test".to_string()));
-        options.insert("uri".to_string(), PortalValue::Str("https://example.com".to_string()));
+        options.insert(
+            "uri".to_string(),
+            PortalValue::Str("https://example.com".to_string()),
+        );
         options.insert("handle_token".to_string(), PortalValue::Str("token".to_string()));
         options.insert("unknown".to_string(), PortalValue::Str("x".to_string()));
 

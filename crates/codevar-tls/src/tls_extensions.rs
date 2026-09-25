@@ -70,14 +70,17 @@ impl ParsedExtensions {
         let mut seen = HashSet::new();
         while !r.is_empty() {
             let ext_type = r.u16()?;
-            let ext_data = r.vec_u16()?.to_vec();
+            let ext_data = r
+                .vec_u16()?
+                .to_vec();
             if !seen.insert(ext_type) {
                 return Err(TlsError::Alert(AlertDescription::IllegalParameter));
             }
-            out.raw.push(RawExtension {
-                ext_type,
-                data: ext_data.clone(),
-            });
+            out.raw
+                .push(RawExtension {
+                    ext_type,
+                    data: ext_data.clone(),
+                });
             match ExtensionType::from_u16(ext_type) {
                 Some(ExtensionType::ServerName) => {
                     out.server_name = parse_server_name(&ext_data)?;
@@ -96,13 +99,23 @@ impl ParsedExtensions {
                 }
                 Some(ExtensionType::ApplicationLayerProtocolNegotiation) => {
                     out.alpn = parse_alpn(&ext_data)?;
-                    if out.alpn.len() == 1 {
-                        out.selected_alpn = out.alpn.first().cloned();
+                    if out
+                        .alpn
+                        .len()
+                        == 1
+                    {
+                        out.selected_alpn = out
+                            .alpn
+                            .first()
+                            .cloned();
                     }
                 }
                 Some(ExtensionType::Cookie) => {
                     let mut cr = Reader::new(&ext_data);
-                    out.cookie = Some(cr.vec_u16()?.to_vec());
+                    out.cookie = Some(
+                        cr.vec_u16()?
+                            .to_vec(),
+                    );
                     cr.expect_empty("cookie")?;
                 }
                 Some(ExtensionType::ExtendedMasterSecret) => {
@@ -119,7 +132,9 @@ impl ParsedExtensions {
                 }
                 Some(ExtensionType::PskKeyExchangeModes) => {
                     let mut cr = Reader::new(&ext_data);
-                    out.psk_modes = cr.vec_u8()?.to_vec();
+                    out.psk_modes = cr
+                        .vec_u8()?
+                        .to_vec();
                     cr.expect_empty("psk_modes")?;
                 }
                 _ => {}
@@ -160,7 +175,11 @@ fn parse_supported_versions(data: &[u8]) -> TlsResult<Vec<ProtocolVersion>> {
     let mut r = Reader::new(data);
     let list = r.vec_u8()?;
     r.expect_empty("supported_versions")?;
-    if list.len() < 2 || !list.len().is_multiple_of(2) {
+    if list.len() < 2
+        || !list
+            .len()
+            .is_multiple_of(2)
+    {
         return Err(TlsError::Alert(AlertDescription::DecodeError));
     }
     let mut versions = Vec::new();
@@ -211,7 +230,10 @@ fn parse_alpn(data: &[u8]) -> TlsResult<Vec<Vec<u8>>> {
     let mut protocols = Vec::new();
     let mut lr = Reader::new(list);
     while !lr.is_empty() {
-        protocols.push(lr.vec_u8()?.to_vec());
+        protocols.push(
+            lr.vec_u8()?
+                .to_vec(),
+        );
     }
     if protocols.is_empty() {
         return Err(TlsError::Alert(AlertDescription::DecodeError));
@@ -235,10 +257,11 @@ fn parse_key_share(data: &[u8], out: &mut ParsedExtensions) -> TlsResult<()> {
         if 4 + maybe_len == data.len()
             && let Some(group) = NamedGroup::from_u16(maybe_group)
         {
-            out.key_shares.push(KeySharePublic {
-                group,
-                key_exchange: data[4..].to_vec(),
-            });
+            out.key_shares
+                .push(KeySharePublic {
+                    group,
+                    key_exchange: data[4..].to_vec(),
+                });
             out.selected_group = Some(group);
             return Ok(());
         }
@@ -249,12 +272,15 @@ fn parse_key_share(data: &[u8], out: &mut ParsedExtensions) -> TlsResult<()> {
     let mut lr = Reader::new(list);
     while !lr.is_empty() {
         let g = lr.u16()?;
-        let kx = lr.vec_u16()?.to_vec();
+        let kx = lr
+            .vec_u16()?
+            .to_vec();
         if let Some(group) = NamedGroup::from_u16(g) {
-            out.key_shares.push(KeySharePublic {
-                group,
-                key_exchange: kx,
-            });
+            out.key_shares
+                .push(KeySharePublic {
+                    group,
+                    key_exchange: kx,
+                });
         }
     }
     Ok(())
@@ -284,7 +310,9 @@ pub fn encode_supported_versions_client(versions: &[ProtocolVersion]) -> TlsResu
 /// Encodes ServerHello `supported_versions`.
 #[must_use]
 pub fn encode_supported_versions_server(version: ProtocolVersion) -> Vec<u8> {
-    version.to_be_bytes().to_vec()
+    version
+        .to_be_bytes()
+        .to_vec()
 }
 
 /// Encodes `supported_groups`.
@@ -313,7 +341,11 @@ pub fn encode_signature_algorithms(schemes: &[SignatureScheme]) -> TlsResult<Vec
 pub fn encode_key_share_client(shares: &[KeySharePublic]) -> TlsResult<Vec<u8>> {
     let mut list = Vec::new();
     for s in shares {
-        put_u16(&mut list, s.group.as_u16());
+        put_u16(
+            &mut list,
+            s.group
+                .as_u16(),
+        );
         put_vec_u16(&mut list, &s.key_exchange)?;
     }
     let mut out = Vec::new();
@@ -324,7 +356,12 @@ pub fn encode_key_share_client(shares: &[KeySharePublic]) -> TlsResult<Vec<u8>> 
 /// Encodes ServerHello key_share entry.
 pub fn encode_key_share_server(share: &KeySharePublic) -> TlsResult<Vec<u8>> {
     let mut out = Vec::new();
-    put_u16(&mut out, share.group.as_u16());
+    put_u16(
+        &mut out,
+        share
+            .group
+            .as_u16(),
+    );
     put_vec_u16(&mut out, &share.key_exchange)?;
     Ok(out)
 }
@@ -332,7 +369,10 @@ pub fn encode_key_share_server(share: &KeySharePublic) -> TlsResult<Vec<u8>> {
 /// Encodes HRR selected group.
 #[must_use]
 pub fn encode_key_share_hrr(group: NamedGroup) -> Vec<u8> {
-    group.as_u16().to_be_bytes().to_vec()
+    group
+        .as_u16()
+        .to_be_bytes()
+        .to_vec()
 }
 
 /// Encodes ALPN extension data.
@@ -410,19 +450,63 @@ mod tests {
     #[test]
     fn parse_empty_list_yields_default() {
         let parsed = ParsedExtensions::parse(&[]).unwrap();
-        assert!(parsed.raw.is_empty());
-        assert!(parsed.server_name.is_none());
-        assert!(parsed.supported_versions.is_empty());
-        assert!(parsed.supported_groups.is_empty());
-        assert!(parsed.key_shares.is_empty());
-        assert!(parsed.selected_group.is_none());
-        assert!(parsed.signature_algorithms.is_empty());
-        assert!(parsed.alpn.is_empty());
-        assert!(parsed.cookie.is_none());
+        assert!(
+            parsed
+                .raw
+                .is_empty()
+        );
+        assert!(
+            parsed
+                .server_name
+                .is_none()
+        );
+        assert!(
+            parsed
+                .supported_versions
+                .is_empty()
+        );
+        assert!(
+            parsed
+                .supported_groups
+                .is_empty()
+        );
+        assert!(
+            parsed
+                .key_shares
+                .is_empty()
+        );
+        assert!(
+            parsed
+                .selected_group
+                .is_none()
+        );
+        assert!(
+            parsed
+                .signature_algorithms
+                .is_empty()
+        );
+        assert!(
+            parsed
+                .alpn
+                .is_empty()
+        );
+        assert!(
+            parsed
+                .cookie
+                .is_none()
+        );
         assert!(!parsed.extended_master_secret);
         assert!(!parsed.renegotiation_info);
-        assert!(parsed.psk_modes.is_empty());
-        assert!(parsed.selected_alpn.is_none());
+        assert!(
+            parsed
+                .psk_modes
+                .is_empty()
+        );
+        assert!(
+            parsed
+                .selected_alpn
+                .is_none()
+        );
     }
 
     #[test]
@@ -430,8 +514,18 @@ mod tests {
         let data = encode_server_name("example.com").unwrap();
         let wire = entries(&[(ExtensionType::ServerName.as_u16(), &data)]);
         let parsed = ParsedExtensions::parse(&wire).unwrap();
-        assert_eq!(parsed.server_name.as_deref(), Some("example.com"));
-        assert_eq!(parsed.raw.len(), 1);
+        assert_eq!(
+            parsed
+                .server_name
+                .as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            parsed
+                .raw
+                .len(),
+            1
+        );
         assert_eq!(parsed.raw[0].ext_type, ExtensionType::ServerName.as_u16());
         assert_eq!(parsed.raw[0].data, data);
     }
@@ -449,7 +543,12 @@ mod tests {
             (ExtensionType::SupportedVersions.as_u16(), &versions),
         ]);
         let parsed = ParsedExtensions::parse(&wire).unwrap();
-        assert_eq!(parsed.server_name.as_deref(), Some("a.test"));
+        assert_eq!(
+            parsed
+                .server_name
+                .as_deref(),
+            Some("a.test")
+        );
         assert_eq!(
             parsed.supported_groups,
             vec![NamedGroup::X25519, NamedGroup::Secp256r1]
@@ -458,7 +557,12 @@ mod tests {
             parsed.supported_versions,
             vec![ProtocolVersion::Tls12, ProtocolVersion::Tls13]
         );
-        assert_eq!(parsed.raw.len(), 4);
+        assert_eq!(
+            parsed
+                .raw
+                .len(),
+            4
+        );
         assert_eq!(parsed.raw[1].ext_type, 0x9999);
         assert_eq!(parsed.raw[1].data, vec![1, 2, 3]);
     }
@@ -520,21 +624,55 @@ mod tests {
     fn zero_length_extension_data_is_tolerated() {
         let wire = entries(&[(ExtensionType::SessionTicket.as_u16(), &[]), (0x9999, &[])]);
         let parsed = ParsedExtensions::parse(&wire).unwrap();
-        assert_eq!(parsed.raw.len(), 2);
-        assert!(parsed.raw[0].data.is_empty());
-        assert!(parsed.raw[1].data.is_empty());
-        assert!(parsed.server_name.is_none());
+        assert_eq!(
+            parsed
+                .raw
+                .len(),
+            2
+        );
+        assert!(
+            parsed.raw[0]
+                .data
+                .is_empty()
+        );
+        assert!(
+            parsed.raw[1]
+                .data
+                .is_empty()
+        );
+        assert!(
+            parsed
+                .server_name
+                .is_none()
+        );
     }
 
     #[test]
     fn unknown_extension_type_is_tolerated_and_kept_raw() {
         let wire = entries(&[(0xabcd, &[9, 8, 7, 6])]);
         let parsed = ParsedExtensions::parse(&wire).unwrap();
-        assert_eq!(parsed.raw.len(), 1);
+        assert_eq!(
+            parsed
+                .raw
+                .len(),
+            1
+        );
         assert_eq!(parsed.raw[0].ext_type, 0xabcd);
-        assert!(parsed.server_name.is_none());
-        assert!(parsed.supported_versions.is_empty());
-        assert!(parsed.selected_alpn.is_none());
+        assert!(
+            parsed
+                .server_name
+                .is_none()
+        );
+        assert!(
+            parsed
+                .supported_versions
+                .is_empty()
+        );
+        assert!(
+            parsed
+                .selected_alpn
+                .is_none()
+        );
     }
 
     #[test]
@@ -555,7 +693,12 @@ mod tests {
         let data = encode_server_name("localhost").unwrap();
         let wire = entries(&[(ExtensionType::ServerName.as_u16(), &data)]);
         let parsed = ParsedExtensions::parse(&wire).unwrap();
-        assert_eq!(parsed.server_name.as_deref(), Some("localhost"));
+        assert_eq!(
+            parsed
+                .server_name
+                .as_deref(),
+            Some("localhost")
+        );
 
         // Two host_name entries in one list are rejected.
         let mut list = Vec::new();
@@ -664,10 +807,19 @@ mod tests {
             &multi,
         )]);
         let parsed = ParsedExtensions::parse(&wire).unwrap();
-        assert_eq!(parsed.alpn.len(), 2);
+        assert_eq!(
+            parsed
+                .alpn
+                .len(),
+            2
+        );
         assert_eq!(parsed.alpn[0].as_slice(), b"h2");
         assert_eq!(parsed.alpn[1].as_slice(), b"http/1.1");
-        assert!(parsed.selected_alpn.is_none());
+        assert!(
+            parsed
+                .selected_alpn
+                .is_none()
+        );
 
         let single = encode_alpn_selected(b"h2").unwrap();
         let single_wire = entries(&[(
@@ -675,8 +827,18 @@ mod tests {
             &single,
         )]);
         let single_parsed = ParsedExtensions::parse(&single_wire).unwrap();
-        assert_eq!(single_parsed.alpn.len(), 1);
-        assert_eq!(single_parsed.selected_alpn.as_deref(), Some(&b"h2"[..]));
+        assert_eq!(
+            single_parsed
+                .alpn
+                .len(),
+            1
+        );
+        assert_eq!(
+            single_parsed
+                .selected_alpn
+                .as_deref(),
+            Some(&b"h2"[..])
+        );
 
         // Empty protocol list is a decode error.
         let empty = encode_alpn(&[]).unwrap();
@@ -709,7 +871,12 @@ mod tests {
         let client = encode_key_share_client(&shares).unwrap();
         let wire = entries(&[(ExtensionType::KeyShare.as_u16(), &client)]);
         let parsed = ParsedExtensions::parse(&wire).unwrap();
-        assert_eq!(parsed.key_shares.len(), 2);
+        assert_eq!(
+            parsed
+                .key_shares
+                .len(),
+            2
+        );
         assert_eq!(parsed.key_shares[0].group, NamedGroup::X25519);
         assert_eq!(parsed.key_shares[0].key_exchange, vec![0x42; 32]);
         assert_eq!(parsed.key_shares[1].group, NamedGroup::Secp256r1);
@@ -722,7 +889,12 @@ mod tests {
         let server = encode_key_share_server(&server_share).unwrap();
         let sh_wire = entries(&[(ExtensionType::KeyShare.as_u16(), &server)]);
         let sh_parsed = ParsedExtensions::parse(&sh_wire).unwrap();
-        assert_eq!(sh_parsed.key_shares.len(), 1);
+        assert_eq!(
+            sh_parsed
+                .key_shares
+                .len(),
+            1
+        );
         assert_eq!(sh_parsed.key_shares[0].key_exchange, vec![0x43; 32]);
         assert_eq!(sh_parsed.selected_group, Some(NamedGroup::X25519));
 
@@ -731,12 +903,20 @@ mod tests {
         let hrr_wire = entries(&[(ExtensionType::KeyShare.as_u16(), &hrr)]);
         let hrr_parsed = ParsedExtensions::parse(&hrr_wire).unwrap();
         assert_eq!(hrr_parsed.selected_group, Some(NamedGroup::Secp384r1));
-        assert!(hrr_parsed.key_shares.is_empty());
+        assert!(
+            hrr_parsed
+                .key_shares
+                .is_empty()
+        );
 
         let unknown_hrr = [0x99, 0x99];
         let unk_wire = entries(&[(ExtensionType::KeyShare.as_u16(), &unknown_hrr)]);
         let unk_parsed = ParsedExtensions::parse(&unk_wire).unwrap();
-        assert!(unk_parsed.selected_group.is_none());
+        assert!(
+            unk_parsed
+                .selected_group
+                .is_none()
+        );
     }
 
     #[test]
@@ -800,10 +980,20 @@ mod tests {
         assert_eq!(usize::from(total), block.len() - 2);
 
         let parsed = ParsedExtensions::parse(&block[2..]).unwrap();
-        assert_eq!(parsed.server_name.as_deref(), Some("build.test"));
+        assert_eq!(
+            parsed
+                .server_name
+                .as_deref(),
+            Some("build.test")
+        );
         assert!(parsed.extended_master_secret);
         assert!(parsed.renegotiation_info);
-        assert_eq!(parsed.raw.len(), 3);
+        assert_eq!(
+            parsed
+                .raw
+                .len(),
+            3
+        );
     }
 
     #[test]

@@ -53,7 +53,11 @@ impl SingleByteDecoder {
                 CopyAsciiResult::GoOn((mut non_ascii, mut handle)) => 'middle: loop {
                     // SAFETY: `non_ascii` is a u8 byte >=0x80, from the invariants
                     // on Utf8Destination::copy_ascii_from_check_space_bmp()
-                    let mapped = unsafe { *(self.table.get_unchecked(non_ascii as usize - 0x80usize)) };
+                    let mapped = unsafe {
+                        *(self
+                            .table
+                            .get_unchecked(non_ascii as usize - 0x80usize))
+                    };
                     // let mapped = self.table[non_ascii as usize - 0x80usize];
                     if mapped == 0u16 {
                         return (
@@ -168,7 +172,11 @@ impl SingleByteDecoder {
                         //
                         // SAFETY: We can rely on `non_ascii` being between `0x80` and `0xFF` due to
                         // the invariants of `ascii_to_basic_latin()`, and our table has enough space for that.
-                        let mapped = unsafe { *(self.table.get_unchecked(non_ascii as usize - 0x80usize)) };
+                        let mapped = unsafe {
+                            *(self
+                                .table
+                                .get_unchecked(non_ascii as usize - 0x80usize))
+                        };
                         // let mapped = self.table[non_ascii as usize - 0x80usize];
                         if mapped == 0u16 {
                             return (
@@ -479,7 +487,9 @@ impl SingleByteEncoder {
 
 #[inline(always)]
 fn position(slice: &[u16], needle: u16) -> Option<usize> {
-    slice.iter().position(|&x| x == needle)
+    slice
+        .iter()
+        .position(|&x| x == needle)
 }
 
 fn write_ncr(unmappable: char, dst: &mut [u8]) -> usize {

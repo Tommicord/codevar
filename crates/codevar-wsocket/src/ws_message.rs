@@ -137,7 +137,9 @@ mod tests {
     #[test]
     fn binary_constructor_preserves_bytes() {
         assert_eq!(WsMessage::binary(vec![]), WsMessage::Binary(Vec::new()));
-        let bytes: Vec<u8> = (0u16..=255).map(|i| u8::try_from(i).unwrap()).collect();
+        let bytes: Vec<u8> = (0u16..=255)
+            .map(|i| u8::try_from(i).unwrap())
+            .collect();
         let msg = WsMessage::binary(bytes.clone());
         assert!(msg.is_data());
         assert_eq!(msg, WsMessage::Binary(bytes));

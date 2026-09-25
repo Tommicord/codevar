@@ -75,7 +75,8 @@ pub struct ClientConfigBuilder {
 impl ClientConfigBuilder {
     /// Adds PEM trust anchors.
     pub fn with_root_pem(mut self, pem: &[u8]) -> TlsResult<Self> {
-        self.roots.add_pem(pem)?;
+        self.roots
+            .add_pem(pem)?;
         Ok(self)
     }
 
@@ -296,7 +297,10 @@ pub fn select_alpn(server: &[Vec<u8>], client: &[Vec<u8>]) -> Option<Vec<u8>> {
         return None;
     }
     for s in server {
-        if client.iter().any(|c| c == s) {
+        if client
+            .iter()
+            .any(|c| c == s)
+        {
             return Some(s.clone());
         }
     }
@@ -317,12 +321,17 @@ mod tests {
 
     #[test]
     fn client_config_builder_defaults() {
-        let cfg = ClientConfig::builder().build().unwrap();
+        let cfg = ClientConfig::builder()
+            .build()
+            .unwrap();
         assert_eq!(cfg.versions, vec![ProtocolVersion::Tls13, ProtocolVersion::Tls12]);
         assert_eq!(cfg.cipher_suites, CipherSuite::default_offered().to_vec());
         assert_eq!(cfg.named_groups, NamedGroup::default_offered().to_vec());
         assert_eq!(cfg.signature_schemes, SignatureScheme::default_offered().to_vec());
-        assert!(cfg.alpn_protocols.is_empty());
+        assert!(
+            cfg.alpn_protocols
+                .is_empty()
+        );
         assert!(cfg.require_ems);
         // Verifier rejects unknown hosts by default (not skip-all).
         let roots = RootCertStore::empty();
@@ -334,10 +343,22 @@ mod tests {
     fn client_config_dangerous_insecure_defaults() {
         let cfg = ClientConfig::dangerous_insecure();
         assert_eq!(cfg.versions, vec![ProtocolVersion::Tls13, ProtocolVersion::Tls12]);
-        assert!(!cfg.cipher_suites.is_empty());
-        assert!(!cfg.named_groups.is_empty());
-        assert!(!cfg.signature_schemes.is_empty());
-        assert!(cfg.alpn_protocols.is_empty());
+        assert!(
+            !cfg.cipher_suites
+                .is_empty()
+        );
+        assert!(
+            !cfg.named_groups
+                .is_empty()
+        );
+        assert!(
+            !cfg.signature_schemes
+                .is_empty()
+        );
+        assert!(
+            cfg.alpn_protocols
+                .is_empty()
+        );
         assert!(cfg.require_ems);
         // Insecure verifier accepts a wrong hostname.
         let leaf = crate::tls_cert::parse_pem_certs(LEAF_PEM).unwrap();
@@ -349,7 +370,9 @@ mod tests {
     #[test]
     fn client_config_builder_overrides() {
         let mut roots = RootCertStore::empty();
-        roots.add_pem(LEAF_PEM).unwrap();
+        roots
+            .add_pem(LEAF_PEM)
+            .unwrap();
         let cfg = ClientConfig::builder()
             .with_root_store(roots)
             .with_alpn(vec![b"h2".to_vec()])
@@ -388,9 +411,17 @@ mod tests {
     #[test]
     fn certified_key_from_pem_loads_chain_and_key() {
         let key = certified_key();
-        assert_eq!(key.cert_chain.len(), 1);
+        assert_eq!(
+            key.cert_chain
+                .len(),
+            1
+        );
         assert!(!key.cert_chain[0].is_empty());
-        assert_eq!(key.key.kind(), crate::tls_sign::SignatureKind::EcdsaP256);
+        assert_eq!(
+            key.key
+                .kind(),
+            crate::tls_sign::SignatureKind::EcdsaP256
+        );
         // Clone shares the Arc key.
         let cloned = key.clone();
         assert!(Arc::ptr_eq(&key.key, &cloned.key));
@@ -417,8 +448,18 @@ mod tests {
     fn certified_key_does_not_validate_key_cert_match() {
         // Quirk: an RSA key paired with an ECDSA certificate loads successfully.
         let mixed = CertifiedKey::from_pem(LEAF_PEM, RSA_KEY_PEM).unwrap();
-        assert_eq!(mixed.cert_chain.len(), 1);
-        assert_eq!(mixed.key.kind(), crate::tls_sign::SignatureKind::Rsa);
+        assert_eq!(
+            mixed
+                .cert_chain
+                .len(),
+            1
+        );
+        assert_eq!(
+            mixed
+                .key
+                .kind(),
+            crate::tls_sign::SignatureKind::Rsa
+        );
     }
 
     #[test]
@@ -427,16 +468,29 @@ mod tests {
         assert_eq!(cfg.versions, vec![ProtocolVersion::Tls13, ProtocolVersion::Tls12]);
         assert_eq!(cfg.cipher_suites, CipherSuite::default_offered().to_vec());
         assert_eq!(cfg.named_groups, NamedGroup::default_offered().to_vec());
-        assert!(cfg.alpn_protocols.is_empty());
+        assert!(
+            cfg.alpn_protocols
+                .is_empty()
+        );
         assert!(cfg.require_ems);
-        assert_eq!(cfg.certified_key.cert_chain.len(), 1);
+        assert_eq!(
+            cfg.certified_key
+                .cert_chain
+                .len(),
+            1
+        );
 
         let built = ServerConfig::builder(certified_key())
             .with_alpn(vec![b"h2".to_vec(), b"http/1.1".to_vec()])
             .with_versions(vec![ProtocolVersion::Tls13])
             .build();
         assert_eq!(built.versions, vec![ProtocolVersion::Tls13]);
-        assert_eq!(built.alpn_protocols.len(), 2);
+        assert_eq!(
+            built
+                .alpn_protocols
+                .len(),
+            2
+        );
         assert!(built.require_ems);
 
         let default_builder = ServerConfig::builder(certified_key()).build();
@@ -471,7 +525,10 @@ mod tests {
 
         // Preference lists the TLS 1.3 suite first; under TLS 1.2 it is skipped.
         let pref = [TlsAes128GcmSha256, TlsEcdheEcdsaWithAes128GcmSha256];
-        let both: Vec<u16> = pref.iter().map(|s| s.as_u16()).collect();
+        let both: Vec<u16> = pref
+            .iter()
+            .map(|s| s.as_u16())
+            .collect();
         assert_eq!(
             select_cipher_suite(&pref, &both, Tls12).unwrap(),
             TlsEcdheEcdsaWithAes128GcmSha256

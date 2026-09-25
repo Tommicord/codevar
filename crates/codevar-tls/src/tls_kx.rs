@@ -53,7 +53,9 @@ pub fn generate_key_share(group: NamedGroup) -> TlsResult<(KeySharePrivate, KeyS
             let secret = StaticSecret::from(seed);
             seed.zeroize();
             let public = X25519Public::from(&secret);
-            let key_exchange = public.as_bytes().to_vec();
+            let key_exchange = public
+                .as_bytes()
+                .to_vec();
             Ok((
                 KeySharePrivate::X25519(secret),
                 KeySharePublic { group, key_exchange },
@@ -67,7 +69,9 @@ pub fn generate_key_share(group: NamedGroup) -> TlsResult<(KeySharePrivate, KeyS
                 KeySharePrivate::P256(secret),
                 KeySharePublic {
                     group,
-                    key_exchange: encoded.as_bytes().to_vec(),
+                    key_exchange: encoded
+                        .as_bytes()
+                        .to_vec(),
                 },
             ))
         }
@@ -79,7 +83,9 @@ pub fn generate_key_share(group: NamedGroup) -> TlsResult<(KeySharePrivate, KeyS
                 KeySharePrivate::P384(secret),
                 KeySharePublic {
                     group,
-                    key_exchange: encoded.as_bytes().to_vec(),
+                    key_exchange: encoded
+                        .as_bytes()
+                        .to_vec(),
                 },
             ))
         }
@@ -90,7 +96,11 @@ pub fn generate_key_share(group: NamedGroup) -> TlsResult<(KeySharePrivate, KeyS
 pub fn shared_secret(private: &KeySharePrivate, peer: &KeySharePublic) -> TlsResult<Vec<u8>> {
     match (private, peer.group) {
         (KeySharePrivate::X25519(secret), NamedGroup::X25519) => {
-            if peer.key_exchange.len() != 32 {
+            if peer
+                .key_exchange
+                .len()
+                != 32
+            {
                 return Err(TlsError::Alert(
                     crate::tls_alert::AlertDescription::IllegalParameter,
                 ));
@@ -99,19 +109,25 @@ pub fn shared_secret(private: &KeySharePrivate, peer: &KeySharePublic) -> TlsRes
             pk_bytes.copy_from_slice(&peer.key_exchange);
             let peer_pk = X25519Public::from(pk_bytes);
             let shared = secret.diffie_hellman(&peer_pk);
-            Ok(shared.as_bytes().to_vec())
+            Ok(shared
+                .as_bytes()
+                .to_vec())
         }
         (KeySharePrivate::P256(secret), NamedGroup::Secp256r1) => {
             let peer_pk = p256::PublicKey::from_sec1_bytes(&peer.key_exchange)
                 .map_err(|_| TlsError::Alert(crate::tls_alert::AlertDescription::IllegalParameter))?;
             let shared = p256_dh(secret.to_nonzero_scalar(), peer_pk.as_affine());
-            Ok(shared.raw_secret_bytes().to_vec())
+            Ok(shared
+                .raw_secret_bytes()
+                .to_vec())
         }
         (KeySharePrivate::P384(secret), NamedGroup::Secp384r1) => {
             let peer_pk = p384::PublicKey::from_sec1_bytes(&peer.key_exchange)
                 .map_err(|_| TlsError::Alert(crate::tls_alert::AlertDescription::IllegalParameter))?;
             let shared = p384_dh(secret.to_nonzero_scalar(), peer_pk.as_affine());
-            Ok(shared.raw_secret_bytes().to_vec())
+            Ok(shared
+                .raw_secret_bytes()
+                .to_vec())
         }
         _ => Err(TlsError::Alert(
             crate::tls_alert::AlertDescription::IllegalParameter,

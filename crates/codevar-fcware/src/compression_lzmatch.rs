@@ -31,7 +31,9 @@ pub fn lz_match_decode(frame: &[u8]) -> CompressorResult<Vec<u8>> {
     }
     // SAFETY: length checked above; bytes 3..7 are in-bounds.
     let expected = unsafe {
-        let p = frame.as_ptr().add(3);
+        let p = frame
+            .as_ptr()
+            .add(3);
         u32::from_be_bytes([*p, *p.add(1), *p.add(2), *p.add(3)]) as usize
     };
     let mut output = Vec::with_capacity(expected);
@@ -39,7 +41,11 @@ pub fn lz_match_decode(frame: &[u8]) -> CompressorResult<Vec<u8>> {
 
     while position < frame.len() {
         // SAFETY: `position < frame.len()`.
-        let marker = unsafe { *frame.as_ptr().add(position) };
+        let marker = unsafe {
+            *frame
+                .as_ptr()
+                .add(position)
+        };
         position += 1;
         match marker {
             0 => {
@@ -51,7 +57,14 @@ pub fn lz_match_decode(frame: &[u8]) -> CompressorResult<Vec<u8>> {
                     return Err(CompressorError::TruncatedFrame);
                 }
                 // SAFETY: `position..end` is within `frame`.
-                let literals = unsafe { core::slice::from_raw_parts(frame.as_ptr().add(position), length) };
+                let literals = unsafe {
+                    core::slice::from_raw_parts(
+                        frame
+                            .as_ptr()
+                            .add(position),
+                        length,
+                    )
+                };
                 extend_bytes(&mut output, literals);
                 position = end;
             }
@@ -88,8 +101,12 @@ fn append_match(output: &mut Vec<u8>, distance: usize, length: usize) {
         // SAFETY: `start + length <= output.len()` because `distance >= length`,
         // and reserved capacity covers the new length; source and dest do not overlap.
         unsafe {
-            let src = output.as_ptr().add(start);
-            let dst = output.as_mut_ptr().add(output.len());
+            let src = output
+                .as_ptr()
+                .add(start);
+            let dst = output
+                .as_mut_ptr()
+                .add(output.len());
             core::ptr::copy_nonoverlapping(src, dst, length);
             output.set_len(output.len() + length);
         }

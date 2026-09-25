@@ -16,15 +16,18 @@
 use cfg_if::cfg_if;
 
 pub(crate) fn is_ascii(s: &[u8; STRIDE]) -> bool {
-    s.iter().all(|b| *b < 0x80)
+    s.iter()
+        .all(|b| *b < 0x80)
 }
 
 pub(crate) fn is_basic_latin(s: &[u16; STRIDE]) -> bool {
-    s.iter().all(|b| *b < 0x80)
+    s.iter()
+        .all(|b| *b < 0x80)
 }
 
 pub(crate) fn is_utf16_latin1(s: &[u16; STRIDE]) -> bool {
-    s.iter().all(|b| *b < 0x100)
+    s.iter()
+        .all(|b| *b < 0x100)
 }
 
 pub(crate) fn copy_stride(src_stride: &[u8; STRIDE], dst_stride: &mut [u8; STRIDE]) {
@@ -46,7 +49,11 @@ pub(crate) fn pack_stride(src_stride: &[u16; STRIDE], dst_stride: &mut [u8; STRI
 }
 
 fn copy_stride_tail(src_stride: &[u8; 16], dst_stride: &mut [u8; 16]) -> (u8, usize) {
-    for (i, (s, d)) in src_stride.iter().zip(dst_stride.iter_mut()).enumerate() {
+    for (i, (s, d)) in src_stride
+        .iter()
+        .zip(dst_stride.iter_mut())
+        .enumerate()
+    {
         let c = *s;
         if c >= 0x80 {
             return (c, i);
@@ -57,7 +64,11 @@ fn copy_stride_tail(src_stride: &[u8; 16], dst_stride: &mut [u8; 16]) -> (u8, us
 }
 
 fn unpack_stride_tail(src_stride: &[u8; 16], dst_stride: &mut [u16; 16]) -> (u8, usize) {
-    for (i, (s, d)) in src_stride.iter().zip(dst_stride.iter_mut()).enumerate() {
+    for (i, (s, d)) in src_stride
+        .iter()
+        .zip(dst_stride.iter_mut())
+        .enumerate()
+    {
         let c = *s;
         if c >= 0x80 {
             return (c, i);
@@ -68,7 +79,11 @@ fn unpack_stride_tail(src_stride: &[u8; 16], dst_stride: &mut [u16; 16]) -> (u8,
 }
 
 fn pack_stride_tail(src_stride: &[u16; 16], dst_stride: &mut [u8; 16]) -> (u16, usize) {
-    for (i, (s, d)) in src_stride.iter().zip(dst_stride.iter_mut()).enumerate() {
+    for (i, (s, d)) in src_stride
+        .iter()
+        .zip(dst_stride.iter_mut())
+        .enumerate()
+    {
         let c = *s;
         if c >= 0x80 {
             return (c, i);
@@ -79,7 +94,10 @@ fn pack_stride_tail(src_stride: &[u16; 16], dst_stride: &mut [u8; 16]) -> (u16, 
 }
 
 fn validate_ascii_stride_tail(stride: &[u8; 16]) -> (u8, usize) {
-    for (i, s) in stride.iter().enumerate() {
+    for (i, s) in stride
+        .iter()
+        .enumerate()
+    {
         let b = *s;
         if b >= 0x80 {
             return (b, i);
@@ -90,7 +108,10 @@ fn validate_ascii_stride_tail(stride: &[u8; 16]) -> (u8, usize) {
 }
 
 fn validate_basic_latin_stride_tail(stride: &[u16; 16]) -> usize {
-    for (i, s) in stride.iter().enumerate() {
+    for (i, s) in stride
+        .iter()
+        .enumerate()
+    {
         if *s >= 0x80 {
             return i;
         }
@@ -176,15 +197,18 @@ macro_rules! ascii_copy_impl_double {
 
                     let (src_double_strides, src_single_stride) = src_strides_tail.as_chunks::<2>();
                     let (dst_double_strides, dst_single_stride) = dst_strides_tail.as_chunks_mut::<2>();
-                    for (src_double_stride, dst_double_stride) in
-                        src_double_strides.iter().zip(dst_double_strides.iter_mut())
+                    for (src_double_stride, dst_double_stride) in src_double_strides
+                        .iter()
+                        .zip(dst_double_strides.iter_mut())
                     {
                         if let Some((c, pos)) = $double_stride(src_double_stride, dst_double_stride) {
                             return Some((c, consumed + pos));
                         }
                         consumed += STRIDE << 1;
                     }
-                    for (src_stride, dst_stride) in src_single_stride.iter().zip(dst_single_stride.iter_mut())
+                    for (src_stride, dst_stride) in src_single_stride
+                        .iter()
+                        .zip(dst_single_stride.iter_mut())
                     {
                         if let Some((c, pos)) = $stride(src_stride, dst_stride) {
                             return Some((c, consumed + pos));
@@ -195,7 +219,10 @@ macro_rules! ascii_copy_impl_double {
                     debug_assert!(false);
                 }
             }
-            for (src_slot, dst_slot) in src_tail.iter().zip(dst_tail.iter_mut()) {
+            for (src_slot, dst_slot) in src_tail
+                .iter()
+                .zip(dst_tail.iter_mut())
+            {
                 let c = *src_slot;
                 if c >= 0x80 {
                     return Some((c, consumed));
@@ -218,13 +245,19 @@ macro_rules! ascii_copy_impl_single {
             let mut consumed = 0usize;
             let (src_strides, src_tail) = src[..len].as_chunks::<STRIDE>();
             let (dst_strides, dst_tail) = dst[..len].as_chunks_mut::<STRIDE>();
-            for (src_stride, dst_stride) in src_strides.iter().zip(dst_strides.iter_mut()) {
+            for (src_stride, dst_stride) in src_strides
+                .iter()
+                .zip(dst_strides.iter_mut())
+            {
                 if let Some((c, pos)) = $stride(src_stride, dst_stride) {
                     return Some((c, consumed + pos));
                 }
                 consumed += STRIDE;
             }
-            for (src_slot, dst_slot) in src_tail.iter().zip(dst_tail.iter_mut()) {
+            for (src_slot, dst_slot) in src_tail
+                .iter()
+                .zip(dst_tail.iter_mut())
+            {
                 let c = *src_slot;
                 if c >= 0x80 {
                     return Some((c, consumed));
@@ -424,7 +457,10 @@ pub fn validate_ascii(bytes: &[u8]) -> Option<(u8, usize)> {
 }
 
 pub(crate) fn iso_2022_jp_ascii_valid_up_to(bytes: &[u8]) -> usize {
-    for (i, b_ref) in bytes.iter().enumerate() {
+    for (i, b_ref) in bytes
+        .iter()
+        .enumerate()
+    {
         let b = *b_ref;
         if b >= 0x80 || b == 0x1B || b == 0x0E || b == 0x0F {
             return i;

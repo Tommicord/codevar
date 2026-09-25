@@ -33,7 +33,10 @@ pub fn bitward_encode(values: &[u16]) -> CompressorResult<Vec<u8>> {
     }
 
     let mut repeat_table = Vec::new();
-    for (value, frequency) in frequencies.iter().enumerate() {
+    for (value, frequency) in frequencies
+        .iter()
+        .enumerate()
+    {
         if *frequency > 1 && repeat_table.len() < INDEX_LIMIT {
             repeat_table.push(value as u16);
         }
@@ -45,7 +48,10 @@ pub fn bitward_encode(values: &[u16]) -> CompressorResult<Vec<u8>> {
         .collect();
 
     let mut duplicate_bytes = Vec::new();
-    for (value, frequency) in frequencies.iter().enumerate() {
+    for (value, frequency) in frequencies
+        .iter()
+        .enumerate()
+    {
         if *frequency > 1 {
             let value = value as u16;
             let [high, low] = value.to_be_bytes();
@@ -64,14 +70,26 @@ pub fn bitward_encode(values: &[u16]) -> CompressorResult<Vec<u8>> {
         .map(|(index, &value)| (value, index as u8))
         .collect();
 
-    let mut records = Vec::with_capacity(values.len().saturating_mul(2));
+    let mut records = Vec::with_capacity(
+        values
+            .len()
+            .saturating_mul(2),
+    );
     let mut index = 0usize;
     while index < values.len() {
         // SAFETY: `index < values.len()`.
-        let value = unsafe { *values.as_ptr().add(index) };
+        let value = unsafe {
+            *values
+                .as_ptr()
+                .add(index)
+        };
         let mut run_length = 1usize;
         while index + run_length < values.len()
-            && unsafe { *values.as_ptr().add(index + run_length) } == value
+            && unsafe {
+                *values
+                    .as_ptr()
+                    .add(index + run_length)
+            } == value
         {
             run_length += 1;
         }
@@ -141,7 +159,9 @@ pub fn bitward_decode(frame: &[u8]) -> CompressorResult<Vec<u16>> {
         return Err(CompressorError::InvalidFrame);
     }
     let expected = unsafe {
-        let p = frame.as_ptr().add(3);
+        let p = frame
+            .as_ptr()
+            .add(3);
         u32::from_be_bytes([*p, *p.add(1), *p.add(2), *p.add(3)]) as usize
     };
     let repeat_len = u16::from_be_bytes([frame[7], frame[8]]) as usize;
@@ -168,10 +188,16 @@ pub fn bitward_decode(frame: &[u8]) -> CompressorResult<Vec<u16>> {
     let mut output = Vec::with_capacity(expected);
     let mut position = records_start;
     while output.len() < expected {
-        let control = *frame.get(position).ok_or(CompressorError::TruncatedFrame)?;
+        let control = *frame
+            .get(position)
+            .ok_or(CompressorError::TruncatedFrame)?;
         position += 1;
         if control == DUPLICATE_MARKER {
-            let duplicate = usize::from(*frame.get(position).ok_or(CompressorError::TruncatedFrame)?);
+            let duplicate = usize::from(
+                *frame
+                    .get(position)
+                    .ok_or(CompressorError::TruncatedFrame)?,
+            );
             position += 1;
             let byte = *duplicate_bytes
                 .get(duplicate)
@@ -195,7 +221,9 @@ pub fn bitward_decode(frame: &[u8]) -> CompressorResult<Vec<u16>> {
         }
         let mask = (control >> 5) & 3;
         if mask == 3 {
-            let byte = *frame.get(position).ok_or(CompressorError::TruncatedFrame)?;
+            let byte = *frame
+                .get(position)
+                .ok_or(CompressorError::TruncatedFrame)?;
             position += 1;
             output.push(u16::from_be_bytes([byte, byte]));
             continue;

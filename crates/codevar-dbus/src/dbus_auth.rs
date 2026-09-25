@@ -104,7 +104,10 @@ impl AuthSession {
     /// Returns the bytes that must be written to the transport,
     /// if any are pending.
     pub fn poll(&mut self) -> DbusResult<AuthPoll> {
-        if !self.pending.is_empty() {
+        if !self
+            .pending
+            .is_empty()
+        {
             if matches!(self.state, AuthState::SendBegin) {
                 self.state = AuthState::Finished;
             }
@@ -159,7 +162,10 @@ impl AuthSession {
         let mut lines = Vec::new();
         let mut pos = 0;
         while pos < rx.len() {
-            if let Some(end) = rx[pos..].iter().position(|&b| b == b'\n') {
+            if let Some(end) = rx[pos..]
+                .iter()
+                .position(|&b| b == b'\n')
+            {
                 let line_end = pos + end;
                 let line = core::str::from_utf8(&rx[pos..=line_end])
                     .map_err(|_| DbusError::auth("non-UTF-8 auth line"))?;
@@ -197,7 +203,9 @@ impl AuthSession {
             return Ok(());
         }
         if line.starts_with("REJECTED") {
-            let rest = line.strip_prefix("REJECTED").unwrap_or("");
+            let rest = line
+                .strip_prefix("REJECTED")
+                .unwrap_or("");
             let mechanisms = rest.trim();
             match self.state {
                 AuthState::AwaitExternal => {
@@ -242,7 +250,9 @@ mod tests {
     #[test]
     fn external_success() -> DbusResult<()> {
         let mut session = AuthSession::with_external(1000);
-        let first = session.poll().unwrap();
+        let first = session
+            .poll()
+            .unwrap();
         match first {
             AuthPoll::Write(bytes) => {
                 assert_eq!(bytes[0], 0);
@@ -252,21 +262,32 @@ mod tests {
             other => panic!("expected Write, got {other:?}"),
         }
         fake(&mut session, &[&b"OK 1234deadbeef\r\n"[..], &b""[..]])?;
-        let begin = session.poll().unwrap();
+        let begin = session
+            .poll()
+            .unwrap();
         assert_eq!(begin, AuthPoll::Write(b"BEGIN\r\n".to_vec()));
-        assert_eq!(session.poll().unwrap(), AuthPoll::Done);
+        assert_eq!(
+            session
+                .poll()
+                .unwrap(),
+            AuthPoll::Done
+        );
         Ok(())
     }
 
     #[test]
     fn external_falls_back_to_anonymous() -> DbusResult<()> {
         let mut session = AuthSession::with_external(1000);
-        session.poll().unwrap();
+        session
+            .poll()
+            .unwrap();
         fake(
             &mut session,
             &[&b"REJECTED KERBEROS_V4\r\n"[..], &b"OK deadbeef\r\n"[..]],
         )?;
-        let begin = session.poll().unwrap();
+        let begin = session
+            .poll()
+            .unwrap();
         assert_eq!(begin, AuthPoll::Write(b"BEGIN\r\n".to_vec()));
         Ok(())
     }
@@ -274,17 +295,25 @@ mod tests {
     #[test]
     fn exhausted_mechanisms_fails() {
         let mut session = AuthSession::with_external(1000);
-        session.poll().unwrap();
+        session
+            .poll()
+            .unwrap();
         // The first REJECTED switches to the anonymous mechanism.
-        session.feed(b"REJECTED KERBEROS_V4\r\n").unwrap();
-        let err = session.feed(b"REJECTED ANONYMOUS\r\n").unwrap_err();
+        session
+            .feed(b"REJECTED KERBEROS_V4\r\n")
+            .unwrap();
+        let err = session
+            .feed(b"REJECTED ANONYMOUS\r\n")
+            .unwrap_err();
         assert!(err.is_auth());
     }
 
     #[test]
     fn ok_without_space_is_accepted() -> DbusResult<()> {
         let mut session = AuthSession::with_external(1000);
-        session.poll().unwrap();
+        session
+            .poll()
+            .unwrap();
         fake(&mut session, &[&b"OK\r\n"[..]])?;
         Ok(())
     }
@@ -292,20 +321,32 @@ mod tests {
     #[test]
     fn rejects_garbage_lines() {
         let mut session = AuthSession::with_external(1000);
-        session.poll().unwrap();
-        let err = session.feed(b"NONSENSE\r\n").unwrap_err();
+        session
+            .poll()
+            .unwrap();
+        let err = session
+            .feed(b"NONSENSE\r\n")
+            .unwrap_err();
         assert!(err.is_auth());
     }
 
     #[test]
     fn split_line_across_feeds() {
         let mut session = AuthSession::with_external(1000);
-        session.poll().unwrap();
-        session.feed(b"OK ").unwrap();
+        session
+            .poll()
+            .unwrap();
+        session
+            .feed(b"OK ")
+            .unwrap();
         assert!(!session.is_finished());
-        session.feed(b"deadbeef\r\n").unwrap();
+        session
+            .feed(b"deadbeef\r\n")
+            .unwrap();
         assert!(!session.is_finished());
-        let begin = session.poll().unwrap();
+        let begin = session
+            .poll()
+            .unwrap();
         assert_eq!(begin, AuthPoll::Write(b"BEGIN\r\n".to_vec()));
         assert!(session.is_finished());
     }
@@ -313,8 +354,16 @@ mod tests {
     #[test]
     fn feed_after_finished_is_an_error() {
         let mut session = AuthSession::with_external(1000);
-        session.poll().unwrap();
-        session.feed(b"OK deadbeef\r\n").unwrap();
-        assert!(session.feed(b"DATA x\r\n").is_err());
+        session
+            .poll()
+            .unwrap();
+        session
+            .feed(b"OK deadbeef\r\n")
+            .unwrap();
+        assert!(
+            session
+                .feed(b"DATA x\r\n")
+                .is_err()
+        );
     }
 }

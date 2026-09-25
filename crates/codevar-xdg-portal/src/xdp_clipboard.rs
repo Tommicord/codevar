@@ -40,14 +40,19 @@ fn handle_request_clipboard<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let session_handle = reader.read_object_path()?.to_string();
+    let session_handle = reader
+        .read_object_path()?
+        .to_string();
     let options = crate::xdp_utils::decode_options(&mut reader)?;
 
     let filtered = filter_options(&options, REQUEST_CLIPBOARD_OPTIONS)?;
 
     let handle = ctx.begin_session(inv, &filtered)?;
 
-    let app_id = handle.app_info.id().to_string();
+    let app_id = handle
+        .app_info
+        .id()
+        .to_string();
 
     ctx.call_impl(
         CLIPBOARD_IMPL_INTERFACE,
@@ -70,7 +75,9 @@ fn handle_set_selection<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let session_handle = reader.read_object_path()?.to_string();
+    let session_handle = reader
+        .read_object_path()?
+        .to_string();
     let options = crate::xdp_utils::decode_options(&mut reader)?;
 
     let filtered = filter_options(&options, SET_SELECTION_OPTIONS)?;
@@ -97,12 +104,14 @@ fn handle_selection_write<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let session_handle = reader.read_object_path()?.to_string();
+    let session_handle = reader
+        .read_object_path()?
+        .to_string();
     let serial = reader.read_u32()?;
 
-    let handle = ctx.take_session(&session_handle).ok_or_else(|| {
-        PortalError::NotFound(String::from("Session not found"))
-    })?;
+    let handle = ctx
+        .take_session(&session_handle)
+        .ok_or_else(|| PortalError::NotFound(String::from("Session not found")))?;
 
     ctx.call_impl(
         CLIPBOARD_IMPL_INTERFACE,
@@ -113,7 +122,9 @@ fn handle_selection_write<T: codevar_dbus::DbusTransport + 'static>(
             bw.write_u32(serial)
         },
     )?;
-    let mut reply = ctx.conn.recv_timeout(core::time::Duration::from_secs(25))?;
+    let mut reply = ctx
+        .conn
+        .recv_timeout(core::time::Duration::from_secs(25))?;
     let fds = reply.take_fds();
     let mut results = OptionMap::new();
 
@@ -133,13 +144,15 @@ fn handle_selection_write_done<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let session_handle = reader.read_object_path()?.to_string();
+    let session_handle = reader
+        .read_object_path()?
+        .to_string();
     let serial = reader.read_u32()?;
     let success = reader.read_bool()?;
 
-    let handle = ctx.take_session(&session_handle).ok_or_else(|| {
-        PortalError::NotFound(String::from("Session not found"))
-    })?;
+    let handle = ctx
+        .take_session(&session_handle)
+        .ok_or_else(|| PortalError::NotFound(String::from("Session not found")))?;
 
     ctx.call_impl(
         CLIPBOARD_IMPL_INTERFACE,
@@ -160,12 +173,16 @@ fn handle_selection_read<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let session_handle = reader.read_object_path()?.to_string();
-    let mime_type = reader.read_str()?.to_string();
+    let session_handle = reader
+        .read_object_path()?
+        .to_string();
+    let mime_type = reader
+        .read_str()?
+        .to_string();
 
-    let handle = ctx.take_session(&session_handle).ok_or_else(|| {
-        PortalError::NotFound(String::from("Session not found"))
-    })?;
+    let handle = ctx
+        .take_session(&session_handle)
+        .ok_or_else(|| PortalError::NotFound(String::from("Session not found")))?;
 
     ctx.call_impl(
         CLIPBOARD_IMPL_INTERFACE,
@@ -176,7 +193,9 @@ fn handle_selection_read<T: codevar_dbus::DbusTransport + 'static>(
             bw.write_str(&mime_type)
         },
     )?;
-    let mut reply = ctx.conn.recv_timeout(core::time::Duration::from_secs(25))?;
+    let mut reply = ctx
+        .conn
+        .recv_timeout(core::time::Duration::from_secs(25))?;
     let fds = reply.take_fds();
     let mut results = OptionMap::new();
 
@@ -195,128 +214,128 @@ pub fn register<T: codevar_dbus::DbusTransport + 'static>(ctx: &mut PortalContex
     let iface_xml = XmlBuilder::new("interface")
         .attr("name", "org.freedesktop.portal.Clipboard")
         .child("method")
-            .attr("name", "RequestClipboard")
-            .child("arg")
-                .attr("type", "o")
-                .attr("name", "session_handle")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "a{sv}")
-                .attr("name", "options")
-                .attr("direction", "in")
-            .end()
+        .attr("name", "RequestClipboard")
+        .child("arg")
+        .attr("type", "o")
+        .attr("name", "session_handle")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "a{sv}")
+        .attr("name", "options")
+        .attr("direction", "in")
+        .end()
         .end()
         .child("method")
-            .attr("name", "SetSelection")
-            .child("arg")
-                .attr("type", "o")
-                .attr("name", "session_handle")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "a{sv}")
-                .attr("name", "options")
-                .attr("direction", "in")
-            .end()
+        .attr("name", "SetSelection")
+        .child("arg")
+        .attr("type", "o")
+        .attr("name", "session_handle")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "a{sv}")
+        .attr("name", "options")
+        .attr("direction", "in")
+        .end()
         .end()
         .child("method")
-            .attr("name", "SelectionWrite")
-            .child("annotation")
-                .attr("name", "org.gtk.GDBus.C.UnixFD")
-                .attr("value", "true")
-            .end()
-            .child("arg")
-                .attr("type", "o")
-                .attr("name", "session_handle")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "u")
-                .attr("name", "serial")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "h")
-                .attr("name", "fd")
-                .attr("direction", "out")
-            .end()
+        .attr("name", "SelectionWrite")
+        .child("annotation")
+        .attr("name", "org.gtk.GDBus.C.UnixFD")
+        .attr("value", "true")
+        .end()
+        .child("arg")
+        .attr("type", "o")
+        .attr("name", "session_handle")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "u")
+        .attr("name", "serial")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "h")
+        .attr("name", "fd")
+        .attr("direction", "out")
+        .end()
         .end()
         .child("method")
-            .attr("name", "SelectionWriteDone")
-            .child("arg")
-                .attr("type", "o")
-                .attr("name", "session_handle")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "u")
-                .attr("name", "serial")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "b")
-                .attr("name", "success")
-                .attr("direction", "in")
-            .end()
+        .attr("name", "SelectionWriteDone")
+        .child("arg")
+        .attr("type", "o")
+        .attr("name", "session_handle")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "u")
+        .attr("name", "serial")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "b")
+        .attr("name", "success")
+        .attr("direction", "in")
+        .end()
         .end()
         .child("method")
-            .attr("name", "SelectionRead")
-            .child("annotation")
-                .attr("name", "org.gtk.GDBus.C.UnixFD")
-                .attr("value", "true")
-            .end()
-            .child("arg")
-                .attr("type", "o")
-                .attr("name", "session_handle")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "s")
-                .attr("name", "mime_type")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "h")
-                .attr("name", "fd")
-                .attr("direction", "out")
-            .end()
+        .attr("name", "SelectionRead")
+        .child("annotation")
+        .attr("name", "org.gtk.GDBus.C.UnixFD")
+        .attr("value", "true")
+        .end()
+        .child("arg")
+        .attr("type", "o")
+        .attr("name", "session_handle")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "s")
+        .attr("name", "mime_type")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "h")
+        .attr("name", "fd")
+        .attr("direction", "out")
+        .end()
         .end()
         .child("signal")
-            .attr("name", "SelectionOwnerChanged")
-            .child("arg")
-                .attr("type", "o")
-                .attr("name", "session_handle")
-                .attr("direction", "out")
-            .end()
-            .child("arg")
-                .attr("type", "a{sv}")
-                .attr("name", "options")
-                .attr("direction", "out")
-            .end()
+        .attr("name", "SelectionOwnerChanged")
+        .child("arg")
+        .attr("type", "o")
+        .attr("name", "session_handle")
+        .attr("direction", "out")
+        .end()
+        .child("arg")
+        .attr("type", "a{sv}")
+        .attr("name", "options")
+        .attr("direction", "out")
+        .end()
         .end()
         .child("signal")
-            .attr("name", "SelectionTransfer")
-            .child("arg")
-                .attr("type", "o")
-                .attr("name", "session_handle")
-                .attr("direction", "out")
-            .end()
-            .child("arg")
-                .attr("type", "s")
-                .attr("name", "mime_type")
-                .attr("direction", "out")
-            .end()
-            .child("arg")
-                .attr("type", "u")
-                .attr("name", "serial")
-                .attr("direction", "out")
-            .end()
+        .attr("name", "SelectionTransfer")
+        .child("arg")
+        .attr("type", "o")
+        .attr("name", "session_handle")
+        .attr("direction", "out")
+        .end()
+        .child("arg")
+        .attr("type", "s")
+        .attr("name", "mime_type")
+        .attr("direction", "out")
+        .end()
+        .child("arg")
+        .attr("type", "u")
+        .attr("name", "serial")
+        .attr("direction", "out")
+        .end()
         .end()
         .child("property")
-            .attr("name", "version")
-            .attr("type", "u")
-            .attr("access", "read")
+        .attr("name", "version")
+        .attr("type", "u")
+        .attr("access", "read")
         .end()
         .build();
 

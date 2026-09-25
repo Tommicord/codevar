@@ -63,15 +63,22 @@ fn handle_set_wallpaper_uri<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let parent_window = reader.read_str()?.to_string();
-    let uri = reader.read_str()?.to_string();
+    let parent_window = reader
+        .read_str()?
+        .to_string();
+    let uri = reader
+        .read_str()?
+        .to_string();
     let options = crate::xdp_utils::decode_options(&mut reader)?;
 
     let filtered = filter_options(&options, WALLPAPER_OPTIONS)?;
 
     let handle = ctx.begin_request(inv, &filtered)?;
 
-    let app_id = handle.app_info.id().to_string();
+    let app_id = handle
+        .app_info
+        .id()
+        .to_string();
 
     ctx.call_impl(
         WALLPAPER_IMPL_INTERFACE,
@@ -96,7 +103,9 @@ fn handle_set_wallpaper_file<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let parent_window = reader.read_str()?.to_string();
+    let parent_window = reader
+        .read_str()?
+        .to_string();
     let fd = reader.read_fd()?;
     let options = crate::xdp_utils::decode_options(&mut reader)?;
 
@@ -104,7 +113,10 @@ fn handle_set_wallpaper_file<T: codevar_dbus::DbusTransport + 'static>(
 
     let handle = ctx.begin_request(inv, &filtered)?;
 
-    let app_id = handle.app_info.id().to_string();
+    let app_id = handle
+        .app_info
+        .id()
+        .to_string();
 
     ctx.call_impl(
         WALLPAPER_IMPL_INTERFACE,
@@ -133,59 +145,59 @@ pub fn register<T: codevar_dbus::DbusTransport + 'static>(ctx: &mut PortalContex
     let iface_xml = XmlBuilder::new("interface")
         .attr("name", "org.freedesktop.portal.Wallpaper")
         .child("method")
-            .attr("name", "SetWallpaperURI")
-            .child("arg")
-                .attr("type", "s")
-                .attr("name", "parent_window")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "s")
-                .attr("name", "uri")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "a{sv}")
-                .attr("name", "options")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "o")
-                .attr("name", "handle")
-                .attr("direction", "out")
-            .end()
+        .attr("name", "SetWallpaperURI")
+        .child("arg")
+        .attr("type", "s")
+        .attr("name", "parent_window")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "s")
+        .attr("name", "uri")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "a{sv}")
+        .attr("name", "options")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "o")
+        .attr("name", "handle")
+        .attr("direction", "out")
+        .end()
         .end()
         .child("method")
-            .attr("name", "SetWallpaperFile")
-            .child("annotation")
-                .attr("name", "org.gtk.GDBus.C.UnixFD")
-                .attr("value", "true")
-            .end()
-            .child("arg")
-                .attr("type", "s")
-                .attr("name", "parent_window")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "h")
-                .attr("name", "fd")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "a{sv}")
-                .attr("name", "options")
-                .attr("direction", "in")
-            .end()
-            .child("arg")
-                .attr("type", "o")
-                .attr("name", "handle")
-                .attr("direction", "out")
-            .end()
+        .attr("name", "SetWallpaperFile")
+        .child("annotation")
+        .attr("name", "org.gtk.GDBus.C.UnixFD")
+        .attr("value", "true")
+        .end()
+        .child("arg")
+        .attr("type", "s")
+        .attr("name", "parent_window")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "h")
+        .attr("name", "fd")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "a{sv}")
+        .attr("name", "options")
+        .attr("direction", "in")
+        .end()
+        .child("arg")
+        .attr("type", "o")
+        .attr("name", "handle")
+        .attr("direction", "out")
+        .end()
         .end()
         .child("property")
-            .attr("name", "version")
-            .attr("type", "u")
-            .attr("access", "read")
+        .attr("name", "version")
+        .attr("type", "u")
+        .attr("access", "read")
         .end()
         .build();
 

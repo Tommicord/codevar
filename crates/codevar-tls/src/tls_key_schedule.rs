@@ -35,7 +35,10 @@ impl DirectionalSecrets {
     /// Builds traffic keys for the record layer (sequence starts at 0).
     #[must_use]
     pub fn traffic_keys(&self) -> TrafficKeys {
-        TrafficKeys::new(self.key.clone())
+        TrafficKeys::new(
+            self.key
+                .clone(),
+        )
     }
 }
 
@@ -255,13 +258,19 @@ impl Tls12Keys {
     /// Client write traffic keys.
     #[must_use]
     pub fn client_traffic(&self) -> TrafficKeys {
-        TrafficKeys::new(self.client_write.clone())
+        TrafficKeys::new(
+            self.client_write
+                .clone(),
+        )
     }
 
     /// Server write traffic keys.
     #[must_use]
     pub fn server_traffic(&self) -> TrafficKeys {
-        TrafficKeys::new(self.server_write.clone())
+        TrafficKeys::new(
+            self.server_write
+                .clone(),
+        )
     }
 
     /// Hash algorithm.
@@ -300,8 +309,18 @@ mod tests {
             Ok(ks) => ks,
             Err(_) => return,
         };
-        assert_eq!(ks.client_handshake.secret.len(), 32);
-        assert_eq!(ks.server_handshake.secret.len(), 32);
+        assert_eq!(
+            ks.client_handshake
+                .secret
+                .len(),
+            32
+        );
+        assert_eq!(
+            ks.server_handshake
+                .secret
+                .len(),
+            32
+        );
         let vd = match ks.server_finished_verify(&hello_hash) {
             Ok(vd) => vd,
             Err(_) => return,

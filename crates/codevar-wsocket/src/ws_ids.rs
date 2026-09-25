@@ -402,7 +402,9 @@ mod tests {
             WsOpcode::Ping,
             WsOpcode::Pong,
         ];
-        let set: HashSet<WsOpcode> = opcodes.into_iter().collect();
+        let set: HashSet<WsOpcode> = opcodes
+            .into_iter()
+            .collect();
         assert_eq!(set.len(), 6);
         assert!(set.contains(&WsOpcode::Pong));
     }
@@ -561,7 +563,9 @@ mod tests {
             WsCloseCode::Other(1012),
             WsCloseCode::Other(3000),
         ];
-        let set: HashSet<WsCloseCode> = codes.into_iter().collect();
+        let set: HashSet<WsCloseCode> = codes
+            .into_iter()
+            .collect();
         assert_eq!(set.len(), codes.len());
         assert!(set.contains(&WsCloseCode::Other(1012)));
         assert!(!set.contains(&WsCloseCode::Other(1013)));

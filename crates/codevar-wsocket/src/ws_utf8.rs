@@ -227,20 +227,27 @@ mod tests {
     #[test]
     fn accepts_empty_input() {
         let mut v = Utf8Validator::new();
-        v.feed(&[]).unwrap();
-        v.feed(&[]).unwrap();
-        v.finish().unwrap();
+        v.feed(&[])
+            .unwrap();
+        v.feed(&[])
+            .unwrap();
+        v.finish()
+            .unwrap();
         validate_utf8(&[]).unwrap();
     }
 
     #[test]
     fn accepts_full_ascii_range() {
-        let ascii: Vec<u8> = (0u16..=0x7F).map(|i| u8::try_from(i).unwrap()).collect();
+        let ascii: Vec<u8> = (0u16..=0x7F)
+            .map(|i| u8::try_from(i).unwrap())
+            .collect();
         validate_utf8(&ascii).unwrap();
 
         let mut v = Utf8Validator::new();
-        v.feed(&ascii).unwrap();
-        v.finish().unwrap();
+        v.feed(&ascii)
+            .unwrap();
+        v.finish()
+            .unwrap();
     }
 
     #[test]
@@ -287,7 +294,8 @@ mod tests {
     fn rejects_truncated_sequences_at_finish() {
         for seq in [&[0xC3][..], &[0xE2, 0x82][..], &[0xF0, 0x9F, 0x99][..]] {
             let mut v = Utf8Validator::new();
-            v.feed(seq).unwrap();
+            v.feed(seq)
+                .unwrap();
             assert!(matches!(v.finish(), Err(WsError::InvalidUtf8)));
         }
     }
@@ -311,9 +319,11 @@ mod tests {
     fn byte_by_byte_feeding_preserves_validity() {
         let mut v = Utf8Validator::new();
         for b in SPLIT_SAMPLE.as_bytes() {
-            v.feed(&[*b]).unwrap();
+            v.feed(&[*b])
+                .unwrap();
         }
-        v.finish().unwrap();
+        v.finish()
+            .unwrap();
     }
 
     #[test]
@@ -325,7 +335,8 @@ mod tests {
                 v.feed(piece)
                     .unwrap_or_else(|e| panic!("chunk {chunk}: {e}"));
             }
-            v.finish().unwrap_or_else(|e| panic!("chunk {chunk}: {e}"));
+            v.finish()
+                .unwrap_or_else(|e| panic!("chunk {chunk}: {e}"));
         }
         validate_utf8(bytes).unwrap();
     }
@@ -333,32 +344,47 @@ mod tests {
     #[test]
     fn finish_fails_while_multi_byte_sequence_pending() {
         let mut v = Utf8Validator::new();
-        v.feed(&[0xC3]).unwrap();
-        assert!(v.finish().is_err());
+        v.feed(&[0xC3])
+            .unwrap();
+        assert!(
+            v.finish()
+                .is_err()
+        );
 
-        v.feed(&[0xA9]).unwrap();
-        v.finish().unwrap();
+        v.feed(&[0xA9])
+            .unwrap();
+        v.finish()
+            .unwrap();
     }
 
     #[test]
     fn reset_clears_pending_state() {
         let mut v = Utf8Validator::new();
-        v.feed(&[0xC3]).unwrap();
-        assert!(v.finish().is_err());
+        v.feed(&[0xC3])
+            .unwrap();
+        assert!(
+            v.finish()
+                .is_err()
+        );
         v.reset();
-        v.finish().unwrap();
-        v.feed(b"fresh").unwrap();
-        v.finish().unwrap();
+        v.finish()
+            .unwrap();
+        v.feed(b"fresh")
+            .unwrap();
+        v.finish()
+            .unwrap();
     }
 
     #[test]
     fn rejects_non_continuation_byte_after_partial_sequence() {
         let mut v = Utf8Validator::new();
-        v.feed(&[0xC3]).unwrap();
+        v.feed(&[0xC3])
+            .unwrap();
         assert!(matches!(v.feed(&[0x41]), Err(WsError::InvalidUtf8)));
 
         let mut v3 = Utf8Validator::new();
-        v3.feed(&[0xE2, 0x82]).unwrap();
+        v3.feed(&[0xE2, 0x82])
+            .unwrap();
         assert!(matches!(v3.feed(&[0x20]), Err(WsError::InvalidUtf8)));
     }
 
@@ -368,9 +394,11 @@ mod tests {
         assert!(matches!(v.feed(&[0x80]), Err(WsError::InvalidUtf8)));
 
         let mut v2 = Utf8Validator::new();
-        v2.feed(&[0x41]).unwrap();
+        v2.feed(&[0x41])
+            .unwrap();
         assert!(matches!(v2.feed(&[0xBF]), Err(WsError::InvalidUtf8)));
-        v2.finish().unwrap();
+        v2.finish()
+            .unwrap();
     }
 
     #[test]
@@ -382,12 +410,18 @@ mod tests {
     #[test]
     fn pending_bytes_survive_across_feed_calls_until_complete() {
         let mut v = Utf8Validator::new();
-        v.feed(&[0xF0]).unwrap();
-        v.feed(&[0x9F]).unwrap();
-        v.feed(&[0x99]).unwrap();
-        v.finish().unwrap_err();
-        v.feed(&[0x82]).unwrap();
-        v.finish().unwrap();
+        v.feed(&[0xF0])
+            .unwrap();
+        v.feed(&[0x9F])
+            .unwrap();
+        v.feed(&[0x99])
+            .unwrap();
+        v.finish()
+            .unwrap_err();
+        v.feed(&[0x82])
+            .unwrap();
+        v.finish()
+            .unwrap();
     }
 
     #[test]
@@ -395,18 +429,34 @@ mod tests {
         let default = Utf8Validator::default();
         let fresh = Utf8Validator::new();
         assert_eq!(format!("{default:?}"), format!("{fresh:?}"));
-        default.finish().unwrap();
-        fresh.finish().unwrap();
+        default
+            .finish()
+            .unwrap();
+        fresh
+            .finish()
+            .unwrap();
     }
 
     #[test]
     fn validator_clone_inherits_pending_state() {
         let mut v = Utf8Validator::new();
-        v.feed(&[0xC3]).unwrap();
+        v.feed(&[0xC3])
+            .unwrap();
         let mut clone = v.clone();
-        assert!(clone.finish().is_err());
-        clone.feed(&[0xA9]).unwrap();
-        clone.finish().unwrap();
-        assert!(v.finish().is_err());
+        assert!(
+            clone
+                .finish()
+                .is_err()
+        );
+        clone
+            .feed(&[0xA9])
+            .unwrap();
+        clone
+            .finish()
+            .unwrap();
+        assert!(
+            v.finish()
+                .is_err()
+        );
     }
 }

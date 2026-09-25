@@ -164,14 +164,16 @@ impl PathBuf {
     #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
+        self.inner
+            .is_empty()
     }
 
     /// Returns the length of the path in bytes.
     #[inline]
     #[must_use]
     pub fn len(&self) -> usize {
-        self.inner.len()
+        self.inner
+            .len()
     }
 
     /// Pushes `component` onto the path.
@@ -189,12 +191,22 @@ impl PathBuf {
             return Ok(self);
         }
         if component.starts_with('/') {
-            self.inner = component.trim_end_matches('/').to_owned();
+            self.inner = component
+                .trim_end_matches('/')
+                .to_owned();
         } else {
-            if !self.inner.is_empty() && !self.inner.ends_with('/') {
-                self.inner.push('/');
+            if !self
+                .inner
+                .is_empty()
+                && !self
+                    .inner
+                    .ends_with('/')
+            {
+                self.inner
+                    .push('/');
             }
-            self.inner.push_str(component.trim_end_matches('/'));
+            self.inner
+                .push_str(component.trim_end_matches('/'));
         }
         Ok(self)
     }
@@ -209,22 +221,29 @@ impl PathBuf {
     /// `true` when a component was removed.
     #[must_use]
     pub fn pop(&mut self) -> bool {
-        if self.inner.is_empty() {
+        if self
+            .inner
+            .is_empty()
+        {
             return false;
         }
         if self.inner == "/" {
             return false;
         }
-        let stripped = self.inner.trim_end_matches('/');
+        let stripped = self
+            .inner
+            .trim_end_matches('/');
         if let Some(idx) = stripped.rfind('/') {
             if idx == 0 {
                 self.inner = String::from("/");
             } else {
-                self.inner.truncate(idx);
+                self.inner
+                    .truncate(idx);
             }
             true
         } else {
-            self.inner.clear();
+            self.inner
+                .clear();
             true
         }
     }
@@ -234,11 +253,15 @@ impl PathBuf {
     #[inline]
     #[must_use]
     pub fn file_name(&self) -> Option<&str> {
-        let stripped = self.inner.trim_end_matches('/');
+        let stripped = self
+            .inner
+            .trim_end_matches('/');
         if stripped.is_empty() {
             return None;
         }
-        stripped.rfind('/').map(|i| &stripped[i + 1..])
+        stripped
+            .rfind('/')
+            .map(|i| &stripped[i + 1..])
     }
 
     /// Returns the file stem (the part before the last `.` in the last
@@ -247,7 +270,8 @@ impl PathBuf {
     #[must_use]
     pub fn file_stem(&self) -> Option<&str> {
         let name = self.file_name()?;
-        name.rfind('.').map(|i| &name[..i])
+        name.rfind('.')
+            .map(|i| &name[..i])
     }
 
     /// Returns the file extension (the part after the last `.` in the
@@ -256,7 +280,8 @@ impl PathBuf {
     #[must_use]
     pub fn extension(&self) -> Option<&str> {
         let name = self.file_name()?;
-        name.rfind('.').map(|i| &name[i + 1..])
+        name.rfind('.')
+            .map(|i| &name[i + 1..])
     }
 
     /// Sets the last component of the path to `name`.
@@ -270,12 +295,18 @@ impl PathBuf {
         if name.is_empty() {
             return Err(PathError::Empty);
         }
-        if let Some(idx) = self.inner.rfind('/') {
-            self.inner.truncate(idx + 1);
+        if let Some(idx) = self
+            .inner
+            .rfind('/')
+        {
+            self.inner
+                .truncate(idx + 1);
         } else {
-            self.inner.clear();
+            self.inner
+                .clear();
         }
-        self.inner.push_str(name);
+        self.inner
+            .push_str(name);
         Ok(self)
     }
 
@@ -287,8 +318,12 @@ impl PathBuf {
     pub fn set_extension(&mut self, ext: Option<&str>) -> bool {
         match ext {
             None => {
-                if let Some(idx) = self.inner.rfind('.') {
-                    self.inner.truncate(idx);
+                if let Some(idx) = self
+                    .inner
+                    .rfind('.')
+                {
+                    self.inner
+                        .truncate(idx);
                     true
                 } else {
                     false
@@ -298,15 +333,23 @@ impl PathBuf {
                 if validate_component(ext).is_err() {
                     return false;
                 }
-                if let Some(idx) = self.inner.rfind('.') {
-                    self.inner.truncate(idx);
-                    self.inner.push('.');
-                    self.inner.push_str(ext);
+                if let Some(idx) = self
+                    .inner
+                    .rfind('.')
+                {
+                    self.inner
+                        .truncate(idx);
+                    self.inner
+                        .push('.');
+                    self.inner
+                        .push_str(ext);
                     true
                 } else {
                     // No existing extension - add one
-                    self.inner.push('.');
-                    self.inner.push_str(ext);
+                    self.inner
+                        .push('.');
+                    self.inner
+                        .push_str(ext);
                     true
                 }
             }
@@ -333,7 +376,9 @@ impl PathBuf {
     #[inline]
     #[must_use]
     pub fn parent(&self) -> Option<&str> {
-        let stripped = self.inner.trim_end_matches('/');
+        let stripped = self
+            .inner
+            .trim_end_matches('/');
         if stripped.is_empty() || stripped == "/" {
             return None;
         }
@@ -358,7 +403,9 @@ impl PathBuf {
     #[inline]
     #[must_use]
     pub fn is_absolute(&self) -> bool {
-        self.inner.starts_with('/') || is_windows_drive_absolute(&self.inner)
+        self.inner
+            .starts_with('/')
+            || is_windows_drive_absolute(&self.inner)
     }
 
     /// Returns `true` when the path does not start with a root.
@@ -380,7 +427,10 @@ impl PathBuf {
     #[must_use]
     pub fn normalize(&self) -> PathBuf {
         let mut segments: Vec<&str> = Vec::new();
-        for segment in self.inner.split('/') {
+        for segment in self
+            .inner
+            .split('/')
+        {
             match segment {
                 "" | "." => {}
                 ".." => {
@@ -392,7 +442,10 @@ impl PathBuf {
         if segments.is_empty() {
             return PathBuf::from_string(String::from("/"));
         }
-        let mut out = String::with_capacity(self.inner.len());
+        let mut out = String::with_capacity(
+            self.inner
+                .len(),
+        );
         for segment in &segments {
             out.push('/');
             out.push_str(segment);
@@ -402,14 +455,17 @@ impl PathBuf {
 
     /// Returns an iterator over the path components between separators.
     pub fn components(&self) -> impl Iterator<Item = &str> {
-        self.inner.split('/').filter(|s| !s.is_empty())
+        self.inner
+            .split('/')
+            .filter(|s| !s.is_empty())
     }
 
     /// Returns the number of components in the path.
     #[inline]
     #[must_use]
     pub fn component_count(&self) -> usize {
-        self.components().count()
+        self.components()
+            .count()
     }
 }
 
@@ -446,7 +502,9 @@ impl<'a> Iterator for Ancestors<'a> {
         if self.done {
             return None;
         }
-        let stripped = self.current.trim_end_matches('/');
+        let stripped = self
+            .current
+            .trim_end_matches('/');
         if stripped.is_empty() || stripped == "/" {
             return None;
         }
@@ -480,14 +538,17 @@ impl PathBuilder {
 
     /// Sets the path to start from the root (`/`).
     pub fn root(mut self) -> Self {
-        self.buf.inner.push('/');
+        self.buf
+            .inner
+            .push('/');
         self
     }
 
     /// Pushes a path segment.
     pub fn push(mut self, component: &str) -> Result<Self, PathError> {
         validate_component(component)?;
-        self.buf.push(component)?;
+        self.buf
+            .push(component)?;
         Ok(self)
     }
 
@@ -499,14 +560,16 @@ impl PathBuilder {
     /// Sets the final component of the path as a file name.
     pub fn file(mut self, name: &str) -> Result<Self, PathError> {
         validate_component(name)?;
-        self.buf.push(name)?;
+        self.buf
+            .push(name)?;
         Ok(self)
     }
 
     /// Sets the extension of the final component.
     pub fn with_extension(mut self, ext: &str) -> Result<Self, PathError> {
         validate_component(ext)?;
-        self.buf.set_extension(Some(ext));
+        self.buf
+            .set_extension(Some(ext));
         Ok(self)
     }
 
@@ -525,7 +588,9 @@ impl PathBuilder {
             return Err(PathError::Empty);
         }
         validate(p.as_str())?;
-        p.inner = p.normalize().into_string();
+        p.inner = p
+            .normalize()
+            .into_string();
         Ok(p)
     }
 }
@@ -548,7 +613,10 @@ pub fn validate(path: &str) -> Result<(), PathError> {
     if path.is_empty() {
         return Err(PathError::Empty);
     }
-    for (i, byte) in path.bytes().enumerate() {
+    for (i, byte) in path
+        .bytes()
+        .enumerate()
+    {
         if byte == 0 {
             return Err(PathError::InvalidCharacter(i));
         }
@@ -578,7 +646,10 @@ pub fn validate_component(name: &str) -> Result<(), PathError> {
     if name == "." || name == ".." {
         return Err(PathError::ReservedName);
     }
-    for (i, byte) in name.bytes().enumerate() {
+    for (i, byte) in name
+        .bytes()
+        .enumerate()
+    {
         if byte == 0 {
             return Err(PathError::InvalidCharacter(i));
         }
@@ -613,9 +684,15 @@ fn is_reserved_device_name(name: &str) -> bool {
         "CON" | "PRN" | "AUX" | "NUL" => true,
         _ => {
             if let Some(stripped) = upper.strip_prefix("COM") {
-                stripped.len() <= 2 && stripped.bytes().all(|b| b.is_ascii_digit())
+                stripped.len() <= 2
+                    && stripped
+                        .bytes()
+                        .all(|b| b.is_ascii_digit())
             } else if let Some(stripped) = upper.strip_prefix("LPT") {
-                stripped.len() <= 2 && stripped.bytes().all(|b| b.is_ascii_digit())
+                stripped.len() <= 2
+                    && stripped
+                        .bytes()
+                        .all(|b| b.is_ascii_digit())
             } else {
                 false
             }
@@ -675,8 +752,8 @@ pub fn current_dir() -> Result<PathBuf, PathError> {
 /// Unix implementation using [`libc`].
 #[cfg(all(unix, not(target_arch = "wasm32")))]
 mod unix {
-    use alloc::vec;
     use super::*;
+    use alloc::vec;
 
     pub(super) fn read(path: &str) -> Result<Vec<u8>, PathError> {
         use alloc::ffi::CString;
@@ -699,7 +776,15 @@ mod unix {
         loop {
             // SAFETY: `buffer` is writable for its full length and
             // `fd` refers to an open file.
-            let count = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
+            let count = unsafe {
+                libc::read(
+                    fd,
+                    buffer
+                        .as_mut_ptr()
+                        .cast(),
+                    buffer.len(),
+                )
+            };
             if count < 0 {
                 let errno = unsafe { errno() };
                 // SAFETY: the descriptor is open and will be closed.
@@ -746,7 +831,13 @@ mod unix {
     pub(super) fn current_dir() -> Result<PathBuf, PathError> {
         // SAFETY: `getcwd` writes at most 4096 bytes into the buffer.
         let mut buf = vec![0u8; 4096];
-        let ptr = unsafe { libc::getcwd(buf.as_mut_ptr().cast(), buf.len()) };
+        let ptr = unsafe {
+            libc::getcwd(
+                buf.as_mut_ptr()
+                    .cast(),
+                buf.len(),
+            )
+        };
         if ptr.is_null() {
             let errno = unsafe { errno() };
             return Err(PathError::Io {
@@ -754,7 +845,9 @@ mod unix {
                 code: errno,
             });
         }
-        let len = unsafe { core::ffi::CStr::from_ptr(ptr) }.to_bytes().len();
+        let len = unsafe { core::ffi::CStr::from_ptr(ptr) }
+            .to_bytes()
+            .len();
         // SAFETY: `getcwd` null-terminated the string at `len`.
         unsafe { buf.set_len(len) };
         let s = String::from_utf8(buf).map_err(|_| PathError::NotUtf8)?;
@@ -1068,7 +1161,10 @@ pub fn to_file_uri(path: &str) -> Result<String, PathError> {
     }
     let mut uri = String::with_capacity("file://".len() + normalized.len());
     uri.push_str("file://");
-    for &byte in normalized.as_str().as_bytes() {
+    for &byte in normalized
+        .as_str()
+        .as_bytes()
+    {
         if is_uri_path_safe(byte) {
             uri.push(char::from(byte));
         } else {
@@ -1085,17 +1181,25 @@ pub fn to_file_uri(path: &str) -> Result<String, PathError> {
 /// Percent-decodes the path and resolves `.`/`..` segments. Returns
 /// `None` for URIs without a `file` scheme or with a malformed path.
 pub fn from_file_uri(uri: &str) -> Result<PathBuf, PathError> {
-    let (scheme, rest) = uri.split_once(':').ok_or(PathError::InvalidUri)?;
+    let (scheme, rest) = uri
+        .split_once(':')
+        .ok_or(PathError::InvalidUri)?;
     if !scheme.eq_ignore_ascii_case("file") {
         return Err(PathError::InvalidUri);
     }
     let raw_path = match rest.strip_prefix("//") {
         Some(after) if after.starts_with('/') => after,
-        Some(after) => &after[after.find('/').ok_or(PathError::InvalidUri)?..],
+        Some(after) => {
+            &after[after
+                .find('/')
+                .ok_or(PathError::InvalidUri)?..]
+        }
         None if rest.starts_with('/') => rest,
         None => return Err(PathError::InvalidUri),
     };
-    let end = raw_path.find(['?', '#']).unwrap_or(raw_path.len());
+    let end = raw_path
+        .find(['?', '#'])
+        .unwrap_or(raw_path.len());
     let decoded = decode_percent_encoding(&raw_path[..end])?;
     let path = PathBuf::from_string(normalize(&decoded));
     validate(path.as_str())?;
@@ -1142,10 +1246,18 @@ fn decode_percent_encoding(value: &str) -> Result<String, PathError> {
             index += 1;
             continue;
         }
-        let high =
-            hex_digit(*bytes.get(index + 1).ok_or(PathError::InvalidUri)?).ok_or(PathError::InvalidUri)?;
-        let low =
-            hex_digit(*bytes.get(index + 2).ok_or(PathError::InvalidUri)?).ok_or(PathError::InvalidUri)?;
+        let high = hex_digit(
+            *bytes
+                .get(index + 1)
+                .ok_or(PathError::InvalidUri)?,
+        )
+        .ok_or(PathError::InvalidUri)?;
+        let low = hex_digit(
+            *bytes
+                .get(index + 2)
+                .ok_or(PathError::InvalidUri)?,
+        )
+        .ok_or(PathError::InvalidUri)?;
         let byte = high << 4 | low;
         if byte == 0 || byte == b'/' {
             return Err(PathError::InvalidCharacter(index));
@@ -1264,32 +1376,40 @@ mod tests {
     #[test]
     fn test_push_builds_path() {
         let mut p = PathBuf::new();
-        p.push("usr").unwrap();
-        p.push("local").unwrap();
-        p.push("bin").unwrap();
+        p.push("usr")
+            .unwrap();
+        p.push("local")
+            .unwrap();
+        p.push("bin")
+            .unwrap();
         assert_eq!(p.as_str(), "usr/local/bin");
     }
 
     #[test]
     fn test_push_absolute_replaces() {
         let mut p = PathBuf::new();
-        p.push("usr").unwrap();
-        p.push("/local").unwrap();
+        p.push("usr")
+            .unwrap();
+        p.push("/local")
+            .unwrap();
         assert_eq!(p.as_str(), "/local");
     }
 
     #[test]
     fn test_push_strips_trailing_slash() {
         let mut p = PathBuf::new();
-        p.push("usr/").unwrap();
+        p.push("usr/")
+            .unwrap();
         assert_eq!(p.as_str(), "usr");
     }
 
     #[test]
     fn test_join_is_same_as_push() {
         let mut p = PathBuf::new();
-        p.join("foo").unwrap();
-        p.join("bar").unwrap();
+        p.join("foo")
+            .unwrap();
+        p.join("bar")
+            .unwrap();
         assert_eq!(p.as_str(), "foo/bar");
     }
     #[test]
@@ -1337,7 +1457,8 @@ mod tests {
     #[test]
     fn test_set_file_name() {
         let mut p = PathBuf::from_str("/usr/local/bin").unwrap();
-        p.set_file_name("app").unwrap();
+        p.set_file_name("app")
+            .unwrap();
         assert_eq!(p.as_str(), "/usr/local/app");
     }
 
@@ -1358,14 +1479,18 @@ mod tests {
     #[test]
     fn test_with_file_name() {
         let p = PathBuf::from_str("/usr/local/bin").unwrap();
-        let q = p.with_file_name("app").unwrap();
+        let q = p
+            .with_file_name("app")
+            .unwrap();
         assert_eq!(q.as_str(), "/usr/local/app");
     }
 
     #[test]
     fn test_with_extension() {
         let p = PathBuf::from_str("/usr/local/bin.rs").unwrap();
-        let q = p.with_extension("txt").unwrap();
+        let q = p
+            .with_extension("txt")
+            .unwrap();
         assert_eq!(q.as_str(), "/usr/local/bin.txt");
     }
 
@@ -1403,31 +1528,49 @@ mod tests {
     #[test]
     fn test_normalize_dots() {
         let p = PathBuf::from_str("/usr/./local/../bin").unwrap();
-        assert_eq!(p.normalize().as_str(), "/usr/bin");
+        assert_eq!(
+            p.normalize()
+                .as_str(),
+            "/usr/bin"
+        );
     }
 
     #[test]
     fn test_normalize_double_dots_escape() {
         let p = PathBuf::from_str("/usr/../../bin").unwrap();
-        assert_eq!(p.normalize().as_str(), "/bin");
+        assert_eq!(
+            p.normalize()
+                .as_str(),
+            "/bin"
+        );
     }
 
     #[test]
     fn test_normalize_empty_is_root() {
         let p = PathBuf::new();
-        assert_eq!(p.normalize().as_str(), "/");
+        assert_eq!(
+            p.normalize()
+                .as_str(),
+            "/"
+        );
     }
 
     #[test]
     fn test_normalize_collapses_separators() {
         let p = PathBuf::from_str("//usr///local").unwrap();
-        assert_eq!(p.normalize().as_str(), "/usr/local");
+        assert_eq!(
+            p.normalize()
+                .as_str(),
+            "/usr/local"
+        );
     }
 
     #[test]
     fn test_components() {
         let p = PathBuf::from_str("/usr/local/bin").unwrap();
-        let v: Vec<&str> = p.components().collect();
+        let v: Vec<&str> = p
+            .components()
+            .collect();
         assert_eq!(v, ["usr", "local", "bin"]);
     }
 
@@ -1513,7 +1656,9 @@ mod tests {
     #[test]
     fn test_builder_rejects_invalid_component() {
         assert!(matches!(
-            PathBuilder::new().root().push("foo\x00bar"),
+            PathBuilder::new()
+                .root()
+                .push("foo\x00bar"),
             Err(PathError::InvalidCharacter(_))
         ));
     }

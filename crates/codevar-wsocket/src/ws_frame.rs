@@ -278,18 +278,35 @@ impl WsFrame {
     /// Clients MUST supply a fresh random masking key for every frame
     /// (RFC 6455 §5.3). Servers MUST pass `None`.
     pub fn encode(&self, out: &mut Vec<u8>, mask_key: Option<[u8; 4]>) -> WsResult<()> {
-        let len = self.payload.len();
-        let mut b0 = self.header.opcode.as_u8();
-        if self.header.fin {
+        let len = self
+            .payload
+            .len();
+        let mut b0 = self
+            .header
+            .opcode
+            .as_u8();
+        if self
+            .header
+            .fin
+        {
             b0 |= 0x80;
         }
-        if self.header.rsv1 {
+        if self
+            .header
+            .rsv1
+        {
             b0 |= 0x40;
         }
-        if self.header.rsv2 {
+        if self
+            .header
+            .rsv2
+        {
             b0 |= 0x20;
         }
-        if self.header.rsv3 {
+        if self
+            .header
+            .rsv3
+        {
             b0 |= 0x10;
         }
         out.push(b0);
@@ -322,7 +339,10 @@ impl WsFrame {
 /// The same function both masks and unmasks.
 #[inline]
 pub fn apply_mask(data: &mut [u8], key: [u8; 4]) {
-    for (i, byte) in data.iter_mut().enumerate() {
+    for (i, byte) in data
+        .iter_mut()
+        .enumerate()
+    {
         *byte ^= key[i % 4];
     }
 }
@@ -362,7 +382,10 @@ pub fn encode_close_payload(code: Option<WsCloseCode>, reason: &str) -> WsResult
                 ));
             }
             let mut payload = Vec::with_capacity(2 + reason_bytes.len());
-            payload.extend_from_slice(&c.as_u16().to_be_bytes());
+            payload.extend_from_slice(
+                &c.as_u16()
+                    .to_be_bytes(),
+            );
             payload.extend_from_slice(reason_bytes);
             Ok(payload)
         }
@@ -436,7 +459,9 @@ mod tests {
 
     fn encode_unmasked(frame: &WsFrame) -> Vec<u8> {
         let mut out = Vec::new();
-        frame.encode(&mut out, None).expect("encode");
+        frame
+            .encode(&mut out, None)
+            .expect("encode");
         out
     }
 
@@ -456,15 +481,25 @@ mod tests {
 
     #[test]
     fn header_parse_waits_for_incomplete_base_header() {
-        assert!(parse_header(&[]).unwrap().is_none());
-        assert!(parse_header(&[0x81]).unwrap().is_none());
+        assert!(
+            parse_header(&[])
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            parse_header(&[0x81])
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
     fn header_parse_extracts_flags_opcode_and_length() {
         let mut buf = vec![0xC1, 0x80 | 10, 1, 2, 3, 4];
         buf.extend_from_slice(&[0u8; 10]);
-        let header = parse_header(&buf).unwrap().unwrap();
+        let header = parse_header(&buf)
+            .unwrap()
+            .unwrap();
         assert!(header.fin);
         assert!(header.rsv1);
         assert!(!header.rsv2);
@@ -480,8 +515,16 @@ mod tests {
     fn header_parse_accepts_all_defined_opcodes() {
         for v in [0u8, 0x1, 0x2, 0x8, 0x9, 0xA] {
             let buf = [0x80 | v, 0x00];
-            let header = parse_header(&buf).unwrap().unwrap();
-            assert_eq!(header.opcode.as_u8(), v, "opcode {v:#x}");
+            let header = parse_header(&buf)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                header
+                    .opcode
+                    .as_u8(),
+                v,
+                "opcode {v:#x}"
+            );
         }
     }
 
@@ -507,9 +550,16 @@ mod tests {
     fn header_parse_waits_for_truncated_masked_header() {
         let full = [0x81, 0x85, 9, 8, 7, 6];
         for n in 0..full.len() {
-            assert!(parse_header(&full[..n]).unwrap().is_none(), "truncated at {n}");
+            assert!(
+                parse_header(&full[..n])
+                    .unwrap()
+                    .is_none(),
+                "truncated at {n}"
+            );
         }
-        let header = parse_header(&full).unwrap().unwrap();
+        let header = parse_header(&full)
+            .unwrap()
+            .unwrap();
         assert_eq!(header.mask_key, Some([9, 8, 7, 6]));
         assert_eq!(header.header_len, 6);
     }
@@ -519,9 +569,16 @@ mod tests {
         let mut full = vec![0x81, 126];
         full.extend_from_slice(&126u16.to_be_bytes());
         for n in 2..full.len() {
-            assert!(parse_header(&full[..n]).unwrap().is_none(), "truncated at {n}");
+            assert!(
+                parse_header(&full[..n])
+                    .unwrap()
+                    .is_none(),
+                "truncated at {n}"
+            );
         }
-        let header = parse_header(&full).unwrap().unwrap();
+        let header = parse_header(&full)
+            .unwrap()
+            .unwrap();
         assert_eq!(header.payload_len, 126);
         assert_eq!(header.header_len, 4);
 
@@ -542,9 +599,16 @@ mod tests {
         let mut full = vec![0x81, 127];
         full.extend_from_slice(&0x1_0000u64.to_be_bytes());
         for n in 2..full.len() {
-            assert!(parse_header(&full[..n]).unwrap().is_none(), "truncated at {n}");
+            assert!(
+                parse_header(&full[..n])
+                    .unwrap()
+                    .is_none(),
+                "truncated at {n}"
+            );
         }
-        let header = parse_header(&full).unwrap().unwrap();
+        let header = parse_header(&full)
+            .unwrap()
+            .unwrap();
         assert_eq!(header.payload_len, 0x1_0000);
         assert_eq!(header.header_len, 10);
 
@@ -618,13 +682,21 @@ mod tests {
         ));
 
         let max_control = [0x89, 125];
-        assert!(parse_header(&max_control).unwrap().is_some());
+        assert!(
+            parse_header(&max_control)
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
     fn header_frame_len_reports_overflow_as_none() {
         let max_len = make_header(u64::try_from(usize::MAX).unwrap(), 2);
-        assert!(max_len.frame_len().is_none());
+        assert!(
+            max_len
+                .frame_len()
+                .is_none()
+        );
 
         let boundary = make_header(u64::try_from(usize::MAX - 2).unwrap(), 2);
         assert_eq!(boundary.frame_len(), Some(usize::MAX));
@@ -636,37 +708,61 @@ mod tests {
     #[test]
     fn check_rsv_clear_rejects_each_reserved_bit() {
         let base = make_header(0, 2);
-        assert!(base.check_rsv_clear().is_ok());
+        assert!(
+            base.check_rsv_clear()
+                .is_ok()
+        );
 
         let mut rsv1 = make_header(0, 2);
         rsv1.rsv1 = true;
-        assert!(rsv1.check_rsv_clear().is_err());
+        assert!(
+            rsv1.check_rsv_clear()
+                .is_err()
+        );
 
         let mut rsv2 = make_header(0, 2);
         rsv2.rsv2 = true;
-        assert!(rsv2.check_rsv_clear().is_err());
+        assert!(
+            rsv2.check_rsv_clear()
+                .is_err()
+        );
 
         let mut rsv3 = make_header(0, 2);
         rsv3.rsv3 = true;
-        assert!(rsv3.check_rsv_clear().is_err());
+        assert!(
+            rsv3.check_rsv_clear()
+                .is_err()
+        );
     }
 
     #[test]
     fn check_masking_enforces_role_expectations() {
         let mut unmasked = make_header(0, 2);
         unmasked.masked = false;
-        assert!(unmasked.check_masking(Role::Client).is_ok());
+        assert!(
+            unmasked
+                .check_masking(Role::Client)
+                .is_ok()
+        );
         assert!(matches!(
-            unmasked.check_masking(Role::Server).unwrap_err(),
+            unmasked
+                .check_masking(Role::Server)
+                .unwrap_err(),
             WsError::Protocol { .. }
         ));
 
         let mut masked = make_header(0, 6);
         masked.masked = true;
         masked.mask_key = Some([1, 2, 3, 4]);
-        assert!(masked.check_masking(Role::Server).is_ok());
+        assert!(
+            masked
+                .check_masking(Role::Server)
+                .is_ok()
+        );
         assert!(matches!(
-            masked.check_masking(Role::Client).unwrap_err(),
+            masked
+                .check_masking(Role::Client)
+                .unwrap_err(),
             WsError::Protocol { .. }
         ));
     }
@@ -676,9 +772,21 @@ mod tests {
         for flag in [0x40u8, 0x20, 0x10] {
             let mut frame = WsFrame::text("hi");
             match flag {
-                0x40 => frame.header.rsv1 = true,
-                0x20 => frame.header.rsv2 = true,
-                _ => frame.header.rsv3 = true,
+                0x40 => {
+                    frame
+                        .header
+                        .rsv1 = true
+                }
+                0x20 => {
+                    frame
+                        .header
+                        .rsv2 = true
+                }
+                _ => {
+                    frame
+                        .header
+                        .rsv3 = true
+                }
             }
             let encoded = encode_unmasked(&frame);
             let err = parse_client(&encoded).unwrap_err();
@@ -730,7 +838,10 @@ mod tests {
         for _ in 0..64 {
             keys.push(random_mask_key().unwrap());
         }
-        assert!(keys.iter().any(|k| *k != keys[0]));
+        assert!(
+            keys.iter()
+                .any(|k| *k != keys[0])
+        );
 
         let mut data = vec![7u8; 33];
         let original = data.clone();
@@ -753,10 +864,21 @@ mod tests {
         for (opcode, payload) in cases {
             let frame = WsFrame::new(true, opcode, payload.clone());
             let encoded = encode_unmasked(&frame);
-            let (parsed, consumed) = parse_client(&encoded).unwrap().unwrap();
+            let (parsed, consumed) = parse_client(&encoded)
+                .unwrap()
+                .unwrap();
             assert_eq!(consumed, encoded.len(), "opcode {opcode}");
-            assert_eq!(parsed.header.opcode, opcode);
-            assert!(parsed.header.fin);
+            assert_eq!(
+                parsed
+                    .header
+                    .opcode,
+                opcode
+            );
+            assert!(
+                parsed
+                    .header
+                    .fin
+            );
             assert_eq!(parsed.payload, payload, "opcode {opcode}");
         }
     }
@@ -764,7 +886,9 @@ mod tests {
     #[test]
     fn try_parse_frame_round_trips_length_boundaries() {
         for len in [0usize, 1, 125, 126, 65535, 65536] {
-            let payload: Vec<u8> = (0..len).map(|i| u8::try_from(i % 256).unwrap()).collect();
+            let payload: Vec<u8> = (0..len)
+                .map(|i| u8::try_from(i % 256).unwrap())
+                .collect();
             let frame = WsFrame::new(true, WsOpcode::Binary, payload.clone());
             let encoded = encode_unmasked(&frame);
 
@@ -780,11 +904,21 @@ mod tests {
                 126..=65535 => 4,
                 _ => 10,
             };
-            let (parsed, consumed) = parse_client(&encoded).unwrap().unwrap();
+            let (parsed, consumed) = parse_client(&encoded)
+                .unwrap()
+                .unwrap();
             assert_eq!(consumed, encoded.len(), "len {len}");
-            assert_eq!(parsed.header.header_len, expected_header, "len {len}");
             assert_eq!(
-                parsed.header.payload_len,
+                parsed
+                    .header
+                    .header_len,
+                expected_header,
+                "len {len}"
+            );
+            assert_eq!(
+                parsed
+                    .header
+                    .payload_len,
                 u64::try_from(len).unwrap(),
                 "len {len}"
             );
@@ -798,23 +932,38 @@ mod tests {
         let frame = WsFrame::new(true, WsOpcode::Binary, payload.clone());
         let key = [0xDE, 0xAD, 0xBE, 0xEF];
         let mut out = Vec::new();
-        frame.encode(&mut out, Some(key)).unwrap();
+        frame
+            .encode(&mut out, Some(key))
+            .unwrap();
 
         let wire_payload_start = out.len() - payload.len();
         assert_ne!(&out[wire_payload_start..], &payload[..]);
 
         for n in 0..out.len() {
             assert!(
-                parse_server(&out[..n]).unwrap().is_none(),
+                parse_server(&out[..n])
+                    .unwrap()
+                    .is_none(),
                 "masked frame truncated at {n}"
             );
         }
 
-        let (parsed, consumed) = parse_server(&out).unwrap().unwrap();
+        let (parsed, consumed) = parse_server(&out)
+            .unwrap()
+            .unwrap();
         assert_eq!(consumed, out.len());
         assert_eq!(parsed.payload, payload);
-        assert!(parsed.header.masked);
-        assert_eq!(parsed.header.mask_key, Some(key));
+        assert!(
+            parsed
+                .header
+                .masked
+        );
+        assert_eq!(
+            parsed
+                .header
+                .mask_key,
+            Some(key)
+        );
     }
 
     #[test]
@@ -829,7 +978,9 @@ mod tests {
         assert!(msg.contains("unmasked"), "message: {msg}");
 
         let mut masked_out = Vec::new();
-        frame.encode(&mut masked_out, Some([1, 2, 3, 4])).unwrap();
+        frame
+            .encode(&mut masked_out, Some([1, 2, 3, 4]))
+            .unwrap();
         let err = parse_client(&masked_out).unwrap_err();
         let msg = match err {
             WsError::Protocol { message, .. } => message,
@@ -845,11 +996,15 @@ mod tests {
         let total = encoded.len();
         for n in 0..total {
             assert!(
-                parse_client(&encoded[..n]).unwrap().is_none(),
+                parse_client(&encoded[..n])
+                    .unwrap()
+                    .is_none(),
                 "unmasked frame truncated at {n}"
             );
         }
-        let (parsed, consumed) = parse_client(&encoded).unwrap().unwrap();
+        let (parsed, consumed) = parse_client(&encoded)
+            .unwrap()
+            .unwrap();
         assert_eq!(consumed, total);
         assert_eq!(parsed.payload, frame.payload);
     }
@@ -862,41 +1017,89 @@ mod tests {
         let first_len = buf.len();
         buf.extend_from_slice(&encode_unmasked(&second));
 
-        let (parsed, consumed) = parse_client(&buf).unwrap().unwrap();
+        let (parsed, consumed) = parse_client(&buf)
+            .unwrap()
+            .unwrap();
         assert_eq!(consumed, first_len);
         assert_eq!(parsed.payload, first.payload);
 
-        let (parsed2, consumed2) = parse_client(&buf[consumed..]).unwrap().unwrap();
+        let (parsed2, consumed2) = parse_client(&buf[consumed..])
+            .unwrap()
+            .unwrap();
         assert_eq!(consumed2, buf.len() - first_len);
         assert_eq!(parsed2.payload, second.payload);
-        assert_eq!(parsed2.header.opcode, WsOpcode::Binary);
+        assert_eq!(
+            parsed2
+                .header
+                .opcode,
+            WsOpcode::Binary
+        );
     }
 
     #[test]
     fn constructors_build_expected_frames() {
         let text = WsFrame::text("hi");
-        assert!(text.header.fin);
-        assert_eq!(text.header.opcode, WsOpcode::Text);
+        assert!(
+            text.header
+                .fin
+        );
+        assert_eq!(
+            text.header
+                .opcode,
+            WsOpcode::Text
+        );
         assert_eq!(text.payload, b"hi");
-        assert_eq!(text.header.payload_len, 2);
+        assert_eq!(
+            text.header
+                .payload_len,
+            2
+        );
 
         let binary = WsFrame::binary(vec![9u8]);
-        assert_eq!(binary.header.opcode, WsOpcode::Binary);
+        assert_eq!(
+            binary
+                .header
+                .opcode,
+            WsOpcode::Binary
+        );
 
         let close = WsFrame::close(Some(WsCloseCode::Normal), "bye").unwrap();
-        assert_eq!(close.header.opcode, WsOpcode::Close);
+        assert_eq!(
+            close
+                .header
+                .opcode,
+            WsOpcode::Close
+        );
         assert_eq!(close.payload, [0x03, 0xE8, b'b', b'y', b'e']);
 
         let ping = WsFrame::ping(b"ping").unwrap();
-        assert_eq!(ping.header.opcode, WsOpcode::Ping);
-        assert!(ping.header.fin);
+        assert_eq!(
+            ping.header
+                .opcode,
+            WsOpcode::Ping
+        );
+        assert!(
+            ping.header
+                .fin
+        );
 
         let pong = WsFrame::pong(Vec::new()).unwrap();
-        assert_eq!(pong.header.opcode, WsOpcode::Pong);
-        assert!(pong.payload.is_empty());
+        assert_eq!(
+            pong.header
+                .opcode,
+            WsOpcode::Pong
+        );
+        assert!(
+            pong.payload
+                .is_empty()
+        );
 
         let partial = WsFrame::new(false, WsOpcode::Text, b"a".to_vec());
-        assert!(!partial.header.fin);
+        assert!(
+            !partial
+                .header
+                .fin
+        );
     }
 
     #[test]
@@ -1024,17 +1227,25 @@ mod tests {
     #[test]
     fn one_mib_payload_round_trips_masked_and_unmasked() {
         let len = 1024 * 1024;
-        let payload: Vec<u8> = (0..len).map(|i| u8::try_from(i % 251).unwrap()).collect();
+        let payload: Vec<u8> = (0..len)
+            .map(|i| u8::try_from(i % 251).unwrap())
+            .collect();
         let frame = WsFrame::new(true, WsOpcode::Binary, payload.clone());
 
         let unmasked = encode_unmasked(&frame);
-        let (parsed, consumed) = parse_client(&unmasked).unwrap().unwrap();
+        let (parsed, consumed) = parse_client(&unmasked)
+            .unwrap()
+            .unwrap();
         assert_eq!(consumed, unmasked.len());
         assert_eq!(parsed.payload, payload);
 
         let mut masked_out = Vec::new();
-        frame.encode(&mut masked_out, Some([9, 8, 7, 6])).unwrap();
-        let (parsed, consumed) = parse_server(&masked_out).unwrap().unwrap();
+        frame
+            .encode(&mut masked_out, Some([9, 8, 7, 6]))
+            .unwrap();
+        let (parsed, consumed) = parse_server(&masked_out)
+            .unwrap()
+            .unwrap();
         assert_eq!(consumed, masked_out.len());
         assert_eq!(parsed.payload, payload);
     }
@@ -1045,9 +1256,16 @@ mod tests {
         for i in 0..500 {
             out.clear();
             let text = format!("chunk-{i}");
-            let frame = WsFrame::text(text.as_bytes().to_vec());
-            frame.encode(&mut out, None).unwrap();
-            let (parsed, consumed) = parse_client(&out).unwrap().unwrap();
+            let frame = WsFrame::text(
+                text.as_bytes()
+                    .to_vec(),
+            );
+            frame
+                .encode(&mut out, None)
+                .unwrap();
+            let (parsed, consumed) = parse_client(&out)
+                .unwrap()
+                .unwrap();
             assert_eq!(consumed, out.len(), "iteration {i}");
             assert_eq!(parsed.payload, text.as_bytes(), "iteration {i}");
         }

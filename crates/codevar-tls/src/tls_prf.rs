@@ -76,13 +76,19 @@ fn p_hash_sha384(secret: &[u8], seed: &[u8], out_len: usize) -> TlsResult<Vec<u8
 fn hmac_sha256(key: &[u8], data: &[u8]) -> TlsResult<Vec<u8>> {
     let mut mac = HmacSha256::new_from_slice(key).map_err(|_| TlsError::crypto("HMAC-SHA256 key"))?;
     mac.update(data);
-    Ok(mac.finalize().into_bytes().to_vec())
+    Ok(mac
+        .finalize()
+        .into_bytes()
+        .to_vec())
 }
 
 fn hmac_sha384(key: &[u8], data: &[u8]) -> TlsResult<Vec<u8>> {
     let mut mac = HmacSha384::new_from_slice(key).map_err(|_| TlsError::crypto("HMAC-SHA384 key"))?;
     mac.update(data);
-    Ok(mac.finalize().into_bytes().to_vec())
+    Ok(mac
+        .finalize()
+        .into_bytes()
+        .to_vec())
 }
 
 /// HMAC used for TLS 1.3 Finished / PSK binders.
@@ -100,5 +106,6 @@ pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    a.ct_eq(b).into()
+    a.ct_eq(b)
+        .into()
 }

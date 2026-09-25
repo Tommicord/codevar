@@ -145,7 +145,9 @@ pub fn is_valid_member(name: &str) -> bool {
     if !is_element_start(bytes[0], false) {
         return false;
     }
-    bytes.iter().all(|byte| is_name_char(*byte, false))
+    bytes
+        .iter()
+        .all(|byte| is_name_char(*byte, false))
 }
 
 /// Returns `true` when `name` is a valid bus name of any kind.
@@ -155,7 +157,10 @@ pub fn is_valid_member(name: &str) -> bool {
 /// have elements that begin with a digit.
 #[must_use]
 pub fn is_valid_bus_name(name: &str) -> bool {
-    let unique = name.as_bytes().first() == Some(&b':');
+    let unique = name
+        .as_bytes()
+        .first()
+        == Some(&b':');
     let rest = if unique { &name[1..] } else { name };
     check_elements(rest, true, unique, 2)
 }
@@ -163,7 +168,10 @@ pub fn is_valid_bus_name(name: &str) -> bool {
 /// Returns `true` when `name` is a valid unique connection name.
 #[must_use]
 pub fn is_valid_unique_name(name: &str) -> bool {
-    name.as_bytes().first() == Some(&b':') && is_valid_bus_name(name)
+    name.as_bytes()
+        .first()
+        == Some(&b':')
+        && is_valid_bus_name(name)
 }
 
 /// Validates an object path, reporting the failure as [`DbusError`].

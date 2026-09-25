@@ -162,9 +162,16 @@ impl WsClientHandshake {
         if let Some(ref origin) = self.origin {
             req.push_str(&format!("Origin: {origin}\r\n"));
         }
-        if !self.protocols.is_empty() {
+        if !self
+            .protocols
+            .is_empty()
+        {
             req.push_str("Sec-WebSocket-Protocol: ");
-            req.push_str(&self.protocols.join(", "));
+            req.push_str(
+                &self
+                    .protocols
+                    .join(", "),
+            );
             req.push_str("\r\n");
         }
         req.push_str("\r\n");
@@ -199,18 +206,29 @@ impl WsClientHandshake {
             return Err(WsError::handshake("Sec-WebSocket-Accept mismatch"));
         }
         if let Some(ref proto) = response.protocol {
-            if !self.protocols.iter().any(|p| p == proto) {
+            if !self
+                .protocols
+                .iter()
+                .any(|p| p == proto)
+            {
                 return Err(WsError::handshake(format!(
                     "server selected unoffered subprotocol '{proto}'"
                 )));
             }
             self.selected_protocol = Some(proto.clone());
-        } else if response.headers.contains_key("sec-websocket-protocol") {
+        } else if response
+            .headers
+            .contains_key("sec-websocket-protocol")
+        {
             return Err(WsError::handshake("empty Sec-WebSocket-Protocol in response"));
         }
         // Reject unnegotiated extensions (we offer none).
-        if let Some(ext) = response.headers.get("sec-websocket-extensions")
-            && !ext.trim().is_empty()
+        if let Some(ext) = response
+            .headers
+            .get("sec-websocket-extensions")
+            && !ext
+                .trim()
+                .is_empty()
         {
             return Err(WsError::handshake(format!(
                 "server selected unoffered extension '{ext}'"
@@ -272,7 +290,10 @@ impl WsServerHandshake {
         if !header_token_contains(connection, "Upgrade") {
             return Err(WsError::handshake("missing Connection: Upgrade"));
         }
-        if request.key.is_empty() {
+        if request
+            .key
+            .is_empty()
+        {
             return Err(WsError::handshake("missing Sec-WebSocket-Key"));
         }
         // Key must decode to 16 bytes (RFC 6455 §4.1).
@@ -284,7 +305,11 @@ impl WsServerHandshake {
         self.selected_protocol = request
             .protocols
             .iter()
-            .find(|p| self.supported_protocols.iter().any(|s| s == *p))
+            .find(|p| {
+                self.supported_protocols
+                    .iter()
+                    .any(|s| s == *p)
+            })
             .cloned();
         self.request = Some(request);
         Ok(())
@@ -368,7 +393,9 @@ pub fn try_parse_request(buf: &[u8]) -> WsResult<Option<(HandshakeRequest, usize
         .get("sec-websocket-protocol")
         .map(|v| split_tokens(v))
         .unwrap_or_default();
-    let origin = headers.get("origin").cloned();
+    let origin = headers
+        .get("origin")
+        .cloned();
     let consumed = header_end + 4; // include CRLF CRLF
     Ok(Some((
         HandshakeRequest {
@@ -410,7 +437,9 @@ pub fn try_parse_response(buf: &[u8]) -> WsResult<Option<(WsHandshakeResponse, u
         .get("sec-websocket-accept")
         .cloned()
         .unwrap_or_default();
-    let protocol = headers.get("sec-websocket-protocol").cloned();
+    let protocol = headers
+        .get("sec-websocket-protocol")
+        .cloned();
     let consumed = header_end + 4;
     Ok(Some((
         WsHandshakeResponse {
@@ -424,7 +453,8 @@ pub fn try_parse_response(buf: &[u8]) -> WsResult<Option<(WsHandshakeResponse, u
 }
 
 fn find_header_end(buf: &[u8]) -> Option<usize> {
-    buf.windows(4).position(|w| w == b"\r\n\r\n")
+    buf.windows(4)
+        .position(|w| w == b"\r\n\r\n")
 }
 
 fn parse_headers<'a, I>(lines: I) -> WsResult<HashMap<String, String>>
@@ -439,8 +469,12 @@ where
         let (name, value) = line
             .split_once(':')
             .ok_or_else(|| WsError::handshake(format!("malformed header line: {line}")))?;
-        let name = name.trim().to_ascii_lowercase();
-        let value = value.trim().to_string();
+        let name = name
+            .trim()
+            .to_ascii_lowercase();
+        let value = value
+            .trim()
+            .to_string();
         // Combine duplicate headers with comma (RFC 7230 §3.2.2), except
         // Sec-WebSocket-Extensions / Protocol which may appear multiple times;
         // joining with comma preserves list semantics.
@@ -458,7 +492,10 @@ where
 fn split_tokens(value: &str) -> Vec<String> {
     value
         .split(',')
-        .map(|s| s.trim().to_string())
+        .map(|s| {
+            s.trim()
+                .to_string()
+        })
         .filter(|s| !s.is_empty())
         .collect()
 }
@@ -470,7 +507,10 @@ fn eq_ignore_ascii_case(a: &str, b: &str) -> bool {
 fn header_token_contains(header: &str, token: &str) -> bool {
     header
         .split(',')
-        .any(|t| t.trim().eq_ignore_ascii_case(token))
+        .any(|t| {
+            t.trim()
+                .eq_ignore_ascii_case(token)
+        })
 }
 
 #[cfg(test)]
@@ -510,7 +550,10 @@ mod tests {
         let encoded = ws_base64::encode(&a);
         assert_eq!(encoded.len(), 24);
         assert!(encoded.ends_with("=="));
-        for ch in encoded.chars().filter(|c| *c != '=') {
+        for ch in encoded
+            .chars()
+            .filter(|c| *c != '=')
+        {
             assert!(
                 ch.is_ascii_alphanumeric() || ch == '+' || ch == '/',
                 "unexpected base64 character {ch}"
@@ -535,10 +578,22 @@ mod tests {
         .expect("valid handshake");
         assert_eq!(hs.path, "/chat");
         assert_eq!(hs.host, "example.com");
-        assert_eq!(hs.key_b64.len(), 24);
-        assert_eq!(ws_base64::decode(&hs.key_b64).expect("key").len(), 16);
+        assert_eq!(
+            hs.key_b64
+                .len(),
+            24
+        );
+        assert_eq!(
+            ws_base64::decode(&hs.key_b64)
+                .expect("key")
+                .len(),
+            16
+        );
         assert_eq!(hs.expected_accept, compute_accept_key(&hs.key_b64));
-        assert!(hs.selected_protocol.is_none());
+        assert!(
+            hs.selected_protocol
+                .is_none()
+        );
     }
 
     #[test]
@@ -573,23 +628,44 @@ mod tests {
         let mut client = WsClientHandshake::new("/chat", "example.com", vec!["chat".to_string()], None)
             .expect("valid handshake");
         let bytes = client.encode_request();
-        let (req, consumed) = try_parse_request(&bytes).expect("parse").expect("complete");
+        let (req, consumed) = try_parse_request(&bytes)
+            .expect("parse")
+            .expect("complete");
         assert_eq!(consumed, bytes.len());
         assert_eq!(req.path, "/chat");
         assert_eq!(req.host, "example.com");
         assert_eq!(req.key, client.key_b64);
         assert_eq!(req.protocols, vec!["chat".to_string()]);
-        assert!(req.origin.is_none());
-        assert_eq!(req.headers.get("upgrade").map(String::as_str), Some("websocket"));
+        assert!(
+            req.origin
+                .is_none()
+        );
         assert_eq!(
-            req.headers.get("sec-websocket-version").map(String::as_str),
+            req.headers
+                .get("upgrade")
+                .map(String::as_str),
+            Some("websocket")
+        );
+        assert_eq!(
+            req.headers
+                .get("sec-websocket-version")
+                .map(String::as_str),
             Some("13")
         );
 
         let mut server = WsServerHandshake::new(vec!["chat".to_string()]);
-        server.accept_request(req).expect("accept");
-        assert_eq!(server.selected_protocol.as_deref(), Some("chat"));
-        let resp_bytes = server.encode_response().expect("encode");
+        server
+            .accept_request(req)
+            .expect("accept");
+        assert_eq!(
+            server
+                .selected_protocol
+                .as_deref(),
+            Some("chat")
+        );
+        let resp_bytes = server
+            .encode_response()
+            .expect("encode");
 
         let (resp, consumed2) = try_parse_response(&resp_bytes)
             .expect("parse")
@@ -597,9 +673,20 @@ mod tests {
         assert_eq!(consumed2, resp_bytes.len());
         assert_eq!(resp.status, 101);
         assert_eq!(resp.accept, compute_accept_key(&client.key_b64));
-        assert_eq!(resp.protocol.as_deref(), Some("chat"));
-        client.validate_response(&resp).expect("validate");
-        assert_eq!(client.selected_protocol.as_deref(), Some("chat"));
+        assert_eq!(
+            resp.protocol
+                .as_deref(),
+            Some("chat")
+        );
+        client
+            .validate_response(&resp)
+            .expect("validate");
+        assert_eq!(
+            client
+                .selected_protocol
+                .as_deref(),
+            Some("chat")
+        );
     }
 
     #[test]
@@ -610,7 +697,11 @@ mod tests {
             let parsed = try_parse_request(&bytes[..i]).expect("prefix parses");
             assert!(parsed.is_none(), "prefix of {i} bytes parsed early");
         }
-        assert!(try_parse_request(&bytes).expect("full").is_some());
+        assert!(
+            try_parse_request(&bytes)
+                .expect("full")
+                .is_some()
+        );
 
         // Trailing bytes after the header block are not consumed.
         let mut with_tail = bytes.clone();
@@ -629,38 +720,68 @@ mod tests {
             let parsed = try_parse_response(&full[..i]).expect("prefix parses");
             assert!(parsed.is_none(), "prefix of {i} bytes parsed early");
         }
-        let (resp, consumed) = try_parse_response(full).expect("parse").expect("complete");
+        let (resp, consumed) = try_parse_response(full)
+            .expect("parse")
+            .expect("complete");
         assert_eq!(consumed, full.len());
         assert_eq!(resp.status, 101);
-        assert_eq!(resp.headers.get("upgrade").map(String::as_str), Some("websocket"));
+        assert_eq!(
+            resp.headers
+                .get("upgrade")
+                .map(String::as_str),
+            Some("websocket")
+        );
     }
 
     #[test]
     fn request_header_edge_cases() {
         // Case-insensitive names, whitespace around name/value, empty value.
         let raw = b"GET / HTTP/1.1\r\nHoSt: Example.COM\r\n  X-Empty:   \r\n\r\n";
-        let (req, _) = try_parse_request(raw).expect("parse").expect("complete");
+        let (req, _) = try_parse_request(raw)
+            .expect("parse")
+            .expect("complete");
         assert_eq!(req.host, "Example.COM");
-        assert_eq!(req.headers.get("x-empty").map(String::as_str), Some(""));
-        assert!(req.key.is_empty());
-        assert!(req.protocols.is_empty());
+        assert_eq!(
+            req.headers
+                .get("x-empty")
+                .map(String::as_str),
+            Some("")
+        );
+        assert!(
+            req.key
+                .is_empty()
+        );
+        assert!(
+            req.protocols
+                .is_empty()
+        );
 
         // Duplicate protocol headers are comma-joined (list semantics).
         let raw2 = b"GET / HTTP/1.1\r\nHost: h\r\n\
                     Sec-WebSocket-Protocol: chat\r\n\
                     Sec-WebSocket-Protocol: super\r\n\r\n";
-        let (req2, _) = try_parse_request(raw2).expect("parse").expect("complete");
+        let (req2, _) = try_parse_request(raw2)
+            .expect("parse")
+            .expect("complete");
         assert_eq!(req2.protocols, vec!["chat".to_string(), "super".to_string()]);
 
         // Empty protocol tokens are dropped.
         let raw3 = b"GET / HTTP/1.1\r\nHost: h\r\nSec-WebSocket-Protocol: a,, b ,\r\n\r\n";
-        let (req3, _) = try_parse_request(raw3).expect("parse").expect("complete");
+        let (req3, _) = try_parse_request(raw3)
+            .expect("parse")
+            .expect("complete");
         assert_eq!(req3.protocols, vec!["a".to_string(), "b".to_string()]);
 
         // Origin header is surfaced.
         let raw4 = b"GET / HTTP/1.1\r\nHost: h\r\nOrigin: http://o\r\n\r\n";
-        let (req4, _) = try_parse_request(raw4).expect("parse").expect("complete");
-        assert_eq!(req4.origin.as_deref(), Some("http://o"));
+        let (req4, _) = try_parse_request(raw4)
+            .expect("parse")
+            .expect("complete");
+        assert_eq!(
+            req4.origin
+                .as_deref(),
+            Some("http://o")
+        );
     }
 
     #[test]
@@ -696,13 +817,23 @@ mod tests {
     #[test]
     fn response_status_line_variants() {
         let ok = b"HTTP/1.1 101 Switching Protocols\r\n\r\n";
-        let (r, _) = try_parse_response(ok).expect("parse").expect("complete");
+        let (r, _) = try_parse_response(ok)
+            .expect("parse")
+            .expect("complete");
         assert_eq!(r.status, 101);
-        assert!(r.accept.is_empty());
-        assert!(r.protocol.is_none());
+        assert!(
+            r.accept
+                .is_empty()
+        );
+        assert!(
+            r.protocol
+                .is_none()
+        );
 
         let bad = b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
-        let (r2, _) = try_parse_response(bad).expect("parse").expect("complete");
+        let (r2, _) = try_parse_response(bad)
+            .expect("parse")
+            .expect("complete");
         assert_eq!(r2.status, 400);
 
         // Non-numeric status token.
@@ -728,8 +859,16 @@ mod tests {
         let (r3, _) = try_parse_response(with_keys)
             .expect("parse")
             .expect("complete");
-        assert_eq!(r3.accept.as_str(), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
-        assert_eq!(r3.protocol.as_deref(), Some("chat"));
+        assert_eq!(
+            r3.accept
+                .as_str(),
+            "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+        );
+        assert_eq!(
+            r3.protocol
+                .as_deref(),
+            Some("chat")
+        );
     }
 
     fn base_response(accept: &str) -> WsHandshakeResponse {
@@ -747,14 +886,17 @@ mod tests {
     #[test]
     fn validate_response_rejects_bad_status_upgrade_and_accept() {
         let mut hs = WsClientHandshake::new("/", "h", vec!["chat".to_string()], None).expect("handshake");
-        let good_accept = hs.expected_accept.clone();
+        let good_accept = hs
+            .expected_accept
+            .clone();
 
         let mut resp = base_response(&good_accept);
         resp.status = 400;
         assert!(matches!(hs.validate_response(&resp), Err(WsError::Handshake(_))));
 
         let mut resp = base_response(&good_accept);
-        resp.headers.remove("upgrade");
+        resp.headers
+            .remove("upgrade");
         assert!(matches!(hs.validate_response(&resp), Err(WsError::Handshake(_))));
 
         let mut resp = base_response(&good_accept);
@@ -771,15 +913,20 @@ mod tests {
         let mut resp = base_response(&good_accept);
         resp.headers
             .insert("connection".to_string(), "keep-alive, Upgrade".to_string());
-        hs.validate_response(&resp).expect("token list accepted");
+        hs.validate_response(&resp)
+            .expect("token list accepted");
 
         let resp = base_response("AAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
         assert!(matches!(hs.validate_response(&resp), Err(WsError::Handshake(_))));
 
         // Correct everything with matching accept: success path.
         let resp = base_response(&good_accept);
-        hs.validate_response(&resp).expect("valid response");
-        assert!(hs.selected_protocol.is_none());
+        hs.validate_response(&resp)
+            .expect("valid response");
+        assert!(
+            hs.selected_protocol
+                .is_none()
+        );
     }
 
     #[test]
@@ -787,13 +934,20 @@ mod tests {
         let mut hs =
             WsClientHandshake::new("/", "h", vec!["chat".to_string(), "superchat".to_string()], None)
                 .expect("handshake");
-        let accept = hs.expected_accept.clone();
+        let accept = hs
+            .expected_accept
+            .clone();
 
         // Offered subprotocol is selected.
         let mut resp = base_response(&accept);
         resp.protocol = Some("superchat".to_string());
-        hs.validate_response(&resp).expect("offered protocol");
-        assert_eq!(hs.selected_protocol.as_deref(), Some("superchat"));
+        hs.validate_response(&resp)
+            .expect("offered protocol");
+        assert_eq!(
+            hs.selected_protocol
+                .as_deref(),
+            Some("superchat")
+        );
 
         // Unoffered subprotocol is rejected.
         let mut resp = base_response(&accept);
@@ -808,16 +962,18 @@ mod tests {
 
         // Unoffered extension is rejected; empty extension header is fine.
         let mut resp = base_response(&accept);
-        resp.headers.insert(
-            "sec-websocket-extensions".to_string(),
-            "permessage-deflate".to_string(),
-        );
+        resp.headers
+            .insert(
+                "sec-websocket-extensions".to_string(),
+                "permessage-deflate".to_string(),
+            );
         assert!(matches!(hs.validate_response(&resp), Err(WsError::Handshake(_))));
 
         let mut resp = base_response(&accept);
         resp.headers
             .insert("sec-websocket-extensions".to_string(), String::new());
-        hs.validate_response(&resp).expect("empty extension");
+        hs.validate_response(&resp)
+            .expect("empty extension");
     }
 
     fn base_request() -> HandshakeRequest {
@@ -838,9 +994,16 @@ mod tests {
     #[test]
     fn server_accept_request_validation() {
         let mut hs = WsServerHandshake::new(vec![]);
-        hs.accept_request(base_request()).expect("valid request");
-        assert!(hs.request.is_some());
-        assert!(hs.selected_protocol.is_none());
+        hs.accept_request(base_request())
+            .expect("valid request");
+        assert!(
+            hs.request
+                .is_some()
+        );
+        assert!(
+            hs.selected_protocol
+                .is_none()
+        );
 
         // Wrong version.
         let mut req = base_request();
@@ -850,20 +1013,24 @@ mod tests {
 
         // Missing version header.
         let mut req = base_request();
-        req.headers.remove("sec-websocket-version");
+        req.headers
+            .remove("sec-websocket-version");
         assert!(matches!(hs.accept_request(req), Err(WsError::Handshake(_))));
 
         // Upgrade header missing or wrong value (case-insensitive match).
         let mut req = base_request();
-        req.headers.remove("upgrade");
+        req.headers
+            .remove("upgrade");
         assert!(matches!(hs.accept_request(req), Err(WsError::Handshake(_))));
         let mut req = base_request();
-        req.headers.insert("upgrade".to_string(), "h2c".to_string());
+        req.headers
+            .insert("upgrade".to_string(), "h2c".to_string());
         assert!(matches!(hs.accept_request(req), Err(WsError::Handshake(_))));
         let mut req = base_request();
         req.headers
             .insert("upgrade".to_string(), "WebSocket".to_string());
-        hs.accept_request(req).expect("case-insensitive upgrade");
+        hs.accept_request(req)
+            .expect("case-insensitive upgrade");
 
         // Connection must contain the Upgrade token.
         let mut req = base_request();
@@ -892,18 +1059,31 @@ mod tests {
         let mut hs = WsServerHandshake::new(vec!["a".to_string(), "b".to_string()]);
         let mut req = base_request();
         req.protocols = vec!["b".to_string(), "a".to_string()];
-        hs.accept_request(req).expect("accept");
-        assert_eq!(hs.selected_protocol.as_deref(), Some("b"));
+        hs.accept_request(req)
+            .expect("accept");
+        assert_eq!(
+            hs.selected_protocol
+                .as_deref(),
+            Some("b")
+        );
 
         // No mutual protocol -> none selected.
         let mut req = base_request();
         req.protocols = vec!["c".to_string()];
-        hs.accept_request(req).expect("accept");
-        assert!(hs.selected_protocol.is_none());
+        hs.accept_request(req)
+            .expect("accept");
+        assert!(
+            hs.selected_protocol
+                .is_none()
+        );
 
         // Client offers nothing -> none selected.
-        hs.accept_request(base_request()).expect("accept");
-        assert!(hs.selected_protocol.is_none());
+        hs.accept_request(base_request())
+            .expect("accept");
+        assert!(
+            hs.selected_protocol
+                .is_none()
+        );
     }
 
     #[test]
@@ -928,12 +1108,23 @@ mod tests {
         raw.extend_from_slice(b"GET / HTTP/1.1\r\nHost: h\r\nX-Big: ");
         raw.extend(std::iter::repeat_n(b'A', 1024 * 1024));
         raw.extend_from_slice(b"\r\n\r\n");
-        let (req, consumed) = try_parse_request(&raw).expect("parse").expect("complete");
+        let (req, consumed) = try_parse_request(&raw)
+            .expect("parse")
+            .expect("complete");
         assert_eq!(consumed, raw.len());
-        assert_eq!(req.headers.get("x-big").map(String::len), Some(1024 * 1024));
+        assert_eq!(
+            req.headers
+                .get("x-big")
+                .map(String::len),
+            Some(1024 * 1024)
+        );
         // Without the terminator the parser only reports "need more bytes".
         let partial = &raw[..raw.len() - 1];
-        assert!(try_parse_request(partial).expect("prefix").is_none());
+        assert!(
+            try_parse_request(partial)
+                .expect("prefix")
+                .is_none()
+        );
     }
 
     #[test]
@@ -949,10 +1140,21 @@ mod tests {
         let hs =
             WsClientHandshake::new("/", "h", vec![], Some("o\r\nX-Evil: 1".to_string())).expect("handshake");
         let bytes = hs.encode_request();
-        let (req, _) = try_parse_request(&bytes).expect("parse").expect("complete");
+        let (req, _) = try_parse_request(&bytes)
+            .expect("parse")
+            .expect("complete");
         // The injected line is parsed as its own header, and Origin is truncated.
-        assert_eq!(req.headers.get("x-evil").map(String::as_str), Some("1"));
-        assert_eq!(req.origin.as_deref(), Some("o"));
+        assert_eq!(
+            req.headers
+                .get("x-evil")
+                .map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            req.origin
+                .as_deref(),
+            Some("o")
+        );
     }
 
     #[test]

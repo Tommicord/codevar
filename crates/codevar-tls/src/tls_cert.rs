@@ -77,14 +77,37 @@ impl ParsedCert {
     }
 
     fn from_parsed(der: Vec<u8>, cert: &X509Certificate<'_>) -> TlsResult<Self> {
-        let subject = cert.subject().to_string();
-        let issuer = cert.issuer().to_string();
-        let spki_der = cert.tbs_certificate.subject_pki.raw.to_vec();
-        let not_before = cert.validity().not_before.timestamp();
-        let not_after = cert.validity().not_after.timestamp();
-        let signature_oid = cert.signature_algorithm.algorithm.to_id_string();
-        let signature = cert.signature_value.data.to_vec();
-        let tbs_der = cert.tbs_certificate.as_ref().to_vec();
+        let subject = cert
+            .subject()
+            .to_string();
+        let issuer = cert
+            .issuer()
+            .to_string();
+        let spki_der = cert
+            .tbs_certificate
+            .subject_pki
+            .raw
+            .to_vec();
+        let not_before = cert
+            .validity()
+            .not_before
+            .timestamp();
+        let not_after = cert
+            .validity()
+            .not_after
+            .timestamp();
+        let signature_oid = cert
+            .signature_algorithm
+            .algorithm
+            .to_id_string();
+        let signature = cert
+            .signature_value
+            .data
+            .to_vec();
+        let tbs_der = cert
+            .tbs_certificate
+            .as_ref()
+            .to_vec();
 
         let mut dns_names = Vec::new();
         let mut is_ca = false;
@@ -105,7 +128,10 @@ impl ParsedCert {
         }
         if dns_names.is_empty() {
             // Fallback to Common Name for legacy certificates.
-            for attr in cert.subject().iter_common_name() {
+            for attr in cert
+                .subject()
+                .iter_common_name()
+            {
                 if let Ok(cn) = attr.as_str() {
                     dns_names.push(cn.to_string());
                 }
@@ -137,7 +163,9 @@ impl ParsedCert {
     /// (single left-most `*` wildcard only).
     #[must_use]
     pub fn matches_hostname(&self, hostname: &str) -> bool {
-        let host = hostname.trim_end_matches('.').to_ascii_lowercase();
+        let host = hostname
+            .trim_end_matches('.')
+            .to_ascii_lowercase();
         for name in &self.dns_names {
             if dns_name_matches(&name.to_ascii_lowercase(), &host) {
                 return true;
@@ -150,9 +178,14 @@ impl ParsedCert {
     pub fn public_key_kind(&self) -> TlsResult<LeafKeyKind> {
         let (_, cert) = X509Certificate::from_der(&self.der)
             .map_err(|e| TlsError::certificate(format!("re-parse: {e}")))?;
-        match cert.public_key().parsed() {
+        match cert
+            .public_key()
+            .parsed()
+        {
             Ok(PublicKey::EC(ec)) => {
-                let key_len = ec.data().len();
+                let key_len = ec
+                    .data()
+                    .len();
                 // Uncompressed SEC1: 0x04 || X || Y
                 match key_len {
                     65 => Ok(LeafKeyKind::EcdsaP256),
@@ -225,7 +258,11 @@ pub fn parse_pem_certs(pem_bytes: &[u8]) -> TlsResult<Vec<Vec<u8>>> {
     let mut certs = Vec::new();
     for block in pem::parse_many(text).map_err(|e| TlsError::certificate(format!("PEM: {e}")))? {
         if block.tag() == "CERTIFICATE" {
-            certs.push(block.contents().to_vec());
+            certs.push(
+                block
+                    .contents()
+                    .to_vec(),
+            );
         }
     }
     if certs.is_empty() {
@@ -252,7 +289,8 @@ impl RootCertStore {
 
     /// Adds a DER-encoded trust anchor.
     pub fn add_der(&mut self, der: &[u8]) -> TlsResult<()> {
-        self.roots.push(ParsedCert::from_der(der)?);
+        self.roots
+            .push(ParsedCert::from_der(der)?);
         Ok(())
     }
 
@@ -284,13 +322,15 @@ impl RootCertStore {
     /// Number of trust anchors.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.roots.len()
+        self.roots
+            .len()
     }
 
     /// Returns true when no roots are configured.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.roots.is_empty()
+        self.roots
+            .is_empty()
     }
 
     /// Immutable view of roots.
@@ -379,7 +419,11 @@ impl CertVerifier {
     }
 
     fn verify_chain_signatures(&self, chain: &[ParsedCert]) -> TlsResult<()> {
-        if self.roots.is_empty() && chain.len() == 1 {
+        if self
+            .roots
+            .is_empty()
+            && chain.len() == 1
+        {
             // Self-signed leaf: verify against itself when no roots configured.
             return verify_cert_signature(
                 &chain[0].tbs_der,
@@ -433,7 +477,10 @@ pub struct ServerName {
 impl ServerName {
     /// Parses a DNS server name (rejects empty / IP literals for now).
     pub fn try_from_str(s: &str) -> TlsResult<Self> {
-        let name = s.trim().trim_end_matches('.').to_ascii_lowercase();
+        let name = s
+            .trim()
+            .trim_end_matches('.')
+            .to_ascii_lowercase();
         if name.is_empty() || name.contains(['/', ' ', '\0']) {
             return Err(TlsError::Unsupported("invalid server name".into()));
         }
@@ -470,7 +517,9 @@ mod tests {
         b"-----BEGIN CERTIFICATE-----\nMIIBuDCCAV+gAwIBAgIUI45Sxo+yHGLkPe4tXHxugB3Lhu4wCgYIKg==\n-----END CERTIFICATE-----\n";
 
     fn leaf_der() -> Vec<u8> {
-        parse_pem_certs(LEAF_PEM).unwrap().remove(0)
+        parse_pem_certs(LEAF_PEM)
+            .unwrap()
+            .remove(0)
     }
 
     #[test]
@@ -532,12 +581,36 @@ mod tests {
         let der = leaf_der();
         let cert = ParsedCert::from_der(&der).unwrap();
         assert_eq!(cert.der, der);
-        assert!(!cert.subject.is_empty());
-        assert!(!cert.issuer.is_empty());
-        assert!(!cert.spki_der.is_empty());
-        assert!(!cert.tbs_der.is_empty());
-        assert!(!cert.signature.is_empty());
-        assert!(!cert.signature_oid.is_empty());
+        assert!(
+            !cert
+                .subject
+                .is_empty()
+        );
+        assert!(
+            !cert
+                .issuer
+                .is_empty()
+        );
+        assert!(
+            !cert
+                .spki_der
+                .is_empty()
+        );
+        assert!(
+            !cert
+                .tbs_der
+                .is_empty()
+        );
+        assert!(
+            !cert
+                .signature
+                .is_empty()
+        );
+        assert!(
+            !cert
+                .signature_oid
+                .is_empty()
+        );
 
         let mut trailing = der.clone();
         trailing.push(0);
@@ -548,7 +621,9 @@ mod tests {
     #[test]
     fn from_der_rejects_truncated_and_oversized_declared_length() {
         // Truncated DER wrapped in PEM.
-        let trunc = parse_pem_certs(TRUNCATED_DER_PEM).unwrap().remove(0);
+        let trunc = parse_pem_certs(TRUNCATED_DER_PEM)
+            .unwrap()
+            .remove(0);
         assert!(ParsedCert::from_der(&trunc).is_err());
         // Truncated leaf.
         let der = leaf_der();
@@ -568,9 +643,15 @@ mod tests {
         let mut store = RootCertStore::empty();
         assert!(store.is_empty());
         assert_eq!(store.len(), 0);
-        assert!(store.roots().is_empty());
+        assert!(
+            store
+                .roots()
+                .is_empty()
+        );
 
-        store.add_der(&leaf_der()).unwrap();
+        store
+            .add_der(&leaf_der())
+            .unwrap();
         assert_eq!(store.len(), 1);
         assert!(!store.is_empty());
         assert!(store.roots()[0].matches_hostname("example.com"));
@@ -580,7 +661,11 @@ mod tests {
         assert_eq!(clone.len(), 1);
 
         // Adding garbage fails without growing the store.
-        assert!(store.add_der(&[1, 2, 3]).is_err());
+        assert!(
+            store
+                .add_der(&[1, 2, 3])
+                .is_err()
+        );
         assert_eq!(store.len(), 1);
     }
 
@@ -590,11 +675,17 @@ mod tests {
         let mut multi = LEAF_PEM.to_vec();
         multi.extend_from_slice(RSA_PEM);
         multi.extend_from_slice(ED25519_PEM);
-        store.add_pem(&multi).unwrap();
+        store
+            .add_pem(&multi)
+            .unwrap();
         assert_eq!(store.len(), 3);
 
         let mut failed = RootCertStore::empty();
-        assert!(failed.add_pem(b"").is_err());
+        assert!(
+            failed
+                .add_pem(b"")
+                .is_err()
+        );
         assert!(failed.is_empty());
     }
 
@@ -637,11 +728,23 @@ mod tests {
     #[test]
     fn leaf_key_kind_classification() {
         let leaf = ParsedCert::from_der(&parse_pem_certs(LEAF_PEM).unwrap()[0]).unwrap();
-        assert_eq!(leaf.public_key_kind().unwrap(), LeafKeyKind::EcdsaP256);
+        assert_eq!(
+            leaf.public_key_kind()
+                .unwrap(),
+            LeafKeyKind::EcdsaP256
+        );
         let rsa = ParsedCert::from_der(&parse_pem_certs(RSA_PEM).unwrap()[0]).unwrap();
-        assert_eq!(rsa.public_key_kind().unwrap(), LeafKeyKind::Rsa);
+        assert_eq!(
+            rsa.public_key_kind()
+                .unwrap(),
+            LeafKeyKind::Rsa
+        );
         let ed = ParsedCert::from_der(&parse_pem_certs(ED25519_PEM).unwrap()[0]).unwrap();
-        assert_eq!(ed.public_key_kind().unwrap(), LeafKeyKind::Ed25519);
+        assert_eq!(
+            ed.public_key_kind()
+                .unwrap(),
+            LeafKeyKind::Ed25519
+        );
         // Enum round trip via Debug/Clone/Copy.
         let kind = LeafKeyKind::EcdsaP256;
         let copy = kind;
@@ -709,7 +812,9 @@ mod tests {
     #[test]
     fn verifier_self_signed_chain_and_hostname_checks() {
         let mut roots = RootCertStore::empty();
-        roots.add_der(&leaf_der()).unwrap();
+        roots
+            .add_der(&leaf_der())
+            .unwrap();
         let verifier = CertVerifier::new(roots.clone());
 
         // Matching hostname: self-signed chain verifies against its anchor.
@@ -758,9 +863,13 @@ mod tests {
     #[test]
     fn verifier_chain_order_and_issuer_mismatch() {
         let leaf = leaf_der();
-        let rsa = parse_pem_certs(RSA_PEM).unwrap().remove(0);
+        let rsa = parse_pem_certs(RSA_PEM)
+            .unwrap()
+            .remove(0);
         let mut roots = RootCertStore::empty();
-        roots.add_der(&leaf).unwrap();
+        roots
+            .add_der(&leaf)
+            .unwrap();
 
         // Leaf presented under a non-matching issuer certificate.
         let verifier = CertVerifier::new(roots);

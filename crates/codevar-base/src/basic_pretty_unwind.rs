@@ -120,7 +120,9 @@ mod tests {
         fn write_str(&mut self, s: &str) -> fmt::Result {
             let bytes = s.as_bytes();
             let avail = N - self.len;
-            let take = bytes.len().min(avail);
+            let take = bytes
+                .len()
+                .min(avail);
             self.buf[self.len..self.len + take].copy_from_slice(&bytes[..take]);
             self.len += take;
             Ok(())
@@ -160,9 +162,17 @@ mod tests {
         write_frames(&mut out, frames.iter()).unwrap_or(());
         let formatted = out.as_str();
         let mut lines = formatted.split('\n');
-        let first = lines.next().unwrap_or("");
-        let second = lines.next().unwrap_or("");
-        assert!(lines.next().is_none());
+        let first = lines
+            .next()
+            .unwrap_or("");
+        let second = lines
+            .next()
+            .unwrap_or("");
+        assert!(
+            lines
+                .next()
+                .is_none()
+        );
         assert!(first.contains("0x0000000000001000"));
         assert!(second.contains("0x0000000000003000"));
     }
@@ -172,7 +182,10 @@ mod tests {
         let frame = make_frame(0x1000, 0x2000, None);
         let mut out = StackBuf::<64>::new();
         write_symbol_address(&mut out, &frame).unwrap_or(());
-        assert!(out.as_str().contains("1000"));
+        assert!(
+            out.as_str()
+                .contains("1000")
+        );
     }
 
     #[test]
@@ -180,7 +193,10 @@ mod tests {
         let frame = make_frame(0x1, 0x2, None);
         let mut out = StackBuf::<128>::new();
         write_frame(&mut out, &frame, 42).unwrap_or(());
-        assert!(out.as_str().contains("   42:"));
+        assert!(
+            out.as_str()
+                .contains("   42:")
+        );
     }
 
     #[test]

@@ -40,7 +40,9 @@ impl<'a> BitLaneReader<'a> {
     #[inline]
     #[must_use]
     pub fn new(data: &'a [u8], available_bits: usize) -> Self {
-        let max_bits = data.len().saturating_mul(8);
+        let max_bits = data
+            .len()
+            .saturating_mul(8);
         Self {
             data,
             bit_index: 0,
@@ -62,7 +64,8 @@ impl<'a> BitLaneReader<'a> {
     #[inline]
     #[must_use]
     pub fn remaining_bits(&self) -> usize {
-        self.bit_end.saturating_sub(self.bit_index)
+        self.bit_end
+            .saturating_sub(self.bit_index)
     }
 
     /// Returns the next bit (`0` or `1`), refilling lanes when empty.
@@ -72,8 +75,12 @@ impl<'a> BitLaneReader<'a> {
             self.refill_lanes()?;
         }
         let bit = self.lanes[usize::from(self.lane_pos)];
-        self.lane_pos = self.lane_pos.saturating_add(1);
-        self.bit_index = self.bit_index.saturating_add(1);
+        self.lane_pos = self
+            .lane_pos
+            .saturating_add(1);
+        self.bit_index = self
+            .bit_index
+            .saturating_add(1);
         Ok(bit)
     }
 
@@ -125,7 +132,11 @@ pub(crate) fn extract_bit_lanes(data: &[u8], bit_index: usize, count: usize) -> 
 fn extract_bit_lanes_scalar(data: &[u8], bit_index: usize, count: usize) -> [u8; BIT_LANES] {
     let mut lanes = [0u8; BIT_LANES];
     let window = load_bit_window(data, bit_index);
-    for (lane, slot) in lanes.iter_mut().enumerate().take(count) {
+    for (lane, slot) in lanes
+        .iter_mut()
+        .enumerate()
+        .take(count)
+    {
         *slot = ((window >> (63 - lane)) & 1) as u8;
     }
     lanes
@@ -144,7 +155,12 @@ fn load_bit_window(data: &[u8], bit_index: usize) -> u64 {
     let copy_len = available.min(8);
     // SAFETY: `byte_index + copy_len <= data.len()` and `copy_len <= 8`.
     unsafe {
-        core::ptr::copy_nonoverlapping(data.as_ptr().add(byte_index), tmp.as_mut_ptr(), copy_len);
+        core::ptr::copy_nonoverlapping(
+            data.as_ptr()
+                .add(byte_index),
+            tmp.as_mut_ptr(),
+            copy_len,
+        );
     }
     let window = u64::from_be_bytes(tmp);
     window << bit_off
@@ -175,10 +191,18 @@ unsafe fn extract_bit_lanes_sse2(data: &[u8], bit_index: usize, count: usize) ->
         let ones = _mm_set1_epi8(1);
         let bits: __m128i = _mm_and_si128(eq, ones);
         let mut lanes = [0u8; 16];
-        _mm_storeu_si128(lanes.as_mut_ptr().cast::<__m128i>(), bits);
+        _mm_storeu_si128(
+            lanes
+                .as_mut_ptr()
+                .cast::<__m128i>(),
+            bits,
+        );
         let mut out = [0u8; BIT_LANES];
         out[..count].copy_from_slice(&lanes[..count]);
-        for slot in out.iter_mut().skip(count) {
+        for slot in out
+            .iter_mut()
+            .skip(count)
+        {
             *slot = 0;
         }
         out
@@ -213,10 +237,19 @@ mod tests {
         assert_eq!(reader.remaining_bits(), 12);
         let expected = [1, 1, 0, 0, 1, 0, 1, 0, 1, 1, 1, 1];
         for bit in expected {
-            assert_eq!(reader.next_bit().expect("bit"), bit);
+            assert_eq!(
+                reader
+                    .next_bit()
+                    .expect("bit"),
+                bit
+            );
         }
         assert_eq!(reader.remaining_bits(), 0);
-        assert!(reader.next_bit().is_err());
+        assert!(
+            reader
+                .next_bit()
+                .is_err()
+        );
     }
 
     #[test]
@@ -224,9 +257,18 @@ mod tests {
         let data = [0xff];
         let mut reader = BitLaneReader::new(&data, 10_000);
         for _ in 0..8 {
-            assert_eq!(reader.next_bit().expect("bit"), 1);
+            assert_eq!(
+                reader
+                    .next_bit()
+                    .expect("bit"),
+                1
+            );
         }
-        assert!(reader.next_bit().is_err());
+        assert!(
+            reader
+                .next_bit()
+                .is_err()
+        );
     }
 
     #[test]

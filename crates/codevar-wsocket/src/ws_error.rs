@@ -341,7 +341,12 @@ mod tests {
         ];
         for err in errors {
             let boxed: Box<dyn std::error::Error> = Box::new(err.clone());
-            assert!(boxed.source().is_none(), "source for {err:?}");
+            assert!(
+                boxed
+                    .source()
+                    .is_none(),
+                "source for {err:?}"
+            );
             assert_eq!(boxed.to_string(), err.to_string());
         }
     }

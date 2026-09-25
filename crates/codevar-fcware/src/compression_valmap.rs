@@ -84,7 +84,11 @@ pub fn valmap_encode(values: &[u16]) -> CompressorResult<Vec<u8>> {
     if values.is_empty() {
         return Ok(Vec::new());
     }
-    let mut output = Vec::with_capacity(values.len().saturating_mul(3));
+    let mut output = Vec::with_capacity(
+        values
+            .len()
+            .saturating_mul(3),
+    );
     // SAFETY: `values` is non-empty.
     let first = unsafe { *values.as_ptr() };
     if first < 0x80 {
@@ -95,7 +99,16 @@ pub fn valmap_encode(values: &[u16]) -> CompressorResult<Vec<u8>> {
     }
     for index in 1..values.len() {
         // SAFETY: `index` and `index - 1` are in-bounds.
-        let (previous, current) = unsafe { (*values.as_ptr().add(index - 1), *values.as_ptr().add(index)) };
+        let (previous, current) = unsafe {
+            (
+                *values
+                    .as_ptr()
+                    .add(index - 1),
+                *values
+                    .as_ptr()
+                    .add(index),
+            )
+        };
         let mut best: Option<(u16, u8, u8, u32, u16)> = None;
         for first_multiplier in 0u8..4 {
             for next_multiplier in 0u8..4 {
@@ -160,9 +173,13 @@ pub fn valmap_decode(stream: &[u8]) -> CompressorResult<Vec<u16>> {
         let first_multiplier = (header >> 4) & 3;
         let next_multiplier = (header >> 6) & 3;
         let current = if mode == 0 {
-            let value = u32::from(*output.last().ok_or(CompressorError::InvalidIndex)?)
-                .saturating_mul(u32::from(first_multiplier))
-                .saturating_add(u32::from(next_multiplier));
+            let value = u32::from(
+                *output
+                    .last()
+                    .ok_or(CompressorError::InvalidIndex)?,
+            )
+            .saturating_mul(u32::from(first_multiplier))
+            .saturating_add(u32::from(next_multiplier));
             u16::try_from(value).map_err(|_| CompressorError::InvalidIndex)?
         } else if first_multiplier == 1 && next_multiplier == 0 {
             let value = *stream
@@ -201,7 +218,11 @@ mod tests {
         const { assert!(COMPACT_RANGE_RECORD_SIZE > 0) };
         let ranges: Vec<CandidateRange> = compact_candidate_ranges().collect();
         assert!(!ranges.is_empty());
-        assert!(ranges.windows(2).all(|w| w[0].start <= w[1].start));
+        assert!(
+            ranges
+                .windows(2)
+                .all(|w| w[0].start <= w[1].start)
+        );
         let _ = compact_candidate_count(0);
         let _ = compact_candidates(1).count();
     }

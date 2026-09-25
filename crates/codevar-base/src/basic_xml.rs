@@ -148,7 +148,10 @@ impl core::error::Error for XmlError {}
 /// ```
 #[must_use]
 pub fn validate(input: &str) -> Result<(), XmlError> {
-    if input.trim().is_empty() {
+    if input
+        .trim()
+        .is_empty()
+    {
         return Err(XmlError::EmptyInput);
     }
 
@@ -407,11 +410,16 @@ impl XmlBuilder {
     pub fn attr(mut self, name: &str, value: &str) -> Self {
         debug_assert!(!self.closed, "cannot add attribute to a built document");
         assert!(is_valid_name(name), "invalid XML attribute name: {name}");
-        self.buffer.push(' ');
-        self.buffer.push_str(name);
-        self.buffer.push_str("=\"");
-        self.buffer.push_str(&escape(value));
-        self.buffer.push('"');
+        self.buffer
+            .push(' ');
+        self.buffer
+            .push_str(name);
+        self.buffer
+            .push_str("=\"");
+        self.buffer
+            .push_str(&escape(value));
+        self.buffer
+            .push('"');
         self
     }
 
@@ -426,8 +434,12 @@ impl XmlBuilder {
     pub fn text(mut self, text: &str) -> Self {
         assert!(!self.closed, "cannot add text to a built document");
         self.flush_open();
-        self.buffer.push_str(&escape(text));
-        if let Some(entry) = self.stack.last_mut() {
+        self.buffer
+            .push_str(&escape(text));
+        if let Some(entry) = self
+            .stack
+            .last_mut()
+        {
             entry.1 = true;
         }
         self
@@ -447,13 +459,21 @@ impl XmlBuilder {
         assert!(is_valid_name(name), "invalid XML element name: {name}");
         self.flush_open();
         // Mark the parent as having children.
-        if let Some(entry) = self.stack.last_mut() {
+        if let Some(entry) = self
+            .stack
+            .last_mut()
+        {
             entry.1 = true;
         }
-        let pos = self.buffer.len();
-        self.buffer.push('<');
-        self.buffer.push_str(name);
-        self.stack.push((name.to_string(), false, pos));
+        let pos = self
+            .buffer
+            .len();
+        self.buffer
+            .push('<');
+        self.buffer
+            .push_str(name);
+        self.stack
+            .push((name.to_string(), false, pos));
         self
     }
 
@@ -468,23 +488,34 @@ impl XmlBuilder {
     #[must_use]
     pub fn end(mut self) -> Self {
         assert!(!self.closed, "cannot close element of a built document");
-        let Some((tag_name, has_children, _)) = self.stack.pop() else {
+        let Some((tag_name, has_children, _)) = self
+            .stack
+            .pop()
+        else {
             panic!("cannot close element: no open elements");
         };
         if has_children {
             // Opening tag already closed by flush_open() in child() or text().
-            self.buffer.push_str("</");
-            self.buffer.push_str(&tag_name);
-            self.buffer.push('>');
+            self.buffer
+                .push_str("</");
+            self.buffer
+                .push_str(&tag_name);
+            self.buffer
+                .push('>');
         } else {
             // No children were added; close the opening tag with />.
             // The opening <name was pushed without a >, so add />.
             // But text() may have already added > via flush_open().
             // If buffer ends with >, replace it with />; otherwise add />.
-            if self.buffer.ends_with('>') {
-                self.buffer.pop();
+            if self
+                .buffer
+                .ends_with('>')
+            {
+                self.buffer
+                    .pop();
             }
-            self.buffer.push_str("/>");
+            self.buffer
+                .push_str("/>");
         }
         self
     }
@@ -500,22 +531,43 @@ impl XmlBuilder {
     #[must_use]
     pub fn build(mut self) -> XmlDocument {
         if (!self.closed) {
-            while self.stack.len() > 1 {
+            while self
+                .stack
+                .len()
+                > 1
+            {
                 self = self.end();
             }
-            if let Some((tag_name, _, _)) = self.stack.pop() {
-                if self.buffer.ends_with('/') {
-                    self.buffer.pop(); // remove /
-                    self.buffer.push_str("></");
-                    self.buffer.push_str(&tag_name);
-                    self.buffer.push('>');
+            if let Some((tag_name, _, _)) = self
+                .stack
+                .pop()
+            {
+                if self
+                    .buffer
+                    .ends_with('/')
+                {
+                    self.buffer
+                        .pop(); // remove /
+                    self.buffer
+                        .push_str("></");
+                    self.buffer
+                        .push_str(&tag_name);
+                    self.buffer
+                        .push('>');
                 } else {
-                    if !self.buffer.ends_with('>') {
-                        self.buffer.push('>');
+                    if !self
+                        .buffer
+                        .ends_with('>')
+                    {
+                        self.buffer
+                            .push('>');
                     }
-                    self.buffer.push_str("</");
-                    self.buffer.push_str(&tag_name);
-                    self.buffer.push('>');
+                    self.buffer
+                        .push_str("</");
+                    self.buffer
+                        .push_str(&tag_name);
+                    self.buffer
+                        .push('>');
                 }
             }
             self.closed = true;
@@ -533,7 +585,8 @@ impl XmlBuilder {
     /// Panics if called after [`build`].
     pub fn push(mut self, content: &str) -> Self {
         assert!(!self.closed, "cannot push content to a built document");
-        self.buffer.push_str(content);
+        self.buffer
+            .push_str(content);
         self
     }
 
@@ -541,9 +594,20 @@ impl XmlBuilder {
     /// Called before adding text or children to ensure the current
     /// element's opening tag is properly terminated.
     fn flush_open(&mut self) {
-        if let Some((_, has_children, _)) = self.stack.last() {
-            if !has_children && !self.buffer.ends_with('>') && !self.buffer.ends_with('/') {
-                self.buffer.push('>');
+        if let Some((_, has_children, _)) = self
+            .stack
+            .last()
+        {
+            if !has_children
+                && !self
+                    .buffer
+                    .ends_with('>')
+                && !self
+                    .buffer
+                    .ends_with('/')
+            {
+                self.buffer
+                    .push('>');
             }
         }
     }
@@ -590,6 +654,50 @@ impl fmt::Display for XmlDocument {
     }
 }
 
+#[macro_export]
+macro_rules! xml {
+    ($tag:ident) => {{
+        $crate::basic_xml::XmlBuilder::new(stringify!($tag)).build()
+    }};
+    ($tag:ident, attrs: [$($attr_name:literal = $attr_value:expr),+ $(,)?]) => {{
+        let mut builder = $crate::basic_xml::XmlBuilder::new(stringify!($tag));
+        $(builder = builder.attr($attr_name, $attr_value);)+
+        builder.build()
+    }};
+    ($tag:ident, attrs: [$($attr_name:literal = $attr_value:expr),+ $(,)?], children: [$($child:tt),+ $(,)?]) => {{
+        let mut builder = $crate::basic_xml::XmlBuilder::new(stringify!($tag));
+        $(builder = builder.attr($attr_name, $attr_value);)+
+        xml!(@build_children builder, $($child),+);
+        builder.build()
+    }};
+    ($tag:ident, children: [$($child:tt),+ $(,)?]) => {{
+        let mut builder = $crate::basic_xml::XmlBuilder::new(stringify!($tag));
+        xml!(@build_children builder, $($child),+);
+        builder.build()
+    }};
+    (@build_children $builder:ident) => {};
+    (@build_children $builder:ident, ($child_tag:ident $(, attrs: [$($attr_name:literal = $attr_value:expr),+])? $(, children: [$($grandchild:tt),+])?), $($rest:tt),*) => {{
+        $builder = $builder.child(stringify!($child_tag));
+        $( $( $builder = $builder.attr($attr_name, $attr_value); )+ )?
+        $( xml!(@build_children $builder, $($grandchild),+); )?
+        $builder = $builder.end();
+        xml!(@build_children $builder, $($rest),*);
+    }};
+    (@build_children $builder:ident, (text($text:expr)), $($rest:tt),*) => {{
+        $builder = $builder.text($text);
+        xml!(@build_children $builder, $($rest),*);
+    }};
+    (@build_children $builder:ident, ($child_tag:ident $(, attrs: [$($attr_name:literal = $attr_value:expr),+])? $(, children: [$($grandchild:tt),+])?)) => {{
+        $builder = $builder.child(stringify!($child_tag));
+        $( $( $builder = $builder.attr($attr_name, $attr_value); )+ )?
+        $( xml!(@build_children $builder, $($grandchild),+); )?
+        $builder = $builder.end();
+    }};
+    (@build_children $builder:ident, (text($text:expr))) => {{
+        $builder = $builder.text($text);
+    }};
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -600,7 +708,10 @@ mod tests {
         let xml = doc.to_string();
         assert!(xml.starts_with("<node"));
         assert!(xml.ends_with("</node>"));
-        assert!(doc.validate().is_ok());
+        assert!(
+            doc.validate()
+                .is_ok()
+        );
     }
 
     #[test]
@@ -612,7 +723,10 @@ mod tests {
         let xml = doc.to_string();
         assert!(xml.contains("version=\"1.0\""));
         assert!(xml.contains("encoding=\"utf-8\""));
-        assert!(doc.validate().is_ok());
+        assert!(
+            doc.validate()
+                .is_ok()
+        );
     }
 
     #[test]
@@ -622,7 +736,10 @@ mod tests {
             .text("hello")
             .end()
             .build();
-        assert!(doc.validate().is_ok());
+        assert!(
+            doc.validate()
+                .is_ok()
+        );
     }
 
     #[test]
@@ -636,7 +753,10 @@ mod tests {
             .end()
             .text("top")
             .build();
-        assert!(doc.validate().is_ok());
+        assert!(
+            doc.validate()
+                .is_ok()
+        );
         let xml = doc.to_string();
         assert!(xml.contains("<a>"));
         assert!(xml.contains("</a>"));
@@ -651,7 +771,10 @@ mod tests {
             .build();
         let xml = doc.to_string();
         assert!(xml.contains("<child type=\"s\"/>"));
-        assert!(doc.validate().is_ok());
+        assert!(
+            doc.validate()
+                .is_ok()
+        );
     }
 
     #[test]
@@ -694,8 +817,87 @@ mod tests {
             .end()
             .build();
         let xml = doc.to_string();
-        assert!(doc.validate().is_ok());
+        assert!(
+            doc.validate()
+                .is_ok()
+        );
         assert!(xml.contains("org.freedesktop.DBus.Introspectable"));
         assert!(xml.contains("<method name=\"Introspect\">"));
+    }
+
+    #[test]
+    fn macro_simple_element() {
+        let doc = xml!(node);
+        assert!(
+            doc.to_string()
+                .starts_with("<node")
+        );
+        assert!(
+            doc.to_string()
+                .ends_with("</node>")
+        );
+        assert!(
+            doc.validate()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn macro_with_attributes() {
+        let doc = xml!(node, attrs: ["version" = "1.0", "encoding" = "utf-8"]);
+        let xml = doc.to_string();
+        assert!(xml.contains("version=\"1.0\""));
+        assert!(xml.contains("encoding=\"utf-8\""));
+        assert!(
+            doc.validate()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn macro_with_children() {
+        let doc = xml!(root, children: [
+            (child, attrs: ["name" = "first"]),
+            (child, attrs: ["name" = "second"])
+        ]);
+        let xml = doc.to_string();
+        assert!(xml.contains("<child name=\"first\"></child>"));
+        assert!(xml.contains("<child name=\"second\"></child>"));
+        assert!(
+            doc.validate()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn macro_nested_children() {
+        let doc = xml!(node, children: [
+            (interface, attrs: ["name" = "org.freedesktop.DBus.Introspectable"], children: [
+                (method, attrs: ["name" = "Introspect"], children: [
+                    (arg, attrs: ["name" = "data", "type" = "s", "direction" = "out"])
+                ])
+            ])
+        ]);
+        let xml = doc.to_string();
+        assert!(xml.contains("org.freedesktop.DBus.Introspectable"));
+        assert!(xml.contains("<method name=\"Introspect\"></method>"));
+        assert!(xml.contains("<arg name=\"data\" type=\"s\" direction=\"out\"></arg>"));
+        assert!(
+            doc.validate()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn macro_with_text() {
+        let doc = xml!(root, children: [
+            (child, children: [(text("hello world"))])
+        ]);
+        let xml = doc.to_string();
+        assert!(xml.contains("<child>hello world</child>"));
+        assert!(
+            doc.validate()
+                .is_ok()
+        );
     }
 }

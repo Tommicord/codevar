@@ -93,7 +93,11 @@ impl FlatpakInstance {
                 ))
             })?;
 
-        let id = dir.rsplit('/').next().unwrap_or("").to_string();
+        let id = dir
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .to_string();
 
         let (app_id, ref_type) = if key_file.has_group(FLATPAK_METADATA_GROUP_APPLICATION) {
             let name = key_file
@@ -172,7 +176,9 @@ pub fn list_instances() -> XdpResult<Vec<FlatpakInstance>> {
 /// Finds a Flatpak instance by application ID.
 pub fn find_by_app_id(app_id: &str) -> XdpResult<Option<FlatpakInstance>> {
     let instances = list_instances()?;
-    Ok(instances.into_iter().find(|inst| inst.app_id == app_id))
+    Ok(instances
+        .into_iter()
+        .find(|inst| inst.app_id == app_id))
 }
 
 /// Returns the base directories to scan for Flatpak instances.
@@ -224,7 +230,11 @@ fn read_dir_entries(path: &str) -> Result<Vec<String>, PortalError> {
             break;
         }
         // SAFETY: entry is a valid dirent*
-        let name = unsafe { (*entry).d_name.as_ptr() };
+        let name = unsafe {
+            (*entry)
+                .d_name
+                .as_ptr()
+        };
         // SAFETY: name is a valid C string
         let c_str = unsafe { core::ffi::CStr::from_ptr(name) };
         if let Ok(name_str) = c_str.to_str() {
@@ -291,7 +301,15 @@ fn read_file_bytes(path: &str) -> Result<Vec<u8>, PortalError> {
     let mut buffer = [0u8; 4096];
     loop {
         // SAFETY: fd is valid, buffer is writable
-        let count = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
+        let count = unsafe {
+            libc::read(
+                fd,
+                buffer
+                    .as_mut_ptr()
+                    .cast(),
+                buffer.len(),
+            )
+        };
         if count < 0 {
             let errno = unsafe { *libc::__errno_location() };
             if errno == libc::EINTR {
@@ -347,6 +365,9 @@ mod tests {
     fn test_get_instance_base_dirs() {
         let dirs = get_instance_base_dirs();
         assert!(!dirs.is_empty());
-        assert!(dirs.iter().any(|d| d.contains(".flatpak")));
+        assert!(
+            dirs.iter()
+                .any(|d| d.contains(".flatpak"))
+        );
     }
 }
