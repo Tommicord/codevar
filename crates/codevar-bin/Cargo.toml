@@ -8,7 +8,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+ash = { workspace = true }
 codevar-base = { path = "../codevar-base" }
+codevar-wl-protocol = { workspace = true }
+libc = { workspace = true }
 
 [[bin]]
 name = "codevar"

@@ -220,13 +220,8 @@ fn run() -> WlResult<String> {
             })?;
         }
         display.flush()?;
-        let mut spins = 0u32;
         while !frame_done.get() && !closed.get() && Instant::now() < deadline {
-            let seen = display.dispatch(Some(Duration::from_millis(50)))?;
-            spins += 1;
-            if std::env::var_os("CODEVAR_XDG_DEBUG").is_some() {
-                eprintln!("[dbg] frame={frames} spin={spins} seen={seen} done={} closed={}", frame_done.get(), closed.get());
-            }
+            display.dispatch(Some(Duration::from_millis(50)))?;
         }
         if !frame_done.get() {
             break;

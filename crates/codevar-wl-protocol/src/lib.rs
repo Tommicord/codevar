@@ -34,6 +34,8 @@
 
 extern crate alloc;
 
+mod linux_dmabuf;
+mod linux_drm_syncobj;
 mod wl_client;
 mod wl_conn;
 mod wl_core;
@@ -45,6 +47,8 @@ mod wl_server;
 mod wl_unix;
 mod xdg_shell;
 
+pub use linux_dmabuf::*;
+pub use linux_drm_syncobj::*;
 pub use wl_client::{WlClientDisplay, WlProxyId, WlRegistryEvent};
 pub use wl_conn::{WlClosure, WlConnection, WlTransport, reserve_new_ids};
 pub use wl_core::*;

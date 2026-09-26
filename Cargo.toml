@@ -23,6 +23,7 @@ repository = "https://github.com/Tommicord/codevar"
 
 [workspace.dependencies]
 cc = "1.2"
+ash = "0.38"
 libc = "0.2"
 cfg-if = "1.0.5"
 bindgen = "0.72.1"
