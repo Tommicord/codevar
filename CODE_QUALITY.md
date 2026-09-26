@@ -235,53 +235,6 @@ impl ConcurrentCounter {
 }
 ```
 
-## GPU Compute Shader Development Guidelines
-
-### CUDA Development Standards
-
-#### Architecture Requirements
-
-- Design algorithms for massive parallelism (thousands of threads)
-- Minimize thread divergence within warps
-- Use shared memory for frequently accessed data
-- Coalesce global memory access patterns
-- Avoid atomic operations when possible
-- Design for optimal memory bandwidth utilization
-
-#### Code Quality Standards
-
-```cuda
-// ✅ CORRECT CUDA kernel design
-__global__ void merge_blocks(
-    const uint8_t* __restrict__ data_a,
-    const uint8_t* __restrict__ data_b,
-    uint8_t* __restrict__ result,
-    const size_t block_size
-) {
-    const size_t tid = threadIdx.x;
-    const size_t bid = blockIdx.x;
-    const size_t global_id = bid * blockDim.x + tid;
-    
-    // Shared memory for cache efficiency
-    __shared__ uint8_t shared_a[256];
-    __shared__ uint8_t shared_b[256];
-    
-    // Coalesced memory access
-    if (tid < block_size && global_id < block_size) {
-        shared_a[tid] = data_a[global_id];
-        shared_b[tid] = data_b[global_id];
-    }
-    
-    __syncthreads();
-    
-    // Simple merge logic - avoid nested loops
-    if (tid < block_size && global_id < block_size) {
-        result[global_id] = (shared_a[tid] <= shared_b[tid]) ? 
-                            shared_a[tid] : shared_b[tid];
-    }
-}
-```
-
 #### Performance Guidelines
 
 - **Avoid deeply nested loops** in kernel code

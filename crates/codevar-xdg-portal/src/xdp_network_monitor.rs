@@ -18,7 +18,7 @@
 //! This portal provides network status information to sandboxed
 //! applications. It does not involve user interaction.
 
-use codevar_base::basic_xml::{XmlBuilder, XmlDocument};
+use codevar_base::xml;
 
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -26,7 +26,7 @@ use alloc::string::{String, ToString};
 use crate::xdp_app_info::AppInfo;
 use crate::xdp_context::{MethodInvocation, PortalContext, PortalFn, PortalInterface};
 use crate::xdp_error::{PortalError, XdpResult};
-use crate::xdp_utils::{OptionKey, OptionMap, PortalValue, decode_options, encode_options};
+use crate::xdp_utils::{OptionKey, OptionMap, decode_options, encode_options};
 
 /// Interface name for the NetworkMonitor portal.
 const NETWORK_MONITOR_INTERFACE: &str = "org.freedesktop.portal.NetworkMonitor";
@@ -87,67 +87,27 @@ pub fn register<T: codevar_dbus::DbusTransport + 'static>(ctx: &mut PortalContex
         ("CanReach", handle_can_reach as PortalFn<T>),
     ];
 
-    let iface_xml = XmlBuilder::new("interface")
-        .attr("name", "org.freedesktop.portal.NetworkMonitor")
-        .child("signal")
-        .attr("name", "changed")
-        .end()
-        .child("method")
-        .attr("name", "GetAvailable")
-        .child("arg")
-        .attr("type", "b")
-        .attr("name", "available")
-        .attr("direction", "out")
-        .end()
-        .end()
-        .child("method")
-        .attr("name", "GetMetered")
-        .child("arg")
-        .attr("type", "b")
-        .attr("name", "metered")
-        .attr("direction", "out")
-        .end()
-        .end()
-        .child("method")
-        .attr("name", "GetConnectivity")
-        .child("arg")
-        .attr("type", "u")
-        .attr("name", "connectivity")
-        .attr("direction", "out")
-        .end()
-        .end()
-        .child("method")
-        .attr("name", "GetStatus")
-        .child("arg")
-        .attr("type", "a{sv}")
-        .attr("name", "status")
-        .attr("direction", "out")
-        .end()
-        .end()
-        .child("method")
-        .attr("name", "CanReach")
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "hostname")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "u")
-        .attr("name", "port")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "b")
-        .attr("name", "reachable")
-        .attr("direction", "out")
-        .end()
-        .end()
-        .child("property")
-        .attr("name", "version")
-        .attr("type", "u")
-        .attr("access", "read")
-        .end()
-        .build();
+    let iface_xml = xml!(interface, attrs: ["name" = "org.freedesktop.portal.NetworkMonitor"], children: [
+        (signal, attrs: ["name" = "changed"]),
+        (method, attrs: ["name" = "GetAvailable"], children: [
+            (arg, attrs: ["type" = "b", "name" = "available", "direction" = "out"])
+        ]),
+        (method, attrs: ["name" = "GetMetered"], children: [
+            (arg, attrs: ["type" = "b", "name" = "metered", "direction" = "out"])
+        ]),
+        (method, attrs: ["name" = "GetConnectivity"], children: [
+            (arg, attrs: ["type" = "u", "name" = "connectivity", "direction" = "out"])
+        ]),
+        (method, attrs: ["name" = "GetStatus"], children: [
+            (arg, attrs: ["type" = "a{sv}", "name" = "status", "direction" = "out"])
+        ]),
+        (method, attrs: ["name" = "CanReach"], children: [
+            (arg, attrs: ["type" = "s", "name" = "hostname", "direction" = "in"]),
+            (arg, attrs: ["type" = "u", "name" = "port", "direction" = "in"]),
+            (arg, attrs: ["type" = "b", "name" = "reachable", "direction" = "out"])
+        ]),
+        (property, attrs: ["name" = "version", "type" = "u", "access" = "read"]),
+    ]);
 
     let iface = PortalInterface {
         name: NETWORK_MONITOR_INTERFACE,
@@ -318,7 +278,7 @@ fn handle_can_reach<T: codevar_dbus::DbusTransport + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::xdp_utils::{OptionKey, OptionMap};
+    use crate::xdp_utils::OptionMap;
 
     #[test]
     fn test_filter_options_map_empty() {

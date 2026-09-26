@@ -18,7 +18,7 @@
 //! Ported from `desktop-portal/screenshot.c`. Provides the
 //! `org.freedesktop.portal.Screenshot` interface with `Screenshot` and `PickColor`.
 
-use codevar_base::basic_xml::{XmlBuilder, XmlDocument};
+use codevar_base::xml;
 
 use alloc::format;
 use alloc::string::ToString;
@@ -120,55 +120,20 @@ pub fn register<T: codevar_dbus::DbusTransport + 'static>(ctx: &mut PortalContex
         ("PickColor", handle_pick_color),
     ];
 
-    let iface_xml = XmlBuilder::new("interface")
-        .attr("name", "org.freedesktop.portal.Screenshot")
-        .child("method")
-        .attr("name", "Screenshot")
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "parent_window")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "a{sv}")
-        .attr("name", "options")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "o")
-        .attr("name", "handle")
-        .attr("direction", "out")
-        .end()
-        .end()
-        .child("method")
-        .attr("name", "PickColor")
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "parent_window")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "a{sv}")
-        .attr("name", "options")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "o")
-        .attr("name", "handle")
-        .attr("direction", "out")
-        .end()
-        .end()
-        .child("property")
-        .attr("name", "AvailableTargets")
-        .attr("type", "u")
-        .attr("access", "read")
-        .end()
-        .child("property")
-        .attr("name", "version")
-        .attr("type", "u")
-        .attr("access", "read")
-        .end()
-        .build();
+    let iface_xml = xml!(interface, attrs: ["name" = "org.freedesktop.portal.Screenshot"], children: [
+        (method, attrs: ["name" = "Screenshot"], children: [
+            (arg, attrs: ["type" = "s", "name" = "parent_window", "direction" = "in"]),
+            (arg, attrs: ["type" = "a{sv}", "name" = "options", "direction" = "in"]),
+            (arg, attrs: ["type" = "o", "name" = "handle", "direction" = "out"])
+        ]),
+        (method, attrs: ["name" = "PickColor"], children: [
+            (arg, attrs: ["type" = "s", "name" = "parent_window", "direction" = "in"]),
+            (arg, attrs: ["type" = "a{sv}", "name" = "options", "direction" = "in"]),
+            (arg, attrs: ["type" = "o", "name" = "handle", "direction" = "out"])
+        ]),
+        (property, attrs: ["name" = "AvailableTargets", "type" = "u", "access" = "read"]),
+        (property, attrs: ["name" = "version", "type" = "u", "access" = "read"]),
+    ]);
 
     let iface = crate::xdp_context::PortalInterface {
         name: SCREENSHOT_INTERFACE,

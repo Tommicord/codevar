@@ -18,7 +18,7 @@
 //! Ported from `desktop-portal/wallpaper.c`. Provides the
 //! `org.freedesktop.portal.Wallpaper` interface with `SetWallpaperURI` and `SetWallpaperFile`.
 
-use codevar_base::basic_xml::{XmlBuilder, XmlDocument};
+use codevar_base::xml;
 
 use alloc::format;
 use alloc::string::ToString;
@@ -130,64 +130,22 @@ pub fn register<T: codevar_dbus::DbusTransport + 'static>(ctx: &mut PortalContex
         ("SetWallpaperFile", handle_set_wallpaper_file),
     ];
 
-    let iface_xml = XmlBuilder::new("interface")
-        .attr("name", "org.freedesktop.portal.Wallpaper")
-        .child("method")
-        .attr("name", "SetWallpaperURI")
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "parent_window")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "uri")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "a{sv}")
-        .attr("name", "options")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "o")
-        .attr("name", "handle")
-        .attr("direction", "out")
-        .end()
-        .end()
-        .child("method")
-        .attr("name", "SetWallpaperFile")
-        .child("annotation")
-        .attr("name", "org.gtk.GDBus.C.UnixFD")
-        .attr("value", "true")
-        .end()
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "parent_window")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "h")
-        .attr("name", "fd")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "a{sv}")
-        .attr("name", "options")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "o")
-        .attr("name", "handle")
-        .attr("direction", "out")
-        .end()
-        .end()
-        .child("property")
-        .attr("name", "version")
-        .attr("type", "u")
-        .attr("access", "read")
-        .end()
-        .build();
+    let iface_xml = xml!(interface, attrs: ["name" = "org.freedesktop.portal.Wallpaper"], children: [
+        (method, attrs: ["name" = "SetWallpaperURI"], children: [
+            (arg, attrs: ["type" = "s", "name" = "parent_window", "direction" = "in"]),
+            (arg, attrs: ["type" = "s", "name" = "uri", "direction" = "in"]),
+            (arg, attrs: ["type" = "a{sv}", "name" = "options", "direction" = "in"]),
+            (arg, attrs: ["type" = "o", "name" = "handle", "direction" = "out"])
+        ]),
+        (method, attrs: ["name" = "SetWallpaperFile"], children: [
+            (annotation, attrs: ["name" = "org.gtk.GDBus.C.UnixFD", "value" = "true"]),
+            (arg, attrs: ["type" = "s", "name" = "parent_window", "direction" = "in"]),
+            (arg, attrs: ["type" = "h", "name" = "fd", "direction" = "in"]),
+            (arg, attrs: ["type" = "a{sv}", "name" = "options", "direction" = "in"]),
+            (arg, attrs: ["type" = "o", "name" = "handle", "direction" = "out"])
+        ]),
+        (property, attrs: ["name" = "version", "type" = "u", "access" = "read"]),
+    ]);
 
     let iface = crate::xdp_context::PortalInterface {
         name: WALLPAPER_INTERFACE,

@@ -446,7 +446,6 @@ impl XmlBuilder {
         assert!(!self.closed, "cannot add child to a built document");
         assert!(is_valid_name(name), "invalid XML element name: {name}");
         self.flush_open();
-        // Mark the parent as having children.
         if let Some(entry) = self.stack.last_mut() {
             entry.1 = true;
         }
@@ -472,7 +471,6 @@ impl XmlBuilder {
             panic!("cannot close element: no open elements");
         };
         if has_children {
-            // Opening tag already closed by flush_open() in child() or text().
             self.buffer.push_str("</");
             self.buffer.push_str(&tag_name);
             self.buffer.push('>');
@@ -767,8 +765,8 @@ mod tests {
             (child, attrs: ["name" = "second"])
         ]);
         let xml = doc.to_string();
-        assert!(xml.contains("<child name=\"first\"></child>"));
-        assert!(xml.contains("<child name=\"second\"></child>"));
+        assert!(xml.contains("<child name=\"first\"/>"));
+        assert!(xml.contains("<child name=\"second\"/>"));
         assert!(doc.validate().is_ok());
     }
 
@@ -783,8 +781,9 @@ mod tests {
         ]);
         let xml = doc.to_string();
         assert!(xml.contains("org.freedesktop.DBus.Introspectable"));
-        assert!(xml.contains("<method name=\"Introspect\"></method>"));
-        assert!(xml.contains("<arg name=\"data\" type=\"s\" direction=\"out\"></arg>"));
+        assert!(xml.contains("<method name=\"Introspect\"><arg"));
+        assert!(xml.contains("name=\"data\" type=\"s\" direction=\"out\"/>"));
+        assert!(xml.contains("</method>"));
         assert!(doc.validate().is_ok());
     }
 

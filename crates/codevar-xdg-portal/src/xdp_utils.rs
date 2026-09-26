@@ -706,7 +706,7 @@ pub(crate) fn write_value<W: ValueWriter>(writer: &mut W, value: &PortalValue) -
 /// The write operations shared by [`BodyWriter`] and [`DbusWriter`]
 /// so option maps can be encoded into full messages and into raw
 /// bodies alike.
-trait ValueWriter {
+pub(crate) trait ValueWriter {
     /// Appends a `BOOLEAN`.
     fn write_bool(&mut self, value: bool) -> DbusResult<()>;
     /// Appends a `BYTE`.

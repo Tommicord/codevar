@@ -18,7 +18,7 @@
 //! This portal provides network proxy information to sandboxed
 //! applications. It does not involve user interaction.
 
-use codevar_base::basic_xml::{XmlBuilder, XmlDocument};
+use codevar_base::xml;
 
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -80,27 +80,13 @@ fn filter_options_map(options: &OptionMap, supported: &[OptionKey]) -> Result<Op
 pub fn register<T: codevar_dbus::DbusTransport + 'static>(ctx: &mut PortalContext<T>) -> XdpResult<()> {
     let methods: &[(&'static str, PortalFn<T>)] = &[("Lookup", handle_lookup as PortalFn<T>)];
 
-    let iface_xml = XmlBuilder::new("interface")
-        .attr("name", "org.freedesktop.portal.ProxyResolver")
-        .child("method")
-        .attr("name", "Lookup")
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "uri")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "as")
-        .attr("name", "proxies")
-        .attr("direction", "out")
-        .end()
-        .end()
-        .child("property")
-        .attr("name", "version")
-        .attr("type", "u")
-        .attr("access", "read")
-        .end()
-        .build();
+    let iface_xml = xml!(interface, attrs: ["name" = "org.freedesktop.portal.ProxyResolver"], children: [
+        (method, attrs: ["name" = "Lookup"], children: [
+            (arg, attrs: ["type" = "s", "name" = "uri", "direction" = "in"]),
+            (arg, attrs: ["type" = "as", "name" = "proxies", "direction" = "out"])
+        ]),
+        (property, attrs: ["name" = "version", "type" = "u", "access" = "read"]),
+    ]);
 
     let iface = PortalInterface {
         name: PROXY_RESOLVER_INTERFACE,

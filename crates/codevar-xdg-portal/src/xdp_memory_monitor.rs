@@ -18,10 +18,10 @@
 //! This portal provides low memory monitoring information to
 //! sandboxed applications. It does not involve user interaction.
 
-use codevar_base::basic_xml::{XmlBuilder, XmlDocument};
+use codevar_base::xml;
 
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 
 use crate::xdp_app_info::AppInfo;
 use crate::xdp_context::{MethodInvocation, PortalContext, PortalFn, PortalInterface};
@@ -79,21 +79,12 @@ fn filter_options_map(options: &OptionMap, supported: &[OptionKey]) -> Result<Op
 pub fn register<T: codevar_dbus::DbusTransport + 'static>(ctx: &mut PortalContext<T>) -> XdpResult<()> {
     let methods: &[(&'static str, PortalFn<T>)] = &[("GetAvailable", handle_get_available as PortalFn<T>)];
 
-    let iface_xml = XmlBuilder::new("interface")
-        .attr("name", "org.freedesktop.portal.MemoryMonitor")
-        .child("signal")
-        .attr("name", "LowMemoryWarning")
-        .child("arg")
-        .attr("name", "level")
-        .attr("type", "y")
-        .end()
-        .end()
-        .child("property")
-        .attr("name", "version")
-        .attr("type", "u")
-        .attr("access", "read")
-        .end()
-        .build();
+    let iface_xml = xml!(interface, attrs: ["name" = "org.freedesktop.portal.MemoryMonitor"], children: [
+        (signal, attrs: ["name" = "LowMemoryWarning"], children: [
+            (arg, attrs: ["name" = "level", "type" = "y"])
+        ]),
+        (property, attrs: ["name" = "version", "type" = "u", "access" = "read"]),
+    ]);
 
     let iface = PortalInterface {
         name: MEMORY_MONITOR_INTERFACE,

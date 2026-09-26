@@ -368,6 +368,12 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
         self.sessions.remove(path)
     }
 
+    /// Returns whether a session handle is registered for `path`.
+    #[must_use]
+    pub fn has_session(&self, path: &str) -> bool {
+        self.sessions.contains_key(path)
+    }
+
     /// Registers match rules for all registered interfaces.
     fn register_match_rules(&mut self) -> XdpResult<()> {
         // Match rules for method calls on the desktop path and request/session paths

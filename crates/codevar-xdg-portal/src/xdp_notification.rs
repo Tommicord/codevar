@@ -19,10 +19,10 @@
 //! and withdrawing notifications. Supports icons, sounds, buttons,
 //! categories, and markup body.
 
-use codevar_base::basic_xml::{XmlBuilder, XmlDocument};
+use codevar_base::xml;
 
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 
 use crate::xdp_context::{MethodInvocation, PortalContext, PortalFn, PortalInterface};
 use crate::xdp_error::{PortalError, XdpResult};
@@ -124,63 +124,25 @@ fn handle_remove_notification<T: codevar_dbus::DbusTransport + 'static>(
 }
 
 pub fn register<T: codevar_dbus::DbusTransport + 'static>(ctx: &mut PortalContext<T>) -> XdpResult<()> {
-    let iface_xml = XmlBuilder::new("interface")
-        .attr("name", "org.freedesktop.portal.Notification")
-        .child("method")
-        .attr("name", "AddNotification")
-        .child("annotation")
-        .attr("name", "org.gtk.GDBus.C.UnixFD")
-        .attr("value", "true")
-        .end()
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "id")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "a{sv}")
-        .attr("name", "notification")
-        .attr("direction", "in")
-        .end()
-        .end()
-        .child("method")
-        .attr("name", "RemoveNotification")
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "id")
-        .attr("direction", "in")
-        .end()
-        .end()
-        .child("property")
-        .attr("name", "SupportedOptions")
-        .attr("type", "a{sv}")
-        .attr("access", "read")
-        .child("annotation")
-        .attr("name", "org.qtproject.QtDBus.QtTypeName")
-        .attr("value", "QVariantMap")
-        .end()
-        .end()
-        .child("signal")
-        .attr("name", "ActionInvoked")
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "id")
-        .end()
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "action")
-        .end()
-        .child("arg")
-        .attr("type", "av")
-        .attr("name", "parameter")
-        .end()
-        .end()
-        .child("property")
-        .attr("name", "version")
-        .attr("type", "u")
-        .attr("access", "read")
-        .end()
-        .build();
+    let iface_xml = xml!(interface, attrs: ["name" = "org.freedesktop.portal.Notification"], children: [
+        (method, attrs: ["name" = "AddNotification"], children: [
+            (annotation, attrs: ["name" = "org.gtk.GDBus.C.UnixFD", "value" = "true"]),
+            (arg, attrs: ["type" = "s", "name" = "id", "direction" = "in"]),
+            (arg, attrs: ["type" = "a{sv}", "name" = "notification", "direction" = "in"])
+        ]),
+        (method, attrs: ["name" = "RemoveNotification"], children: [
+            (arg, attrs: ["type" = "s", "name" = "id", "direction" = "in"])
+        ]),
+        (property, attrs: ["name" = "SupportedOptions", "type" = "a{sv}", "access" = "read"], children: [
+            (annotation, attrs: ["name" = "org.qtproject.QtDBus.QtTypeName", "value" = "QVariantMap"])
+        ]),
+        (signal, attrs: ["name" = "ActionInvoked"], children: [
+            (arg, attrs: ["type" = "s", "name" = "id"]),
+            (arg, attrs: ["type" = "s", "name" = "action"]),
+            (arg, attrs: ["type" = "av", "name" = "parameter"])
+        ]),
+        (property, attrs: ["name" = "version", "type" = "u", "access" = "read"]),
+    ]);
 
     let interface = PortalInterface {
         name: NOTIFICATION_INTERFACE,

@@ -19,7 +19,7 @@
 //! D-Bus connections and associate them with an application ID that
 //! will be used in portal APIs. Only host applications can register.
 
-use codevar_base::basic_xml::{XmlBuilder, XmlDocument};
+use codevar_base::xml;
 
 use crate::xdp_app_info::AppInfo;
 use crate::xdp_context::{MethodInvocation, PortalContext, PortalFn, PortalInterface};
@@ -79,27 +79,13 @@ fn filter_options_map(options: &OptionMap, supported: &[OptionKey]) -> Result<Op
 pub fn register<T: codevar_dbus::DbusTransport + 'static>(ctx: &mut PortalContext<T>) -> XdpResult<()> {
     let methods: &[(&'static str, PortalFn<T>)] = &[("Register", handle_register as PortalFn<T>)];
 
-    let iface_xml = XmlBuilder::new("interface")
-        .attr("name", "org.freedesktop.host.portal.Registry")
-        .child("method")
-        .attr("name", "Register")
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "app_id")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "a{sv}")
-        .attr("name", "options")
-        .attr("direction", "in")
-        .end()
-        .end()
-        .child("property")
-        .attr("name", "version")
-        .attr("type", "u")
-        .attr("access", "read")
-        .end()
-        .build();
+    let iface_xml = xml!(interface, attrs: ["name" = "org.freedesktop.host.portal.Registry"], children: [
+        (method, attrs: ["name" = "Register"], children: [
+            (arg, attrs: ["type" = "s", "name" = "app_id", "direction" = "in"]),
+            (arg, attrs: ["type" = "a{sv}", "name" = "options", "direction" = "in"])
+        ]),
+        (property, attrs: ["name" = "version", "type" = "u", "access" = "read"]),
+    ]);
 
     let iface = PortalInterface {
         name: REGISTRY_INTERFACE,

@@ -21,7 +21,7 @@
 //! Install, Uninstall, GetDesktopEntry, GetIcon, and Launch.
 
 use alloc::string::ToString;
-use codevar_base::basic_xml::XmlBuilder;
+use codevar_base::xml;
 
 use crate::xdp_context::{MethodInvocation, PortalContext, PortalFn, PortalInterface};
 use crate::xdp_error::XdpResult;
@@ -262,155 +262,47 @@ fn handle_launch<T: codevar_dbus::DbusTransport + 'static>(
 }
 
 pub fn register<T: codevar_dbus::DbusTransport + 'static>(ctx: &mut PortalContext<T>) -> XdpResult<()> {
-    let iface_xml = XmlBuilder::new("interface")
-        .attr("name", "org.freedesktop.portal.DynamicLauncher")
-        .child("method")
-        .attr("name", "Install")
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "token")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "desktop_file_id")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "desktop_entry")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "a{sv}")
-        .attr("name", "options")
-        .attr("direction", "in")
-        .end()
-        .end()
-        .child("method")
-        .attr("name", "PrepareInstall")
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "parent_window")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "name")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "v")
-        .attr("name", "icon_v")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "a{sv}")
-        .attr("name", "options")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "o")
-        .attr("name", "handle")
-        .attr("direction", "out")
-        .end()
-        .end()
-        .child("method")
-        .attr("name", "RequestInstallToken")
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "name")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "v")
-        .attr("name", "icon_v")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "a{sv}")
-        .attr("name", "options")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "token")
-        .attr("direction", "out")
-        .end()
-        .end()
-        .child("method")
-        .attr("name", "Uninstall")
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "desktop_file_id")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "a{sv}")
-        .attr("name", "options")
-        .attr("direction", "in")
-        .end()
-        .end()
-        .child("method")
-        .attr("name", "GetDesktopEntry")
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "desktop_file_id")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "contents")
-        .attr("direction", "out")
-        .end()
-        .end()
-        .child("method")
-        .attr("name", "GetIcon")
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "desktop_file_id")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "v")
-        .attr("name", "icon_v")
-        .attr("direction", "out")
-        .end()
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "icon_format")
-        .attr("direction", "out")
-        .end()
-        .child("arg")
-        .attr("type", "u")
-        .attr("name", "icon_size")
-        .attr("direction", "out")
-        .end()
-        .end()
-        .child("method")
-        .attr("name", "Launch")
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "desktop_file_id")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "a{sv}")
-        .attr("name", "options")
-        .attr("direction", "in")
-        .end()
-        .end()
-        .child("property")
-        .attr("name", "SupportedLauncherTypes")
-        .attr("type", "u")
-        .attr("access", "read")
-        .end()
-        .child("property")
-        .attr("name", "version")
-        .attr("type", "u")
-        .attr("access", "read")
-        .end()
-        .build();
+    let iface_xml = xml!(interface, attrs: ["name" = "org.freedesktop.portal.DynamicLauncher"], children: [
+        (method, attrs: ["name" = "Install"], children: [
+            (arg, attrs: ["type" = "s", "name" = "token", "direction" = "in"]),
+            (arg, attrs: ["type" = "s", "name" = "desktop_file_id", "direction" = "in"]),
+            (arg, attrs: ["type" = "s", "name" = "desktop_entry", "direction" = "in"]),
+            (arg, attrs: ["type" = "a{sv}", "name" = "options", "direction" = "in"])
+        ]),
+        (method, attrs: ["name" = "PrepareInstall"], children: [
+            (arg, attrs: ["type" = "s", "name" = "parent_window", "direction" = "in"]),
+            (arg, attrs: ["type" = "s", "name" = "name", "direction" = "in"]),
+            (arg, attrs: ["type" = "v", "name" = "icon_v", "direction" = "in"]),
+            (arg, attrs: ["type" = "a{sv}", "name" = "options", "direction" = "in"]),
+            (arg, attrs: ["type" = "o", "name" = "handle", "direction" = "out"])
+        ]),
+        (method, attrs: ["name" = "RequestInstallToken"], children: [
+            (arg, attrs: ["type" = "s", "name" = "name", "direction" = "in"]),
+            (arg, attrs: ["type" = "v", "name" = "icon_v", "direction" = "in"]),
+            (arg, attrs: ["type" = "a{sv}", "name" = "options", "direction" = "in"]),
+            (arg, attrs: ["type" = "s", "name" = "token", "direction" = "out"])
+        ]),
+        (method, attrs: ["name" = "Uninstall"], children: [
+            (arg, attrs: ["type" = "s", "name" = "desktop_file_id", "direction" = "in"]),
+            (arg, attrs: ["type" = "a{sv}", "name" = "options", "direction" = "in"])
+        ]),
+        (method, attrs: ["name" = "GetDesktopEntry"], children: [
+            (arg, attrs: ["type" = "s", "name" = "desktop_file_id", "direction" = "in"]),
+            (arg, attrs: ["type" = "s", "name" = "contents", "direction" = "out"])
+        ]),
+        (method, attrs: ["name" = "GetIcon"], children: [
+            (arg, attrs: ["type" = "s", "name" = "desktop_file_id", "direction" = "in"]),
+            (arg, attrs: ["type" = "v", "name" = "icon_v", "direction" = "out"]),
+            (arg, attrs: ["type" = "s", "name" = "icon_format", "direction" = "out"]),
+            (arg, attrs: ["type" = "u", "name" = "icon_size", "direction" = "out"])
+        ]),
+        (method, attrs: ["name" = "Launch"], children: [
+            (arg, attrs: ["type" = "s", "name" = "desktop_file_id", "direction" = "in"]),
+            (arg, attrs: ["type" = "a{sv}", "name" = "options", "direction" = "in"])
+        ]),
+        (property, attrs: ["name" = "SupportedLauncherTypes", "type" = "u", "access" = "read"]),
+        (property, attrs: ["name" = "version", "type" = "u", "access" = "read"]),
+    ]);
 
     let interface = PortalInterface {
         name: DYNAMIC_LAUNCHER_INTERFACE,

@@ -18,17 +18,15 @@
 //! Provides methods to open URIs, local files, and directories via an application chooser
 //! backend (`org.freedesktop.impl.portal.AppChooser`).
 
-use codevar_base::basic_xml::{XmlBuilder, XmlDocument};
+use codevar_base::xml;
 
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
+use alloc::string::ToString;
 use core::time::Duration;
 
 use crate::xdp_context::PortalContext;
-use crate::xdp_documents::{DocumentFlags, plan_register_document};
 use crate::xdp_error::{PortalError, XdpResult};
-use crate::xdp_utils::{OptionKey, OptionMap, PortalValue, decode_options, encode_options, filter_options};
+use crate::xdp_utils::{OptionKey, encode_options, filter_options};
 
 const APP_CHOOSER_IMPL_INTERFACE: &str = "org.freedesktop.impl.portal.AppChooser";
 const OPEN_URI_INTERFACE: &str = "org.freedesktop.portal.OpenURI";
@@ -186,101 +184,32 @@ fn handle_scheme_supported<T: codevar_dbus::DbusTransport + 'static>(
 }
 
 pub fn register<T: codevar_dbus::DbusTransport + 'static>(ctx: &mut PortalContext<T>) -> XdpResult<()> {
-    let iface_xml = XmlBuilder::new("interface")
-        .attr("name", "org.freedesktop.portal.OpenURI")
-        .child("method")
-        .attr("name", "OpenURI")
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "parent_window")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "uri")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "a{sv}")
-        .attr("name", "options")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "o")
-        .attr("name", "handle")
-        .attr("direction", "out")
-        .end()
-        .end()
-        .child("method")
-        .attr("name", "OpenFile")
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "parent_window")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "h")
-        .attr("name", "fd")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "a{sv}")
-        .attr("name", "options")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "o")
-        .attr("name", "handle")
-        .attr("direction", "out")
-        .end()
-        .end()
-        .child("method")
-        .attr("name", "OpenDirectory")
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "parent_window")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "h")
-        .attr("name", "fd")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "a{sv}")
-        .attr("name", "options")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "o")
-        .attr("name", "handle")
-        .attr("direction", "out")
-        .end()
-        .end()
-        .child("method")
-        .attr("name", "SchemeSupported")
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "scheme")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "a{sv}")
-        .attr("name", "options")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "b")
-        .attr("name", "supported")
-        .attr("direction", "out")
-        .end()
-        .end()
-        .child("property")
-        .attr("name", "version")
-        .attr("type", "u")
-        .attr("access", "read")
-        .end()
-        .build();
+    let iface_xml = xml!(interface, attrs: ["name" = "org.freedesktop.portal.OpenURI"], children: [
+        (method, attrs: ["name" = "OpenURI"], children: [
+            (arg, attrs: ["type" = "s", "name" = "parent_window", "direction" = "in"]),
+            (arg, attrs: ["type" = "s", "name" = "uri", "direction" = "in"]),
+            (arg, attrs: ["type" = "a{sv}", "name" = "options", "direction" = "in"]),
+            (arg, attrs: ["type" = "o", "name" = "handle", "direction" = "out"])
+        ]),
+        (method, attrs: ["name" = "OpenFile"], children: [
+            (arg, attrs: ["type" = "s", "name" = "parent_window", "direction" = "in"]),
+            (arg, attrs: ["type" = "h", "name" = "fd", "direction" = "in"]),
+            (arg, attrs: ["type" = "a{sv}", "name" = "options", "direction" = "in"]),
+            (arg, attrs: ["type" = "o", "name" = "handle", "direction" = "out"])
+        ]),
+        (method, attrs: ["name" = "OpenDirectory"], children: [
+            (arg, attrs: ["type" = "s", "name" = "parent_window", "direction" = "in"]),
+            (arg, attrs: ["type" = "h", "name" = "fd", "direction" = "in"]),
+            (arg, attrs: ["type" = "a{sv}", "name" = "options", "direction" = "in"]),
+            (arg, attrs: ["type" = "o", "name" = "handle", "direction" = "out"])
+        ]),
+        (method, attrs: ["name" = "SchemeSupported"], children: [
+            (arg, attrs: ["type" = "s", "name" = "scheme", "direction" = "in"]),
+            (arg, attrs: ["type" = "a{sv}", "name" = "options", "direction" = "in"]),
+            (arg, attrs: ["type" = "b", "name" = "supported", "direction" = "out"])
+        ]),
+        (property, attrs: ["name" = "version", "type" = "u", "access" = "read"]),
+    ]);
 
     ctx.register_interface(crate::xdp_context::PortalInterface {
         name: OPEN_URI_INTERFACE,

@@ -20,7 +20,7 @@
 //! instead it extends sessions from RemoteDesktop or InputCapture.
 
 use alloc::string::{String, ToString};
-use codevar_base::basic_xml::{XmlBuilder, XmlDocument};
+use codevar_base::xml;
 
 use crate::xdp_context::{MethodInvocation, PortalContext, PortalFn, PortalInterface};
 use crate::xdp_error::{PortalError, XdpResult};
@@ -196,133 +196,43 @@ fn handle_selection_read<T: codevar_dbus::DbusTransport + 'static>(
 }
 
 pub fn register<T: codevar_dbus::DbusTransport + 'static>(ctx: &mut PortalContext<T>) -> XdpResult<()> {
-    let iface_xml = XmlBuilder::new("interface")
-        .attr("name", "org.freedesktop.portal.Clipboard")
-        .child("method")
-        .attr("name", "RequestClipboard")
-        .child("arg")
-        .attr("type", "o")
-        .attr("name", "session_handle")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "a{sv}")
-        .attr("name", "options")
-        .attr("direction", "in")
-        .end()
-        .end()
-        .child("method")
-        .attr("name", "SetSelection")
-        .child("arg")
-        .attr("type", "o")
-        .attr("name", "session_handle")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "a{sv}")
-        .attr("name", "options")
-        .attr("direction", "in")
-        .end()
-        .end()
-        .child("method")
-        .attr("name", "SelectionWrite")
-        .child("annotation")
-        .attr("name", "org.gtk.GDBus.C.UnixFD")
-        .attr("value", "true")
-        .end()
-        .child("arg")
-        .attr("type", "o")
-        .attr("name", "session_handle")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "u")
-        .attr("name", "serial")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "h")
-        .attr("name", "fd")
-        .attr("direction", "out")
-        .end()
-        .end()
-        .child("method")
-        .attr("name", "SelectionWriteDone")
-        .child("arg")
-        .attr("type", "o")
-        .attr("name", "session_handle")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "u")
-        .attr("name", "serial")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "b")
-        .attr("name", "success")
-        .attr("direction", "in")
-        .end()
-        .end()
-        .child("method")
-        .attr("name", "SelectionRead")
-        .child("annotation")
-        .attr("name", "org.gtk.GDBus.C.UnixFD")
-        .attr("value", "true")
-        .end()
-        .child("arg")
-        .attr("type", "o")
-        .attr("name", "session_handle")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "mime_type")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "h")
-        .attr("name", "fd")
-        .attr("direction", "out")
-        .end()
-        .end()
-        .child("signal")
-        .attr("name", "SelectionOwnerChanged")
-        .child("arg")
-        .attr("type", "o")
-        .attr("name", "session_handle")
-        .attr("direction", "out")
-        .end()
-        .child("arg")
-        .attr("type", "a{sv}")
-        .attr("name", "options")
-        .attr("direction", "out")
-        .end()
-        .end()
-        .child("signal")
-        .attr("name", "SelectionTransfer")
-        .child("arg")
-        .attr("type", "o")
-        .attr("name", "session_handle")
-        .attr("direction", "out")
-        .end()
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "mime_type")
-        .attr("direction", "out")
-        .end()
-        .child("arg")
-        .attr("type", "u")
-        .attr("name", "serial")
-        .attr("direction", "out")
-        .end()
-        .end()
-        .child("property")
-        .attr("name", "version")
-        .attr("type", "u")
-        .attr("access", "read")
-        .end()
-        .build();
+    let iface_xml = xml!(interface, attrs: ["name" = "org.freedesktop.portal.Clipboard"], children: [
+        (method, attrs: ["name" = "RequestClipboard"], children: [
+            (arg, attrs: ["type" = "o", "name" = "session_handle", "direction" = "in"]),
+            (arg, attrs: ["type" = "a{sv}", "name" = "options", "direction" = "in"])
+        ]),
+        (method, attrs: ["name" = "SetSelection"], children: [
+            (arg, attrs: ["type" = "o", "name" = "session_handle", "direction" = "in"]),
+            (arg, attrs: ["type" = "a{sv}", "name" = "options", "direction" = "in"])
+        ]),
+        (method, attrs: ["name" = "SelectionWrite"], children: [
+            (annotation, attrs: ["name" = "org.gtk.GDBus.C.UnixFD", "value" = "true"]),
+            (arg, attrs: ["type" = "o", "name" = "session_handle", "direction" = "in"]),
+            (arg, attrs: ["type" = "u", "name" = "serial", "direction" = "in"]),
+            (arg, attrs: ["type" = "h", "name" = "fd", "direction" = "out"])
+        ]),
+        (method, attrs: ["name" = "SelectionWriteDone"], children: [
+            (arg, attrs: ["type" = "o", "name" = "session_handle", "direction" = "in"]),
+            (arg, attrs: ["type" = "u", "name" = "serial", "direction" = "in"]),
+            (arg, attrs: ["type" = "b", "name" = "success", "direction" = "in"])
+        ]),
+        (method, attrs: ["name" = "SelectionRead"], children: [
+            (annotation, attrs: ["name" = "org.gtk.GDBus.C.UnixFD", "value" = "true"]),
+            (arg, attrs: ["type" = "o", "name" = "session_handle", "direction" = "in"]),
+            (arg, attrs: ["type" = "s", "name" = "mime_type", "direction" = "in"]),
+            (arg, attrs: ["type" = "h", "name" = "fd", "direction" = "out"])
+        ]),
+        (signal, attrs: ["name" = "SelectionOwnerChanged"], children: [
+            (arg, attrs: ["type" = "o", "name" = "session_handle", "direction" = "out"]),
+            (arg, attrs: ["type" = "a{sv}", "name" = "options", "direction" = "out"])
+        ]),
+        (signal, attrs: ["name" = "SelectionTransfer"], children: [
+            (arg, attrs: ["type" = "o", "name" = "session_handle", "direction" = "out"]),
+            (arg, attrs: ["type" = "s", "name" = "mime_type", "direction" = "out"]),
+            (arg, attrs: ["type" = "u", "name" = "serial", "direction" = "out"])
+        ]),
+        (property, attrs: ["name" = "version", "type" = "u", "access" = "read"]),
+    ]);
 
     let interface = PortalInterface {
         name: CLIPBOARD_INTERFACE,

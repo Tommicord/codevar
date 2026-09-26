@@ -19,7 +19,7 @@
 //! `org.freedesktop.portal.Account` interface with `GetUserInformation`.
 
 use alloc::string::ToString;
-use codevar_base::basic_xml::{XmlBuilder, XmlDocument};
+use codevar_base::xml;
 
 use crate::xdp_context::{MethodInvocation, PortalContext, PortalFn};
 use crate::xdp_error::{PortalError, XdpResult};
@@ -77,32 +77,14 @@ fn handle_get_user_information<T: codevar_dbus::DbusTransport + 'static>(
 pub fn register<T: codevar_dbus::DbusTransport + 'static>(ctx: &mut PortalContext<T>) -> XdpResult<()> {
     let methods: &[(&str, PortalFn<T>)] = &[("GetUserInformation", handle_get_user_information)];
 
-    let iface_xml = XmlBuilder::new("interface")
-        .attr("name", "org.freedesktop.portal.Account")
-        .child("method")
-        .attr("name", "GetUserInformation")
-        .child("arg")
-        .attr("type", "s")
-        .attr("name", "window")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "a{sv}")
-        .attr("name", "options")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "o")
-        .attr("name", "handle")
-        .attr("direction", "out")
-        .end()
-        .end()
-        .child("property")
-        .attr("name", "version")
-        .attr("type", "u")
-        .attr("access", "read")
-        .end()
-        .build();
+    let iface_xml = xml!(interface, attrs: ["name" = "org.freedesktop.portal.Account"], children: [
+        (method, attrs: ["name" = "GetUserInformation"], children: [
+            (arg, attrs: ["type" = "s", "name" = "window", "direction" = "in"]),
+            (arg, attrs: ["type" = "a{sv}", "name" = "options", "direction" = "in"]),
+            (arg, attrs: ["type" = "o", "name" = "handle", "direction" = "out"])
+        ]),
+        (property, attrs: ["name" = "version", "type" = "u", "access" = "read"]),
+    ]);
 
     let iface = crate::xdp_context::PortalInterface {
         name: ACCOUNT_INTERFACE,
