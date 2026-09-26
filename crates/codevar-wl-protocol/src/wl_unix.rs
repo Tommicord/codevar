@@ -272,11 +272,12 @@ fn map_revents(revents: libc::c_short) -> WlPollEvents {
 }
 
 /// Reads the environment variable `name`, if set.
-fn get_env(name: &str) -> Option<String> {
-    // SAFETY: `getenv` returns a pointer to an internal buffer valid
-    // until the next call to `getenv`. The string is copied out
-    // immediately and the pointer is never retained.
-    let ptr = unsafe { libc::getenv(name.as_ptr() as *const libc::c_char) };
+fn get_env(name: &core::ffi::CStr) -> Option<String> {
+    // SAFETY: `name` is a valid NUL-terminated string and `getenv`
+    // returns either null or a pointer to a NUL-terminated string
+    // valid until the next `getenv`/`setenv` call. The string is
+    // copied out immediately and the pointer is never retained.
+    let ptr = unsafe { libc::getenv(name.as_ptr()) };
     if ptr.is_null() {
         return None;
     }
@@ -374,8 +375,8 @@ impl WlUnixTransport {
     /// when `WAYLAND_DISPLAY` is empty, and [`WlError::Io`] when the
     /// socket cannot be opened.
     pub fn connect_session() -> WlResult<Self> {
-        let runtime_dir = get_env("XDG_RUNTIME_DIR");
-        let display = get_env("WAYLAND_DISPLAY");
+        let runtime_dir = get_env(c"XDG_RUNTIME_DIR");
+        let display = get_env(c"WAYLAND_DISPLAY");
         let path = display_socket_path(runtime_dir.as_deref(), display.as_deref())?;
         Self::connect(&path)
     }

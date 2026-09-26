@@ -30,9 +30,10 @@ use codevar_wl_protocol::{
     COMPOSITOR_CREATE_SURFACE, COMPOSITOR_INTERFACE, SURFACE_COMMIT, SURFACE_DESTROY, SURFACE_INTERFACE,
     WlArgument, WlClientDisplay, WlClock, WlDisplayError, WlProxyId, WlRegistryEvent, WlResult,
     WlServerDisplay, WlUnixPoller, WlUnixTransport, XDG_SURFACE_ACK_CONFIGURE, XDG_SURFACE_CONFIGURE,
-    XDG_SURFACE_GET_TOPLEVEL, XDG_SURFACE_INTERFACE, XDG_TOPLEVEL_CLOSE, XDG_TOPLEVEL_DESTROY,
-    XDG_TOPLEVEL_INTERFACE, XDG_TOPLEVEL_SET_APP_ID, XDG_TOPLEVEL_SET_TITLE, XDG_WM_BASE_CREATE_POSITIONER,
-    XDG_WM_BASE_GET_XDG_SURFACE, XDG_WM_BASE_INTERFACE, XDG_WM_BASE_PING, XDG_WM_BASE_PONG,
+    XDG_SURFACE_DESTROY, XDG_SURFACE_GET_TOPLEVEL, XDG_SURFACE_INTERFACE, XDG_TOPLEVEL_CLOSE,
+    XDG_TOPLEVEL_DESTROY, XDG_TOPLEVEL_INTERFACE, XDG_TOPLEVEL_SET_APP_ID, XDG_TOPLEVEL_SET_TITLE,
+    XDG_WM_BASE_CREATE_POSITIONER, XDG_WM_BASE_GET_XDG_SURFACE, XDG_WM_BASE_INTERFACE, XDG_WM_BASE_PING,
+    XDG_WM_BASE_PONG,
 };
 
 /// Clock standing still at zero; the fixtures register no timers.
@@ -85,6 +86,7 @@ impl Fixture {
 #[derive(Default)]
 struct Record {
     serial: u32,
+    surfaces: Vec<u32>,
     xdg_surfaces: Vec<(u32, u32)>,
     positioners: Vec<u32>,
     toplevels: Vec<u32>,
@@ -129,9 +131,46 @@ fn scripted_session(server: &mut TestServer, record: &Rc<RefCell<Record>>) -> Wl
         },
     )?;
 
+    install_compositor_handler(server, record)?;
     install_wm_base_handler(server, record)?;
     install_surface_handlers(server, record)?;
     Ok(())
+}
+
+fn install_compositor_handler(server: &mut TestServer, record: &Rc<RefCell<Record>>) -> WlResult<()> {
+    let record = Rc::clone(record);
+    server.add_request_handler(&COMPOSITOR_INTERFACE, move |client, _, sender, opcode, args| {
+        if opcode != COMPOSITOR_CREATE_SURFACE {
+            client.post_error(
+                sender,
+                WlDisplayError::InvalidMethod.code(),
+                "unsupported wl_compositor request",
+            );
+            return;
+        }
+        let Some(WlArgument::NewId(new_id)) = args.first() else {
+            client.post_error(
+                sender,
+                WlDisplayError::InvalidMethod.code(),
+                "create_surface expects a new_id argument",
+            );
+            return;
+        };
+        let new_id = *new_id;
+        let version = client
+            .resource_version(sender)
+            .unwrap_or(1)
+            .min(SURFACE_INTERFACE.version);
+        if let Err(error) = client.create_resource(new_id, &SURFACE_INTERFACE, version) {
+            client.post_error(
+                sender,
+                WlDisplayError::NoMemory.code(),
+                format!("create_surface failed: {error}"),
+            );
+            return;
+        }
+        record.borrow_mut().surfaces.push(new_id);
+    })
 }
 
 fn install_wm_base_handler(server: &mut TestServer, record: &Rc<RefCell<Record>>) -> WlResult<()> {
@@ -509,6 +548,7 @@ fn toplevel_handshake_completes_over_a_real_socket() {
 
     {
         let record = record.borrow();
+        assert_eq!(record.surfaces, [surface.id()]);
         assert_eq!(record.xdg_surfaces, [(xdg_surface.id(), surface.id())]);
         assert_eq!(record.toplevels, [toplevel.id()]);
         assert_eq!(record.configures_sent, [serial]);
