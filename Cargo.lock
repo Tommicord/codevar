@@ -182,6 +182,7 @@ dependencies = [
 name = "codevar-wl-protocol"
 version = "1.0.0"
 dependencies = [
+ "libc",
  "num-traits",
 ]
 

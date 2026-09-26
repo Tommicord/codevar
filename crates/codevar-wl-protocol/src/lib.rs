@@ -40,6 +40,8 @@ mod wl_error;
 mod wl_evloop;
 mod wl_handle;
 mod wl_server;
+#[cfg(unix)]
+mod wl_unix;
 
 pub use wl_client::{WlClientDisplay, WlProxyId, WlRegistryEvent};
 pub use wl_conn::{WlClosure, WlConnection, WlTransport, reserve_new_ids};
@@ -50,3 +52,5 @@ pub use wl_handle::{
     WlMap, WlMessage, WlObject, WlSignal,
 };
 pub use wl_server::{WlClient, WlClientId, WlResource, WlServerDisplay, WlTaskQueue};
+#[cfg(unix)]
+pub use wl_unix::{WlUnixPoller, WlUnixTransport};
