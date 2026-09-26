@@ -54,7 +54,7 @@ const DEADLINE: Duration = Duration::from_secs(15);
 fn main() {
     match run() {
         Ok(summary) => println!("{summary}"),
-        Err(error) => {
+        Err(_) => {
             std::process::exit(1);
         }
     }

@@ -17,7 +17,7 @@
 //!
 //! The subsystem owns everything that is per-frame — one primary command
 //! buffer, the frame's fence and semaphores, and an ordered stack of
-//! [`RenderLayer`]s — while device-level state (instance, device, queue,
+//! [`RenderLayer`]s, while device-level state (instance, device, queue,
 //! command pool and the offscreen render target) stays in
 //! [`PipelineContext`](crate::ui_pipeline::PipelineContext), which is
 //! analogous to rlgame's `game_pipeline.c`.
