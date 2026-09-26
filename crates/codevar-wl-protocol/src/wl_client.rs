@@ -304,6 +304,65 @@ impl<T: WlTransport> WlClientDisplay<T> {
         Ok(WlProxyId(id))
     }
 
+    /// Sends a request on `proxy` that does not create an object.
+    ///
+    /// `args` follow the argument order of the request signature. The
+    /// request is rejected when the proxy is older than the version the
+    /// request was introduced in, mirroring the server side check.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WlError::InvalidObject`] when `proxy` is stale,
+    /// [`WlError::InvalidMethod`] when the interface has no request at
+    /// `opcode` and [`WlError::InvalidArgument`] when the proxy version
+    /// predates the request or `args` do not match the signature.
+    pub fn marshal_request(&mut self, proxy: WlProxyId, opcode: u32, args: Vec<WlArgument>) -> WlResult<()> {
+        let (_, _, message) = self.request_message(proxy, opcode)?;
+        self.marshal(proxy.0, opcode, message, args)
+    }
+
+    /// Sends a request on `proxy` that creates a new object.
+    ///
+    /// The id is reserved before the request is queued and inserted as
+    /// the first argument; `args` only carry the remaining arguments.
+    /// The returned proxy holds the interface of the first argument and
+    /// the highest version both the request and `proxy` allow.
+    ///
+    /// # Errors
+    ///
+    /// Like [`Self::marshal_request`] and additionally
+    /// [`WlError::InvalidArgument`] when the request does not start with
+    /// a new id carrying an interface.
+    pub fn marshal_new_id(
+        &mut self,
+        proxy: WlProxyId,
+        opcode: u32,
+        args: Vec<WlArgument>,
+    ) -> WlResult<WlProxyId> {
+        let (interface, version, message) = self.request_message(proxy, opcode)?;
+        let child = message
+            .args()
+            .next()
+            .filter(|first| first.details.ty == WlArgType::NewId)
+            .and_then(|first| first.interface)
+            .ok_or_else(|| {
+                WlError::invalid_argument(format!(
+                    "{}.{} does not create an object as its first argument",
+                    interface.name, message.name
+                ))
+            })?;
+        let child_version = version.min(child.version);
+        let id = self.create_proxy(child, child_version)?;
+        let mut full_args = Vec::with_capacity(args.len() + 1);
+        full_args.push(WlArgument::NewId(id));
+        full_args.extend(args);
+        if let Err(error) = self.marshal(proxy.0, opcode, message, full_args) {
+            self.proxies.remove(id);
+            return Err(error);
+        }
+        Ok(WlProxyId(id))
+    }
+
     /// Installs a raw listener on `id`.
     ///
     /// The listener receives the opcode and the decoded arguments of every
@@ -597,6 +656,35 @@ impl<T: WlTransport> WlClientDisplay<T> {
                 name, proxy.interface.name
             )))
         }
+    }
+
+    /// Resolves `opcode` on `proxy` and enforces the request version.
+    fn request_message(
+        &self,
+        proxy: WlProxyId,
+        opcode: u32,
+    ) -> WlResult<(&'static WlInterface, u32, &'static WlMessage)> {
+        let interface = self
+            .proxy_interface(proxy)
+            .ok_or(WlError::InvalidObject(proxy.0))?;
+        let version = self
+            .proxy_version(proxy)
+            .ok_or(WlError::InvalidObject(proxy.0))?;
+        let message = interface
+            .request_at(opcode)
+            .ok_or(WlError::InvalidMethod {
+                interface: interface.name,
+                opcode,
+            })?;
+        if version > 0 && version < message.since() {
+            return Err(WlError::invalid_argument(format!(
+                "{}.{} requires version {}, but the proxy is version {version}",
+                interface.name,
+                message.name,
+                message.since()
+            )));
+        }
+        Ok((interface, version, message))
     }
 
     /// Reads every complete message of the input buffer into a queue.

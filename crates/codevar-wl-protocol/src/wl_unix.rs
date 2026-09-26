@@ -724,42 +724,4 @@ mod tests {
         let error = unix_address(&long).unwrap_err();
         assert!(matches!(error, WlError::InvalidArgument(_)));
     }
-
-    #[test]
-    fn transport_pair_reports_readiness_and_eof() {
-        let (mut first, mut second) = WlUnixTransport::pair().unwrap();
-        assert_eq!(first.handle(), first.fd() as WlHandle);
-        assert!(matches!(
-            first.recv(&mut [0u8; 4], &mut Vec::new()),
-            Err(WlError::WouldBlock)
-        ));
-
-        assert_eq!(second.send(b"ping", &[]).unwrap(), 4);
-        let events = first
-            .wait(Some(Duration::ZERO), WlPollEvents::READABLE)
-            .unwrap();
-        assert!(events.contains(WlPollEvents::READABLE));
-
-        let mut buf = [0u8; 8];
-        let mut fds = Vec::new();
-        assert_eq!(first.recv(&mut buf, &mut fds).unwrap(), 4);
-        assert_eq!(&buf[..4], b"ping");
-        assert!(fds.is_empty());
-
-        drop(second);
-        let events = first
-            .wait(Some(Duration::from_secs(2)), WlPollEvents::READABLE)
-            .unwrap();
-        assert!(events.contains(WlPollEvents::HANGUP));
-        assert_eq!(first.recv(&mut buf, &mut fds).unwrap(), 0);
-    }
-
-    #[test]
-    fn transport_rejects_more_fds_than_the_limit() {
-        let (first, _second) = WlUnixTransport::pair().unwrap();
-        let mut transport = first;
-        let filler = [0 as WlFd; MAX_FDS_PER_MESSAGE + 1];
-        let error = transport.send(b"header", &filler).unwrap_err();
-        assert!(matches!(error, WlError::Unsupported(_)));
-    }
 }

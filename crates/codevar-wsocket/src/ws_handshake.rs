@@ -279,7 +279,7 @@ impl WsServerHandshake {
         }
         // Key must decode to 16 bytes (RFC 6455 §4.1).
         let decoded = codevar_base::basic_base64::decode(&request.key)
-            .map_err(|_| WsError::Internal("base64 decoding failed".to_string()))?;
+            .map_err(|_| WsError::Decode("base64 decoding failed".to_string()))?;
         if decoded.len() != 16 {
             return Err(WsError::handshake("Sec-WebSocket-Key must decode to 16 bytes"));
         }
