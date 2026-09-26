@@ -92,7 +92,7 @@ type ExampleResult<T> = Result<T, Box<dyn std::error::Error>>;
 fn main() {
     match run() {
         Ok(summary) => println!("{summary}"),
-        Err(error) => {
+        Err(_) => {
             std::process::exit(1);
         }
     }
@@ -265,14 +265,6 @@ fn run() -> ExampleResult<String> {
         {
             let feedback = Rc::clone(&feedback);
             display.add_listener(proxy, move |_, opcode, args| {
-                let summary: Vec<String> = args
-                    .iter()
-                    .map(|arg| match arg {
-                        WlArgument::Array(Some(array)) => format!("Array({}B)", array.len()),
-                        WlArgument::Fd(fd) => format!("Fd({fd})"),
-                        other => format!("{other:?}"),
-                    })
-                    .collect();
                 let mut state = feedback.borrow_mut();
                 match opcode {
                     FEEDBACK_FORMAT_TABLE => {
@@ -291,10 +283,6 @@ fn run() -> ExampleResult<String> {
                     | FEEDBACK_TRANCHE_DONE => {}
                     FEEDBACK_TRANCHE_FORMATS => {
                         let bytes = array_arg(args, 0);
-                        let hex: Vec<String> = bytes
-                            .iter()
-                            .map(|byte| format!("{byte:02x}"))
-                            .collect();
                         state.tranche_indices.extend(u16_array(&bytes));
                     }
                     FEEDBACK_DONE => state.done = true,
@@ -341,7 +329,7 @@ fn run() -> ExampleResult<String> {
         // The single-entry choice is only an optimisation: fall back to
         // every modifier the compositor advertised if the driver cannot
         // build the image with it.
-        Err(error) if requested.len() == 1 => PipelineContext::new(width as u32, height as u32, &modifiers)?,
+        Err(_) if requested.len() == 1 => PipelineContext::new(width as u32, height as u32, &modifiers)?,
         Err(error) => return Err(error.into()),
     };
     let target = pipeline.render_target();
