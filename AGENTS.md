@@ -125,7 +125,9 @@ New Rust files must include the Apache 2.0 copyright header used elsewhere:
 - Consider memory layout and cache efficiency
 - Profile performance changes before merging
 - Use `#[inline]` on hot-path small functions
-- Design algorithms for CPU and GPU parallel execution
+
+### Optimizing binary sizes
+- Use #![cfg_attr(not(test), no_std)] when adding new modules for reducing binary sizes
 
 ### Unsafe Code Guidelines
 

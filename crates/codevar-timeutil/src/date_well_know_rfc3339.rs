@@ -13,16 +13,10 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-#![cfg_attr(not(test), no_std)]
-extern crate alloc;
+//! The format described in RFC 3339.
 
-pub mod basic_base64;
-pub mod basic_cpuid;
-pub mod basic_daemon;
-pub mod basic_pathbuf;
-pub mod basic_pretty_unwind;
-pub mod basic_signal;
-pub mod basic_time;
-pub mod basic_unwind;
-pub mod basic_url;
-pub mod basic_xml;
+/// The format described in [RFC 3339](https://tools.ietf.org/html/rfc3339#section-5.6).
+///
+/// Format example: 1985-04-12T23:20:50.52Z
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rfc3339;

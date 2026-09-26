@@ -64,7 +64,7 @@ type ProxyListener<T> = Box<dyn FnMut(&mut WlClientDisplay<T>, u32, &mut [WlArgu
 
 /// Handle of a proxy object owned by a [`WlClientDisplay`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct WlProxyId(u32);
+pub struct WlProxyId(pub u32);
 
 impl WlProxyId {
     /// Returns the protocol id of the proxy.

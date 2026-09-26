@@ -13,16 +13,10 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-#![cfg_attr(not(test), no_std)]
-extern crate alloc;
+//! The format described in RFC 2822.
 
-pub mod basic_base64;
-pub mod basic_cpuid;
-pub mod basic_daemon;
-pub mod basic_pathbuf;
-pub mod basic_pretty_unwind;
-pub mod basic_signal;
-pub mod basic_time;
-pub mod basic_unwind;
-pub mod basic_url;
-pub mod basic_xml;
+/// The format described in [RFC 2822](https://tools.ietf.org/html/rfc2822#section-3.3).
+///
+/// Example: Fri, 21 Nov 1997 09:55:06 -0600
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rfc2822;

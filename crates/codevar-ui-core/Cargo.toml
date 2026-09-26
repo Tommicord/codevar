@@ -15,6 +15,8 @@ ash = { workspace = true }
 codevar-base = { workspace = true }
 codevar-wl-protocol = { workspace = true }
 libc = { workspace = true }
+log = { workspace = true }
+spin = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-link = { workspace = true }

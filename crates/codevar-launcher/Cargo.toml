@@ -13,6 +13,7 @@ codevar-base = { workspace = true }
 codevar-ui-core = { workspace = true }
 codevar-wl-protocol = { workspace = true }
 libc = { workspace = true }
+log = { workspace = true }
 
 [[bin]]
 name = "codevar"

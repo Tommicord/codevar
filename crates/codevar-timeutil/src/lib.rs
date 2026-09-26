@@ -1,0 +1,44 @@
+//! Copyright 2026 Codevar Project
+//! Licensed under the Apache License, Version 2.0 (the
+//! "License"); you may not use this file except in
+//! compliance with the License. You may obtain a copy of the
+//! License at
+//!
+//!   http://www.apache.org/licenses/LICENSE-2.0
+//!
+//! Unless required by applicable law or agreed to in
+//! writing, software distributed under the License is
+//! distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+//! CONDITIONS OF ANY KIND, either express or implied. See
+//! the License for the specific language governing
+//! permissions and limitations under the License.
+
+#![cfg_attr(not(test), no_std)]
+extern crate alloc;
+
+mod date;
+mod date_adt_hack;
+mod date_component_provider;
+mod date_error;
+mod date_format_description;
+mod date_format_description_modifier;
+mod date_formattable;
+mod date_formatting;
+mod date_internal_macro;
+mod date_iso8601;
+mod date_metadata;
+mod date_month;
+mod date_num_fmt;
+mod date_offset_time;
+mod date_plain;
+mod date_signed_duration;
+mod date_time;
+mod date_timestamp;
+mod date_unit;
+mod date_utc_offset;
+mod date_utc_time;
+mod date_util;
+mod date_weekday;
+mod date_well_know_iso8601;
+mod date_well_know_rfc2822;
+mod date_well_know_rfc3339;

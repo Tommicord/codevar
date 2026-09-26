@@ -1,0 +1,25 @@
+[package]
+name = "codevar-timeutil"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+wasm-bindgen = []
+large-dates = []
+std = []
+
+[lib]
+name = "codevar_timeutil"
+
+[dependencies]
+codevar-base = { workspace = true }
+libc = { workspace = true }
+deranged = { workspace = true }
+num-conv = { workspace = true }
+powerfmt = { workspace = true }
+count-digits = { workspace = true }
+js-sys = "0.3.106"
