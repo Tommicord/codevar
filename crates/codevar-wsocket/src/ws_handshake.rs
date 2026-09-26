@@ -35,7 +35,6 @@
 //!
 //! where `GUID` is [`GUID`](crate::ws_ids::GUID).
 
-use crate::ws_base64;
 use crate::ws_error::{WsError, WsResult};
 use crate::ws_ids::{GUID, VERSION};
 use sha1::{Digest, Sha1};
@@ -51,7 +50,7 @@ pub fn generate_key_nonce() -> WsResult<[u8; 16]> {
 /// Computes `Sec-WebSocket-Accept` from the raw 16-byte key nonce.
 #[must_use]
 pub fn accept_key_from_nonce(nonce: &[u8; 16]) -> String {
-    compute_accept_key(&ws_base64::encode(nonce))
+    compute_accept_key(&codevar_base::basic_base64::encode(nonce))
 }
 
 /// Computes `Sec-WebSocket-Accept` from the Base64 `Sec-WebSocket-Key` value.
@@ -63,7 +62,7 @@ pub fn compute_accept_key(sec_websocket_key: &str) -> String {
     hasher.update(sec_websocket_key.as_bytes());
     hasher.update(GUID.as_bytes());
     let digest = hasher.finalize();
-    ws_base64::encode(&digest)
+    codevar_base::basic_base64::encode(&digest)
 }
 
 /// Parsed client opening-handshake request.
@@ -135,7 +134,7 @@ impl WsClientHandshake {
             ));
         }
         let nonce = generate_key_nonce()?;
-        let key_b64 = ws_base64::encode(&nonce);
+        let key_b64 = codevar_base::basic_base64::encode(&nonce);
         let expected_accept = compute_accept_key(&key_b64);
         Ok(Self {
             path,
@@ -279,7 +278,8 @@ impl WsServerHandshake {
             return Err(WsError::handshake("missing Sec-WebSocket-Key"));
         }
         // Key must decode to 16 bytes (RFC 6455 §4.1).
-        let decoded = ws_base64::decode(&request.key)?;
+        let decoded = codevar_base::basic_base64::decode(&request.key)
+            .map_err(|_| WsError::Internal("base64 decoding failed".to_string()))?;
         if decoded.len() != 16 {
             return Err(WsError::handshake("Sec-WebSocket-Key must decode to 16 bytes"));
         }
@@ -478,8 +478,8 @@ fn header_token_contains(header: &str, token: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use codevar_base::basic_base64;
     use super::*;
-    use crate::ws_base64;
 
     #[test]
     fn rfc6455_accept_key_test_vector() {
@@ -499,9 +499,9 @@ mod tests {
     fn accept_key_from_nonce_matches_rfc_vector() {
         let nonce = *b"the sample nonce";
         assert_eq!(nonce.len(), 16);
-        assert_eq!(ws_base64::encode(&nonce), "dGhlIHNhbXBsZSBub25jZQ==");
+        assert_eq!(basic_base64::encode(&nonce), "dGhlIHNhbXBsZSBub25jZQ==");
         assert_eq!(accept_key_from_nonce(&nonce), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
-        let manual = compute_accept_key(&ws_base64::encode(&nonce));
+        let manual = compute_accept_key(&basic_base64::encode(&nonce));
         assert_eq!(accept_key_from_nonce(&nonce), manual);
     }
 
@@ -510,7 +510,7 @@ mod tests {
         let a = generate_key_nonce().expect("rand a");
         let b = generate_key_nonce().expect("rand b");
         assert_ne!(a, b);
-        let encoded = ws_base64::encode(&a);
+        let encoded = basic_base64::encode(&a);
         assert_eq!(encoded.len(), 24);
         assert!(encoded.ends_with("=="));
         for ch in encoded.chars().filter(|c| *c != '=') {
@@ -519,7 +519,7 @@ mod tests {
                 "unexpected base64 character {ch}"
             );
         }
-        assert_eq!(ws_base64::decode(&encoded).expect("decode"), a.to_vec());
+        assert_eq!(basic_base64::decode(&encoded).expect("decode"), a.to_vec());
         assert_ne!(accept_key_from_nonce(&a), accept_key_from_nonce(&b));
     }
 
@@ -539,7 +539,7 @@ mod tests {
         assert_eq!(hs.path, "/chat");
         assert_eq!(hs.host, "example.com");
         assert_eq!(hs.key_b64.len(), 24);
-        assert_eq!(ws_base64::decode(&hs.key_b64).expect("key").len(), 16);
+        assert_eq!(basic_base64::decode(&hs.key_b64).expect("key").len(), 16);
         assert_eq!(hs.expected_accept, compute_accept_key(&hs.key_b64));
         assert!(hs.selected_protocol.is_none());
     }

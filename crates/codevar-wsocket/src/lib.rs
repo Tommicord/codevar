@@ -13,7 +13,6 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-pub mod ws_base64;
 pub mod ws_client;
 pub mod ws_connection;
 pub mod ws_error;
