@@ -475,7 +475,7 @@ mod tests {
             tv_nsec: 1_234_567_890,
         };
         let libc_ts = original.into_libc();
-        let restored = Timespec::from_libc(ts_libc);
+        let restored = Timespec::from_libc(libc_ts);
         assert_eq!(original, restored);
     }
 }

@@ -13,13 +13,13 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
+use codevar_base::basic_time::SystemTime;
 use core::cmp::Ordering;
 use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::iter::Sum;
 use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 use core::time::Duration as StdDuration;
-use codevar_base::basic_time::SystemTime;
 
 use crate::date_error::ConversionRange;
 use crate::date_internal_macro::const_try_opt;
@@ -44,10 +44,7 @@ pub(crate) enum Padding {
 }
 
 /// The type of the `nanosecond` field of `SignedDuration`.
-type Nanoseconds = ri32<
-    { -Nanosecond::per_t::<i32>(Second) + 1 },
-    { Nanosecond::per_t::<i32>(Second) - 1 },
->;
+type Nanoseconds = ri32<{ -Nanosecond::per_t::<i32>(Second) + 1 }, { Nanosecond::per_t::<i32>(Second) - 1 }>;
 
 /// A span of time with nanosecond precision.
 ///
@@ -117,12 +114,6 @@ impl Default for SignedDuration {
     }
 }
 
-/// This is adapted from the [`std` implementation][std], which uses mostly bit operations to ensure
-/// the highest precision:
-///
-/// Changes from `std` are marked and explained below.
-///
-/// [std]: https://github.com/rust-lang/rust/blob/3a37c2f0523c87147b64f1b8099fc9df22e8c53e/library/core/src/time.rs#L1262-L1340
 #[rustfmt::skip] // Skip `rustfmt` because it reformats the arguments of the macro weirdly.
 macro_rules! try_from_secs {
     (
@@ -139,8 +130,6 @@ macro_rules! try_from_secs {
             const MIN_EXP: i16 = 1 - (1i16 << $exp_bits) / 2;
             const MANT_MASK: $bits_ty = (1 << $mant_bits) - 1;
             const EXP_MASK: $bits_ty = (1 << $exp_bits) - 1;
-
-            // Change from std: No error check for negative values necessary.
 
             let bits = $secs.to_bits();
             let mant = (bits & MANT_MASK) | (MANT_MASK + 1);
@@ -189,10 +178,6 @@ macro_rules! try_from_secs {
                 let rem_msb = nanos_tmp & rem_msb_mask == 0;
                 let add_ns = !(rem_msb || (is_even && is_tie));
 
-                // f32 does not have enough precision to trigger the second branch.
-                // For example, it can not represent numbers between 1.999_999_880...
-                // and 2.0. Bigger values result in even smaller precision of the
-                // fractional part.
                 let nanos = nanos + add_ns as u32;
                 if ($mant_bits == 23) || (nanos != Nanosecond::per_t::<u32>(Second)) {
                     (secs, nanos)
@@ -200,36 +185,18 @@ macro_rules! try_from_secs {
                     (secs + 1, 0)
                 }
             } else if exp < 63 {
-                // Change from std: The exponent here is 63 instead of 64,
-                // because i64::MAX + 1 is 2^63.
-
-                // the input has no fractional part
                 #[allow(trivial_numeric_casts)]
                 let secs = (mant as u64) << (exp - $mant_bits);
                 (secs, 0)
             } else if bits == (i64::MIN as $float_ty).to_bits() {
-                // Change from std: Signed integers are asymmetrical in that
-                // iN::MIN is -iN::MAX - 1. So for example i8 covers the
-                // following numbers -128..=127. The check above (exp < 63)
-                // doesn't cover i64::MIN as that is -2^63, so we have this
-                // additional case to handle the asymmetry of iN::MIN.
                 break 'value Ok(Self::new_ranged_unchecked(i64::MIN, Nanoseconds::new_static::<0>()));
             } else if $secs.is_nan() {
-                // Change from std: std doesn't differentiate between the error
-                // cases.
                 break 'value Err(FloatConstructorError::Nan);
             } else if $secs.is_sign_negative() {
                 break 'value Err(FloatConstructorError::NegOverflow);
             } else {
                 break 'value Err(FloatConstructorError::PosOverflow);
             };
-
-            // Change from std: All the code is mostly unmodified in that it
-            // simply calculates an unsigned integer. Here we extract the sign
-            // bit and assign it to the number. We basically manually do two's
-            // complement here, we could also use an if and just negate the
-            // numbers based on the sign, but it turns out to be quite a bit
-            // slower.
             let mask = (bits as $bits_ty_signed) >> ($mant_bits + $exp_bits);
             #[allow(trivial_numeric_casts)]
             let secs_signed = ((secs as i64) ^ (mask as i64)) - (mask as i64);
@@ -315,10 +282,7 @@ impl SignedDuration {
     /// [`SignedDuration::abs`]).
     #[inline]
     pub const fn unsigned_abs(self) -> StdDuration {
-        StdDuration::new(
-            self.seconds.unsigned_abs(),
-            self.nanoseconds.get().unsigned_abs(),
-        )
+        StdDuration::new(self.seconds.unsigned_abs(), self.nanoseconds.get().unsigned_abs())
     }
 
     /// Create a new `SignedDuration` without checking the validity of the components.
@@ -340,10 +304,7 @@ impl SignedDuration {
 
     /// Create a new `SignedDuration` without checking the validity of the components.
     #[inline]
-    pub(crate) const fn new_ranged_unchecked(
-        seconds: i64,
-        nanoseconds: Nanoseconds,
-    ) -> Self {
+    pub(crate) const fn new_ranged_unchecked(seconds: i64, nanoseconds: Nanoseconds) -> Self {
         if seconds < 0 {
             debug_assert!(nanoseconds.get() <= 0);
         } else if seconds > 0 {
@@ -389,30 +350,21 @@ impl SignedDuration {
 
     /// Create a new `SignedDuration` with the provided seconds and nanoseconds.
     #[inline]
-    pub(crate) const fn new_ranged(
-        mut seconds: i64,
-        mut nanoseconds: Nanoseconds,
-    ) -> Self {
+    pub(crate) const fn new_ranged(mut seconds: i64, mut nanoseconds: Nanoseconds) -> Self {
         if seconds > 0 && nanoseconds.get() < 0 {
             // `seconds` cannot overflow here because it is positive.
             seconds -= 1;
             // Safety: `nanoseconds` is negative with a maximum of 999,999,999, so adding a billion
             // to it is guaranteed to result in an in-range value.
-            nanoseconds = unsafe {
-                Nanoseconds::new_unchecked(
-                    nanoseconds.get() + Nanosecond::per_t::<i32>(Second),
-                )
-            };
+            nanoseconds =
+                unsafe { Nanoseconds::new_unchecked(nanoseconds.get() + Nanosecond::per_t::<i32>(Second)) };
         } else if seconds < 0 && nanoseconds.get() > 0 {
             // `seconds` cannot overflow here because it is negative.
             seconds += 1;
             // Safety: `nanoseconds` is positive with a minimum of -999,999,999, so subtracting a
             // billion from it is guaranteed to result in an in-range value.
-            nanoseconds = unsafe {
-                Nanoseconds::new_unchecked(
-                    nanoseconds.get() - Nanosecond::per_t::<i32>(Second),
-                )
-            };
+            nanoseconds =
+                unsafe { Nanoseconds::new_unchecked(nanoseconds.get() - Nanosecond::per_t::<i32>(Second)) };
         }
 
         Self::new_ranged_unchecked(seconds, nanoseconds)
@@ -605,8 +557,8 @@ impl SignedDuration {
         unsafe {
             Self::new_unchecked(
                 milliseconds / Millisecond::per_t::<i64>(Second),
-                (milliseconds % Millisecond::per_t::<i64>(Second)
-                    * Nanosecond::per_t::<i64>(Millisecond)) as i32,
+                (milliseconds % Millisecond::per_t::<i64>(Second) * Nanosecond::per_t::<i64>(Millisecond))
+                    as i32,
             )
         }
     }
@@ -618,8 +570,8 @@ impl SignedDuration {
         unsafe {
             Self::new_unchecked(
                 microseconds / Microsecond::per_t::<i64>(Second),
-                (microseconds % Microsecond::per_t::<i64>(Second)
-                    * Nanosecond::per_t::<i64>(Microsecond)) as i32,
+                (microseconds % Microsecond::per_t::<i64>(Second) * Nanosecond::per_t::<i64>(Microsecond))
+                    as i32,
             )
         }
     }
@@ -691,15 +643,13 @@ impl SignedDuration {
     /// Get the number of fractional seconds in the duration.
     #[inline]
     pub const fn as_seconds_f64(self) -> f64 {
-        self.seconds as f64
-            + self.nanoseconds.get() as f64 / Nanosecond::per_t::<f64>(Second)
+        self.seconds as f64 + self.nanoseconds.get() as f64 / Nanosecond::per_t::<f64>(Second)
     }
 
     /// Get the number of fractional seconds in the duration.
     #[inline]
     pub const fn as_seconds_f32(self) -> f32 {
-        self.seconds as f32
-            + self.nanoseconds.get() as f32 / Nanosecond::per_t::<f32>(Second)
+        self.seconds as f32 + self.nanoseconds.get() as f32 / Nanosecond::per_t::<f32>(Second)
     }
 
     /// Get the number of whole milliseconds in the duration.
@@ -735,8 +685,7 @@ impl SignedDuration {
     /// Get the number of nanoseconds in the duration.
     #[inline]
     pub const fn whole_nanoseconds(self) -> i128 {
-        self.seconds as i128 * Nanosecond::per_t::<i128>(Second)
-            + self.nanoseconds.get() as i128
+        self.seconds as i128 * Nanosecond::per_t::<i128>(Second) + self.nanoseconds.get() as i128
     }
 
     /// Get the number of nanoseconds past the number of whole seconds.
@@ -762,9 +711,7 @@ impl SignedDuration {
         if nanoseconds >= Nanosecond::per_t(Second) || seconds < 0 && nanoseconds > 0 {
             nanoseconds -= Nanosecond::per_t::<i32>(Second);
             seconds = const_try_opt!(seconds.checked_add(1));
-        } else if nanoseconds <= -Nanosecond::per_t::<i32>(Second)
-            || seconds > 0 && nanoseconds < 0
-        {
+        } else if nanoseconds <= -Nanosecond::per_t::<i32>(Second) || seconds > 0 && nanoseconds < 0 {
             nanoseconds += Nanosecond::per_t::<i32>(Second);
             seconds = const_try_opt!(seconds.checked_sub(1));
         }
@@ -782,9 +729,7 @@ impl SignedDuration {
         if nanoseconds >= Nanosecond::per_t(Second) || seconds < 0 && nanoseconds > 0 {
             nanoseconds -= Nanosecond::per_t::<i32>(Second);
             seconds = const_try_opt!(seconds.checked_add(1));
-        } else if nanoseconds <= -Nanosecond::per_t::<i32>(Second)
-            || seconds > 0 && nanoseconds < 0
-        {
+        } else if nanoseconds <= -Nanosecond::per_t::<i32>(Second) || seconds > 0 && nanoseconds < 0 {
             nanoseconds += Nanosecond::per_t::<i32>(Second);
             seconds = const_try_opt!(seconds.checked_sub(1));
         }
@@ -800,9 +745,8 @@ impl SignedDuration {
         let total_nanos = self.nanoseconds.get() as i64 * rhs as i64;
         let extra_secs = total_nanos / Nanosecond::per_t::<i64>(Second);
         let nanoseconds = (total_nanos % Nanosecond::per_t::<i64>(Second)) as i32;
-        let seconds = const_try_opt!(
-            const_try_opt!(self.seconds.checked_mul(rhs as i64)).checked_add(extra_secs)
-        );
+        let seconds =
+            const_try_opt!(const_try_opt!(self.seconds.checked_mul(rhs as i64)).checked_add(extra_secs));
 
         // Safety: `nanoseconds` is guaranteed to be in range because of the modulus above.
         unsafe { Some(Self::new_unchecked(seconds, nanoseconds)) }
@@ -815,10 +759,9 @@ impl SignedDuration {
             const_try_opt!(self.seconds.checked_div(rhs as i64)),
             self.seconds % (rhs as i64),
         );
-        let (mut nanos, extra_nanos) =
-            (self.nanoseconds.get() / rhs, self.nanoseconds.get() % rhs);
-        nanos += ((extra_secs * (Nanosecond::per_t::<i64>(Second)) + extra_nanos as i64)
-            / (rhs as i64)) as i32;
+        let (mut nanos, extra_nanos) = (self.nanoseconds.get() / rhs, self.nanoseconds.get() % rhs);
+        nanos +=
+            ((extra_secs * (Nanosecond::per_t::<i64>(Second)) + extra_nanos as i64) / (rhs as i64)) as i32;
 
         // Safety: `nanoseconds` is in range.
         unsafe { Some(Self::new_unchecked(secs, nanos)) }
@@ -830,10 +773,7 @@ impl SignedDuration {
         if self.seconds == i64::MIN {
             None
         } else {
-            Some(Self::new_ranged_unchecked(
-                -self.seconds,
-                self.nanoseconds.neg(),
-            ))
+            Some(Self::new_ranged_unchecked(-self.seconds, self.nanoseconds.neg()))
         }
     }
 
@@ -855,9 +795,7 @@ impl SignedDuration {
                 Some(seconds) => seconds,
                 None => return Self::MAX,
             };
-        } else if nanoseconds <= -Nanosecond::per_t::<i32>(Second)
-            || seconds > 0 && nanoseconds < 0
-        {
+        } else if nanoseconds <= -Nanosecond::per_t::<i32>(Second) || seconds > 0 && nanoseconds < 0 {
             nanoseconds += Nanosecond::per_t::<i32>(Second);
             seconds = match seconds.checked_sub(1) {
                 Some(seconds) => seconds,
@@ -887,9 +825,7 @@ impl SignedDuration {
                 Some(seconds) => seconds,
                 None => return Self::MAX,
             };
-        } else if nanoseconds <= -Nanosecond::per_t::<i32>(Second)
-            || seconds > 0 && nanoseconds < 0
-        {
+        } else if nanoseconds <= -Nanosecond::per_t::<i32>(Second) || seconds > 0 && nanoseconds < 0 {
             nanoseconds += Nanosecond::per_t::<i32>(Second);
             seconds = match seconds.checked_sub(1) {
                 Some(seconds) => seconds,
@@ -934,7 +870,10 @@ impl TryFrom<StdDuration> for SignedDuration {
     #[inline]
     fn try_from(original: StdDuration) -> Result<Self, ConversionRange> {
         Ok(Self::new(
-            original.as_secs().try_into().map_err(|_| ConversionRange)?,
+            original
+                .as_secs()
+                .try_into()
+                .map_err(|_| ConversionRange)?,
             original.subsec_nanos().cast_signed(),
         ))
     }
@@ -946,7 +885,10 @@ impl TryFrom<SignedDuration> for StdDuration {
     #[inline]
     fn try_from(duration: SignedDuration) -> Result<Self, ConversionRange> {
         Ok(Self::new(
-            duration.seconds.try_into().map_err(|_| ConversionRange)?,
+            duration
+                .seconds
+                .try_into()
+                .map_err(|_| ConversionRange)?,
             duration
                 .nanoseconds
                 .get()
@@ -1402,10 +1344,10 @@ impl Add<SignedDuration> for SystemTime {
         if duration.is_zero() {
             self
         } else if duration.is_positive() {
-            self + duration.unsigned_abs()
+            self + SignedDuration::try_from(duration.unsigned_abs()).unwrap_or_default()
         } else {
             debug_assert!(duration.is_negative());
-            self - duration.unsigned_abs()
+            self - SignedDuration::try_from(duration.unsigned_abs()).unwrap_or_default()
         }
     }
 }
@@ -1428,10 +1370,10 @@ impl Sub<SignedDuration> for SystemTime {
         if duration.is_zero() {
             self
         } else if duration.is_positive() {
-            self - duration.unsigned_abs()
+            self - SignedDuration::try_from(duration.unsigned_abs()).unwrap_or_default()
         } else {
             debug_assert!(duration.is_negative());
-            self + duration.unsigned_abs()
+            self + SignedDuration::try_from(duration.unsigned_abs()).unwrap_or_default()
         }
     }
 }

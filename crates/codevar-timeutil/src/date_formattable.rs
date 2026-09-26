@@ -16,23 +16,19 @@
 use crate::date_adt_hack::EncodedConfig;
 use crate::date_component_provider::ComponentProvider;
 use crate::date_error::{ComponentRange, Error};
-use crate::date_format_description::{
-    Component, FormatDescription, FormatDescriptionInner,
-};
+use crate::date_format_description::{Component, FormatDescription, FormatDescriptionInner};
 use crate::date_format_description_modifier::{End, Padding};
 use crate::date_formatting::{
     MONTH_NAMES, WEEKDAY_NAMES, fmt_calendar_year_century_extended_range,
     fmt_calendar_year_century_standard_range, fmt_calendar_year_full_extended_range,
-    fmt_calendar_year_full_standard_range, fmt_calendar_year_last_two, fmt_day,
-    fmt_hour_12, fmt_hour_24, fmt_iso_year_century_extended_range,
-    fmt_iso_year_century_standard_range, fmt_iso_year_full_extended_range,
-    fmt_iso_year_full_standard_range, fmt_iso_year_last_two, fmt_minute, fmt_month_long,
-    fmt_month_numerical, fmt_month_short, fmt_offset_hour, fmt_offset_minute,
-    fmt_offset_second, fmt_ordinal, fmt_period, fmt_second, fmt_subsecond,
-    fmt_unix_timestamp_microsecond, fmt_unix_timestamp_millisecond,
-    fmt_unix_timestamp_nanosecond, fmt_unix_timestamp_second, fmt_week_number_iso,
-    fmt_week_number_monday, fmt_week_number_sunday, fmt_weekday_long, fmt_weekday_monday,
-    fmt_weekday_short, fmt_weekday_sunday, format_four_digits_pad_zero,
+    fmt_calendar_year_full_standard_range, fmt_calendar_year_last_two, fmt_day, fmt_hour_12, fmt_hour_24,
+    fmt_iso_year_century_extended_range, fmt_iso_year_century_standard_range,
+    fmt_iso_year_full_extended_range, fmt_iso_year_full_standard_range, fmt_iso_year_last_two, fmt_minute,
+    fmt_month_long, fmt_month_numerical, fmt_month_short, fmt_offset_hour, fmt_offset_minute,
+    fmt_offset_second, fmt_ordinal, fmt_period, fmt_second, fmt_subsecond, fmt_unix_timestamp_microsecond,
+    fmt_unix_timestamp_millisecond, fmt_unix_timestamp_nanosecond, fmt_unix_timestamp_second,
+    fmt_week_number_iso, fmt_week_number_monday, fmt_week_number_sunday, fmt_weekday_long,
+    fmt_weekday_monday, fmt_weekday_short, fmt_weekday_sunday, format_four_digits_pad_zero,
     format_two_digits, write, write_if_else,
 };
 use crate::date_internal_macro::try_err;
@@ -47,7 +43,6 @@ use alloc::vec::Vec;
 use core::ops::Deref;
 use deranged::{ri16, ru8, ru16};
 use num_conv::prelude::*;
-use core::io;
 
 macro_rules! fmt_component_match {
     ($self:expr, $output:ident, $value:ident, $state:ident, $($extra:tt)*) => {
@@ -406,9 +401,7 @@ impl Sealed for Rfc2822 {
 
         let mut bytes = 0;
 
-        if value.calendar_year(state).get() < 1900
-            && value.calendar_year(state).get() >= 10_000
-        {
+        if value.calendar_year(state).get() < 1900 && value.calendar_year(state).get() >= 10_000 {
             return Err(Error::InvalidComponent("year"));
         }
         if value.offset_second(state).get() != 0 {
@@ -433,8 +426,7 @@ impl Sealed for Rfc2822 {
         bytes += try_err!(write(output, " "), Error);
         bytes += try_err!(
             write(output, unsafe {
-                MONTH_NAMES[u8::from(value.month(state)).widen::<usize>() - 1]
-                    .get_unchecked(..3)
+                MONTH_NAMES[u8::from(value.month(state)).widen::<usize>() - 1].get_unchecked(..3)
             }),
             Error
         );
@@ -443,7 +435,11 @@ impl Sealed for Rfc2822 {
         bytes += try_err!(
             format_four_digits_pad_zero(output, unsafe {
                 ru16::new_unchecked(
-                    value.calendar_year(state).get().cast_unsigned().truncate(),
+                    value
+                        .calendar_year(state)
+                        .get()
+                        .cast_unsigned()
+                        .truncate(),
                 )
             }),
             Error
@@ -473,9 +469,7 @@ impl Sealed for Rfc2822 {
                 output,
                 // Safety: `OffsetMinutes` is guaranteed to be in the range `-59..=59`, so the absolute
                 // value is guaranteed to be in the range `0..=59`.
-                unsafe {
-                    ru8::new_unchecked(value.offset_minute(state).get().unsigned_abs())
-                },
+                unsafe { ru8::new_unchecked(value.offset_minute(state).get().unsigned_abs()) },
                 Padding::Zero,
             ),
             Error
@@ -522,7 +516,11 @@ impl Sealed for Rfc3339 {
         bytes += try_err!(
             format_four_digits_pad_zero(output, unsafe {
                 ru16::new_unchecked(
-                    value.calendar_year(state).get().cast_unsigned().truncate(),
+                    value
+                        .calendar_year(state)
+                        .get()
+                        .cast_unsigned()
+                        .truncate(),
                 )
             }),
             Error
@@ -589,9 +587,7 @@ impl Sealed for Rfc3339 {
                 output,
                 // Safety: `OffsetMinutes` is guaranteed to be in the range `-59..=59`, so the absolute
                 // value is guaranteed to be in the range `0..=59`.
-                unsafe {
-                    ru8::new_unchecked(value.offset_minute(state).get().unsigned_abs())
-                },
+                unsafe { ru8::new_unchecked(value.offset_minute(state).get().unsigned_abs()) },
                 Padding::Zero,
             ),
             Error

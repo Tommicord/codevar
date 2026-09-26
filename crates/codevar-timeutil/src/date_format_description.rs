@@ -200,12 +200,8 @@ impl fmt::Debug for FormatDescriptionInner<'_> {
             Self::UnixTimestampMicrosecond(modifier) => modifier.fmt(f),
             Self::UnixTimestampNanosecond(modifier) => modifier.fmt(f),
             Self::End(modifier) => modifier.fmt(f),
-            Self::BorrowedLiteral(literal) => {
-                f.debug_tuple("Literal").field(literal).finish()
-            }
-            Self::BorrowedCompound(compound) => {
-                f.debug_tuple("Compound").field(compound).finish()
-            }
+            Self::BorrowedLiteral(literal) => f.debug_tuple("Literal").field(literal).finish(),
+            Self::BorrowedCompound(compound) => f.debug_tuple("Compound").field(compound).finish(),
             Self::BorrowedOptional {
                 format: should_format,
                 item,
@@ -215,12 +211,8 @@ impl fmt::Debug for FormatDescriptionInner<'_> {
                 .field("item", item)
                 .finish(),
             Self::BorrowedFirst(items) => f.debug_tuple("First").field(items).finish(),
-            Self::OwnedLiteral(literal) => {
-                f.debug_tuple("Literal").field(literal).finish()
-            }
-            Self::OwnedCompound(compound) => {
-                f.debug_tuple("Compound").field(compound).finish()
-            }
+            Self::OwnedLiteral(literal) => f.debug_tuple("Literal").field(literal).finish(),
+            Self::OwnedCompound(compound) => f.debug_tuple("Compound").field(compound).finish(),
             Self::OwnedOptional {
                 format: should_format,
                 item,
@@ -332,12 +324,7 @@ impl<'a> FormatDescriptionInner<'a> {
         // Safety: `make_owned_in_place` recursively eliminates all variants that contain
         // references, so we can transmute between lifetimes freely. ADTs do not vary in layout when
         // only the lifetime differs.
-        unsafe {
-            core::mem::transmute::<
-                FormatDescriptionInner<'a>,
-                FormatDescriptionInner<'static>,
-            >(self)
-        }
+        unsafe { core::mem::transmute::<FormatDescriptionInner<'a>, FormatDescriptionInner<'static>>(self) }
     }
 
     /// Convert the inner `enum` to a `FormatDescription`.
@@ -361,9 +348,7 @@ impl<'a> FormatDescriptionInner<'a> {
             Self::WeekdayShort(_) => 3,
             Self::WeekdayLong(_) => 9,
             Self::WeekdaySunday(_) | Self::WeekdayMonday(_) => 1,
-            Self::WeekNumberIso(_)
-            | Self::WeekNumberSunday(_)
-            | Self::WeekNumberMonday(_) => 2,
+            Self::WeekNumberIso(_) | Self::WeekNumberSunday(_) | Self::WeekNumberMonday(_) => 2,
             Self::CalendarYearFullExtendedRange(_) => 7,
             Self::CalendarYearFullStandardRange(_) => 5,
             Self::IsoYearFullExtendedRange(_) => 7,
@@ -557,26 +542,14 @@ impl<'a> From<&'a Component> for FormatDescriptionInner<'a> {
             Component::WeekNumberIso(x) => Self::WeekNumberIso(*x),
             Component::WeekNumberSunday(x) => Self::WeekNumberSunday(*x),
             Component::WeekNumberMonday(x) => Self::WeekNumberMonday(*x),
-            Component::CalendarYearFullExtendedRange(x) => {
-                Self::CalendarYearFullExtendedRange(*x)
-            }
-            Component::CalendarYearFullStandardRange(x) => {
-                Self::CalendarYearFullStandardRange(*x)
-            }
+            Component::CalendarYearFullExtendedRange(x) => Self::CalendarYearFullExtendedRange(*x),
+            Component::CalendarYearFullStandardRange(x) => Self::CalendarYearFullStandardRange(*x),
             Component::IsoYearFullExtendedRange(x) => Self::IsoYearFullExtendedRange(*x),
             Component::IsoYearFullStandardRange(x) => Self::IsoYearFullStandardRange(*x),
-            Component::CalendarYearCenturyExtendedRange(x) => {
-                Self::CalendarYearCenturyExtendedRange(*x)
-            }
-            Component::CalendarYearCenturyStandardRange(x) => {
-                Self::CalendarYearCenturyStandardRange(*x)
-            }
-            Component::IsoYearCenturyExtendedRange(x) => {
-                Self::IsoYearCenturyExtendedRange(*x)
-            }
-            Component::IsoYearCenturyStandardRange(x) => {
-                Self::IsoYearCenturyStandardRange(*x)
-            }
+            Component::CalendarYearCenturyExtendedRange(x) => Self::CalendarYearCenturyExtendedRange(*x),
+            Component::CalendarYearCenturyStandardRange(x) => Self::CalendarYearCenturyStandardRange(*x),
+            Component::IsoYearCenturyExtendedRange(x) => Self::IsoYearCenturyExtendedRange(*x),
+            Component::IsoYearCenturyStandardRange(x) => Self::IsoYearCenturyStandardRange(*x),
             Component::CalendarYearLastTwo(x) => Self::CalendarYearLastTwo(*x),
             Component::IsoYearLastTwo(x) => Self::IsoYearLastTwo(*x),
             Component::Hour12(x) => Self::Hour12(*x),
@@ -621,47 +594,35 @@ impl crate::date_formattable::Sealed for FormatDescriptionInner<'_> {
                 fmt_month_long(output, value.month(state), *modifier).map_err(Into::into)
             }
             Self::MonthNumerical(modifier) if V::SUPPLIES_DATE => {
-                fmt_month_numerical(output, value.month(state), *modifier)
-                    .map_err(Into::into)
+                fmt_month_numerical(output, value.month(state), *modifier).map_err(Into::into)
             }
             Self::Ordinal(modifier) if V::SUPPLIES_DATE => {
                 fmt_ordinal(output, value.ordinal(state), *modifier).map_err(Into::into)
             }
             Self::WeekdayShort(modifier) if V::SUPPLIES_DATE => {
-                fmt_weekday_short(output, value.weekday(state), *modifier)
-                    .map_err(Into::into)
+                fmt_weekday_short(output, value.weekday(state), *modifier).map_err(Into::into)
             }
             Self::WeekdayLong(modifier) if V::SUPPLIES_DATE => {
-                fmt_weekday_long(output, value.weekday(state), *modifier)
-                    .map_err(Into::into)
+                fmt_weekday_long(output, value.weekday(state), *modifier).map_err(Into::into)
             }
             Self::WeekdaySunday(modifier) if V::SUPPLIES_DATE => {
-                fmt_weekday_sunday(output, value.weekday(state), *modifier)
-                    .map_err(Into::into)
+                fmt_weekday_sunday(output, value.weekday(state), *modifier).map_err(Into::into)
             }
             Self::WeekdayMonday(modifier) if V::SUPPLIES_DATE => {
-                fmt_weekday_monday(output, value.weekday(state), *modifier)
-                    .map_err(Into::into)
+                fmt_weekday_monday(output, value.weekday(state), *modifier).map_err(Into::into)
             }
             Self::WeekNumberIso(modifier) if V::SUPPLIES_DATE => {
-                fmt_week_number_iso(output, value.iso_week_number(state), *modifier)
-                    .map_err(Into::into)
+                fmt_week_number_iso(output, value.iso_week_number(state), *modifier).map_err(Into::into)
             }
             Self::WeekNumberSunday(modifier) if V::SUPPLIES_DATE => {
-                fmt_week_number_sunday(output, value.sunday_based_week(state), *modifier)
-                    .map_err(Into::into)
+                fmt_week_number_sunday(output, value.sunday_based_week(state), *modifier).map_err(Into::into)
             }
             Self::WeekNumberMonday(modifier) if V::SUPPLIES_DATE => {
-                fmt_week_number_monday(output, value.monday_based_week(state), *modifier)
-                    .map_err(Into::into)
+                fmt_week_number_monday(output, value.monday_based_week(state), *modifier).map_err(Into::into)
             }
             Self::CalendarYearFullExtendedRange(modifier) if V::SUPPLIES_DATE => {
-                fmt_calendar_year_full_extended_range(
-                    output,
-                    value.calendar_year(state),
-                    *modifier,
-                )
-                .map_err(Into::into)
+                fmt_calendar_year_full_extended_range(output, value.calendar_year(state), *modifier)
+                    .map_err(Into::into)
             }
             Self::CalendarYearFullStandardRange(modifier) if V::SUPPLIES_DATE => {
                 fmt_calendar_year_full_standard_range(
@@ -669,87 +630,45 @@ impl crate::date_formattable::Sealed for FormatDescriptionInner<'_> {
                     value
                         .calendar_year(state)
                         .narrow::<-9_999, 9_999>()
-                        .ok_or_else(|| {
-                            crate::date_error::ComponentRange::conditional(
-                                "year",
-                            )
-                        })?
+                        .ok_or_else(|| crate::date_error::ComponentRange::conditional("year"))?
                         .try_into()
-                        .map_err(|_| {
-                            crate::date_error::ComponentRange::conditional(
-                                "year",
-                            )
-                        })?,
+                        .map_err(|_| crate::date_error::ComponentRange::conditional("year"))?,
                     *modifier,
                 )
                 .map_err(Into::into)
             }
             Self::IsoYearFullExtendedRange(modifier) if V::SUPPLIES_DATE => {
-                fmt_iso_year_full_extended_range(output, value.iso_year(state), *modifier)
-                    .map_err(Into::into)
+                fmt_iso_year_full_extended_range(output, value.iso_year(state), *modifier).map_err(Into::into)
             }
-            Self::IsoYearFullStandardRange(modifier) if V::SUPPLIES_DATE => {
-                fmt_iso_year_full_standard_range(
-                    output,
-                    value
-                        .iso_year(state)
-                        .narrow::<-9_999, 9_999>()
-                        .ok_or_else(|| {
-                            crate::date_error::ComponentRange::conditional(
-                                "year",
-                            )
-                        })?
-                        .try_into()
-                        .map_err(|_| {
-                            crate::date_error::ComponentRange::conditional(
-                                "year",
-                            )
-                        })?,
-                    *modifier,
-                )
-                .map_err(Into::into)
-            }
+            Self::IsoYearFullStandardRange(modifier) if V::SUPPLIES_DATE => fmt_iso_year_full_standard_range(
+                output,
+                value
+                    .iso_year(state)
+                    .narrow::<-9_999, 9_999>()
+                    .ok_or_else(|| crate::date_error::ComponentRange::conditional("year"))?
+                    .try_into()
+                    .map_err(|_| crate::date_error::ComponentRange::conditional("year"))?,
+                *modifier,
+            )
+            .map_err(Into::into),
             Self::CalendarYearCenturyExtendedRange(modifier) if V::SUPPLIES_DATE => {
                 let year = value.calendar_year(state);
-                let century =
-                    deranged::RangedI16::<-9_999, 9_999>::new((year.get() / 100) as i16)
-                        .ok_or_else(|| {
-                            crate::date_error::ComponentRange::conditional(
-                                "century",
-                            )
-                        })?;
-                fmt_calendar_year_century_extended_range(
-                    output,
-                    century,
-                    year.is_negative(),
-                    *modifier,
-                )
-                .map_err(Into::into)
+                let century = deranged::RangedI16::<-9_999, 9_999>::new((year.get() / 100) as i16)
+                    .ok_or_else(|| crate::date_error::ComponentRange::conditional("century"))?;
+                fmt_calendar_year_century_extended_range(output, century, year.is_negative(), *modifier)
+                    .map_err(Into::into)
             }
             Self::CalendarYearCenturyStandardRange(modifier) if V::SUPPLIES_DATE => {
                 let year = value.calendar_year(state);
                 let is_negative = year.is_negative();
-                let year =
-                    deranged::RangedI16::<-9_999, 9_999>::new((year.get() / 100) as i16)
-                        .ok_or_else(|| {
-                            crate::date_error::ComponentRange::conditional(
-                                "century",
-                            )
-                        })?;
+                let year = deranged::RangedI16::<-9_999, 9_999>::new((year.get() / 100) as i16)
+                    .ok_or_else(|| crate::date_error::ComponentRange::conditional("century"))?;
                 fmt_calendar_year_century_standard_range(
                     output,
                     year.narrow::<-99, 99>()
-                        .ok_or_else(|| {
-                            crate::date_error::ComponentRange::conditional(
-                                "century",
-                            )
-                        })?
+                        .ok_or_else(|| crate::date_error::ComponentRange::conditional("century"))?
                         .try_into()
-                        .map_err(|_| {
-                            crate::date_error::ComponentRange::conditional(
-                                "century",
-                            )
-                        })?,
+                        .map_err(|_| crate::date_error::ComponentRange::conditional("century"))?,
                     is_negative,
                     *modifier,
                 )
@@ -758,45 +677,22 @@ impl crate::date_formattable::Sealed for FormatDescriptionInner<'_> {
             Self::IsoYearCenturyExtendedRange(modifier) if V::SUPPLIES_DATE => {
                 let year = value.iso_year(state);
                 let is_negative = year.is_negative();
-                let century =
-                    deranged::RangedI16::<-9_999, 9_999>::new((year.get() / 100) as i16)
-                        .ok_or_else(|| {
-                            crate::date_error::ComponentRange::conditional(
-                                "century",
-                            )
-                        })?;
-                fmt_iso_year_century_extended_range(
-                    output,
-                    century,
-                    is_negative,
-                    *modifier,
-                )
-                .map_err(Into::into)
+                let century = deranged::RangedI16::<-9_999, 9_999>::new((year.get() / 100) as i16)
+                    .ok_or_else(|| crate::date_error::ComponentRange::conditional("century"))?;
+                fmt_iso_year_century_extended_range(output, century, is_negative, *modifier)
+                    .map_err(Into::into)
             }
             Self::IsoYearCenturyStandardRange(modifier) if V::SUPPLIES_DATE => {
                 let year = value.iso_year(state);
                 let is_negative = year.is_negative();
-                let year =
-                    deranged::RangedI16::<-9_999, 9_999>::new((year.get() / 100) as i16)
-                        .ok_or_else(|| {
-                            crate::date_error::ComponentRange::conditional(
-                                "century",
-                            )
-                        })?;
+                let year = deranged::RangedI16::<-9_999, 9_999>::new((year.get() / 100) as i16)
+                    .ok_or_else(|| crate::date_error::ComponentRange::conditional("century"))?;
                 fmt_iso_year_century_standard_range(
                     output,
                     year.narrow::<-99, 99>()
-                        .ok_or_else(|| {
-                            crate::date_error::ComponentRange::conditional(
-                                "century",
-                            )
-                        })?
+                        .ok_or_else(|| crate::date_error::ComponentRange::conditional("century"))?
                         .try_into()
-                        .map_err(|_| {
-                            crate::date_error::ComponentRange::conditional(
-                                "century",
-                            )
-                        })?,
+                        .map_err(|_| crate::date_error::ComponentRange::conditional("century"))?,
                     is_negative,
                     *modifier,
                 )
@@ -804,25 +700,14 @@ impl crate::date_formattable::Sealed for FormatDescriptionInner<'_> {
             }
             Self::CalendarYearLastTwo(modifier) if V::SUPPLIES_DATE => {
                 let year = value.calendar_year(state);
-                let last_two =
-                    deranged::RangedU8::new((year.get() % 100).unsigned_abs() as u8)
-                        .ok_or_else(|| {
-                            crate::date_error::ComponentRange::conditional(
-                                "year",
-                            )
-                        })?;
-                fmt_calendar_year_last_two(output, last_two, *modifier)
-                    .map_err(Into::into)
+                let last_two = deranged::RangedU8::new((year.get() % 100).unsigned_abs() as u8)
+                    .ok_or_else(|| crate::date_error::ComponentRange::conditional("year"))?;
+                fmt_calendar_year_last_two(output, last_two, *modifier).map_err(Into::into)
             }
             Self::IsoYearLastTwo(modifier) if V::SUPPLIES_DATE => {
                 let year = value.iso_year(state);
-                let last_two =
-                    deranged::RangedU8::new((year.get() % 100).unsigned_abs() as u8)
-                        .ok_or_else(|| {
-                            crate::date_error::ComponentRange::conditional(
-                                "year",
-                            )
-                        })?;
+                let last_two = deranged::RangedU8::new((year.get() % 100).unsigned_abs() as u8)
+                    .ok_or_else(|| crate::date_error::ComponentRange::conditional("year"))?;
                 fmt_iso_year_last_two(output, last_two, *modifier).map_err(Into::into)
             }
             Self::Hour12(modifier) if V::SUPPLIES_TIME => {
@@ -841,8 +726,7 @@ impl crate::date_formattable::Sealed for FormatDescriptionInner<'_> {
                 fmt_second(output, value.second(state), *modifier).map_err(Into::into)
             }
             Self::Subsecond(modifier) if V::SUPPLIES_TIME => {
-                fmt_subsecond(output, value.subsecond(state), *modifier)
-                    .map_err(Into::into)
+                fmt_subsecond(output, value.subsecond(state), *modifier).map_err(Into::into)
             }
             Self::OffsetHour(modifier) if V::SUPPLIES_OFFSET => fmt_offset_hour(
                 output,
@@ -852,45 +736,27 @@ impl crate::date_formattable::Sealed for FormatDescriptionInner<'_> {
             )
             .map_err(Into::into),
             Self::OffsetMinute(modifier) if V::SUPPLIES_OFFSET => {
-                fmt_offset_minute(output, value.offset_minute(state), *modifier)
-                    .map_err(Into::into)
+                fmt_offset_minute(output, value.offset_minute(state), *modifier).map_err(Into::into)
             }
             Self::OffsetSecond(modifier) if V::SUPPLIES_OFFSET => {
-                fmt_offset_second(output, value.offset_second(state), *modifier)
-                    .map_err(Into::into)
+                fmt_offset_second(output, value.offset_second(state), *modifier).map_err(Into::into)
             }
             Self::Ignore(_) => Ok(0),
             Self::UnixTimestampSecond(modifier) if V::SUPPLIES_TIMESTAMP => {
-                fmt_unix_timestamp_second(
-                    output,
-                    value.unix_timestamp_seconds(state),
-                    *modifier,
-                )
-                .map_err(Into::into)
+                fmt_unix_timestamp_second(output, value.unix_timestamp_seconds(state), *modifier)
+                    .map_err(Into::into)
             }
             Self::UnixTimestampMillisecond(modifier) if V::SUPPLIES_TIMESTAMP => {
-                fmt_unix_timestamp_millisecond(
-                    output,
-                    value.unix_timestamp_milliseconds(state),
-                    *modifier,
-                )
-                .map_err(Into::into)
+                fmt_unix_timestamp_millisecond(output, value.unix_timestamp_milliseconds(state), *modifier)
+                    .map_err(Into::into)
             }
             Self::UnixTimestampMicrosecond(modifier) if V::SUPPLIES_TIMESTAMP => {
-                fmt_unix_timestamp_microsecond(
-                    output,
-                    value.unix_timestamp_microseconds(state),
-                    *modifier,
-                )
-                .map_err(Into::into)
+                fmt_unix_timestamp_microsecond(output, value.unix_timestamp_microseconds(state), *modifier)
+                    .map_err(Into::into)
             }
             Self::UnixTimestampNanosecond(modifier) if V::SUPPLIES_TIMESTAMP => {
-                fmt_unix_timestamp_nanosecond(
-                    output,
-                    value.unix_timestamp_nanoseconds(state),
-                    *modifier,
-                )
-                .map_err(Into::into)
+                fmt_unix_timestamp_nanosecond(output, value.unix_timestamp_nanoseconds(state), *modifier)
+                    .map_err(Into::into)
             }
             Self::End(_) => Ok(0),
             _ => Ok(0),
@@ -909,9 +775,7 @@ impl crate::date_metadata::ComputeMetadata for FormatDescriptionInner<'_> {
             Self::WeekdayShort(_) => 3,
             Self::WeekdayLong(_) => 9,
             Self::WeekdaySunday(_) | Self::WeekdayMonday(_) => 1,
-            Self::WeekNumberIso(_)
-            | Self::WeekNumberSunday(_)
-            | Self::WeekNumberMonday(_) => 2,
+            Self::WeekNumberIso(_) | Self::WeekNumberSunday(_) | Self::WeekNumberMonday(_) => 2,
             Self::CalendarYearFullExtendedRange(_) => 7,
             Self::CalendarYearFullStandardRange(_) => 5,
             Self::IsoYearFullExtendedRange(_) => 7,

@@ -16,15 +16,13 @@
 use crate::date::Date;
 use crate::date_format_description_modifier::DayPeriod;
 use crate::date_formatting::fmt_types::{
-    Day, IsoWeekNumber, MondayBasedWeek, OptionDay, OptionIsoWeekNumber, OptionYear,
-    Ordinal, SundayBasedWeek, Year,
+    Day, IsoWeekNumber, MondayBasedWeek, OptionDay, OptionIsoWeekNumber, OptionYear, Ordinal,
+    SundayBasedWeek, Year,
 };
 use crate::date_month::Month;
 use crate::date_offset_time::OffsetDateTime;
 use crate::date_plain::PlainDateTime;
-use crate::date_time::{
-    Hours, Minutes, Nanoseconds, Seconds, Subseconds, Time,
-};
+use crate::date_time::{Hours, Minutes, Nanoseconds, Seconds, Subseconds, Time};
 use crate::date_timestamp::Timestamp;
 use crate::date_utc_offset::{
     Hours as OffsetHours, Minutes as OffsetMinutes, Seconds as OffsetSeconds, UtcOffset,
@@ -281,8 +279,7 @@ impl ComponentProvider for Date {
         let iso_year = unsafe { Year::new_unchecked(iso_year) };
         state.iso_year = OptionYear::Some(iso_year);
         // Safety: `iso_week` is guaranteed to be non-zero.
-        state.iso_week =
-            OptionIsoWeekNumber::Some(unsafe { IsoWeekNumber::new_unchecked(iso_week) });
+        state.iso_week = OptionIsoWeekNumber::Some(unsafe { IsoWeekNumber::new_unchecked(iso_week) });
         iso_year
     }
 }
@@ -403,8 +400,7 @@ impl ComponentProvider for UtcDateTime {
 
     #[inline]
     fn unix_timestamp_milliseconds(&self, state: &mut Self::State) -> i64 {
-        (ComponentProvider::unix_timestamp_nanoseconds(self, state) / 1_000_000)
-            .truncate()
+        (ComponentProvider::unix_timestamp_nanoseconds(self, state) / 1_000_000).truncate()
     }
 
     #[inline]

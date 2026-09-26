@@ -16,6 +16,7 @@
 //! The [`Timestamp`] struct and associated `impl`s.
 
 use alloc::string::String;
+use codevar_base::basic_time::TimeVal;
 use core::cmp::Ordering;
 use core::fmt;
 use core::hash::{Hash, Hasher};
@@ -23,29 +24,23 @@ use core::mem::MaybeUninit;
 use core::ops::{Add, AddAssign, Sub, SubAssign};
 use core::time::Duration as StdDuration;
 use deranged::{ri64, ri128, ru8, ru32};
-use codevar_base::basic_time::SystemTime;
 
 use crate::date::Date;
 use crate::date_error::ComponentRange;
 use crate::date_internal_macro::{const_try, div_floor, ensure_ranged};
 use crate::date_month::Month;
-use crate::date_num_fmt::{
-    str_from_raw_parts, truncated_subsecond_from_nanos, u64_pad_none,
-};
+use crate::date_num_fmt::{str_from_raw_parts, truncated_subsecond_from_nanos, u64_pad_none};
 use crate::date_offset_time::OffsetDateTime;
 use crate::date_signed_duration::SignedDuration;
 use crate::date_time::Time;
-use crate::date_unit::{
-    Day, Hour, Microsecond, Millisecond, Minute, Nanosecond, Second,
-};
+use crate::date_unit::{Day, Hour, Microsecond, Millisecond, Minute, Nanosecond, Second};
 use crate::date_utc_offset::UtcOffset;
 use crate::date_utc_time::UtcDateTime;
 use crate::date_util::{Overflow, leap_ordinal_to_month_day};
 use crate::date_weekday::Weekday;
 
 /// The range of valid seconds for a [`Timestamp`].
-pub(crate) type Seconds =
-    ri64<{ UtcDateTime::MIN.unix_timestamp() }, { UtcDateTime::MAX.unix_timestamp() }>;
+pub(crate) type Seconds = ri64<{ UtcDateTime::MIN.unix_timestamp() }, { UtcDateTime::MAX.unix_timestamp() }>;
 type Nanoseconds = ru32<0, 999_999_999>;
 
 // Validate that the minimum time is midnight and the maximum is one nanosecond before midnight.
@@ -117,11 +112,8 @@ impl Ord for Timestamp {
 impl From<TimeVal> for Timestamp {
     #[inline]
     fn from(value: TimeVal) -> Self {
-        let nanos = i128::from(value.secs) * 1_000_000_000_i128
-            + i128::from(value.nsecs);
-        Self::from_nanoseconds(nanos).unwrap_or_else(|_| {
-            if nanos < 0 { Self::MIN } else { Self::MAX }
-        })
+        let nanos = i128::from(value.secs) * 1_000_000_000_i128 + i128::from(value.nsecs);
+        Self::from_nanoseconds(nanos).unwrap_or_else(|_| if nanos < 0 { Self::MIN } else { Self::MAX })
     }
 }
 
@@ -132,8 +124,7 @@ impl Timestamp {
     }
 
     /// A `Timestamp` representing the Unix epoch (1970-01-01 00:00:00 UTC).
-    pub const UNIX_EPOCH: Self =
-        Self::new_ranged(Seconds::new_static::<0>(), Nanoseconds::new_static::<0>());
+    pub const UNIX_EPOCH: Self = Self::new_ranged(Seconds::new_static::<0>(), Nanoseconds::new_static::<0>());
 
     /// The minimum valid `Timestamp`.
     ///
@@ -252,10 +243,10 @@ impl Timestamp {
     /// the resulting value is out of range.
     #[inline]
     pub const fn from_nanoseconds(nanoseconds: i128) -> Result<Self, ComponentRange> {
-        const MAX: i128 = Seconds::MAX.get() as i128 * Nanosecond::per_t::<i128>(Second)
-            + Nanoseconds::MAX.get() as i128;
-        const MIN: i128 = Seconds::MIN.get() as i128 * Nanosecond::per_t::<i128>(Second)
-            + Nanoseconds::MIN.get() as i128;
+        const MAX: i128 =
+            Seconds::MAX.get() as i128 * Nanosecond::per_t::<i128>(Second) + Nanoseconds::MAX.get() as i128;
+        const MIN: i128 =
+            Seconds::MIN.get() as i128 * Nanosecond::per_t::<i128>(Second) + Nanoseconds::MIN.get() as i128;
 
         ensure_ranged!(ri128<MIN, MAX>: nanoseconds);
 
@@ -344,8 +335,7 @@ impl Timestamp {
     /// Negative values represent moments before the Unix epoch.
     #[inline]
     pub const fn as_nanoseconds(self) -> i128 {
-        self.seconds.get() as i128 * Nanosecond::per_t::<i128>(Second)
-            + self.nanoseconds.get() as i128
+        self.seconds.get() as i128 * Nanosecond::per_t::<i128>(Second) + self.nanoseconds.get() as i128
     }
 
     /// Get the [`Date`] of the timestamp in UTC.
@@ -360,24 +350,16 @@ impl Timestamp {
     /// Get the [`Time`] of the timestamp in UTC.
     #[inline]
     pub const fn time(self) -> Time {
-        let within_day = self.as_seconds().rem_euclid(Second::per_t::<i64>(Day)) as u32;
+        let within_day = self
+            .as_seconds()
+            .rem_euclid(Second::per_t::<i64>(Day)) as u32;
 
         let hour = within_day / Second::per_t::<u32>(Hour);
-        let minute = (within_day - hour * Second::per_t::<u32>(Hour))
-            / Second::per_t::<u32>(Minute);
-        let second = within_day
-            - hour * Second::per_t::<u32>(Hour)
-            - minute * Second::per_t::<u32>(Minute);
+        let minute = (within_day - hour * Second::per_t::<u32>(Hour)) / Second::per_t::<u32>(Minute);
+        let second = within_day - hour * Second::per_t::<u32>(Hour) - minute * Second::per_t::<u32>(Minute);
 
         // Safety: All values are guaranteed to be in range.
-        unsafe {
-            Time::from_hms_nanos_unchecked(
-                hour as u8,
-                minute as u8,
-                second as u8,
-                self.nanosecond(),
-            )
-        }
+        unsafe { Time::from_hms_nanos_unchecked(hour as u8, minute as u8, second as u8, self.nanosecond()) }
     }
 
     /// Compute the year, leap year status, and ordinal day of the timestamp in UTC.
@@ -549,14 +531,15 @@ impl Timestamp {
     /// Get the minute of the timestamp in UTC.
     #[inline]
     pub const fn minute(self) -> u8 {
-        (div_floor!(self.seconds.get(), Second::per_t::<i64>(Minute)))
-            .rem_euclid(Minute::per_t(Hour)) as u8
+        (div_floor!(self.seconds.get(), Second::per_t::<i64>(Minute))).rem_euclid(Minute::per_t(Hour)) as u8
     }
 
     /// Get the second of the timestamp in UTC.
     #[inline]
     pub const fn second(self) -> u8 {
-        self.seconds.get().rem_euclid(Second::per_t(Minute)) as u8
+        self.seconds
+            .get()
+            .rem_euclid(Second::per_t(Minute)) as u8
     }
 
     /// Get the millisecond of the timestamp in UTC.
@@ -598,7 +581,11 @@ impl Timestamp {
             }
         };
 
-        let seconds = match self.seconds.get().checked_add(duration.whole_seconds()) {
+        let seconds = match self
+            .seconds
+            .get()
+            .checked_add(duration.whole_seconds())
+        {
             Some(seconds) => seconds,
             None if duration.is_negative() => return Err(Overflow::Negative),
             None => return Err(Overflow::Positive),
@@ -641,7 +628,11 @@ impl Timestamp {
             }
         };
 
-        let seconds = match self.seconds.get().checked_sub(duration.whole_seconds()) {
+        let seconds = match self
+            .seconds
+            .get()
+            .checked_sub(duration.whole_seconds())
+        {
             Some(seconds) => seconds,
             None if duration.is_negative() => return Err(Overflow::Positive),
             None => return Err(Overflow::Negative),
@@ -667,8 +658,10 @@ impl Timestamp {
     /// `Overflow::Negative` if the result is out of range.
     #[inline]
     const fn add_std(self, duration: StdDuration) -> Result<Self, Overflow> {
-        let Some(mut seconds) =
-            self.seconds.get().checked_add_unsigned(duration.as_secs())
+        let Some(mut seconds) = self
+            .seconds
+            .get()
+            .checked_add_unsigned(duration.as_secs())
         else {
             return Err(Overflow::Positive);
         };
@@ -697,13 +690,14 @@ impl Timestamp {
     /// `Overflow::Negative` if the result is out of range.
     #[inline]
     const fn sub_std(self, duration: StdDuration) -> Result<Self, Overflow> {
-        let Some(mut seconds) =
-            self.seconds.get().checked_sub_unsigned(duration.as_secs())
+        let Some(mut seconds) = self
+            .seconds
+            .get()
+            .checked_sub_unsigned(duration.as_secs())
         else {
             return Err(Overflow::Negative);
         };
-        let mut nanoseconds =
-            self.nanoseconds.get() as i32 - duration.subsec_nanos() as i32;
+        let mut nanoseconds = self.nanoseconds.get() as i32 - duration.subsec_nanos() as i32;
 
         if nanoseconds < 0 {
             nanoseconds += Nanosecond::per_t::<i32>(Second);
@@ -796,8 +790,7 @@ impl Timestamp {
         let seconds_since_midnight = time.hour() as i64 * Second::per_t::<i64>(Hour)
             + time.minute() as i64 * Second::per_t::<i64>(Minute)
             + time.second() as i64;
-        let seconds = div_floor!(self.seconds.get(), Second::per_t::<i64>(Day))
-            * Second::per_t::<i64>(Day)
+        let seconds = div_floor!(self.seconds.get(), Second::per_t::<i64>(Day)) * Second::per_t::<i64>(Day)
             + seconds_since_midnight;
         // Safety: Seconds is constructed from an existing valid value, and nanoseconds are always
         // in range given the origin. Any time of day is valid for any date in range, as enforced by
@@ -810,8 +803,7 @@ impl Timestamp {
     #[must_use = "This method does not mutate the original `Timestamp`."]
     pub const fn replace_date(mut self, date: Date) -> Self {
         let seconds_after_midnight = self.seconds.get().rem_euclid(Second::per_t(Day));
-        let seconds = (date.to_julian_day() as i64
-            - UtcDateTime::UNIX_EPOCH.to_julian_day() as i64)
+        let seconds = (date.to_julian_day() as i64 - UtcDateTime::UNIX_EPOCH.to_julian_day() as i64)
             * Second::per_t::<i64>(Day)
             + seconds_after_midnight;
         // Safety: The range of valid dates is identical to the range of valid timestamps, so any
@@ -854,8 +846,7 @@ impl Timestamp {
     #[inline]
     pub const fn replace_hour(mut self, hour: u8) -> Result<Self, ComponentRange> {
         ensure_ranged!(ru8<0, 23>: hour);
-        let seconds = div_floor!(self.seconds.get(), Second::per_t::<i64>(Day))
-            * Second::per_t::<i64>(Day)
+        let seconds = div_floor!(self.seconds.get(), Second::per_t::<i64>(Day)) * Second::per_t::<i64>(Day)
             + hour as i64 * Second::per_t::<i64>(Hour)
             + self.minute() as i64 * Second::per_t::<i64>(Minute)
             + self.second() as i64;
@@ -868,8 +859,7 @@ impl Timestamp {
     #[inline]
     pub const fn replace_minute(mut self, minute: u8) -> Result<Self, ComponentRange> {
         ensure_ranged!(ru8<0, 59>: minute);
-        let seconds = div_floor!(self.seconds.get(), Second::per_t::<i64>(Hour))
-            * Second::per_t::<i64>(Hour)
+        let seconds = div_floor!(self.seconds.get(), Second::per_t::<i64>(Hour)) * Second::per_t::<i64>(Hour)
             + minute as i64 * Second::per_t::<i64>(Minute)
             + self.second() as i64;
         // Safety: Any value is valid so long as `minute` is in range.
@@ -891,30 +881,21 @@ impl Timestamp {
 
     /// Replace the milliseconds within the second.
     #[inline]
-    pub const fn replace_millisecond(
-        self,
-        millisecond: u16,
-    ) -> Result<Self, ComponentRange> {
+    pub const fn replace_millisecond(self, millisecond: u16) -> Result<Self, ComponentRange> {
         let nanos = ensure_ranged!(Nanoseconds: millisecond as u32 * Nanosecond::per_t::<u32>(Millisecond));
         Ok(self.replace_nanosecond_ranged(nanos))
     }
 
     /// Replace the microseconds within the second.
     #[inline]
-    pub const fn replace_microsecond(
-        self,
-        microsecond: u32,
-    ) -> Result<Self, ComponentRange> {
+    pub const fn replace_microsecond(self, microsecond: u32) -> Result<Self, ComponentRange> {
         let nanos = ensure_ranged!(Nanoseconds: microsecond * Nanosecond::per_t::<u32>(Microsecond));
         Ok(self.replace_nanosecond_ranged(nanos))
     }
 
     /// Replace the nanoseconds within the second.
     #[inline]
-    pub const fn replace_nanosecond(
-        self,
-        nanosecond: u32,
-    ) -> Result<Self, ComponentRange> {
+    pub const fn replace_nanosecond(self, nanosecond: u32) -> Result<Self, ComponentRange> {
         let nanos = ensure_ranged!(Nanoseconds: nanosecond);
         Ok(self.replace_nanosecond_ranged(nanos))
     }
@@ -936,9 +917,7 @@ impl Timestamp {
             // Safety: Given the range of `new_nanos`, subtracting it from the maximum always
             // results in a value in range. Zero is excluded by a previous conditional.
             Self::new_ranged(seconds, unsafe {
-                Nanoseconds::new_unchecked(
-                    Nanosecond::per_t::<u32>(Second) - new_nanos.get(),
-                )
+                Nanoseconds::new_unchecked(Nanosecond::per_t::<u32>(Second) - new_nanos.get())
             })
         }
     }
@@ -950,10 +929,7 @@ impl Timestamp {
     const DISPLAY_BUFFER_SIZE: usize = 25;
 
     /// Format the `Timestamp` into the provided buffer, returning the number of bytes written.
-    pub(crate) fn fmt_into_buffer(
-        self,
-        buf: &mut [MaybeUninit<u8>; Self::DISPLAY_BUFFER_SIZE],
-    ) -> usize {
+    pub(crate) fn fmt_into_buffer(self, buf: &mut [MaybeUninit<u8>; Self::DISPLAY_BUFFER_SIZE]) -> usize {
         let mut idx = 0;
 
         let mut second = self.seconds.get();
@@ -971,9 +947,7 @@ impl Timestamp {
                 // 1_000_000_000 will always yield a value in the range 1..=999_999_999, which is a
                 // subset of the valid range for `Nanoseconds`.
                 nanosecond = unsafe {
-                    Nanoseconds::new_unchecked(
-                        Nanosecond::per_t::<u32>(Second) - nanosecond.get(),
-                    )
+                    Nanoseconds::new_unchecked(Nanosecond::per_t::<u32>(Second) - nanosecond.get())
                 };
             }
         }
@@ -994,10 +968,9 @@ impl Timestamp {
             let subsecond = truncated_subsecond_from_nanos(nanosecond);
             // Safety: `buf` has sufficient capacity for the subsecond digits.
             unsafe {
-                subsecond.as_ptr().copy_to_nonoverlapping(
-                    buf.as_mut_ptr().add(idx).cast(),
-                    subsecond.len(),
-                );
+                subsecond
+                    .as_ptr()
+                    .copy_to_nonoverlapping(buf.as_mut_ptr().add(idx).cast(), subsecond.len());
             }
             idx += subsecond.len();
         }
@@ -1121,10 +1094,7 @@ impl Sub for Timestamp {
         let nanoseconds = self.nanoseconds.get() as i32 - rhs.nanoseconds.get() as i32;
 
         if nanoseconds < 0 {
-            SignedDuration::new(
-                seconds - 1,
-                nanoseconds + Nanosecond::per_t::<i32>(Second),
-            )
+            SignedDuration::new(seconds - 1, nanoseconds + Nanosecond::per_t::<i32>(Second))
         } else {
             SignedDuration::new(seconds, nanoseconds)
         }

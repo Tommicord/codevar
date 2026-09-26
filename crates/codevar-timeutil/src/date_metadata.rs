@@ -14,13 +14,9 @@
 //! permissions and limitations under the License.
 
 use crate::date_adt_hack::EncodedConfig;
-use crate::date_format_description::{
-    Component, FormatDescription, FormatDescriptionInner,
-};
+use crate::date_format_description::{Component, FormatDescription, FormatDescriptionInner};
 use crate::date_format_description_modifier::SubsecondDigits;
-use crate::date_well_know_iso8601::{
-    DateKind, Iso8601, OffsetPrecision, TimePrecision,
-};
+use crate::date_well_know_iso8601::{DateKind, Iso8601, OffsetPrecision, TimePrecision};
 use crate::date_well_know_rfc2822::Rfc2822;
 use crate::date_well_know_rfc3339::Rfc3339;
 use core::iter::Sum;
@@ -197,9 +193,7 @@ impl ComputeMetadata for Component {
             Self::WeekdayShort(_) => 3,
             Self::WeekdayLong(_) => 9,
             Self::WeekdaySunday(_) | Self::WeekdayMonday(_) => 1,
-            Self::WeekNumberIso(_)
-            | Self::WeekNumberSunday(_)
-            | Self::WeekNumberMonday(_) => 2,
+            Self::WeekNumberIso(_) | Self::WeekNumberSunday(_) | Self::WeekNumberMonday(_) => 2,
             Self::CalendarYearFullExtendedRange(_) => 7,
             Self::CalendarYearFullStandardRange(_) => 5,
             Self::IsoYearFullExtendedRange(_) => 7,
@@ -246,7 +240,9 @@ where
 {
     #[inline]
     fn compute_metadata(&self) -> Metadata {
-        self.iter().map(|item| item.compute_metadata()).sum()
+        self.iter()
+            .map(|item| item.compute_metadata())
+            .sum()
     }
 }
 

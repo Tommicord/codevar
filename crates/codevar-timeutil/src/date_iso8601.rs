@@ -14,7 +14,6 @@
 //! permissions and limitations under the License.
 
 use core::cmp::min;
-use core::io;
 
 use crate::date_adt_hack::EncodedConfig;
 use crate::date_component_provider::ComponentProvider;
@@ -22,13 +21,10 @@ use crate::date_error::Error;
 use crate::date_format_description_modifier::Padding;
 use crate::date_formatting::{
     format_float, format_four_digits_pad_zero, format_int_padded, format_single_digit,
-    format_six_digits_pad_zero, format_three_digits, format_two_digits, write, write_if,
-    write_if_else,
+    format_six_digits_pad_zero, format_three_digits, format_two_digits, write, write_if, write_if_else,
 };
 use crate::date_unit::{Hour, Minute, Nanosecond, Second};
-use crate::date_well_know_iso8601::{
-    DateKind, Iso8601, OffsetPrecision, TimePrecision,
-};
+use crate::date_well_know_iso8601::{DateKind, Iso8601, OffsetPrecision, TimePrecision};
 use deranged::{ru8, ru16, ru32};
 use num_conv::prelude::*;
 
@@ -51,12 +47,11 @@ where
                 bytes += write_if_else(output, year < 0, "-", "+")?;
                 // Safety: `calendar_year` returns a value whose absolute value is guaranteed to be
                 // less than 1,000,000.
-                bytes += format_six_digits_pad_zero(output, unsafe {
-                    ru32::new_unchecked(year.unsigned_abs())
-                })?;
+                bytes +=
+                    format_six_digits_pad_zero(output, unsafe { ru32::new_unchecked(year.unsigned_abs()) })?;
             } else {
-                let year = ru16::new(year.cast_unsigned().truncate())
-                    .ok_or(Error::InvalidComponent("year"))?;
+                let year =
+                    ru16::new(year.cast_unsigned().truncate()).ok_or(Error::InvalidComponent("year"))?;
                 bytes += format_four_digits_pad_zero(output, year)?;
             }
             bytes += write_if(output, Iso8601::<CONFIG>::USE_SEPARATORS, "-")?;
@@ -76,20 +71,15 @@ where
                 bytes += write_if_else(output, year < 0, "-", "+")?;
                 // Safety: `iso_year` returns a value whose absolute value is guaranteed to be less
                 // than 1,000,000.
-                bytes += format_six_digits_pad_zero(output, unsafe {
-                    ru32::new_unchecked(year.unsigned_abs())
-                })?;
+                bytes +=
+                    format_six_digits_pad_zero(output, unsafe { ru32::new_unchecked(year.unsigned_abs()) })?;
             } else {
-                let year = ru16::new(year.cast_unsigned().truncate())
-                    .ok_or(Error::InvalidComponent("year"))?;
+                let year =
+                    ru16::new(year.cast_unsigned().truncate()).ok_or(Error::InvalidComponent("year"))?;
                 bytes += format_four_digits_pad_zero(output, year)?;
             }
             bytes += write_if_else(output, Iso8601::<CONFIG>::USE_SEPARATORS, "-W", "W")?;
-            bytes += format_two_digits(
-                output,
-                value.iso_week_number(state).expand(),
-                Padding::Zero,
-            )?;
+            bytes += format_two_digits(output, value.iso_week_number(state).expand(), Padding::Zero)?;
             bytes += write_if(output, Iso8601::<CONFIG>::USE_SEPARATORS, "-")?;
             // Safety: The value is in the range `1..=7`.
             bytes += format_single_digit(output, unsafe {
@@ -103,20 +93,15 @@ where
                 bytes += write_if_else(output, year < 0, "-", "+")?;
                 // Safety: `calendar_year` returns a value whose absolute value is guaranteed to be
                 // less than 1,000,000.
-                bytes += format_six_digits_pad_zero(output, unsafe {
-                    ru32::new_unchecked(year.unsigned_abs())
-                })?;
+                bytes +=
+                    format_six_digits_pad_zero(output, unsafe { ru32::new_unchecked(year.unsigned_abs()) })?;
             } else {
-                let year = ru16::new(year.cast_unsigned().truncate())
-                    .ok_or(Error::InvalidComponent("year"))?;
+                let year =
+                    ru16::new(year.cast_unsigned().truncate()).ok_or(Error::InvalidComponent("year"))?;
                 bytes += format_four_digits_pad_zero(output, year)?;
             }
             bytes += write_if(output, Iso8601::<CONFIG>::USE_SEPARATORS, "-")?;
-            bytes += format_three_digits(
-                output,
-                value.ordinal(state).expand(),
-                Padding::Zero,
-            )?;
+            bytes += format_three_digits(output, value.ordinal(state).expand(), Padding::Zero)?;
         }
     }
 
@@ -159,8 +144,7 @@ where
             bytes += write_if(output, Iso8601::<CONFIG>::USE_SEPARATORS, ":")?;
             let minutes = (value.minute(state).get() as f64)
                 + (value.second(state).get() as f64) / Second::per_t::<f64>(Minute)
-                + (value.nanosecond(state).get() as f64)
-                    / Nanosecond::per_t::<f64>(Minute);
+                + (value.nanosecond(state).get() as f64) / Nanosecond::per_t::<f64>(Minute);
             bytes += format_float(output, minutes, 2, decimal_digits)?;
         }
         TimePrecision::Second { decimal_digits } => {
@@ -234,8 +218,7 @@ where
         Padding::Zero,
     )?;
     let minutes = value.offset_minute(state);
-    if Iso8601::<CONFIG>::OFFSET_PRECISION == OffsetPrecision::Hour && minutes.get() != 0
-    {
+    if Iso8601::<CONFIG>::OFFSET_PRECISION == OffsetPrecision::Hour && minutes.get() != 0 {
         return Err(Error::InvalidComponent("offset_minute"));
     } else if Iso8601::<CONFIG>::OFFSET_PRECISION == OffsetPrecision::Minute {
         bytes += write_if(output, Iso8601::<CONFIG>::USE_SEPARATORS, ":")?;

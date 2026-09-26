@@ -475,10 +475,7 @@ impl PlainDateTime {
 
     /// Replace the milliseconds within the second.
     #[inline]
-    pub const fn replace_millisecond(
-        self,
-        millisecond: u16,
-    ) -> Result<Self, ComponentRange> {
+    pub const fn replace_millisecond(self, millisecond: u16) -> Result<Self, ComponentRange> {
         Ok(Self {
             date: self.date,
             time: const_try!(self.time.replace_millisecond(millisecond)),
@@ -493,10 +490,7 @@ impl PlainDateTime {
 
     /// Replace the microseconds within the second.
     #[inline]
-    pub const fn replace_microsecond(
-        self,
-        microsecond: u32,
-    ) -> Result<Self, ComponentRange> {
+    pub const fn replace_microsecond(self, microsecond: u32) -> Result<Self, ComponentRange> {
         Ok(Self {
             date: self.date,
             time: const_try!(self.time.replace_microsecond(microsecond)),
@@ -511,10 +505,7 @@ impl PlainDateTime {
 
     /// Replace the nanoseconds within the second.
     #[inline]
-    pub const fn replace_nanosecond(
-        self,
-        nanosecond: u32,
-    ) -> Result<Self, ComponentRange> {
+    pub const fn replace_nanosecond(self, nanosecond: u32) -> Result<Self, ComponentRange> {
         Ok(Self {
             date: self.date,
             time: const_try!(self.time.replace_nanosecond(nanosecond)),
@@ -543,15 +534,11 @@ impl SmartDisplay for PlainDateTime {
 impl PlainDateTime {
     /// The maximum number of bytes that the `fmt_into_buffer` method will write, which is also used
     /// for the `Display` implementation.
-    pub(crate) const DISPLAY_BUFFER_SIZE: usize =
-        Date::DISPLAY_BUFFER_SIZE + Time::DISPLAY_BUFFER_SIZE + 1;
+    pub(crate) const DISPLAY_BUFFER_SIZE: usize = Date::DISPLAY_BUFFER_SIZE + Time::DISPLAY_BUFFER_SIZE + 1;
 
     /// Format the `PlainDateTime` into the provided buffer, returning the number of bytes written.
     #[inline]
-    pub(crate) fn fmt_into_buffer(
-        self,
-        buf: &mut [MaybeUninit<u8>; Self::DISPLAY_BUFFER_SIZE],
-    ) -> usize {
+    pub(crate) fn fmt_into_buffer(self, buf: &mut [MaybeUninit<u8>; Self::DISPLAY_BUFFER_SIZE]) -> usize {
         // Safety: The buffer is large enough that the first chunk is in bounds.
         let date_len = self
             .date
@@ -559,7 +546,9 @@ impl PlainDateTime {
         buf[date_len].write(b' ');
         // Safety: The buffer is large enough that the first chunk is in bounds.
         let time_len = self.time.fmt_into_buffer(unsafe {
-            buf[date_len + 1..].first_chunk_mut().unwrap_unchecked()
+            buf[date_len + 1..]
+                .first_chunk_mut()
+                .unwrap_unchecked()
         });
         date_len + time_len + 1
     }
@@ -602,7 +591,9 @@ impl Add<StdDuration> for PlainDateTime {
 
         Self {
             date: if is_next_day {
-                (self.date + duration).next_day().unwrap_or(Date::MAX)
+                (self.date + duration)
+                    .next_day()
+                    .unwrap_or(Date::MAX)
             } else {
                 self.date + duration
             },
@@ -650,7 +641,9 @@ impl Sub<StdDuration> for PlainDateTime {
 
         Self {
             date: if is_previous_day {
-                (self.date - duration).previous_day().unwrap_or(Date::MIN)
+                (self.date - duration)
+                    .previous_day()
+                    .unwrap_or(Date::MIN)
             } else {
                 self.date - duration
             },

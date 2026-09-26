@@ -14,34 +14,29 @@
 //! permissions and limitations under the License.
 
 use crate::date_format_description_modifier::{
-    CalendarYearCenturyExtendedRange, CalendarYearCenturyStandardRange,
-    CalendarYearFullExtendedRange, CalendarYearFullStandardRange, CalendarYearLastTwo,
-    Day, DayPeriod, Hour12, Hour24, IsoYearCenturyExtendedRange,
-    IsoYearCenturyStandardRange, IsoYearFullExtendedRange, IsoYearFullStandardRange,
-    IsoYearLastTwo, Minute, MonthLong, MonthNumerical, MonthShort, OffsetHour,
-    OffsetMinute, OffsetSecond, Ordinal, Padding, Period, Second, Subsecond,
-    SubsecondDigits, UnixTimestampMicrosecond, UnixTimestampMillisecond,
-    UnixTimestampNanosecond, UnixTimestampSecond, WeekNumberIso, WeekNumberMonday,
-    WeekNumberSunday, WeekdayLong, WeekdayMonday, WeekdayShort, WeekdaySunday,
+    CalendarYearCenturyExtendedRange, CalendarYearCenturyStandardRange, CalendarYearFullExtendedRange,
+    CalendarYearFullStandardRange, CalendarYearLastTwo, Day, DayPeriod, Hour12, Hour24,
+    IsoYearCenturyExtendedRange, IsoYearCenturyStandardRange, IsoYearFullExtendedRange,
+    IsoYearFullStandardRange, IsoYearLastTwo, Minute, MonthLong, MonthNumerical, MonthShort, OffsetHour,
+    OffsetMinute, OffsetSecond, Ordinal, Padding, Period, Second, Subsecond, SubsecondDigits,
+    UnixTimestampMicrosecond, UnixTimestampMillisecond, UnixTimestampNanosecond, UnixTimestampSecond,
+    WeekNumberIso, WeekNumberMonday, WeekNumberSunday, WeekdayLong, WeekdayMonday, WeekdayShort,
+    WeekdaySunday,
 };
 use crate::date_month::Month;
 use crate::date_num_fmt::{
     StackStr, five_digits_zero_padded, four_digits_space_padded, four_digits_zero_padded,
-    one_to_four_digits_no_padding, one_to_three_digits_no_padding,
-    one_to_two_digits_no_padding, single_digit, six_digits_zero_padded,
-    subsecond_from_nanos, three_digits_space_padded, three_digits_zero_padded,
-    two_digits_space_padded, two_digits_zero_padded, u64_pad_none, u128_pad_none,
+    one_to_four_digits_no_padding, one_to_three_digits_no_padding, one_to_two_digits_no_padding,
+    single_digit, six_digits_zero_padded, subsecond_from_nanos, three_digits_space_padded,
+    three_digits_zero_padded, two_digits_space_padded, two_digits_zero_padded, u64_pad_none, u128_pad_none,
 };
 use crate::date_time::{Hours, Minutes, Nanoseconds, Seconds};
-use crate::date_utc_offset::{
-    Hours as OffsetHours, Minutes as OffsetMinutes, Seconds as OffsetSeconds,
-};
+use crate::date_utc_offset::{Hours as OffsetHours, Minutes as OffsetMinutes, Seconds as OffsetSeconds};
 use crate::date_weekday::Weekday;
-use deranged::{ru8, ru16, ru32};
-use num_conv::{Truncate, Widen};
-use core::io;
 use core::mem::MaybeUninit;
 use core::num::NonZero;
+use deranged::{ru8, ru16, ru32};
+use num_conv::Widen;
 
 pub(crate) mod fmt_types {
 
@@ -91,7 +86,7 @@ pub const WEEKDAY_NAMES: [&str; 7] = [
 pub(crate) fn write_bytes(
     output: &mut (impl core::fmt::Write + ?Sized),
     bytes: &[u8],
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     // Safety: We assume bytes are valid ASCII/UTF-8
     output.write_str(core::str::from_utf8(bytes).map_err(|_| core::fmt::Error)?)?;
     Ok(bytes.len())
@@ -102,7 +97,7 @@ pub(crate) fn write_bytes(
 pub(crate) fn write(
     output: &mut (impl core::fmt::Write + ?Sized),
     s: &str,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     output.write_str(s)?;
     Ok(s.len())
 }
@@ -112,7 +107,7 @@ pub(crate) fn write(
 pub(crate) fn write_many<const N: usize>(
     output: &mut (impl core::fmt::Write + ?Sized),
     arr: [&str; N],
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     let mut bytes = 0;
     for s in arr {
         output.write_str(s)?;
@@ -127,7 +122,7 @@ pub(crate) fn write_if(
     output: &mut (impl core::fmt::Write + ?Sized),
     pred: bool,
     s: &str,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     if pred { write(output, s) } else { Ok(0) }
 }
 
@@ -138,7 +133,7 @@ pub(crate) fn write_if_else(
     pred: bool,
     true_str: &str,
     false_str: &str,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     write(output, if pred { true_str } else { false_str })
 }
 
@@ -171,13 +166,13 @@ pub(crate) fn format_int_padded(
     output: &mut (impl core::fmt::Write + ?Sized),
     value: u64,
     width: u8,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     let s = u64_pad_none(value);
     let digit_count = s.len() as u8;
     for _ in digit_count..width {
         output.write_str("0")?;
     }
-    output.write_str(s)?;
+    output.write_str(&*s)?;
     Ok(width as usize)
 }
 
@@ -191,7 +186,7 @@ pub(crate) fn format_float(
     mut value: f64,
     digits_before_decimal: u8,
     digits_after_decimal: Option<NonZero<u8>>,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     match digits_after_decimal {
         Some(digits_after_decimal) => {
             // If the precision is less than nine digits after the decimal point, truncate the
@@ -211,12 +206,10 @@ pub(crate) fn format_float(
                 value = f64::trunc(value * trunc_num) / trunc_num;
 
                 let int_part = value.trunc() as u64;
-                let frac_part =
-                    f64::round(value.fract() * f64_10_pow_x(digits_after_decimal)) as u64;
+                let frac_part = f64::round(value.fract() * f64_10_pow_x(digits_after_decimal)) as u64;
 
-                let width = digits_before_decimal.widen::<usize>()
-                    + 1
-                    + digits_after_decimal.get().widen::<usize>();
+                let width =
+                    digits_before_decimal.widen::<usize>() + 1 + digits_after_decimal.get().widen::<usize>();
 
                 format_int_padded(output, int_part, digits_before_decimal.widen())?;
                 output.write_str(".")?;
@@ -241,17 +234,17 @@ pub(crate) fn format_float(
 pub(crate) fn format_single_digit(
     output: &mut (impl core::fmt::Write + ?Sized),
     value: ru8<0, 9>,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     write(output, single_digit(value))
 }
 
-/// Format a two digit number with the specified padding.
+/// Format a two-digit number with the specified padding.
 #[inline]
 pub(crate) fn format_two_digits(
     output: &mut (impl core::fmt::Write + ?Sized),
     value: ru8<0, 99>,
     padding: Padding,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     let s = match padding {
         Padding::Space => two_digits_space_padded(value),
         Padding::Zero => two_digits_zero_padded(value),
@@ -260,13 +253,13 @@ pub(crate) fn format_two_digits(
     write(output, s)
 }
 
-/// Format a three digit number with the specified padding.
+/// Format a three-digit number with the specified padding.
 #[inline]
 pub(crate) fn format_three_digits(
     output: &mut (impl core::fmt::Write + ?Sized),
     value: ru16<0, 999>,
     padding: Padding,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     let [first, second_and_third] = match padding {
         Padding::Space => three_digits_space_padded(value),
         Padding::Zero => three_digits_zero_padded(value),
@@ -275,13 +268,13 @@ pub(crate) fn format_three_digits(
     write_many(output, [first, second_and_third])
 }
 
-/// Format a four digit number with the specified padding.
+/// Format a four-digit number with the specified padding.
 #[inline]
 pub(crate) fn format_four_digits(
     output: &mut (impl core::fmt::Write + ?Sized),
     value: ru16<0, 9_999>,
     padding: Padding,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     let [first_and_second, third_and_fourth] = match padding {
         Padding::Space => four_digits_space_padded(value),
         Padding::Zero => four_digits_zero_padded(value),
@@ -290,30 +283,30 @@ pub(crate) fn format_four_digits(
     write_many(output, [first_and_second, third_and_fourth])
 }
 
-/// Format a four digit number that is padded with zeroes.
+/// Format a four-digit number that is padded with zeroes.
 #[inline]
 pub(crate) fn format_four_digits_pad_zero(
     output: &mut (impl core::fmt::Write + ?Sized),
     value: ru16<0, 9_999>,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     write_many(output, four_digits_zero_padded(value))
 }
 
-/// Format a five digit number that is padded with zeroes.
+/// Format a five-digit number that is padded with zeroes.
 #[inline]
 pub(crate) fn format_five_digits_pad_zero(
     output: &mut (impl core::fmt::Write + ?Sized),
     value: ru32<0, 99_999>,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     write_many(output, five_digits_zero_padded(value))
 }
 
-/// Format a six digit number that is padded with zeroes.
+/// Format a six-digit number that is padded with zeroes.
 #[inline]
 pub(crate) fn format_six_digits_pad_zero(
     output: &mut (impl core::fmt::Write + ?Sized),
     value: ru32<0, 999_999>,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     write_many(output, six_digits_zero_padded(value))
 }
 
@@ -324,7 +317,7 @@ pub(crate) fn format_six_digits_pad_zero(
 pub(crate) fn format_u64_pad_none(
     output: &mut (impl core::fmt::Write + ?Sized),
     value: u64,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     write(output, &u64_pad_none(value))
 }
 
@@ -335,7 +328,7 @@ pub(crate) fn format_u64_pad_none(
 pub(crate) fn format_u128_pad_none(
     output: &mut (impl core::fmt::Write + ?Sized),
     value: u128,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     write(output, &u128_pad_none(value))
 }
 
@@ -357,7 +350,7 @@ pub fn fmt_month_short(
     MonthShort {
         case_sensitive: _, // no effect on formatting
     }: MonthShort,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     // Safety: All month names are at least three bytes long.
     write(output, unsafe {
         MONTH_NAMES[u8::from(month).widen::<usize>() - 1].get_unchecked(..3)
@@ -372,7 +365,7 @@ pub fn fmt_month_long(
     MonthLong {
         case_sensitive: _, // no effect on formatting
     }: MonthLong,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     write(output, MONTH_NAMES[u8::from(month).widen::<usize>() - 1])
 }
 
@@ -382,7 +375,7 @@ pub fn fmt_month_numerical(
     output: &mut (impl core::fmt::Write + ?Sized),
     month: Month,
     MonthNumerical { padding }: MonthNumerical,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     format_two_digits(
         output,
         // Safety: The month is guaranteed to be in the range `1..=12`.
@@ -409,11 +402,10 @@ pub fn fmt_weekday_short(
     WeekdayShort {
         case_sensitive: _, // no effect on formatting
     }: WeekdayShort,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     // Safety: All weekday names are at least three bytes long.
     write(output, unsafe {
-        WEEKDAY_NAMES[weekday.number_days_from_monday().widen::<usize>()]
-            .get_unchecked(..3)
+        WEEKDAY_NAMES[weekday.number_days_from_monday().widen::<usize>()].get_unchecked(..3)
     })
 }
 
@@ -425,7 +417,7 @@ pub fn fmt_weekday_long(
     WeekdayLong {
         case_sensitive: _, // no effect on formatting
     }: WeekdayLong,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     write(
         output,
         WEEKDAY_NAMES[weekday.number_days_from_monday().widen::<usize>()],
@@ -439,7 +431,7 @@ pub fn fmt_weekday_sunday(
     output: &mut (impl core::fmt::Write + ?Sized),
     weekday: Weekday,
     WeekdaySunday { one_indexed }: WeekdaySunday,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     // Safety: The value is guaranteed to be in the range `0..=7`.
     format_single_digit(output, unsafe {
         ru8::new_unchecked(weekday.number_days_from_sunday() + u8::from(one_indexed))
@@ -453,7 +445,7 @@ pub fn fmt_weekday_monday(
     output: &mut (impl core::fmt::Write + ?Sized),
     weekday: Weekday,
     WeekdayMonday { one_indexed }: WeekdayMonday,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     // Safety: The value is guaranteed to be in the range `0..=7`.
     format_single_digit(output, unsafe {
         ru8::new_unchecked(weekday.number_days_from_monday() + u8::from(one_indexed))
@@ -465,7 +457,7 @@ pub fn fmt_week_number_iso(
     output: &mut (impl core::fmt::Write + ?Sized),
     week_number: fmt_types::IsoWeekNumber,
     WeekNumberIso { padding }: WeekNumberIso,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     format_two_digits(output, week_number.expand(), padding)
 }
 
@@ -474,7 +466,7 @@ pub fn fmt_week_number_sunday(
     output: &mut (impl core::fmt::Write + ?Sized),
     week_number: fmt_types::SundayBasedWeek,
     WeekNumberSunday { padding }: WeekNumberSunday,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     format_two_digits(output, week_number.expand(), padding)
 }
 
@@ -483,7 +475,7 @@ pub fn fmt_week_number_monday(
     output: &mut (impl core::fmt::Write + ?Sized),
     week_number: fmt_types::MondayBasedWeek,
     WeekNumberMonday { padding }: WeekNumberMonday,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     format_two_digits(output, week_number.expand(), padding)
 }
 
@@ -495,7 +487,7 @@ pub fn fmt_calendar_year_full_extended_range(
         padding,
         sign_is_mandatory,
     }: CalendarYearFullExtendedRange,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     let mut bytes = 0;
     bytes += fmt_sign(
         output,
@@ -504,8 +496,12 @@ pub fn fmt_calendar_year_full_extended_range(
     )?;
     // Safety: We just called `.abs()`, so zero is the minimum. The maximum is
     // unchanged.
-    let value: ru32<0, 999_999> =
-        unsafe { full_year.abs().narrow_unchecked::<0, 999_999>().into() };
+    let value: ru32<0, 999_999> = unsafe {
+        full_year
+            .abs()
+            .narrow_unchecked::<0, 999_999>()
+            .into()
+    };
 
     bytes += if let Some(value) = value.narrow::<0, 9_999>() {
         format_four_digits(output, value.into(), padding)?
@@ -525,13 +521,18 @@ pub fn fmt_calendar_year_full_standard_range(
         padding,
         sign_is_mandatory,
     }: CalendarYearFullStandardRange,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     let mut bytes = 0;
     bytes += fmt_sign(output, full_year.is_negative(), sign_is_mandatory)?;
     // Safety: The minimum is zero due to the `.abs()` call; the maximum is unchanged.
     bytes += format_four_digits(
         output,
-        unsafe { full_year.abs().narrow_unchecked::<0, 9_999>().into() },
+        unsafe {
+            full_year
+                .abs()
+                .narrow_unchecked::<0, 9_999>()
+                .into()
+        },
         padding,
     )?;
     Ok(bytes)
@@ -545,7 +546,7 @@ pub fn fmt_iso_year_full_extended_range(
         padding,
         sign_is_mandatory,
     }: IsoYearFullExtendedRange,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     let mut bytes = 0;
     bytes += fmt_sign(
         output,
@@ -553,8 +554,12 @@ pub fn fmt_iso_year_full_extended_range(
         sign_is_mandatory || full_year.get() >= 10_000,
     )?;
     // Safety: The minimum is zero due to the `.abs()` call, with the maximum is unchanged.
-    let value: ru32<0, 999_999> =
-        unsafe { full_year.abs().narrow_unchecked::<0, 999_999>().into() };
+    let value: ru32<0, 999_999> = unsafe {
+        full_year
+            .abs()
+            .narrow_unchecked::<0, 999_999>()
+            .into()
+    };
 
     bytes += if let Some(value) = value.narrow::<0, 9_999>() {
         format_four_digits(output, value.into(), padding)?
@@ -574,7 +579,7 @@ pub fn fmt_iso_year_full_standard_range(
         padding,
         sign_is_mandatory,
     }: IsoYearFullStandardRange,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     let mut bytes = 0;
     bytes += fmt_sign(output, year.is_negative(), sign_is_mandatory)?;
     // Safety: The minimum is zero due to the `.abs()` call; the maximum is unchanged.
@@ -595,16 +600,16 @@ pub fn fmt_calendar_year_century_extended_range(
         padding,
         sign_is_mandatory,
     }: CalendarYearCenturyExtendedRange,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     let mut bytes = 0;
-    bytes += fmt_sign(
-        output,
-        is_negative,
-        sign_is_mandatory || century.get() >= 100,
-    )?;
+    bytes += fmt_sign(output, is_negative, sign_is_mandatory || century.get() >= 100)?;
     // Safety: The minimum is zero due to the `.abs()` call;  the maximum is unchanged.
-    let century: ru16<0, 9_999> =
-        unsafe { century.abs().narrow_unchecked::<0, 9_999>().into() };
+    let century: ru16<0, 9_999> = unsafe {
+        century
+            .abs()
+            .narrow_unchecked::<0, 9_999>()
+            .into()
+    };
 
     bytes += if let Some(century) = century.narrow::<0, 99>() {
         format_two_digits(output, century.into(), padding)?
@@ -625,7 +630,7 @@ pub fn fmt_calendar_year_century_standard_range(
         padding,
         sign_is_mandatory,
     }: CalendarYearCenturyStandardRange,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     let mut bytes = 0;
     bytes += fmt_sign(output, is_negative, sign_is_mandatory)?;
     // Safety: The minimum is zero due to the `.unsigned_abs()` call.
@@ -643,16 +648,16 @@ pub fn fmt_iso_year_century_extended_range(
         padding,
         sign_is_mandatory,
     }: IsoYearCenturyExtendedRange,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     let mut bytes = 0;
-    bytes += fmt_sign(
-        output,
-        is_negative,
-        sign_is_mandatory || century.get() >= 100,
-    )?;
+    bytes += fmt_sign(output, is_negative, sign_is_mandatory || century.get() >= 100)?;
     // Safety: The minimum is zero due to the `.unsigned_abs()` call, with the maximum is unchanged.
-    let century: ru16<0, 9_999> =
-        unsafe { century.abs().narrow_unchecked::<0, 9_999>().into() };
+    let century: ru16<0, 9_999> = unsafe {
+        century
+            .abs()
+            .narrow_unchecked::<0, 9_999>()
+            .into()
+    };
 
     bytes += if let Some(century) = century.narrow::<0, 99>() {
         format_two_digits(output, century.into(), padding)?
@@ -673,7 +678,7 @@ pub fn fmt_iso_year_century_standard_range(
         padding,
         sign_is_mandatory,
     }: IsoYearCenturyStandardRange,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     let mut bytes = 0;
     bytes += fmt_sign(output, is_negative, sign_is_mandatory)?;
     // Safety: The minimum is zero due to the `.unsigned_abs()` call.
@@ -687,7 +692,7 @@ pub fn fmt_calendar_year_last_two(
     output: &mut (impl core::fmt::Write + ?Sized),
     last_two: fmt_types::LastTwo,
     CalendarYearLastTwo { padding }: CalendarYearLastTwo,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     format_two_digits(output, last_two, padding)
 }
 
@@ -696,7 +701,7 @@ pub fn fmt_iso_year_last_two(
     output: &mut (impl core::fmt::Write + ?Sized),
     last_two: fmt_types::LastTwo,
     IsoYearLastTwo { padding }: IsoYearLastTwo,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     format_two_digits(output, last_two, padding)
 }
 
@@ -706,7 +711,7 @@ pub fn fmt_hour_12(
     output: &mut (impl core::fmt::Write + ?Sized),
     hour: Hours,
     Hour12 { padding }: Hour12,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     // Safety: The value is guaranteed to be in the range `1..=12`.
     format_two_digits(
         output,
@@ -721,7 +726,7 @@ pub fn fmt_hour_24(
     output: &mut (impl core::fmt::Write + ?Sized),
     hour: Hours,
     Hour24 { padding }: Hour24,
-) -> core::fmt::Result {
+) -> Result<usize, core::fmt::Error> {
     format_two_digits(output, hour.expand(), padding)
 }
 
@@ -787,9 +792,6 @@ pub fn fmt_subsecond(
         digits_6_and_7,
         digits_8_and_9,
     ] = subsecond_from_nanos(nanos);
-
-    // Ensure that digits 2 thru 9 are stored as a single array that is 8-aligned. This allows the
-    // conversion to a `u64` to be zero cost, resulting in a nontrivial performance improvement.
     let buf = Digits {
         _padding: MaybeUninit::uninit(),
         digit_1: digit_1.as_bytes()[0],
@@ -818,8 +820,7 @@ pub fn fmt_subsecond(
             // By converting the bytes into a single integer, we can effectively perform an equality
             // check against b'0' for all bytes at once. This is actually faster than
             // using portable SIMD (even with `-Ctarget-cpu=native`).
-            let bitmask =
-                u64::from_le_bytes(buf.digits_2_thru_9) ^ u64::from_le_bytes([b'0'; 8]);
+            let bitmask = u64::from_le_bytes(buf.digits_2_thru_9) ^ u64::from_le_bytes([b'0'; 8]);
             let digits_to_truncate = bitmask.leading_zeros() / 8;
             9 - digits_to_truncate as usize
         }

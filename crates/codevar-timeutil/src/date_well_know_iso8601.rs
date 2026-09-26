@@ -201,18 +201,13 @@ impl Config {
         use_separators: false,
         year_is_six_digits: false,
         date_kind: DateKind::Calendar,
-        time_precision: TimePrecision::Hour {
-            decimal_digits: None,
-        },
+        time_precision: TimePrecision::Hour { decimal_digits: None },
         offset_precision: OffsetPrecision::Hour,
     };
 
     /// Set whether the format the date, time, and/or UTC offset.
     #[inline]
-    pub const fn set_formatted_components(
-        self,
-        formatted_components: FormattedComponents,
-    ) -> Self {
+    pub const fn set_formatted_components(self, formatted_components: FormattedComponents) -> Self {
         Self {
             formatted_components,
             ..self

@@ -25,16 +25,13 @@ use core::hash::{Hash, Hasher};
 use core::mem::MaybeUninit;
 use core::ops::Neg;
 use deranged::{ri8, ri32, ru8};
-use core::io;
 
 /// The type of the `hours` field of `UtcOffset`.
 pub(crate) type Hours = ri8<-25, 25>;
 /// The type of the `minutes` field of `UtcOffset`.
-pub(crate) type Minutes =
-    ri8<{ -(Minute::per_t::<i8>(Hour) - 1) }, { Minute::per_t::<i8>(Hour) - 1 }>;
+pub(crate) type Minutes = ri8<{ -(Minute::per_t::<i8>(Hour) - 1) }, { Minute::per_t::<i8>(Hour) - 1 }>;
 /// The type of the `seconds` field of `UtcOffset`.
-pub(crate) type Seconds =
-    ri8<{ -(Second::per_t::<i8>(Minute) - 1) }, { Second::per_t::<i8>(Minute) - 1 }>;
+pub(crate) type Seconds = ri8<{ -(Second::per_t::<i8>(Minute) - 1) }, { Second::per_t::<i8>(Minute) - 1 }>;
 /// The type capable of storing the range of whole seconds that a `UtcOffset` can encompass.
 type WholeSeconds = ri32<
     {
@@ -85,7 +82,8 @@ impl Hash for UtcOffset {
 impl PartialEq for UtcOffset {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        self.as_u32_for_equality().eq(&other.as_u32_for_equality())
+        self.as_u32_for_equality()
+            .eq(&other.as_u32_for_equality())
     }
 }
 
@@ -135,14 +133,11 @@ impl UtcOffset {
     /// reasons.
     #[inline]
     const fn as_i32_for_comparison(self) -> i32 {
-        (self.hours.get() as i32) << 16
-            | (self.minutes.get() as i32) << 8
-            | (self.seconds.get() as i32)
+        (self.hours.get() as i32) << 16 | (self.minutes.get() as i32) << 8 | (self.seconds.get() as i32)
     }
 
     /// A `UtcOffset` that is UTC.
-    pub const UTC: Self =
-        Self::from_whole_seconds_ranged(WholeSeconds::new_static::<0>());
+    pub const UTC: Self = Self::from_whole_seconds_ranged(WholeSeconds::new_static::<0>());
 
     /// Create a `UtcOffset` representing an offset of the hours, minutes, and seconds provided, the
     /// validity of which must be guaranteed by the caller. All three parameters must have the same
@@ -175,11 +170,7 @@ impl UtcOffset {
     /// The sign of all three components should match. If they do not, all smaller components will
     /// have their signs flipped.
     #[inline]
-    pub const fn from_hms(
-        hours: i8,
-        minutes: i8,
-        seconds: i8,
-    ) -> Result<Self, ComponentRange> {
+    pub const fn from_hms(hours: i8, minutes: i8, seconds: i8) -> Result<Self, ComponentRange> {
         Ok(Self::from_hms_ranged(
             ensure_ranged!(Hours: hours("offset hour")),
             ensure_ranged!(Minutes: minutes("offset minute")),
@@ -192,11 +183,7 @@ impl UtcOffset {
     ///
     /// While the signs of the parameters are required to match, this is not a safety invariant.
     #[inline]
-    pub(crate) const fn from_hms_ranged_unchecked(
-        hours: Hours,
-        minutes: Minutes,
-        seconds: Seconds,
-    ) -> Self {
+    pub(crate) const fn from_hms_ranged_unchecked(hours: Hours, minutes: Minutes, seconds: Seconds) -> Self {
         if hours.get() < 0 {
             debug_assert!(minutes.get() <= 0);
             debug_assert!(seconds.get() <= 0);
@@ -223,14 +210,8 @@ impl UtcOffset {
     /// The sign of all three components should match. If they do not, all smaller components will
     /// have their signs flipped.
     #[inline]
-    pub(crate) const fn from_hms_ranged(
-        hours: Hours,
-        mut minutes: Minutes,
-        mut seconds: Seconds,
-    ) -> Self {
-        if (hours.get() > 0 && minutes.get() < 0)
-            || (hours.get() < 0 && minutes.get() > 0)
-        {
+    pub(crate) const fn from_hms_ranged(hours: Hours, mut minutes: Minutes, mut seconds: Seconds) -> Self {
+        if (hours.get() > 0 && minutes.get() < 0) || (hours.get() < 0 && minutes.get() > 0) {
             minutes = minutes.neg();
         }
         if (hours.get() > 0 && seconds.get() < 0)
@@ -263,8 +244,7 @@ impl UtcOffset {
         unsafe {
             Self::from_hms_unchecked(
                 (seconds.get() / Second::per_t::<i32>(Hour)) as i8,
-                ((seconds.get() % Second::per_t::<i32>(Hour))
-                    / Minute::per_t::<i32>(Hour)) as i8,
+                ((seconds.get() % Second::per_t::<i32>(Hour)) / Minute::per_t::<i32>(Hour)) as i8,
                 (seconds.get() % Second::per_t::<i32>(Minute)) as i8,
             )
         }
@@ -351,7 +331,7 @@ impl UtcOffset {
     #[inline]
     pub fn format_into(
         self,
-        output: &mut (impl core::fmt::Write + ?Sized),
+        output: &mut (impl fmt::Write + ?Sized),
         format: &(impl Formattable + ?Sized),
     ) -> Result<usize, Error> {
         format.format_into(output, &self, &mut Default::default())
@@ -361,30 +341,6 @@ impl UtcOffset {
     #[inline]
     pub fn format(self, format: &(impl Formattable + ?Sized)) -> Result<String, Error> {
         format.format(&self, &mut Default::default())
-    }
-}
-
-#[cfg(feature = "parsing")]
-impl UtcOffset {
-    /// Parse a `UtcOffset` from the input using the provided [format
-    /// description](crate::format_description).
-    #[inline]
-    pub fn parse(
-        input: &str,
-        description: &(impl Parsable + ?Sized),
-    ) -> Result<Self, error::Parse> {
-        description.parse_offset(input.as_bytes(), None)
-    }
-
-    /// Parse a `UtcOffset` from the input using the provided [format
-    /// description](crate::format_description) and default values.
-    #[inline]
-    pub fn parse_with_defaults(
-        input: &[u8],
-        description: &(impl Parsable + ?Sized),
-        defaults: Parsed,
-    ) -> Result<Self, error::Parse> {
-        description.parse_offset(input, Some(defaults))
     }
 }
 

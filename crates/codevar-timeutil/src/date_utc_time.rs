@@ -13,18 +13,15 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
+use codevar_base::basic_time::{SystemTime, TimeVal};
 use core::fmt;
 use core::mem::MaybeUninit;
 use core::ops::{Add, AddAssign, Sub, SubAssign};
 use core::time::Duration as StdDuration;
-use core::hint;
-use codevar_base::basic_time::SystemTime;
 
 use crate::date::{Date, MAX_YEAR, MIN_YEAR};
 use crate::date_error::ComponentRange;
-use crate::date_internal_macro::{
-    carry, cascade, const_try, const_try_opt, div_floor, ensure_ranged,
-};
+use crate::date_internal_macro::{carry, cascade, const_try, const_try_opt, div_floor, ensure_ranged};
 use crate::date_month::Month;
 use crate::date_num_fmt::str_from_raw_parts;
 use crate::date_offset_time::OffsetDateTime;
@@ -59,16 +56,23 @@ impl From<TimeVal> for UtcDateTime {
         match timestamp.to_utc() {
             Some(datetime) => datetime,
             None => {
-                let nanos = i128::from(value.secs) * 1_000_000_000_i128
-                    + i128::from(value.nsecs);
+                let nanos = i128::from(value.secs) * 1_000_000_000_i128 + i128::from(value.nsecs);
                 if nanos >= 0 { Self::MAX } else { Self::MIN }
             }
         }
     }
 }
 
+impl From<SystemTime> for UtcDateTime {
+    /// Convert the system clock marker into the current UTC date and time.
+    #[inline]
+    fn from(_value: SystemTime) -> Self {
+        Self::now()
+    }
+}
+
 impl UtcDateTime {
-    /// Midnight, 1 January, 1970.
+    /// Midnight, 1 January 1970.
     pub const UNIX_EPOCH: Self = Self::new(Date::UNIX_EPOCH, Time::MIDNIGHT);
 
     /// The smallest value that can be represented by `UtcDateTime`.
@@ -122,7 +126,6 @@ impl UtcDateTime {
     pub const MAX: Self = Self::new(Date::MAX, Time::MAX);
 
     /// Create a new `UtcDateTime` with the current date and time.
-    #[cfg(feature = "std")]
     #[inline]
     pub fn now() -> Self {
         #[cfg(all(
@@ -172,18 +175,14 @@ impl UtcDateTime {
     /// Create a `UtcDateTime` from the provided Unix timestamp.
     #[inline]
     pub const fn from_unix_timestamp(timestamp: i64) -> Result<Self, ComponentRange> {
-        type Timestamp = ri64<
-            { UtcDateTime::MIN.unix_timestamp() },
-            { UtcDateTime::MAX.unix_timestamp() },
-        >;
+        type Timestamp = ri64<{ UtcDateTime::MIN.unix_timestamp() }, { UtcDateTime::MAX.unix_timestamp() }>;
         ensure_ranged!(Timestamp: timestamp);
 
         // Use the unchecked method here, as the input validity has already been verified.
         // Safety: The Julian day number is in range.
         let date = unsafe {
             Date::from_julian_day_unchecked(
-                UNIX_EPOCH_JULIAN_DAY
-                    + div_floor!(timestamp, Second::per_t::<i64>(Day)) as i32,
+                UNIX_EPOCH_JULIAN_DAY + div_floor!(timestamp, Second::per_t::<i64>(Day)) as i32,
             )
         };
 
@@ -192,8 +191,7 @@ impl UtcDateTime {
         let time = unsafe {
             Time::from_hms_nanos_unchecked(
                 (seconds_within_day / Second::per_t::<i64>(Hour)) as u8,
-                ((seconds_within_day % Second::per_t::<i64>(Hour))
-                    / Minute::per_t::<i64>(Hour)) as u8,
+                ((seconds_within_day % Second::per_t::<i64>(Hour)) / Minute::per_t::<i64>(Hour)) as u8,
                 (seconds_within_day % Second::per_t::<i64>(Minute)) as u8,
                 0,
             )
@@ -204,9 +202,7 @@ impl UtcDateTime {
 
     /// Construct an `UtcDateTime` from the provided Unix timestamp (in nanoseconds).
     #[inline]
-    pub const fn from_unix_timestamp_nanos(
-        timestamp: i128,
-    ) -> Result<Self, ComponentRange> {
+    pub const fn from_unix_timestamp_nanos(timestamp: i128) -> Result<Self, ComponentRange> {
         let seconds = div_floor!(timestamp, Nanosecond::per_t::<i128>(Second));
         if seconds < Seconds::MIN.get() as i128 || seconds > Seconds::MAX.get() as i128 {
             return Err(ComponentRange::unconditional("timestamp"));
@@ -306,8 +302,7 @@ impl UtcDateTime {
     /// Get the [Unix timestamp](https://en.wikipedia.org/wiki/Unix_time).
     #[inline]
     pub const fn unix_timestamp(self) -> i64 {
-        let days = (self.to_julian_day() as i64 - UNIX_EPOCH_JULIAN_DAY as i64)
-            * Second::per_t::<i64>(Day);
+        let days = (self.to_julian_day() as i64 - UNIX_EPOCH_JULIAN_DAY as i64) * Second::per_t::<i64>(Day);
         let hours = self.hour() as i64 * Second::per_t::<i64>(Hour);
         let minutes = self.minute() as i64 * Second::per_t::<i64>(Minute);
         let seconds = self.second() as i64;
@@ -317,8 +312,7 @@ impl UtcDateTime {
     /// Get the Unix timestamp in nanoseconds.
     #[inline]
     pub const fn unix_timestamp_nanos(self) -> i128 {
-        self.unix_timestamp() as i128 * Nanosecond::per_t::<i128>(Second)
-            + self.nanosecond() as i128
+        self.unix_timestamp() as i128 * Nanosecond::per_t::<i128>(Second) + self.nanosecond() as i128
     }
 
     /// Get the [`Date`] component of the `UtcDateTime`.
@@ -490,17 +484,13 @@ impl UtcDateTime {
     /// Computes `self + duration`, returning `None` if an overflow occurred.
     #[inline]
     pub const fn checked_add(self, duration: SignedDuration) -> Option<Self> {
-        Some(Self::from_plain(const_try_opt!(
-            self.inner.checked_add(duration)
-        )))
+        Some(Self::from_plain(const_try_opt!(self.inner.checked_add(duration))))
     }
 
     /// Computes `self - duration`, returning `None` if an overflow occurred.
     #[inline]
     pub const fn checked_sub(self, duration: SignedDuration) -> Option<Self> {
-        Some(Self::from_plain(const_try_opt!(
-            self.inner.checked_sub(duration)
-        )))
+        Some(Self::from_plain(const_try_opt!(self.inner.checked_sub(duration))))
     }
 
     /// Computes `self + duration`, saturating value on overflow.
@@ -539,9 +529,7 @@ impl UtcDateTime {
     /// Replace the month of the year.
     #[inline]
     pub const fn replace_month(self, month: Month) -> Result<Self, ComponentRange> {
-        Ok(Self::from_plain(const_try!(
-            self.inner.replace_month(month)
-        )))
+        Ok(Self::from_plain(const_try!(self.inner.replace_month(month))))
     }
 
     /// Replace the day of the month.
@@ -553,9 +541,7 @@ impl UtcDateTime {
     /// Replace the day of the year.
     #[inline]
     pub const fn replace_ordinal(self, ordinal: u16) -> Result<Self, ComponentRange> {
-        Ok(Self::from_plain(const_try!(
-            self.inner.replace_ordinal(ordinal)
-        )))
+        Ok(Self::from_plain(const_try!(self.inner.replace_ordinal(ordinal))))
     }
 
     /// Truncate to the start of the day, setting the time to midnight.
@@ -579,9 +565,7 @@ impl UtcDateTime {
     /// Replace the minutes within the hour.
     #[inline]
     pub const fn replace_minute(self, minute: u8) -> Result<Self, ComponentRange> {
-        Ok(Self::from_plain(const_try!(
-            self.inner.replace_minute(minute)
-        )))
+        Ok(Self::from_plain(const_try!(self.inner.replace_minute(minute))))
     }
 
     /// Truncate to the minute, setting the second and subsecond components to zero.
@@ -593,9 +577,7 @@ impl UtcDateTime {
     /// Replace the seconds within the minute.
     #[inline]
     pub const fn replace_second(self, second: u8) -> Result<Self, ComponentRange> {
-        Ok(Self::from_plain(const_try!(
-            self.inner.replace_second(second)
-        )))
+        Ok(Self::from_plain(const_try!(self.inner.replace_second(second))))
     }
 
     /// Truncate to the second, setting the subsecond components to zero.
@@ -606,10 +588,7 @@ impl UtcDateTime {
 
     /// Replace the milliseconds within the second.
     #[inline]
-    pub const fn replace_millisecond(
-        self,
-        millisecond: u16,
-    ) -> Result<Self, ComponentRange> {
+    pub const fn replace_millisecond(self, millisecond: u16) -> Result<Self, ComponentRange> {
         Ok(Self::from_plain(const_try!(
             self.inner.replace_millisecond(millisecond)
         )))
@@ -623,10 +602,7 @@ impl UtcDateTime {
 
     /// Replace the microseconds within the second.
     #[inline]
-    pub const fn replace_microsecond(
-        self,
-        microsecond: u32,
-    ) -> Result<Self, ComponentRange> {
+    pub const fn replace_microsecond(self, microsecond: u32) -> Result<Self, ComponentRange> {
         Ok(Self::from_plain(const_try!(
             self.inner.replace_microsecond(microsecond)
         )))
@@ -641,10 +617,7 @@ impl UtcDateTime {
 
     /// Replace the nanoseconds within the second.
     #[inline]
-    pub const fn replace_nanosecond(
-        self,
-        nanosecond: u32,
-    ) -> Result<Self, ComponentRange> {
+    pub const fn replace_nanosecond(self, nanosecond: u32) -> Result<Self, ComponentRange> {
         Ok(Self::from_plain(const_try!(
             self.inner.replace_nanosecond(nanosecond)
         )))
@@ -676,10 +649,7 @@ impl UtcDateTime {
 
     /// Format the `PlainDateTime` into the provided buffer, returning the number of bytes written.
     #[inline]
-    pub(crate) fn fmt_into_buffer(
-        self,
-        buf: &mut [MaybeUninit<u8>; Self::DISPLAY_BUFFER_SIZE],
-    ) -> usize {
+    pub(crate) fn fmt_into_buffer(self, buf: &mut [MaybeUninit<u8>; Self::DISPLAY_BUFFER_SIZE]) -> usize {
         // Safety: The buffer is large enough that the first chunk is in bounds.
         let pdt_len = self
             .inner

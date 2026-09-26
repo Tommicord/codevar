@@ -35,9 +35,7 @@ impl<const CONFIG: EncodedConfig> Iso8601<CONFIG> {
     /// Whether the date should be formatted.
     pub(crate) const FORMAT_DATE: bool = matches!(
         Self::CONFIG.formatted_components,
-        FormattedComponents::Date
-            | FormattedComponents::DateTime
-            | FormattedComponents::DateTimeOffset
+        FormattedComponents::Date | FormattedComponents::DateTime | FormattedComponents::DateTimeOffset
     );
     /// Whether the time should be formatted.
     pub(crate) const FORMAT_TIME: bool = matches!(
@@ -50,9 +48,7 @@ impl<const CONFIG: EncodedConfig> Iso8601<CONFIG> {
     /// Whether the UTC offset should be formatted.
     pub(crate) const FORMAT_OFFSET: bool = matches!(
         Self::CONFIG.formatted_components,
-        FormattedComponents::Offset
-            | FormattedComponents::DateTimeOffset
-            | FormattedComponents::TimeOffset
+        FormattedComponents::Offset | FormattedComponents::DateTimeOffset | FormattedComponents::TimeOffset
     );
     /// Whether the year is six digits.
     pub(crate) const YEAR_IS_SIX_DIGITS: bool = Self::CONFIG.year_is_six_digits;
@@ -144,9 +140,7 @@ impl Config {
             2 => TimePrecision::Second {
                 decimal_digits: NonZero::new(bytes[5]),
             },
-            _ => TimePrecision::Hour {
-                decimal_digits: None,
-            },
+            _ => TimePrecision::Hour { decimal_digits: None },
         };
         let offset_precision = match bytes[6] {
             0 => OffsetPrecision::Hour,

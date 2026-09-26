@@ -19,13 +19,13 @@
 //! cases. They have strict requirements, and may not return the most ergonomic types to avoid
 //! unnecessary allocations and copying.
 
+use core::hint;
 use core::mem::MaybeUninit;
 use core::ops::Deref;
 use core::{ptr, slice};
 #[cfg(feature = "formatting")]
 use deranged::ru64;
 use deranged::{ru8, ru16, ru32, ru64};
-use core::hint;
 
 static SINGLE_DIGITS: [u8; 10] = *b"0123456789";
 
@@ -89,10 +89,7 @@ impl<const MAX_LEN: usize> StackTrailingStr<MAX_LEN> {
     ///
     /// - The last `MAX_LEN - start_index` bytes of `buf` must be initialized and valid UTF-8.
     #[inline]
-    pub(crate) const unsafe fn new(
-        buf: [MaybeUninit<u8>; MAX_LEN],
-        start_index: usize,
-    ) -> Self {
+    pub(crate) const unsafe fn new(buf: [MaybeUninit<u8>; MAX_LEN], start_index: usize) -> Self {
         debug_assert!(start_index <= MAX_LEN);
         Self { buf, start_index }
     }
@@ -130,11 +127,7 @@ impl<const MAX_LEN: usize> Deref for StackTrailingStr<MAX_LEN> {
 ///
 /// `buf` must be at least `offset + 2` bytes long.
 #[inline]
-const unsafe fn write_two_digits(
-    buf: &mut [MaybeUninit<u8>],
-    offset: usize,
-    value: ru8<0, 99>,
-) {
+const unsafe fn write_two_digits(buf: &mut [MaybeUninit<u8>], offset: usize, value: ru8<0, 99>) {
     // Safety: `buf` is at least `offset + 2` bytes long.
     unsafe {
         ptr::copy_nonoverlapping(
@@ -151,11 +144,7 @@ const unsafe fn write_two_digits(
 ///
 /// `buf` must be at least `offset` bytes long.
 #[inline]
-const unsafe fn write_one_digit(
-    buf: &mut [MaybeUninit<u8>],
-    offset: usize,
-    value: ru8<0, 9>,
-) {
+const unsafe fn write_one_digit(buf: &mut [MaybeUninit<u8>], offset: usize, value: ru8<0, 9>) {
     // Safety: `buf` is at least `offset` bytes long.
     unsafe {
         ptr::copy_nonoverlapping(
@@ -190,12 +179,7 @@ const fn div_100(n: ru16<0, 9_999>) -> [ru8<0, 99>; 2] {
 
     // Safety: `high` is guaranteed to be less than 100 and `low` is guaranteed to be less than 100
     // due to the arithmetic above.
-    unsafe {
-        [
-            ru8::new_unchecked(high as u8),
-            ru8::new_unchecked(low as u8),
-        ]
-    }
+    unsafe { [ru8::new_unchecked(high as u8), ru8::new_unchecked(low as u8)] }
 }
 
 /// Obtain a string containing a single ASCII digit representing `n`.
@@ -231,7 +215,12 @@ pub(crate) const fn two_digits_zero_padded(n: ru8<0, 99>) -> &'static str {
     // Safety: We're staying within the bounds of the array. The array contains only ASCII
     // characters, so it's valid UTF-8.
     unsafe {
-        str_from_raw_parts(ZERO_PADDED_PAIRS.as_ptr().add((n.get() as usize) * 2), 2)
+        str_from_raw_parts(
+            ZERO_PADDED_PAIRS
+                .as_ptr()
+                .add((n.get() as usize) * 2),
+            2,
+        )
     }
 }
 
@@ -242,7 +231,12 @@ pub(crate) const fn two_digits_space_padded(n: ru8<0, 99>) -> &'static str {
     // Safety: We're staying within the bounds of the array. The array contains only ASCII
     // characters, so it's valid UTF-8.
     unsafe {
-        str_from_raw_parts(SPACE_PADDED_PAIRS.as_ptr().add((n.get() as usize) * 2), 2)
+        str_from_raw_parts(
+            SPACE_PADDED_PAIRS
+                .as_ptr()
+                .add((n.get() as usize) * 2),
+            2,
+        )
     }
 }
 
@@ -328,11 +322,9 @@ pub(crate) const fn four_to_six_digits(n: ru32<0, 999_999>) -> [&'static str; 3]
 
     // Safety: `offset` is within the bounds of the array. The array contains only ASCII characters,
     // so it's valid UTF-8.
-    let first_two =
-        unsafe { str_from_raw_parts(ZERO_PADDED_PAIRS.as_ptr().add(offset), size) };
+    let first_two = unsafe { str_from_raw_parts(ZERO_PADDED_PAIRS.as_ptr().add(offset), size) };
     // Safety: `remaining` is guaranteed to be less than 10,000 due to the modulus above.
-    let [second_two, last_two] =
-        four_digits_zero_padded(unsafe { ru16::new_unchecked(remaining as u16) });
+    let [second_two, last_two] = four_digits_zero_padded(unsafe { ru16::new_unchecked(remaining as u16) });
     [first_two, second_two, last_two]
 }
 
@@ -348,8 +340,7 @@ pub(crate) const fn five_digits_zero_padded(n: ru32<0, 99_999>) -> [&'static str
     // Safety: `first_one` is guaranteed to be less than 10 due to the division above.
     let first_one = single_digit(unsafe { ru8::new_unchecked(first_one as u8) });
     // Safety: `remaining` is guaranteed to be less than 10,000 due to the modulus above.
-    let [second_two, last_two] =
-        four_digits_zero_padded(unsafe { ru16::new_unchecked(remaining as u16) });
+    let [second_two, last_two] = four_digits_zero_padded(unsafe { ru16::new_unchecked(remaining as u16) });
     [first_one, second_two, last_two]
 }
 
@@ -362,11 +353,9 @@ pub(crate) const fn six_digits_zero_padded(n: ru32<0, 999_999>) -> [&'static str
     let (first_two, remaining) = (n / 10_000, n % 10_000);
 
     // Safety: `first_two` is guaranteed to be less than 100 due to the division above.
-    let first_two =
-        two_digits_zero_padded(unsafe { ru8::new_unchecked(first_two as u8) });
+    let first_two = two_digits_zero_padded(unsafe { ru8::new_unchecked(first_two as u8) });
     // Safety: `remaining` is guaranteed to be less than 10,000 due to the modulus above.
-    let [second_two, last_two] =
-        four_digits_zero_padded(unsafe { ru16::new_unchecked(remaining as u16) });
+    let [second_two, last_two] = four_digits_zero_padded(unsafe { ru16::new_unchecked(remaining as u16) });
     [first_two, second_two, last_two]
 }
 
@@ -405,9 +394,7 @@ pub(crate) const fn subsecond_from_nanos(n: ru32<0, 999_999_999>) -> [&'static s
 /// This value is intended to be used after a decimal point to represent a fractional second.
 /// Trailing zeros are truncated, but at least one digit is always present.
 #[inline]
-pub(crate) const fn truncated_subsecond_from_nanos(
-    n: ru32<0, 999_999_999>,
-) -> StackStr<9> {
+pub(crate) const fn truncated_subsecond_from_nanos(n: ru32<0, 999_999_999>) -> StackStr<9> {
     #[repr(C, align(8))]
     #[derive(Clone, Copy)]
     struct Digits {
@@ -578,10 +565,7 @@ pub(crate) const fn u128_pad_none(value: u128) -> StackTrailingStr<39> {
 /// # Safety
 ///
 /// - `buf` must be at least `OFFSET + 16` bytes long.
-const unsafe fn enc_16lsd<const OFFSET: usize>(
-    buf: &mut [MaybeUninit<u8>],
-    n: ru64<0, 9999_9999_9999_9999>,
-) {
+const unsafe fn enc_16lsd<const OFFSET: usize>(buf: &mut [MaybeUninit<u8>], n: ru64<0, 9999_9999_9999_9999>) {
     // Consume the least-significant decimals from a working copy.
     let mut remain = n.get();
 

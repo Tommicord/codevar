@@ -188,10 +188,7 @@ impl Day {
 
 /// The representation of a month.
 #[non_exhaustive]
-#[deprecated(
-    since = "0.3.48",
-    note = "used only in the deprecated `Month` component"
-)]
+#[deprecated(since = "0.3.48", note = "used only in the deprecated `Month` component")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MonthRepr {
     /// The number of the month (January is 1, December is 12).
@@ -317,10 +314,7 @@ impl WeekdayMonday {
 
 /// The representation used for the week number.
 #[non_exhaustive]
-#[deprecated(
-    since = "0.3.48",
-    note = "used only in the deprecated `WeekNumber` component"
-)]
+#[deprecated(since = "0.3.48", note = "used only in the deprecated `WeekNumber` component")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WeekNumberRepr {
     /// Week 1 is the week that contains January 4.

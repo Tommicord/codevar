@@ -19,9 +19,9 @@
 //! through [`codevar_ui_core::ui_display::UiDisplay`], runs the
 //! render loop and tears everything down on exit.
 
-use log::{error, info};
 use codevar_base::basic_signal;
 use codevar_ui_core::ui_display::{UiDisplay, WindowInit};
+use log::error;
 
 fn main() {
     if let Err(e) = basic_signal::install() {
