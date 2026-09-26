@@ -927,9 +927,7 @@ impl<'p> RendererSubsystem<'p> {
     /// documentation).
     pub fn draw_frame(&mut self, wait_sync_file: Option<OwnedFd>) -> Result<OwnedFd, RendererError> {
         self.begin_frame(wait_sync_file)?;
-        if let Err(err) = self.render_frame() {
-            return Err(err);
-        }
+        self.render_frame()?;
         self.end_frame()
     }
 
