@@ -478,8 +478,8 @@ fn header_token_contains(header: &str, token: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use codevar_base::basic_base64;
     use super::*;
+    use codevar_base::basic_base64;
 
     #[test]
     fn rfc6455_accept_key_test_vector() {
@@ -539,7 +539,12 @@ mod tests {
         assert_eq!(hs.path, "/chat");
         assert_eq!(hs.host, "example.com");
         assert_eq!(hs.key_b64.len(), 24);
-        assert_eq!(basic_base64::decode(&hs.key_b64).expect("key").len(), 16);
+        assert_eq!(
+            basic_base64::decode(&hs.key_b64)
+                .expect("key")
+                .len(),
+            16
+        );
         assert_eq!(hs.expected_accept, compute_accept_key(&hs.key_b64));
         assert!(hs.selected_protocol.is_none());
     }

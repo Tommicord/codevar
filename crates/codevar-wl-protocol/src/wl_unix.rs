@@ -142,7 +142,11 @@ fn unix_address(path: &str) -> WlResult<(libc::sockaddr_un, libc::socklen_t)> {
     // bounds-checked above, so the copy stays inside the array and
     // the trailing NUL written by `zeroed` remains in place.
     unsafe {
-        core::ptr::copy_nonoverlapping(bytes.as_ptr(), sun.sun_path.as_mut_ptr().cast::<u8>(), bytes.len());
+        core::ptr::copy_nonoverlapping(
+            bytes.as_ptr(),
+            sun.sun_path.as_mut_ptr().cast::<u8>(),
+            bytes.len(),
+        );
     }
     let offset = core::mem::size_of::<libc::sockaddr_un>() - sun.sun_path.len();
     let len = (offset + bytes.len() + 1) as libc::socklen_t;
@@ -177,7 +181,13 @@ fn finish_connect(fd: libc::c_int) -> WlResult<()> {
         // SAFETY: `error` and `length` describe a writable buffer of
         // the size the kernel expects for `SO_ERROR`.
         if unsafe {
-            libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_ERROR, &mut error as *mut _ as *mut libc::c_void, &mut length)
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_ERROR,
+                &mut error as *mut _ as *mut libc::c_void,
+                &mut length,
+            )
         } < 0
         {
             return Err(io_error("getsockopt", errno()));
@@ -467,7 +477,9 @@ impl WlTransport for WlUnixTransport {
                 // descriptor list was lost. Release what arrived and
                 // fail loudly instead of losing descriptors silently.
                 close_fds(&collected);
-                return Err(WlError::io("control message truncated: too many file descriptors"));
+                return Err(WlError::io(
+                    "control message truncated: too many file descriptors",
+                ));
             }
             // Queue descriptors in arrival order so they line up with
             // the message arguments parsed from the byte stream.
@@ -647,7 +659,13 @@ impl WlPoller for WlUnixPoller {
         // SAFETY: `pollfds` holds `entries.len()` initialized
         // elements; `poll` writes only into the `revents` fields and
         // accepts a null pointer when the count is zero.
-        let ready = unsafe { libc::poll(pollfds.as_mut_ptr(), pollfds.len() as libc::nfds_t, poll_timeout(timeout)) };
+        let ready = unsafe {
+            libc::poll(
+                pollfds.as_mut_ptr(),
+                pollfds.len() as libc::nfds_t,
+                poll_timeout(timeout),
+            )
+        };
         if ready < 0 {
             let code = errno();
             if code == libc::EINTR {
@@ -711,10 +729,15 @@ mod tests {
     fn transport_pair_reports_readiness_and_eof() {
         let (mut first, mut second) = WlUnixTransport::pair().unwrap();
         assert_eq!(first.handle(), first.fd() as WlHandle);
-        assert!(matches!(first.recv(&mut [0u8; 4], &mut Vec::new()), Err(WlError::WouldBlock)));
+        assert!(matches!(
+            first.recv(&mut [0u8; 4], &mut Vec::new()),
+            Err(WlError::WouldBlock)
+        ));
 
         assert_eq!(second.send(b"ping", &[]).unwrap(), 4);
-        let events = first.wait(Some(Duration::ZERO), WlPollEvents::READABLE).unwrap();
+        let events = first
+            .wait(Some(Duration::ZERO), WlPollEvents::READABLE)
+            .unwrap();
         assert!(events.contains(WlPollEvents::READABLE));
 
         let mut buf = [0u8; 8];
@@ -724,7 +747,9 @@ mod tests {
         assert!(fds.is_empty());
 
         drop(second);
-        let events = first.wait(Some(Duration::from_secs(2)), WlPollEvents::READABLE).unwrap();
+        let events = first
+            .wait(Some(Duration::from_secs(2)), WlPollEvents::READABLE)
+            .unwrap();
         assert!(events.contains(WlPollEvents::HANGUP));
         assert_eq!(first.recv(&mut buf, &mut fds).unwrap(), 0);
     }
