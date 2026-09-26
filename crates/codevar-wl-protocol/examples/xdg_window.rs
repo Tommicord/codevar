@@ -55,7 +55,6 @@ fn main() {
     match run() {
         Ok(summary) => println!("{summary}"),
         Err(error) => {
-            eprintln!("xdg window demo failed: {error}");
             std::process::exit(1);
         }
     }

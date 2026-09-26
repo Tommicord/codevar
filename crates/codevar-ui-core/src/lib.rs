@@ -13,4 +13,10 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-//! Placeholder module (implementation pending).
+#![cfg_attr(not(test), no_std)]
+
+extern crate alloc;
+
+pub mod ui_display;
+pub mod ui_pipeline;
+pub mod ui_renderer;

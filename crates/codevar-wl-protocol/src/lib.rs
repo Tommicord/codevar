@@ -34,24 +34,24 @@
 
 extern crate alloc;
 
-mod linux_dmabuf;
-mod linux_drm_syncobj;
 mod wl_client;
 mod wl_conn;
 mod wl_core;
+mod wl_dmabuf;
+mod wl_drm_syncobj;
 mod wl_error;
 mod wl_evloop;
 mod wl_handle;
 mod wl_server;
 #[cfg(unix)]
 mod wl_unix;
-mod xdg_shell;
+mod wl_xdg_shell;
 
-pub use linux_dmabuf::*;
-pub use linux_drm_syncobj::*;
 pub use wl_client::{WlClientDisplay, WlProxyId, WlRegistryEvent};
 pub use wl_conn::{WlClosure, WlConnection, WlTransport, reserve_new_ids};
 pub use wl_core::*;
+pub use wl_dmabuf::*;
+pub use wl_drm_syncobj::*;
 pub use wl_error::{WlError, WlProtocolError, WlResult};
 pub use wl_evloop::{WlClock, WlEventLoop, WlEventSourceId, WlPollEntry, WlPollEvents, WlPoller};
 pub use wl_handle::{
@@ -61,4 +61,4 @@ pub use wl_handle::{
 pub use wl_server::{WlClient, WlClientId, WlResource, WlServerDisplay, WlTaskQueue};
 #[cfg(unix)]
 pub use wl_unix::{WlUnixPoller, WlUnixTransport};
-pub use xdg_shell::*;
+pub use wl_xdg_shell::*;

@@ -13,8 +13,4 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-//! Support library for the `codevar` launcher binary: Wayland window
-//! management and Vulkan rendering.
-
-pub mod vulkan;
-pub mod wayland;
+//! Support library for the `codevar` launcher binary

@@ -1,5 +1,5 @@
 [package]
-name = "codevar-bin"
+name = "codevar-ui-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,12 +7,14 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "codevar_ui_core"
+
 [dependencies]
 ash = { workspace = true }
-codevar-base = { path = "../codevar-base" }
+codevar-base = { workspace = true }
 codevar-wl-protocol = { workspace = true }
 libc = { workspace = true }
 
-[[bin]]
-name = "codevar"
-path = "src/bin/main.rs"
+[target.'cfg(windows)'.dependencies]
+windows-link = { workspace = true }

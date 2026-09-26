@@ -78,7 +78,7 @@ New Rust files must include the Apache 2.0 copyright header used elsewhere:
 
 ### Documentation
 
-- Public items should have doc comments (`#![warn(missing_docs)]` is enabled).
+- Public items should have doc comments
 - Match the existing style: type-level docs with field descriptions for `#[repr(C)]` structs.
 
 ## Testing

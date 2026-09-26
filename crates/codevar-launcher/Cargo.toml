@@ -1,0 +1,19 @@
+[package]
+name = "codevar-launcher"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ash = { workspace = true }
+codevar-base = { workspace = true }
+codevar-ui-core = { workspace = true }
+codevar-wl-protocol = { workspace = true }
+libc = { workspace = true }
+
+[[bin]]
+name = "codevar"
+path = "src/bin/main.rs"
