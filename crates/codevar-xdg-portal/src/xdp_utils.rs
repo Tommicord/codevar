@@ -1083,10 +1083,13 @@ pub fn env_var(name: &str) -> Option<String> {
         if name.contains('\0') {
             return None;
         }
-        // SAFETY: `name` is a valid NUL-terminated C string; `getenv`
+        let mut buf = Vec::with_capacity(name.len() + 1);
+        buf.extend_from_slice(name.as_bytes());
+        buf.push(0);
+        // SAFETY: `buf` is a NUL-terminated copy of `name`; `getenv`
         // returns either null or a pointer to a string that outlives
         // this call, which is copied before returning.
-        let ptr = unsafe { libc::getenv(name.as_ptr().cast::<libc::c_char>()) };
+        let ptr = unsafe { libc::getenv(buf.as_ptr().cast::<libc::c_char>()) };
         if ptr.is_null() {
             return None;
         }

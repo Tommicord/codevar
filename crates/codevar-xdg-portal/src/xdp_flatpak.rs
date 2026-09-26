@@ -37,18 +37,12 @@ const FLATPAK_METADATA_GROUP_INSTANCE: &str = "Instance";
 const FLATPAK_METADATA_KEY_INSTANCE_PATH: &str = "instance-path";
 /// Key for instance ID.
 const FLATPAK_METADATA_KEY_INSTANCE_ID: &str = "instance-id";
-/// Key for app path.
-const FLATPAK_METADATA_KEY_APP_PATH: &str = "app-path";
 /// Key for app commit.
 const FLATPAK_METADATA_KEY_APP_COMMIT: &str = "app-commit";
 /// Key for architecture.
 const FLATPAK_METADATA_KEY_ARCH: &str = "arch";
 /// Key for branch.
 const FLATPAK_METADATA_KEY_BRANCH: &str = "branch";
-/// Key for runtime path.
-const FLATPAK_METADATA_KEY_RUNTIME_PATH: &str = "runtime-path";
-/// Key for runtime commit.
-const FLATPAK_METADATA_KEY_RUNTIME_COMMIT: &str = "runtime-commit";
 /// Key for application name.
 const FLATPAK_METADATA_KEY_NAME: &str = "name";
 /// Key for runtime ref.
@@ -157,10 +151,10 @@ pub fn list_instances() -> XdpResult<Vec<FlatpakInstance>> {
         if let Ok(entries) = read_dir_entries(&base_dir) {
             for entry in entries {
                 let instance_dir = format!("{}/{}", base_dir, entry);
-                if is_directory(&instance_dir) {
-                    if let Ok(instance) = FlatpakInstance::new(&instance_dir) {
-                        instances.push(instance);
-                    }
+                if is_directory(&instance_dir)
+                    && let Ok(instance) = FlatpakInstance::new(&instance_dir)
+                {
+                    instances.push(instance);
                 }
             }
         }
@@ -229,10 +223,11 @@ fn read_dir_entries(path: &str) -> Result<Vec<String>, PortalError> {
         let name = unsafe { (*entry).d_name.as_ptr() };
         // SAFETY: name is a valid C string
         let c_str = unsafe { core::ffi::CStr::from_ptr(name) };
-        if let Ok(name_str) = c_str.to_str() {
-            if name_str != "." && name_str != ".." {
-                entries.push(name_str.to_string());
-            }
+        if let Ok(name_str) = c_str.to_str()
+            && name_str != "."
+            && name_str != ".."
+        {
+            entries.push(name_str.to_string());
         }
     }
 

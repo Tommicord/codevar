@@ -165,7 +165,7 @@ fn handle_scheme_supported<T: codevar_dbus::DbusTransport + 'static>(
 
     let app_info = crate::xdp_app_info::AppInfo::host(&inv.sender);
 
-    let reply = ctx
+    let _reply = ctx
         .call_impl(
             APP_CHOOSER_IMPL_INTERFACE,
             "SchemeSupported",
@@ -178,7 +178,6 @@ fn handle_scheme_supported<T: codevar_dbus::DbusTransport + 'static>(
         )
         .map_err(|e| PortalError::InvalidArgument(format!("Failed to call backend: {}", e)))?;
 
-    let mut reply_reader = reply.body_reader();
     let supported = !scheme.is_empty();
     ctx.reply(inv, |bw| bw.write_bool(supported))
 }

@@ -146,7 +146,6 @@ impl core::error::Error for XmlError {}
 /// assert!(validate("<node attr=\"value\"></node>").is_ok());
 /// assert!(validate("<node><unclosed>").is_err());
 /// ```
-#[must_use]
 pub fn validate(input: &str) -> Result<(), XmlError> {
     if input.trim().is_empty() {
         return Err(XmlError::EmptyInput);
@@ -497,7 +496,7 @@ impl XmlBuilder {
     /// Panics if there are still unclosed elements.
     #[must_use]
     pub fn build(mut self) -> XmlDocument {
-        if (!self.closed) {
+        if !self.closed {
             while self.stack.len() > 1 {
                 self = self.end();
             }
@@ -539,10 +538,12 @@ impl XmlBuilder {
     /// Called before adding text or children to ensure the current
     /// element's opening tag is properly terminated.
     fn flush_open(&mut self) {
-        if let Some((_, has_children, _)) = self.stack.last() {
-            if !has_children && !self.buffer.ends_with('>') && !self.buffer.ends_with('/') {
-                self.buffer.push('>');
-            }
+        if let Some((_, has_children, _)) = self.stack.last()
+            && !has_children
+            && !self.buffer.ends_with('>')
+            && !self.buffer.ends_with('/')
+        {
+            self.buffer.push('>');
         }
     }
 }
@@ -570,7 +571,6 @@ impl XmlDocument {
     }
 
     /// Validates that this document is well-formed XML.
-    #[must_use]
     pub fn validate(&self) -> Result<(), XmlError> {
         validate(&self.xml)
     }

@@ -32,9 +32,7 @@ use codevar_dbus::{BodyWriter, DbusMessage};
 
 use crate::xdp_context::{MethodInvocation, PortalContext, PortalFn, PortalInterface};
 use crate::xdp_error::{PortalError, XdpResult};
-use crate::xdp_utils::{
-    OptionKey, OptionMap, PortalValue, decode_options, encode_options, filter_options,
-};
+use crate::xdp_utils::{OptionKey, OptionMap, PortalValue, decode_options, encode_options, filter_options};
 
 const REMOTE_DESKTOP_INTERFACE: &str = "org.freedesktop.portal.RemoteDesktop";
 const REMOTE_DESKTOP_IMPL_INTERFACE: &str = "org.freedesktop.impl.portal.RemoteDesktop";
@@ -466,171 +464,95 @@ fn handle_connect_to_eis<T: codevar_dbus::DbusTransport + 'static>(
     Ok(())
 }
 
-/// Appends a `<method>` element with the given arguments.
-fn add_method(builder: XmlBuilder, name: &str, args: &[(&str, &str, &str)]) -> XmlBuilder {
-    let mut method = builder.child("method").attr("name", name);
-    for (arg_name, type_signature, direction) in args {
-        method = method
-            .child("arg")
-            .attr("name", arg_name)
-            .attr("type", type_signature)
-            .attr("direction", direction)
-            .end();
-    }
-    method.end()
-}
-
 fn build_interface_xml() -> XmlDocument {
-    let builder = XmlBuilder::new("interface").attr("name", REMOTE_DESKTOP_INTERFACE);
-    let builder = add_method(
-        builder,
-        "CreateSession",
-        &[("options", "a{sv}", "in"), ("handle", "o", "out")],
-    );
-    let builder = add_method(
-        builder,
-        "SelectDevices",
-        &[
-            ("session_handle", "o", "in"),
-            ("options", "a{sv}", "in"),
-            ("handle", "o", "out"),
-        ],
-    );
-    let builder = add_method(
-        builder,
-        "Start",
-        &[
-            ("session_handle", "o", "in"),
-            ("parent_window", "s", "in"),
-            ("options", "a{sv}", "in"),
-            ("handle", "o", "out"),
-        ],
-    );
-    let builder = add_method(
-        builder,
-        "NotifyPointerMotion",
-        &[
-            ("session_handle", "o", "in"),
-            ("options", "a{sv}", "in"),
-            ("dx", "d", "in"),
-            ("dy", "d", "in"),
-        ],
-    );
-    let builder = add_method(
-        builder,
-        "NotifyPointerMotionAbsolute",
-        &[
-            ("session_handle", "o", "in"),
-            ("options", "a{sv}", "in"),
-            ("stream", "u", "in"),
-            ("x", "d", "in"),
-            ("y", "d", "in"),
-        ],
-    );
-    let builder = add_method(
-        builder,
-        "NotifyPointerButton",
-        &[
-            ("session_handle", "o", "in"),
-            ("options", "a{sv}", "in"),
-            ("button", "i", "in"),
-            ("state", "u", "in"),
-        ],
-    );
-    let builder = add_method(
-        builder,
-        "NotifyPointerAxis",
-        &[
-            ("session_handle", "o", "in"),
-            ("options", "a{sv}", "in"),
-            ("dx", "d", "in"),
-            ("dy", "d", "in"),
-        ],
-    );
-    let builder = add_method(
-        builder,
-        "NotifyPointerAxisDiscrete",
-        &[
-            ("session_handle", "o", "in"),
-            ("options", "a{sv}", "in"),
-            ("axis", "u", "in"),
-            ("steps", "i", "in"),
-        ],
-    );
-    let builder = add_method(
-        builder,
-        "NotifyKeyboardKeycode",
-        &[
-            ("session_handle", "o", "in"),
-            ("options", "a{sv}", "in"),
-            ("keycode", "i", "in"),
-            ("state", "u", "in"),
-        ],
-    );
-    let builder = add_method(
-        builder,
-        "NotifyKeyboardKeysym",
-        &[
-            ("session_handle", "o", "in"),
-            ("options", "a{sv}", "in"),
-            ("keysym", "i", "in"),
-            ("state", "u", "in"),
-        ],
-    );
-    let builder = add_method(
-        builder,
-        "NotifyTouchDown",
-        &[
-            ("session_handle", "o", "in"),
-            ("options", "a{sv}", "in"),
-            ("stream", "u", "in"),
-            ("slot", "u", "in"),
-            ("x", "d", "in"),
-            ("y", "d", "in"),
-        ],
-    );
-    let builder = add_method(
-        builder,
-        "NotifyTouchMotion",
-        &[
-            ("session_handle", "o", "in"),
-            ("options", "a{sv}", "in"),
-            ("stream", "u", "in"),
-            ("slot", "u", "in"),
-            ("x", "d", "in"),
-            ("y", "d", "in"),
-        ],
-    );
-    let builder = add_method(
-        builder,
-        "NotifyTouchUp",
-        &[
-            ("session_handle", "o", "in"),
-            ("options", "a{sv}", "in"),
-            ("slot", "u", "in"),
-        ],
-    );
-    let builder = add_method(
-        builder,
-        "ConnectToEIS",
-        &[
-            ("session_handle", "o", "in"),
-            ("options", "a{sv}", "in"),
-            ("fd", "h", "out"),
-        ],
-    );
-    let builder = builder
-        .child("property")
-        .attr("name", "AvailableDeviceTypes")
-        .attr("type", "u")
-        .attr("access", "read")
-        .end()
-        .child("property")
-        .attr("name", "version")
-        .attr("type", "u")
-        .attr("access", "read")
-        .end();
-    builder.build()
+    xml!(interface, attrs: ["name" = REMOTE_DESKTOP_INTERFACE], children: [
+        (method, attrs: ["name" = "CreateSession"], children: [
+            (arg, attrs: ["name" = "options", "type" = "a{sv}", "direction" = "in"]),
+            (arg, attrs: ["name" = "handle", "type" = "o", "direction" = "out"])
+        ]),
+        (method, attrs: ["name" = "SelectDevices"], children: [
+            (arg, attrs: ["name" = "session_handle", "type" = "o", "direction" = "in"]),
+            (arg, attrs: ["name" = "options", "type" = "a{sv}", "direction" = "in"]),
+            (arg, attrs: ["name" = "handle", "type" = "o", "direction" = "out"])
+        ]),
+        (method, attrs: ["name" = "Start"], children: [
+            (arg, attrs: ["name" = "session_handle", "type" = "o", "direction" = "in"]),
+            (arg, attrs: ["name" = "parent_window", "type" = "s", "direction" = "in"]),
+            (arg, attrs: ["name" = "options", "type" = "a{sv}", "direction" = "in"]),
+            (arg, attrs: ["name" = "handle", "type" = "o", "direction" = "out"])
+        ]),
+        (method, attrs: ["name" = "NotifyPointerMotion"], children: [
+            (arg, attrs: ["name" = "session_handle", "type" = "o", "direction" = "in"]),
+            (arg, attrs: ["name" = "options", "type" = "a{sv}", "direction" = "in"]),
+            (arg, attrs: ["name" = "dx", "type" = "d", "direction" = "in"]),
+            (arg, attrs: ["name" = "dy", "type" = "d", "direction" = "in"])
+        ]),
+        (method, attrs: ["name" = "NotifyPointerMotionAbsolute"], children: [
+            (arg, attrs: ["name" = "session_handle", "type" = "o", "direction" = "in"]),
+            (arg, attrs: ["name" = "options", "type" = "a{sv}", "direction" = "in"]),
+            (arg, attrs: ["name" = "stream", "type" = "u", "direction" = "in"]),
+            (arg, attrs: ["name" = "x", "type" = "d", "direction" = "in"]),
+            (arg, attrs: ["name" = "y", "type" = "d", "direction" = "in"])
+        ]),
+        (method, attrs: ["name" = "NotifyPointerButton"], children: [
+            (arg, attrs: ["name" = "session_handle", "type" = "o", "direction" = "in"]),
+            (arg, attrs: ["name" = "options", "type" = "a{sv}", "direction" = "in"]),
+            (arg, attrs: ["name" = "button", "type" = "i", "direction" = "in"]),
+            (arg, attrs: ["name" = "state", "type" = "u", "direction" = "in"])
+        ]),
+        (method, attrs: ["name" = "NotifyPointerAxis"], children: [
+            (arg, attrs: ["name" = "session_handle", "type" = "o", "direction" = "in"]),
+            (arg, attrs: ["name" = "options", "type" = "a{sv}", "direction" = "in"]),
+            (arg, attrs: ["name" = "dx", "type" = "d", "direction" = "in"]),
+            (arg, attrs: ["name" = "dy", "type" = "d", "direction" = "in"])
+        ]),
+        (method, attrs: ["name" = "NotifyPointerAxisDiscrete"], children: [
+            (arg, attrs: ["name" = "session_handle", "type" = "o", "direction" = "in"]),
+            (arg, attrs: ["name" = "options", "type" = "a{sv}", "direction" = "in"]),
+            (arg, attrs: ["name" = "axis", "type" = "u", "direction" = "in"]),
+            (arg, attrs: ["name" = "steps", "type" = "i", "direction" = "in"])
+        ]),
+        (method, attrs: ["name" = "NotifyKeyboardKeycode"], children: [
+            (arg, attrs: ["name" = "session_handle", "type" = "o", "direction" = "in"]),
+            (arg, attrs: ["name" = "options", "type" = "a{sv}", "direction" = "in"]),
+            (arg, attrs: ["name" = "keycode", "type" = "i", "direction" = "in"]),
+            (arg, attrs: ["name" = "state", "type" = "u", "direction" = "in"])
+        ]),
+        (method, attrs: ["name" = "NotifyKeyboardKeysym"], children: [
+            (arg, attrs: ["name" = "session_handle", "type" = "o", "direction" = "in"]),
+            (arg, attrs: ["name" = "options", "type" = "a{sv}", "direction" = "in"]),
+            (arg, attrs: ["name" = "keysym", "type" = "i", "direction" = "in"]),
+            (arg, attrs: ["name" = "state", "type" = "u", "direction" = "in"])
+        ]),
+        (method, attrs: ["name" = "NotifyTouchDown"], children: [
+            (arg, attrs: ["name" = "session_handle", "type" = "o", "direction" = "in"]),
+            (arg, attrs: ["name" = "options", "type" = "a{sv}", "direction" = "in"]),
+            (arg, attrs: ["name" = "stream", "type" = "u", "direction" = "in"]),
+            (arg, attrs: ["name" = "slot", "type" = "u", "direction" = "in"]),
+            (arg, attrs: ["name" = "x", "type" = "d", "direction" = "in"]),
+            (arg, attrs: ["name" = "y", "type" = "d", "direction" = "in"])
+        ]),
+        (method, attrs: ["name" = "NotifyTouchMotion"], children: [
+            (arg, attrs: ["name" = "session_handle", "type" = "o", "direction" = "in"]),
+            (arg, attrs: ["name" = "options", "type" = "a{sv}", "direction" = "in"]),
+            (arg, attrs: ["name" = "stream", "type" = "u", "direction" = "in"]),
+            (arg, attrs: ["name" = "slot", "type" = "u", "direction" = "in"]),
+            (arg, attrs: ["name" = "x", "type" = "d", "direction" = "in"]),
+            (arg, attrs: ["name" = "y", "type" = "d", "direction" = "in"])
+        ]),
+        (method, attrs: ["name" = "NotifyTouchUp"], children: [
+            (arg, attrs: ["name" = "session_handle", "type" = "o", "direction" = "in"]),
+            (arg, attrs: ["name" = "options", "type" = "a{sv}", "direction" = "in"]),
+            (arg, attrs: ["name" = "slot", "type" = "u", "direction" = "in"])
+        ]),
+        (method, attrs: ["name" = "ConnectToEIS"], children: [
+            (arg, attrs: ["name" = "session_handle", "type" = "o", "direction" = "in"]),
+            (arg, attrs: ["name" = "options", "type" = "a{sv}", "direction" = "in"]),
+            (arg, attrs: ["name" = "fd", "type" = "h", "direction" = "out"])
+        ]),
+        (property, attrs: ["name" = "AvailableDeviceTypes", "type" = "u", "access" = "read"]),
+        (property, attrs: ["name" = "version", "type" = "u", "access" = "read"]),
+    ])
 }
 
 pub fn register<T: codevar_dbus::DbusTransport + 'static>(ctx: &mut PortalContext<T>) -> XdpResult<()> {
@@ -639,7 +561,10 @@ pub fn register<T: codevar_dbus::DbusTransport + 'static>(ctx: &mut PortalContex
         ("SelectDevices", handle_select_devices),
         ("Start", handle_start),
         ("NotifyPointerMotion", handle_notify_pointer_motion),
-        ("NotifyPointerMotionAbsolute", handle_notify_pointer_motion_absolute),
+        (
+            "NotifyPointerMotionAbsolute",
+            handle_notify_pointer_motion_absolute,
+        ),
         ("NotifyPointerButton", handle_notify_pointer_button),
         ("NotifyPointerAxis", handle_notify_pointer_axis),
         ("NotifyPointerAxisDiscrete", handle_notify_pointer_axis_discrete),
@@ -679,7 +604,10 @@ mod tests {
     #[test]
     fn create_session_keeps_tokens_and_drops_unknown() {
         let mut options = OptionMap::new();
-        options.insert(String::from("handle_token"), PortalValue::Str(String::from("abc123")));
+        options.insert(
+            String::from("handle_token"),
+            PortalValue::Str(String::from("abc123")),
+        );
         options.insert(
             String::from("session_handle_token"),
             PortalValue::Str(String::from("sess1")),
@@ -704,7 +632,10 @@ mod tests {
     fn select_devices_accepts_persist_mode() {
         let mut options = OptionMap::new();
         options.insert(String::from("persist_mode"), PortalValue::U32(2));
-        options.insert(String::from("restore_token"), PortalValue::Str(String::from("tok")));
+        options.insert(
+            String::from("restore_token"),
+            PortalValue::Str(String::from("tok")),
+        );
         let filtered = filter_options(&options, SELECT_DEVICES_OPTIONS).unwrap();
         assert_eq!(filtered.len(), 2);
     }

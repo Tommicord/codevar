@@ -25,27 +25,36 @@ use alloc::string::ToString;
 
 use crate::xdp_context::{MethodInvocation, PortalContext, PortalFn};
 use crate::xdp_error::{PortalError, XdpResult};
-use crate::xdp_permissions::{Permission, get_permission, set_permission};
 use crate::xdp_utils::{OptionKey, OptionMap, PortalValue, filter_options};
 use codevar_dbus::BodyWriter;
 
 const SCREENSHOT_INTERFACE: &str = "org.freedesktop.portal.Screenshot";
 const SCREENSHOT_IMPL_INTERFACE: &str = "org.freedesktop.impl.portal.Screenshot";
-const SCREENSHOT_ACCESS_INTERFACE: &str = "org.freedesktop.impl.portal.Access";
 const SCREENSHOT_VERSION: u32 = 3;
-const DESKTOP_PATH: &str = "/org/freedesktop/portal/desktop";
 
 const SCREENSHOT_TARGET_SCREEN: u32 = 1u32 << 0;
 const SCREENSHOT_TARGET_WINDOW: u32 = 1u32 << 1;
 const SCREENSHOT_TARGET_AREA: u32 = 1u32 << 2;
 const SCREENSHOT_TARGET_ACTIVE_WINDOW: u32 = 1u32 << 3;
+const SCREENSHOT_TARGET_MASK: u32 = SCREENSHOT_TARGET_SCREEN
+    | SCREENSHOT_TARGET_WINDOW
+    | SCREENSHOT_TARGET_AREA
+    | SCREENSHOT_TARGET_ACTIVE_WINDOW;
 
-const SCREENSHOT_PERMISSION_TABLE: &str = "screenshot";
-const SCREENSHOT_PERMISSION_ID: &str = "screenshot";
+fn validate_target(_key: &str, value: &PortalValue, _options: &OptionMap) -> Result<(), PortalError> {
+    if let PortalValue::U32(target) = value
+        && *target & !SCREENSHOT_TARGET_MASK != 0
+    {
+        return Err(PortalError::InvalidArgument(format!(
+            "Invalid screenshot target: {target}"
+        )));
+    }
+    Ok(())
+}
 
 const SCREENSHOT_OPTIONS_V3: &[OptionKey] = &[
     OptionKey::new("parent_window", "s"),
-    OptionKey::new("target", "u"),
+    OptionKey::with_validate("target", "u", validate_target),
     OptionKey::new("modal", "b"),
     OptionKey::new("handle_token", "s"),
     OptionKey::new("multiple", "b"),

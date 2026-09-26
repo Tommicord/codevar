@@ -21,16 +21,19 @@
 //!
 //! ## Fluent builder
 //!
-//! Use [`PathBuilder`] to construct validated paths step by step:
+//! Use [`PathBuilder`] to construct validated paths step by step.
+//! Setters are infallible and only accumulate raw components;
+//! [`PathBuilder::build`] tokenizes, validates every component, and
+//! normalises the result:
 //!
 //! ```rust
 //! # use codevar_base::basic_pathbuf::PathBuilder;
 //! let path = PathBuilder::new()
 //!     .root()
-//!     .push("usr").unwrap()
-//!     .push("local").unwrap()
-//!     .file("bin").unwrap()
-//!     .with_extension("sh").unwrap()
+//!     .push("usr")
+//!     .push("local")
+//!     .file("bin")
+//!     .with_extension("sh")
 //!     .build()
 //!     .expect("valid path");
 //! assert_eq!(path.as_str(), "/usr/local/bin.sh");
@@ -59,7 +62,6 @@
 
 use alloc::borrow::ToOwned;
 use alloc::string::String;
-use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
@@ -114,6 +116,7 @@ impl PathBuf {
     /// Returns [`PathError::Empty`] when `path` is empty, or
     /// [`PathError::InvalidCharacter`] when `path` contains a NUL or
     /// control character.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(path: &str) -> Result<Self, PathError> {
         validate(path)?;
         Ok(Self {
@@ -181,12 +184,25 @@ impl PathBuf {
     ///
     /// # Errors
     ///
-    /// Returns [`PathError::InvalidCharacter`] when `component` is not
-    /// valid.
+    /// Returns [`PathError::Empty`] when `component` is empty,
+    /// [`PathError::ReservedName`] when it is `"."` or `".."`, or
+    /// [`PathError::InvalidCharacter`] when it contains a NUL or
+    /// control character.
     pub fn push(&mut self, component: &str) -> Result<&mut Self, PathError> {
         validate_component(component)?;
+        self.append_unvalidated(component);
+        Ok(self)
+    }
+
+    /// Appends `component` using the joining rules of [`push`] but
+    /// without validating it.
+    ///
+    /// Validation is the caller's responsibility: [`PathBuilder::build`]
+    /// validates every accumulated component before producing a
+    /// [`PathBuf`].
+    fn append_unvalidated(&mut self, component: &str) {
         if component.is_empty() {
-            return Ok(self);
+            return;
         }
         if component.starts_with('/') {
             self.inner = component.trim_end_matches('/').to_owned();
@@ -197,7 +213,6 @@ impl PathBuf {
             self.inner
                 .push_str(component.trim_end_matches('/'));
         }
-        Ok(self)
     }
 
     /// Appends a path component like [`push`].
@@ -312,6 +327,20 @@ impl PathBuf {
                 }
             }
         }
+    }
+
+    /// Sets the extension of the last component without validating
+    /// `ext`.
+    ///
+    /// Validation is the caller's responsibility: [`PathBuilder::build`]
+    /// validates every accumulated component before producing a
+    /// [`PathBuf`].
+    fn set_extension_unvalidated(&mut self, ext: &str) {
+        if let Some(idx) = self.inner.rfind('.') {
+            self.inner.truncate(idx);
+        }
+        self.inner.push('.');
+        self.inner.push_str(ext);
     }
 
     /// Returns a new [`PathBuf`] with the last component replaced by
@@ -462,10 +491,14 @@ impl<'a> Iterator for Ancestors<'a> {
 }
 
 /// Fluent builder for constructing a validated [`PathBuf`].
+///
+/// The responsibilities are split in two: the setters only accumulate
+/// raw components and are infallible, while [`build`](Self::build)
+/// tokenizes the accumulated path, validates each component, and
+/// normalises the result.
 #[derive(Debug, Clone)]
 pub struct PathBuilder {
     buf: PathBuf,
-    built: bool,
 }
 
 impl PathBuilder {
@@ -473,10 +506,7 @@ impl PathBuilder {
     #[inline]
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            buf: PathBuf::new(),
-            built: false,
-        }
+        Self { buf: PathBuf::new() }
     }
 
     /// Sets the path to start from the root (`/`).
@@ -485,47 +515,56 @@ impl PathBuilder {
         self
     }
 
-    /// Pushes a path segment.
-    pub fn push(mut self, component: &str) -> Result<Self, PathError> {
-        validate_component(component)?;
-        self.buf.push(component)?;
-        Ok(self)
+    /// Appends a path segment.
+    ///
+    /// The segment is stored as-is; it is validated by
+    /// [`build`](Self::build).
+    pub fn push(mut self, component: &str) -> Self {
+        self.buf.append_unvalidated(component);
+        self
     }
 
-    /// Appends a path segment.
-    pub fn join(self, component: &str) -> Result<Self, PathError> {
+    /// Appends a path segment. Alias for [`push`](Self::push).
+    pub fn join(self, component: &str) -> Self {
         self.push(component)
     }
 
     /// Sets the final component of the path as a file name.
-    pub fn file(mut self, name: &str) -> Result<Self, PathError> {
-        validate_component(name)?;
-        self.buf.push(name)?;
-        Ok(self)
+    ///
+    /// The name is stored as-is; it is validated by
+    /// [`build`](Self::build).
+    pub fn file(self, name: &str) -> Self {
+        self.push(name)
     }
 
     /// Sets the extension of the final component.
-    pub fn with_extension(mut self, ext: &str) -> Result<Self, PathError> {
-        validate_component(ext)?;
-        self.buf.set_extension(Some(ext));
-        Ok(self)
+    ///
+    /// The extension is stored as-is; it is validated by
+    /// [`build`](Self::build).
+    pub fn with_extension(mut self, ext: &str) -> Self {
+        self.buf.set_extension_unvalidated(ext);
+        self
     }
 
-    /// Builds the [`PathBuf`], validating and normalising the path.
+    /// Builds the [`PathBuf`].
+    ///
+    /// Validates the full path with [`validate`], tokenizes it into
+    /// components and validates each one with [`validate_component`],
+    /// and finally normalises `.`/`..` segments and repeated
+    /// separators.
     ///
     /// # Errors
     ///
-    /// Returns [`PathError::Empty`] when the path is empty, or
-    /// [`PathError::InvalidCharacter`] when it contains invalid bytes.
+    /// Returns [`PathError::Empty`] when the path is empty,
+    /// [`PathError::InvalidCharacter`] when it contains a NUL or
+    /// control character, or [`PathError::ReservedName`] when a
+    /// component is `"."`, `".."`, or a Windows reserved name.
     pub fn build(self) -> Result<PathBuf, PathError> {
-        if self.built {
-            return Err(PathError::InvalidCharacter(0));
-        }
         let mut p = self.buf;
-        if p.is_empty() {
-            return Err(PathError::Empty);
-        }
         validate(p.as_str())?;
+        for component in p.components() {
+            validate_component(component)?;
+        }
         p.inner = p.normalize().into_string();
         Ok(p)
     }
@@ -807,6 +846,7 @@ mod unix {
 #[cfg(windows)]
 mod windows {
     use super::*;
+    use alloc::vec;
     use core::ffi::c_void;
 
     windows_link::link!(
@@ -942,6 +982,8 @@ mod windows {
 /// UTF-16 encoding helper for Windows.
 #[cfg(windows)]
 mod encode_utf16 {
+    use alloc::vec::Vec;
+
     pub(super) fn encode_utf16(input: &[u8], out: &mut Vec<u16>) {
         let mut i = 0;
         while i < input.len() {
@@ -1023,8 +1065,6 @@ fn is_windows_drive_absolute(path: &str) -> bool {
         _ => false,
     }
 }
-
-// ──── URI conversion ─────────────────────────────────────────
 
 /// Characters that may appear unescaped in a `file:` URI path segment.
 const fn is_uri_path_safe(byte: u8) -> bool {
@@ -1454,7 +1494,6 @@ mod tests {
         let p = PathBuilder::new()
             .root()
             .push("a")
-            .unwrap()
             .build()
             .unwrap();
         assert_eq!(p.as_str(), "/a");
@@ -1465,9 +1504,7 @@ mod tests {
         let p = PathBuilder::new()
             .root()
             .push("a")
-            .unwrap()
             .push("b")
-            .unwrap()
             .build()
             .unwrap();
         assert_eq!(p.as_str(), "/a/b");
@@ -1478,9 +1515,7 @@ mod tests {
         let p = PathBuilder::new()
             .root()
             .push("a")
-            .unwrap()
             .file("b")
-            .unwrap()
             .build()
             .unwrap();
         assert_eq!(p.as_str(), "/a/b");
@@ -1491,11 +1526,8 @@ mod tests {
         let p = PathBuilder::new()
             .root()
             .push("a")
-            .unwrap()
             .file("b")
-            .unwrap()
             .with_extension("txt")
-            .unwrap()
             .build()
             .unwrap();
         assert_eq!(p.as_str(), "/a/b.txt");
@@ -1506,13 +1538,9 @@ mod tests {
         let p = PathBuilder::new()
             .root()
             .push("usr")
-            .unwrap()
             .push("local")
-            .unwrap()
             .file("bin")
-            .unwrap()
             .with_extension("sh")
-            .unwrap()
             .build()
             .unwrap();
         assert_eq!(p.as_str(), "/usr/local/bin.sh");
@@ -1526,9 +1554,18 @@ mod tests {
     #[test]
     fn test_builder_rejects_invalid_component() {
         assert!(matches!(
-            PathBuilder::new().root().push("foo\x00bar"),
+            PathBuilder::new()
+                .root()
+                .push("foo\x00bar")
+                .build(),
             Err(PathError::InvalidCharacter(_))
         ));
+    }
+
+    #[test]
+    fn test_builder_validates_components_at_build() {
+        let builder = PathBuilder::new().root().push("..");
+        assert!(matches!(builder.build(), Err(PathError::ReservedName)));
     }
     #[test]
     fn test_validate_accepts_valid() {

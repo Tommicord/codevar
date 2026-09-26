@@ -34,15 +34,6 @@ const NOTIFICATION_VERSION: u32 = 2;
 
 const SUPPORTED_PRIORITIES: &[&str] = &["low", "normal", "high", "urgent"];
 
-const SUPPORTED_BUTTON_PURPOSES: &[&str] = &[
-    "system.custom-alert",
-    "im.reply-with-text",
-    "im.call-invitation",
-    "im.dismiss",
-    "im.accept",
-    "im.decline",
-];
-
 const NOTIFICATION_OPTIONS: &[OptionKey] = &[
     OptionKey::new("title", "s"),
     OptionKey::new("body", "s"),
@@ -51,7 +42,7 @@ const NOTIFICATION_OPTIONS: &[OptionKey] = &[
     OptionKey::new("actions", "a(sv)"),
     OptionKey::new("persistent", "b"),
     OptionKey::new("urgency", "s"),
-    OptionKey::new("priority", "s"),
+    OptionKey::with_validate("priority", "s", validate_priority),
     OptionKey::new("timeout", "i"),
     OptionKey::new("sound", "s"),
     OptionKey::new("image", "s"),
@@ -61,13 +52,13 @@ const NOTIFICATION_OPTIONS: &[OptionKey] = &[
 ];
 
 fn validate_priority(_key: &str, value: &PortalValue, _options: &OptionMap) -> Result<(), PortalError> {
-    if let PortalValue::Str(s) = value {
-        if !SUPPORTED_PRIORITIES.contains(&s.as_str()) {
-            return Err(PortalError::InvalidArgument(format!(
-                "Invalid priority '{}', must be one of {:?}",
-                s, SUPPORTED_PRIORITIES
-            )));
-        }
+    if let PortalValue::Str(s) = value
+        && !SUPPORTED_PRIORITIES.contains(&s.as_str())
+    {
+        return Err(PortalError::InvalidArgument(format!(
+            "Invalid priority '{}', must be one of {:?}",
+            s, SUPPORTED_PRIORITIES
+        )));
     }
     Ok(())
 }

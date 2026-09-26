@@ -25,18 +25,12 @@ use alloc::string::ToString;
 
 use crate::xdp_context::{MethodInvocation, PortalContext, PortalFn};
 use crate::xdp_error::{PortalError, XdpResult};
-use crate::xdp_permissions::{Permission, get_permission, set_permission};
 use crate::xdp_utils::{OptionKey, OptionMap, PortalValue, filter_options};
 use codevar_dbus::BodyWriter;
 
 const WALLPAPER_INTERFACE: &str = "org.freedesktop.portal.Wallpaper";
 const WALLPAPER_IMPL_INTERFACE: &str = "org.freedesktop.impl.portal.Wallpaper";
-const WALLPAPER_ACCESS_INTERFACE: &str = "org.freedesktop.impl.portal.Access";
 const WALLPAPER_VERSION: u32 = 1;
-const DESKTOP_PATH: &str = "/org/freedesktop/portal/desktop";
-
-const WALLPAPER_PERMISSION_TABLE: &str = "wallpaper";
-const WALLPAPER_PERMISSION_ID: &str = "wallpaper";
 
 fn validate_set_on(_key: &str, value: &PortalValue, _options: &OptionMap) -> Result<(), PortalError> {
     if let PortalValue::Str(s) = value

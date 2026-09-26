@@ -25,7 +25,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::time::Duration;
 
-use codevar_base::basic_xml::{XmlBuilder, XmlDocument};
+use codevar_base::basic_xml::XmlBuilder;
 use codevar_dbus::{
     BodyWriter, Connection, DbusError, DbusMessage, DbusReader, DbusResult, DbusTransport, MessageKind,
 };

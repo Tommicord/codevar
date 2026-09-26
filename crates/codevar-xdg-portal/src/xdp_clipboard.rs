@@ -24,7 +24,6 @@ use codevar_base::xml;
 
 use crate::xdp_context::{MethodInvocation, PortalContext, PortalFn, PortalInterface};
 use crate::xdp_error::{PortalError, XdpResult};
-use crate::xdp_request::extract_handle_token;
 use crate::xdp_utils::{OptionKey, OptionMap, PortalValue, encode_options, filter_options};
 
 const CLIPBOARD_INTERFACE: &str = "org.freedesktop.portal.Clipboard";
@@ -40,7 +39,7 @@ fn handle_request_clipboard<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let session_handle = reader.read_object_path()?.to_string();
+    let _session_handle = reader.read_object_path()?.to_string();
     let options = crate::xdp_utils::decode_options(&mut reader)?;
 
     let filtered = filter_options(&options, REQUEST_CLIPBOARD_OPTIONS)?;
@@ -70,7 +69,7 @@ fn handle_set_selection<T: codevar_dbus::DbusTransport + 'static>(
     inv: &MethodInvocation,
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
-    let session_handle = reader.read_object_path()?.to_string();
+    let _session_handle = reader.read_object_path()?.to_string();
     let options = crate::xdp_utils::decode_options(&mut reader)?;
 
     let filtered = filter_options(&options, SET_SELECTION_OPTIONS)?;

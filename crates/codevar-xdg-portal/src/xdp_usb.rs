@@ -69,14 +69,6 @@ fn read_device_entry(reader: &mut DbusReader<'_>) -> XdpResult<(String, OptionMa
     Ok((id, props))
 }
 
-fn validate_usb_bool(_key: &str, _value: &PortalValue, _options: &OptionMap) -> Result<(), PortalError> {
-    Ok(())
-}
-
-fn validate_usb_string(_key: &str, _value: &PortalValue, _options: &OptionMap) -> Result<(), PortalError> {
-    Ok(())
-}
-
 const CREATE_SESSION_OPTIONS: &[OptionKey] = &[OptionKey::new("session_handle_token", "s")];
 
 const ENUMERATE_DEVICES_OPTIONS: &[OptionKey] = &[];
@@ -125,15 +117,10 @@ fn handle_enumerate_devices<T: codevar_dbus::DbusTransport + 'static>(
 
     let _filtered = filter_options(&options, ENUMERATE_DEVICES_OPTIONS)?;
     let app_info = crate::xdp_app_info::AppInfo::host(&inv.sender);
-    let reply = ctx.call_impl(
-        USB_IMPL_INTERFACE,
-        "EnumerateDevices",
-        CALL_TIMEOUT,
-        |bw| {
-            bw.write_str(app_info.id())?;
-            bw.write_array("{sv}", |_| Ok(()))
-        },
-    )?;
+    let reply = ctx.call_impl(USB_IMPL_INTERFACE, "EnumerateDevices", CALL_TIMEOUT, |bw| {
+        bw.write_str(app_info.id())?;
+        bw.write_array("{sv}", |_| Ok(()))
+    })?;
 
     let mut reply_reader = reply.body_reader();
     let mut devices_array = reply_reader.read_array(8)?;
@@ -170,6 +157,7 @@ fn handle_acquire_devices<T: codevar_dbus::DbusTransport + 'static>(
     let mut devices = Vec::new();
     while !devices_array.is_empty() {
         let (device_id, device_options) = read_device_entry(&mut devices_array)?;
+        let device_options = filter_options(&device_options, ACQUIRE_DEVICES_DEVICE_OPTIONS)?;
         devices.push((device_id, device_options));
     }
 
@@ -207,28 +195,27 @@ fn handle_finish_acquire_devices<T: codevar_dbus::DbusTransport + 'static>(
 ) -> XdpResult<()> {
     let mut reader = inv.body_reader();
     let handle_path = reader.read_object_path()?.to_string();
-    let _options = crate::xdp_utils::decode_options(&mut reader)?;
+    let options = crate::xdp_utils::decode_options(&mut reader)?;
+    let _filtered = filter_options(&options, FINISH_ACQUIRE_DEVICES_OPTIONS)?;
 
     let handle = ctx
         .take_request(&handle_path)
         .ok_or_else(|| PortalError::NotFound("Request not found".to_string()))?;
-    let reply = ctx.call_impl(
-        USB_IMPL_INTERFACE,
-        "FinishAcquireDevices",
-        CALL_TIMEOUT,
-        |bw| {
-            bw.write_object_path(&handle_path)?;
-            bw.write_array("{sv}", |_| Ok(()))
-        },
-    )?;
+    let reply = ctx.call_impl(USB_IMPL_INTERFACE, "FinishAcquireDevices", CALL_TIMEOUT, |bw| {
+        bw.write_object_path(&handle_path)?;
+        bw.write_array("{sv}", |_| Ok(()))
+    })?;
     let mut results = Vec::new();
-    let mut finished = false;
+    let finished;
     {
         let mut reply_reader = reply.body_reader();
         let mut results_array = reply_reader.read_array(8)?;
         while !results_array.is_empty() && results.len() < MAX_DEVICES_PER_FINISH {
             let (device_id, props) = read_device_entry(&mut results_array)?;
-            let result = props.get("result").map(value_as_string).unwrap_or_default();
+            let result = props
+                .get("result")
+                .map(value_as_string)
+                .unwrap_or_default();
             results.push((device_id, result));
         }
         finished = reply_reader.read_bool().unwrap_or(false);
@@ -260,16 +247,11 @@ fn handle_release_devices<T: codevar_dbus::DbusTransport + 'static>(
     let _filtered = filter_options(&_options, RELEASE_DEVICES_OPTIONS)?;
     let app_info = crate::xdp_app_info::AppInfo::host(&inv.sender);
 
-    ctx.call_impl(
-        USB_IMPL_INTERFACE,
-        "ReleaseDevices",
-        CALL_TIMEOUT,
-        |bw| {
-            bw.write_str(app_info.id())?;
-            bw.write_array("s", |_| Ok(()))?;
-            bw.write_array("{sv}", |_| Ok(()))
-        },
-    )?;
+    ctx.call_impl(USB_IMPL_INTERFACE, "ReleaseDevices", CALL_TIMEOUT, |bw| {
+        bw.write_str(app_info.id())?;
+        bw.write_array("s", |_| Ok(()))?;
+        bw.write_array("{sv}", |_| Ok(()))
+    })?;
     ctx.reply_empty(inv)
 }
 
