@@ -204,13 +204,14 @@ fn run() -> WlResult<String> {
 
     // Safety: the pool mapping is live and `paint` stays inside it.
     unsafe { pool.paint(0) };
-    attach_frame(&mut display, surface, buffer)?;
-    display.flush()?;
 
     let mut frames = 0u32;
     while frames < FRAME_BUDGET && !closed.get() && Instant::now() < deadline {
+        // One batch: attach, damage, frame, commit — the callback must
+        // already be pending when the compositor processes the commit,
+        // matching what reference clients (weston simple-shm) do.
+        let frame = queue_frame(&mut display, surface, buffer)?;
         let frame_done = Rc::new(Cell::new(false));
-        let frame = display.marshal_new_id(surface, SURFACE_FRAME, Vec::new())?;
         {
             let frame_done = Rc::clone(&frame_done);
             display.add_callback_listener(frame, move |_, _| {
@@ -219,8 +220,13 @@ fn run() -> WlResult<String> {
             })?;
         }
         display.flush()?;
+        let mut spins = 0u32;
         while !frame_done.get() && !closed.get() && Instant::now() < deadline {
-            display.dispatch(Some(Duration::from_millis(50)))?;
+            let seen = display.dispatch(Some(Duration::from_millis(50)))?;
+            spins += 1;
+            if std::env::var_os("CODEVAR_XDG_DEBUG").is_some() {
+                eprintln!("[dbg] frame={frames} spin={spins} seen={seen} done={} closed={}", frame_done.get(), closed.get());
+            }
         }
         if !frame_done.get() {
             break;
@@ -229,7 +235,6 @@ fn run() -> WlResult<String> {
         frames += 1;
         // Safety: the pool mapping is live and `paint` stays inside it.
         unsafe { pool.paint(frames) };
-        attach_frame(&mut display, surface, buffer)?;
     }
     display.flush()?;
 
@@ -266,12 +271,15 @@ fn bind(
     display.registry_bind(registry, name, interface, version.min(interface.version))
 }
 
-/// Queues the frame the mapped buffer will show next.
-fn attach_frame(
+/// Queues the frame the mapped buffer will show next in a single batch:
+/// `attach`, `damage`, `frame` and `commit` are written to the socket
+/// together, so the frame callback is pending before the compositor
+/// processes the commit that triggers the repaint.
+fn queue_frame(
     display: &mut WlClientDisplay<WlUnixTransport>,
     surface: WlProxyId,
     buffer: WlProxyId,
-) -> WlResult<()> {
+) -> WlResult<WlProxyId> {
     display.marshal_request(
         surface,
         SURFACE_ATTACH,
@@ -291,7 +299,9 @@ fn attach_frame(
             WlArgument::Int(HEIGHT),
         ],
     )?;
-    display.marshal_request(surface, SURFACE_COMMIT, Vec::new())
+    let frame = display.marshal_new_id(surface, SURFACE_FRAME, Vec::new())?;
+    display.marshal_request(surface, SURFACE_COMMIT, Vec::new())?;
+    Ok(frame)
 }
 
 /// A shared memory pool mapped into this process.
