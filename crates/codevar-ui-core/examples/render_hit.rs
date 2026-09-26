@@ -304,8 +304,7 @@ fn run() -> ExampleResult<String> {
         preferred_modifiers(&state.format_table, &state.tranche_indices)
     };
     let modifiers = if modifiers.is_empty() {
-        let legacy = legacy_modifiers.borrow().clone();
-        legacy
+        legacy_modifiers.borrow().clone()
     } else {
         modifiers
     };
@@ -399,7 +398,9 @@ fn run() -> ExampleResult<String> {
         // One frame: record, submit, export completion, wait for the GPU
         // so the committed pixels are final (the alternative would be
         // implicit dma-buf fencing alone).
-        let sync_file = renderer.draw_frame(None)?;
+        renderer.begin_frame(None)?;
+        renderer.render_frame()?;
+        let sync_file = renderer.end_frame()?;
         wait_for_gpu(&sync_file)?;
         drop(sync_file);
 
@@ -468,12 +469,15 @@ struct Feedback {
     done: bool,
 }
 
+/// Named Globals for interface binding
+type Globals = Rc<RefCell<Vec<(u32, String, u32)>>>;
+
 /// Binds `interface` to the global of the same name announced by the
 /// registry.
 fn bind(
     display: &mut WlClientDisplay<WlUnixTransport>,
     registry: WlProxyId,
-    globals: &Rc<RefCell<Vec<(u32, String, u32)>>>,
+    globals: &Globals,
     interface: &'static WlInterface,
 ) -> WlResult<WlProxyId> {
     let (name, version) = global_named(globals, interface.name)?;
@@ -481,7 +485,7 @@ fn bind(
 }
 
 /// Returns `(name, version)` of the global called `interface`.
-fn global_named(globals: &Rc<RefCell<Vec<(u32, String, u32)>>>, interface: &str) -> WlResult<(u32, u32)> {
+fn global_named(globals: &Globals, interface: &str) -> WlResult<(u32, u32)> {
     globals
         .borrow()
         .iter()
@@ -586,10 +590,11 @@ fn preferred_modifiers(table: &[u8], tranche_indices: &[u32]) -> Vec<u64> {
         return modifiers;
     }
     for &index in tranche_indices {
-        if let Some(&(format, modifier)) = entries.get(index as usize) {
-            if format == DRM_FORMAT_XRGB8888 && !modifiers.contains(&modifier) {
-                modifiers.push(modifier);
-            }
+        if let Some(&(format, modifier)) = entries.get(index as usize)
+            && format == DRM_FORMAT_XRGB8888
+            && !modifiers.contains(&modifier)
+        {
+            modifiers.push(modifier);
         }
     }
     modifiers

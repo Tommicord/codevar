@@ -62,7 +62,7 @@
 //!   transference has the same side effects on the source semaphore's
 //!   payload as executing a semaphore wait operation"), SYNC_FD has *copy*
 //!   transference, so a successful export consumes (unsignals) the binary
-//!   semaphore. Export is only valid while the semaphore is signalled or
+//!   semaphore. Export is only valid while the semaphore is signaled or
 //!   its signal operation is pending
 //!   (VUID-VkSemaphoreGetFdInfoKHR-handleType-01135), which is why it
 //!   happens immediately after `vkQueueSubmit`.
@@ -749,7 +749,6 @@ impl<'p> RendererSubsystem<'p> {
                 "the subsystem is running without a command buffer",
             ));
         }
-
         // Wait for the previous submission, then retire its sync objects.
         if let Some(fence) = self.frame_fence {
             // SAFETY: `fence` was created by this subsystem, is waited on
@@ -796,7 +795,7 @@ impl<'p> RendererSubsystem<'p> {
                 return Err(err);
             }
         };
-        // A fresh unsignaled fence: it is signalled by this frame's submit
+        // A fresh unsignaled fence: it is signaled by this frame's submit
         // and waited on at the start of the next one (no reset needed).
         let fence = match self.create_frame_fence() {
             Ok(fence) => fence,
@@ -811,7 +810,6 @@ impl<'p> RendererSubsystem<'p> {
                 return Err(err);
             }
         };
-
         self.frame_fence = Some(fence);
         self.frame_wait_sem = wait_semaphore;
         self.frame_signal_sem = Some(signal_semaphore);
@@ -841,7 +839,6 @@ impl<'p> RendererSubsystem<'p> {
             self.discard_unsubmitted_frame();
             return Err(err);
         }
-
         let context = self.context;
         let device = context.device();
         let fence = self
@@ -917,20 +914,6 @@ impl<'p> RendererSubsystem<'p> {
         Ok(sync_file)
     }
 
-    /// Convenience wrapper running [`RendererSubsystem::begin_frame`],
-    /// [`RendererSubsystem::render_frame`] and
-    /// [`RendererSubsystem::end_frame`] in one call.
-    ///
-    /// # Errors
-    ///
-    /// Returns whichever error any of the three steps returns (see their
-    /// documentation).
-    pub fn draw_frame(&mut self, wait_sync_file: Option<OwnedFd>) -> Result<OwnedFd, RendererError> {
-        self.begin_frame(wait_sync_file)?;
-        self.render_frame()?;
-        self.end_frame()
-    }
-
     /// Checks that the subsystem is running.
     fn require_running(&self, operation: &'static str) -> Result<(), RendererError> {
         if self.state == RendererState::Running {
@@ -966,7 +949,6 @@ impl<'p> RendererSubsystem<'p> {
             .ok_or(RendererError::Internal(
                 "frame recording requested without a command buffer",
             ))?;
-
         let begin_info =
             vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
         // SAFETY: the command buffer was allocated from this pool and the
@@ -999,10 +981,9 @@ impl<'p> RendererSubsystem<'p> {
                 &[to_attachment],
             );
         }
-
         let clear_value = vk::ClearValue {
             color: vk::ClearColorValue {
-                float32: [0.05, 0.06, 0.09, 1.0],
+                float32: [0.00, 0.00, 0.00, 1.0],
             },
         };
         let color_attachment = vk::RenderingAttachmentInfo::default()
@@ -1037,13 +1018,12 @@ impl<'p> RendererSubsystem<'p> {
             min_depth: 0.0,
             max_depth: 1.0,
         };
-        // SAFETY: the command buffer is inside a begin/end rendering scope
+        // SAFETY: the command buffer is inside begin/end rendering scope
         // and pipelines are created with VIEWPORT/SCISSOR as dynamic states.
         unsafe {
             device.cmd_set_viewport(command_buffer, 0, core::slice::from_ref(&viewport));
             device.cmd_set_scissor(command_buffer, 0, core::slice::from_ref(&render_area));
         }
-
         let layer_result = {
             let mut frame = FrameContext::new(
                 device,
@@ -1158,14 +1138,14 @@ impl<'p> RendererSubsystem<'p> {
         Ok(())
     }
 
-    /// Exports a signalled (or pending-signal) binary semaphore as a new
+    /// Exports a signaled (or pending-signal) binary semaphore as a new
     /// `sync_file` fd representing GPU completion.
     fn export_sync_fd(&self, semaphore: vk::Semaphore) -> Result<OwnedFd, RendererError> {
         let get_info = vk::SemaphoreGetFdInfoKHR::default()
             .semaphore(semaphore)
             .handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD);
         // SAFETY: the semaphore was created with SYNC_FD in
-        // `VkExportSemaphoreCreateInfo` and is signalled or has a pending
+        // `VkExportSemaphoreCreateInfo` and is signaled or has a pending
         // signal operation (it was just submitted), satisfying
         // VUID-VkSemaphoreGetFdInfoKHR-handleType-01132/01135.
         let raw_fd = unsafe {
@@ -1175,7 +1155,7 @@ impl<'p> RendererSubsystem<'p> {
         }
         .map_err(RendererError::SemaphoreExport)?;
         if raw_fd < 0 {
-            // The Vulkan spec allows `-1` to mean "already signalled", but a
+            // The Vulkan spec allows `-1` to mean "already signaled", but a
             // `sync_file` fd is what the presentation layer needs; treat it
             // as an error.
             return Err(RendererError::Internal(
@@ -1188,7 +1168,7 @@ impl<'p> RendererSubsystem<'p> {
     }
 
     /// Destroys the frame's fence and semaphores. Only called after the
-    /// frame fence signalled, after a failed submission (nothing on the
+    /// frame fence signaled, after a failed submission (nothing on the
     /// queue) or from `Drop` after `device_wait_idle`.
     fn retire_frame_sync(&mut self) {
         let device = self.context.device();
