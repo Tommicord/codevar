@@ -22,7 +22,7 @@
 //! It directly implements the freedesktop.org trash specification
 //! (https://specifications.freedesktop.org/trash-spec/latest/).
 
-use codevar_base::basic_xml::XmlBuilder;
+use codevar_base::xml;
 
 use crate::xdp_context::{MethodInvocation, PortalContext, PortalFn};
 use crate::xdp_error::{PortalError, XdpResult};
@@ -30,7 +30,7 @@ use crate::xdp_utils::env_var;
 use alloc::ffi::CString;
 use alloc::format;
 use alloc::string::{String, ToString};
-use codevar_base::basic_pathbuf::PathBuf;
+use codevar_base::basic_pathbuf::{PathBuf, PathBuilder};
 
 const TRASH_INTERFACE: &str = "org.freedesktop.portal.Trash";
 const TRASH_VERSION: u32 = 1;
@@ -190,11 +190,19 @@ fn handle_trash_file<T: codevar_dbus::DbusTransport + 'static>(
         .map(ToString::to_string)
         .ok_or_else(|| PortalError::InvalidArgument("Invalid file path".to_string()))?;
     let unique_name = unix_trash::get_unique_name(&base_name, &files_dir);
-    let info_name = format!("{}.trashinfo", unique_name);
-    let dest_path = format!("{}/{}", files_dir, unique_name);
+    let info_name = PathBuilder::new()
+        .file(unique_name.as_str())
+        .extension("trashinfo")
+        .build()
+        .map_err(|_| PortalError::Failed("malformed trashinfo file path".to_string()))?;
+    let dest_path = PathBuilder::new()
+        .push(files_dir.as_str())
+        .file(unique_name.as_str())
+        .build()
+        .map_err(|_| PortalError::Failed("malformed dest file path".to_string()))?;
     let c_src = CString::new(original_path.as_bytes())
         .map_err(|_| PortalError::InvalidArgument("path contains nul byte".to_string()))?;
-    let c_dest = CString::new(dest_path.as_bytes())
+    let c_dest = CString::new(dest_path.to_string().as_bytes())
         .map_err(|_| PortalError::InvalidArgument("path contains nul byte".to_string()))?;
     let result = unsafe { libc::rename(c_src.as_ptr(), c_dest.as_ptr()) };
     if result != 0 {
@@ -202,7 +210,7 @@ fn handle_trash_file<T: codevar_dbus::DbusTransport + 'static>(
         return Err(PortalError::Failed(format!("rename failed: {}", errno)));
     }
     let deletion_time = unix_trash::get_timestamp();
-    unix_trash::write_trash_info(&info_dir, &info_name, &original_path, &deletion_time)?;
+    unix_trash::write_trash_info(&info_dir, info_name.as_str(), &original_path, &deletion_time)?;
     let result = 0u32;
     ctx.reply(inv, |bw| bw.write_u32(result))
 }
@@ -220,31 +228,14 @@ fn handle_trash_file<T: codevar_dbus::DbusTransport + 'static>(
 pub fn register<T: codevar_dbus::DbusTransport + 'static>(ctx: &mut PortalContext<T>) -> XdpResult<()> {
     let methods: &[(&str, PortalFn<T>)] = &[("TrashFile", handle_trash_file)];
 
-    let iface_xml = XmlBuilder::new("interface")
-        .attr("name", "org.freedesktop.portal.Trash")
-        .child("method")
-        .attr("name", "TrashFile")
-        .child("annotation")
-        .attr("name", "org.gtk.GDBus.C.UnixFD")
-        .attr("value", "true")
-        .end()
-        .child("arg")
-        .attr("type", "h")
-        .attr("name", "fd")
-        .attr("direction", "in")
-        .end()
-        .child("arg")
-        .attr("type", "u")
-        .attr("name", "result")
-        .attr("direction", "out")
-        .end()
-        .end()
-        .child("property")
-        .attr("name", "version")
-        .attr("type", "u")
-        .attr("access", "read")
-        .end()
-        .build();
+    let iface_xml = xml!(interface, attrs: ["name" = "org.freedesktop.portal.Trash"], children: [
+        (method, attrs: ["name" = "TrashFile"], children: [
+            (annotation, attrs: ["name" = "org.gtk.GDBus.C.UnixFD", "value" = "true"]),
+            (arg, attrs: ["type" = "h", "name" = "fd", "direction" = "in"]),
+            (arg, attrs: ["type" = "u", "name" = "result", "direction" = "out"])
+        ]),
+        (property, attrs: ["name" = "version", "type" = "u", "access" = "read"])
+    ]);
 
     let iface = crate::xdp_context::PortalInterface {
         name: TRASH_INTERFACE,

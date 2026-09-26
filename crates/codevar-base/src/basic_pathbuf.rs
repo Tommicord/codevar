@@ -33,7 +33,7 @@
 //!     .push("usr")
 //!     .push("local")
 //!     .file("bin")
-//!     .with_extension("sh")
+//!     .extension("sh")
 //!     .build()
 //!     .expect("valid path");
 //! assert_eq!(path.as_str(), "/usr/local/bin.sh");
@@ -541,7 +541,7 @@ impl PathBuilder {
     ///
     /// The extension is stored as-is; it is validated by
     /// [`build`](Self::build).
-    pub fn with_extension(mut self, ext: &str) -> Self {
+    pub fn extension(mut self, ext: &str) -> Self {
         self.buf.set_extension_unvalidated(ext);
         self
     }
@@ -1527,7 +1527,7 @@ mod tests {
             .root()
             .push("a")
             .file("b")
-            .with_extension("txt")
+            .extension("txt")
             .build()
             .unwrap();
         assert_eq!(p.as_str(), "/a/b.txt");
@@ -1540,7 +1540,7 @@ mod tests {
             .push("usr")
             .push("local")
             .file("bin")
-            .with_extension("sh")
+            .extension("sh")
             .build()
             .unwrap();
         assert_eq!(p.as_str(), "/usr/local/bin.sh");
