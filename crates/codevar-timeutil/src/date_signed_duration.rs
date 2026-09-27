@@ -967,7 +967,8 @@ impl Neg for SignedDuration {
 
     #[inline]
     fn neg(self) -> Self::Output {
-        self.checked_neg().unwrap_or(Self::MIN)
+        // The only value whose negation is not representable is `MIN`, which saturates to `MAX`.
+        self.checked_neg().unwrap_or(Self::MAX)
     }
 }
 
@@ -1385,5 +1386,545 @@ impl SubAssign<SignedDuration> for SystemTime {
     #[inline]
     fn sub_assign(&mut self, rhs: SignedDuration) {
         *self = *self - rhs;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hash_of<T: Hash>(value: &T) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    #[test]
+    fn constants_match_unit_durations() {
+        assert_eq!(SignedDuration::ZERO, SignedDuration::seconds(0));
+        assert_eq!(SignedDuration::NANOSECOND, SignedDuration::nanoseconds(1));
+        assert_eq!(SignedDuration::MICROSECOND, SignedDuration::microseconds(1));
+        assert_eq!(SignedDuration::MILLISECOND, SignedDuration::milliseconds(1));
+        assert_eq!(SignedDuration::SECOND, SignedDuration::seconds(1));
+        assert_eq!(SignedDuration::MINUTE, SignedDuration::minutes(1));
+        assert_eq!(SignedDuration::HOUR, SignedDuration::hours(1));
+        assert_eq!(SignedDuration::DAY, SignedDuration::days(1));
+        assert_eq!(SignedDuration::WEEK, SignedDuration::weeks(1));
+        assert_eq!(SignedDuration::default(), SignedDuration::ZERO);
+        assert!(SignedDuration::default().is_zero());
+
+        assert!(SignedDuration::ZERO.is_zero());
+        assert!(!SignedDuration::ZERO.is_positive());
+        assert!(!SignedDuration::ZERO.is_negative());
+        assert!(SignedDuration::SECOND.is_positive());
+        assert!(!SignedDuration::SECOND.is_negative());
+        assert!(SignedDuration::seconds(-1).is_negative());
+        assert!(!SignedDuration::seconds(-1).is_positive());
+        assert_eq!(-SignedDuration::SECOND, SignedDuration::seconds(-1));
+        assert_eq!(SignedDuration::ZERO.neg(), SignedDuration::ZERO);
+    }
+
+    #[test]
+    fn min_and_max_boundaries() {
+        assert_eq!(SignedDuration::MIN.whole_seconds(), i64::MIN);
+        assert_eq!(SignedDuration::MIN.subsec_nanoseconds(), -999_999_999);
+        assert_eq!(SignedDuration::MAX.whole_seconds(), i64::MAX);
+        assert_eq!(SignedDuration::MAX.subsec_nanoseconds(), 999_999_999);
+        assert!(SignedDuration::MIN.is_negative());
+        assert!(SignedDuration::MAX.is_positive());
+        assert!(SignedDuration::MIN < SignedDuration::MAX);
+
+        // `abs` saturates instead of overflowing.
+        assert_eq!(SignedDuration::MIN.abs(), SignedDuration::MAX);
+        assert_eq!(SignedDuration::MAX.abs(), SignedDuration::MAX);
+        assert_eq!(SignedDuration::seconds(-5).abs(), SignedDuration::seconds(5));
+        assert_eq!(SignedDuration::seconds(5).abs(), SignedDuration::seconds(5));
+
+        // `unsigned_abs` never saturates.
+        assert_eq!(
+            SignedDuration::MIN.unsigned_abs(),
+            StdDuration::new(9_223_372_036_854_775_808, 999_999_999),
+        );
+        assert_eq!(
+            SignedDuration::seconds(-1).unsigned_abs(),
+            StdDuration::from_secs(1)
+        );
+        assert_eq!(
+            SignedDuration::milliseconds(-1_500).unsigned_abs(),
+            StdDuration::from_millis(1_500)
+        );
+
+        // Overlarge components saturate rather than wrapping.
+        assert_eq!(
+            SignedDuration::new(i64::MAX, 1_000_000_000),
+            SignedDuration::seconds(i64::MAX)
+        );
+        assert_eq!(
+            SignedDuration::new(i64::MIN, -1_000_000_000),
+            SignedDuration::seconds(i64::MIN)
+        );
+    }
+
+    #[test]
+    fn constructors_normalize_and_saturate() {
+        // Sub-second overflows fold into the seconds component.
+        assert_eq!(
+            SignedDuration::new(1, 1_500_000_000),
+            SignedDuration::new(2, 500_000_000),
+        );
+        assert_eq!(
+            SignedDuration::new(-1, -1_500_000_000),
+            SignedDuration::new(-2, -500_000_000),
+        );
+        // Mixed signs borrow from the seconds component.
+        assert_eq!(
+            SignedDuration::new(1, -1),
+            SignedDuration::nanoseconds(999_999_999)
+        );
+        assert_eq!(
+            SignedDuration::new(-1, 1),
+            SignedDuration::nanoseconds(-999_999_999)
+        );
+        assert_eq!(SignedDuration::new(0, -1), SignedDuration::nanoseconds(-1));
+        assert_eq!(SignedDuration::new(0, 1), SignedDuration::nanoseconds(1));
+
+        // Each unit constructor is equivalent to scaling the next smaller one.
+        assert_eq!(SignedDuration::weeks(2), SignedDuration::days(14));
+        assert_eq!(SignedDuration::days(1), SignedDuration::hours(24));
+        assert_eq!(SignedDuration::hours(1), SignedDuration::minutes(60));
+        assert_eq!(SignedDuration::minutes(1), SignedDuration::seconds(60));
+        assert_eq!(SignedDuration::seconds(1), SignedDuration::milliseconds(1_000));
+        assert_eq!(
+            SignedDuration::milliseconds(1),
+            SignedDuration::microseconds(1_000)
+        );
+        assert_eq!(
+            SignedDuration::microseconds(1),
+            SignedDuration::nanoseconds(1_000)
+        );
+        assert_eq!(SignedDuration::hours(-1), SignedDuration::minutes(-60));
+        assert_eq!(
+            SignedDuration::nanoseconds(-1_500_000_000),
+            SignedDuration::new(-1, -500_000_000),
+        );
+
+        // Multiplicative constructors saturate at the bounds instead of wrapping, truncating to
+        // a whole number of seconds.
+        assert_eq!(SignedDuration::hours(i64::MAX), SignedDuration::seconds(i64::MAX));
+        assert_eq!(SignedDuration::hours(i64::MIN), SignedDuration::seconds(i64::MIN));
+        assert_eq!(SignedDuration::weeks(i64::MAX), SignedDuration::seconds(i64::MAX));
+        assert_eq!(SignedDuration::days(i64::MIN), SignedDuration::seconds(i64::MIN));
+        assert_eq!(
+            SignedDuration::minutes(i64::MAX),
+            SignedDuration::seconds(i64::MAX)
+        );
+        assert!(SignedDuration::hours(i64::MAX) < SignedDuration::MAX);
+        assert!(SignedDuration::minutes(i64::MIN) > SignedDuration::MIN);
+
+        // `nanoseconds_i128` saturates outside of the representable range.
+        assert_eq!(
+            SignedDuration::nanoseconds_i128(1_500_000_000),
+            SignedDuration::new(1, 500_000_000)
+        );
+        assert_eq!(
+            SignedDuration::nanoseconds_i128(i128::from(i64::MAX) * 2),
+            SignedDuration::MAX,
+        );
+        assert_eq!(
+            SignedDuration::nanoseconds_i128(i128::from(i64::MIN) * 2),
+            SignedDuration::MIN,
+        );
+    }
+
+    #[test]
+    fn whole_and_subsec_accessors() {
+        let value = SignedDuration::new(172_803, 456_789_000); // 2 days, plus 3.456789 seconds
+        assert_eq!(value.whole_weeks(), 0);
+        assert_eq!(value.whole_days(), 2);
+        assert_eq!(value.whole_hours(), 48);
+        assert_eq!(value.whole_minutes(), 2_880);
+        assert_eq!(value.whole_seconds(), 172_803);
+        assert_eq!(value.whole_milliseconds(), 172_803_456);
+        assert_eq!(value.subsec_milliseconds(), 456);
+        assert_eq!(value.whole_microseconds(), 172_803_456_789);
+        assert_eq!(value.subsec_microseconds(), 456_789);
+        assert_eq!(value.whole_nanoseconds(), 172_803_456_789_000_i128);
+        assert_eq!(value.subsec_nanoseconds(), 456_789_000);
+
+        // Negative durations truncate towards zero.
+        let value = SignedDuration::new(-172_803, -456_789_000);
+        assert_eq!(value.whole_weeks(), 0);
+        assert_eq!(value.whole_days(), -2);
+        assert_eq!(value.whole_hours(), -48);
+        assert_eq!(value.whole_minutes(), -2_880);
+        assert_eq!(value.whole_seconds(), -172_803);
+        assert_eq!(value.whole_milliseconds(), -172_803_456);
+        assert_eq!(value.subsec_milliseconds(), -456);
+        assert_eq!(value.whole_microseconds(), -172_803_456_789);
+        assert_eq!(value.subsec_microseconds(), -456_789);
+        assert_eq!(value.whole_nanoseconds(), -172_803_456_789_000_i128);
+        assert_eq!(value.subsec_nanoseconds(), -456_789_000);
+
+        // Sub-second values report zero for every coarser unit.
+        let value = SignedDuration::milliseconds(-500);
+        assert_eq!(value.whole_seconds(), 0);
+        assert_eq!(value.whole_days(), 0);
+        assert_eq!(value.whole_hours(), 0);
+        assert_eq!(value.whole_milliseconds(), -500);
+        assert_eq!(value.subsec_milliseconds(), -500);
+        assert!(value.is_negative());
+
+        // Whole-second values report zero subsecond remainders.
+        let value = SignedDuration::seconds(3);
+        assert_eq!(value.subsec_milliseconds(), 0);
+        assert_eq!(value.subsec_microseconds(), 0);
+        assert_eq!(value.subsec_nanoseconds(), 0);
+
+        // Fractional seconds convert exactly for binary fractions.
+        assert_eq!(SignedDuration::seconds(90).as_seconds_f64(), 90.5);
+        assert_eq!(SignedDuration::milliseconds(250).as_seconds_f64(), 0.25);
+        assert_eq!(SignedDuration::milliseconds(-250).as_seconds_f32(), -0.25);
+        assert_eq!(SignedDuration::seconds(-1).as_seconds_f64(), -1.0);
+    }
+
+    #[test]
+    fn checked_and_saturating_arithmetic() {
+        assert_eq!(
+            SignedDuration::seconds(5).checked_add(SignedDuration::seconds(6)),
+            Some(SignedDuration::seconds(11)),
+        );
+        assert_eq!(
+            SignedDuration::seconds(5).checked_sub(SignedDuration::seconds(6)),
+            Some(SignedDuration::seconds(-1)),
+        );
+        assert!(
+            SignedDuration::MAX
+                .checked_add(SignedDuration::SECOND)
+                .is_none()
+        );
+        assert!(
+            SignedDuration::MIN
+                .checked_sub(SignedDuration::SECOND)
+                .is_none()
+        );
+        assert!(
+            SignedDuration::MIN
+                .checked_add(SignedDuration::SECOND)
+                .is_some()
+        );
+        assert!(
+            SignedDuration::MAX
+                .checked_sub(SignedDuration::SECOND)
+                .is_some()
+        );
+        assert_eq!(
+            SignedDuration::MAX.checked_add(SignedDuration::MIN),
+            Some(SignedDuration::seconds(-1)),
+        );
+
+        // The operators saturate rather than overflowing.
+        assert_eq!(SignedDuration::MAX + SignedDuration::SECOND, SignedDuration::MAX);
+        assert_eq!(
+            SignedDuration::MAX + SignedDuration::MILLISECOND,
+            SignedDuration::MAX
+        );
+        assert_eq!(SignedDuration::MIN - SignedDuration::SECOND, SignedDuration::MIN);
+        assert_eq!(
+            SignedDuration::MIN - SignedDuration::MILLISECOND,
+            SignedDuration::MIN
+        );
+        assert_eq!(
+            SignedDuration::MAX.saturating_add(SignedDuration::SECOND),
+            SignedDuration::MAX,
+        );
+        assert_eq!(
+            SignedDuration::MIN.saturating_sub(SignedDuration::SECOND),
+            SignedDuration::MIN,
+        );
+        assert_eq!(
+            SignedDuration::seconds(5).saturating_add(SignedDuration::seconds(6)),
+            SignedDuration::seconds(11),
+        );
+
+        // Multiplication.
+        assert_eq!(
+            SignedDuration::seconds(5).checked_mul(2),
+            Some(SignedDuration::seconds(10))
+        );
+        assert_eq!(
+            SignedDuration::seconds(5).checked_mul(0),
+            Some(SignedDuration::ZERO)
+        );
+        assert!(SignedDuration::MIN.checked_mul(2).is_none());
+        assert!(
+            SignedDuration::seconds(5)
+                .checked_div(0)
+                .is_none()
+        );
+        assert_eq!(
+            SignedDuration::hours(3).checked_div(2),
+            Some(SignedDuration::minutes(90)),
+        );
+        assert_eq!(SignedDuration::MAX.saturating_mul(2), SignedDuration::MAX,);
+        assert_eq!(SignedDuration::MIN.saturating_mul(2), SignedDuration::MIN,);
+        assert_eq!(
+            SignedDuration::seconds(3).saturating_mul(2),
+            SignedDuration::seconds(6),
+        );
+
+        // Negation.
+        assert_eq!(
+            SignedDuration::seconds(5).checked_neg(),
+            Some(SignedDuration::seconds(-5))
+        );
+        assert!(SignedDuration::MIN.checked_neg().is_none());
+        assert_eq!(
+            -SignedDuration::MAX,
+            SignedDuration::seconds(-i64::MAX) - SignedDuration::nanoseconds(999_999_999)
+        );
+        // Negating the minimum value saturates to the maximum instead of returning itself.
+        assert_eq!(-SignedDuration::MIN, SignedDuration::MAX);
+    }
+
+    #[test]
+    fn operator_traits_add_and_subtract() {
+        let hour = SignedDuration::HOUR;
+        assert_eq!(hour + SignedDuration::MINUTE, SignedDuration::minutes(61));
+        assert_eq!(hour - SignedDuration::minutes(90), SignedDuration::minutes(-30));
+        assert_eq!(hour + SignedDuration::ZERO, hour);
+
+        let mut value = hour;
+        value += SignedDuration::MINUTE;
+        assert_eq!(value, SignedDuration::minutes(61));
+        value -= SignedDuration::MINUTE;
+        assert_eq!(value, hour);
+
+        // Arithmetic with standard durations.
+        assert_eq!(hour + StdDuration::from_secs(60), SignedDuration::minutes(61));
+        assert_eq!(hour - StdDuration::from_secs(120), SignedDuration::minutes(58));
+        assert_eq!(StdDuration::from_secs(60) + hour, SignedDuration::minutes(61));
+        assert_eq!(StdDuration::from_secs(120) - hour, SignedDuration::minutes(-58));
+        let mut value = hour;
+        value += StdDuration::from_secs(60);
+        assert_eq!(value, SignedDuration::minutes(61));
+        value -= StdDuration::from_secs(60);
+        assert_eq!(value, hour);
+
+        // A standard duration too large to convert saturates at the bounds.
+        let huge = StdDuration::from_secs(u64::MAX);
+        assert_eq!(hour + huge, SignedDuration::MAX);
+        // Subtracting a std duration too large to convert saturates towards `-MAX`.
+        assert_eq!(hour - huge, -SignedDuration::MAX + SignedDuration::HOUR);
+        assert_eq!(SignedDuration::ZERO - huge, -SignedDuration::MAX);
+        let mut value = huge;
+        value += hour;
+        assert_eq!(value, StdDuration::MAX);
+
+        // Subtracting a duration larger than the standard duration saturates.
+        let mut value = StdDuration::ZERO;
+        value -= SignedDuration::seconds(1);
+        assert_eq!(value, StdDuration::MAX);
+    }
+
+    #[test]
+    fn multiplication_and_division() {
+        let value = SignedDuration::minutes(10);
+        assert_eq!(value * 2i32, SignedDuration::minutes(20));
+        assert_eq!(2i32 * value, SignedDuration::minutes(20));
+        assert_eq!(value * 2u8, SignedDuration::minutes(20));
+        assert_eq!(value * 0i32, SignedDuration::ZERO);
+        assert_eq!(value / 4i32, SignedDuration::seconds(150));
+        let mut value = SignedDuration::minutes(10);
+        value *= 3i32;
+        assert_eq!(value, SignedDuration::minutes(30));
+        value /= 3i32;
+        assert_eq!(value, SignedDuration::minutes(10));
+
+        // Scaling by floats goes through the float constructors.
+        assert_eq!(SignedDuration::HOUR * 2.5, SignedDuration::minutes(150));
+        assert_eq!(2.5 * SignedDuration::HOUR, SignedDuration::minutes(150));
+        assert_eq!(SignedDuration::HOUR * 0.5f32, SignedDuration::minutes(30));
+        assert_eq!(SignedDuration::HOUR * -1.0, SignedDuration::minutes(-60));
+        let mut value = SignedDuration::HOUR;
+        value *= 2.0;
+        assert_eq!(value, SignedDuration::minutes(120));
+        value /= 4.0;
+        assert_eq!(value, SignedDuration::minutes(30));
+
+        // Ratios produce floats.
+        assert_eq!(SignedDuration::HOUR / SignedDuration::HOUR, 1.0);
+        assert_eq!(SignedDuration::hours(1) / SignedDuration::minutes(1), 60.0);
+        assert_eq!(SignedDuration::hours(1) / StdDuration::from_secs(1_800), 2.0);
+        assert_eq!(StdDuration::from_secs(1_800) / SignedDuration::hours(1), 0.5);
+        assert_eq!(SignedDuration::HOUR / 4i32, SignedDuration::minutes(15));
+        assert_eq!(SignedDuration::HOUR / 2.0, SignedDuration::minutes(30));
+        assert_eq!(SignedDuration::HOUR / 2.0f32, SignedDuration::minutes(30));
+    }
+
+    #[test]
+    fn float_constructors() {
+        assert_eq!(
+            SignedDuration::seconds_f64(1.5),
+            SignedDuration::new(1, 500_000_000)
+        );
+        assert_eq!(
+            SignedDuration::seconds_f64(-1.5),
+            SignedDuration::new(-1, -500_000_000)
+        );
+        assert_eq!(SignedDuration::seconds_f64(0.0), SignedDuration::ZERO);
+        assert_eq!(SignedDuration::seconds_f64(f64::NAN), SignedDuration::ZERO);
+        assert_eq!(SignedDuration::seconds_f64(1e30), SignedDuration::MAX);
+        assert_eq!(SignedDuration::seconds_f64(-1e30), SignedDuration::MIN);
+        assert_eq!(
+            SignedDuration::saturating_seconds_f64(f64::NAN),
+            SignedDuration::ZERO
+        );
+        assert_eq!(SignedDuration::saturating_seconds_f64(1e30), SignedDuration::MAX);
+        assert_eq!(SignedDuration::saturating_seconds_f64(-1e30), SignedDuration::MIN);
+        assert!(SignedDuration::checked_seconds_f64(1e30).is_none());
+        assert!(SignedDuration::checked_seconds_f64(-1e30).is_none());
+        assert!(SignedDuration::checked_seconds_f64(f64::NAN).is_none());
+        assert_eq!(
+            SignedDuration::checked_seconds_f64(2.0),
+            Some(SignedDuration::seconds(2))
+        );
+
+        assert_eq!(
+            SignedDuration::seconds_f32(1.5),
+            SignedDuration::new(1, 500_000_000)
+        );
+        assert_eq!(SignedDuration::seconds_f32(f32::NAN), SignedDuration::ZERO);
+        assert_eq!(SignedDuration::seconds_f32(1e30), SignedDuration::MAX);
+        assert_eq!(SignedDuration::seconds_f32(-1e30), SignedDuration::MIN);
+        assert!(SignedDuration::checked_seconds_f32(f32::NAN).is_none());
+        assert_eq!(
+            SignedDuration::checked_seconds_f32(0.5),
+            Some(SignedDuration::milliseconds(500))
+        );
+        assert_eq!(SignedDuration::saturating_seconds_f32(-1e30), SignedDuration::MIN);
+    }
+
+    #[test]
+    fn ordering_equality_and_hashing() {
+        let values = [
+            SignedDuration::days(-1),
+            SignedDuration::minutes(-1),
+            SignedDuration::nanoseconds(-1),
+            SignedDuration::ZERO,
+            SignedDuration::nanoseconds(1),
+            SignedDuration::minutes(1),
+            SignedDuration::days(1),
+        ];
+        for (index, value) in values.iter().enumerate() {
+            for (other_index, other) in values.iter().enumerate() {
+                let expected = index.cmp(&other_index);
+                assert_eq!(value.cmp(other), expected, "{value:?} vs {other:?}");
+                assert_eq!(value.partial_cmp(other), Some(expected));
+                assert_eq!(value == other, index == other_index);
+            }
+        }
+        assert_eq!(values.windows(2).all(|pair| pair[0] < pair[1]), true);
+
+        // Equivalent values built in different ways compare and hash identically.
+        let a = SignedDuration::seconds(90);
+        let b = SignedDuration::minutes(1) + SignedDuration::seconds(30);
+        assert_eq!(a, b);
+        assert_eq!(hash_of(&a), hash_of(&b));
+        let a = SignedDuration::new(1, -1);
+        let b = SignedDuration::nanoseconds(999_999_999);
+        assert_eq!(a, b);
+        assert_eq!(hash_of(&a), hash_of(&b));
+
+        assert_ne!(SignedDuration::SECOND, SignedDuration::seconds(2));
+        assert_ne!(
+            hash_of(&SignedDuration::SECOND),
+            hash_of(&SignedDuration::seconds(2))
+        );
+
+        // Comparison against `Duration` agrees with the signed comparison.
+        assert_eq!(SignedDuration::seconds(5), StdDuration::from_secs(5));
+        assert_eq!(StdDuration::from_secs(5), SignedDuration::seconds(5));
+        assert!(SignedDuration::seconds(5) > StdDuration::from_secs(4));
+        assert!(SignedDuration::seconds(5) < StdDuration::from_secs(6));
+        assert!(StdDuration::from_secs(6) > SignedDuration::seconds(5));
+        assert!(SignedDuration::seconds(-1) < StdDuration::ZERO);
+        // Durations beyond `i64::MAX` seconds always compare as greater.
+        assert_eq!(
+            SignedDuration::MAX.partial_cmp(&StdDuration::from_secs(u64::MAX)),
+            Some(Ordering::Less),
+        );
+        assert_eq!(
+            StdDuration::from_secs(u64::MAX).partial_cmp(&SignedDuration::MAX),
+            Some(Ordering::Greater),
+        );
+    }
+
+    #[test]
+    fn try_from_conversions() {
+        assert_eq!(
+            SignedDuration::try_from(StdDuration::from_secs(5)),
+            Ok(SignedDuration::seconds(5)),
+        );
+        assert_eq!(SignedDuration::try_from(StdDuration::MAX), Err(ConversionRange),);
+        assert_eq!(
+            StdDuration::try_from(SignedDuration::seconds(5)),
+            Ok(StdDuration::from_secs(5)),
+        );
+        assert_eq!(
+            StdDuration::try_from(SignedDuration::seconds(-1)),
+            Err(ConversionRange),
+        );
+        assert_eq!(
+            StdDuration::try_from(SignedDuration::new(-1, -1)),
+            Err(ConversionRange),
+        );
+        // Positive durations with a subsecond component convert exactly.
+        assert_eq!(
+            StdDuration::try_from(SignedDuration::milliseconds(1_500)),
+            Ok(StdDuration::from_millis(1_500)),
+        );
+        assert_eq!(
+            StdDuration::try_from(SignedDuration::MAX),
+            Ok(StdDuration::new(9_223_372_036_854_775_807, 999_999_999)),
+        );
+    }
+
+    #[test]
+    fn sum_combines_durations() {
+        let parts = [
+            SignedDuration::seconds(1),
+            SignedDuration::seconds(2),
+            SignedDuration::seconds(3),
+            SignedDuration::seconds(-4),
+        ];
+        assert_eq!(
+            parts.into_iter().sum::<SignedDuration>(),
+            SignedDuration::seconds(2)
+        );
+        assert_eq!(parts.iter().sum::<SignedDuration>(), SignedDuration::seconds(2));
+        assert_eq!(
+            core::iter::empty::<SignedDuration>().sum::<SignedDuration>(),
+            SignedDuration::ZERO,
+        );
+        assert_eq!(
+            core::iter::empty::<&SignedDuration>().sum::<SignedDuration>(),
+            SignedDuration::ZERO,
+        );
+    }
+
+    #[test]
+    fn debug_formats_fields() {
+        assert_eq!(
+            format!("{:?}", SignedDuration::new(1, 500_000_000)),
+            "SignedDuration { seconds: 1, nanoseconds: 500000000 }",
+        );
+        assert_eq!(
+            format!("{:?}", SignedDuration::seconds(-2)),
+            "SignedDuration { seconds: -2, nanoseconds: 0 }",
+        );
+        assert_eq!(
+            format!("{:?}", SignedDuration::ZERO),
+            "SignedDuration { seconds: 0, nanoseconds: 0 }"
+        );
     }
 }

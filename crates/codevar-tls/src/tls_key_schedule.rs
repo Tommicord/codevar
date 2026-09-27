@@ -285,27 +285,400 @@ pub mod finished_label {
     pub const SERVER: &[u8] = b"server finished";
 }
 
-/// Empty IKM / salt helper used by unit tests.
+/// TLS 1.3 / TLS 1.2 key-schedule known-answer tests.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tls_ids::CipherSuite;
 
+    fn unhex(s: &str) -> Vec<u8> {
+        (0..s.len() / 2)
+            .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap())
+            .collect()
+    }
+
     #[test]
-    fn tls13_handshake_secrets_have_expected_lengths() {
-        let ecdhe = [7u8; 32];
-        let hello_hash = [3u8; 32];
-        let ks = match Tls13KeySchedule::from_handshake(CipherSuite::TlsAes128GcmSha256, &ecdhe, &hello_hash)
-        {
-            Ok(ks) => ks,
-            Err(_) => return,
+    fn tls13_handshake_secrets_match_known_answers() {
+        // Inputs: ecdhe = 00..1f, hello_hash = 0xAA * 32.
+        // Values computed independently with Python hmac/hashlib following RFC 8446 §7.1;
+        // the early/derived secrets also match RFC 8448 §3.1/§3.2 known values.
+        let ecdhe: Vec<u8> = (0u8..32).collect();
+        let hello_hash = [0xAAu8; 32];
+        let ks = Tls13KeySchedule::from_handshake(
+            CipherSuite::TlsAes128GcmSha256,
+            &ecdhe,
+            &hello_hash,
+        )
+        .unwrap();
+
+        assert_eq!(ks.hash_algorithm(), HashAlgorithm::Sha256);
+        assert_eq!(
+            ks.client_handshake.secret,
+            unhex("b4a822c84130bb5df25cbab7c34c5bf9629e298e0b76ac42f0c6f3e2668c1372")
+        );
+        assert_eq!(
+            ks.server_handshake.secret,
+            unhex("c774008ddd08971a1bb155d8eec043278fdc425171884c6a14b4983f06423cb5")
+        );
+        // Application secrets start out un-derived.
+        assert!(ks.client_application.is_none());
+        assert!(ks.server_application.is_none());
+
+        // Handshake traffic key/iv for the client direction.
+        assert_eq!(
+            ks.client_handshake.key.algorithm(),
+            AeadAlgorithm::Aes128Gcm
+        );
+        assert_eq!(
+            ks.client_handshake.key.tls12_salt(),
+            unhex("ab9ac6645231028fe8482919")
+        );
+
+        // Traffic keys start at sequence number 0.
+        let tk = ks.client_handshake.traffic_keys();
+        assert_eq!(tk.seq, 0);
+        assert_eq!(tk.aead.algorithm(), AeadAlgorithm::Aes128Gcm);
+    }
+
+    #[test]
+    fn tls13_application_and_resumption_secrets_match_known_answers() {
+        let ecdhe: Vec<u8> = (0u8..32).collect();
+        let mut ks = Tls13KeySchedule::from_handshake(
+            CipherSuite::TlsAes128GcmSha256,
+            &ecdhe,
+            &[0xAAu8; 32],
+        )
+        .unwrap();
+
+        let server_finished_hash = [0xBBu8; 32];
+        ks.derive_application_secrets(&server_finished_hash).unwrap();
+        let (cap_secret, sap_secret) = {
+            let cap = ks.client_application.as_ref().unwrap();
+            let sap = ks.server_application.as_ref().unwrap();
+            (cap.secret.clone(), sap.secret.clone())
         };
-        assert_eq!(ks.client_handshake.secret.len(), 32);
-        assert_eq!(ks.server_handshake.secret.len(), 32);
-        let vd = match ks.server_finished_verify(&hello_hash) {
-            Ok(vd) => vd,
-            Err(_) => return,
-        };
-        assert_eq!(vd.len(), 32);
+        assert_eq!(
+            cap_secret,
+            unhex("3c80122a7ecbc5d634e8a0cc7b2c43bfceb3143c561e7cb33aaff8c25d7b22e2")
+        );
+        assert_eq!(
+            sap_secret,
+            unhex("9fd216e69458a8e41e6173c5bd8cfe04c00b7487a223a7f402a70b349844ef9f")
+        );
+        // Handshake secrets are untouched by application derivation.
+        assert_eq!(
+            ks.client_handshake.secret,
+            unhex("b4a822c84130bb5df25cbab7c34c5bf9629e298e0b76ac42f0c6f3e2668c1372")
+        );
+
+        // KeyUpdate on an application traffic secret.
+        let updated = Tls13KeySchedule::update_traffic_secret(HashAlgorithm::Sha256, &cap_secret)
+        .unwrap();
+        assert_eq!(
+            updated,
+            unhex("db40e79dd0f41c2493040485f48f7736fa463a88b524f58f911640f606da12aa")
+        );
+        // Updated secret feeds new traffic keys of the same suite.
+        let next = ks.traffic_from_app_secret(&updated).unwrap();
+        assert_eq!(next.secret, updated);
+        assert_eq!(next.key.algorithm(), AeadAlgorithm::Aes128Gcm);
+        assert_eq!(next.traffic_keys().seq, 0);
+        // One update round differs from the next (no fixed point in one step).
+        let updated2 =
+            Tls13KeySchedule::update_traffic_secret(HashAlgorithm::Sha256, &updated).unwrap();
+        assert_ne!(updated, updated2);
+
+        // Resumption master secret derives from the client Finished hash.
+        let client_finished_hash = [0xCCu8; 32];
+        ks.derive_resumption_master(&client_finished_hash).unwrap();
+        // Deriving twice yields the same result (stateless re-computation).
+        ks.derive_resumption_master(&client_finished_hash).unwrap();
+    }
+
+    #[test]
+    fn tls13_finished_verify_matches_known_answers() {
+        let ecdhe: Vec<u8> = (0u8..32).collect();
+        let ks = Tls13KeySchedule::from_handshake(
+            CipherSuite::TlsAes128GcmSha256,
+            &ecdhe,
+            &[0xAAu8; 32],
+        )
+        .unwrap();
+        let transcript = [0xDDu8; 32];
+        let client = ks.client_finished_verify(&transcript).unwrap();
+        let server = ks.server_finished_verify(&transcript).unwrap();
+        assert_eq!(
+            client,
+            unhex("04a3e650913e837206d65d4e32ecbe9aac8a785b659349cc7a0ced9341b02d78")
+        );
+        assert_eq!(
+            server,
+            unhex("bbed8eec41dde617e4d2035e9ef35c9c603113ba72c187a26f93d294d4f9c23d")
+        );
+        assert_ne!(client, server);
+        // Different transcripts give different verify_data.
+        let other = ks.client_finished_verify(&[0xEEu8; 32]).unwrap();
+        assert_ne!(client, other);
+        assert_eq!(other.len(), 32);
+    }
+
+    #[test]
+    fn tls13_sha384_suite_uses_48_byte_secrets() {
+        let ecdhe: Vec<u8> = (0u8..48).collect();
+        let mut ks = Tls13KeySchedule::from_handshake(
+            CipherSuite::TlsAes256GcmSha384,
+            &ecdhe,
+            &[0x55u8; 48],
+        )
+        .unwrap();
+        assert_eq!(ks.hash_algorithm(), HashAlgorithm::Sha384);
+        assert_eq!(ks.client_handshake.secret.len(), 48);
+        assert_eq!(ks.server_handshake.secret.len(), 48);
+        assert_eq!(ks.client_handshake.key.algorithm(), AeadAlgorithm::Aes256Gcm);
+        assert_eq!(
+            ks.client_handshake.key.tls12_salt().len(),
+            AeadAlgorithm::Aes256Gcm.iv_len()
+        );
+        assert_eq!(ks.client_finished_verify(&[0x11u8; 48]).unwrap().len(), 48);
+
+        ks.derive_application_secrets(&[0x22u8; 48]).unwrap();
+        let cap = ks.client_application.as_ref().unwrap();
+        assert_eq!(cap.secret.len(), 48);
+        assert_eq!(cap.key.algorithm(), AeadAlgorithm::Aes256Gcm);
+    }
+
+    #[test]
+    fn tls13_chacha_suite_uses_chacha_aead() {
+        let ecdhe: Vec<u8> = (0u8..32).collect();
+        let ks = Tls13KeySchedule::from_handshake(
+            CipherSuite::TlsChacha20Poly1305Sha256,
+            &ecdhe,
+            &[0xAAu8; 32],
+        )
+        .unwrap();
+        assert_eq!(
+            ks.client_handshake.key.algorithm(),
+            AeadAlgorithm::ChaCha20Poly1305
+        );
+        assert_eq!(
+            ks.server_handshake.key.algorithm(),
+            AeadAlgorithm::ChaCha20Poly1305
+        );
+    }
+
+    #[test]
+    fn tls13_different_inputs_yield_different_secrets() {
+        let ecdhe_a: Vec<u8> = (0u8..32).collect();
+        let ecdhe_b: Vec<u8> = (1u8..33).collect();
+        let a = Tls13KeySchedule::from_handshake(
+            CipherSuite::TlsAes128GcmSha256,
+            &ecdhe_a,
+            &[0xAAu8; 32],
+        )
+        .unwrap();
+        let b = Tls13KeySchedule::from_handshake(
+            CipherSuite::TlsAes128GcmSha256,
+            &ecdhe_b,
+            &[0xAAu8; 32],
+        )
+        .unwrap();
+        assert_ne!(a.client_handshake.secret, b.client_handshake.secret);
+
+        let c = Tls13KeySchedule::from_handshake(
+            CipherSuite::TlsAes128GcmSha256,
+            &ecdhe_a,
+            &[0xBBu8; 32],
+        )
+        .unwrap();
+        assert_ne!(a.client_handshake.secret, c.client_handshake.secret);
+        // Deterministic for identical inputs.
+        let d = Tls13KeySchedule::from_handshake(
+            CipherSuite::TlsAes128GcmSha256,
+            &ecdhe_a,
+            &[0xAAu8; 32],
+        )
+        .unwrap();
+        assert_eq!(a.client_handshake.secret, d.client_handshake.secret);
+    }
+
+    #[test]
+    fn tls12_master_secret_and_key_block_known_answers() {
+        let pms = [0x03u8; 48];
+        let client_random = [0xC1u8; 32];
+        let server_random = [0x5Au8; 32];
+        let keys = Tls12Keys::derive(
+            CipherSuite::TlsEcdheRsaWithAes128GcmSha256,
+            &pms,
+            &client_random,
+            &server_random,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(keys.hash_algorithm(), HashAlgorithm::Sha256);
+        assert_eq!(keys.aead_algorithm(), AeadAlgorithm::Aes128Gcm);
+        assert_eq!(
+            keys.master_secret,
+            unhex(
+                "73d201864b0b8ff114471583b7c7b04f22841a4713bd5b69a81dc97a4f07b1a8\
+                 f9eb7cc115475731ab0dc83f99cb2bdc"
+            )
+        );
+        // key_block = PRF(master, "key expansion", server_random || client_random):
+        // 16-byte client key || 16-byte server key || 4-byte client iv || 4-byte server iv.
+        assert_eq!(keys.client_write.tls12_salt(), unhex("7eab71c2"));
+        assert_eq!(keys.server_write.tls12_salt(), unhex("218f490f"));
+        assert_eq!(keys.client_write.algorithm(), AeadAlgorithm::Aes128Gcm);
+
+        // Finished verify_data is 12 bytes and differs per label/direction.
+        let transcript = [0xEEu8; 32];
+        let client_fin = keys
+            .finished_verify(finished_label::CLIENT, &transcript)
+            .unwrap();
+        let server_fin = keys
+            .finished_verify(finished_label::SERVER, &transcript)
+            .unwrap();
+        assert_eq!(client_fin, unhex("2c5952b9dfb3fe31b9972394"));
+        assert_eq!(server_fin, unhex("ae9c11a4b52ef6fb703edec7"));
+        assert_eq!(client_fin.len(), 12);
+        assert_ne!(client_fin, server_fin);
+
+        // Traffic key wrappers start at sequence 0.
+        assert_eq!(keys.client_traffic().seq, 0);
+        assert_eq!(keys.server_traffic().seq, 0);
+    }
+
+    #[test]
+    fn tls12_extended_master_secret_known_answer() {
+        let pms = [0x03u8; 48];
+        let session_hash = [0x99u8; 32];
+        let ems_keys = Tls12Keys::derive(
+            CipherSuite::TlsEcdheRsaWithAes128GcmSha256,
+            &pms,
+            &[0xC1u8; 32],
+            &[0x5Au8; 32],
+            Some(&session_hash),
+        )
+        .unwrap();
+        assert_eq!(
+            ems_keys.master_secret,
+            unhex(
+                "5834c02ac9974ef56fe7fd14dd7991082ea5c79872e8836ac1a761211a6be38d\
+                 749d1a128033adb5d5eb74eca8c5c74e"
+            )
+        );
+
+        // EMS and classic derivation must differ for the same inputs.
+        let classic = Tls12Keys::derive(
+            CipherSuite::TlsEcdheRsaWithAes128GcmSha256,
+            &pms,
+            &[0xC1u8; 32],
+            &[0x5Au8; 32],
+            None,
+        )
+        .unwrap();
+        assert_ne!(ems_keys.master_secret, classic.master_secret);
+        // Classic derivation is deterministic and independent of session hash.
+        let classic2 = Tls12Keys::derive(
+            CipherSuite::TlsEcdheRsaWithAes128GcmSha256,
+            &pms,
+            &[0xC1u8; 32],
+            &[0x5Au8; 32],
+            None,
+        )
+        .unwrap();
+        assert_eq!(classic.master_secret, classic2.master_secret);
+        assert_ne!(
+            classic.master_secret,
+            Tls12Keys::derive(
+                CipherSuite::TlsEcdheRsaWithAes128GcmSha256,
+                &pms,
+                &[0xC2u8; 32],
+                &[0x5Au8; 32],
+                None,
+            )
+            .unwrap()
+            .master_secret
+        );
+    }
+
+    #[test]
+    fn tls12_chacha_suite_key_block_layout() {
+        // ChaCha20-Poly1305 uses 32-byte keys and 12-byte fixed IVs.
+        let keys = Tls12Keys::derive(
+            CipherSuite::TlsEcdheRsaWithChacha20Poly1305Sha256,
+            &[0x03u8; 48],
+            &[0xC1u8; 32],
+            &[0x5Au8; 32],
+            None,
+        )
+        .unwrap();
+        assert_eq!(keys.aead_algorithm(), AeadAlgorithm::ChaCha20Poly1305);
+        // From key_block: client iv at offset 64, server iv at offset 76.
+        assert_eq!(
+            keys.client_write.tls12_salt(),
+            unhex("4ba2875c3528896ae6f666f0")
+        );
+        assert_eq!(keys.client_write.tls12_salt().len(), 12);
+        assert_eq!(keys.server_write.tls12_salt().len(), 12);
+        // Finished verify still yields 12 bytes.
+        assert_eq!(
+            keys.finished_verify(finished_label::CLIENT, &[0xEEu8; 32])
+                .unwrap()
+                .len(),
+            12
+        );
+    }
+
+    #[test]
+    fn tls12_finished_verify_is_direction_and_transcript_sensitive() {
+        let keys = Tls12Keys::derive(
+            CipherSuite::TlsEcdheRsaWithAes128GcmSha256,
+            &[0x07u8; 48],
+            &[0x11u8; 32],
+            &[0x22u8; 32],
+            None,
+        )
+        .unwrap();
+        let t1 = keys
+            .finished_verify(finished_label::CLIENT, &[0x01u8; 32])
+            .unwrap();
+        let t2 = keys
+            .finished_verify(finished_label::CLIENT, &[0x02u8; 32])
+            .unwrap();
+        let t3 = keys
+            .finished_verify(finished_label::SERVER, &[0x01u8; 32])
+            .unwrap();
+        assert_ne!(t1, t2);
+        assert_ne!(t1, t3);
+        // Custom labels (e.g. TLS 1.3 exporters) still produce 12 bytes.
+        assert_eq!(
+            keys.finished_verify(b"exporter master secret", &[0x01u8; 32])
+                .unwrap()
+                .len(),
+            12
+        );
+    }
+
+    #[test]
+    fn finished_label_constants_are_correct() {
+        assert_eq!(finished_label::CLIENT, b"client finished");
+        assert_eq!(finished_label::SERVER, b"server finished");
+    }
+
+    #[test]
+    fn directional_secrets_expose_traffic_keys() {
+        let ecdhe: Vec<u8> = (0u8..32).collect();
+        let ks = Tls13KeySchedule::from_handshake(
+            CipherSuite::TlsAes128GcmSha256,
+            &ecdhe,
+            &[0xAAu8; 32],
+        )
+        .unwrap();
+        let a = ks.client_handshake.traffic_keys();
+        let b = ks.client_handshake.traffic_keys();
+        assert_eq!(a.seq, 0);
+        assert_eq!(b.seq, 0);
+        assert_eq!(a.aead.algorithm(), b.aead.algorithm());
     }
 }

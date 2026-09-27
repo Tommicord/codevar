@@ -680,3 +680,378 @@ impl Sub for PlainDateTime {
         (self.date - rhs.date) + (self.time - rhs.time)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn datetime(year: i32, month: Month, day: u8, hour: u8, minute: u8, second: u8) -> PlainDateTime {
+        PlainDateTime::new(
+            Date::from_calendar_date(year, month, day).expect("valid date"),
+            Time::from_hms(hour, minute, second).expect("valid time"),
+        )
+    }
+
+    #[test]
+    fn new_exposes_date_and_time_components() {
+        let value = datetime(2024, Month::February, 29, 1, 2, 3);
+        assert_eq!(
+            value.date(),
+            Date::from_calendar_date(2024, Month::February, 29).expect("valid")
+        );
+        assert_eq!(value.time(), Time::from_hms(1, 2, 3).expect("valid"));
+
+        // Date accessors delegate to the date component.
+        assert_eq!(value.year(), 2024);
+        assert_eq!(value.month(), Month::February);
+        assert_eq!(value.day(), 29);
+        assert_eq!(value.ordinal(), 60);
+        assert_eq!(value.iso_week(), 9);
+        assert_eq!(value.to_calendar_date(), (2024, Month::February, 29));
+        assert_eq!(value.to_ordinal_date(), (2024, 60));
+        assert_eq!(value.to_iso_week_date(), (2024, 9, Weekday::Thursday));
+        assert_eq!(value.weekday(), Weekday::Thursday);
+        assert_eq!(value.to_julian_day(), value.date().to_julian_day());
+        assert_eq!(value.sunday_based_week(), value.date().sunday_based_week(),);
+        assert_eq!(value.monday_based_week(), value.date().monday_based_week());
+
+        // Time accessors delegate to the time component.
+        assert_eq!(value.as_hms(), (1, 2, 3));
+        assert_eq!(value.hour(), 1);
+        assert_eq!(value.minute(), 2);
+        assert_eq!(value.second(), 3);
+        assert_eq!(value.millisecond(), 0);
+        assert_eq!(value.nanosecond(), 0);
+        let value = value.replace_nanosecond(1_234).expect("valid");
+        assert_eq!(value.as_hms_nano(), (1, 2, 3, 1_234));
+        // 1_234 ns is a microsecond fraction, not a whole millisecond.
+        assert_eq!(value.as_hms_milli(), (1, 2, 3, 0));
+        assert_eq!(value.as_hms_micro(), (1, 2, 3, 1));
+        assert_eq!(value.microsecond(), 1);
+        assert_eq!(value.millisecond(), 0);
+    }
+
+    #[test]
+    fn min_and_max_bounds() {
+        assert_eq!(PlainDateTime::MIN.to_string(), "-9999-01-01 0:00:00.0",);
+        assert_eq!(PlainDateTime::MAX.to_string(), "9999-12-31 23:59:59.999999999",);
+        assert_eq!(PlainDateTime::MIN.date(), Date::MIN);
+        assert_eq!(PlainDateTime::MIN.time(), Time::MIDNIGHT);
+        assert_eq!(PlainDateTime::MAX.date(), Date::MAX);
+        assert_eq!(PlainDateTime::MAX.time(), Time::MAX);
+        assert!(PlainDateTime::MIN < PlainDateTime::MAX);
+    }
+
+    #[test]
+    fn display_formats_date_and_time() {
+        let cases = [
+            (
+                datetime(2024, Month::February, 29, 1, 2, 3),
+                "2024-02-29 1:02:03.0",
+            ),
+            (datetime(1970, Month::January, 1, 0, 0, 0), "1970-01-01 0:00:00.0"),
+            (
+                datetime(1, Month::January, 1, 23, 59, 59),
+                "0001-01-01 23:59:59.0",
+            ),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(value.to_string(), expected, "Display of {value:?}");
+            assert_eq!(format!("{value:?}"), expected, "Debug matches Display");
+            assert_eq!(
+                value
+                    .metadata(FormatterOptions::default())
+                    .unpadded_width(),
+                expected.len(),
+                "metadata width for {expected}",
+            );
+        }
+
+        let value = datetime(1970, Month::January, 1, 1, 2, 3);
+        assert_eq!(format!("{value:>22}"), "  1970-01-01 1:02:03.0");
+        assert_eq!(format!("{value:<22}"), "1970-01-01 1:02:03.0  ");
+        assert_eq!(format!("{value:.10}"), "1970-01-01");
+    }
+
+    #[test]
+    fn checked_arithmetic_carries_across_midnight() {
+        let value = datetime(2024, Month::March, 1, 0, 30, 0);
+
+        // Borrowing an hour crosses back into February.
+        assert_eq!(
+            value
+                .checked_sub(SignedDuration::hours(1))
+                .map(|v| v.to_string())
+                .as_deref(),
+            Some("2024-02-29 23:30:00.0"),
+        );
+        // Carrying an hour crosses into the next day.
+        assert_eq!(
+            value
+                .checked_add(SignedDuration::hours(24 * 2))
+                .map(|v| v.to_string())
+                .as_deref(),
+            Some("2024-03-03 0:30:00.0"),
+        );
+        // A duration of whole days moves the date only.
+        assert_eq!(
+            value
+                .checked_add(SignedDuration::days(30))
+                .map(|v| v.to_string())
+                .as_deref(),
+            Some("2024-03-31 0:30:00.0"),
+        );
+        // Sub-day durations that stay within the day never move the date.
+        let noon = datetime(2024, Month::June, 15, 12, 0, 0);
+        assert_eq!(
+            noon.checked_add(SignedDuration::hours(7))
+                .map(|v| v.to_string())
+                .as_deref(),
+            Some("2024-06-15 19:00:00.0"),
+        );
+        // 23 hours from noon lands late the next day.
+        assert_eq!(
+            noon.checked_add(SignedDuration::hours(23))
+                .map(|v| v.to_string())
+                .as_deref(),
+            Some("2024-06-16 11:00:00.0"),
+        );
+        assert_eq!(
+            noon.checked_sub(SignedDuration::hours(11))
+                .map(|v| v.to_string())
+                .as_deref(),
+            Some("2024-06-15 1:00:00.0"),
+        );
+
+        // Mixed date and time components: 1 day and 23 hours from just after midnight lands
+        // in the previous day's late evening.
+        let value = datetime(2024, Month::June, 15, 0, 0, 0);
+        assert_eq!(
+            value
+                .checked_add(SignedDuration::days(1) + SignedDuration::hours(23))
+                .map(|v| v.to_string())
+                .as_deref(),
+            Some("2024-06-16 23:00:00.0"),
+        );
+
+        // Round trip.
+        let duration = SignedDuration::days(12) + SignedDuration::hours(5) + SignedDuration::seconds(30);
+        let value = datetime(2024, Month::June, 15, 8, 45, 12);
+        assert_eq!(
+            value
+                .checked_add(duration)
+                .and_then(|v| v.checked_sub(duration)),
+            Some(value),
+        );
+    }
+
+    #[test]
+    fn checked_arithmetic_reports_overflow_at_bounds() {
+        assert_eq!(
+            PlainDateTime::MAX.checked_add(SignedDuration::nanoseconds(1)),
+            None
+        );
+        assert_eq!(
+            PlainDateTime::MIN.checked_sub(SignedDuration::nanoseconds(1)),
+            None
+        );
+        assert!(
+            PlainDateTime::MAX
+                .checked_add(SignedDuration::days(-1))
+                .is_some()
+        );
+        assert!(
+            PlainDateTime::MIN
+                .checked_add(SignedDuration::days(1))
+                .is_some()
+        );
+
+        // The very last representable instant cannot be advanced by even one hour.
+        let max = PlainDateTime::MAX;
+        assert_eq!(max.checked_add(SignedDuration::hours(1)), None);
+
+        assert_eq!(
+            PlainDateTime::MAX.saturating_add(SignedDuration::nanoseconds(1)),
+            PlainDateTime::MAX,
+        );
+        assert_eq!(
+            PlainDateTime::MIN.saturating_sub(SignedDuration::nanoseconds(1)),
+            PlainDateTime::MIN,
+        );
+        assert_eq!(
+            PlainDateTime::MIN
+                .saturating_add(SignedDuration::nanoseconds(1))
+                .to_string(),
+            "-9999-01-01 0:00:00.000000001",
+        );
+
+        // Positive durations saturate to MAX and negative ones to MIN.
+        let huge = SignedDuration::days(i64::from(i32::MAX) + 100);
+        assert_eq!(PlainDateTime::MIN.saturating_add(huge), PlainDateTime::MAX);
+        assert_eq!(PlainDateTime::MAX.saturating_sub(huge), PlainDateTime::MIN);
+        assert_eq!(PlainDateTime::MAX.saturating_add(-huge), PlainDateTime::MIN);
+        assert_eq!(PlainDateTime::MIN.saturating_sub(-huge), PlainDateTime::MAX);
+    }
+
+    #[test]
+    fn operator_traits_add_and_subtract_durations() {
+        let value = datetime(2024, Month::June, 15, 23, 0, 0);
+        let one_hour = SignedDuration::hours(1);
+
+        assert_eq!((value + one_hour).to_string(), "2024-06-16 0:00:00.0");
+        assert_eq!((value - one_hour).to_string(), "2024-06-15 22:00:00.0");
+
+        let mut mutated = value;
+        mutated += one_hour;
+        assert_eq!(mutated.to_string(), "2024-06-16 0:00:00.0");
+        mutated -= one_hour;
+        assert_eq!(mutated, value);
+
+        // Standard durations carry into the date as well.
+        let two_hours = StdDuration::from_secs(2 * 3_600);
+        assert_eq!((value + two_hours).to_string(), "2024-06-16 1:00:00.0");
+        assert_eq!((value - two_hours).to_string(), "2024-06-15 21:00:00.0");
+        let mut mutated = value;
+        mutated += two_hours;
+        assert_eq!(mutated, value + two_hours);
+        mutated -= two_hours;
+        assert_eq!(mutated, value);
+
+        // Subtraction of two datetimes yields the elapsed duration.
+        let a = datetime(2024, Month::June, 15, 12, 0, 0);
+        let b = datetime(2024, Month::June, 16, 6, 30, 0);
+        assert_eq!(b - a, SignedDuration::hours(18) + SignedDuration::minutes(30));
+        assert_eq!(a - b, -(SignedDuration::hours(18) + SignedDuration::minutes(30)));
+        assert_eq!(a - a, SignedDuration::hours(0));
+        // Crossing midnight in the difference.
+        let a = datetime(2024, Month::June, 15, 23, 0, 0);
+        let b = datetime(2024, Month::June, 16, 1, 0, 0);
+        assert_eq!(b - a, SignedDuration::hours(2));
+
+        // Saturation on overflow.
+        assert_eq!(PlainDateTime::MAX + one_hour, PlainDateTime::MAX);
+        assert_eq!(PlainDateTime::MIN - one_hour, PlainDateTime::MIN);
+    }
+
+    #[test]
+    fn replace_and_truncate_preserve_the_other_component() {
+        let value = datetime(2024, Month::June, 15, 13, 45, 59)
+            .replace_nanosecond(987_654_321)
+            .expect("valid");
+
+        // Replacing the date preserves the time and vice versa.
+        let other_date = Date::from_calendar_date(2000, Month::January, 2).expect("valid");
+        assert_eq!(value.replace_date(other_date).date(), other_date);
+        assert_eq!(value.replace_date(other_date).time(), value.time());
+        let other_time = Time::from_hms(1, 2, 3).expect("valid");
+        assert_eq!(value.replace_time(other_time).time(), other_time);
+        assert_eq!(value.replace_time(other_time).date(), value.date());
+
+        // Date replacements delegate to `Date` and keep the time.
+        assert_eq!(
+            value
+                .replace_year(2025)
+                .expect("valid")
+                .to_string(),
+            "2025-06-15 13:45:59.987654321",
+        );
+        assert_eq!(
+            value
+                .replace_month(Month::July)
+                .expect("valid")
+                .to_string(),
+            "2024-07-15 13:45:59.987654321",
+        );
+        assert_eq!(value.replace_day(30).expect("valid").day(), 30,);
+        assert_eq!(
+            value
+                .replace_ordinal(100)
+                .expect("valid")
+                .ordinal(),
+            100,
+        );
+        assert!(value.replace_day(31).is_err());
+        assert!(value.replace_year(10_000).is_err());
+
+        // Time replacements keep the date.
+        assert_eq!(value.replace_hour(20).expect("valid").hour(), 20);
+        assert_eq!(value.replace_minute(1).expect("valid").minute(), 1);
+        assert_eq!(value.replace_second(2).expect("valid").second(), 2);
+        assert!(value.replace_hour(24).is_err());
+        assert!(value.replace_minute(60).is_err());
+        assert!(value.replace_second(60).is_err());
+        assert!(value.replace_millisecond(1_000).is_err());
+        assert!(value.replace_microsecond(1_000_000).is_err());
+        assert!(value.replace_nanosecond(1_000_000_000).is_err());
+
+        // Truncations only clear time components; `truncate_to_day` clears the whole time.
+        assert_eq!(value.truncate_to_day().to_string(), "2024-06-15 0:00:00.0");
+        assert_eq!(value.truncate_to_hour().to_string(), "2024-06-15 13:00:00.0");
+        assert_eq!(value.truncate_to_minute().to_string(), "2024-06-15 13:45:00.0");
+        assert_eq!(value.truncate_to_second().to_string(), "2024-06-15 13:45:59.0");
+        assert_eq!(
+            value.truncate_to_millisecond().to_string(),
+            "2024-06-15 13:45:59.987",
+        );
+        assert_eq!(
+            value.truncate_to_microsecond().to_string(),
+            "2024-06-15 13:45:59.987654",
+        );
+        assert_eq!(value.truncate_to_day().date(), value.date());
+        assert_eq!(PlainDateTime::MIN.truncate_to_day(), PlainDateTime::MIN);
+    }
+
+    #[test]
+    fn assume_conversions_preserve_wall_clock_values() {
+        let value = datetime(2024, Month::June, 15, 13, 45, 59);
+
+        let utc = value.as_utc();
+        assert_eq!(utc.date(), value.date());
+        assert_eq!(utc.time(), value.time());
+
+        let offset_datetime = value.assume_utc();
+        assert_eq!(offset_datetime.date(), value.date());
+        assert_eq!(offset_datetime.time(), value.time());
+        assert_eq!(offset_datetime.offset(), UtcOffset::UTC);
+
+        let offset = UtcOffset::from_whole_seconds(3_600).expect("valid offset");
+        let offset_datetime = value.assume_offset(offset);
+        assert_eq!(offset_datetime.date(), value.date());
+        assert_eq!(offset_datetime.time(), value.time());
+        assert_eq!(offset_datetime.offset(), offset);
+    }
+
+    #[test]
+    fn datetimes_are_ordered_and_hashable() {
+        use core::hash::{Hash, Hasher};
+
+        fn hash_of<T: Hash>(value: &T) -> u64 {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            value.hash(&mut hasher);
+            hasher.finish()
+        }
+
+        let early = datetime(1999, Month::December, 31, 23, 59, 59);
+        let epoch = datetime(1970, Month::January, 1, 0, 0, 0);
+        let late = datetime(2100, Month::January, 1, 0, 0, 0);
+
+        assert!(epoch < early);
+        assert!(early < late);
+        assert!(PlainDateTime::MIN < epoch);
+        assert!(late < PlainDateTime::MAX);
+
+        // Ordering differentiates on the time within the same date.
+        let a = datetime(2024, Month::June, 15, 1, 0, 0);
+        let b = datetime(2024, Month::June, 15, 2, 0, 0);
+        assert!(a < b);
+        assert_eq!(a, a);
+        assert_ne!(a, b);
+
+        let copy = PlainDateTime::new(a.date(), a.time());
+        assert_eq!(hash_of(&a), hash_of(&copy));
+        assert_ne!(hash_of(&a), hash_of(&b));
+        assert_eq!(a.cmp(&b), core::cmp::Ordering::Less);
+        assert_eq!(b.cmp(&a), core::cmp::Ordering::Greater);
+        assert_eq!(a.cmp(&a), core::cmp::Ordering::Equal);
+    }
+}

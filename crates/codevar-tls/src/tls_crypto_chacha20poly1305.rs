@@ -325,3 +325,136 @@ fn poly1305(key: &[u8; 32], msg: &[u8]) -> [u8; 16] {
     tag[12..16].copy_from_slice(&(f3 as u32).to_le_bytes());
     tag
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// RFC 8439 §2.8.2 AEAD test vector key.
+    const RFC_KEY: [u8; 32] = [
+        0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e,
+        0x8f, 0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d,
+        0x9e, 0x9f,
+    ];
+    /// RFC 8439 §2.8.2 nonce.
+    const RFC_NONCE: [u8; 12] = [
+        0x07, 0x00, 0x00, 0x00, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,
+    ];
+    /// RFC 8439 §2.8.2 additional data.
+    const RFC_AAD: [u8; 12] = [
+        0x50, 0x51, 0x52, 0x53, 0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7,
+    ];
+    const RFC_PLAINTEXT: &[u8] = b"Ladies and Gentlemen of the class of '99: If I could offer you \
+only one tip for the future, sunscreen would be it.";
+    /// RFC 8439 §2.8.2 expected ciphertext || tag.
+    const RFC_CT_TAG: &str = "d31a8d34648e60db7b86afbc53ef7ec2a4aded51296e08fea9e2b5a736ee62d\
+63dbea45e8ca9671282fafb69da92728b1a71de0a9e060b2905d6a5b67ecd3b36\
+92ddbd7f2d778b8c9803aee328091b58fab324e4fad675945585808b4831d7bc3f\
+f4def08e4b7a9de576d26586cec64b61161ae10b594f09e26a7e902ecbd0600691";
+
+    fn unhex(s: &str) -> Vec<u8> {
+        (0..s.len() / 2)
+            .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn rfc8439_aead_vector_seals_and_opens() {
+        let expected = unhex(RFC_CT_TAG);
+        let out = seal(&RFC_KEY, &RFC_NONCE, &RFC_AAD, RFC_PLAINTEXT).unwrap();
+        assert_eq!(out, expected);
+        assert_eq!(out.len(), RFC_PLAINTEXT.len() + TAG_LEN);
+        // Tag is the final 16 bytes of the published vector.
+        assert_eq!(
+            &out[out.len() - TAG_LEN..],
+            &unhex("1ae10b594f09e26a7e902ecbd0600691")[..]
+        );
+        let back = open(&RFC_KEY, &RFC_NONCE, &RFC_AAD, &out).unwrap();
+        assert_eq!(back, RFC_PLAINTEXT);
+    }
+
+    #[test]
+    fn rfc8439_empty_plaintext_produces_tag_only() {
+        // Independently computed: ChaCha20-Poly1305 over empty PT/AAD.
+        let expected = unhex("a0784d7a4716f3feb4f64e7f4b39bf04");
+        let out = seal(&RFC_KEY, &RFC_NONCE, &[], &[]).unwrap();
+        assert_eq!(out, expected);
+        assert_eq!(out.len(), TAG_LEN);
+        let back = open(&RFC_KEY, &RFC_NONCE, &[], &out).unwrap();
+        assert!(back.is_empty());
+    }
+
+    #[test]
+    fn round_trip_across_block_boundaries() {
+        // 64-byte ChaCha20 block edges plus multi-block payloads.
+        for len in [0usize, 1, 15, 16, 17, 63, 64, 65, 127, 128, 129, 1000] {
+            let plain: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+            for aad in [b"".as_slice(), b"hdr", &[0u8; 16][..], &[0u8; 31][..]] {
+                let sealed = seal(&RFC_KEY, &RFC_NONCE, aad, &plain).unwrap();
+                assert_eq!(sealed.len(), len + TAG_LEN);
+                let opened = open(&RFC_KEY, &RFC_NONCE, aad, &sealed).unwrap();
+                assert_eq!(opened, plain, "round trip failed for len={len}");
+            }
+        }
+    }
+
+    #[test]
+    fn tampering_ciphertext_tag_or_aad_is_rejected() {
+        let sealed = seal(&RFC_KEY, &RFC_NONCE, &RFC_AAD, RFC_PLAINTEXT).unwrap();
+
+        // Flip a ciphertext bit.
+        let mut bad_ct = sealed.clone();
+        bad_ct[0] ^= 0x01;
+        assert!(open(&RFC_KEY, &RFC_NONCE, &RFC_AAD, &bad_ct).is_err());
+
+        // Flip a tag bit.
+        let mut bad_tag = sealed.clone();
+        let last = bad_tag.len() - 1;
+        bad_tag[last] ^= 0x80;
+        assert!(open(&RFC_KEY, &RFC_NONCE, &RFC_AAD, &bad_tag).is_err());
+
+        // Different AAD.
+        let mut wrong_aad = RFC_AAD;
+        wrong_aad[0] ^= 0x01;
+        assert!(open(&RFC_KEY, &RFC_NONCE, &wrong_aad, &sealed).is_err());
+
+        // Different nonce.
+        let mut wrong_nonce = RFC_NONCE;
+        wrong_nonce[11] ^= 0x01;
+        assert!(open(&RFC_KEY, &wrong_nonce, &RFC_AAD, &sealed).is_err());
+
+        // Different key.
+        let mut wrong_key = RFC_KEY;
+        wrong_key[0] ^= 0x01;
+        assert!(open(&wrong_key, &RFC_NONCE, &RFC_AAD, &sealed).is_err());
+
+        // Truncated input below the tag length.
+        assert!(open(&RFC_KEY, &RFC_NONCE, &RFC_AAD, &sealed[..TAG_LEN - 1]).is_err());
+    }
+
+    #[test]
+    fn invalid_key_lengths_are_rejected() {
+        assert!(seal(&[], &RFC_NONCE, &[], b"x").is_err());
+        assert!(seal(&[0u8; 16], &RFC_NONCE, &[], b"x").is_err());
+        assert!(seal(&[0u8; 31], &RFC_NONCE, &[], b"x").is_err());
+        assert!(seal(&[0u8; 33], &RFC_NONCE, &[], b"x").is_err());
+        assert!(open(&[0u8; 16], &RFC_NONCE, &[], &[0u8; 16]).is_err());
+    }
+
+    #[test]
+    fn aad_does_not_change_ciphertext_but_changes_tag() {
+        let a = seal(&RFC_KEY, &RFC_NONCE, b"aad-one", RFC_PLAINTEXT).unwrap();
+        let b = seal(&RFC_KEY, &RFC_NONCE, b"aad-two", RFC_PLAINTEXT).unwrap();
+        assert_eq!(a[..RFC_PLAINTEXT.len()], b[..RFC_PLAINTEXT.len()]);
+        assert_ne!(a[RFC_PLAINTEXT.len()..], b[RFC_PLAINTEXT.len()..]);
+    }
+
+    #[test]
+    fn distinct_nonces_produce_distinct_keystreams() {
+        let mut nonce2 = RFC_NONCE;
+        nonce2[11] = 1;
+        let a = seal(&RFC_KEY, &RFC_NONCE, &RFC_AAD, RFC_PLAINTEXT).unwrap();
+        let b = seal(&RFC_KEY, &nonce2, &RFC_AAD, RFC_PLAINTEXT).unwrap();
+        assert_ne!(a, b);
+    }
+}

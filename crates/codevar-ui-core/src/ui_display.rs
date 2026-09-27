@@ -226,8 +226,8 @@ impl UiDisplay {
     ///
     /// The flow delegates each protocol step to a dedicated helper:
     /// [`connect`] (session + registry), [`bind_protocol_globals`] (globals
-    /// and their listeners), [`create_window_objects`] (surface and
-    /// xdg-shell handshake), [`negotiate_modifiers`] (linux-dmabuf
+    /// and their listeners), [`create_window_objects`] (surface,
+    /// toplevel and xdg-shell handshake), [`negotiate_modifiers`] (linux-dmabuf
     /// feedback), then the Vulkan pipeline, renderer and `wl_buffer`.
     pub fn new(init: WindowInit) -> Result<Self, UiDisplayError> {
         basic_signal::install().map_err(UiDisplayError::Signal)?;
@@ -241,7 +241,7 @@ impl UiDisplay {
             window_state,
         } = connect(init.width, init.height)?;
         let protocol = bind_protocol_globals(&mut display, registry, &globals, &window_state)?;
-        let (surface, xdg_surface) = create_window_objects(
+        let (surface, xdg_surface, toplevel) = create_window_objects(
             &mut display,
             protocol.compositor,
             protocol.wm_base,
@@ -258,7 +258,10 @@ impl UiDisplay {
 
         let pipeline = PipelineContext::new(width as u32, height as u32, &modifiers)
             .map_err(UiDisplayError::Pipeline)?;
-        let renderer = create_renderer(&pipeline);
+        let mut renderer = create_renderer(&pipeline);
+        renderer
+            .start()
+            .map_err(UiDisplayError::Renderer)?;
         let buffer = create_wl_buffer(
             &mut display,
             protocol.dmabuf,
@@ -267,7 +270,6 @@ impl UiDisplay {
             height,
             &window_state,
         )?;
-        let toplevel = create_toplevel(&mut display, protocol.wm_base, xdg_surface)?;
         Ok(Self {
             display: Some(display),
             dmabuf: Some(protocol.dmabuf),
@@ -734,12 +736,16 @@ fn bind_protocol_globals(
     })
 }
 
-/// Creates the `wl_surface` and `xdg_surface`, installs the configure and
-/// close listeners, then publishes the window title, app id and the first
-/// commit.
+/// Creates the `wl_surface`, `xdg_surface` and `xdg_toplevel`, installs
+/// the configure listener on the `xdg_surface` and the close listener on
+/// the `xdg_toplevel`, then publishes the window title, app id and the
+/// initial commit.
 ///
-/// Returns the surface pair used by [`ack_configure`] and
-/// [`create_toplevel`].
+/// The toplevel is created before the first commit so the surface
+/// already has its role when it is committed, as required by xdg-shell.
+///
+/// Returns the `(surface, xdg_surface, toplevel)` triple used by
+/// [`ack_configure`] and the render loop.
 ///
 /// # Errors
 ///
@@ -751,7 +757,7 @@ fn create_window_objects(
     wm_base: WlProxyId,
     window_state: &Rc<RefCell<WindowState>>,
     init: WindowInit,
-) -> Result<(WlProxyId, WlProxyId), UiDisplayError> {
+) -> Result<(WlProxyId, WlProxyId, WlProxyId), UiDisplayError> {
     let surface = display
         .marshal_new_id(compositor, COMPOSITOR_CREATE_SURFACE, Vec::new())
         .map_err(UiDisplayError::Wayland)?;
@@ -786,10 +792,12 @@ fn create_window_objects(
             .map_err(UiDisplayError::Wayland)?;
     }
 
+    let toplevel = create_toplevel(display, xdg_surface)?;
+
     {
         let window_state = Rc::clone(window_state);
         display
-            .add_listener(surface, move |_, opcode, _| {
+            .add_listener(toplevel, move |_, opcode, _| {
                 if opcode == XDG_TOPLEVEL_CLOSE {
                     window_state.borrow_mut().closed = true;
                 }
@@ -800,7 +808,7 @@ fn create_window_objects(
 
     display
         .marshal_request(
-            surface,
+            toplevel,
             XDG_TOPLEVEL_SET_TITLE,
             vec![WlArgument::Str(Some(
                 init.title
@@ -812,7 +820,7 @@ fn create_window_objects(
         .map_err(UiDisplayError::Wayland)?;
     display
         .marshal_request(
-            surface,
+            toplevel,
             XDG_TOPLEVEL_SET_APP_ID,
             vec![WlArgument::Str(Some(
                 init.app_id
@@ -827,7 +835,7 @@ fn create_window_objects(
         .map_err(UiDisplayError::Wayland)?;
     display.flush().map_err(UiDisplayError::Wayland)?;
 
-    Ok((surface, xdg_surface))
+    Ok((surface, xdg_surface, toplevel))
 }
 
 /// Dispatches events until the first `xdg_surface.configure` arrives.
@@ -1064,22 +1072,20 @@ fn create_wl_buffer(
     Ok(buffer)
 }
 
-/// Creates the `xdg_toplevel` for `xdg_surface`.
+/// Creates the `xdg_toplevel` role object for `xdg_surface`.
+///
+/// `get_toplevel` takes no arguments: the sender is the `xdg_surface`
+/// and the new id is inserted by [`WlClientDisplay::marshal_new_id`].
 ///
 /// # Errors
 ///
 /// * [`UiDisplayError::Wayland`] — the request failed.
 fn create_toplevel(
     display: &mut WlClientDisplay<WlUnixTransport>,
-    wm_base: WlProxyId,
     xdg_surface: WlProxyId,
 ) -> Result<WlProxyId, UiDisplayError> {
     display
-        .marshal_new_id(
-            wm_base,
-            XDG_SURFACE_GET_TOPLEVEL,
-            vec![WlArgument::Object(xdg_surface.id())],
-        )
+        .marshal_new_id(xdg_surface, XDG_SURFACE_GET_TOPLEVEL, Vec::new())
         .map_err(UiDisplayError::Wayland)
 }
 

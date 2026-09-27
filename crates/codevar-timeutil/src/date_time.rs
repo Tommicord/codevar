@@ -817,3 +817,373 @@ impl Sub for Time {
         unsafe { SignedDuration::new_unchecked(seconds.widen(), nanoseconds) }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn time(hour: u8, minute: u8, second: u8) -> Time {
+        Time::from_hms(hour, minute, second).expect("valid time")
+    }
+
+    #[test]
+    fn constructors_build_expected_components() {
+        let t = time(13, 45, 59);
+        assert_eq!(t.as_hms(), (13, 45, 59));
+        assert_eq!((t.hour(), t.minute(), t.second()), (13, 45, 59));
+        assert_eq!(t.millisecond(), 0);
+        assert_eq!(t.microsecond(), 0);
+        assert_eq!(t.nanosecond(), 0);
+
+        let t = Time::from_hms_milli(1, 2, 3, 456).expect("valid");
+        assert_eq!(t.as_hms_milli(), (1, 2, 3, 456));
+        assert_eq!(t.nanosecond(), 456_000_000);
+        assert_eq!(t.as_hms_nano(), (1, 2, 3, 456_000_000));
+
+        let t = Time::from_hms_micro(1, 2, 3, 456_789).expect("valid");
+        assert_eq!(t.as_hms_micro(), (1, 2, 3, 456_789));
+        assert_eq!(t.millisecond(), 456);
+        assert_eq!(t.nanosecond(), 456_789_000);
+
+        let t = Time::from_hms_nano(1, 2, 3, 456_789_012).expect("valid");
+        assert_eq!(t.as_hms_nano(), (1, 2, 3, 456_789_012));
+        assert_eq!(t.microsecond(), 456_789);
+        assert_eq!(t.millisecond(), 456);
+
+        assert_eq!(Time::MIDNIGHT.as_hms(), (0, 0, 0));
+        assert_eq!(Time::MIDNIGHT.nanosecond(), 0);
+        assert_eq!(Time::MAX.as_hms(), (23, 59, 59));
+        assert_eq!(Time::MAX.nanosecond(), 999_999_999);
+        assert_eq!(Time::MAX.millisecond(), 999);
+    }
+
+    #[test]
+    fn constructors_reject_out_of_range_components() {
+        let error = Time::from_hms(24, 0, 0).expect_err("must be rejected");
+        assert_eq!(error.name(), "hour");
+        assert!(!error.is_conditional());
+        for hour in [25u8, 100, 255] {
+            assert!(Time::from_hms(hour, 0, 0).is_err(), "hour {hour}");
+        }
+        for minute in [60u8, 61, 255] {
+            let error = Time::from_hms(0, minute, 0).expect_err("must be rejected");
+            assert_eq!(error.name(), "minute");
+            assert!(!error.is_conditional());
+        }
+        for second in [60u8, 61, 255] {
+            let error = Time::from_hms(0, 0, second).expect_err("must be rejected");
+            assert_eq!(error.name(), "second");
+            assert!(!error.is_conditional());
+        }
+        let error = Time::from_hms_milli(0, 0, 0, 1_000).expect_err("must be rejected");
+        assert_eq!(error.name(), "millisecond");
+        assert!(!error.is_conditional());
+        let error = Time::from_hms_micro(0, 0, 0, 1_000_000).expect_err("must be rejected");
+        assert_eq!(error.name(), "microsecond");
+        let error = Time::from_hms_nano(0, 0, 0, 1_000_000_000).expect_err("must be rejected");
+        assert_eq!(error.name(), "nanosecond");
+
+        // Boundary values are accepted.
+        assert!(Time::from_hms(23, 59, 59).is_ok());
+        assert!(Time::from_hms_milli(0, 0, 0, 999).is_ok());
+        assert!(Time::from_hms_micro(0, 0, 0, 999_999).is_ok());
+        assert!(Time::from_hms_nano(0, 0, 0, 999_999_999).is_ok());
+    }
+
+    #[test]
+    fn replace_components_updates_only_that_field() {
+        let t = time(1, 2, 3)
+            .replace_nanosecond(456_789_012)
+            .expect("valid");
+        assert_eq!(t.as_hms_nano(), (1, 2, 3, 456_789_012));
+
+        assert!(t.replace_hour(24).is_err());
+        let t = t.replace_hour(20).expect("valid");
+        assert_eq!(t.hour(), 20);
+        assert!(t.replace_minute(60).is_err());
+        let t = t.replace_minute(30).expect("valid");
+        assert_eq!(t.minute(), 30);
+        assert!(t.replace_second(60).is_err());
+        let t = t.replace_second(45).expect("valid");
+        assert_eq!(t.second(), 45);
+
+        let t = t.replace_millisecond(999).expect("valid");
+        assert_eq!(t.nanosecond(), 999_000_000);
+        assert!(t.replace_millisecond(1_000).is_err());
+        let t = t.replace_microsecond(999_999).expect("valid");
+        assert_eq!(t.nanosecond(), 999_999_000);
+        assert!(t.replace_microsecond(1_000_000).is_err());
+        let t = t.replace_nanosecond(999_999_999).expect("valid");
+        assert_eq!(t.nanosecond(), 999_999_999);
+        assert_eq!(t.as_hms_nano(), (20, 30, 45, 999_999_999));
+        assert!(t.replace_nanosecond(1_000_000_000).is_err());
+        assert!(t.replace_nanosecond(0).is_ok());
+    }
+
+    #[test]
+    fn truncate_clears_lower_components() {
+        let t = Time::from_hms_nano(13, 45, 59, 987_654_321).expect("valid");
+
+        let truncated = t.truncate_to_hour();
+        assert_eq!(truncated.as_hms_nano(), (13, 0, 0, 0));
+
+        let truncated = t.truncate_to_minute();
+        assert_eq!(truncated.as_hms_nano(), (13, 45, 0, 0));
+
+        let truncated = t.truncate_to_second();
+        assert_eq!(truncated.as_hms_nano(), (13, 45, 59, 0));
+
+        let truncated = t.truncate_to_millisecond();
+        assert_eq!(truncated.nanosecond(), 987_000_000);
+        assert_eq!(truncated.as_hms(), (13, 45, 59));
+
+        let truncated = t.truncate_to_microsecond();
+        assert_eq!(truncated.nanosecond(), 987_654_000);
+
+        // Truncating an already-truncated time is a no-op.
+        assert_eq!(truncated.truncate_to_microsecond(), truncated);
+        assert_eq!(Time::MIDNIGHT.truncate_to_hour(), Time::MIDNIGHT);
+        assert_eq!(Time::MAX.truncate_to_second(), time(23, 59, 59));
+    }
+
+    #[test]
+    fn display_formats_times_without_hour_padding() {
+        let cases = [
+            (Time::MIDNIGHT, "0:00:00.0"),
+            (time(13, 45, 59), "13:45:59.0"),
+            (time(1, 2, 3), "1:02:03.0"),
+            (Time::MAX, "23:59:59.999999999"),
+            (
+                Time::from_hms_nano(0, 0, 0, 10).expect("valid"),
+                "0:00:00.00000001",
+            ),
+            (
+                Time::from_hms_nano(0, 0, 0, 500_000_000).expect("valid"),
+                "0:00:00.5",
+            ),
+            (
+                Time::from_hms_nano(9, 0, 0, 1_000_000).expect("valid"),
+                "9:00:00.001",
+            ),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(value.to_string(), expected, "Display of {value:?}");
+            assert_eq!(format!("{value:?}"), expected, "Debug matches Display");
+            assert_eq!(
+                value
+                    .metadata(FormatterOptions::default())
+                    .unpadded_width(),
+                expected.len(),
+                "metadata width for {expected}",
+            );
+        }
+
+        let value = time(13, 45, 59);
+        assert_eq!(format!("{value:>14}"), "    13:45:59.0");
+        assert_eq!(format!("{value:<14}"), "13:45:59.0    ");
+        assert_eq!(format!("{value:.5}"), "13:45");
+    }
+
+    #[test]
+    fn times_are_ordered_and_hashable() {
+        use core::hash::{Hash, Hasher};
+
+        fn hash_of<T: Hash>(value: &T) -> u64 {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            value.hash(&mut hasher);
+            hasher.finish()
+        }
+
+        let midnight = Time::MIDNIGHT;
+        let morning = time(1, 0, 0);
+        let noon = time(12, 0, 0);
+        let max = Time::MAX;
+
+        assert!(midnight < morning);
+        assert!(morning < noon);
+        assert!(noon < max);
+        assert!(max > midnight);
+        assert_eq!(midnight, Time::from_hms(0, 0, 0).expect("valid"));
+        assert_eq!(hash_of(&midnight), hash_of(&Time::MIDNIGHT));
+        assert_ne!(hash_of(&noon), hash_of(&morning));
+        assert_eq!(midnight.cmp(&noon), core::cmp::Ordering::Less);
+        assert_eq!(max.cmp(&midnight), core::cmp::Ordering::Greater);
+        assert_eq!(noon.cmp(&noon), core::cmp::Ordering::Equal);
+        // `MIDNIGHT` is the minimum and `MAX` the maximum representable time.
+        assert_eq!(
+            Time::MIDNIGHT.as_u64(),
+            Time::MIDNIGHT.as_u64().min(Time::MAX.as_u64())
+        );
+    }
+
+    #[test]
+    fn duration_until_wraps_within_a_day() {
+        let midnight = Time::MIDNIGHT;
+        let noon = time(12, 0, 0);
+        let quarter = time(6, 0, 0);
+
+        assert_eq!(midnight.duration_until(noon), SignedDuration::hours(12));
+        assert_eq!(noon.duration_since(midnight), SignedDuration::hours(12));
+        assert_eq!(midnight.duration_until(midnight), SignedDuration::hours(0));
+        assert_eq!(midnight.duration_until(quarter), SignedDuration::hours(6));
+        // Walking backwards wraps forward into the same day.
+        assert_eq!(noon.duration_until(midnight), SignedDuration::hours(12));
+        assert_eq!(quarter.duration_until(midnight), SignedDuration::hours(18));
+
+        // For distinct times, the pair of durations in both directions covers exactly one
+        // day; identical times yield zero in both directions.
+        for a in [midnight, quarter, noon, time(23, 0, 0), Time::MAX] {
+            for b in [midnight, quarter, noon, time(23, 59, 59), Time::MAX] {
+                let forward = a.duration_until(b);
+                let backward = b.duration_until(a);
+                assert!(forward >= SignedDuration::hours(0));
+                assert!(forward < SignedDuration::days(1));
+                if a == b {
+                    assert_eq!(forward, SignedDuration::hours(0));
+                    assert_eq!(backward, SignedDuration::hours(0));
+                } else {
+                    assert_eq!(forward + backward, SignedDuration::days(1));
+                }
+            }
+        }
+
+        // Sub-second precision is preserved.
+        let a = Time::from_hms_nano(0, 0, 0, 1).expect("valid");
+        let b = Time::MIDNIGHT;
+        assert_eq!(b.duration_until(a), SignedDuration::nanoseconds(1));
+        assert_eq!(
+            a.duration_until(b),
+            SignedDuration::days(1) - SignedDuration::nanoseconds(1)
+        );
+    }
+
+    #[test]
+    fn subtraction_returns_signed_durations() {
+        let noon = time(12, 0, 0);
+        let midnight = Time::MIDNIGHT;
+        let quarter = time(6, 0, 0);
+
+        assert_eq!(noon - midnight, SignedDuration::hours(12));
+        assert_eq!(midnight - noon, SignedDuration::hours(-12));
+        assert_eq!(noon - noon, SignedDuration::hours(0));
+        assert_eq!(quarter - midnight, SignedDuration::hours(6));
+        assert_eq!(midnight - quarter, SignedDuration::hours(-6));
+
+        // Mixing positive second and negative nanosecond components.
+        let a = Time::from_hms_nano(12, 0, 0, 0).expect("valid");
+        let b = Time::from_hms_nano(11, 59, 59, 500_000_000).expect("valid");
+        assert_eq!(a - b, SignedDuration::nanoseconds(500_000_000));
+        assert_eq!(b - a, SignedDuration::nanoseconds(-500_000_000));
+
+        let a = Time::from_hms_nano(11, 59, 59, 0).expect("valid");
+        let b = Time::from_hms_nano(12, 0, 0, 500_000_000).expect("valid");
+        assert_eq!(b - a, SignedDuration::nanoseconds(1_500_000_000));
+        assert_eq!(a - b, SignedDuration::nanoseconds(-1_500_000_000));
+
+        // Consistency with duration_until for the non-wrapping direction.
+        assert_eq!(noon - quarter, quarter.duration_until(noon));
+    }
+
+    #[test]
+    fn addition_wraps_around_the_day() {
+        let t = time(23, 30, 0);
+        assert_eq!(
+            t + SignedDuration::hours(1),
+            Time::MIDNIGHT + SignedDuration::minutes(30)
+        );
+        assert_eq!(t + SignedDuration::hours(-1), time(22, 30, 0));
+        assert_eq!(Time::MIDNIGHT - SignedDuration::hours(1), time(23, 0, 0),);
+
+        // Whole-day components of a duration do not affect the time of day.
+        assert_eq!(t + SignedDuration::days(1), t);
+        assert_eq!(t - SignedDuration::days(3), t);
+        assert_eq!(t + SignedDuration::days(-1), t);
+
+        // Addition and subtraction are inverse operations within the day.
+        let duration = SignedDuration::hours(5) + SignedDuration::minutes(30);
+        assert_eq!((t + duration) - duration, t);
+        assert_eq!((t - duration) + duration, t);
+
+        // Standard durations wrap the same way.
+        assert_eq!(
+            t + StdDuration::from_secs(3_600),
+            Time::MIDNIGHT + SignedDuration::minutes(30),
+        );
+        assert_eq!(t - StdDuration::from_secs(3_600), time(22, 30, 0),);
+        assert_eq!(t + StdDuration::from_secs(86_400), t);
+
+        // Assign operators delegate to the operator implementations.
+        let mut value = t;
+        value += SignedDuration::hours(1);
+        assert_eq!(value, Time::MIDNIGHT + SignedDuration::minutes(30));
+        value -= SignedDuration::hours(1);
+        assert_eq!(value, t);
+        value += StdDuration::from_secs(3_600);
+        assert_eq!(value, Time::MIDNIGHT + SignedDuration::minutes(30));
+        value -= StdDuration::from_secs(3_600);
+        assert_eq!(value, t);
+    }
+
+    #[test]
+    fn adjusting_add_reports_date_adjustment() {
+        let t = time(23, 0, 0);
+        let (adjustment, next) = t.adjusting_add(SignedDuration::hours(1));
+        assert!(matches!(adjustment, DateAdjustment::Next));
+        assert_eq!(next, Time::MIDNIGHT);
+
+        let (adjustment, previous) = Time::MIDNIGHT.adjusting_add(SignedDuration::hours(-1));
+        assert!(matches!(adjustment, DateAdjustment::Previous));
+        assert_eq!(previous, time(23, 0, 0));
+
+        let (adjustment, unchanged) = t.adjusting_add(SignedDuration::minutes(30));
+        assert!(matches!(adjustment, DateAdjustment::None));
+        assert_eq!(unchanged, time(23, 30, 0));
+
+        // Days are ignored entirely: no date adjustment is reported.
+        let (adjustment, unchanged) = t.adjusting_add(SignedDuration::days(100));
+        assert!(matches!(adjustment, DateAdjustment::None));
+        assert_eq!(unchanged, t);
+
+        // Crossing midnight in the subtractive direction.
+        let (adjustment, previous) = time(1, 0, 0).adjusting_sub(SignedDuration::hours(2));
+        assert!(matches!(adjustment, DateAdjustment::Previous));
+        assert_eq!(previous, time(23, 0, 0));
+
+        let (adjustment, next) = time(23, 0, 0).adjusting_sub(SignedDuration::hours(-2));
+        assert!(matches!(adjustment, DateAdjustment::Next));
+        assert_eq!(next, time(1, 0, 0));
+
+        // Standard durations only ever move forward.
+        let (is_next_day, next) = time(23, 0, 0).adjusting_add_std(StdDuration::from_secs(3_600));
+        assert!(is_next_day);
+        assert_eq!(next, Time::MIDNIGHT);
+        let (is_next_day, unchanged) = time(1, 0, 0).adjusting_add_std(StdDuration::from_secs(3_600));
+        assert!(!is_next_day);
+        assert_eq!(unchanged, time(2, 0, 0));
+        let (is_previous_day, previous) = Time::MIDNIGHT.adjusting_sub_std(StdDuration::from_secs(3_600));
+        assert!(is_previous_day);
+        assert_eq!(previous, time(23, 0, 0));
+        let (is_previous_day, unchanged) = time(1, 0, 0).adjusting_sub_std(StdDuration::from_secs(3_600));
+        assert!(!is_previous_day);
+        assert_eq!(unchanged, Time::MIDNIGHT);
+    }
+
+    #[test]
+    fn as_u64_reflects_temporal_order() {
+        let values = [
+            Time::MIDNIGHT,
+            time(0, 0, 1),
+            time(0, 1, 0),
+            time(1, 0, 0),
+            time(12, 0, 0),
+            time(23, 59, 59),
+            Time::MAX,
+        ];
+        for window in values.windows(2) {
+            assert!(window[0].as_u64() < window[1].as_u64());
+            assert!(window[0] < window[1]);
+        }
+        // Equal times compare equally at the bit level too.
+        assert_eq!(time(12, 30, 45).as_u64(), time(12, 30, 45).as_u64());
+    }
+}

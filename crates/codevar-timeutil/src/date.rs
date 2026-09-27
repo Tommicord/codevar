@@ -1216,3 +1216,1001 @@ impl Sub for Date {
         SignedDuration::days((self.to_julian_day() - other.to_julian_day()).widen())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::date_util::days_in_month_leap;
+
+    /// Cumulative days before each month (1-based index) in a common year.
+    const CUMULATIVE: [u16; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+
+    /// Independent civil date to days since the Unix epoch (Howard Hinnant's `days_from_civil`).
+    fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
+        let y = i64::from(year) - i64::from(month <= 2);
+        let era = if y >= 0 { y } else { y - 399 } / 400;
+        let yoe = y - era * 400;
+        let m = if month > 2 { month - 3 } else { month + 9 };
+        let doy = (153 * i64::from(m) + 2) / 5 + i64::from(day) - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        era * 146_097 + doe - 719_468
+    }
+
+    /// Days since the Unix epoch for a `Date`, derived from the crate's Julian day.
+    fn epoch_days(date: Date) -> i64 {
+        i64::from(date.to_julian_day()) - 2_440_588
+    }
+
+    /// Independent weekday from days since the epoch (1970-01-01 was a Thursday).
+    fn reference_weekday(epoch_days: i64) -> Weekday {
+        match (epoch_days + 3).rem_euclid(7) {
+            0 => Weekday::Monday,
+            1 => Weekday::Tuesday,
+            2 => Weekday::Wednesday,
+            3 => Weekday::Thursday,
+            4 => Weekday::Friday,
+            5 => Weekday::Saturday,
+            _ => Weekday::Sunday,
+        }
+    }
+
+    /// Independent ISO week date: the ISO year is the calendar year containing the week's
+    /// Thursday, and week 1 is the week containing the first Thursday of the ISO year.
+    fn reference_iso_week(date: Date) -> (i32, u8) {
+        let epoch = epoch_days(date);
+        let thursday = epoch + i64::from(4 - i32::from(date.weekday().number_from_monday()));
+        let jan_1 = days_from_civil(date.year(), 1, 1);
+        let jan_1_next = days_from_civil(date.year() + 1, 1, 1);
+        let iso_year = if thursday < jan_1 {
+            date.year() - 1
+        } else if thursday >= jan_1_next {
+            date.year() + 1
+        } else {
+            date.year()
+        };
+        let week = ((thursday - days_from_civil(iso_year, 1, 1)) / 7 + 1) as u8;
+        (iso_year, week)
+    }
+
+    /// Independent conversion of an ordinal day to its month and day of month.
+    fn reference_month_day(year: i32, ordinal: u16) -> (Month, u8) {
+        let leap = is_leap_year(year);
+        for index in 0..12 {
+            let start = CUMULATIVE[index] + u16::from(index >= 2 && leap);
+            let end = if index == 11 {
+                if leap { 366 } else { 365 }
+            } else {
+                CUMULATIVE[index + 1] + u16::from(index + 1 >= 2 && leap)
+            };
+            if ordinal > start && ordinal <= end {
+                let month = Month::try_from((index as u8) + 1).expect("month is in range");
+                return (month, (ordinal - start) as u8);
+            }
+        }
+        panic!("ordinal {ordinal} is out of range for year {year}");
+    }
+
+    /// Independent week numbering where week 1 contains the first `weekday` of the year.
+    fn reference_week(ordinal: u16, days_from_week_start: u8) -> u8 {
+        ((i32::from(ordinal) - 1 - i32::from(days_from_week_start)).div_euclid(7) + 1) as u8
+    }
+
+    #[test]
+    fn min_and_max_bounds() {
+        assert_eq!(Date::MIN.to_calendar_date(), (MIN_YEAR, Month::January, 1));
+        assert_eq!(Date::MAX.to_calendar_date(), (MAX_YEAR, Month::December, 31));
+        assert_eq!(Date::MIN.ordinal(), 1);
+        assert_eq!(
+            Date::MAX.ordinal(),
+            if is_leap_year(MAX_YEAR) { 366 } else { 365 }
+        );
+        assert_eq!(Date::MIN.year(), MIN_YEAR);
+        assert_eq!(Date::MAX.year(), MAX_YEAR);
+        assert_eq!(Date::UNIX_EPOCH.to_calendar_date(), (1970, Month::January, 1));
+        assert!(Date::MIN < Date::UNIX_EPOCH);
+        assert!(Date::UNIX_EPOCH < Date::MAX);
+    }
+
+    #[test]
+    fn from_calendar_date_round_trip_for_sampled_days() {
+        // Every year in the representable range, sampled days within each year.
+        for year in (MIN_YEAR..=MAX_YEAR).step_by(7) {
+            let leap = is_leap_year(year);
+            let days_in_year = if leap { 366 } else { 365 };
+            for ordinal in [1u16, 31, 32, 59, 60, 61, 100, 200, days_in_year - 1, days_in_year] {
+                let date = Date::from_ordinal_date(year, ordinal).expect("ordinal is in range");
+                let (month, day) = reference_month_day(year, ordinal);
+                assert_eq!(date.year(), year, "year for {year}-{ordinal}");
+                assert_eq!(date.ordinal(), ordinal, "ordinal for {year}-{ordinal}");
+                assert_eq!(date.month(), month, "month for {year}-{ordinal}");
+                assert_eq!(date.day(), day, "day for {year}-{ordinal}");
+
+                let rebuilt = Date::from_calendar_date(year, month, day).expect("date is valid");
+                assert_eq!(rebuilt, date, "calendar round trip for {year}-{ordinal}");
+                assert_eq!(rebuilt.to_calendar_date(), (year, month, day));
+                assert!(date >= Date::MIN && date <= Date::MAX);
+            }
+        }
+    }
+
+    #[test]
+    fn from_calendar_date_rejects_invalid_components() {
+        // Day out of range for the specific month/year combination (conditional).
+        for (year, month, day) in [
+            (2023, Month::February, 29),
+            (2100, Month::February, 29),
+            (2023, Month::April, 31),
+            (2024, Month::June, 31),
+            (2024, Month::September, 31),
+            (2024, Month::November, 31),
+            (2024, Month::January, 32),
+            (2024, Month::December, 0),
+        ] {
+            let error = Date::from_calendar_date(year, month, day).expect_err("must be rejected");
+            assert_eq!(error.name(), "day");
+            assert!(error.is_conditional(), "{year}-{month:?}-{day}");
+            assert_eq!(error.to_string(), "day was not in range");
+        }
+
+        // Valid leap day and month ends.
+        assert!(Date::from_calendar_date(2024, Month::February, 29).is_ok());
+        assert!(Date::from_calendar_date(2000, Month::February, 29).is_ok());
+        assert!(Date::from_calendar_date(2024, Month::April, 31).is_err());
+        assert!(Date::from_calendar_date(2024, Month::April, 30).is_ok());
+        assert!(Date::from_calendar_date(2023, Month::December, 31).is_ok());
+
+        // Year out of range (unconditional).
+        for year in [MAX_YEAR + 1, MIN_YEAR - 1, i32::MAX, i32::MIN] {
+            let error = Date::from_calendar_date(year, Month::January, 1).expect_err("rejected");
+            assert_eq!(error.name(), "year");
+            assert!(!error.is_conditional(), "year {year}");
+        }
+    }
+
+    #[test]
+    fn from_ordinal_date_validates_range() {
+        assert_eq!(
+            Date::from_ordinal_date(2024, 60).map(Date::to_calendar_date),
+            Ok((2024, Month::February, 29)),
+        );
+        assert_eq!(
+            Date::from_ordinal_date(2023, 59).map(Date::to_calendar_date),
+            Ok((2023, Month::February, 28)),
+        );
+
+        for (year, ordinal) in [(2023, 366), (2024, 367), (2024, 0), (2100, 366), (1, 0)] {
+            let error = Date::from_ordinal_date(year, ordinal).expect_err("must be rejected");
+            assert_eq!(error.name(), "ordinal");
+            assert!(error.is_conditional(), "{year}-{ordinal}");
+        }
+
+        let error = Date::from_ordinal_date(MAX_YEAR + 1, 1).expect_err("must be rejected");
+        assert_eq!(error.name(), "year");
+        assert!(!error.is_conditional());
+
+        // Boundary ordinals are accepted.
+        assert!(Date::from_ordinal_date(MIN_YEAR, 1).is_ok());
+        assert!(Date::from_ordinal_date(MAX_YEAR, 365).is_ok());
+        assert!(Date::from_ordinal_date(2024, 366).is_ok());
+    }
+
+    #[test]
+    fn iso_week_date_known_anchors() {
+        let cases: [(Date, (i32, u8, Weekday)); 8] = [
+            (
+                Date::from_calendar_date(2020, Month::December, 31).expect("valid"),
+                (2020, 53, Weekday::Thursday),
+            ),
+            (
+                Date::from_calendar_date(2021, Month::January, 1).expect("valid"),
+                (2020, 53, Weekday::Friday),
+            ),
+            (
+                Date::from_calendar_date(2019, Month::December, 30).expect("valid"),
+                (2020, 1, Weekday::Monday),
+            ),
+            (
+                Date::from_calendar_date(2021, Month::December, 31).expect("valid"),
+                (2021, 52, Weekday::Friday),
+            ),
+            (
+                Date::from_calendar_date(2015, Month::December, 31).expect("valid"),
+                (2015, 53, Weekday::Thursday),
+            ),
+            (
+                Date::from_calendar_date(2016, Month::January, 1).expect("valid"),
+                (2015, 53, Weekday::Friday),
+            ),
+            (
+                Date::from_calendar_date(2024, Month::February, 29).expect("valid"),
+                (2024, 9, Weekday::Thursday),
+            ),
+            (Date::UNIX_EPOCH, (1970, 1, Weekday::Thursday)),
+        ];
+        for (date, expected) in cases {
+            assert_eq!(date.to_iso_week_date(), expected, "{date}");
+            assert_eq!(date.iso_week(), expected.1, "{date}");
+            let (year, week, weekday) = expected;
+            assert_eq!(
+                Date::from_iso_week_date(year, week, weekday).map(|d| (d, d.weekday())),
+                Ok((date, weekday)),
+                "round trip for {year}-W{week:02}-{weekday}",
+            );
+        }
+    }
+
+    #[test]
+    fn iso_week_date_round_trip_and_reference() {
+        let mut date = Date::from_calendar_date(1999, Month::December, 1).expect("valid");
+        let end = Date::from_calendar_date(2005, Month::January, 31).expect("valid");
+        while date <= end {
+            let (year, week, weekday) = date.to_iso_week_date();
+            assert_eq!(weekday, date.weekday(), "{date}");
+            assert!((1..=53).contains(&week), "week {week} for {date}");
+            assert_eq!(reference_iso_week(date), (year, week), "{date}");
+            let rebuilt = Date::from_iso_week_date(year, week, weekday).expect("valid ISO date");
+            assert_eq!(rebuilt, date, "round trip for {date}");
+            date = date.next_day().expect("not at MAX");
+        }
+    }
+
+    #[test]
+    fn iso_week_date_rejects_invalid_weeks() {
+        // 2021 has 52 ISO weeks.
+        let error = Date::from_iso_week_date(2021, 53, Weekday::Monday).expect_err("must be rejected");
+        assert_eq!(error.name(), "week");
+        assert!(error.is_conditional());
+
+        for week in [0u8, 54, 255] {
+            let error = Date::from_iso_week_date(2020, week, Weekday::Monday).expect_err("rejected");
+            assert_eq!(error.name(), "week");
+            assert!(error.is_conditional(), "week {week}");
+        }
+
+        // 2020 does have 53 weeks.
+        assert!(Date::from_iso_week_date(2020, 53, Weekday::Monday).is_ok());
+
+        let error = Date::from_iso_week_date(MAX_YEAR + 1, 1, Weekday::Monday).expect_err("rejected");
+        assert_eq!(error.name(), "year");
+        assert!(!error.is_conditional());
+
+        // The final week of the maximum year extends past `Date::MAX`.
+        let error = Date::from_iso_week_date(MAX_YEAR, 52, Weekday::Sunday).expect_err("rejected");
+        assert_eq!(error.name(), "weekday");
+        assert!(error.is_conditional());
+    }
+
+    #[test]
+    fn julian_day_known_values_and_round_trip() {
+        // 1970-01-01 (Unix epoch), 2000-01-01 (J2000.0), 2024-02-29.
+        assert_eq!(Date::UNIX_EPOCH.to_julian_day(), 2_440_588);
+        let j2000 = Date::from_calendar_date(2000, Month::January, 1).expect("valid");
+        assert_eq!(j2000.to_julian_day(), 2_451_545);
+        let leap_day = Date::from_calendar_date(2024, Month::February, 29).expect("valid");
+        assert_eq!(leap_day.to_julian_day(), 2_460_370);
+
+        for date in [
+            Date::MIN,
+            Date::MAX,
+            Date::UNIX_EPOCH,
+            j2000,
+            leap_day,
+            Date::from_calendar_date(1, Month::January, 1).expect("valid"),
+            Date::from_calendar_date(1999, Month::December, 31).expect("valid"),
+            Date::from_calendar_date(-9999, Month::December, 31).expect("valid"),
+        ] {
+            let jd = date.to_julian_day();
+            assert_eq!(Date::from_julian_day(jd).expect("in range"), date, "JD {jd}");
+            assert_eq!(
+                i64::from(jd),
+                days_from_civil(
+                    date.year(),
+                    u32::from(u8::from(date.month())),
+                    u32::from(date.day())
+                ) + 2_440_588,
+                "JD for {date}",
+            );
+        }
+    }
+
+    #[test]
+    fn julian_day_rejects_values_out_of_range() {
+        let min_jd = Date::MIN.to_julian_day();
+        let max_jd = Date::MAX.to_julian_day();
+        assert!(Date::from_julian_day(min_jd).is_ok());
+        assert!(Date::from_julian_day(max_jd).is_ok());
+        for jd in [min_jd - 1, max_jd + 1, i32::MAX, i32::MIN] {
+            let error = Date::from_julian_day(jd).expect_err("must be rejected");
+            assert_eq!(error.name(), "julian_day");
+            assert!(!error.is_conditional(), "JD {jd}");
+        }
+    }
+
+    #[test]
+    fn full_sweep_of_every_representable_date() {
+        let mut date = Date::MIN;
+        let mut expected_epoch = days_from_civil(MIN_YEAR, 1, 1);
+        let mut visited = 0i64;
+
+        loop {
+            let year = date.year();
+            let ordinal = date.ordinal();
+            assert!(date >= Date::MIN && date <= Date::MAX);
+
+            // Julian day and epoch day advance one per day, matching the reference calendar.
+            assert_eq!(
+                i64::from(date.to_julian_day()),
+                expected_epoch + 2_440_588,
+                "Julian day for {date}",
+            );
+            assert_eq!(
+                date.weekday(),
+                reference_weekday(expected_epoch),
+                "weekday for {date}"
+            );
+
+            // Calendar components agree with an independent ordinal-to-date conversion.
+            let (month, day) = reference_month_day(year, ordinal);
+            assert_eq!((date.month(), date.day()), (month, day), "components for {date}");
+            assert_eq!(date.to_calendar_date(), (year, month, day), "{date}");
+            assert_eq!(date.to_ordinal_date(), (year, ordinal), "{date}");
+            assert!((1..=366).contains(&ordinal), "ordinal {ordinal} for {date}");
+            assert!(ordinal <= days_in_year(year), "ordinal {ordinal} for {date}");
+            assert!(day >= 1 && day <= days_in_month_leap(u8::from(month), is_leap_year(year)));
+
+            // Construction from the observed components yields the same date.
+            assert_eq!(
+                Date::from_calendar_date(year, month, day).expect("valid"),
+                date,
+                "calendar round trip for {date}",
+            );
+            assert_eq!(Date::from_ordinal_date(year, ordinal).expect("valid"), date);
+
+            visited += 1;
+            if date == Date::MAX {
+                break;
+            }
+            let next = date
+                .next_day()
+                .expect("next_day succeeds before MAX");
+            assert!(next > date);
+            assert_eq!(
+                next.previous_day()
+                    .expect("previous_day succeeds"),
+                date
+            );
+            expected_epoch += 1;
+            date = next;
+        }
+
+        let expected_days = days_from_civil(MAX_YEAR, 12, 31) - days_from_civil(MIN_YEAR, 1, 1) + 1;
+        assert_eq!(visited, expected_days, "total number of representable dates");
+    }
+
+    #[test]
+    fn next_day_and_previous_day_bounds() {
+        assert_eq!(Date::MAX.next_day(), None);
+        assert_eq!(Date::MIN.previous_day(), None);
+        assert_eq!(
+            Date::MAX
+                .previous_day()
+                .map(Date::to_calendar_date),
+            Some((MAX_YEAR, Month::December, 30)),
+        );
+        assert_eq!(
+            Date::MIN.next_day().map(Date::to_calendar_date),
+            Some((MIN_YEAR, Month::January, 2)),
+        );
+        // Year boundaries wrap correctly.
+        let jan_1 = Date::from_calendar_date(2024, Month::January, 1).expect("valid");
+        assert_eq!(
+            jan_1.previous_day().map(Date::to_calendar_date),
+            Some((2023, Month::December, 31)),
+        );
+        let dec_31 = Date::from_calendar_date(2023, Month::December, 31).expect("valid");
+        assert_eq!(
+            dec_31.next_day().map(Date::to_calendar_date),
+            Some((2024, Month::January, 1)),
+        );
+        // Leap day handling.
+        let feb_28 = Date::from_calendar_date(2024, Month::February, 28).expect("valid");
+        assert_eq!(
+            feb_28.next_day().map(Date::to_calendar_date),
+            Some((2024, Month::February, 29)),
+        );
+        let feb_28_common = Date::from_calendar_date(2023, Month::February, 28).expect("valid");
+        assert_eq!(
+            feb_28_common
+                .next_day()
+                .map(Date::to_calendar_date),
+            Some((2023, Month::March, 1)),
+        );
+    }
+
+    #[test]
+    fn week_numbers_match_reference() {
+        // 2021-01-01 is a Friday: it belongs to week 0 for both numbering schemes.
+        let date = Date::from_calendar_date(2021, Month::January, 1).expect("valid");
+        assert_eq!(date.monday_based_week(), 0);
+        assert_eq!(date.sunday_based_week(), 0);
+        // The first Monday of 2021 (Jan 4) starts week 1.
+        let date = Date::from_calendar_date(2021, Month::January, 4).expect("valid");
+        assert_eq!(date.monday_based_week(), 1);
+        assert_eq!(date.sunday_based_week(), 1);
+        // 1970-01-01 is a Thursday; the first Sunday (Jan 4) and first Monday (Jan 5) both
+        // fall later, so it belongs to week 0 of both numbering schemes.
+        assert_eq!(Date::UNIX_EPOCH.sunday_based_week(), 0);
+        assert_eq!(Date::UNIX_EPOCH.monday_based_week(), 0);
+
+        for year in (MIN_YEAR..=MAX_YEAR).step_by(11) {
+            for ordinal in [1u16, 2, 7, 8, 31, 100, 364, 365, 366] {
+                let Ok(date) = Date::from_ordinal_date(year, ordinal) else {
+                    continue;
+                };
+                assert_eq!(
+                    date.sunday_based_week(),
+                    reference_week(ordinal, date.weekday().number_days_from_sunday()),
+                    "sunday-based week for {date}",
+                );
+                assert_eq!(
+                    date.monday_based_week(),
+                    reference_week(ordinal, date.weekday().number_days_from_monday()),
+                    "monday-based week for {date}",
+                );
+                assert!((0..=53).contains(&date.sunday_based_week()), "{date}");
+                assert!((0..=53).contains(&date.monday_based_week()), "{date}");
+            }
+        }
+    }
+
+    #[test]
+    fn weekday_reference_agreement_across_years() {
+        for year in (MIN_YEAR..=MAX_YEAR).step_by(3) {
+            for (month, day) in [
+                (Month::January, 1),
+                (Month::February, 28),
+                (Month::June, 15),
+                (Month::December, 31),
+            ] {
+                let date = Date::from_calendar_date(year, month, day).expect("valid");
+                assert_eq!(date.weekday(), reference_weekday(epoch_days(date)), "{date}",);
+            }
+        }
+    }
+
+    #[test]
+    fn next_and_prev_occurrence_navigate_weekdays() {
+        let date = Date::from_calendar_date(2024, Month::March, 6).expect("valid"); // Wednesday
+        assert_eq!(date.weekday(), Weekday::Wednesday);
+
+        assert_eq!(
+            date.next_occurrence(Weekday::Friday)
+                .to_calendar_date(),
+            (2024, Month::March, 8),
+        );
+        // A matching weekday yields the following week, since occurrences are strictly later.
+        assert_eq!(
+            date.next_occurrence(Weekday::Wednesday)
+                .to_calendar_date(),
+            (2024, Month::March, 13),
+        );
+        assert_eq!(
+            date.prev_occurrence(Weekday::Friday)
+                .to_calendar_date(),
+            (2024, Month::March, 1),
+        );
+        assert_eq!(
+            date.prev_occurrence(Weekday::Wednesday)
+                .to_calendar_date(),
+            (2024, Month::February, 28),
+        );
+        assert_eq!(
+            date.nth_next_occurrence(Weekday::Friday, 3)
+                .to_calendar_date(),
+            (2024, Month::March, 22),
+        );
+        // The first occurrence is strictly earlier (2024-03-01), so n = 3 lands two weeks
+        // before it.
+        assert_eq!(
+            date.nth_prev_occurrence(Weekday::Friday, 3)
+                .to_calendar_date(),
+            (2024, Month::February, 16),
+        );
+        // n == 0 returns the date itself.
+        assert_eq!(date.nth_next_occurrence(Weekday::Friday, 0), date);
+        assert_eq!(date.nth_prev_occurrence(Weekday::Friday, 0), date);
+
+        for weekday in [
+            Weekday::Monday,
+            Weekday::Tuesday,
+            Weekday::Wednesday,
+            Weekday::Thursday,
+            Weekday::Friday,
+            Weekday::Saturday,
+            Weekday::Sunday,
+        ] {
+            let next = date.next_occurrence(weekday);
+            assert_eq!(next.weekday(), weekday);
+            assert!(next > date);
+            assert!(next <= date + SignedDuration::days(7));
+
+            let prev = date.prev_occurrence(weekday);
+            assert_eq!(prev.weekday(), weekday);
+            assert!(prev < date);
+            assert!(prev >= date - SignedDuration::days(7));
+        }
+    }
+
+    #[test]
+    fn occurrence_overflow_saturates() {
+        // Occurring on the same weekday is a full week away, which overflows at the bounds.
+        assert_eq!(Date::MAX.next_occurrence(Weekday::Friday), Date::MAX);
+        assert_eq!(Date::MIN.prev_occurrence(Weekday::Monday), Date::MIN);
+        // Occurrences that stay within the range resolve normally.
+        assert_eq!(
+            Date::MAX
+                .prev_occurrence(Weekday::Monday)
+                .to_calendar_date(),
+            (9999, Month::December, 27),
+        );
+        assert_eq!(
+            Date::MIN
+                .next_occurrence(Weekday::Monday)
+                .to_calendar_date(),
+            (-9999, Month::January, 8),
+        );
+        // Large distances saturate rather than overflowing.
+        assert_eq!(Date::MAX.nth_next_occurrence(Weekday::Monday, 200), Date::MAX,);
+        assert_eq!(Date::MIN.nth_prev_occurrence(Weekday::Monday, 200), Date::MIN,);
+        // The checked variants report the overflow as `None`.
+        assert_eq!(Date::MAX.checked_next_occurrence(Weekday::Monday), None);
+        assert_eq!(Date::MAX.checked_next_occurrence(Weekday::Friday), None);
+        assert_eq!(Date::MIN.checked_prev_occurrence(Weekday::Monday), None);
+        assert_eq!(Date::MAX.checked_nth_next_occurrence(Weekday::Monday, 1), None,);
+        assert_eq!(Date::MIN.checked_nth_prev_occurrence(Weekday::Monday, 1), None,);
+        // n == 0 is rejected by the checked variants but handled by the panicking ones.
+        assert_eq!(
+            Date::UNIX_EPOCH.checked_nth_next_occurrence(Weekday::Monday, 0),
+            None,
+        );
+        assert_eq!(
+            Date::UNIX_EPOCH.checked_nth_prev_occurrence(Weekday::Monday, 0),
+            None,
+        );
+        // A date just inside the range resolves when the target stays inside, but not when
+        // the next occurrence would fall past `Date::MAX`.
+        let almost_max = Date::MAX.previous_day().expect("not MIN"); // a Thursday
+        assert_eq!(
+            almost_max.checked_next_occurrence(Weekday::Friday),
+            Some(Date::MAX),
+        );
+        assert_eq!(almost_max.checked_next_occurrence(Weekday::Monday), None);
+    }
+
+    #[test]
+    fn checked_and_saturating_arithmetic() {
+        let date = Date::from_calendar_date(2024, Month::January, 1).expect("valid");
+
+        // Whole days only: sub-day durations are ignored.
+        assert_eq!(date.checked_add(SignedDuration::hours(23)), Some(date));
+        assert_eq!(
+            date.checked_add(SignedDuration::hours(24))
+                .map(Date::to_calendar_date),
+            Some((2024, Month::January, 2)),
+        );
+        assert_eq!(
+            date.checked_add(SignedDuration::days(31))
+                .map(Date::to_calendar_date),
+            Some((2024, Month::February, 1)),
+        );
+        assert_eq!(
+            date.checked_sub(SignedDuration::days(1))
+                .map(Date::to_calendar_date),
+            Some((2023, Month::December, 31)),
+        );
+        // Adding and then subtracting returns the original date.
+        let duration = SignedDuration::days(12_345);
+        assert_eq!(
+            date.checked_add(duration)
+                .and_then(|d| d.checked_sub(duration)),
+            Some(date)
+        );
+
+        // Overflow yields None; the saturating variants clamp.
+        assert_eq!(Date::MAX.checked_add(SignedDuration::days(1)), None);
+        assert_eq!(Date::MIN.checked_sub(SignedDuration::days(1)), None);
+        // Moving away from the bounds always succeeds.
+        assert!(
+            Date::MAX
+                .checked_add(SignedDuration::days(-1))
+                .is_some()
+        );
+        assert!(
+            Date::MIN
+                .checked_sub(SignedDuration::days(-1))
+                .is_some()
+        );
+        assert_eq!(Date::MAX.saturating_add(SignedDuration::days(1)), Date::MAX);
+        assert_eq!(Date::MIN.saturating_sub(SignedDuration::days(1)), Date::MIN);
+        // Saturating operations clamp to the bound only when moving past it.
+        assert_eq!(
+            Date::MIN.saturating_add(SignedDuration::days(1)),
+            Date::MIN.next_day().expect("MIN is not MAX"),
+        );
+        assert_eq!(
+            Date::MAX.saturating_sub(SignedDuration::days(1)),
+            Date::MAX.previous_day().expect("MAX is not MIN"),
+        );
+
+        // Durations far outside the i32 day range.
+        let huge = SignedDuration::days(i64::from(i32::MAX) + 1);
+        assert_eq!(date.checked_add(huge), None);
+        assert_eq!(date.checked_sub(huge), None);
+        assert_eq!(date.checked_add(-huge), None);
+        assert_eq!(date.saturating_add(huge), Date::MAX);
+        assert_eq!(date.saturating_sub(huge), Date::MIN);
+
+        // Standard durations.
+        let two_days = StdDuration::from_secs(2 * 86_400);
+        assert_eq!(
+            date.checked_add_std(two_days)
+                .map(Date::to_calendar_date),
+            Some((2024, Month::January, 3)),
+        );
+        assert_eq!(
+            date.checked_sub_std(two_days)
+                .map(Date::to_calendar_date),
+            Some((2023, Month::December, 30)),
+        );
+        // Standard durations also only count whole days.
+        assert_eq!(date.checked_add_std(StdDuration::from_secs(86_399)), Some(date));
+        assert_eq!(Date::MAX.checked_add_std(StdDuration::from_secs(u64::MAX)), None);
+        assert_eq!(Date::MIN.checked_sub_std(StdDuration::from_secs(u64::MAX)), None);
+        assert!(
+            Date::MAX
+                .checked_sub_std(StdDuration::from_secs(86_400))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn arithmetic_operator_traits() {
+        let date = Date::from_calendar_date(2024, Month::June, 15).expect("valid");
+        let one_day = SignedDuration::days(1);
+        let three_days = SignedDuration::days(3);
+
+        assert_eq!((date + three_days).to_calendar_date(), (2024, Month::June, 18),);
+        assert_eq!((date - three_days).to_calendar_date(), (2024, Month::June, 12));
+        assert_eq!(date - (date - three_days), three_days);
+        assert_eq!((date + three_days) - date, three_days);
+
+        let mut mutated = date;
+        mutated += three_days;
+        assert_eq!(mutated.to_calendar_date(), (2024, Month::June, 18));
+        mutated -= three_days;
+        assert_eq!(mutated, date);
+        assert_eq!(mutated, date + one_day - one_day);
+
+        // Out-of-range operator additions saturate instead of panicking.
+        assert_eq!(Date::MAX + one_day, Date::MAX);
+        assert_eq!(Date::MIN - one_day, Date::MIN);
+        assert_eq!(Date::MAX - one_day, Date::MAX.previous_day().expect("not MIN"));
+        assert_eq!(Date::MIN + one_day, Date::MIN.next_day().expect("not MAX"));
+
+        // Standard duration operators saturate as well.
+        let std_one_day = StdDuration::from_secs(86_400);
+        assert_eq!((Date::MAX + std_one_day), Date::MAX);
+        assert_eq!((Date::MIN - std_one_day), Date::MIN);
+        let mut mutated = date;
+        mutated += std_one_day;
+        assert_eq!(mutated, date + one_day);
+        mutated -= std_one_day;
+        assert_eq!(mutated, date);
+    }
+
+    #[test]
+    fn replace_year_adjusts_for_leap_years() {
+        // Dates in January and February are unaffected by leap status.
+        let feb_28 = Date::from_calendar_date(2024, Month::February, 28).expect("valid");
+        assert_eq!(
+            feb_28
+                .replace_year(2023)
+                .map(Date::to_calendar_date),
+            Ok((2023, Month::February, 28)),
+        );
+        assert_eq!(
+            feb_28
+                .replace_year(2024)
+                .map(Date::to_calendar_date),
+            Ok((2024, Month::February, 28)),
+        );
+
+        // February 29 cannot be replaced into a common year.
+        let leap_day = Date::from_calendar_date(2024, Month::February, 29).expect("valid");
+        let error = leap_day
+            .replace_year(2023)
+            .expect_err("must be rejected");
+        assert_eq!(error.name(), "day");
+        assert!(error.is_conditional());
+        assert!(leap_day.replace_year(2000).is_ok());
+
+        // March and later keep their calendar date when leap status changes.
+        let march_1_leap = Date::from_calendar_date(2024, Month::March, 1).expect("valid");
+        assert_eq!(
+            march_1_leap
+                .replace_year(2023)
+                .map(Date::to_calendar_date),
+            Ok((2023, Month::March, 1)),
+        );
+        let march_1_common = Date::from_calendar_date(2023, Month::March, 1).expect("valid");
+        assert_eq!(
+            march_1_common
+                .replace_year(2024)
+                .map(Date::to_calendar_date),
+            Ok((2024, Month::March, 1)),
+        );
+        let june_15_common = Date::from_calendar_date(2023, Month::June, 15).expect("valid");
+        assert_eq!(
+            june_15_common
+                .replace_year(2024)
+                .map(Date::to_calendar_date),
+            Ok((2024, Month::June, 15)),
+        );
+        let june_15_leap = Date::from_calendar_date(2024, Month::June, 15).expect("valid");
+        assert_eq!(
+            june_15_leap
+                .replace_year(2023)
+                .map(Date::to_calendar_date),
+            Ok((2023, Month::June, 15)),
+        );
+
+        for year in [MAX_YEAR + 1, MIN_YEAR - 1] {
+            let error = june_15_common
+                .replace_year(year)
+                .expect_err("must be rejected");
+            assert_eq!(error.name(), "year");
+            assert!(!error.is_conditional());
+        }
+        assert!(june_15_common.replace_year(MAX_YEAR).is_ok());
+    }
+
+    #[test]
+    fn replace_month_keeps_day_or_rejects_it() {
+        let date = Date::from_calendar_date(2024, Month::January, 31).expect("valid");
+        assert_eq!(
+            date.replace_month(Month::March)
+                .map(Date::to_calendar_date),
+            Ok((2024, Month::March, 31)),
+        );
+        assert_eq!(
+            date.replace_month(Month::January)
+                .map(Date::to_calendar_date),
+            Ok((2024, Month::January, 31)),
+        );
+        // 31 does not exist in February, even in a leap year.
+        let error = date
+            .replace_month(Month::February)
+            .expect_err("must be rejected");
+        assert_eq!(error.name(), "day");
+        assert!(error.is_conditional());
+
+        let date = Date::from_calendar_date(2024, Month::March, 15).expect("valid");
+        assert_eq!(
+            date.replace_month(Month::February)
+                .map(Date::to_calendar_date),
+            Ok((2024, Month::February, 15)),
+        );
+        let date = Date::from_calendar_date(2023, Month::March, 31).expect("valid");
+        let error = date
+            .replace_month(Month::February)
+            .expect_err("must be rejected");
+        assert!(error.is_conditional());
+        // May has 31 days, so the day is preserved.
+        assert_eq!(
+            date.replace_month(Month::May)
+                .map(Date::to_calendar_date),
+            Ok((2023, Month::May, 31)),
+        );
+    }
+
+    #[test]
+    fn replace_day_and_replace_ordinal_validate_ranges() {
+        let date = Date::from_calendar_date(2023, Month::January, 15).expect("valid");
+        assert_eq!(
+            date.replace_day(29).map(Date::to_calendar_date),
+            Ok((2023, Month::January, 29)),
+        );
+        let error = date.replace_day(0).expect_err("must be rejected");
+        assert_eq!(error.name(), "day");
+        assert!(error.is_conditional());
+        let error = date
+            .replace_day(32)
+            .expect_err("must be rejected");
+        assert!(error.is_conditional());
+
+        // February 29 only exists in leap years.
+        let feb = Date::from_calendar_date(2024, Month::February, 1).expect("valid");
+        assert_eq!(
+            feb.replace_day(29).map(Date::to_calendar_date),
+            Ok((2024, Month::February, 29)),
+        );
+        let feb_common = Date::from_calendar_date(2023, Month::February, 1).expect("valid");
+        let error = feb_common
+            .replace_day(29)
+            .expect_err("must be rejected");
+        assert!(error.is_conditional());
+
+        let date = Date::from_calendar_date(2024, Month::May, 1).expect("valid");
+        assert_eq!(
+            date.replace_ordinal(366)
+                .map(Date::to_calendar_date),
+            Ok((2024, Month::December, 31)),
+        );
+        assert_eq!(date.replace_ordinal(1).map(Date::ordinal), Ok(1));
+        let error = date
+            .replace_ordinal(0)
+            .expect_err("must be rejected");
+        assert_eq!(error.name(), "ordinal");
+        assert!(error.is_conditional());
+        let error = date
+            .replace_ordinal(367)
+            .expect_err("must be rejected");
+        assert!(error.is_conditional());
+
+        let date_common = Date::from_calendar_date(2023, Month::May, 1).expect("valid");
+        let error = date_common
+            .replace_ordinal(366)
+            .expect_err("must be rejected");
+        assert!(error.is_conditional());
+        assert!(date_common.replace_ordinal(365).is_ok());
+    }
+
+    #[test]
+    fn display_formats_iso_dates() {
+        let cases = [
+            (Date::UNIX_EPOCH, "1970-01-01"),
+            (Date::MIN, "-9999-01-01"),
+            (Date::MAX, "9999-12-31"),
+            (
+                Date::from_calendar_date(2024, Month::February, 29).expect("valid"),
+                "2024-02-29",
+            ),
+            (
+                Date::from_calendar_date(1, Month::January, 1).expect("valid"),
+                "0001-01-01",
+            ),
+            (
+                Date::from_calendar_date(-9999, Month::December, 31).expect("valid"),
+                "-9999-12-31",
+            ),
+            (
+                Date::from_calendar_date(9999, Month::June, 7).expect("valid"),
+                "9999-06-07",
+            ),
+        ];
+        for (date, expected) in cases {
+            assert_eq!(date.to_string(), expected);
+            assert_eq!(format!("{date:?}"), expected, "Debug matches Display");
+            assert_eq!(
+                date.metadata(FormatterOptions::default())
+                    .unpadded_width(),
+                expected.len()
+            );
+            // Zero-padded components, including for years below 1000.
+            assert_eq!(expected.len(), date.to_string().len());
+        }
+
+        // Formatting flags are honored by Display.
+        let date = Date::UNIX_EPOCH;
+        assert_eq!(format!("{date:>15}"), "     1970-01-01");
+        assert_eq!(format!("{date:<15}"), "1970-01-01     ");
+        assert_eq!(format!("{date:^15}"), "  1970-01-01   ");
+        assert_eq!(format!("{date:.5}"), "1970-");
+    }
+
+    #[test]
+    fn date_converts_to_plain_date_time() {
+        let date = Date::from_calendar_date(2024, Month::February, 29).expect("valid");
+
+        let midnight = date.midnight();
+        assert_eq!(midnight.date(), date);
+        assert_eq!(midnight.time(), Time::MIDNIGHT);
+
+        let time = Time::from_hms_nano(13, 45, 59, 123_456_789).expect("valid");
+        let with_time = date.with_time(time);
+        assert_eq!(with_time.date(), date);
+        assert_eq!(with_time.time(), time);
+
+        let with_hms = date.with_hms(1, 2, 3).expect("valid time");
+        assert_eq!(with_hms.date(), date);
+        assert_eq!(with_hms.time(), Time::from_hms(1, 2, 3).expect("valid"));
+
+        let with_milli = date
+            .with_hms_milli(1, 2, 3, 999)
+            .expect("valid time");
+        assert_eq!(with_milli.time().millisecond(), 999);
+
+        let with_micro = date
+            .with_hms_micro(1, 2, 3, 999_999)
+            .expect("valid time");
+        assert_eq!(with_micro.time().microsecond(), 999_999);
+
+        let with_nano = date
+            .with_hms_nano(1, 2, 3, 999_999_999)
+            .expect("valid time");
+        assert_eq!(with_nano.time().nanosecond(), 999_999_999);
+
+        // Invalid time components are rejected with the offending component named.
+        let error = date
+            .with_hms(24, 0, 0)
+            .expect_err("must be rejected");
+        assert_eq!(error.name(), "hour");
+        assert!(!error.is_conditional());
+        let error = date
+            .with_hms(0, 60, 0)
+            .expect_err("must be rejected");
+        assert_eq!(error.name(), "minute");
+        let error = date
+            .with_hms(0, 0, 60)
+            .expect_err("must be rejected");
+        assert_eq!(error.name(), "second");
+        let error = date
+            .with_hms_milli(0, 0, 0, 1_000)
+            .expect_err("must be rejected");
+        assert_eq!(error.name(), "millisecond");
+        let error = date
+            .with_hms_micro(0, 0, 0, 1_000_000)
+            .expect_err("must be rejected");
+        assert_eq!(error.name(), "microsecond");
+        let error = date
+            .with_hms_nano(0, 0, 0, 1_000_000_000)
+            .expect_err("must be rejected");
+        assert_eq!(error.name(), "nanosecond");
+    }
+
+    #[test]
+    fn dates_are_ordered_and_hashable() {
+        use core::hash::{Hash, Hasher};
+
+        fn hash_of<T: Hash>(value: &T) -> u64 {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            value.hash(&mut hasher);
+            hasher.finish()
+        }
+
+        let early = Date::from_calendar_date(1999, Month::December, 31).expect("valid");
+        let epoch = Date::UNIX_EPOCH;
+        let late = Date::from_calendar_date(2100, Month::January, 1).expect("valid");
+
+        assert!(epoch < early);
+        assert!(early < late);
+        assert!(Date::MIN < epoch);
+        assert!(late < Date::MAX);
+
+        // Equal values hash equally; distinct values are unlikely to collide.
+        let early_copy = Date::from_ordinal_date(1999, 365).expect("valid");
+        assert_eq!(early, early_copy);
+        assert_eq!(hash_of(&early), hash_of(&early_copy));
+        assert_ne!(hash_of(&early), hash_of(&late));
+        assert_ne!(hash_of(&epoch), hash_of(&Date::MIN));
+
+        // Chronological order agrees with Julian day order.
+        for (a, b) in [
+            (Date::MIN, epoch),
+            (epoch, early),
+            (early, late),
+            (late, Date::MAX),
+        ] {
+            assert_eq!(a < b, a.to_julian_day() < b.to_julian_day());
+        }
+
+        // Ordinal ordering matches chronological ordering within a year.
+        let mut ordinal = 2u16;
+        while ordinal <= 365 {
+            let date = Date::from_ordinal_date(2023, ordinal).expect("valid");
+            let previous = Date::from_ordinal_date(2023, ordinal - 1).expect("valid");
+            assert!(date > previous, "{date} should follow {previous}");
+            ordinal += 1;
+        }
+    }
+}

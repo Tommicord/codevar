@@ -182,3 +182,208 @@ impl fmt::Display for IndeterminateOffset {
 }
 
 impl core::error::Error for IndeterminateOffset {}
+
+#[cfg(test)]
+mod tests {
+    use core::error::Error as _;
+
+    use super::*;
+
+    #[test]
+    fn component_range_constructors_and_accessors() {
+        let unconditional = ComponentRange::unconditional("day");
+        assert_eq!(unconditional.name(), "day");
+        assert!(!unconditional.is_conditional());
+
+        let conditional = ComponentRange::conditional("year");
+        assert_eq!(conditional.name(), "year");
+        assert!(conditional.is_conditional());
+
+        assert_ne!(unconditional, conditional);
+        assert_eq!(unconditional, ComponentRange::unconditional("day"));
+        let copy = unconditional;
+        assert_eq!(copy, unconditional);
+    }
+
+    #[test]
+    fn component_range_display_includes_component_name() {
+        assert_eq!(
+            ComponentRange::unconditional("day").to_string(),
+            "day was not in range"
+        );
+        assert_eq!(
+            ComponentRange::conditional("nanosecond").to_string(),
+            "nanosecond was not in range",
+        );
+        assert_eq!(
+            ComponentRange::unconditional("offset hour").to_string(),
+            "offset hour was not in range",
+        );
+        // Padding flags are ignored: the implementation writes the message directly.
+        assert_eq!(
+            format!("{:>25}", ComponentRange::unconditional("day")),
+            "day was not in range",
+        );
+    }
+
+    #[test]
+    fn simple_error_displays() {
+        assert_eq!(
+            ConversionRange.to_string(),
+            "Source value is out of range for the target type",
+        );
+        assert_eq!(InvalidVariant.to_string(), "value was not a valid variant");
+        assert_eq!(
+            IndeterminateOffset.to_string(),
+            "The UTC offset cannot be determined",
+        );
+    }
+
+    #[test]
+    fn error_displays_each_variant() {
+        assert_eq!(
+            Error::InsufficientTypeInformation.to_string(),
+            "The type being formatted does not contain sufficient information to format a \
+             component.",
+        );
+        assert_eq!(
+            Error::InvalidComponent("offset hour").to_string(),
+            "The offset hour component cannot be formatted into the requested format.",
+        );
+        assert_eq!(
+            Error::InvalidComponent("seconds").to_string(),
+            "The seconds component cannot be formatted into the requested format.",
+        );
+        let range = ComponentRange::unconditional("day");
+        assert_eq!(Error::ComponentRange(range).to_string(), range.to_string());
+        assert_eq!(
+            Error::ConversionRange(ConversionRange).to_string(),
+            ConversionRange.to_string(),
+        );
+        assert_eq!(
+            Error::IndeterminateOffset(IndeterminateOffset).to_string(),
+            IndeterminateOffset.to_string(),
+        );
+        assert_eq!(
+            Error::StdIo(core::fmt::Error).to_string(),
+            core::fmt::Error.to_string(),
+        );
+    }
+
+    #[test]
+    fn error_from_conversions_wrap_sources() {
+        let range = ComponentRange::conditional("month");
+        let from_range: Error = range.into();
+        assert!(matches!(from_range, Error::ComponentRange(actual) if actual == range));
+        assert_eq!(from_range.to_string(), "month was not in range");
+
+        let conversion: Error = ConversionRange.into();
+        assert!(matches!(conversion, Error::ConversionRange(ConversionRange)));
+        let again: Error = ConversionRange.into();
+        assert!(matches!(again, Error::ConversionRange(ConversionRange)));
+        assert_eq!(again.to_string(), conversion.to_string());
+
+        let fmt_error: Error = core::fmt::Error.into();
+        assert!(matches!(fmt_error, Error::StdIo(_)));
+        assert_eq!(fmt_error.to_string(), core::fmt::Error.to_string());
+    }
+
+    #[test]
+    fn error_source_follows_variant() {
+        assert!(
+            Error::InsufficientTypeInformation
+                .source()
+                .is_none()
+        );
+        assert!(Error::InvalidComponent("hour").source().is_none());
+
+        let error = Error::ComponentRange(ComponentRange::unconditional("day"));
+        let source = error.source().expect("source should be present");
+        assert_eq!(source.to_string(), "day was not in range");
+        assert!(source.downcast_ref::<ComponentRange>().is_some());
+        assert!(source.downcast_ref::<ConversionRange>().is_none());
+
+        let error = Error::ConversionRange(ConversionRange);
+        let source = error.source().expect("source should be present");
+        assert!(source.downcast_ref::<ConversionRange>().is_some());
+
+        let error = Error::IndeterminateOffset(IndeterminateOffset);
+        let source = error.source().expect("source should be present");
+        assert!(
+            source
+                .downcast_ref::<IndeterminateOffset>()
+                .is_some()
+        );
+
+        let error = Error::StdIo(core::fmt::Error);
+        let source = error.source().expect("source should be present");
+        assert!(
+            source
+                .downcast_ref::<core::fmt::Error>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn leaf_errors_have_no_source() {
+        assert!(
+            ComponentRange::unconditional("day")
+                .source()
+                .is_none()
+        );
+        assert!(ConversionRange.source().is_none());
+        assert!(InvalidVariant.source().is_none());
+        assert!(IndeterminateOffset.source().is_none());
+    }
+
+    #[test]
+    fn errors_can_be_used_as_dyn_error() {
+        let errors: Vec<(Box<dyn core::error::Error>, &str)> = vec![
+            (
+                Box::new(ComponentRange::unconditional("day")),
+                "day was not in range",
+            ),
+            (
+                Box::new(ConversionRange),
+                "Source value is out of range for the target type",
+            ),
+            (Box::new(InvalidVariant), "value was not a valid variant"),
+            (
+                Box::new(IndeterminateOffset),
+                "The UTC offset cannot be determined",
+            ),
+            (Box::new(Error::InsufficientTypeInformation), ""),
+        ];
+        for (error, expected) in errors {
+            if !expected.is_empty() {
+                assert_eq!(error.to_string(), expected);
+            }
+            let _ = error.source();
+        }
+    }
+
+    #[test]
+    fn component_range_is_hashable() {
+        use core::hash::{Hash, Hasher};
+        use std::collections::hash_map::DefaultHasher;
+
+        fn hash_of<T: Hash>(value: &T) -> u64 {
+            let mut hasher = DefaultHasher::new();
+            value.hash(&mut hasher);
+            hasher.finish()
+        }
+
+        assert_eq!(
+            hash_of(&ComponentRange::unconditional("day")),
+            hash_of(&ComponentRange::unconditional("day")),
+        );
+        assert_ne!(
+            hash_of(&ComponentRange::unconditional("day")),
+            hash_of(&ComponentRange::unconditional("hour")),
+        );
+        assert_ne!(
+            hash_of(&ComponentRange::unconditional("day")),
+            hash_of(&ComponentRange::conditional("day")),
+        );
+    }
+}

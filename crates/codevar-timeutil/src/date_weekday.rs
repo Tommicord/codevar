@@ -194,3 +194,120 @@ impl FromStr for Weekday {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ALL_DAYS: [Weekday; 7] = [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday];
+
+    const NAMES: [&str; 7] = [
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+    ];
+
+    #[test]
+    fn parse_and_display_round_trip_all_days() {
+        for (index, &day) in ALL_DAYS.iter().enumerate() {
+            assert_eq!(day.to_string(), NAMES[index]);
+            assert_eq!(NAMES[index].parse::<Weekday>(), Ok(day));
+            // Matching is exact.
+            assert!(
+                format!(" {}", NAMES[index])
+                    .parse::<Weekday>()
+                    .is_err()
+            );
+            assert!(
+                NAMES[index]
+                    .to_lowercase()
+                    .parse::<Weekday>()
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn parse_rejects_invalid_input() {
+        for input in ["", "monday", "Mondayy", "Mon", "1", "January", "  Monday"] {
+            assert_eq!(
+                input.parse::<Weekday>(),
+                Err(InvalidVariant),
+                "unexpectedly accepted {input:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn previous_and_next_wrap_around_the_week() {
+        for (index, &day) in ALL_DAYS.iter().enumerate() {
+            let expected_prev = ALL_DAYS[(index + 6) % 7];
+            let expected_next = ALL_DAYS[(index + 1) % 7];
+            assert_eq!(day.previous(), expected_prev, "previous of {day:?}");
+            assert_eq!(day.next(), expected_next, "next of {day:?}");
+        }
+        assert_eq!(Monday.previous(), Sunday);
+        assert_eq!(Sunday.next(), Monday);
+        assert_eq!(Monday.previous().next(), Monday);
+        assert_eq!(Sunday.next().previous(), Sunday);
+    }
+
+    #[test]
+    fn nth_next_and_nth_prev_cover_all_offsets() {
+        for (index, &day) in ALL_DAYS.iter().enumerate() {
+            for n in 0u8..=100 {
+                let expected_next = ALL_DAYS[(index + (n % 7) as usize) % 7];
+                let expected_prev = ALL_DAYS[(index + 7 - (n % 7) as usize) % 7 % 7];
+                assert_eq!(day.nth_next(n), expected_next, "{day:?}.nth_next({n})");
+                assert_eq!(day.nth_prev(n), expected_prev, "{day:?}.nth_prev({n})");
+            }
+            assert_eq!(day.nth_next(7), day);
+            assert_eq!(day.nth_prev(7), day);
+            assert_eq!(day.nth_next(0), day);
+            assert_eq!(day.nth_prev(0), day);
+            // nth_next and nth_prev are inverse operations.
+            assert_eq!(day.nth_next(5).nth_prev(5), day);
+        }
+    }
+
+    #[test]
+    fn weekday_numbers_are_consistent() {
+        for (index, &day) in ALL_DAYS.iter().enumerate() {
+            assert_eq!(day.number_days_from_monday(), index as u8);
+            assert_eq!(day.number_from_monday(), index as u8 + 1);
+            // Sunday is day 0 of the Sunday-based count, so Monday (= index 0) is 1 and
+            // Saturday (= index 5) is 6.
+            assert_eq!(day.number_days_from_sunday(), (index as u8 + 1) % 7);
+            assert_eq!(day.number_from_sunday(), (index as u8 + 1) % 7 + 1);
+            // The Sunday-based one-indexed number of a day is the Monday-based one-indexed
+            // number of the following day.
+            assert_eq!(day.number_from_sunday(), day.next().number_from_monday());
+        }
+        assert_eq!(Monday.number_from_monday(), 1);
+        assert_eq!(Sunday.number_from_monday(), 7);
+        assert_eq!(Sunday.number_from_sunday(), 1);
+        assert_eq!(Monday.number_from_sunday(), 2);
+        assert_eq!(Saturday.number_from_sunday(), 7);
+        assert_eq!(Saturday.number_from_monday(), 6);
+    }
+
+    #[test]
+    fn metadata_widths_match_displayed_names() {
+        for (index, &day) in ALL_DAYS.iter().enumerate() {
+            let metadata = day.metadata(FormatterOptions::default());
+            assert_eq!(metadata.unpadded_width(), NAMES[index].len());
+        }
+    }
+
+    #[test]
+    fn display_respects_formatting_flags() {
+        assert_eq!(format!("{:<10}", Wednesday), "Wednesday ");
+        assert_eq!(format!("{:>10}", Monday), "    Monday");
+        assert_eq!(format!("{:^9}", Friday), " Friday  ");
+        assert_eq!(format!("{:.*}", 3, Wednesday), "Wed");
+    }
+}

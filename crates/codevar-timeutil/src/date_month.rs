@@ -252,3 +252,160 @@ impl TryFrom<u8> for Month {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ALL_MONTHS: [Month; 12] = [
+        January, February, March, April, May, June, July, August, September, October, November, December,
+    ];
+
+    const NAMES: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+
+    #[test]
+    fn from_number_round_trips_all_months() {
+        for (index, &month) in ALL_MONTHS.iter().enumerate() {
+            let number = NonZero::new(index as u8 + 1).expect("month numbers are non-zero");
+            assert_eq!(Month::from_number(number), Ok(month));
+            assert_eq!(u8::from(month), index as u8 + 1);
+            assert_eq!(Month::try_from(index as u8 + 1), Ok(month));
+        }
+    }
+
+    #[test]
+    fn from_number_rejects_out_of_range_values() {
+        for value in [13u8, 14, 100, 255] {
+            let number = NonZero::new(value).expect("test inputs are non-zero");
+            let error = Month::from_number(number).expect_err("should be rejected");
+            assert_eq!(error, ComponentRange::unconditional("month"));
+            assert_eq!(Month::try_from(value).expect_err("should be rejected"), error);
+            assert!(!error.is_conditional());
+        }
+        assert_eq!(
+            Month::try_from(0)
+                .expect_err("zero is not a month")
+                .name(),
+            "month"
+        );
+    }
+
+    #[test]
+    fn parse_and_display_round_trip_all_months() {
+        for (index, &month) in ALL_MONTHS.iter().enumerate() {
+            assert_eq!(month.to_string(), NAMES[index]);
+            assert_eq!(NAMES[index].parse::<Month>(), Ok(month));
+            // Parsing is exact: no surrounding whitespace or case changes are accepted.
+            assert!(
+                format!(" {}", NAMES[index])
+                    .parse::<Month>()
+                    .is_err()
+            );
+            assert!(
+                NAMES[index]
+                    .to_lowercase()
+                    .parse::<Month>()
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn parse_rejects_invalid_input() {
+        for input in ["", "january", "Januaryy", "1", "Jan", "Sunday", "  "] {
+            assert_eq!(
+                input.parse::<Month>(),
+                Err(InvalidVariant),
+                "unexpectedly accepted {input:?}",
+            );
+        }
+        assert_eq!(InvalidVariant.to_string(), "value was not a valid variant");
+    }
+
+    #[test]
+    fn display_respects_formatting_flags() {
+        assert_eq!(format!("{:<10}", January), "January   ");
+        assert_eq!(format!("{:>10}", May), "       May");
+        assert_eq!(format!("{:^10}", May), "   May    ");
+    }
+
+    #[test]
+    fn previous_and_next_wrap_around_the_year() {
+        for (index, &month) in ALL_MONTHS.iter().enumerate() {
+            let expected_prev = ALL_MONTHS[(index + 11) % 12];
+            let expected_next = ALL_MONTHS[(index + 1) % 12];
+            assert_eq!(month.previous(), expected_prev, "previous of {month:?}");
+            assert_eq!(month.next(), expected_next, "next of {month:?}");
+        }
+        assert_eq!(January.previous(), December);
+        assert_eq!(December.next(), January);
+        assert_eq!(January.previous().next(), January);
+        assert_eq!(December.next().previous(), December);
+    }
+
+    #[test]
+    fn nth_next_and_nth_prev_wrap_correctly() {
+        for (index, &month) in ALL_MONTHS.iter().enumerate() {
+            for n in 0u8..=30 {
+                let expected_next = ALL_MONTHS[(index + n as usize) % 12];
+                let expected_prev = ALL_MONTHS[(index + 12 - (n as usize % 12)) % 12];
+                assert_eq!(month.nth_next(n), expected_next, "{month:?}.nth_next({n})");
+                assert_eq!(month.nth_prev(n), expected_prev, "{month:?}.nth_prev({n})");
+            }
+            // A full rotation returns the same month, in both directions and for multiples
+            // of the year length.
+            assert_eq!(month.nth_next(12), month);
+            assert_eq!(month.nth_prev(12), month);
+            assert_eq!(month.nth_next(24), month);
+            assert_eq!(month.nth_prev(0), month);
+            assert_eq!(month.nth_next(0), month);
+        }
+    }
+
+    #[test]
+    fn length_reflects_leap_years_for_february() {
+        assert_eq!(February.length(2024), 29);
+        assert_eq!(February.length(2000), 29);
+        assert_eq!(February.length(2023), 28);
+        assert_eq!(February.length(1900), 28);
+        for (index, &month) in ALL_MONTHS.iter().enumerate() {
+            let expected = if index == 1 { 28 } else { COMMON_LENGTHS[index] };
+            assert_eq!(month.length(2023), expected, "common year {month:?}");
+            let expected = if index == 1 { 29 } else { COMMON_LENGTHS[index] };
+            assert_eq!(month.length(2024), expected, "leap year {month:?}");
+        }
+    }
+
+    const COMMON_LENGTHS: [u8; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+    #[test]
+    fn months_are_ordered_january_to_december() {
+        for window in ALL_MONTHS.windows(2) {
+            assert!(window[0] < window[1]);
+        }
+        assert!(January < December);
+        assert_eq!(January, January);
+        assert_ne!(January, February);
+    }
+
+    #[test]
+    fn from_str_and_u8_conversions_are_consistent() {
+        for (index, &month) in ALL_MONTHS.iter().enumerate() {
+            let number = index as u8 + 1;
+            assert_eq!(month.to_string().parse::<Month>().map(u8::from), Ok(number));
+        }
+    }
+}
