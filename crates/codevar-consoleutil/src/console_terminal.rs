@@ -17,7 +17,7 @@
 
 use alloc::string::String;
 use alloc::string::ToString;
-use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use core::sync::atomic::{AtomicU16, Ordering};
 
 /// Terminal capability flags using bitwise operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -235,13 +235,6 @@ impl Terminal {
                 return true;
             }
         }
-        #[cfg(feature = "std")]
-        {
-            use std::io::IsTerminal;
-            if std::io::stdout().is_terminal() {
-                return true;
-            }
-        }
         false
     }
 
@@ -398,10 +391,10 @@ impl Terminal {
     pub fn reset() -> String {
         alloc::format!(
             "{}{}{}{}",
-            super::ansi::sequences::RESET,
-            super::cursor::Cursor::show(),
-            super::clear::Clear::screen_and_home(),
-            super::cursor::Cursor::home()
+            super::console_ansi::sequences::RESET,
+            super::console_cursor::Cursor::show(),
+            super::console_clear::Clear::screen_and_home(),
+            super::console_cursor::Cursor::home()
         )
     }
 

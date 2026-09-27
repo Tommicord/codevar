@@ -15,7 +15,7 @@
 
 //! Screen and line clearing utilities
 
-use super::ansi::{csi, csi1, csi2};
+use super::console_ansi::csi1;
 use alloc::string::String;
 use alloc::string::ToString;
 
@@ -75,7 +75,7 @@ impl Clear {
         }
         // Move back up to original line
         if n > 1 {
-            result.push_str(&super::cursor::Cursor::up(n - 1));
+            result.push_str(&super::console_cursor::Cursor::up(n - 1));
         }
         result
     }
@@ -87,7 +87,7 @@ impl Clear {
         }
         let mut result = String::new();
         for _ in 0..n {
-            result.push_str(&super::cursor::Cursor::up(1));
+            result.push_str(&super::console_cursor::Cursor::up(1));
             result.push_str(&Self::line());
         }
         result

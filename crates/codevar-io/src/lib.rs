@@ -13,6 +13,15 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
+//! Cross-platform I/O utilities for Codevar
+//!
+//! This crate provides:
+//! - Standard I/O handles (stdin, stdout, stderr) with locking support
+//! - Terminal detection via the [`IsTerminal`] trait
+//! - Cross-platform implementations for Unix, Windows, WASI, and bare-metal
+//! - Buffered and async I/O traits
+//! - `no_std` compatible
+
 #![cfg_attr(not(test), no_std)]
 extern crate alloc;
 
@@ -20,6 +29,7 @@ mod io_cursor;
 mod io_error;
 mod io_impls;
 mod io_std;
+mod io_terminal;
 mod io_traits;
 
 #[cfg(feature = "async")]
@@ -39,6 +49,7 @@ mod io_fallback;
 
 pub use io_cursor::Cursor;
 pub use io_error::{Error, ErrorKind, ErrorType, ReadExactError, SeekFrom, SliceWriteError, WriteFmtError};
+pub use io_terminal::{IsTerminal, is_terminal};
 pub use io_traits::{BufRead, Read, ReadReady, Seek, Write, WriteReady};
 
 #[cfg(feature = "async")]

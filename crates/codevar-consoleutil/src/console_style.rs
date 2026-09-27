@@ -15,11 +15,10 @@
 
 //! Style and color definitions for ANSI output
 
-use super::ansi::sgr;
+use super::console_ansi::sgr;
 use alloc::string::String;
 use alloc::string::ToString;
 use core::fmt;
-use heapless::Vec;
 
 /// Style attribute flags using bitwise operations
 /// This replaces individual boolean fields for better memory efficiency
@@ -623,7 +622,7 @@ impl Style {
         if params.is_empty() {
             String::new()
         } else {
-            super::ansi::csi(&params, 'm')
+            super::console_ansi::csi(&params, 'm')
         }
     }
 
@@ -672,7 +671,7 @@ impl Style {
         if params.is_empty() {
             String::new()
         } else {
-            super::ansi::csi(&params, 'm')
+            super::console_ansi::csi(&params, 'm')
         }
     }
 
@@ -830,7 +829,7 @@ mod tests {
     }
 
     #[test]
-    fn test_styled_text() {
+    fn test_text() {
         let style = Style::new().fg(AnsiColor::Red).bold();
         let text = style.apply("Hello");
         let result = text.to_string();

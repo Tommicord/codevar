@@ -31,10 +31,10 @@
 //! use codevar_consoleutil::{AnsiColor, AnsiStyle, Cursor, Clear, Terminal};
 //!
 //! // Print colored text
-//! println!("{}Red text{}", AnsiColor::Red.fg(), AnsiColor::Reset.fg());
+//! println!("{}Red text{}", AnsiColor::Red.fg(), AnsiColor::Default.fg());
 //!
 //! // Move cursor and clear line
-//! print!("{}{}", Cursor::Up(1), Clear::CurrentLine);
+//! print!("{}{}", Cursor::up(1), Clear::current_line());
 //!
 //! // Check terminal capabilities
 //! if Terminal::supports_ansi() {
@@ -42,31 +42,28 @@
 //! }
 //! ```
 
-#![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(not(test), no_std)]
 extern crate alloc;
 
 use core::fmt;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-#[cfg(feature = "std")]
-use std::io::{self, Write};
-
 #[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
 use windows::Win32::System::Console::{
     ENABLE_VIRTUAL_TERMINAL_PROCESSING, GetConsoleMode, GetStdHandle, STD_OUTPUT_HANDLE, SetConsoleMode,
 };
-pub mod ansi;
-pub mod clear;
-pub mod cursor;
-pub mod style;
-pub mod terminal;
+pub mod console_ansi;
+pub mod console_clear;
+pub mod console_cursor;
+pub mod console_style;
+pub mod console_terminal;
 
-pub use ansi::{AnsiBuilder, AnsiCode, AnsiSequence};
-pub use clear::Clear;
 use codevar_io::Error;
-pub use cursor::Cursor;
-pub use style::{AnsiColor, AnsiStyle, Style, StyleAttr, StyledText};
-pub use terminal::{Terminal, TerminalCaps, TerminalInfo};
+pub use console_ansi::{AnsiBuilder, AnsiCode, AnsiSequence};
+pub use console_clear::Clear;
+pub use console_cursor::Cursor;
+pub use console_style::{AnsiColor, AnsiStyle, Style, StyleAttr, StyledText};
+pub use console_terminal::{Terminal, TerminalCaps, TerminalInfo};
 
 /// Initialize ANSI support on Windows (enables virtual terminal processing)
 /// This is a no-op on non-Windows platforms.

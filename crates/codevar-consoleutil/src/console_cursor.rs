@@ -15,7 +15,7 @@
 
 //! Cursor control utilities
 
-use super::ansi::{csi, csi0, csi1, csi2};
+use super::console_ansi::{csi0, csi1, csi2};
 use alloc::string::String;
 use alloc::string::ToString;
 use core::fmt;
