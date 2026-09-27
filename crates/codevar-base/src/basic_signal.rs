@@ -852,7 +852,7 @@ mod unix {
             .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            write_console(b"codevar: recursive signal during handling\n");
+            write_console(b"recursive signal during handling\n");
             reset_and_raise(sig);
             return;
         }

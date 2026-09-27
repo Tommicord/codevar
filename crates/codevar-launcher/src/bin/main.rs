@@ -43,4 +43,7 @@ fn main() {
     if let Err(e) = display.run() {
         error!("codevar: render loop error: {e}");
     }
+    if let Err(e) = basic_signal::uninstall() {
+        warn!("codevar: failed to uninstall signal handlers: {e}");
+    }
 }

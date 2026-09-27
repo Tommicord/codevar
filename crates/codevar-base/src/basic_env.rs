@@ -44,10 +44,10 @@
 //! for validated, platform-aware path construction instead of manual string
 //! concatenation.
 
+use crate::basic_pathbuf::PathBuilder;
 use alloc::boxed::Box;
 use alloc::ffi::CString;
 use alloc::string::String;
-use crate::basic_pathbuf::PathBuilder;
 
 cfg_if::cfg_if! {
     if #[cfg(any(unix, target_os = "macos"))] {
@@ -428,7 +428,11 @@ pub static ENV_CONFIG_DIR: &(dyn NamedEnvDir + Sync) = &LazyEnvDir(move || {
         build_and_leak(
             PathBuilder::new()
                 .root()
-                .push(env_var("HOME").unwrap_or_else(|| String::from("/tmp")).as_str())
+                .push(
+                    env_var("HOME")
+                        .unwrap_or_else(|| String::from("/tmp"))
+                        .as_str(),
+                )
                 .push(".config")
                 .push(ENV_NAME),
             "/tmp/.config/codevar",
@@ -446,7 +450,11 @@ pub static ENV_CONFIG_DIR: &(dyn NamedEnvDir + Sync) = &LazyEnvDir(move || {
         build_and_leak(
             PathBuilder::new()
                 .root()
-                .push(env_var("HOME").unwrap_or_else(|| String::from("/tmp")).as_str())
+                .push(
+                    env_var("HOME")
+                        .unwrap_or_else(|| String::from("/tmp"))
+                        .as_str(),
+                )
                 .push(ENV_NAME),
             "/tmp/codevar",
         )
@@ -477,7 +485,11 @@ pub static ENV_CACHE_DIR: &(dyn NamedEnvDir + Sync) = &LazyEnvDir(move || {
         build_and_leak(
             PathBuilder::new()
                 .root()
-                .push(env_var("HOME").unwrap_or_else(|| String::from("/tmp")).as_str())
+                .push(
+                    env_var("HOME")
+                        .unwrap_or_else(|| String::from("/tmp"))
+                        .as_str(),
+                )
                 .push(".cache")
                 .push(ENV_NAME),
             "/tmp/.cache/codevar",
@@ -527,7 +539,11 @@ pub static ENV_DATA_DIR: &(dyn NamedEnvDir + Sync) = &LazyEnvDir(move || {
         build_and_leak(
             PathBuilder::new()
                 .root()
-                .push(env_var("HOME").unwrap_or_else(|| String::from("/tmp")).as_str())
+                .push(
+                    env_var("HOME")
+                        .unwrap_or_else(|| String::from("/tmp"))
+                        .as_str(),
+                )
                 .push(".local")
                 .push("share")
                 .push(ENV_NAME),
@@ -715,7 +731,11 @@ pub static ENV_SYSTEM_TEMP_DIR: &(dyn NamedEnvDir + Sync) = &LazyEnvDir(move || 
     }
     #[cfg(windows)]
     {
-        leak_str(env_var("TEMP").or_else(|| env_var("TMP")).unwrap_or_else(|| String::from("C:\\Temp")))
+        leak_str(
+            env_var("TEMP")
+                .or_else(|| env_var("TMP"))
+                .unwrap_or_else(|| String::from("C:\\Temp")),
+        )
     }
     #[cfg(not(any(unix, target_os = "macos", windows)))]
     {
@@ -836,20 +856,14 @@ mod tests {
 
     #[test]
     fn test_build_and_leak_returns_valid_path() {
-        let path = build_and_leak(
-            PathBuilder::new().root().push("usr").push("bin"),
-            "/usr/bin",
-        );
+        let path = build_and_leak(PathBuilder::new().root().push("usr").push("bin"), "/usr/bin");
         assert!(path.contains("usr"));
         assert!(path.contains("bin"));
     }
 
     #[test]
     fn test_build_and_leak_fallback() {
-        let path = build_and_leak(
-            PathBuilder::new().root().push("usr").push("bin"),
-            "/usr/bin",
-        );
+        let path = build_and_leak(PathBuilder::new().root().push("usr").push("bin"), "/usr/bin");
         assert_eq!(path, "/usr/bin");
     }
 
