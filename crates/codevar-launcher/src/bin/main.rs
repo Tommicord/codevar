@@ -19,11 +19,12 @@
 //! through [`codevar_ui_core::ui_display::UiDisplay`], runs the
 //! render loop and tears everything down on exit.
 
-use codevar_base::basic_signal;
+use codevar_base::{basic_module_base, basic_signal};
 use codevar_ui_core::ui_display::{UiDisplay, WindowInit};
 use log::{error, warn};
 
 fn main() {
+    basic_module_base::init();
     if let Err(e) = basic_signal::install() {
         warn!("codevar: failed to install signal handlers: {e}");
     };

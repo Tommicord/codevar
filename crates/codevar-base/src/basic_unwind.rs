@@ -1880,6 +1880,7 @@ mod elf {
     }
 
     unsafe extern "C" {
+        #[allow(clashing_extern_declarations)]
         fn dl_iterate_phdr(
             callback: extern "C" fn(*const DlPhdrInfo, usize, *mut core::ffi::c_void) -> i32,
             data: *mut core::ffi::c_void,
@@ -2179,15 +2180,32 @@ mod elf {
     }
 
     pub(super) fn module_base(ip: usize) -> Option<usize> {
+        // `dl_iterate_phdr` is not async-signal-safe; skip when
+        // unwinding inside a signal handler.
+        if crate::basic_signal::is_in_handler() {
+            return None;
+        }
         find(ip).base
     }
 
     pub(super) fn trace_inner(cb: &mut dyn FnMut(&Frame) -> bool) {
-        super::walk(cb, Some(|state: &mut UnwindState| cfi_or_fp(state)));
+        // When inside a signal handler, skip ELF CFI unwinding because
+        // `dl_iterate_phdr` is not async-signal-safe. Fall back to
+        // frame-pointer walking only.
+        if crate::basic_signal::is_in_handler() {
+            super::walk(cb, None);
+        } else {
+            super::walk(cb, Some(|state: &mut UnwindState| cfi_or_fp(state)));
+        }
     }
 
     fn cfi_or_fp(state: &mut UnwindState) -> bool {
         let ip = state.regs.ip;
+        // Skip `find` (which calls `dl_iterate_phdr`) when in a signal
+        // handler; fall back to frame-pointer walking.
+        if crate::basic_signal::is_in_handler() {
+            return fp::step(state);
+        }
         let found = find(ip);
         if let Some((ef, elen)) = found.eh_frame
             && ef >= 4096
@@ -2356,6 +2374,9 @@ mod apple {
     }
 
     pub(super) fn module_base(ip: usize) -> Option<usize> {
+        if crate::basic_signal::is_in_handler() {
+            return None;
+        }
         find(ip).base
     }
 
@@ -2363,6 +2384,9 @@ mod apple {
         super::walk(
             cb,
             Some(|state: &mut UnwindState| {
+                if crate::basic_signal::is_in_handler() {
+                    return fp::step(state);
+                }
                 let found = find(state.regs.ip);
                 if let Some((ef, elen)) = found.eh_frame {
                     let frame = unsafe { core::slice::from_raw_parts(ef as *const u8, elen) };
@@ -2608,17 +2632,7 @@ mod windows {
     allow(dead_code)
 )]
 fn walk(cb: &mut dyn FnMut(&Frame) -> bool, step_fn: Option<fn(&mut UnwindState) -> bool>) {
-    use cfg_if::cfg_if;
-
-    cfg_if! {
-        if #[cfg(all(unix, not(target_vendor = "apple"), target_pointer_width = "64"))] {
-            let module_base = elf::module_base;
-        } else if #[cfg(all(unix, target_vendor = "apple", target_pointer_width = "64"))] {
-            let module_base = apple::module_base;
-        } else {
-            let module_base = |_: usize| None::<usize>;
-        }
-    }
+    use crate::basic_module_base::module_base as cached_module_base;
 
     let Some(mut state) = capture::current() else {
         return;
@@ -2631,7 +2645,7 @@ fn walk(cb: &mut dyn FnMut(&Frame) -> bool, step_fn: Option<fn(&mut UnwindState)
         let frame = Frame {
             ip: state.regs.ip,
             sp: state.sp,
-            module_base: module_base(state.regs.ip),
+            module_base: cached_module_base(state.regs.ip),
         };
         if !cb(&frame) {
             return;
@@ -3214,112 +3228,6 @@ mod tests {
                 Some(|_| false),
             );
             assert_eq!(n, 1);
-        }
-    }
-
-    #[cfg(all(unix, not(target_vendor = "apple"), target_pointer_width = "64"))]
-    #[test]
-    fn debug_walk_detail() {
-        #[inline(never)]
-        fn inner() {
-            let mut list = FrameList::new();
-            collect(&mut list);
-            let frames = list.as_slice();
-            std::eprintln!("frames={}", frames.len());
-            for (i, f) in frames.iter().enumerate() {
-                std::eprintln!(
-                    "  [{i}] ip={:#x} sp={:#x} base={:?}",
-                    f.ip(),
-                    f.sp(),
-                    elf::module_base(f.ip())
-                );
-            }
-        }
-        inner();
-        // also direct CFI steps
-        let Some(mut st) = capture::current() else {
-            return;
-        };
-        let found = elf::find(st.regs.ip);
-        std::eprintln!("eh_frame={:?}", found.eh_frame);
-        if let Some((ef, elen)) = found.eh_frame {
-            let frame = unsafe { core::slice::from_raw_parts(ef as *const u8, elen) };
-            let tables = cfi::UnwindTables {
-                eh_frame: (ef, elen),
-                eh_frame_hdr: found.eh_frame_hdr,
-                datarel_base: found.datarel_base,
-            };
-            {
-                let ip = st.regs.ip;
-                {
-                    // re-parse via step internals isn't exposed; print encodings from hdr
-                    if let Some((ha, hl)) = tables.eh_frame_hdr {
-                        let hdr = unsafe { core::slice::from_raw_parts(ha as *const u8, hl.min(64)) };
-                        std::eprintln!("hdr bytes[0..16]={:02x?}", &hdr[..16.min(hdr.len())]);
-                    }
-                    std::eprintln!(
-                        "frame addr={:#x} len={} datarel={:#x}",
-                        tables.eh_frame.0,
-                        frame.len(),
-                        tables.datarel_base
-                    );
-                    std::eprintln!("ip={:#x} in_module={:?}", ip, elf::module_base(ip));
-                }
-            }
-            for step in 0..6 {
-                let ip = st.regs.ip;
-                let fp = st.regs.gpr[6];
-                let sp = st.sp;
-                match cfi::step(&mut st, &tables, frame) {
-                    Ok(Some(next)) => {
-                        std::eprintln!(
-                            "cfi step {step}: {ip:#x}->{:#x} sp {sp:#x}->{:#x} fp {fp:#x}->{:#x} next_base={:?}",
-                            next.regs.ip,
-                            next.sp,
-                            next.regs.gpr[6],
-                            elf::module_base(next.regs.ip)
-                        );
-                        st = next;
-                    }
-                    Err(e) => {
-                        std::eprintln!("cfi step {step}: Err({e}) at ip={ip:#x} sp={sp:#x} fp={fp:#x}");
-                        // try FP from here
-                        if fp::step(&mut st) {
-                            std::eprintln!("  fp fallback ok ip={:#x}", st.regs.ip);
-                        } else {
-                            std::eprintln!("  fp fallback fail");
-                            break;
-                        }
-                    }
-                    Ok(None) => {
-                        std::eprintln!("cfi step {step}: Ok(None) at ip={ip:#x}");
-                        break;
-                    }
-                }
-            }
-        }
-        // FP steps from capture
-        let Some(mut st) = capture::current() else {
-            return;
-        };
-        std::eprintln!(
-            "FP start ip={:#x} fp={:#x} sp={:#x}",
-            st.regs.ip,
-            st.regs.gpr[6],
-            st.sp
-        );
-        for step in 0..8 {
-            if fp::step(&mut st) {
-                std::eprintln!(
-                    "fp step {step}: ip={:#x} fp={:#x} sp={:#x}",
-                    st.regs.ip,
-                    st.regs.gpr[6],
-                    st.sp
-                );
-            } else {
-                std::eprintln!("fp step {step}: stop");
-                break;
-            }
         }
     }
 

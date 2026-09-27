@@ -21,6 +21,7 @@ pub mod basic_cpuid;
 pub mod basic_daemon;
 pub mod basic_env;
 pub mod basic_html;
+pub mod basic_module_base;
 pub mod basic_pathbuf;
 pub mod basic_pretty_unwind;
 pub mod basic_signal;

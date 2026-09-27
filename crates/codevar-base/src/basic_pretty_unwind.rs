@@ -22,14 +22,136 @@
 //! into a fixed stack buffer inside a signal handler).
 
 use crate::basic_unwind::Frame;
+use alloc::string::ToString;
+use core::ffi::CStr;
 use core::fmt::{self, Write};
+
+/// Attempts to resolve a symbol name and module path for `addr`.
+///
+/// On Unix, uses [`libc::dladdr`]. On Windows, uses `SymFromAddr` from
+/// `DbgHelp`. Returns `(symbol_name, module_path)` when resolution succeeds,
+/// or `None` when the address cannot be resolved.
+///
+/// # Safety
+///
+/// Calling this from a signal handler is generally safe on Unix because
+/// `dladdr` is listed as async-signal-safe in the POSIX specification.
+/// On Windows, `SymFromAddr` requires prior initialization and is not
+/// async-signal-safe; callers must ensure it is not invoked from a signal
+/// handler on that platform.
+#[inline]
+pub fn resolve_symbol(addr: usize) -> Option<(&'static str, &'static str)> {
+    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    {
+        use core::ffi::c_void;
+        unsafe {
+            let mut info: libc::Dl_info = core::mem::zeroed();
+            if libc::dladdr(addr as *const c_void, &mut info) != 0 {
+                let fname = if !info.dli_fname.is_null() {
+                    CStr::from_ptr(info.dli_fname).to_str().ok()?
+                } else {
+                    ""
+                };
+                let sname = if !info.dli_sname.is_null() {
+                    CStr::from_ptr(info.dli_sname).to_str().ok()?
+                } else {
+                    ""
+                };
+                if !sname.is_empty() {
+                    // Demangle Rust symbol names
+                    let demangled = rustc_demangle::demangle(sname).to_string();
+                    // Note: This allocates, but only when a symbol is found.
+                    // For async-signal-safe contexts, use the mangled name.
+                    Some((demangled.leak(), fname))
+                } else {
+                    Some((fname, fname))
+                }
+            } else {
+                None
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        use core::ffi::c_void;
+        #[repr(C)]
+        struct SymbolInfo {
+            size_of_struct: u32,
+            type_index: u32,
+            flags: u64,
+            value: u64,
+            address: u64,
+            register: i32,
+            scope: i32,
+            tag: i32,
+            name_len: i32,
+            max_name_len: i32,
+            name: [u8; 1024],
+        }
+        unsafe {
+            let mut info = SymbolInfo {
+                size_of_struct: core::mem::size_of::<SymbolInfo>() as u32,
+                type_index: 0,
+                flags: 0,
+                value: 0,
+                address: 0,
+                register: 0,
+                scope: 0,
+                tag: 0,
+                name_len: 0,
+                max_name_len: 1024,
+                name: [0; 1024],
+            };
+            let mut disp = 0;
+            if windows_link::SymFromAddr(
+                !0, // process handle (use current process)
+                addr as u64,
+                &mut disp,
+                &mut info as *mut _ as *mut _,
+            ) != 0
+            {
+                let name = CStr::from_ptr(info.name.as_ptr().cast())
+                    .to_str()
+                    .ok()?;
+                let demangled = rustc_demangle::demangle(name).to_string();
+                Some((demangled.leak(), ""))
+            } else {
+                None
+            }
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    None
+}
+
+/// Resolves the module name (shared object / executable path) for `addr`.
+///
+/// On Unix uses [`libc::dladdr`]. On Windows returns an empty string.
+/// Returns `None` when resolution fails.
+#[inline]
+pub fn resolve_module(addr: usize) -> Option<&'static str> {
+    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    {
+        use core::ffi::c_void;
+        unsafe {
+            let mut info: libc::Dl_info = core::mem::zeroed();
+            if libc::dladdr(addr as *const c_void, &mut info) != 0 && !info.dli_fname.is_null() {
+                Some(CStr::from_ptr(info.dli_fname).to_str().ok()?)
+            } else {
+                None
+            }
+        }
+    }
+    #[cfg(not(all(unix, not(target_arch = "wasm32"))))]
+    None
+}
 
 /// Formats a single stack frame into `w`.
 ///
 /// The output has the form:
 ///
 /// ```text
-///    #0: 0x12345678 0x9abcdef0 +0x100
+///    #0: ip=0x12345678 sp=0x9abcdef0 main+0x42 (/lib/x86_64-linux-gnu/libc.so.6)
 /// ```
 ///
 /// The `index` parameter is the frame's position in the call stack. When the
@@ -44,11 +166,18 @@ pub fn write_frame<W: Write + ?Sized>(w: &mut W, frame: &Frame, index: usize) ->
     let sp = frame.sp();
     let module_base = frame.module_base_address();
 
-    write!(w, "   {index:>3}: 0x{ip:016x} 0x{sp:016x}")?;
-
+    write!(w, "   {index:>3}: ip=0x{ip:016x} sp=0x{sp:016x}")?;
     if let Some(base) = module_base {
         let offset = ip.wrapping_sub(base);
         write!(w, "+0x{offset:x}")?;
+        if let Some((sname, _fname)) = resolve_symbol(ip) {
+            if !sname.is_empty() {
+                write!(w, " <{sname}>")?;
+            }
+        }
+    }
+    if let Some(mname) = resolve_module(ip) {
+        write!(w, " ({mname})")?;
     }
     Ok(())
 }

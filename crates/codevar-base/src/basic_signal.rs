@@ -31,11 +31,10 @@
 //! crash occurs while the dynamic loader lock is held (`dl_iterate_phdr`);
 //! the reentrancy guard bounds the damage to one extra line of output.
 
-use core::fmt::{self, Write as _};
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-
 use crate::basic_pretty_unwind::write_frame;
 use crate::basic_unwind::{Frame, capture_frames};
+use core::fmt::{self, Write};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// Maximum number of frames captured by [`dump_backtrace`] and the signal
 /// handler. Bounded so the handler stays well within a 64 KiB alt stack.
@@ -144,6 +143,16 @@ pub fn is_installed() -> bool {
     INSTALLED.load(Ordering::Acquire)
 }
 
+/// Returns `true` if currently executing inside a signal handler.
+///
+/// This is useful for code paths that must avoid calling
+/// non-async-signal-safe functions (e.g., `dl_iterate_phdr`,
+/// `mincore`).
+#[inline]
+pub fn is_in_handler() -> bool {
+    ENTERED.load(Ordering::Acquire) == 1
+}
+
 /// Installs `buf` as the alternate signal stack for the current thread.
 ///
 /// `buf` must remain alive and unused for as long as it should serve as the
@@ -168,29 +177,33 @@ pub fn install_alt_stack(buf: &mut [u8]) -> Result<(), InstallError> {
 /// call returns immediately without output.
 pub fn dump_backtrace() {
     // Only one dumper at a time; a failed CAS means either another thread
-    // or the signal handler is already inside — do not interleave.
+    // or the signal handler is already inside, do not interleave.
     if ENTERED
         .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
         return;
     }
-    dump_frames();
+    let mut backing_linewriter = LineWriter::new();
+    if dump_frames().is_err() {
+        let _ = backing_linewriter.write_str("<backtrace not available>\n");
+        backing_linewriter.flush();
+    }
     ENTERED.store(0, Ordering::Release);
 }
 
 /// Formats and writes captured frames. Caller must own the reentrancy
 /// guard (or accept its use).
-fn dump_frames() {
+fn dump_frames() -> fmt::Result {
     let mut frames = [Frame::new(0, 0, None); DUMP_FRAMES];
     let n = capture_frames(&mut frames);
     for (i, frame) in frames[..n].iter().enumerate() {
         let mut line = LineWriter::new();
-        let _ = line.write_char('#');
-        let _ = write_frame(&mut line, frame, i);
-        let _ = line.write_char('\n');
+        write_frame(&mut line, frame, i)?;
+        line.write_char('\n')?;
         line.flush();
     }
+    Ok(())
 }
 
 /// Fixed stack buffer that accumulates one formatted line, then flushes it

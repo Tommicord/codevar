@@ -29,13 +29,13 @@
 //! ## Examples
 //!
 //! ```rust
-//! use codevar_base::basic_env::{ENV_NAME, ENV_DIR, ENV_CONFIG_DIR, NamedEnvDir};
-//!
-//! // Access the application name as a string.
-//! let app_name = ENV_NAME.get();
+//! use codevar_base::basic_env::{ENV_DIR, ENV_CONFIG_DIR, NamedEnvDir};
 //!
 //! // Access the main configuration directory.
 //! let config_dir = ENV_CONFIG_DIR.get();
+//!
+//! // Access the main environment directory.
+//! let env_dir = ENV_DIR.get();
 //! ```
 //!
 //! ## Path construction
@@ -156,10 +156,10 @@ pub fn build_and_leak(builder: PathBuilder, fallback: &'static str) -> &'static 
 /// # Examples
 ///
 /// ```rust
-/// use codevar_base::basic_env::{ENV_NAME, NamedEnvDir};
+/// use codevar_base::basic_env::{EnvDir, NamedEnvDir};
 ///
-/// let name = ENV_NAME.get();
-/// assert_eq!(name, "codevar");
+/// let dir = EnvDir::new("/usr/bin");
+/// assert_eq!(dir.get(), "/usr/bin");
 /// ```
 pub trait NamedEnvDir {
     /// Returns the directory path as a string slice.
@@ -178,11 +178,18 @@ pub trait NamedEnvDir {
 /// use codevar_base::basic_env::EnvDir;
 /// use codevar_base::basic_env::NamedEnvDir;
 ///
-/// let dir = EnvDir("/usr/bin");
+/// let dir = EnvDir::new("/usr/bin");
 /// assert_eq!(dir.get(), "/usr/bin");
 /// ```
 #[derive(Clone, Debug, Copy)]
 pub struct EnvDir(&'static str);
+
+impl EnvDir {
+    /// Creates a new `EnvDir` from a static string.
+    pub const fn new(path: &'static str) -> Self {
+        EnvDir(path)
+    }
+}
 
 /// A lazily computed directory path.
 ///
@@ -198,11 +205,18 @@ pub struct EnvDir(&'static str);
 /// ```rust
 /// use codevar_base::basic_env::{LazyEnvDir, NamedEnvDir};
 ///
-/// let dir = LazyEnvDir(|| "/usr/local/bin");
+/// let dir = LazyEnvDir::new(|| "/usr/local/bin");
 /// assert_eq!(dir.get(), "/usr/local/bin");
 /// ```
 #[derive(Clone, Debug, Copy)]
 pub struct LazyEnvDir<F>(F);
+
+impl<F> LazyEnvDir<F> {
+    /// Creates a new `LazyEnvDir` from a closure.
+    pub const fn new(f: F) -> Self {
+        LazyEnvDir(f)
+    }
+}
 
 impl NamedEnvDir for EnvDir {
     fn get(&self) -> &str {

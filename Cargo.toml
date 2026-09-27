@@ -30,7 +30,6 @@ quote = "1.0"
 ash = { version = "0.38", default-features = false }
 libc = "0.2"
 cfg-if = "1.0.5"
-bindgen = "0.72.1"
 num-traits = { version = "0.2", default-features = false }
 cargo-ndk = "4.1.2"
 sha1 = "0.10"
@@ -41,6 +40,8 @@ windows-link = "0.100.0"
 spin = "0.12.3"
 hkdf = "0.12"
 hmac = "0.12"
+backtrace-sys = "0.1"
+rustc-demangle = "0.1"
 p256 = { version = "0.13", features = ["ecdsa", "ecdh", "pkcs8", "pem"] }
 p384 = { version = "0.13", features = ["ecdsa", "ecdh", "pkcs8", "pem"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }

@@ -14,3 +14,5 @@
 //! permissions and limitations under the License.
 
 //! Support library for the `codevar` launcher binary
+#![cfg_attr(not(test), no_std)]
+extern crate alloc;
