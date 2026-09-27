@@ -685,6 +685,25 @@ pub fn read(path: &str) -> Result<Vec<u8>, PathError> {
     sys::read(path)
 }
 
+/// Writes `bytes` to `path`, creating or truncating the file.
+///
+/// Dispatches to the platform backend. Returns
+/// [`PathError::Unsupported`] on targets without a backend.
+///
+/// # Errors
+///
+/// Returns [`PathError::Io`] when the file cannot be created or written.
+pub fn write(path: &str, bytes: &[u8]) -> Result<(), PathError> {
+    sys::write(path, bytes)
+}
+
+/// Writes a [`String`] to `path`, creating or truncating the file.
+///
+/// See [`write`] for error semantics.
+pub fn write_string(path: &str, s: &str) -> Result<(), PathError> {
+    sys::write(path, s.as_bytes())
+}
+
 /// Reads a file into a [`String`].
 ///
 /// The file is limited to 16 MiB. Returns
@@ -840,6 +859,58 @@ mod unix {
             }
         }
     }
+
+    /// Writes `bytes` to the file at `path` using [`libc`].
+    ///
+    /// Creates or truncates the file with `O_WRONLY | O_CREAT | O_TRUNC`
+    /// and mode `0o644`.
+    pub(super) fn write(path: &str, bytes: &[u8]) -> Result<(), PathError> {
+        use alloc::ffi::CString;
+
+        let c_path = CString::new(path).map_err(|_| PathError::InvalidCharacter(0))?;
+        // SAFETY: `c_path` is a valid NUL-terminated path; flags and mode are valid.
+        let fd = unsafe {
+            libc::open(
+                c_path.as_ptr(),
+                libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC | libc::O_CLOEXEC,
+                0o644,
+            )
+        };
+        if fd < 0 {
+            let errno = unsafe { errno() };
+            return Err(PathError::Io {
+                op: "open",
+                code: errno,
+            });
+        }
+        let mut offset = 0usize;
+        while offset < bytes.len() {
+            // SAFETY: `bytes[offset..]` is readable and the fd is valid.
+            let written = unsafe {
+                libc::write(
+                    fd,
+                    bytes[offset..].as_ptr().cast(),
+                    (bytes.len() - offset).min(i32::MAX as usize),
+                )
+            };
+            if written < 0 {
+                let errno = unsafe { errno() };
+                // SAFETY: the descriptor is open and will be closed.
+                unsafe { libc::close(fd) };
+                if errno == libc::EINTR {
+                    continue;
+                }
+                return Err(PathError::Io {
+                    op: "write",
+                    code: errno,
+                });
+            }
+            offset += written as usize;
+        }
+        // SAFETY: the descriptor is open and will be closed.
+        unsafe { libc::close(fd) };
+        Ok(())
+    }
 }
 
 /// Windows implementation using the Win32 API.
@@ -883,8 +954,19 @@ mod windows {
         "kernel32.dll" "system"
         fn GetLastError() -> u32
     );
+    windows_link::link!(
+        "kernel32.dll" "system"
+        fn WriteFile(
+            hFile: *mut c_void,
+            lpBuffer: *const u8,
+            nNumberOfBytesToWrite: u32,
+            lpNumberOfBytesWritten: *mut u32,
+            lpOverlapped: *mut c_void,
+        ) -> i32
+    );
 
     const GENERIC_READ: u32 = 0x8000_0000;
+    const GENERIC_WRITE: u32 = 0x4000_0000;
     const OPEN_EXISTING: u32 = 3;
     const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
     const INVALID_HANDLE: isize = -1;
@@ -971,6 +1053,60 @@ mod windows {
         Ok(PathBuf::from_string(s))
     }
 
+    /// Writes `bytes` to the file at `path` using the Win32 API.
+    ///
+    /// Creates or truncates the file with `GENERIC_WRITE`,
+    /// `CREATE_ALWAYS`, `FILE_ATTRIBUTE_NORMAL`.
+    pub(super) fn write(path: &str, bytes: &[u8]) -> Result<(), PathError> {
+        let utf16 = to_utf16(path);
+        // SAFETY: `utf16` is a valid null-terminated UTF-16LE path.
+        let handle = unsafe {
+            CreateFileW(
+                utf16.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                core::ptr::null(),
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                core::ptr::null_mut(),
+            )
+        };
+        if handle as isize == INVALID_HANDLE {
+            let code = unsafe { GetLastError() };
+            return Err(PathError::Io {
+                op: "CreateFileW",
+                code: code as i32,
+            });
+        }
+        let mut offset = 0usize;
+        while offset < bytes.len() {
+            let mut written = 0u32;
+            let chunk = (bytes.len() - offset).min(usize::from(u32::MAX));
+            // SAFETY: `handle` is valid, `bytes[offset..]` is readable.
+            let ok = unsafe {
+                WriteFile(
+                    handle,
+                    bytes[offset..].as_ptr().cast(),
+                    chunk as u32,
+                    &mut written,
+                    core::ptr::null_mut(),
+                )
+            };
+            if ok == 0 || written as usize != chunk {
+                // SAFETY: the handle is valid and will be closed.
+                unsafe { CloseHandle(handle) };
+                return Err(PathError::Io {
+                    op: "WriteFile",
+                    code: unsafe { GetLastError() } as i32,
+                });
+            }
+            offset += written as usize;
+        }
+        // SAFETY: the handle is valid and will be closed.
+        unsafe { CloseHandle(handle) };
+        Ok(())
+    }
+
     fn to_utf16(s: &str) -> Vec<u16> {
         let mut out: Vec<u16> = Vec::with_capacity(s.len());
         encode_utf16::encode_utf16(s.as_bytes(), &mut out);
@@ -1040,6 +1176,10 @@ mod unsupported {
     }
 
     pub(super) fn current_dir() -> Result<PathBuf, PathError> {
+        Err(PathError::Unsupported)
+    }
+
+    pub(super) fn write(_path: &str, _bytes: &[u8]) -> Result<(), PathError> {
         Err(PathError::Unsupported)
     }
 }
@@ -1634,7 +1774,7 @@ mod tests {
     #[test]
     fn test_from_file_uri_rejects_non_file() {
         assert!(matches!(
-            from_file_uri("http://example.com/"),
+            from_file_uri("https://example.com/"),
             Err(PathError::InvalidUri)
         ));
     }
@@ -1646,8 +1786,6 @@ mod tests {
         let p = from_file_uri(&uri).unwrap();
         assert_eq!(p.as_str(), "/usr/local/bin");
     }
-
-    // ── current_dir (Unix only) ──
 
     #[cfg(all(unix, not(target_arch = "wasm32")))]
     #[test]

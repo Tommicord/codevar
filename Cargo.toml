@@ -10,8 +10,9 @@ members = [
     "crates/codevar-wl-protocol",
     "crates/codevar-xdg-portal",
     "crates/codevar-ui-core",
-    "crates/codevar-dbus"
-, "crates/codevar-timeutil"]
+    "crates/codevar-dbus",
+    "crates/codevar-timeutil"
+]
 resolver = "2"
 
 [workspace.package]
@@ -22,8 +23,10 @@ authors = ["Tommicord"]
 license = "Apache-2.0"
 repository = "https://github.com/Tommicord/codevar"
 
-[workspace.dependencies]
+ [workspace.dependencies]
 cc = "1.2"
+proc-macro2 = "1.0"
+quote = "1.0"
 ash = { version = "0.38", default-features = false }
 libc = "0.2"
 cfg-if = "1.0.5"
@@ -66,6 +69,7 @@ codevar-fcware = { path = "crates/codevar-fcware" }
 codevar-textlike-encode = { path = "crates/codevar-textlike-encode" }
 codevar-tls = { path = "crates/codevar-tls" }
 codevar-wl-protocol = { path = "crates/codevar-wl-protocol" }
+codevar-timeutil = { path = "crates/codevar-timeutil" }
 codevar-wredit = { path = "crates/codevar-wredit" }
 codevar-wsocket = { path = "crates/codevar-wsocket" }
 codevar-xdg-portal = { path = "crates/codevar-xdg-portal" }

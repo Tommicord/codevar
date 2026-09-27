@@ -36,19 +36,37 @@ fn main() {
     for i in 0..10 {
         let fc = c.write_tls();
         let fs = s.write_tls();
-        if !fc.is_empty() { s.read_tls(&fc).unwrap(); }
-        if !fs.is_empty() { c.read_tls(&fs).unwrap(); }
+        if !fc.is_empty() {
+            s.read_tls(&fc).unwrap();
+        }
+        if !fs.is_empty() {
+            c.read_tls(&fs).unwrap();
+        }
         let sc = s.process_new_packets();
         let cc = c.process_new_packets();
         println!(
             "round {i}: moved c={} s={}, after: cw={} sw={} hs c={} s={}",
-            fc.len(), fs.len(), c.wants_write(), s.wants_write(),
-            c.is_handshaking(), s.is_handshaking()
+            fc.len(),
+            fs.len(),
+            c.wants_write(),
+            s.wants_write(),
+            c.is_handshaking(),
+            s.is_handshaking()
         );
-        if let Err(e) = cc { println!("  client err: {e:?}"); }
-        if let Err(e) = sc { println!("  server err: {e:?}"); }
-        if !c.is_handshaking() && !s.is_handshaking() { println!("done"); break; }
+        if let Err(e) = cc {
+            println!("  client err: {e:?}");
+        }
+        if let Err(e) = sc {
+            println!("  server err: {e:?}");
+        }
+        if !c.is_handshaking() && !s.is_handshaking() {
+            println!("done");
+            break;
+        }
         let progressed = !fc.is_empty() || !fs.is_empty() || c.wants_write() || s.wants_write();
-        if !progressed { println!("stalled"); break; }
+        if !progressed {
+            println!("stalled");
+            break;
+        }
     }
 }

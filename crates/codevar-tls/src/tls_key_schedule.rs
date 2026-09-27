@@ -304,12 +304,8 @@ mod tests {
         // the early/derived secrets also match RFC 8448 §3.1/§3.2 known values.
         let ecdhe: Vec<u8> = (0u8..32).collect();
         let hello_hash = [0xAAu8; 32];
-        let ks = Tls13KeySchedule::from_handshake(
-            CipherSuite::TlsAes128GcmSha256,
-            &ecdhe,
-            &hello_hash,
-        )
-        .unwrap();
+        let ks =
+            Tls13KeySchedule::from_handshake(CipherSuite::TlsAes128GcmSha256, &ecdhe, &hello_hash).unwrap();
 
         assert_eq!(ks.hash_algorithm(), HashAlgorithm::Sha256);
         assert_eq!(
@@ -325,10 +321,7 @@ mod tests {
         assert!(ks.server_application.is_none());
 
         // Handshake traffic key/iv for the client direction.
-        assert_eq!(
-            ks.client_handshake.key.algorithm(),
-            AeadAlgorithm::Aes128Gcm
-        );
+        assert_eq!(ks.client_handshake.key.algorithm(), AeadAlgorithm::Aes128Gcm);
         assert_eq!(
             ks.client_handshake.key.tls12_salt(),
             unhex("ab9ac6645231028fe8482919")
@@ -343,15 +336,12 @@ mod tests {
     #[test]
     fn tls13_application_and_resumption_secrets_match_known_answers() {
         let ecdhe: Vec<u8> = (0u8..32).collect();
-        let mut ks = Tls13KeySchedule::from_handshake(
-            CipherSuite::TlsAes128GcmSha256,
-            &ecdhe,
-            &[0xAAu8; 32],
-        )
-        .unwrap();
+        let mut ks =
+            Tls13KeySchedule::from_handshake(CipherSuite::TlsAes128GcmSha256, &ecdhe, &[0xAAu8; 32]).unwrap();
 
         let server_finished_hash = [0xBBu8; 32];
-        ks.derive_application_secrets(&server_finished_hash).unwrap();
+        ks.derive_application_secrets(&server_finished_hash)
+            .unwrap();
         let (cap_secret, sap_secret) = {
             let cap = ks.client_application.as_ref().unwrap();
             let sap = ks.server_application.as_ref().unwrap();
@@ -372,8 +362,7 @@ mod tests {
         );
 
         // KeyUpdate on an application traffic secret.
-        let updated = Tls13KeySchedule::update_traffic_secret(HashAlgorithm::Sha256, &cap_secret)
-        .unwrap();
+        let updated = Tls13KeySchedule::update_traffic_secret(HashAlgorithm::Sha256, &cap_secret).unwrap();
         assert_eq!(
             updated,
             unhex("db40e79dd0f41c2493040485f48f7736fa463a88b524f58f911640f606da12aa")
@@ -384,26 +373,23 @@ mod tests {
         assert_eq!(next.key.algorithm(), AeadAlgorithm::Aes128Gcm);
         assert_eq!(next.traffic_keys().seq, 0);
         // One update round differs from the next (no fixed point in one step).
-        let updated2 =
-            Tls13KeySchedule::update_traffic_secret(HashAlgorithm::Sha256, &updated).unwrap();
+        let updated2 = Tls13KeySchedule::update_traffic_secret(HashAlgorithm::Sha256, &updated).unwrap();
         assert_ne!(updated, updated2);
 
         // Resumption master secret derives from the client Finished hash.
         let client_finished_hash = [0xCCu8; 32];
-        ks.derive_resumption_master(&client_finished_hash).unwrap();
+        ks.derive_resumption_master(&client_finished_hash)
+            .unwrap();
         // Deriving twice yields the same result (stateless re-computation).
-        ks.derive_resumption_master(&client_finished_hash).unwrap();
+        ks.derive_resumption_master(&client_finished_hash)
+            .unwrap();
     }
 
     #[test]
     fn tls13_finished_verify_matches_known_answers() {
         let ecdhe: Vec<u8> = (0u8..32).collect();
-        let ks = Tls13KeySchedule::from_handshake(
-            CipherSuite::TlsAes128GcmSha256,
-            &ecdhe,
-            &[0xAAu8; 32],
-        )
-        .unwrap();
+        let ks =
+            Tls13KeySchedule::from_handshake(CipherSuite::TlsAes128GcmSha256, &ecdhe, &[0xAAu8; 32]).unwrap();
         let transcript = [0xDDu8; 32];
         let client = ks.client_finished_verify(&transcript).unwrap();
         let server = ks.server_finished_verify(&transcript).unwrap();
@@ -425,12 +411,8 @@ mod tests {
     #[test]
     fn tls13_sha384_suite_uses_48_byte_secrets() {
         let ecdhe: Vec<u8> = (0u8..48).collect();
-        let mut ks = Tls13KeySchedule::from_handshake(
-            CipherSuite::TlsAes256GcmSha384,
-            &ecdhe,
-            &[0x55u8; 48],
-        )
-        .unwrap();
+        let mut ks =
+            Tls13KeySchedule::from_handshake(CipherSuite::TlsAes256GcmSha384, &ecdhe, &[0x55u8; 48]).unwrap();
         assert_eq!(ks.hash_algorithm(), HashAlgorithm::Sha384);
         assert_eq!(ks.client_handshake.secret.len(), 48);
         assert_eq!(ks.server_handshake.secret.len(), 48);
@@ -439,9 +421,15 @@ mod tests {
             ks.client_handshake.key.tls12_salt().len(),
             AeadAlgorithm::Aes256Gcm.iv_len()
         );
-        assert_eq!(ks.client_finished_verify(&[0x11u8; 48]).unwrap().len(), 48);
+        assert_eq!(
+            ks.client_finished_verify(&[0x11u8; 48])
+                .unwrap()
+                .len(),
+            48
+        );
 
-        ks.derive_application_secrets(&[0x22u8; 48]).unwrap();
+        ks.derive_application_secrets(&[0x22u8; 48])
+            .unwrap();
         let cap = ks.client_application.as_ref().unwrap();
         assert_eq!(cap.secret.len(), 48);
         assert_eq!(cap.key.algorithm(), AeadAlgorithm::Aes256Gcm);
@@ -450,12 +438,9 @@ mod tests {
     #[test]
     fn tls13_chacha_suite_uses_chacha_aead() {
         let ecdhe: Vec<u8> = (0u8..32).collect();
-        let ks = Tls13KeySchedule::from_handshake(
-            CipherSuite::TlsChacha20Poly1305Sha256,
-            &ecdhe,
-            &[0xAAu8; 32],
-        )
-        .unwrap();
+        let ks =
+            Tls13KeySchedule::from_handshake(CipherSuite::TlsChacha20Poly1305Sha256, &ecdhe, &[0xAAu8; 32])
+                .unwrap();
         assert_eq!(
             ks.client_handshake.key.algorithm(),
             AeadAlgorithm::ChaCha20Poly1305
@@ -470,34 +455,18 @@ mod tests {
     fn tls13_different_inputs_yield_different_secrets() {
         let ecdhe_a: Vec<u8> = (0u8..32).collect();
         let ecdhe_b: Vec<u8> = (1u8..33).collect();
-        let a = Tls13KeySchedule::from_handshake(
-            CipherSuite::TlsAes128GcmSha256,
-            &ecdhe_a,
-            &[0xAAu8; 32],
-        )
-        .unwrap();
-        let b = Tls13KeySchedule::from_handshake(
-            CipherSuite::TlsAes128GcmSha256,
-            &ecdhe_b,
-            &[0xAAu8; 32],
-        )
-        .unwrap();
+        let a = Tls13KeySchedule::from_handshake(CipherSuite::TlsAes128GcmSha256, &ecdhe_a, &[0xAAu8; 32])
+            .unwrap();
+        let b = Tls13KeySchedule::from_handshake(CipherSuite::TlsAes128GcmSha256, &ecdhe_b, &[0xAAu8; 32])
+            .unwrap();
         assert_ne!(a.client_handshake.secret, b.client_handshake.secret);
 
-        let c = Tls13KeySchedule::from_handshake(
-            CipherSuite::TlsAes128GcmSha256,
-            &ecdhe_a,
-            &[0xBBu8; 32],
-        )
-        .unwrap();
+        let c = Tls13KeySchedule::from_handshake(CipherSuite::TlsAes128GcmSha256, &ecdhe_a, &[0xBBu8; 32])
+            .unwrap();
         assert_ne!(a.client_handshake.secret, c.client_handshake.secret);
         // Deterministic for identical inputs.
-        let d = Tls13KeySchedule::from_handshake(
-            CipherSuite::TlsAes128GcmSha256,
-            &ecdhe_a,
-            &[0xAAu8; 32],
-        )
-        .unwrap();
+        let d = Tls13KeySchedule::from_handshake(CipherSuite::TlsAes128GcmSha256, &ecdhe_a, &[0xAAu8; 32])
+            .unwrap();
         assert_eq!(a.client_handshake.secret, d.client_handshake.secret);
     }
 
@@ -615,10 +584,7 @@ mod tests {
         .unwrap();
         assert_eq!(keys.aead_algorithm(), AeadAlgorithm::ChaCha20Poly1305);
         // From key_block: client iv at offset 64, server iv at offset 76.
-        assert_eq!(
-            keys.client_write.tls12_salt(),
-            unhex("4ba2875c3528896ae6f666f0")
-        );
+        assert_eq!(keys.client_write.tls12_salt(), unhex("4ba2875c3528896ae6f666f0"));
         assert_eq!(keys.client_write.tls12_salt().len(), 12);
         assert_eq!(keys.server_write.tls12_salt().len(), 12);
         // Finished verify still yields 12 bytes.
@@ -669,12 +635,8 @@ mod tests {
     #[test]
     fn directional_secrets_expose_traffic_keys() {
         let ecdhe: Vec<u8> = (0u8..32).collect();
-        let ks = Tls13KeySchedule::from_handshake(
-            CipherSuite::TlsAes128GcmSha256,
-            &ecdhe,
-            &[0xAAu8; 32],
-        )
-        .unwrap();
+        let ks =
+            Tls13KeySchedule::from_handshake(CipherSuite::TlsAes128GcmSha256, &ecdhe, &[0xAAu8; 32]).unwrap();
         let a = ks.client_handshake.traffic_keys();
         let b = ks.client_handshake.traffic_keys();
         assert_eq!(a.seq, 0);

@@ -145,8 +145,18 @@ mod tests {
         let bob_static = StaticSecret::from(bob_seed);
 
         // Public keys derived from the private scalars match the RFC.
-        assert_eq!(X25519Public::from(&alice_static).as_bytes().to_vec(), alice_pub);
-        assert_eq!(X25519Public::from(&bob_static).as_bytes().to_vec(), bob_pub);
+        assert_eq!(
+            X25519Public::from(&alice_static)
+                .as_bytes()
+                .to_vec(),
+            alice_pub
+        );
+        assert_eq!(
+            X25519Public::from(&bob_static)
+                .as_bytes()
+                .to_vec(),
+            bob_pub
+        );
 
         let alice_secret = KeySharePrivate::X25519(alice_static);
         let bob_secret = KeySharePrivate::X25519(bob_static);
@@ -196,11 +206,7 @@ mod tests {
 
     #[test]
     fn generated_shares_agree_in_both_directions() {
-        for group in [
-            NamedGroup::X25519,
-            NamedGroup::Secp256r1,
-            NamedGroup::Secp384r1,
-        ] {
+        for group in [NamedGroup::X25519, NamedGroup::Secp256r1, NamedGroup::Secp384r1] {
             let (a_priv, a_pub) = generate_key_share(group).unwrap();
             let (b_priv, b_pub) = generate_key_share(group).unwrap();
             let s1 = shared_secret(&a_priv, &b_pub).unwrap();

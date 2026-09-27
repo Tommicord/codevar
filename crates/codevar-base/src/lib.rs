@@ -27,3 +27,4 @@ pub mod basic_time;
 pub mod basic_unwind;
 pub mod basic_url;
 pub mod basic_xml;
+pub mod basic_env;

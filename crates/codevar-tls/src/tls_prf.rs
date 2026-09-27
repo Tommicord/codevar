@@ -155,7 +155,12 @@ mod tests {
         for alg in [HashAlgorithm::Sha256, HashAlgorithm::Sha384] {
             for out_len in [0usize, 1, 16, 31, 32, 33, 48, 64, 70, 128] {
                 let got = tls12_prf(alg, &secret, b"master secret", &seed, out_len).unwrap();
-                let want = reference_p_hash(alg, &secret, &[b"master secret".as_slice(), &seed].concat(), out_len);
+                let want = reference_p_hash(
+                    alg,
+                    &secret,
+                    &[b"master secret".as_slice(), &seed].concat(),
+                    out_len,
+                );
                 assert_eq!(got, want, "alg={alg:?} out_len={out_len}");
                 assert_eq!(got.len(), out_len);
             }
@@ -206,10 +211,16 @@ mod tests {
         assert_ne!(a, other_label);
         let mut other_seed = seed;
         other_seed[0] ^= 1;
-        assert_ne!(a, tls12_prf(HashAlgorithm::Sha256, &secret, b"lbl", &other_seed, 32).unwrap());
+        assert_ne!(
+            a,
+            tls12_prf(HashAlgorithm::Sha256, &secret, b"lbl", &other_seed, 32).unwrap()
+        );
         let mut other_secret = secret;
         other_secret[0] ^= 1;
-        assert_ne!(a, tls12_prf(HashAlgorithm::Sha256, &other_secret, b"lbl", &seed, 32).unwrap());
+        assert_ne!(
+            a,
+            tls12_prf(HashAlgorithm::Sha256, &other_secret, b"lbl", &seed, 32).unwrap()
+        );
         // Prefix property: a longer PRF starts with the shorter one.
         let long = tls12_prf(HashAlgorithm::Sha256, &secret, b"lbl", &seed, 96).unwrap();
         assert_eq!(&long[..32], &a[..]);
@@ -241,11 +252,15 @@ mod tests {
     #[test]
     fn hmac_hash_output_lengths() {
         assert_eq!(
-            hmac_hash(HashAlgorithm::Sha256, b"k", b"m").unwrap().len(),
+            hmac_hash(HashAlgorithm::Sha256, b"k", b"m")
+                .unwrap()
+                .len(),
             32
         );
         assert_eq!(
-            hmac_hash(HashAlgorithm::Sha384, b"k", b"m").unwrap().len(),
+            hmac_hash(HashAlgorithm::Sha384, b"k", b"m")
+                .unwrap()
+                .len(),
             48
         );
     }
@@ -264,7 +279,10 @@ mod tests {
     fn sha_digest_length_matches_hash_algorithm() {
         // Sanity: the PRF really is parameterized by the requested algorithm.
         let out = tls12_prf(HashAlgorithm::Sha256, b"s", b"l", b"seed", 32).unwrap();
-        assert_ne!(out, tls12_prf(HashAlgorithm::Sha384, b"s", b"l", b"seed", 32).unwrap());
+        assert_ne!(
+            out,
+            tls12_prf(HashAlgorithm::Sha384, b"s", b"l", b"seed", 32).unwrap()
+        );
         assert_eq!(Sha256::digest(b"").len(), 32);
         assert_eq!(Sha384::digest(b"").len(), 48);
     }

@@ -139,8 +139,14 @@ mod tests {
         let mut cloned = ctx.clone();
         ctx.update(b"-original");
         cloned.update(b"-clone");
-        assert_eq!(ctx.current(), hash_message(HashAlgorithm::Sha256, b"prefix-original"));
-        assert_eq!(cloned.current(), hash_message(HashAlgorithm::Sha256, b"prefix-clone"));
+        assert_eq!(
+            ctx.current(),
+            hash_message(HashAlgorithm::Sha256, b"prefix-original")
+        );
+        assert_eq!(
+            cloned.current(),
+            hash_message(HashAlgorithm::Sha256, b"prefix-clone")
+        );
     }
 
     #[test]

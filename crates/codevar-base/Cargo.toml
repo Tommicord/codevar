@@ -16,4 +16,14 @@ cfg-if = { workspace = true }
 libc = { workspace = true }
 windows-link = { workspace = true }
 spin = { workspace = true }
+codevar-fcware = { workspace = true }
 codevar-textlike-encode = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = "0.62.2"
+
+[build-dependencies]
+codevar-fcware = { workspace = true }
+cfg-if = { workspace = true }
+libc = { workspace = true }
+windows-link = { workspace = true }

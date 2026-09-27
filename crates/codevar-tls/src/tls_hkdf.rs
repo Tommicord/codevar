@@ -187,24 +187,14 @@ mod tests {
         assert_ne!(a, hkdf_extract(HashAlgorithm::Sha256, b"salt2", b"ikm"));
         assert_ne!(a, hkdf_extract(HashAlgorithm::Sha256, b"salt", b"ikm2"));
         assert_eq!(a.len(), 32);
-        assert_eq!(
-            hkdf_extract(HashAlgorithm::Sha384, b"salt", b"ikm").len(),
-            48
-        );
+        assert_eq!(hkdf_extract(HashAlgorithm::Sha384, b"salt", b"ikm").len(), 48);
     }
 
     #[test]
     fn expand_label_known_answer_and_prefix_property() {
         let secret = [0x77u8; 32];
         let ctx = [0xABu8; 32];
-        let out = hkdf_expand_label(
-            HashAlgorithm::Sha256,
-            &secret,
-            b"c hs traffic",
-            &ctx,
-            42,
-        )
-        .unwrap();
+        let out = hkdf_expand_label(HashAlgorithm::Sha256, &secret, b"c hs traffic", &ctx, 42).unwrap();
         assert_eq!(
             out,
             unhex(
@@ -216,14 +206,12 @@ mod tests {
 
         // The requested length is bound into HkdfLabel, so outputs of different
         // lengths are unrelated (unlike raw HKDF-Expand over a fixed info).
-        let long = hkdf_expand_label(HashAlgorithm::Sha256, &secret, b"c hs traffic", &ctx, 96)
-            .unwrap();
+        let long = hkdf_expand_label(HashAlgorithm::Sha256, &secret, b"c hs traffic", &ctx, 96).unwrap();
         assert_eq!(long.len(), 96);
         assert_ne!(&long[..42], &out[..]);
 
         // The "tls13 " prefix makes labels domain-separated.
-        let other = hkdf_expand_label(HashAlgorithm::Sha256, &secret, b"c hs traffi", &ctx, 42)
-            .unwrap();
+        let other = hkdf_expand_label(HashAlgorithm::Sha256, &secret, b"c hs traffi", &ctx, 42).unwrap();
         assert_ne!(other, out);
 
         // Raw HKDF-Expand (RFC 5869) does have the prefix property.
@@ -255,34 +243,23 @@ mod tests {
     #[test]
     fn expand_label_rejects_oversized_inputs() {
         // Length > 65535.
-        let err = hkdf_expand_label(HashAlgorithm::Sha256, &[0u8; 32], b"key", &[], 65_536)
-            .unwrap_err();
+        let err = hkdf_expand_label(HashAlgorithm::Sha256, &[0u8; 32], b"key", &[], 65_536).unwrap_err();
         assert!(matches!(err, TlsError::Internal(_)));
         // Context > 255 bytes.
-        let err = hkdf_expand_label(
-            HashAlgorithm::Sha256,
-            &[0u8; 32],
-            b"key",
-            &[0u8; 256],
-            32,
-        )
-        .unwrap_err();
+        let err = hkdf_expand_label(HashAlgorithm::Sha256, &[0u8; 32], b"key", &[0u8; 256], 32).unwrap_err();
         assert!(matches!(err, TlsError::Internal(_)));
         // Full label ("tls13 " + label) > 255 bytes.
         let long_label = [b'a'; 250];
-        let err = hkdf_expand_label(HashAlgorithm::Sha256, &[0u8; 32], &long_label, &[], 32)
-            .unwrap_err();
+        let err = hkdf_expand_label(HashAlgorithm::Sha256, &[0u8; 32], &long_label, &[], 32).unwrap_err();
         assert!(matches!(err, TlsError::Internal(_)));
     }
 
     #[test]
     fn expand_label_rejects_short_prk() {
         // HKDF-Expand requires PRK >= hash length.
-        let err = hkdf_expand_label(HashAlgorithm::Sha256, &[0u8; 16], b"key", &[], 32)
-            .unwrap_err();
+        let err = hkdf_expand_label(HashAlgorithm::Sha256, &[0u8; 16], b"key", &[], 32).unwrap_err();
         assert!(matches!(err, TlsError::Crypto(_)));
-        let err = hkdf_expand_label(HashAlgorithm::Sha384, &[0u8; 32], b"key", &[], 48)
-            .unwrap_err();
+        let err = hkdf_expand_label(HashAlgorithm::Sha384, &[0u8; 32], b"key", &[], 48).unwrap_err();
         assert!(matches!(err, TlsError::Crypto(_)));
     }
 
@@ -306,8 +283,7 @@ mod tests {
 
         // With an explicit message hash, that hash is used as the context.
         let ctx = [0xAAu8; 32];
-        let with_ctx =
-            derive_secret(HashAlgorithm::Sha256, &secret, b"derived", Some(&ctx)).unwrap();
+        let with_ctx = derive_secret(HashAlgorithm::Sha256, &secret, b"derived", Some(&ctx)).unwrap();
         assert_ne!(with_ctx, automatic);
         assert_eq!(
             with_ctx,
@@ -316,8 +292,7 @@ mod tests {
 
         // SHA-384 derives 48 bytes.
         let sha384_secret = [0x99u8; 48];
-        let sha384 = derive_secret(HashAlgorithm::Sha384, &sha384_secret, b"derived", None)
-            .unwrap();
+        let sha384 = derive_secret(HashAlgorithm::Sha384, &sha384_secret, b"derived", None).unwrap();
         assert_eq!(sha384.len(), 48);
         // A PRK shorter than the hash output is invalid (RFC 5869 §2.2).
         let err = derive_secret(HashAlgorithm::Sha384, &secret, b"derived", None).unwrap_err();

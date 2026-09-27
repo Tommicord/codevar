@@ -247,7 +247,12 @@ mod tests {
 
     impl MemTransport {
         fn new(rx: Vec<u8>) -> Self {
-            Self { rx, pos: 0, tx: Vec::new(), fail_read: None }
+            Self {
+                rx,
+                pos: 0,
+                tx: Vec::new(),
+                fail_read: None,
+            }
         }
     }
 
@@ -300,7 +305,10 @@ mod tests {
 
     impl MockSession {
         fn idle() -> Self {
-            Self { handshaking: false, ..Self::default() }
+            Self {
+                handshaking: false,
+                ..Self::default()
+            }
         }
     }
 
@@ -609,10 +617,7 @@ mod tests {
 
     #[test]
     fn tls_to_io_maps_error_kinds() {
-        assert_eq!(
-            tls_to_io(TlsError::WouldBlock).kind(),
-            io::ErrorKind::WouldBlock
-        );
+        assert_eq!(tls_to_io(TlsError::WouldBlock).kind(), io::ErrorKind::WouldBlock);
         assert_eq!(
             tls_to_io(TlsError::Closed).kind(),
             io::ErrorKind::ConnectionAborted
@@ -621,14 +626,8 @@ mod tests {
             tls_to_io(TlsError::HandshakeNotComplete).kind(),
             io::ErrorKind::WouldBlock
         );
-        assert_eq!(
-            tls_to_io(TlsError::certificate("x")).kind(),
-            io::ErrorKind::Other
-        );
-        assert_eq!(
-            tls_to_io(TlsError::RandomFailed).kind(),
-            io::ErrorKind::Other
-        );
+        assert_eq!(tls_to_io(TlsError::certificate("x")).kind(), io::ErrorKind::Other);
+        assert_eq!(tls_to_io(TlsError::RandomFailed).kind(), io::ErrorKind::Other);
     }
 
     #[test]

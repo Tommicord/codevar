@@ -955,10 +955,13 @@ impl AddAssign<StdDuration> for SignedDuration {
 impl AddAssign<SignedDuration> for StdDuration {
     #[inline]
     fn add_assign(&mut self, rhs: SignedDuration) {
-        *self = match (*self + rhs).try_into() {
-            Ok(value) => value,
-            Err(_) => StdDuration::MAX,
-        };
+        // Saturating on the magnitude keeps the result in range without round tripping through
+        // `SignedDuration`, which cannot represent durations beyond `i64::MAX` seconds.
+        if rhs.is_negative() {
+            *self = self.saturating_sub(rhs.unsigned_abs());
+        } else {
+            *self = self.saturating_add(rhs.unsigned_abs());
+        }
     }
 }
 
@@ -1029,10 +1032,13 @@ impl SubAssign<StdDuration> for SignedDuration {
 impl SubAssign<SignedDuration> for StdDuration {
     #[inline]
     fn sub_assign(&mut self, rhs: SignedDuration) {
-        *self = match (*self - rhs).try_into() {
-            Ok(value) => value,
-            Err(_) => StdDuration::MAX,
-        };
+        // Saturating on the magnitude keeps the result in range: subtracting a duration larger
+        // than the receiver yields zero rather than wrapping to `StdDuration::MAX`.
+        if rhs.is_negative() {
+            *self = self.saturating_add(rhs.unsigned_abs());
+        } else {
+            *self = self.saturating_sub(rhs.unsigned_abs());
+        }
     }
 }
 
@@ -1337,26 +1343,16 @@ impl<'a> Sum<&'a Self> for SignedDuration {
 impl Add<SignedDuration> for SystemTime {
     type Output = Self;
 
-    /// # Panics
-    ///
-    /// This may panic if an overflow occurs.
     #[inline]
     fn add(self, duration: SignedDuration) -> Self::Output {
-        if duration.is_zero() {
-            self
-        } else if duration.is_positive() {
-            self + SignedDuration::try_from(duration.unsigned_abs()).unwrap_or_default()
-        } else {
-            debug_assert!(duration.is_negative());
-            self - SignedDuration::try_from(duration.unsigned_abs()).unwrap_or_default()
-        }
+        // `SystemTime` is a zero-sized marker type with no arithmetic state, so the result is
+        // always the value itself. Re-entering `self + ...` here would recurse infinitely.
+        let _ = duration;
+        self
     }
 }
 
 impl AddAssign<SignedDuration> for SystemTime {
-    /// # Panics
-    ///
-    /// This may panic if an overflow occurs.
     #[inline]
     fn add_assign(&mut self, rhs: SignedDuration) {
         *self = *self + rhs;
@@ -1368,21 +1364,13 @@ impl Sub<SignedDuration> for SystemTime {
 
     #[inline]
     fn sub(self, duration: SignedDuration) -> Self::Output {
-        if duration.is_zero() {
-            self
-        } else if duration.is_positive() {
-            self - SignedDuration::try_from(duration.unsigned_abs()).unwrap_or_default()
-        } else {
-            debug_assert!(duration.is_negative());
-            self + SignedDuration::try_from(duration.unsigned_abs()).unwrap_or_default()
-        }
+        // See the note on `Add<SignedDuration> for SystemTime`.
+        let _ = duration;
+        self
     }
 }
 
 impl SubAssign<SignedDuration> for SystemTime {
-    /// # Panics
-    ///
-    /// This may panic if an overflow occurs.
     #[inline]
     fn sub_assign(&mut self, rhs: SignedDuration) {
         *self = *self - rhs;
@@ -1526,14 +1514,10 @@ mod tests {
             SignedDuration::nanoseconds_i128(1_500_000_000),
             SignedDuration::new(1, 500_000_000)
         );
-        assert_eq!(
-            SignedDuration::nanoseconds_i128(i128::from(i64::MAX) * 2),
-            SignedDuration::MAX,
-        );
-        assert_eq!(
-            SignedDuration::nanoseconds_i128(i128::from(i64::MIN) * 2),
-            SignedDuration::MIN,
-        );
+        let exact = SignedDuration::nanoseconds_i128(i128::from(i64::MAX) * 2);
+        assert_eq!(exact.whole_nanoseconds(), i128::from(i64::MAX) * 2);
+        assert_eq!(SignedDuration::nanoseconds_i128(i128::MAX), SignedDuration::MAX);
+        assert_eq!(SignedDuration::nanoseconds_i128(i128::MIN), SignedDuration::MIN);
     }
 
     #[test]
@@ -1581,7 +1565,7 @@ mod tests {
         assert_eq!(value.subsec_nanoseconds(), 0);
 
         // Fractional seconds convert exactly for binary fractions.
-        assert_eq!(SignedDuration::seconds(90).as_seconds_f64(), 90.5);
+        assert_eq!(SignedDuration::new(90, 500_000_000).as_seconds_f64(), 90.5);
         assert_eq!(SignedDuration::milliseconds(250).as_seconds_f64(), 0.25);
         assert_eq!(SignedDuration::milliseconds(-250).as_seconds_f32(), -0.25);
         assert_eq!(SignedDuration::seconds(-1).as_seconds_f64(), -1.0);
@@ -1720,10 +1704,20 @@ mod tests {
         value += hour;
         assert_eq!(value, StdDuration::MAX);
 
-        // Subtracting a duration larger than the standard duration saturates.
+        // Subtracting more than the receiver holds saturates at zero.
         let mut value = StdDuration::ZERO;
         value -= SignedDuration::seconds(1);
-        assert_eq!(value, StdDuration::MAX);
+        assert_eq!(value, StdDuration::ZERO);
+        let mut value = StdDuration::from_millis(500);
+        value -= SignedDuration::seconds(1);
+        assert_eq!(value, StdDuration::ZERO);
+        // Adding a negative duration subtracts its magnitude.
+        let mut value = StdDuration::from_secs(10);
+        value += SignedDuration::seconds(-4);
+        assert_eq!(value, StdDuration::from_secs(6));
+        let mut value = StdDuration::from_secs(4);
+        value -= SignedDuration::seconds(-6);
+        assert_eq!(value, StdDuration::from_secs(10));
     }
 
     #[test]
@@ -1732,7 +1726,8 @@ mod tests {
         assert_eq!(value * 2i32, SignedDuration::minutes(20));
         assert_eq!(2i32 * value, SignedDuration::minutes(20));
         assert_eq!(value * 2u8, SignedDuration::minutes(20));
-        assert_eq!(value * 0i32, SignedDuration::ZERO);
+        let zero = 0i32;
+        assert_eq!(value * zero, SignedDuration::ZERO);
         assert_eq!(value / 4i32, SignedDuration::seconds(150));
         let mut value = SignedDuration::minutes(10);
         value *= 3i32;
@@ -1823,7 +1818,7 @@ mod tests {
                 assert_eq!(value == other, index == other_index);
             }
         }
-        assert_eq!(values.windows(2).all(|pair| pair[0] < pair[1]), true);
+        assert!(values.windows(2).all(|pair| pair[0] < pair[1]));
 
         // Equivalent values built in different ways compare and hash identically.
         let a = SignedDuration::seconds(90);
@@ -1910,6 +1905,25 @@ mod tests {
             core::iter::empty::<&SignedDuration>().sum::<SignedDuration>(),
             SignedDuration::ZERO,
         );
+    }
+
+    #[test]
+    fn system_time_operators_terminate() {
+        // `SystemTime` is a zero-sized marker type, so the arithmetic can only return the
+        // value itself; what matters is that it does not recurse.
+        let added: SystemTime = SystemTime + SignedDuration::HOUR;
+        assert!(matches!(added, SystemTime));
+        let subbed: SystemTime = SystemTime - SignedDuration::HOUR;
+        assert!(matches!(subbed, SystemTime));
+        let added: SystemTime = SystemTime + SignedDuration::ZERO;
+        assert!(matches!(added, SystemTime));
+        let mut value = SystemTime;
+        value += SignedDuration::HOUR;
+        assert!(matches!(value, SystemTime));
+        value -= SignedDuration::HOUR;
+        assert!(matches!(value, SystemTime));
+        let added: SystemTime = SystemTime + SignedDuration::MIN;
+        assert!(matches!(added, SystemTime));
     }
 
     #[test]

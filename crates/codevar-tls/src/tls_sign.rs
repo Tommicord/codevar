@@ -364,7 +364,8 @@ mod tests {
 MC4CAQAwBQYDK2VwBCIEIGHJ7vDVIPs7azrXADYOKhREcL5Wvccy7u3MGBD58his
 -----END PRIVATE KEY-----
 ";
-    const ED25519_SPKI: &str = "302a300506032b6570032100eb1a56d88d3d6918a298c05f413853e70a22f3a22f0f1e20494d51682579cc96";
+    const ED25519_SPKI: &str =
+        "302a300506032b6570032100eb1a56d88d3d6918a298c05f413853e70a22f3a22f0f1e20494d51682579cc96";
 
     const P256_PKCS8_PEM: &[u8] = b"-----BEGIN PRIVATE KEY-----
 MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgm/WN/mvVOsU5YIKS
@@ -476,24 +477,20 @@ Uap664VuCyehCd2ifEdytjvQUbTakC4dZdOuooge+1cxadVbGQy0
             .unwrap();
         assert_eq!(chosen, SignatureScheme::RsaPkcs1Sha384);
         let chosen = rsa
-            .select_scheme(&[
-                SignatureScheme::RsaPssRsaeSha256,
-                SignatureScheme::RsaPkcs1Sha256,
-            ])
+            .select_scheme(&[SignatureScheme::RsaPssRsaeSha256, SignatureScheme::RsaPkcs1Sha256])
             .unwrap();
         assert_eq!(chosen, SignatureScheme::RsaPssRsaeSha256);
 
         let p256 = PrivateKey::from_pem(P256_SEC1_PEM).unwrap();
         let chosen = p256
-            .select_scheme(&[
-                SignatureScheme::Ed25519,
-                SignatureScheme::EcdsaSecp256r1Sha256,
-            ])
+            .select_scheme(&[SignatureScheme::Ed25519, SignatureScheme::EcdsaSecp256r1Sha256])
             .unwrap();
         assert_eq!(chosen, SignatureScheme::EcdsaSecp256r1Sha256);
 
         let ed = PrivateKey::from_pem(ED25519_PEM).unwrap();
-        let chosen = ed.select_scheme(&[SignatureScheme::Ed25519]).unwrap();
+        let chosen = ed
+            .select_scheme(&[SignatureScheme::Ed25519])
+            .unwrap();
         assert_eq!(chosen, SignatureScheme::Ed25519);
 
         let p384 = PrivateKey::from_pem(P384_SEC1_PEM).unwrap();
@@ -544,10 +541,14 @@ Uap664VuCyehCd2ifEdytjvQUbTakC4dZdOuooge+1cxadVbGQy0
     #[test]
     fn ed25519_sign_verify_round_trip() {
         let key = PrivateKey::from_pem(ED25519_PEM).unwrap();
-        let sig = key.sign(SignatureScheme::Ed25519, b"handshake transcript").unwrap();
+        let sig = key
+            .sign(SignatureScheme::Ed25519, b"handshake transcript")
+            .unwrap();
         // Ed25519 signatures are fixed 64 bytes and deterministic.
         assert_eq!(sig.len(), 64);
-        let sig2 = key.sign(SignatureScheme::Ed25519, b"handshake transcript").unwrap();
+        let sig2 = key
+            .sign(SignatureScheme::Ed25519, b"handshake transcript")
+            .unwrap();
         assert_eq!(sig, sig2);
 
         sign_and_verify(
@@ -628,11 +629,15 @@ Uap664VuCyehCd2ifEdytjvQUbTakC4dZdOuooge+1cxadVbGQy0
         }
 
         let ed = PrivateKey::from_pem(ED25519_PEM).unwrap();
-        let err = ed.sign(SignatureScheme::EcdsaSecp256r1Sha256, b"m").unwrap_err();
+        let err = ed
+            .sign(SignatureScheme::EcdsaSecp256r1Sha256, b"m")
+            .unwrap_err();
         assert!(matches!(err, TlsError::Unsupported(_)));
 
         let rsa = PrivateKey::from_pem(RSA_PKCS1_PEM).unwrap();
-        let err = rsa.sign(SignatureScheme::Ed25519, b"m").unwrap_err();
+        let err = rsa
+            .sign(SignatureScheme::Ed25519, b"m")
+            .unwrap_err();
         assert!(matches!(err, TlsError::Unsupported(_)));
     }
 
@@ -640,7 +645,9 @@ Uap664VuCyehCd2ifEdytjvQUbTakC4dZdOuooge+1cxadVbGQy0
     fn tampered_signature_fails_verification() {
         let key = PrivateKey::from_pem(ED25519_PEM).unwrap();
         let message = b"transcript hash";
-        let mut sig = key.sign(SignatureScheme::Ed25519, message).unwrap();
+        let mut sig = key
+            .sign(SignatureScheme::Ed25519, message)
+            .unwrap();
         let spki = unhex(ED25519_SPKI);
         verify_handshake_signature(SignatureScheme::Ed25519, &spki, message, &sig).unwrap();
         sig[0] ^= 0x01;
@@ -659,23 +666,16 @@ Uap664VuCyehCd2ifEdytjvQUbTakC4dZdOuooge+1cxadVbGQy0
             .unwrap();
         let garbage = [0u8; 16];
         // Not a valid SPKI at all.
-        let err =
-            verify_handshake_signature(SignatureScheme::EcdsaSecp256r1Sha256, &garbage, b"m", &sig)
-                .unwrap_err();
+        let err = verify_handshake_signature(SignatureScheme::EcdsaSecp256r1Sha256, &garbage, b"m", &sig)
+            .unwrap_err();
         assert!(matches!(err, TlsError::Certificate(_)));
         // Valid SPKI but of the wrong key type for the scheme.
         let err =
-            verify_handshake_signature(SignatureScheme::Ed25519, &unhex(P256_SPKI), b"m", &sig)
-                .unwrap_err();
+            verify_handshake_signature(SignatureScheme::Ed25519, &unhex(P256_SPKI), b"m", &sig).unwrap_err();
         assert!(matches!(err, TlsError::Certificate(_)));
         // RSA scheme against an EC SPKI.
-        let err = verify_handshake_signature(
-            SignatureScheme::RsaPkcs1Sha256,
-            &unhex(P256_SPKI),
-            b"m",
-            &sig,
-        )
-        .unwrap_err();
+        let err = verify_handshake_signature(SignatureScheme::RsaPkcs1Sha256, &unhex(P256_SPKI), b"m", &sig)
+            .unwrap_err();
         assert!(matches!(err, TlsError::Certificate(_)));
         // Malformed signature bytes (not DER, wrong length).
         let err = verify_handshake_signature(
@@ -725,19 +725,15 @@ Uap664VuCyehCd2ifEdytjvQUbTakC4dZdOuooge+1cxadVbGQy0
         let transcript_hash = [0x5Cu8; 32];
 
         let content = tls13_cert_verify_content(true, &transcript_hash);
-        let sig = key.sign(SignatureScheme::Ed25519, &content).unwrap();
+        let sig = key
+            .sign(SignatureScheme::Ed25519, &content)
+            .unwrap();
         verify_handshake_signature(SignatureScheme::Ed25519, &spki, &content, &sig).unwrap();
 
         // Signing the client variant with the client content verifies too,
         // but the server content must not verify as the client one.
         let client_content = tls13_cert_verify_content(false, &transcript_hash);
-        assert!(verify_handshake_signature(
-            SignatureScheme::Ed25519,
-            &spki,
-            &client_content,
-            &sig
-        )
-        .is_err());
+        assert!(verify_handshake_signature(SignatureScheme::Ed25519, &spki, &client_content, &sig).is_err());
     }
 
     #[test]
@@ -749,30 +745,32 @@ Uap664VuCyehCd2ifEdytjvQUbTakC4dZdOuooge+1cxadVbGQy0
         let ed = PrivateKey::from_pem(ED25519_PEM).unwrap();
         let ed_sig = ed.sign(SignatureScheme::Ed25519, tbs).unwrap();
         verify_cert_signature(tbs, "1.3.101.112", &ed_sig, &unhex(ED25519_SPKI)).unwrap();
-        assert!(
-            verify_cert_signature(b"other", "1.3.101.112", &ed_sig, &unhex(ED25519_SPKI)).is_err()
-        );
+        assert!(verify_cert_signature(b"other", "1.3.101.112", &ed_sig, &unhex(ED25519_SPKI)).is_err());
 
         // sha256WithRSAEncryption (1.2.840.113549.1.1.11).
         let rsa = PrivateKey::from_pem(RSA_PKCS1_PEM).unwrap();
-        let rsa_sig = rsa.sign(SignatureScheme::RsaPkcs1Sha256, tbs).unwrap();
+        let rsa_sig = rsa
+            .sign(SignatureScheme::RsaPkcs1Sha256, tbs)
+            .unwrap();
         verify_cert_signature(tbs, "1.2.840.113549.1.1.11", &rsa_sig, &unhex(RSA_SPKI)).unwrap();
-        assert!(verify_cert_signature(
-            b"tampered",
-            "1.2.840.113549.1.1.11",
-            &rsa_sig,
-            &unhex(RSA_SPKI)
-        )
-        .is_err());
+        assert!(
+            verify_cert_signature(b"tampered", "1.2.840.113549.1.1.11", &rsa_sig, &unhex(RSA_SPKI)).is_err()
+        );
 
         // sha384WithRSAEncryption (1.2.840.113549.1.1.12).
-        let rsa_sig384 = rsa.sign(SignatureScheme::RsaPkcs1Sha384, tbs).unwrap();
+        let rsa_sig384 = rsa
+            .sign(SignatureScheme::RsaPkcs1Sha384, tbs)
+            .unwrap();
         verify_cert_signature(tbs, "1.2.840.113549.1.1.12", &rsa_sig384, &unhex(RSA_SPKI)).unwrap();
 
         // RSASSA-PSS (1.2.840.113549.1.1.10): tries SHA-256 then SHA-384.
-        let pss_sig = rsa.sign(SignatureScheme::RsaPssRsaeSha256, tbs).unwrap();
+        let pss_sig = rsa
+            .sign(SignatureScheme::RsaPssRsaeSha256, tbs)
+            .unwrap();
         verify_cert_signature(tbs, "1.2.840.113549.1.1.10", &pss_sig, &unhex(RSA_SPKI)).unwrap();
-        let pss_sig384 = rsa.sign(SignatureScheme::RsaPssRsaeSha384, tbs).unwrap();
+        let pss_sig384 = rsa
+            .sign(SignatureScheme::RsaPssRsaeSha384, tbs)
+            .unwrap();
         verify_cert_signature(tbs, "1.2.840.113549.1.1.10", &pss_sig384, &unhex(RSA_SPKI)).unwrap();
 
         // ecdsa-with-SHA256 (1.2.840.10045.4.3.2).
@@ -805,21 +803,20 @@ Uap664VuCyehCd2ifEdytjvQUbTakC4dZdOuooge+1cxadVbGQy0
         assert!(matches!(err, TlsError::Certificate(_)));
         // RSA signature against an RSA SPKI but with a corrupted signature.
         let rsa = PrivateKey::from_pem(RSA_PKCS1_PEM).unwrap();
-        let mut rsa_sig = rsa.sign(SignatureScheme::RsaPkcs1Sha256, tbs).unwrap();
+        let mut rsa_sig = rsa
+            .sign(SignatureScheme::RsaPkcs1Sha256, tbs)
+            .unwrap();
         let last = rsa_sig.len() - 1;
         rsa_sig[last] ^= 0xFF;
         let err =
-            verify_cert_signature(tbs, "1.2.840.113549.1.1.11", &rsa_sig, &unhex(RSA_SPKI))
-                .unwrap_err();
+            verify_cert_signature(tbs, "1.2.840.113549.1.1.11", &rsa_sig, &unhex(RSA_SPKI)).unwrap_err();
         assert!(matches!(err, TlsError::Alert(AlertDescription::DecryptError)));
     }
 
     #[test]
     fn sha256_helper_matches_reference_digest() {
         let digest = sha256(b"abc");
-        let expected = unhex(
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
-        );
+        let expected = unhex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
         assert_eq!(digest.to_vec(), expected);
         // Length is always 32 bytes.
         assert_eq!(sha256(b"").len(), 32);

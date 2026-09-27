@@ -17,8 +17,8 @@
 //! client and server bytes are shuttled between the two connections.
 
 use codevar_tls::{
-    CertifiedKey, ClientConfig, ProtocolVersion, ServerConfig, ServerName, TlsClientConnection,
-    TlsError, TlsServerConnection, parse_pem_certs,
+    CertifiedKey, ClientConfig, ProtocolVersion, ServerConfig, ServerName, TlsClientConnection, TlsError,
+    TlsServerConnection, parse_pem_certs,
 };
 use std::sync::Arc;
 
@@ -48,10 +48,14 @@ fn pump(client: &mut TlsClientConnection, server: &mut TlsServerConnection) {
         let from_client = client.write_tls();
         let from_server = server.write_tls();
         if !from_client.is_empty() {
-            server.read_tls(&from_client).expect("server read_tls");
+            server
+                .read_tls(&from_client)
+                .expect("server read_tls");
         }
         if !from_server.is_empty() {
-            client.read_tls(&from_server).expect("client read_tls");
+            client
+                .read_tls(&from_server)
+                .expect("client read_tls");
         }
         let server_state = server.process_new_packets();
         let client_state = client.process_new_packets();
@@ -89,9 +93,11 @@ fn server_config() -> Arc<ServerConfig> {
 }
 
 fn new_pair() -> (TlsClientConnection, TlsServerConnection) {
-    let client =
-        TlsClientConnection::new(client_config(), ServerName::try_from_str("example.com").expect("name"))
-            .expect("client");
+    let client = TlsClientConnection::new(
+        client_config(),
+        ServerName::try_from_str("example.com").expect("name"),
+    )
+    .expect("client");
     let server = TlsServerConnection::new(server_config());
     (client, server)
 }
@@ -110,31 +116,49 @@ fn tls13_full_handshake_and_app_data() {
     assert!(!server.is_handshaking());
     assert_eq!(client.protocol_version(), Some(ProtocolVersion::Tls13));
     assert_eq!(server.protocol_version(), Some(ProtocolVersion::Tls13));
-    let client_suite = client.negotiated_cipher_suite().expect("client suite");
-    let server_suite = server.negotiated_cipher_suite().expect("server suite");
+    let client_suite = client
+        .negotiated_cipher_suite()
+        .expect("client suite");
+    let server_suite = server
+        .negotiated_cipher_suite()
+        .expect("server suite");
     assert_eq!(client_suite, server_suite);
     assert!(client_suite.is_tls13());
 
     // Client -> server application data.
-    client.writer_write(b"ping over tls").expect("client write");
+    client
+        .writer_write(b"ping over tls")
+        .expect("client write");
     let wire = client.write_tls();
     assert!(!wire.is_empty());
     server.read_tls(&wire).expect("server read");
-    server.process_new_packets().expect("server process");
+    server
+        .process_new_packets()
+        .expect("server process");
     let mut buf = [0u8; 64];
-    let n = server.reader_read(&mut buf).expect("server read app");
+    let n = server
+        .reader_read(&mut buf)
+        .expect("server read app");
     assert_eq!(&buf[..n], b"ping over tls");
 
     // Server -> client application data.
-    server.writer_write(b"pong over tls").expect("server write");
+    server
+        .writer_write(b"pong over tls")
+        .expect("server write");
     let wire = server.write_tls();
     client.read_tls(&wire).expect("client read");
-    client.process_new_packets().expect("client process");
-    let n = client.reader_read(&mut buf).expect("client read app");
+    client
+        .process_new_packets()
+        .expect("client process");
+    let n = client
+        .reader_read(&mut buf)
+        .expect("client read app");
     assert_eq!(&buf[..n], b"pong over tls");
 
     // Reading with no data pending reports WouldBlock (not EOF/error).
-    let err = client.reader_read(&mut buf).expect_err("would block");
+    let err = client
+        .reader_read(&mut buf)
+        .expect_err("would block");
     assert!(matches!(err, TlsError::WouldBlock));
 }
 
@@ -145,15 +169,16 @@ fn tls13_handshake_with_alpn_selection() {
         .with_alpn(vec![b"h2".to_vec(), b"http/1.1".to_vec()])
         .build()
         .expect("client cfg");
-    let server_cfg = ServerConfig::builder(
-        CertifiedKey::from_pem(LEAF_PEM, LEAF_KEY_PEM).expect("certified key"),
-    )
-    .with_alpn(vec![b"h2".to_vec()])
-    .build();
+    let server_cfg =
+        ServerConfig::builder(CertifiedKey::from_pem(LEAF_PEM, LEAF_KEY_PEM).expect("certified key"))
+            .with_alpn(vec![b"h2".to_vec()])
+            .build();
 
-    let mut client =
-        TlsClientConnection::new(Arc::new(client_cfg), ServerName::try_from_str("example.com").expect("name"))
-            .expect("client");
+    let mut client = TlsClientConnection::new(
+        Arc::new(client_cfg),
+        ServerName::try_from_str("example.com").expect("name"),
+    )
+    .expect("client");
     let mut server = TlsServerConnection::new(Arc::new(server_cfg));
     pump(&mut client, &mut server);
 
@@ -168,15 +193,16 @@ fn tls13_handshake_with_no_mutual_alpn_still_completes() {
         .with_alpn(vec![b"spdy/3".to_vec()])
         .build()
         .expect("client cfg");
-    let server_cfg = ServerConfig::builder(
-        CertifiedKey::from_pem(LEAF_PEM, LEAF_KEY_PEM).expect("certified key"),
-    )
-    .with_alpn(vec![b"h2".to_vec()])
-    .build();
+    let server_cfg =
+        ServerConfig::builder(CertifiedKey::from_pem(LEAF_PEM, LEAF_KEY_PEM).expect("certified key"))
+            .with_alpn(vec![b"h2".to_vec()])
+            .build();
 
-    let mut client =
-        TlsClientConnection::new(Arc::new(client_cfg), ServerName::try_from_str("example.com").expect("name"))
-            .expect("client");
+    let mut client = TlsClientConnection::new(
+        Arc::new(client_cfg),
+        ServerName::try_from_str("example.com").expect("name"),
+    )
+    .expect("client");
     let mut server = TlsServerConnection::new(Arc::new(server_cfg));
     // RFC 8446: when no ALPN protocol is in common the server may abort with
     // fatal no_application_protocol; this implementation does.
@@ -214,15 +240,16 @@ fn tls12_full_handshake_and_app_data() {
         .with_versions(vec![ProtocolVersion::Tls12])
         .build()
         .expect("client cfg");
-    let server_cfg = ServerConfig::builder(
-        CertifiedKey::from_pem(LEAF_PEM, LEAF_KEY_PEM).expect("certified key"),
-    )
-    .with_versions(vec![ProtocolVersion::Tls12])
-    .build();
+    let server_cfg =
+        ServerConfig::builder(CertifiedKey::from_pem(LEAF_PEM, LEAF_KEY_PEM).expect("certified key"))
+            .with_versions(vec![ProtocolVersion::Tls12])
+            .build();
 
-    let mut client =
-        TlsClientConnection::new(Arc::new(client_cfg), ServerName::try_from_str("example.com").expect("name"))
-            .expect("client");
+    let mut client = TlsClientConnection::new(
+        Arc::new(client_cfg),
+        ServerName::try_from_str("example.com").expect("name"),
+    )
+    .expect("client");
     let mut server = TlsServerConnection::new(Arc::new(server_cfg));
     pump(&mut client, &mut server);
 
@@ -232,7 +259,9 @@ fn tls12_full_handshake_and_app_data() {
     assert_eq!(Some(suite), server.negotiated_cipher_suite());
     assert!(!suite.is_tls13());
 
-    client.writer_write(b"tls12 payload").expect("write");
+    client
+        .writer_write(b"tls12 payload")
+        .expect("write");
     let wire = client.write_tls();
     server.read_tls(&wire).expect("read");
     server.process_new_packets().expect("process");
@@ -240,7 +269,9 @@ fn tls12_full_handshake_and_app_data() {
     let n = server.reader_read(&mut buf).expect("read app");
     assert_eq!(&buf[..n], b"tls12 payload");
 
-    server.writer_write(b"tls12 reply").expect("write");
+    server
+        .writer_write(b"tls12 reply")
+        .expect("write");
     let wire = server.write_tls();
     client.read_tls(&wire).expect("read");
     client.process_new_packets().expect("process");
@@ -253,20 +284,18 @@ fn handshake_hello_retry_request_when_groups_mismatch() {
     // Client offers both groups but a key share only for X25519; server
     // supports only P-384 -> HelloRetryRequest for a P-384 share.
     let mut client_cfg = ClientConfig::dangerous_insecure();
-    Arc::make_mut(&mut client_cfg).named_groups =
-        vec![codevar_tls::NamedGroup::X25519, codevar_tls::NamedGroup::Secp384r1];
+    Arc::make_mut(&mut client_cfg).named_groups = vec![
+        codevar_tls::NamedGroup::X25519,
+        codevar_tls::NamedGroup::Secp384r1,
+    ];
 
-    let mut server_cfg = ServerConfig::builder(
-        CertifiedKey::from_pem(LEAF_PEM, LEAF_KEY_PEM).expect("certified key"),
-    )
-    .build();
+    let mut server_cfg =
+        ServerConfig::builder(CertifiedKey::from_pem(LEAF_PEM, LEAF_KEY_PEM).expect("certified key")).build();
     server_cfg.named_groups = vec![codevar_tls::NamedGroup::Secp384r1];
 
-    let mut client = TlsClientConnection::new(
-        client_cfg,
-        ServerName::try_from_str("example.com").expect("name"),
-    )
-    .expect("client");
+    let mut client =
+        TlsClientConnection::new(client_cfg, ServerName::try_from_str("example.com").expect("name"))
+            .expect("client");
     let mut server = TlsServerConnection::new(Arc::new(server_cfg));
     pump(&mut client, &mut server);
 
@@ -290,7 +319,9 @@ fn close_notify_yields_eof_not_error() {
     let n = server.reader_read(&mut buf).expect("eof");
     assert_eq!(n, 0);
     // Writes after close_notify are rejected.
-    let err = server.writer_write(b"late").expect_err("closed write");
+    let err = server
+        .writer_write(b"late")
+        .expect_err("closed write");
     assert!(matches!(err, TlsError::Closed));
 }
 
@@ -298,8 +329,12 @@ fn close_notify_yields_eof_not_error() {
 fn client_rejects_garbage_records() {
     let (mut client, _server) = new_pair();
     // Feed a syntactically invalid record (bad content type + version).
-    client.read_tls(&[0xFF, 0x03, 0x03, 0x00, 0x01, 0x00]).expect("feed");
-    let err = client.process_new_packets().expect_err("bad record");
+    client
+        .read_tls(&[0xFF, 0x03, 0x03, 0x00, 0x01, 0x00])
+        .expect("feed");
+    let err = client
+        .process_new_packets()
+        .expect_err("bad record");
     assert!(!matches!(err, TlsError::WouldBlock));
     // The failed connection is closed: reads report EOF, writes are rejected.
     let mut buf = [0u8; 4];
@@ -313,7 +348,9 @@ fn client_rejects_garbage_records() {
 #[test]
 fn client_write_before_handshake_completes_is_rejected() {
     let (mut client, _server) = new_pair();
-    let err = client.writer_write(b"too early").expect_err("handshaking");
+    let err = client
+        .writer_write(b"too early")
+        .expect_err("handshaking");
     assert!(matches!(err, TlsError::HandshakeNotComplete));
 }
 
