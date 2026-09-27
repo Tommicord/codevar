@@ -859,6 +859,7 @@ mod unix {
     }
 
     /// `SA_SIGINFO` handler: dump a report, then re-raise with `SIG_DFL`.
+    #[cfg_attr(feature = "nightly", sanitize(address = "off"))]
     extern "C" fn handler(sig: libc::c_int, info: *mut libc::siginfo_t, uc: *mut c_void) {
         // Reentrancy guard: never wait, never nest.
         if ENTERED
@@ -886,7 +887,7 @@ mod unix {
             write_line(format_args!("fault IP:      {ip:#018x}"));
         }
         write_line(format_args!("Backtrace: "));
-        dump_frames();
+        let _ = dump_frames();
 
         reset_and_raise(sig);
         // Only reachable for job-control stops resumed with SIGCONT.
@@ -1151,6 +1152,7 @@ mod windows {
     /// # Safety
     ///
     /// Called by the OS with a valid `EXCEPTION_POINTERS*`.
+    #[cfg_attr(feature = "nightly", sanitize(address = "off"))]
     unsafe extern "system" fn veh_handler(raw: *mut ExceptionPointers) -> i32 {
         if raw.is_null() {
             return EXCEPTION_CONTINUE_SEARCH;
@@ -1209,6 +1211,7 @@ mod windows {
     /// # Safety
     ///
     /// Called by the OS with a valid `EXCEPTION_POINTERS*`.
+    #[cfg_attr(feature = "nightly", sanitize(address = "off"))]
     unsafe extern "system" fn unhandled_filter(raw: *mut ExceptionPointers) -> i32 {
         if raw.is_null() {
             return EXCEPTION_CONTINUE_SEARCH;
@@ -1253,6 +1256,7 @@ mod windows {
     /// # Safety
     ///
     /// Invoked by `SetConsoleCtrlHandler` with a well-known event code.
+    #[cfg_attr(feature = "nightly", sanitize(address = "off"))]
     unsafe extern "system" fn ctrl_handler(ctrl_type: u32) -> i32 {
         // 128 + signo: conventional shell-style exit codes.
         let (name, exit_code) = match ctrl_type {

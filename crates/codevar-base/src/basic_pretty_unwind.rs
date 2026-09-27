@@ -170,10 +170,10 @@ pub fn write_frame<W: Write + ?Sized>(w: &mut W, frame: &Frame, index: usize) ->
     if let Some(base) = module_base {
         let offset = ip.wrapping_sub(base);
         write!(w, "+0x{offset:x}")?;
-        if let Some((sname, _fname)) = resolve_symbol(ip) {
-            if !sname.is_empty() {
-                write!(w, " <{sname}>")?;
-            }
+        if let Some((sname, _fname)) = resolve_symbol(ip)
+            && !sname.is_empty()
+        {
+            write!(w, " <{sname}>")?;
         }
     }
     if let Some(mname) = resolve_module(ip) {

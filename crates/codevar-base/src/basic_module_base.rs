@@ -71,6 +71,7 @@ mod imp {
     ///
     /// Must be called once at startup before installing signal handlers.
     /// Not thread-safe; caller must ensure single-threaded initialization.
+    #[cfg_attr(feature = "nightly", sanitize(address = "off"))]
     pub unsafe fn init() {
         if INITIALIZED.swap(1, Ordering::AcqRel) != 0 {
             return;
@@ -100,18 +101,15 @@ mod imp {
             let base_addr = info.dlpi_addr as usize;
 
             for ph in phdrs {
-                match ph.p_type {
-                    libc::PT_LOAD => {
-                        let start = base_addr.wrapping_add(ph.p_vaddr as usize);
-                        let end = start.wrapping_add(ph.p_memsz as usize);
-                        if start < min_start {
-                            min_start = start;
-                        }
-                        if end > max_end {
-                            max_end = end;
-                        }
+                if ph.p_type == libc::PT_LOAD {
+                    let start = base_addr.wrapping_add(ph.p_vaddr as usize);
+                    let end = start.wrapping_add(ph.p_memsz as usize);
+                    if start < min_start {
+                        min_start = start;
                     }
-                    _ => {}
+                    if end > max_end {
+                        max_end = end;
+                    }
                 }
             }
             if min_start == usize::MAX {
@@ -172,6 +170,7 @@ mod imp {
     /// Returns `Some(base)` if `ip` falls within a cached module's range,
     /// otherwise `None`. Async-signal-safe (read-only, no locks, no syscalls).
     #[inline]
+    #[cfg_attr(feature = "nightly", sanitize(address = "off"))]
     pub unsafe fn module_base(ip: usize) -> Option<usize> {
         let n = COUNT.load(Ordering::Acquire);
         if n == 0 {
@@ -201,38 +200,36 @@ mod imp {
     /// Returns the cached module name if `ip` falls within a cached module's
     /// range, otherwise `None`. Async-signal-safe.
     #[inline]
+    #[cfg_attr(feature = "nightly", sanitize(address = "off"))]
     pub unsafe fn module_name(ip: usize) -> Option<&'static str> {
-        let n = COUNT.load(Ordering::Acquire);
-        if n == 0 {
-            return None;
-        }
-        let modules_ptr = ptr::addr_of!(MODULES) as *const ModuleEntry;
-        let mut lo = 0usize;
-        let mut hi = n;
-        while lo < hi {
-            let mid = (lo + hi) >> 1;
-            // SAFETY: Using ptr::addr_of! to avoid mutable reference to static mut
-            let entry = unsafe { &*modules_ptr.add(mid) };
-            if ip < entry.base {
-                hi = mid;
-            } else if ip >= entry.end {
-                lo = mid + 1;
-            } else {
-                let name_end = entry
-                    .name
-                    .iter()
-                    .position(|&b| b == 0)
-                    .unwrap_or(256);
-                // SAFETY: The string data lives in the static MODULES array
-                // which has 'static lifetime. The pointer is valid as long as
-                // the process runs.
-                return unsafe {
-                    core::str::from_utf8_unchecked(core::slice::from_raw_parts(entry.name.as_ptr(), name_end))
-                }
-                .into();
+        unsafe {
+            let n = COUNT.load(Ordering::Acquire);
+            if n == 0 {
+                return None;
             }
+            let modules_ptr = ptr::addr_of!(MODULES) as *const ModuleEntry;
+            let mut lo = 0usize;
+            let mut hi = n;
+            while lo < hi {
+                let mid = (lo + hi) >> 1;
+                let entry = &*modules_ptr.add(mid);
+                if ip < entry.base {
+                    hi = mid;
+                } else if ip >= entry.end {
+                    lo = mid + 1;
+                } else {
+                    let entry_ptr = modules_ptr.add(mid);
+                    let name_ptr = ptr::addr_of!((*entry_ptr).name) as *const u8;
+                    let mut name_end = 0;
+                    while name_end < 256 && *name_ptr.add(name_end) != 0 {
+                        name_end += 1;
+                    }
+                    let slice = core::slice::from_raw_parts(name_ptr, name_end);
+                    return Some(core::str::from_utf8_unchecked(slice));
+                }
+            }
+            None
         }
-        None
     }
 }
 

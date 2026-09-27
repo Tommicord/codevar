@@ -170,6 +170,7 @@ impl Frame {
 /// Return `false` from `cb` to stop the walk. This function never panics and
 /// silently stops when unwind information is missing or corrupt. The first
 /// frames may lie inside `trace` itself.
+#[cfg_attr(feature = "nightly", sanitize(address = "off"))]
 pub fn trace(cb: &mut dyn FnMut(&Frame) -> bool) {
     cfg_if::cfg_if! {
         if #[cfg(all(
@@ -205,6 +206,7 @@ pub fn trace(cb: &mut dyn FnMut(&Frame) -> bool) {
 ///
 /// Stack-only; the cost is one unwind walk bounded by
 /// `min(out.len(), MAX_FRAMES)`.
+#[cfg_attr(feature = "nightly", sanitize(address = "off"))]
 pub fn capture_frames(out: &mut [Frame]) -> usize {
     let limit = out.len().min(MAX_FRAMES);
     let mut count = 0usize;
@@ -547,6 +549,7 @@ mod fp {
     /// [`super::trace`] only on these architectures).
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     #[allow(dead_code)]
+    #[cfg_attr(feature = "nightly", sanitize(address = "off"))]
     pub(super) fn trace_inner(cb: &mut dyn FnMut(&Frame) -> bool) {
         super::walk(cb, None);
     }
@@ -2179,6 +2182,7 @@ mod elf {
         search.found
     }
 
+    #[allow(dead_code)]
     pub(super) fn module_base(ip: usize) -> Option<usize> {
         // `dl_iterate_phdr` is not async-signal-safe; skip when
         // unwinding inside a signal handler.
@@ -2188,6 +2192,7 @@ mod elf {
         find(ip).base
     }
 
+    #[cfg_attr(feature = "nightly", sanitize(address = "off"))]
     pub(super) fn trace_inner(cb: &mut dyn FnMut(&Frame) -> bool) {
         // When inside a signal handler, skip ELF CFI unwinding because
         // `dl_iterate_phdr` is not async-signal-safe. Fall back to
@@ -2380,6 +2385,7 @@ mod apple {
         find(ip).base
     }
 
+    #[cfg_attr(feature = "nightly", sanitize(address = "off"))]
     pub(super) fn trace_inner(cb: &mut dyn FnMut(&Frame) -> bool) {
         super::walk(
             cb,
@@ -2529,6 +2535,7 @@ mod windows {
         buf[off..off + 8].copy_from_slice(&bytes);
     }
 
+    #[cfg_attr(feature = "nightly", sanitize(address = "off"))]
     pub(super) fn trace_inner(cb: &mut dyn FnMut(&Frame) -> bool) {
         let mut ctx = ContextBuf::new();
         ctx.zero();

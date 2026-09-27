@@ -82,7 +82,7 @@ pub fn env_var(key: &str) -> Option<String> {
             None
         } else {
             let c_str = unsafe { core::ffi::CStr::from_ptr(ptr) };
-            c_str.to_str().ok().map(|s| String::from(s))
+            c_str.to_str().ok().map(String::from)
         }
     }
     #[cfg(windows)]
@@ -287,7 +287,7 @@ fn get_bin_dir() -> &'static str {
 ///
 /// assert_eq!(ENV_NAME, "codevar");
 /// ```
-pub static ENV_NAME: &'static str = "codevar";
+pub static ENV_NAME: &str = "codevar";
 
 /// The short name of the application, `"cv"`.
 ///
@@ -302,7 +302,7 @@ pub static ENV_NAME: &'static str = "codevar";
 ///
 /// assert_eq!(ENV_APP_SHORT_NAME, "cv");
 /// ```
-pub static ENV_APP_SHORT_NAME: &'static str = "cv";
+pub static ENV_APP_SHORT_NAME: &str = "cv";
 
 /// The full version string of the Codevar application.
 ///
@@ -317,7 +317,7 @@ pub static ENV_APP_SHORT_NAME: &'static str = "cv";
 ///
 /// assert_eq!(ENV_VERSION, env!("CARGO_PKG_VERSION"));
 /// ```
-pub static ENV_VERSION: &'static str = env!("CARGO_PKG_VERSION");
+pub static ENV_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The system binary directory path.
 ///
@@ -336,7 +336,7 @@ pub static ENV_VERSION: &'static str = env!("CARGO_PKG_VERSION");
 /// let bin = ENV_SYSTEM_BIN_DIR.get();
 /// ```
 #[cfg(any(target_os = "windows", target_family = "unix"))]
-pub static ENV_SYSTEM_BIN_DIR: &(dyn NamedEnvDir + Sync) = &LazyEnvDir(move || get_bin_dir());
+pub static ENV_SYSTEM_BIN_DIR: &(dyn NamedEnvDir + Sync) = &LazyEnvDir(get_bin_dir);
 
 /// The main application data directory.
 ///
