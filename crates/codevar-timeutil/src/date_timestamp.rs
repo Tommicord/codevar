@@ -15,7 +15,7 @@
 
 //! The [`Timestamp`] struct and associated `impl`s.
 
-use codevar_base::basic_time::TimeVal;
+use codevar_time_core::TimeVal;
 use core::cmp::Ordering;
 use core::fmt;
 use core::hash::{Hash, Hasher};
@@ -140,7 +140,7 @@ impl Timestamp {
     /// Create a new `Timestamp` representing the current moment in time.
     #[inline]
     pub fn now() -> Self {
-        codevar_base::basic_time::SystemTime::now()
+        codevar_time_core::SystemTime::now()
             .ok()
             .map(Timestamp::from)
             .unwrap_or(Self::UNIX_EPOCH)

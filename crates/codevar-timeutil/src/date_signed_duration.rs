@@ -13,7 +13,7 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-use codevar_base::basic_time::SystemTime;
+use codevar_time_core::SystemTime;
 use core::cmp::Ordering;
 use core::fmt;
 use core::hash::{Hash, Hasher};

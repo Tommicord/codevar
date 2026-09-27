@@ -1,18 +1,5 @@
 [workspace]
-members = [
-    "crates/codevar-base",
-    "crates/codevar-textlike-encode",
-    "crates/codevar-fcware",
-    "crates/codevar-tls",
-    "crates/codevar-wredit",
-    "crates/codevar-wsocket",
-    "crates/codevar-launcher",
-    "crates/codevar-wl-protocol",
-    "crates/codevar-xdg-portal",
-    "crates/codevar-ui-core",
-    "crates/codevar-dbus",
-    "crates/codevar-timeutil"
-]
+members = ["crates/codevar-base", "crates/codevar-textlike-encode", "crates/codevar-fcware", "crates/codevar-tls", "crates/codevar-wredit", "crates/codevar-wsocket", "crates/codevar-launcher", "crates/codevar-wl-protocol", "crates/codevar-xdg-portal", "crates/codevar-ui-core", "crates/codevar-logger", "crates/codevar-dbus", "crates/codevar-timeutil", "crates/codevar-consoleutil", "crates/codevar-io"]
 resolver = "2"
 
 [workspace.package]
@@ -23,7 +10,7 @@ authors = ["Tommicord"]
 license = "Apache-2.0"
 repository = "https://github.com/Tommicord/codevar"
 
- [workspace.dependencies]
+[workspace.dependencies]
 cc = "1.2"
 proc-macro2 = "1.0"
 quote = "1.0"
@@ -36,6 +23,7 @@ sha1 = "0.10"
 sha2 = "0.10"
 webpki-roots = "1"
 arc-swap = "1.7"
+heapless = "0.9.3"
 windows-link = "0.100.0"
 spin = "0.12.3"
 hkdf = "0.12"
@@ -51,6 +39,7 @@ ecdsa = { version = "0.16", features = ["der"] }
 elliptic-curve = { version = "0.13", features = ["pkcs8", "sec1"] }
 pkcs8 = { version = "0.10", features = ["pem", "std"] }
 sec1 = { version = "0.7", features = ["pem", "der"] }
+defmt = { version = "0.3" }
 x509-parser = "0.17"
 getrandom = "0.2"
 rand_core = "0.6"
@@ -70,11 +59,15 @@ codevar-fcware = { path = "crates/codevar-fcware" }
 codevar-textlike-encode = { path = "crates/codevar-textlike-encode" }
 codevar-tls = { path = "crates/codevar-tls" }
 codevar-wl-protocol = { path = "crates/codevar-wl-protocol" }
-codevar-timeutil = { path = "crates/codevar-timeutil" }
+codevar-timeutil = { path = "crates/codevar-timeutil"}
+codevar-time-core = { path = "crates/codevar-time-core" }
 codevar-wredit = { path = "crates/codevar-wredit" }
 codevar-wsocket = { path = "crates/codevar-wsocket" }
 codevar-xdg-portal = { path = "crates/codevar-xdg-portal" }
 codevar-ui-core = { path = "crates/codevar-ui-core" }
+codevar-logger = { path = "crates/codevar-logger" }
+codevar-consoleutil = { path = "crates/codevar-consoleutil" }
+codevar-io = { path = "crates/codevar-io" }
 
 [profile.dev]
 opt-level = 0

@@ -1,0 +1,28 @@
+[package]
+name = "codevar-io"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+defmt = ["dep:defmt"]
+async = []
+wasm = []
+
+[lib]
+name = "codevar_io"
+
+[dependencies]
+libc = { workspace = true }
+heapless = { workspace = true }
+codevar-textlike-encode = { workspace = true, optional = true }
+codevar-base = { workspace = true, optional = true }
+defmt = { workspace = true, optional = true }
+spin = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Console"] }

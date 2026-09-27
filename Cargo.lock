@@ -91,6 +91,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
+name = "bitflags"
+version = "1.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
+
+[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -113,6 +119,12 @@ name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
+
+[[package]]
+name = "byteorder"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "cc"
@@ -138,11 +150,26 @@ dependencies = [
  "cfg-if",
  "codevar-fcware",
  "codevar-textlike-encode",
+ "codevar-timeutil",
  "libc",
  "rustc-demangle",
  "spin 0.12.3",
+ "wasm-bindgen",
+ "web-sys",
  "windows",
  "windows-link 0.100.0",
+]
+
+[[package]]
+name = "codevar-consoleutil"
+version = "1.0.0"
+dependencies = [
+ "codevar-base",
+ "codevar-io",
+ "codevar-textlike-encode",
+ "heapless",
+ "libc",
+ "windows",
 ]
 
 [[package]]
@@ -165,6 +192,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-io"
+version = "1.0.0"
+dependencies = [
+ "codevar-base",
+ "codevar-textlike-encode",
+ "defmt 0.3.100",
+ "heapless",
+ "libc",
+ "spin 0.12.3",
+ "windows",
+]
+
+[[package]]
 name = "codevar-launcher"
 version = "1.0.0"
 dependencies = [
@@ -177,6 +217,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-logger"
+version = "1.0.0"
+dependencies = [
+ "cfg-if",
+ "codevar-consoleutil",
+ "codevar-io",
+ "codevar-timeutil",
+ "libc",
+ "spin 0.12.3",
+ "windows",
+ "windows-link 0.100.0",
+]
+
+[[package]]
 name = "codevar-textlike-encode"
 version = "1.0.0"
 dependencies = [
@@ -185,10 +239,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-time-core"
+version = "1.0.0"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "spin 0.12.3",
+ "windows-link 0.100.0",
+]
+
+[[package]]
 name = "codevar-timeutil"
 version = "1.0.0"
 dependencies = [
- "codevar-base",
+ "codevar-time-core",
  "count-digits",
  "deranged",
  "js-sys",
@@ -359,6 +423,46 @@ name = "data-encoding"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
+
+[[package]]
+name = "defmt"
+version = "0.3.100"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0963443817029b2024136fc4dd07a5107eb8f977eaf18fcd1fdeb11306b64ad"
+dependencies = [
+ "defmt 1.1.1",
+]
+
+[[package]]
+name = "defmt"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2953bfe4f93bbd20cc71198842756f77d161884c99ebbabc41d80231ded88d1"
+dependencies = [
+ "bitflags",
+ "defmt-macros",
+]
+
+[[package]]
+name = "defmt-macros"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bad9c72e7ca2137e0dc3813245a0d282fd6daad32fd800af018306a9169b5fe8"
+dependencies = [
+ "defmt-parser",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
+]
+
+[[package]]
+name = "defmt-parser"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10d60334b3b2e7c9d91ef8150abfb6fa4c1c39ebbcf4a81c2e346aad939fee3e"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "der"
@@ -551,6 +655,25 @@ dependencies = [
  "ff",
  "rand_core",
  "subtle",
+]
+
+[[package]]
+name = "hash32"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47d60b12902ba28e2730cd37e95b8c9223af2808df9e902d4df49588d1470606"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
+name = "heapless"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25ba4bd83f9415b58b4ed8dc5714c76e626a105be4646c02630ad730ad3b5aa4"
+dependencies = [
+ "hash32",
+ "stable_deref_trait",
 ]
 
 [[package]]
@@ -1080,6 +1203,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "stable_deref_trait"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+
+[[package]]
 name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1235,6 +1364,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23f0c9c52aa7cd7d77769a4cfe2a9adb1b331f489a41d912ce14513d5ab995c6"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "web-sys"
+version = "0.3.106"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "88261b9deccee56594c11a3460c462c41f58d148598fe70ad77070126a68aba4"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
 ]
 
 [[package]]

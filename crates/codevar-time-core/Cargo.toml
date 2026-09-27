@@ -1,0 +1,17 @@
+[package]
+name = "codevar-time-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "codevar_time_core"
+
+[dependencies]
+cfg-if = { workspace = true }
+libc = { workspace = true }
+windows-link = { workspace = true }
+spin = { workspace = true }

@@ -13,7 +13,7 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-use codevar_base::basic_time::{SystemTime, TimeVal};
+use codevar_time_core::{SystemTime, TimeVal};
 use core::fmt;
 use core::mem::MaybeUninit;
 use core::ops::{Add, AddAssign, Sub, SubAssign};
@@ -67,7 +67,7 @@ impl From<SystemTime> for UtcDateTime {
     /// Interpret the system clock marker as the current instant in UTC.
     #[inline]
     fn from(_value: SystemTime) -> Self {
-        codevar_base::basic_time::SystemTime::now()
+        codevar_time_core::SystemTime::now()
             .map(Self::from)
             .unwrap_or(Self::UNIX_EPOCH)
     }
@@ -145,7 +145,7 @@ impl UtcDateTime {
             feature = "wasm-bindgen"
         )))]
         {
-            codevar_base::basic_time::SystemTime::now()
+            codevar_time_core::SystemTime::now()
                 .ok()
                 .map(Timestamp::from)
                 .map(|ts| Self::new(ts.date(), ts.time()))

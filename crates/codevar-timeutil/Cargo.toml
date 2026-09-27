@@ -16,7 +16,7 @@ std = []
 name = "codevar_timeutil"
 
 [dependencies]
-codevar-base = { workspace = true }
+codevar-time-core = { workspace = true }
 libc = { workspace = true }
 deranged = { workspace = true }
 num-conv = { workspace = true }

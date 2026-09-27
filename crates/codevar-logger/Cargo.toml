@@ -1,5 +1,5 @@
 [package]
-name = "codevar-base"
+name = "codevar-logger"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,24 +8,16 @@ license.workspace = true
 repository.workspace = true
 
 [lib]
-name = "codevar_base"
-
-[features]
-nightly = []
-web-sys = ["dep:web-sys", "dep:wasm-bindgen"]
+name = "codevar_logger"
 
 [dependencies]
 cfg-if = { workspace = true }
 libc = { workspace = true }
 windows-link = { workspace = true }
 spin = { workspace = true }
-codevar-fcware = { workspace = true }
-codevar-textlike-encode = { workspace = true }
 codevar-timeutil = { workspace = true }
-rustc-demangle = { workspace = true }
-backtrace-sys = { workspace = true }
-web-sys = { version = "0.3", features = ["console"], optional = true }
-wasm-bindgen = { version = "0.2", optional = true }
+codevar-consoleutil = { workspace = true }
+codevar-io = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Console", "Win32_Storage_FileSystem"] }

@@ -15,7 +15,7 @@
 
 //! The [`OffsetDateTime`] struct and its associated `impl`s.
 
-use codevar_base::basic_time::SystemTime;
+use codevar_time_core::SystemTime;
 use core::cmp::Ordering;
 use core::fmt;
 use core::hash::{Hash, Hasher};
@@ -123,7 +123,7 @@ impl OffsetDateTime {
             feature = "wasm-bindgen"
         )))]
         {
-            codevar_base::basic_time::SystemTime::now()
+            codevar_time_core::SystemTime::now()
                 .ok()
                 .map(Timestamp::from)
                 .map(|ts| Self::new_in_offset(ts.date(), ts.time(), UtcOffset::UTC))

@@ -44,13 +44,13 @@ mod date_well_know_iso8601;
 mod date_well_know_rfc2822;
 mod date_well_know_rfc3339;
 
-pub use crate::date_timestamp::Timestamp;
-pub use crate::date_utc_time::UtcDateTime;
-pub use crate::date_utc_offset::UtcOffset;
-pub use crate::date_time::Time;
 pub use crate::date::Date;
 pub use crate::date_signed_duration::SignedDuration;
+pub use crate::date_time::Time;
+pub use crate::date_timestamp::Timestamp;
 pub use crate::date_unit::{Day, Hour, Microsecond, Millisecond, Minute, Nanosecond, Second};
+pub use crate::date_utc_offset::UtcOffset;
+pub use crate::date_utc_time::UtcDateTime;
 
 /// Returns the current UTC timestamp using the system realtime clock.
 /// This is a convenience function for logging and time-stamping operations.
