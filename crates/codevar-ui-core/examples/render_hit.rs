@@ -857,10 +857,10 @@ mod tests {
     fn preferred_modifiers_follow_the_tranche() {
         let mut table = Vec::new();
         for (format, modifier) in [
-            (DRM_FORMAT_XRGB8888, 0),
-            (0x3432_5241, 0x00E0_0000_0000_0001),
-            (DRM_FORMAT_XRGB8888, 0x00E0_0000_0000_0002),
-            (DRM_FORMAT_XRGB8888, 0),
+            (DRM_FORMAT_XRGB8888, 0u64),
+            (0x3432_5241, 0x00E0_0000_0000_0001u64),
+            (DRM_FORMAT_XRGB8888, 0x00E0_0000_0000_0002u64),
+            (DRM_FORMAT_XRGB8888, 0u64),
         ] {
             table.extend_from_slice(&format.to_ne_bytes());
             table.extend_from_slice(&0u32.to_ne_bytes());

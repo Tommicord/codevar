@@ -37,11 +37,11 @@ macro_rules! impl_const_default {
     ($($(
         #[doc = $doc:expr])*
         $(#[cfg($($cfg:tt)+)])?
-        $(#[expect($($expected:tt)+)])?
+        $(#[allow($($expected:tt)+)])?
         $(@$pub:ident)? $type:ty => $default:expr;
     )*) => {$(
         $(#[cfg($($cfg)+)])?
-        $(#[expect($($expected)+)])?
+        $(#[allow($($expected)+)])?
         impl $type {
             if_pub! {
                 $($pub)?
@@ -55,7 +55,7 @@ macro_rules! impl_const_default {
 
         $(#[doc = $doc])*
         $(#[cfg($($cfg)+)])?
-        $(#[expect($($expected)+)])?
+        $(#[allow($($expected)+)])?
         impl Default for $type {
             #[inline]
             fn default() -> Self {
@@ -618,7 +618,7 @@ pub struct Hour {
     pub is_12_hour_clock: bool,
 }
 
-#[expect(deprecated)]
+#[allow(deprecated)]
 impl Hour {
     builder_methods! {
         /// Set the padding type.

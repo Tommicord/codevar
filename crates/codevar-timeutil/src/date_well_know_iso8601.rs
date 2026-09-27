@@ -122,19 +122,19 @@ pub enum TimePrecision {
     /// Format the hour only. Minutes, seconds, and nanoseconds will be represented with the
     /// specified number of decimal digits, if any.
     Hour {
-        #[expect(missing_docs)]
+        #[allow(missing_docs)]
         decimal_digits: Option<NonZero<u8>>,
     },
     /// Format the hour and minute. Seconds and nanoseconds will be represented with the specified
     /// number of decimal digits, if any.
     Minute {
-        #[expect(missing_docs)]
+        #[allow(missing_docs)]
         decimal_digits: Option<NonZero<u8>>,
     },
     /// Format the hour, minute, and second. Nanoseconds will be represented with the specified
     /// number of decimal digits, if any.
     Second {
-        #[expect(missing_docs)]
+        #[allow(missing_docs)]
         decimal_digits: Option<NonZero<u8>>,
     },
 }
@@ -151,7 +151,7 @@ pub enum OffsetPrecision {
 /// Configuration for [`Iso8601`].
 // This is only used as a const generic, so there's no need to have a number of implementations on
 // it.
-#[expect(missing_copy_implementations, reason = "forwards compatibility")]
+#[allow(missing_copy_implementations, reason = "forwards compatibility")]
 #[doc(alias = "EncodedConfig")] // People will likely search for `EncodedConfig`, so show them this.
 #[derive(Debug)]
 pub struct Config {

@@ -208,9 +208,6 @@ pub struct UiDisplay {
 impl UiDisplay {
     /// Creates a new window and initializes the Wayland connection.
     pub fn new(init: WindowInit) -> Result<Self, UiDisplayError> {
-        basic_signal::install().map_err(UiDisplayError::Signal)?;
-        info!("codevar: installing basic signal handler");
-
         let deadline_ns = SystemTime::monotonic_nanos() + SystemTime::secs_to_nanos(30);
         let transport = WlUnixTransport::connect_session().map_err(UiDisplayError::Wayland)?;
         let mut display = WlClientDisplay::connect(transport).map_err(UiDisplayError::Wayland)?;

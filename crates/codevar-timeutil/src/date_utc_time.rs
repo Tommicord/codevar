@@ -64,10 +64,12 @@ impl From<TimeVal> for UtcDateTime {
 }
 
 impl From<SystemTime> for UtcDateTime {
-    /// Convert the system clock marker into the current UTC date and time.
+    /// Interpret the system clock marker as the current instant in UTC.
     #[inline]
     fn from(_value: SystemTime) -> Self {
-        Self::now()
+        codevar_base::basic_time::SystemTime::now()
+            .map(Self::from)
+            .unwrap_or(Self::UNIX_EPOCH)
     }
 }
 

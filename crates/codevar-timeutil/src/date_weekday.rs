@@ -27,19 +27,19 @@ use powerfmt::smart_display::{FormatterOptions, Metadata, SmartDisplay};
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Weekday {
-    #[expect(missing_docs)]
+    #[allow(missing_docs)]
     Monday,
-    #[expect(missing_docs)]
+    #[allow(missing_docs)]
     Tuesday,
-    #[expect(missing_docs)]
+    #[allow(missing_docs)]
     Wednesday,
-    #[expect(missing_docs)]
+    #[allow(missing_docs)]
     Thursday,
-    #[expect(missing_docs)]
+    #[allow(missing_docs)]
     Friday,
-    #[expect(missing_docs)]
+    #[allow(missing_docs)]
     Saturday,
-    #[expect(missing_docs)]
+    #[allow(missing_docs)]
     Sunday,
 }
 

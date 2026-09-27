@@ -15,21 +15,11 @@
 
 use crate::date_adt_hack::EncodedConfig;
 use crate::date_component_provider::ComponentProvider;
-use crate::date_error::{ComponentRange, Error};
+use crate::date_error::Error;
 use crate::date_format_description::{Component, FormatDescription, FormatDescriptionInner};
-use crate::date_format_description_modifier::{End, Padding};
+use crate::date_format_description_modifier::Padding;
 use crate::date_formatting::{
-    MONTH_NAMES, WEEKDAY_NAMES, fmt_calendar_year_century_extended_range,
-    fmt_calendar_year_century_standard_range, fmt_calendar_year_full_extended_range,
-    fmt_calendar_year_full_standard_range, fmt_calendar_year_last_two, fmt_day, fmt_hour_12, fmt_hour_24,
-    fmt_iso_year_century_extended_range, fmt_iso_year_century_standard_range,
-    fmt_iso_year_full_extended_range, fmt_iso_year_full_standard_range, fmt_iso_year_last_two, fmt_minute,
-    fmt_month_long, fmt_month_numerical, fmt_month_short, fmt_offset_hour, fmt_offset_minute,
-    fmt_offset_second, fmt_ordinal, fmt_period, fmt_second, fmt_subsecond, fmt_unix_timestamp_microsecond,
-    fmt_unix_timestamp_millisecond, fmt_unix_timestamp_nanosecond, fmt_unix_timestamp_second,
-    fmt_week_number_iso, fmt_week_number_monday, fmt_week_number_sunday, fmt_weekday_long,
-    fmt_weekday_monday, fmt_weekday_short, fmt_weekday_sunday, format_four_digits_pad_zero,
-    format_two_digits, write, write_if_else,
+    MONTH_NAMES, WEEKDAY_NAMES, format_four_digits_pad_zero, format_two_digits, write, write_if_else,
 };
 use crate::date_internal_macro::try_err;
 use crate::date_iso8601::{format_date, format_offset, format_time};
@@ -39,232 +29,9 @@ use crate::date_well_know_iso8601::Iso8601;
 use crate::date_well_know_rfc2822::Rfc2822;
 use crate::date_well_know_rfc3339::Rfc3339;
 use alloc::string::String;
-use alloc::vec::Vec;
 use core::ops::Deref;
-use deranged::{ri16, ru8, ru16};
+use deranged::{ru8, ru16};
 use num_conv::prelude::*;
-
-macro_rules! fmt_component_match {
-    ($self:expr, $output:ident, $value:ident, $state:ident, $($extra:tt)*) => {
-        match $self {
-            Self::Day(modifier) if V::SUPPLIES_DATE => {
-                fmt_day($output, $value.day($state), *modifier).map_err(Into::into)
-            }
-            Self::MonthShort(modifier) if V::SUPPLIES_DATE => {
-                fmt_month_short($output, $value.month($state), *modifier).map_err(Into::into)
-            }
-            Self::MonthLong(modifier) if V::SUPPLIES_DATE => {
-                fmt_month_long($output, $value.month($state), *modifier).map_err(Into::into)
-            }
-            Self::MonthNumerical(modifier) if V::SUPPLIES_DATE => {
-                fmt_month_numerical($output, $value.month($state), *modifier).map_err(Into::into)
-            }
-            Self::Ordinal(modifier) if V::SUPPLIES_DATE => {
-                fmt_ordinal($output, $value.ordinal($state), *modifier).map_err(Into::into)
-            }
-            Self::WeekdayShort(modifier) if V::SUPPLIES_DATE => {
-                fmt_weekday_short($output, $value.weekday($state), *modifier).map_err(Into::into)
-            }
-            Self::WeekdayLong(modifier) if V::SUPPLIES_DATE => {
-                fmt_weekday_long($output, $value.weekday($state), *modifier).map_err(Into::into)
-            }
-            Self::WeekdaySunday(modifier) if V::SUPPLIES_DATE => {
-                fmt_weekday_sunday($output, $value.weekday($state), *modifier).map_err(Into::into)
-            }
-            Self::WeekdayMonday(modifier) if V::SUPPLIES_DATE => {
-                fmt_weekday_monday($output, $value.weekday($state), *modifier).map_err(Into::into)
-            }
-            Self::WeekNumberIso(modifier) if V::SUPPLIES_DATE => {
-                fmt_week_number_iso($output, $value.iso_week_number($state), *modifier)
-                    .map_err(Into::into)
-            }
-            Self::WeekNumberSunday(modifier) if V::SUPPLIES_DATE => {
-                fmt_week_number_sunday($output, $value.sunday_based_week($state), *modifier)
-                    .map_err(Into::into)
-            }
-            Self::WeekNumberMonday(modifier) if V::SUPPLIES_DATE => {
-                fmt_week_number_monday($output, $value.monday_based_week($state), *modifier)
-                    .map_err(Into::into)
-            }
-            Self::CalendarYearFullExtendedRange(modifier) if V::SUPPLIES_DATE => {
-                fmt_calendar_year_full_extended_range(
-                    $output,
-                    $value.calendar_year($state),
-                    *modifier
-                ).map_err(Into::into)
-            }
-            Self::CalendarYearFullStandardRange(modifier) if V::SUPPLIES_DATE => {
-                fmt_calendar_year_full_standard_range(
-                    $output,
-                    $value
-                        .calendar_year($state)
-                        .narrow::<-9_999, 9_999>()
-                        .ok_or_else(|| ComponentRange::conditional("year"))?
-                        .try_into()
-                        .map_err(|_| ComponentRange::conditional("year"))?,
-                    *modifier,
-                )
-                .map_err(Into::into)
-            }
-            Self::IsoYearFullExtendedRange(modifier) if V::SUPPLIES_DATE => {
-                fmt_iso_year_full_extended_range($output, $value.iso_year($state), *modifier)
-                    .map_err(Into::into)
-            }
-            Self::IsoYearFullStandardRange(modifier) if V::SUPPLIES_DATE => {
-                fmt_iso_year_full_standard_range(
-                    $output,
-                    $value.iso_year($state)
-                          .narrow::<-9_999, 9_999>()
-                          .ok_or_else(|| ComponentRange::conditional("year"))?
-                          .try_into()
-                          .map_err(|_| ComponentRange::conditional("year"))?,
-                    *modifier,
-                )
-                .map_err(Into::into)
-            }
-            Self::CalendarYearCenturyExtendedRange(modifier) if V::SUPPLIES_DATE => {
-                let year = $value.calendar_year($state);
-                // Safety: Given the range of `year`, the range of the century is `-9_999..=9_999`.
-                let century = deranged::RangedI16::<-9_999, 9_999>::new((year.get() / 100) as i16)
-                    .ok_or_else(|| ComponentRange::conditional("century"))?;
-                fmt_calendar_year_century_extended_range(
-                    $output,
-                    century,
-                    year.is_negative(),
-                    *modifier,
-                )
-                .map_err(Into::into)
-            }
-            Self::CalendarYearCenturyStandardRange(modifier) if V::SUPPLIES_DATE => {
-                let year = $value.calendar_year($state);
-                let is_negative = year.is_negative();
-                // Safety: Given the range of `year`, the range of the century is `-9_999..=9_999`.
-                let year = deranged::RangedI16::<-9_999, 9_999>::new((year.get() / 100) as i16)
-                    .ok_or_else(|| ComponentRange::conditional("century"))?;
-                fmt_calendar_year_century_standard_range(
-                    $output,
-                    year.narrow::<-99, 99>()
-                        .ok_or_else(|| ComponentRange::conditional("century"))?
-                        .try_into()
-                        .map_err(|_| ComponentRange::conditional("century"))?,
-                    is_negative,
-                    *modifier,
-                )
-                .map_err(Into::into)
-            }
-            Self::IsoYearCenturyExtendedRange(modifier) if V::SUPPLIES_DATE => {
-                let year = $value.iso_year($state);
-                let is_negative = year.is_negative();
-                // Safety: Given the range of `year`, the range of the century is `-9_999..=9_999`.
-                let century = deranged::RangedI16::<-9_999, 9_999>::new((year.get() / 100) as i16)
-                    .ok_or_else(|| ComponentRange::conditional("century"))?;
-                fmt_iso_year_century_extended_range($output, century, is_negative, *modifier)
-                    .map_err(Into::into)
-            }
-            Self::IsoYearCenturyStandardRange(modifier) if V::SUPPLIES_DATE => {
-                let year = $value.iso_year($state);
-                let is_negative = year.is_negative();
-                // Safety: Given the range of `year`, the range of the century is `-9_999..=9_999`.
-                let year = deranged::RangedI16::<-9_999, 9_999>::new((year.get() / 100) as i16)
-                    .ok_or_else(|| ComponentRange::conditional("century"))?;
-                fmt_iso_year_century_standard_range(
-                    $output,
-                    year.narrow::<-99, 99>()
-                        .ok_or_else(|| ComponentRange::conditional("century"))?
-                        .try_into()
-                        .map_err(|_| ComponentRange::conditional("century"))?,
-                    is_negative,
-                    *modifier,
-                )
-                .map_err(Into::into)
-            }
-            Self::CalendarYearLastTwo(modifier) if V::SUPPLIES_DATE => {
-                // Safety: Modulus of 100 followed by `.unsigned_abs()` guarantees that the $value
-                // is in the range `0..=99`.
-                let last_two = unsafe {
-                    ru8::new_unchecked(
-                        ($value.calendar_year($state).get().unsigned_abs() % 100).truncate(),
-                    )
-                };
-                fmt_calendar_year_last_two($output, last_two, *modifier).map_err(Into::into)
-            }
-            Self::IsoYearLastTwo(modifier) if V::SUPPLIES_DATE => {
-                // Safety: Modulus of 100 followed by `.unsigned_abs()` guarantees that the $value
-                // is in the range `0..=99`.
-                let last_two = unsafe {
-                    ru8::new_unchecked(
-                        ($value.iso_year($state).get().unsigned_abs() % 100).truncate(),
-                    )
-                };
-                fmt_iso_year_last_two($output, last_two, *modifier).map_err(Into::into)
-            }
-            Self::Hour12(modifier) if V::SUPPLIES_TIME => {
-                fmt_hour_12($output, $value.hour($state), *modifier).map_err(Into::into)
-            }
-            Self::Hour24(modifier) if V::SUPPLIES_TIME => {
-                fmt_hour_24($output, $value.hour($state), *modifier).map_err(Into::into)
-            }
-            Self::Minute(modifier) if V::SUPPLIES_TIME => {
-                fmt_minute($output, $value.minute($state), *modifier).map_err(Into::into)
-            }
-            Self::Period(modifier) if V::SUPPLIES_TIME => {
-                fmt_period($output, *modifier, $value.period($state)).map_err(Into::into)
-            }
-            Self::Second(modifier) if V::SUPPLIES_TIME => {
-                fmt_second($output, $value.second($state), *modifier).map_err(Into::into)
-            }
-            Self::Subsecond(modifier) if V::SUPPLIES_TIME => {
-                fmt_subsecond($output, $value.nanosecond($state), *modifier).map_err(Into::into)
-            }
-            Self::OffsetHour(modifier) if V::SUPPLIES_OFFSET => fmt_offset_hour(
-                $output,
-                $value.offset_is_negative($state),
-                $value.offset_hour($state),
-                *modifier,
-            )
-            .map_err(Into::into),
-            Self::OffsetMinute(modifier) if V::SUPPLIES_OFFSET => {
-                fmt_offset_minute($output, $value.offset_minute($state), *modifier)
-                    .map_err(Into::into)
-            }
-            Self::OffsetSecond(modifier) if V::SUPPLIES_OFFSET => {
-                fmt_offset_second($output, $value.offset_second($state), *modifier)
-                    .map_err(Into::into)
-            }
-            Self::Ignore(_) => Ok(0),
-            Self::UnixTimestampSecond(modifier) if V::SUPPLIES_TIMESTAMP => {
-                fmt_unix_timestamp_second($output, $value.unix_timestamp_seconds($state), *modifier)
-                    .map_err(Into::into)
-            }
-            Self::UnixTimestampMillisecond(modifier) if V::SUPPLIES_TIMESTAMP => {
-                fmt_unix_timestamp_millisecond(
-                    $output,
-                    $value.unix_timestamp_milliseconds($state),
-                    *modifier,
-                )
-                .map_err(Into::into)
-            }
-            Self::UnixTimestampMicrosecond(modifier) if V::SUPPLIES_TIMESTAMP => {
-                fmt_unix_timestamp_microsecond(
-                    $output,
-                    $value.unix_timestamp_microseconds($state),
-                    *modifier,
-                )
-                .map_err(Into::into)
-            }
-            Self::UnixTimestampNanosecond(modifier) if V::SUPPLIES_TIMESTAMP => {
-                fmt_unix_timestamp_nanosecond(
-                    $output,
-                    $value.unix_timestamp_nanoseconds($state),
-                    *modifier,
-                )
-                .map_err(Into::into)
-            }
-            Self::End(End { trailing_input: _ }) => Ok(0),
-            $($extra)*
-        }
-    };
-}
 
 /// A type that describes a format.
 ///
@@ -279,7 +46,7 @@ impl<const CONFIG: EncodedConfig> Formattable for Iso8601<CONFIG> {}
 impl<T> Formattable for T where T: Deref<Target: Formattable> {}
 
 /// Format the item using a format description, the intended output, and the various components.
-#[expect(
+#[allow(
     private_bounds,
     private_interfaces,
     reason = "irrelevant due to being a sealed trait"
@@ -301,23 +68,16 @@ pub trait Sealed: ComputeMetadata {
     where
         V: ComponentProvider,
     {
-        let Metadata {
-            max_bytes_needed,
-            guaranteed_utf8,
-        } = self.compute_metadata();
+        let Metadata { max_bytes_needed, .. } = self.compute_metadata();
 
-        let mut buf = Vec::with_capacity(max_bytes_needed);
-        Ok(if guaranteed_utf8 {
-            // Safety: The output is guaranteed to be UTF-8.
-            unsafe { String::from_utf8_unchecked(buf) }
-        } else {
-            String::from_utf8_lossy(&buf).into_owned()
-        })
+        let mut buf = String::with_capacity(max_bytes_needed);
+        self.format_into(&mut buf, value, state)?;
+        Ok(buf)
     }
 }
 
 impl Sealed for FormatDescription<'_> {
-    #[expect(
+    #[allow(
         private_bounds,
         private_interfaces,
         reason = "irrelevant due to being a sealed trait"
@@ -356,7 +116,7 @@ impl<T> Sealed for T
 where
     T: Deref<Target: Sealed>,
 {
-    #[expect(
+    #[allow(
         private_bounds,
         private_interfaces,
         reason = "irrelevant due to being a sealed trait"
@@ -375,7 +135,7 @@ where
     }
 }
 
-#[expect(
+#[allow(
     private_bounds,
     private_interfaces,
     reason = "irrelevant due to being a sealed trait"
@@ -478,7 +238,7 @@ impl Sealed for Rfc2822 {
     }
 }
 
-#[expect(
+#[allow(
     private_bounds,
     private_interfaces,
     reason = "irrelevant due to being a sealed trait"

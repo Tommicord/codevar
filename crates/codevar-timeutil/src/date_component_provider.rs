@@ -62,7 +62,7 @@ macro_rules! component_provider_methods {
         $(
             $(#[$meta])*
             #[track_caller]
-            #[expect(unused_variables, reason = "better for auto-generation of method stubs")]
+            #[allow(unused_variables, reason = "better for auto-generation of method stubs")]
             fn $name(&self, state: &mut Self::State) -> $ret {
                 unimplemented!(concat!("type does not supply ", $component, " components"))
             }

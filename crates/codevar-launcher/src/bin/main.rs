@@ -21,20 +21,18 @@
 
 use codevar_base::basic_signal;
 use codevar_ui_core::ui_display::{UiDisplay, WindowInit};
-use log::error;
+use log::{error, warn};
 
 fn main() {
     if let Err(e) = basic_signal::install() {
-        error!("codevar: failed to install signal handlers: {e}");
-    }
-
+        warn!("codevar: failed to install signal handlers: {e}");
+    };
     let init = WindowInit {
         title: c"Codevar",
         app_id: c"dev.codevar.launcher",
         width: 640,
         height: 480,
     };
-
     let mut display = match UiDisplay::new(init) {
         Ok(display) => display,
         Err(e) => {
@@ -42,7 +40,6 @@ fn main() {
             return;
         }
     };
-
     if let Err(e) = display.run() {
         error!("codevar: render loop error: {e}");
     }

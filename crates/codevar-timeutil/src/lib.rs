@@ -14,6 +14,7 @@
 //! permissions and limitations under the License.
 
 #![cfg_attr(not(test), no_std)]
+#![allow(dead_code)]
 extern crate alloc;
 
 mod date;
