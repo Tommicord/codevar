@@ -84,6 +84,22 @@ const MAX_FORMAT_TABLE_BYTES: usize = 1 << 20;
 /// Registry globals announced by the compositor: `(name, interface, version)`.
 type Globals = Rc<RefCell<Vec<(u32, String, u32)>>>;
 
+/// The Wayland connection pieces produced by [`connect`] before the
+/// globals are bound.
+struct Connection {
+    display: WlClientDisplay<WlUnixTransport>,
+    registry: WlProxyId,
+    globals: Globals,
+    window_state: Rc<RefCell<WindowState>>,
+}
+
+/// A pending `wl_surface.frame` callback: its proxy and the flag set when
+/// the compositor fires it.
+struct FrameCallback {
+    proxy: WlProxyId,
+    done: Rc<Cell<bool>>,
+}
+
 /// Errors returned by [`UiDisplay`] initialization and operation.
 #[derive(Debug)]
 pub enum UiDisplayError {
@@ -207,353 +223,58 @@ pub struct UiDisplay {
 
 impl UiDisplay {
     /// Creates a new window and initializes the Wayland connection.
+    ///
+    /// The flow delegates each protocol step to a dedicated helper:
+    /// [`connect`] (session + registry), [`bind_protocol_globals`] (globals
+    /// and their listeners), [`create_window_objects`] (surface and
+    /// xdg-shell handshake), [`negotiate_modifiers`] (linux-dmabuf
+    /// feedback), then the Vulkan pipeline, renderer and `wl_buffer`.
     pub fn new(init: WindowInit) -> Result<Self, UiDisplayError> {
+        basic_signal::install().map_err(UiDisplayError::Signal)?;
+        info!("codevar: installing basic signal handler");
+
         let deadline_ns = SystemTime::monotonic_nanos() + SystemTime::secs_to_nanos(30);
-        let transport = WlUnixTransport::connect_session().map_err(UiDisplayError::Wayland)?;
-        let mut display = WlClientDisplay::connect(transport).map_err(UiDisplayError::Wayland)?;
-        let registry = display
-            .get_registry()
-            .map_err(UiDisplayError::Wayland)?;
-        info!("codevar: connected to Wayland compositor");
-        let window_state: Rc<RefCell<WindowState>> =
-            Rc::new(RefCell::new(WindowState::new(init.width, init.height)));
-        let globals: Globals = Rc::new(RefCell::new(Vec::new()));
-        {
-            let globals = Rc::clone(&globals);
-            display
-                .add_registry_listener(registry, move |_, event| {
-                    if let WlRegistryEvent::Global {
-                        name,
-                        interface,
-                        version,
-                    } = event
-                    {
-                        globals
-                            .borrow_mut()
-                            .push((name, interface, version));
-                    }
-                    0
-                })
-                .map_err(UiDisplayError::Wayland)?;
-        }
-        display
-            .roundtrip()
-            .map_err(UiDisplayError::Wayland)?;
-
-        let compositor =
-            bind(&mut display, registry, &globals, &COMPOSITOR_INTERFACE).map_err(UiDisplayError::Wayland)?;
-        let wm_base = bind(&mut display, registry, &globals, &XDG_WM_BASE_INTERFACE)
-            .map_err(UiDisplayError::Wayland)?;
-
-        let (dmabuf_name, dmabuf_version) =
-            global_named(&globals, "zwp_linux_dmabuf_v1").map_err(UiDisplayError::Wayland)?;
-        let dmabuf = display
-            .registry_bind(
-                registry,
-                dmabuf_name,
-                &DMABUF_INTERFACE,
-                dmabuf_version.min(DMABUF_INTERFACE.version),
-            )
-            .map_err(UiDisplayError::Wayland)?;
-
-        {
-            let window_state = Rc::clone(&window_state);
-            display
-                .add_listener(wm_base, move |client, opcode, args| {
-                    if opcode == XDG_WM_BASE_PING
-                        && let Some(WlArgument::Uint(serial)) = args.first()
-                    {
-                        let serial = *serial;
-                        if client
-                            .marshal_request(wm_base, XDG_WM_BASE_PONG, vec![WlArgument::Uint(serial)])
-                            .is_ok()
-                        {
-                            window_state.borrow_mut().pings += 1;
-                        }
-                    }
-                    0
-                })
-                .map_err(UiDisplayError::Wayland)?;
-        }
-        let legacy_modifiers: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
-        {
-            let legacy_modifiers = Rc::clone(&legacy_modifiers);
-            display
-                .add_listener(dmabuf, move |_, opcode, args| {
-                    if opcode == DMABUF_MODIFIER
-                        && let (
-                            Some(WlArgument::Uint(format)),
-                            Some(WlArgument::Uint(hi)),
-                            Some(WlArgument::Uint(lo)),
-                        ) = (args.first(), args.get(1), args.get(2))
-                        && *format == DRM_FORMAT_XRGB8888
-                    {
-                        let modifier = (u64::from(*hi) << 32) | u64::from(*lo);
-                        let modifier = if modifier == u64::MAX { 0 } else { modifier };
-                        legacy_modifiers.borrow_mut().push(modifier);
-                    }
-                    0
-                })
-                .map_err(UiDisplayError::Wayland)?;
-        }
-
-        let surface = display
-            .marshal_new_id(compositor, COMPOSITOR_CREATE_SURFACE, Vec::new())
-            .map_err(UiDisplayError::Wayland)?;
-        let xdg_surface = display
-            .marshal_new_id(
-                wm_base,
-                XDG_WM_BASE_GET_XDG_SURFACE,
-                vec![WlArgument::Object(surface.id())],
-            )
-            .map_err(UiDisplayError::Wayland)?;
-
-        {
-            let window_state = Rc::clone(&window_state);
-            display
-                .add_listener(xdg_surface, move |_, opcode, args| {
-                    if opcode == XDG_SURFACE_CONFIGURE
-                        && let Some(WlArgument::Uint(serial)) = args.first()
-                    {
-                        window_state.borrow_mut().configure_serial = *serial;
-                        window_state.borrow_mut().configured = true;
-                        if let (Some(WlArgument::Int(width)), Some(WlArgument::Int(height))) =
-                            (args.get(1), args.get(2))
-                            && *width > 0
-                            && *height > 0
-                        {
-                            window_state.borrow_mut().width = *width;
-                            window_state.borrow_mut().height = *height;
-                        }
-                    }
-                    0
-                })
-                .map_err(UiDisplayError::Wayland)?;
-        }
-
-        {
-            let window_state = Rc::clone(&window_state);
-            display
-                .add_listener(surface, move |_, opcode, _| {
-                    if opcode == XDG_TOPLEVEL_CLOSE {
-                        window_state.borrow_mut().closed = true;
-                    }
-                    0
-                })
-                .map_err(UiDisplayError::Wayland)?;
-        }
-
-        display
-            .marshal_request(
-                surface,
-                XDG_TOPLEVEL_SET_TITLE,
-                vec![WlArgument::Str(Some(
-                    init.title
-                        .to_str()
-                        .unwrap_or("Codevar")
-                        .to_string(),
-                ))],
-            )
-            .map_err(UiDisplayError::Wayland)?;
-        display
-            .marshal_request(
-                surface,
-                XDG_TOPLEVEL_SET_APP_ID,
-                vec![WlArgument::Str(Some(
-                    init.app_id
-                        .to_str()
-                        .unwrap_or("dev.codevar.window")
-                        .to_string(),
-                ))],
-            )
-            .map_err(UiDisplayError::Wayland)?;
-        display
-            .marshal_request(surface, SURFACE_COMMIT, Vec::new())
-            .map_err(UiDisplayError::Wayland)?;
-        display.flush().map_err(UiDisplayError::Wayland)?;
-
-        while !window_state.borrow().configured {
-            if window_state.borrow().closed {
-                return Err(UiDisplayError::WindowClosed);
-            }
-            if SystemTime::monotonic_nanos() >= deadline_ns {
-                return Err(UiDisplayError::Timeout(
-                    "waiting for xdg_surface.configure".to_string(),
-                ));
-            }
-            display
-                .dispatch(Some(Duration::from_millis(DISPATCH_TIMEOUT_MS)))
-                .map_err(UiDisplayError::Wayland)?;
-        }
+        let Connection {
+            mut display,
+            registry,
+            globals,
+            window_state,
+        } = connect(init.width, init.height)?;
+        let protocol = bind_protocol_globals(&mut display, registry, &globals, &window_state)?;
+        let (surface, xdg_surface) = create_window_objects(
+            &mut display,
+            protocol.compositor,
+            protocol.wm_base,
+            &window_state,
+            init,
+        )?;
+        wait_initial_configure(&mut display, &window_state, deadline_ns)?;
+        ack_configure(&mut display, xdg_surface, &window_state)?;
 
         let width = window_state.borrow().width;
         let height = window_state.borrow().height;
-        let serial = window_state.borrow().configure_serial;
-        display
-            .marshal_request(
-                xdg_surface,
-                XDG_SURFACE_ACK_CONFIGURE,
-                vec![WlArgument::Uint(serial)],
-            )
-            .map_err(UiDisplayError::Wayland)?;
-        display
-            .marshal_request(
-                xdg_surface,
-                XDG_SURFACE_SET_WINDOW_GEOMETRY,
-                vec![
-                    WlArgument::Int(0),
-                    WlArgument::Int(0),
-                    WlArgument::Int(width),
-                    WlArgument::Int(height),
-                ],
-            )
-            .map_err(UiDisplayError::Wayland)?;
+        let (modifiers, feedback) =
+            negotiate_modifiers(&mut display, protocol.dmabuf, &protocol.legacy_modifiers)?;
 
-        let feedback_state: Rc<RefCell<FeedbackState>> = Rc::new(RefCell::new(FeedbackState::default()));
-        let mut feedback_proxy: Option<WlProxyId> = None;
-        if display.proxy_version(dmabuf).unwrap_or(0) >= 4 {
-            let proxy = display
-                .marshal_new_id(dmabuf, DMABUF_GET_DEFAULT_FEEDBACK, Vec::new())
-                .map_err(UiDisplayError::Wayland)?;
-            {
-                let feedback_state = Rc::clone(&feedback_state);
-                display
-                    .add_listener(proxy, move |_, opcode, args: &mut [WlArgument]| {
-                        let mut state = feedback_state.borrow_mut();
-                        match opcode {
-                            FEEDBACK_FORMAT_TABLE => {
-                                let fd = args.get_mut(0).and_then(WlArgument::take_fd);
-                                let size = match args.get(1) {
-                                    Some(WlArgument::Uint(size)) => *size as usize,
-                                    _ => 0,
-                                };
-                                if let Some(fd) = fd {
-                                    state.format_table = read_format_table(fd, size);
-                                }
-                            }
-                            FEEDBACK_MAIN_DEVICE
-                            | FEEDBACK_TRANCHE_TARGET_DEVICE
-                            | FEEDBACK_TRANCHE_FLAGS
-                            | FEEDBACK_TRANCHE_DONE => {}
-                            FEEDBACK_TRANCHE_FORMATS => {
-                                let bytes = array_arg(args, 0);
-                                state.tranche_indices.extend(u16_array(&bytes));
-                            }
-                            FEEDBACK_DONE => state.done = true,
-                            _ => {}
-                        }
-                        0
-                    })
-                    .map_err(UiDisplayError::Wayland)?;
-            }
-            feedback_proxy = Some(proxy);
-            display
-                .roundtrip()
-                .map_err(UiDisplayError::Wayland)?;
-        }
-
-        let modifiers = {
-            let state = feedback_state.borrow();
-            preferred_modifiers(&state.format_table, &state.tranche_indices)
-        };
-        let modifiers = if modifiers.is_empty() {
-            legacy_modifiers.borrow().clone()
-        } else {
-            modifiers
-        };
-        if modifiers.is_empty() {
-            return Err(UiDisplayError::Timeout(
-                "the compositor advertised no modifier for DRM_FORMAT_XRGB8888".to_string(),
-            ));
-        }
-
-        let linear = [0u64];
-        let requested: &[u64] = if modifiers.contains(&0) {
-            &linear
-        } else {
-            &modifiers
-        };
-
-        let pipeline =
-            PipelineContext::new(width as u32, height as u32, requested).map_err(UiDisplayError::Pipeline)?;
-
-        // SAFETY: The renderer borrows from `pipeline` which is stored
-        // in `self.pipeline`. Both are owned by `UiDisplay` and `pipeline`
-        // outlives the renderer. The lifetime is transmuted to `'static`
-        // because the struct's ownership guarantees validity. `Drop` drops
-        // the renderer before the pipeline, preserving the borrow invariant.
-        let renderer = RendererSubsystem::new(&pipeline);
-        let renderer = unsafe {
-            ManuallyDrop::new(core::mem::transmute::<
-                RendererSubsystem<'_>,
-                RendererSubsystem<'static>,
-            >(renderer))
-        };
-
-        let target = pipeline.render_target();
-        let params = display
-            .marshal_new_id(dmabuf, DMABUF_CREATE_PARAMS, Vec::new())
-            .map_err(UiDisplayError::Wayland)?;
-        display
-            .marshal_request(
-                params,
-                BUFFER_PARAMS_ADD,
-                vec![
-                    WlArgument::Fd(target.dmabuf_fd.as_raw()),
-                    WlArgument::Uint(0),
-                    WlArgument::Uint(target.offset),
-                    WlArgument::Uint(target.stride),
-                    WlArgument::Uint((target.modifier >> 32) as u32),
-                    WlArgument::Uint(target.modifier as u32),
-                ],
-            )
-            .map_err(UiDisplayError::Wayland)?;
-        let buffer = display
-            .marshal_new_id(
-                params,
-                BUFFER_PARAMS_CREATE_IMMED,
-                vec![
-                    WlArgument::Int(width),
-                    WlArgument::Int(height),
-                    WlArgument::Uint(target.drm_format),
-                    WlArgument::Uint(0),
-                ],
-            )
-            .map_err(UiDisplayError::Wayland)?;
-        display
-            .marshal_request(params, BUFFER_PARAMS_DESTROY, Vec::new())
-            .map_err(UiDisplayError::Wayland)?;
-        display.flush().map_err(UiDisplayError::Wayland)?;
-
-        {
-            let window_state = Rc::clone(&window_state);
-            display
-                .add_listener(buffer, move |_, opcode, _| {
-                    if opcode == BUFFER_RELEASE {
-                        window_state.borrow_mut().buffer_released = true;
-                    }
-                    0
-                })
-                .map_err(UiDisplayError::Wayland)?;
-        }
-
-        let toplevel = display
-            .marshal_new_id(
-                wm_base,
-                XDG_SURFACE_GET_TOPLEVEL,
-                vec![WlArgument::Object(xdg_surface.id())],
-            )
-            .map_err(UiDisplayError::Wayland)?;
-
-        info!("codevar: window created successfully");
-
+        let pipeline = PipelineContext::new(width as u32, height as u32, &modifiers)
+            .map_err(UiDisplayError::Pipeline)?;
+        let renderer = create_renderer(&pipeline);
+        let buffer = create_wl_buffer(
+            &mut display,
+            protocol.dmabuf,
+            &pipeline,
+            width,
+            height,
+            &window_state,
+        )?;
+        let toplevel = create_toplevel(&mut display, protocol.wm_base, xdg_surface)?;
         Ok(Self {
             display: Some(display),
-            dmabuf: Some(dmabuf),
+            dmabuf: Some(protocol.dmabuf),
             surface: Some(surface),
             xdg_surface: Some(xdg_surface),
             toplevel: Some(toplevel),
-            feedback: feedback_proxy,
+            feedback,
             pipeline: Some(pipeline),
             renderer: Some(renderer),
             buffer: Some(buffer),
@@ -627,6 +348,14 @@ impl UiDisplay {
     }
 
     /// Runs the render loop.
+    ///
+    /// Each iteration drives one frame through the presentation pipeline:
+    /// wait for the compositor to release the previous buffer
+    /// ([`Self::wait_for_buffer_release`]), request a `wl_surface.frame`
+    /// callback ([`Self::request_frame_callback`]), render offscreen
+    /// ([`Self::render_frame`]), attach/damage/commit the dma-buf buffer
+    /// ([`Self::present_buffer`]) and wait for the callback
+    /// ([`Self::wait_for_frame_callback`]).
     pub fn run(&mut self) -> Result<String, UiDisplayError> {
         let mut frames = 0u32;
         let deadline_ns = if self.window_state.borrow().deadline_ns != 0 {
@@ -641,107 +370,16 @@ impl UiDisplay {
             && SystemTime::monotonic_nanos() < deadline_ns
         {
             let release_deadline = SystemTime::monotonic_nanos() + release_timeout_ns;
-            while !self.window_state.borrow().buffer_released
-                && !self.window_state.borrow().closed
-                && SystemTime::monotonic_nanos() < release_deadline
-            {
-                if let Some(display) = &mut self.display {
-                    display
-                        .dispatch(Some(Duration::from_millis(DISPATCH_TIMEOUT_MS)))
-                        .map_err(UiDisplayError::Wayland)?;
-                }
-            }
-            self.window_state.borrow_mut().buffer_released = true;
+            self.wait_for_buffer_release(release_deadline)?;
 
-            let frame_proxy = match self.surface {
-                Some(surface) => {
-                    if let Some(display) = &mut self.display {
-                        display
-                            .marshal_new_id(surface, SURFACE_FRAME, Vec::new())
-                            .map_err(UiDisplayError::Wayland)?
-                    } else {
-                        break;
-                    }
-                }
-                None => break,
+            let Some(callback) = self.request_frame_callback()? else {
+                break;
             };
-            let frame_done = Rc::new(Cell::new(false));
-            if let Some(display) = &mut self.display {
-                let done = Rc::clone(&frame_done);
-                display
-                    .add_callback_listener(frame_proxy, move |_, _| {
-                        done.set(true);
-                        0
-                    })
-                    .map_err(UiDisplayError::Wayland)?;
-            }
 
-            {
-                let renderer = self
-                    .renderer
-                    .as_mut()
-                    .ok_or(UiDisplayError::Renderer(RendererError::Internal(
-                        "renderer not started",
-                    )))?;
-                renderer
-                    .begin_frame(None)
-                    .map_err(UiDisplayError::Renderer)?;
-                renderer
-                    .render_frame()
-                    .map_err(UiDisplayError::Renderer)?;
-                let sync_file = renderer
-                    .end_frame()
-                    .map_err(UiDisplayError::Renderer)?;
-                wait_for_gpu(&sync_file)?;
-                drop(sync_file);
-            }
-
-            let (width, height) = (self.width(), self.height());
-            if let Some(display) = &mut self.display {
-                let surface = self.surface.unwrap_or(WlProxyId(0));
-                let buffer = self.buffer.unwrap_or(WlProxyId(0));
-                display
-                    .marshal_request(
-                        surface,
-                        SURFACE_ATTACH,
-                        vec![
-                            WlArgument::Object(buffer.id()),
-                            WlArgument::Int(0),
-                            WlArgument::Int(0),
-                        ],
-                    )
-                    .map_err(UiDisplayError::Wayland)?;
-                display
-                    .marshal_request(
-                        surface,
-                        SURFACE_DAMAGE,
-                        vec![
-                            WlArgument::Int(0),
-                            WlArgument::Int(0),
-                            WlArgument::Int(width),
-                            WlArgument::Int(height),
-                        ],
-                    )
-                    .map_err(UiDisplayError::Wayland)?;
-                display
-                    .marshal_request(surface, SURFACE_COMMIT, Vec::new())
-                    .map_err(UiDisplayError::Wayland)?;
-                display.flush().map_err(UiDisplayError::Wayland)?;
-            }
-
-            while !frame_done.get()
-                && !self.window_state.borrow().closed
-                && SystemTime::monotonic_nanos() < deadline_ns
-            {
-                if let Some(display) = &mut self.display {
-                    display
-                        .dispatch(Some(Duration::from_millis(DISPATCH_TIMEOUT_MS)))
-                        .map_err(UiDisplayError::Wayland)?;
-                }
-            }
-            if let Some(display) = &mut self.display {
-                let _ = display.proxy_destroy(frame_proxy);
-            }
+            self.render_frame()?;
+            self.present_buffer()?;
+            self.wait_for_frame_callback(&callback.done, deadline_ns)?;
+            self.destroy_frame_callback(callback.proxy);
             frames += 1;
         }
 
@@ -750,6 +388,145 @@ impl UiDisplay {
             "rendered {frames} frames into a {}x{} window, {} pings answered",
             state.width, state.height, state.pings
         ))
+    }
+
+    /// Dispatches Wayland events until the compositor releases the
+    /// attached buffer, the window closes, or `release_deadline_ns`
+    /// passes; the buffer is then considered released either way.
+    fn wait_for_buffer_release(&mut self, release_deadline_ns: u64) -> Result<(), UiDisplayError> {
+        while !self.window_state.borrow().buffer_released
+            && !self.window_state.borrow().closed
+            && SystemTime::monotonic_nanos() < release_deadline_ns
+        {
+            if let Some(display) = &mut self.display {
+                display
+                    .dispatch(Some(Duration::from_millis(DISPATCH_TIMEOUT_MS)))
+                    .map_err(UiDisplayError::Wayland)?;
+            }
+        }
+        self.window_state.borrow_mut().buffer_released = true;
+        Ok(())
+    }
+
+    /// Requests a `wl_surface.frame` callback for the next compositor
+    /// frame and returns its proxy together with the flag the callback
+    /// sets when it fires.
+    ///
+    /// Returns `None` when the surface or the connection is gone, which
+    /// ends the render loop.
+    fn request_frame_callback(&mut self) -> Result<Option<FrameCallback>, UiDisplayError> {
+        let Some(surface) = self.surface else {
+            return Ok(None);
+        };
+        let Some(display) = &mut self.display else {
+            return Ok(None);
+        };
+        let frame_proxy = display
+            .marshal_new_id(surface, SURFACE_FRAME, Vec::new())
+            .map_err(UiDisplayError::Wayland)?;
+        let frame_done = Rc::new(Cell::new(false));
+        let done = Rc::clone(&frame_done);
+        display
+            .add_callback_listener(frame_proxy, move |_, _| {
+                done.set(true);
+                0
+            })
+            .map_err(UiDisplayError::Wayland)?;
+        Ok(Some(FrameCallback {
+            proxy: frame_proxy,
+            done: frame_done,
+        }))
+    }
+
+    /// Renders one frame offscreen through the renderer subsystem and
+    /// blocks until the GPU reports completion via the exported
+    /// `sync_file`.
+    fn render_frame(&mut self) -> Result<(), UiDisplayError> {
+        let renderer = self
+            .renderer
+            .as_mut()
+            .ok_or(UiDisplayError::Renderer(RendererError::Internal(
+                "renderer not started",
+            )))?;
+        renderer
+            .begin_frame(None)
+            .map_err(UiDisplayError::Renderer)?;
+        renderer
+            .render_frame()
+            .map_err(UiDisplayError::Renderer)?;
+        let sync_file = renderer
+            .end_frame()
+            .map_err(UiDisplayError::Renderer)?;
+        wait_for_gpu(&sync_file)?;
+        drop(sync_file);
+        Ok(())
+    }
+
+    /// Attaches the dma-buf buffer to the surface, damages the whole
+    /// window and commits it to the compositor.
+    fn present_buffer(&mut self) -> Result<(), UiDisplayError> {
+        let (width, height) = (self.width(), self.height());
+        let Some(display) = &mut self.display else {
+            return Ok(());
+        };
+        let surface = self.surface.unwrap_or(WlProxyId(0));
+        let buffer = self.buffer.unwrap_or(WlProxyId(0));
+        display
+            .marshal_request(
+                surface,
+                SURFACE_ATTACH,
+                vec![
+                    WlArgument::Object(buffer.id()),
+                    WlArgument::Int(0),
+                    WlArgument::Int(0),
+                ],
+            )
+            .map_err(UiDisplayError::Wayland)?;
+        display
+            .marshal_request(
+                surface,
+                SURFACE_DAMAGE,
+                vec![
+                    WlArgument::Int(0),
+                    WlArgument::Int(0),
+                    WlArgument::Int(width),
+                    WlArgument::Int(height),
+                ],
+            )
+            .map_err(UiDisplayError::Wayland)?;
+        display
+            .marshal_request(surface, SURFACE_COMMIT, Vec::new())
+            .map_err(UiDisplayError::Wayland)?;
+        display.flush().map_err(UiDisplayError::Wayland)?;
+        Ok(())
+    }
+
+    /// Dispatches Wayland events until the frame callback fires, the
+    /// window closes, or `deadline_ns` passes.
+    fn wait_for_frame_callback(
+        &mut self,
+        frame_done: &Rc<Cell<bool>>,
+        deadline_ns: u64,
+    ) -> Result<(), UiDisplayError> {
+        while !frame_done.get()
+            && !self.window_state.borrow().closed
+            && SystemTime::monotonic_nanos() < deadline_ns
+        {
+            if let Some(display) = &mut self.display {
+                display
+                    .dispatch(Some(Duration::from_millis(DISPATCH_TIMEOUT_MS)))
+                    .map_err(UiDisplayError::Wayland)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Releases the `wl_surface.frame` proxy; failure is ignored because
+    /// the callback has already been awaited.
+    fn destroy_frame_callback(&mut self, frame_proxy: WlProxyId) {
+        if let Some(display) = &mut self.display {
+            let _ = display.proxy_destroy(frame_proxy);
+        }
     }
 
     /// Flushes pending requests to the compositor.
@@ -817,6 +594,493 @@ fn bind(
 ) -> Result<WlProxyId, WlError> {
     let (name, version) = global_named(globals, interface.name)?;
     display.registry_bind(registry, name, interface, version.min(interface.version))
+}
+
+/// Globals bound from the registry together with the dmabuf modifier
+/// listener state collected while the registry events arrive.
+struct ProtocolGlobals {
+    compositor: WlProxyId,
+    wm_base: WlProxyId,
+    dmabuf: WlProxyId,
+    /// Modifiers advertised through the legacy `zwp_linux_dmabuf_v1`
+    /// `modifier` event (used when no feedback object is available).
+    legacy_modifiers: Rc<RefCell<Vec<u64>>>,
+}
+
+/// Connects to the Wayland session, creates the registry and performs the
+/// first roundtrip so the compositor announces its globals.
+///
+/// The returned display is ready for [`bind_protocol_globals`].
+///
+/// # Errors
+///
+/// * [`UiDisplayError::Wayland`] — the connection, registry or roundtrip
+///   failed.
+fn connect(width: i32, height: i32) -> Result<Connection, UiDisplayError> {
+    let transport = WlUnixTransport::connect_session().map_err(UiDisplayError::Wayland)?;
+    let mut display = WlClientDisplay::connect(transport).map_err(UiDisplayError::Wayland)?;
+    let registry = display
+        .get_registry()
+        .map_err(UiDisplayError::Wayland)?;
+    info!("codevar: connected to Wayland compositor");
+    let window_state: Rc<RefCell<WindowState>> = Rc::new(RefCell::new(WindowState::new(width, height)));
+    let globals: Globals = Rc::new(RefCell::new(Vec::new()));
+    {
+        let globals = Rc::clone(&globals);
+        display
+            .add_registry_listener(registry, move |_, event| {
+                if let WlRegistryEvent::Global {
+                    name,
+                    interface,
+                    version,
+                } = event
+                {
+                    globals
+                        .borrow_mut()
+                        .push((name, interface, version));
+                }
+                0
+            })
+            .map_err(UiDisplayError::Wayland)?;
+    }
+    display
+        .roundtrip()
+        .map_err(UiDisplayError::Wayland)?;
+    Ok(Connection {
+        display,
+        registry,
+        globals,
+        window_state,
+    })
+}
+
+/// Binds the `wl_compositor`, `xdg_wm_base` and `zwp_linux_dmabuf_v1`
+/// globals and installs their listeners (wm-base ping/pong, dmabuf
+/// modifier advertisement).
+///
+/// # Errors
+///
+/// * [`UiDisplayError::Wayland`] — a global is missing or a request or
+///   listener registration failed.
+fn bind_protocol_globals(
+    display: &mut WlClientDisplay<WlUnixTransport>,
+    registry: WlProxyId,
+    globals: &Globals,
+    window_state: &Rc<RefCell<WindowState>>,
+) -> Result<ProtocolGlobals, UiDisplayError> {
+    let compositor =
+        bind(display, registry, globals, &COMPOSITOR_INTERFACE).map_err(UiDisplayError::Wayland)?;
+    let wm_base =
+        bind(display, registry, globals, &XDG_WM_BASE_INTERFACE).map_err(UiDisplayError::Wayland)?;
+
+    let (dmabuf_name, dmabuf_version) =
+        global_named(globals, "zwp_linux_dmabuf_v1").map_err(UiDisplayError::Wayland)?;
+    let dmabuf = display
+        .registry_bind(
+            registry,
+            dmabuf_name,
+            &DMABUF_INTERFACE,
+            dmabuf_version.min(DMABUF_INTERFACE.version),
+        )
+        .map_err(UiDisplayError::Wayland)?;
+
+    {
+        let window_state = Rc::clone(window_state);
+        display
+            .add_listener(wm_base, move |client, opcode, args| {
+                if opcode == XDG_WM_BASE_PING
+                    && let Some(WlArgument::Uint(serial)) = args.first()
+                {
+                    let serial = *serial;
+                    if client
+                        .marshal_request(wm_base, XDG_WM_BASE_PONG, vec![WlArgument::Uint(serial)])
+                        .is_ok()
+                    {
+                        window_state.borrow_mut().pings += 1;
+                    }
+                }
+                0
+            })
+            .map_err(UiDisplayError::Wayland)?;
+    }
+
+    let legacy_modifiers: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
+    {
+        let legacy_modifiers = Rc::clone(&legacy_modifiers);
+        display
+            .add_listener(dmabuf, move |_, opcode, args| {
+                if opcode == DMABUF_MODIFIER
+                    && let (
+                        Some(WlArgument::Uint(format)),
+                        Some(WlArgument::Uint(hi)),
+                        Some(WlArgument::Uint(lo)),
+                    ) = (args.first(), args.get(1), args.get(2))
+                    && *format == DRM_FORMAT_XRGB8888
+                {
+                    let modifier = (u64::from(*hi) << 32) | u64::from(*lo);
+                    let modifier = if modifier == u64::MAX { 0 } else { modifier };
+                    legacy_modifiers.borrow_mut().push(modifier);
+                }
+                0
+            })
+            .map_err(UiDisplayError::Wayland)?;
+    }
+
+    Ok(ProtocolGlobals {
+        compositor,
+        wm_base,
+        dmabuf,
+        legacy_modifiers,
+    })
+}
+
+/// Creates the `wl_surface` and `xdg_surface`, installs the configure and
+/// close listeners, then publishes the window title, app id and the first
+/// commit.
+///
+/// Returns the surface pair used by [`ack_configure`] and
+/// [`create_toplevel`].
+///
+/// # Errors
+///
+/// * [`UiDisplayError::Wayland`] — object creation, listener
+///   registration or the initial commit failed.
+fn create_window_objects(
+    display: &mut WlClientDisplay<WlUnixTransport>,
+    compositor: WlProxyId,
+    wm_base: WlProxyId,
+    window_state: &Rc<RefCell<WindowState>>,
+    init: WindowInit,
+) -> Result<(WlProxyId, WlProxyId), UiDisplayError> {
+    let surface = display
+        .marshal_new_id(compositor, COMPOSITOR_CREATE_SURFACE, Vec::new())
+        .map_err(UiDisplayError::Wayland)?;
+    let xdg_surface = display
+        .marshal_new_id(
+            wm_base,
+            XDG_WM_BASE_GET_XDG_SURFACE,
+            vec![WlArgument::Object(surface.id())],
+        )
+        .map_err(UiDisplayError::Wayland)?;
+
+    {
+        let window_state = Rc::clone(window_state);
+        display
+            .add_listener(xdg_surface, move |_, opcode, args| {
+                if opcode == XDG_SURFACE_CONFIGURE
+                    && let Some(WlArgument::Uint(serial)) = args.first()
+                {
+                    window_state.borrow_mut().configure_serial = *serial;
+                    window_state.borrow_mut().configured = true;
+                    if let (Some(WlArgument::Int(width)), Some(WlArgument::Int(height))) =
+                        (args.get(1), args.get(2))
+                        && *width > 0
+                        && *height > 0
+                    {
+                        window_state.borrow_mut().width = *width;
+                        window_state.borrow_mut().height = *height;
+                    }
+                }
+                0
+            })
+            .map_err(UiDisplayError::Wayland)?;
+    }
+
+    {
+        let window_state = Rc::clone(window_state);
+        display
+            .add_listener(surface, move |_, opcode, _| {
+                if opcode == XDG_TOPLEVEL_CLOSE {
+                    window_state.borrow_mut().closed = true;
+                }
+                0
+            })
+            .map_err(UiDisplayError::Wayland)?;
+    }
+
+    display
+        .marshal_request(
+            surface,
+            XDG_TOPLEVEL_SET_TITLE,
+            vec![WlArgument::Str(Some(
+                init.title
+                    .to_str()
+                    .unwrap_or("Codevar")
+                    .to_string(),
+            ))],
+        )
+        .map_err(UiDisplayError::Wayland)?;
+    display
+        .marshal_request(
+            surface,
+            XDG_TOPLEVEL_SET_APP_ID,
+            vec![WlArgument::Str(Some(
+                init.app_id
+                    .to_str()
+                    .unwrap_or("dev.codevar.window")
+                    .to_string(),
+            ))],
+        )
+        .map_err(UiDisplayError::Wayland)?;
+    display
+        .marshal_request(surface, SURFACE_COMMIT, Vec::new())
+        .map_err(UiDisplayError::Wayland)?;
+    display.flush().map_err(UiDisplayError::Wayland)?;
+
+    Ok((surface, xdg_surface))
+}
+
+/// Dispatches events until the first `xdg_surface.configure` arrives.
+///
+/// # Errors
+///
+/// * [`UiDisplayError::WindowClosed`] — the compositor closed the window
+///   before the first configure.
+/// * [`UiDisplayError::Timeout`] — `deadline_ns` passed first.
+/// * [`UiDisplayError::Wayland`] — dispatching failed.
+fn wait_initial_configure(
+    display: &mut WlClientDisplay<WlUnixTransport>,
+    window_state: &Rc<RefCell<WindowState>>,
+    deadline_ns: u64,
+) -> Result<(), UiDisplayError> {
+    while !window_state.borrow().configured {
+        if window_state.borrow().closed {
+            return Err(UiDisplayError::WindowClosed);
+        }
+        if SystemTime::monotonic_nanos() >= deadline_ns {
+            return Err(UiDisplayError::Timeout(
+                "waiting for xdg_surface.configure".to_string(),
+            ));
+        }
+        display
+            .dispatch(Some(Duration::from_millis(DISPATCH_TIMEOUT_MS)))
+            .map_err(UiDisplayError::Wayland)?;
+    }
+    Ok(())
+}
+
+/// Acknowledges the first configure and publishes the window geometry.
+///
+/// # Errors
+///
+/// * [`UiDisplayError::Wayland`] — the ack or geometry request failed.
+fn ack_configure(
+    display: &mut WlClientDisplay<WlUnixTransport>,
+    xdg_surface: WlProxyId,
+    window_state: &Rc<RefCell<WindowState>>,
+) -> Result<(), UiDisplayError> {
+    let width = window_state.borrow().width;
+    let height = window_state.borrow().height;
+    let serial = window_state.borrow().configure_serial;
+    display
+        .marshal_request(
+            xdg_surface,
+            XDG_SURFACE_ACK_CONFIGURE,
+            vec![WlArgument::Uint(serial)],
+        )
+        .map_err(UiDisplayError::Wayland)?;
+    display
+        .marshal_request(
+            xdg_surface,
+            XDG_SURFACE_SET_WINDOW_GEOMETRY,
+            vec![
+                WlArgument::Int(0),
+                WlArgument::Int(0),
+                WlArgument::Int(width),
+                WlArgument::Int(height),
+            ],
+        )
+        .map_err(UiDisplayError::Wayland)?;
+    Ok(())
+}
+
+/// Collects the `DRM_FORMAT_XRGB8888` modifiers the compositor accepts
+/// and returns them together with the feedback proxy (when one was
+/// created).
+///
+/// Prefers the linux-dmabuf feedback format table (dmabuf v4+), falls
+/// back to the legacy `modifier` events, and requests only the linear
+/// modifier when the compositor advertises it.
+///
+/// # Errors
+///
+/// * [`UiDisplayError::Wayland`] — the feedback object could not be
+///   created or dispatched.
+/// * [`UiDisplayError::Timeout`] — no modifier at all was advertised.
+fn negotiate_modifiers(
+    display: &mut WlClientDisplay<WlUnixTransport>,
+    dmabuf: WlProxyId,
+    legacy_modifiers: &Rc<RefCell<Vec<u64>>>,
+) -> Result<(Vec<u64>, Option<WlProxyId>), UiDisplayError> {
+    let feedback_state: Rc<RefCell<FeedbackState>> = Rc::new(RefCell::new(FeedbackState::default()));
+    let mut feedback_proxy: Option<WlProxyId> = None;
+    if display.proxy_version(dmabuf).unwrap_or(0) >= 4 {
+        let proxy = display
+            .marshal_new_id(dmabuf, DMABUF_GET_DEFAULT_FEEDBACK, Vec::new())
+            .map_err(UiDisplayError::Wayland)?;
+        {
+            let feedback_state = Rc::clone(&feedback_state);
+            display
+                .add_listener(proxy, move |_, opcode, args: &mut [WlArgument]| {
+                    let mut state = feedback_state.borrow_mut();
+                    match opcode {
+                        FEEDBACK_FORMAT_TABLE => {
+                            let fd = args.get_mut(0).and_then(WlArgument::take_fd);
+                            let size = match args.get(1) {
+                                Some(WlArgument::Uint(size)) => *size as usize,
+                                _ => 0,
+                            };
+                            if let Some(fd) = fd {
+                                state.format_table = read_format_table(fd, size);
+                            }
+                        }
+                        FEEDBACK_MAIN_DEVICE
+                        | FEEDBACK_TRANCHE_TARGET_DEVICE
+                        | FEEDBACK_TRANCHE_FLAGS
+                        | FEEDBACK_TRANCHE_DONE => {}
+                        FEEDBACK_TRANCHE_FORMATS => {
+                            let bytes = array_arg(args, 0);
+                            state.tranche_indices.extend(u16_array(&bytes));
+                        }
+                        FEEDBACK_DONE => state.done = true,
+                        _ => {}
+                    }
+                    0
+                })
+                .map_err(UiDisplayError::Wayland)?;
+        }
+        feedback_proxy = Some(proxy);
+        display
+            .roundtrip()
+            .map_err(UiDisplayError::Wayland)?;
+    }
+
+    let modifiers = {
+        let state = feedback_state.borrow();
+        preferred_modifiers(&state.format_table, &state.tranche_indices)
+    };
+    let modifiers = if modifiers.is_empty() {
+        legacy_modifiers.borrow().clone()
+    } else {
+        modifiers
+    };
+    if modifiers.is_empty() {
+        return Err(UiDisplayError::Timeout(
+            "the compositor advertised no modifier for DRM_FORMAT_XRGB8888".to_string(),
+        ));
+    }
+
+    let linear = [0u64];
+    let requested: Vec<u64> = if modifiers.contains(&0) {
+        linear.to_vec()
+    } else {
+        modifiers
+    };
+    Ok((requested, feedback_proxy))
+}
+
+/// Creates the frame orchestrator borrowing `pipeline` for the display's
+/// lifetime.
+///
+/// # Safety of the returned value
+///
+/// The renderer borrows from `pipeline` which is stored in
+/// `UiDisplay::pipeline`. Both are owned by `UiDisplay` and `pipeline`
+/// outlives the renderer. The lifetime is transmuted to `'static` because
+/// the struct's ownership guarantees validity. `Drop` drops the renderer
+/// before the pipeline, preserving the borrow invariant.
+fn create_renderer(pipeline: &PipelineContext) -> ManuallyDrop<RendererSubsystem<'static>> {
+    let renderer = RendererSubsystem::new(pipeline);
+    // SAFETY: see the function documentation above.
+    unsafe {
+        ManuallyDrop::new(core::mem::transmute::<
+            RendererSubsystem<'_>,
+            RendererSubsystem<'static>,
+        >(renderer))
+    }
+}
+
+/// Exports the pipeline's render target as a `wl_buffer` through the
+/// linux-dmabuf protocol and installs the `wl_buffer.release` listener
+/// that drives the render loop's pacing.
+///
+/// # Errors
+///
+/// * [`UiDisplayError::Wayland`] — any params or flush request failed.
+fn create_wl_buffer(
+    display: &mut WlClientDisplay<WlUnixTransport>,
+    dmabuf: WlProxyId,
+    pipeline: &PipelineContext,
+    width: i32,
+    height: i32,
+    window_state: &Rc<RefCell<WindowState>>,
+) -> Result<WlProxyId, UiDisplayError> {
+    let target = pipeline.render_target();
+    let params = display
+        .marshal_new_id(dmabuf, DMABUF_CREATE_PARAMS, Vec::new())
+        .map_err(UiDisplayError::Wayland)?;
+    display
+        .marshal_request(
+            params,
+            BUFFER_PARAMS_ADD,
+            vec![
+                WlArgument::Fd(target.dmabuf_fd.as_raw()),
+                WlArgument::Uint(0),
+                WlArgument::Uint(target.offset),
+                WlArgument::Uint(target.stride),
+                WlArgument::Uint((target.modifier >> 32) as u32),
+                WlArgument::Uint(target.modifier as u32),
+            ],
+        )
+        .map_err(UiDisplayError::Wayland)?;
+    let buffer = display
+        .marshal_new_id(
+            params,
+            BUFFER_PARAMS_CREATE_IMMED,
+            vec![
+                WlArgument::Int(width),
+                WlArgument::Int(height),
+                WlArgument::Uint(target.drm_format),
+                WlArgument::Uint(0),
+            ],
+        )
+        .map_err(UiDisplayError::Wayland)?;
+    display
+        .marshal_request(params, BUFFER_PARAMS_DESTROY, Vec::new())
+        .map_err(UiDisplayError::Wayland)?;
+    display.flush().map_err(UiDisplayError::Wayland)?;
+
+    {
+        let window_state = Rc::clone(window_state);
+        display
+            .add_listener(buffer, move |_, opcode, _| {
+                if opcode == BUFFER_RELEASE {
+                    window_state.borrow_mut().buffer_released = true;
+                }
+                0
+            })
+            .map_err(UiDisplayError::Wayland)?;
+    }
+    Ok(buffer)
+}
+
+/// Creates the `xdg_toplevel` for `xdg_surface`.
+///
+/// # Errors
+///
+/// * [`UiDisplayError::Wayland`] — the request failed.
+fn create_toplevel(
+    display: &mut WlClientDisplay<WlUnixTransport>,
+    wm_base: WlProxyId,
+    xdg_surface: WlProxyId,
+) -> Result<WlProxyId, UiDisplayError> {
+    display
+        .marshal_new_id(
+            wm_base,
+            XDG_SURFACE_GET_TOPLEVEL,
+            vec![WlArgument::Object(xdg_surface.id())],
+        )
+        .map_err(UiDisplayError::Wayland)
 }
 
 /// Returns `(name, version)` of the global called `interface`.

@@ -15,9 +15,7 @@
 
 //! The [`Date`] struct and its associated `impl`s.
 
-use alloc::string::String;
 use core::fmt;
-use core::hint;
 use core::mem::MaybeUninit;
 use core::num::NonZero;
 use core::ops::{Add, AddAssign, Sub, SubAssign};
@@ -1001,7 +999,7 @@ impl SmartDisplay for Date {
             .clamp(4, 6);
         let formatted_width = year_sign_width + year_width + 6; // include two dashes and two digits each for month and day
 
-        Metadata::new(formatted_width as usize, self, ())
+        Metadata::new(formatted_width, self, ())
     }
 
     #[inline]

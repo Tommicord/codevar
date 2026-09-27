@@ -14,7 +14,6 @@
 //! permissions and limitations under the License.
 
 use crate::date_month::Month;
-use core::hint;
 use core::num::NonZero;
 
 /// Which direction arithmetic overflow occurred in.

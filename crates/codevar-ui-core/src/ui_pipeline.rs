@@ -705,6 +705,225 @@ fn create_device(
     Ok((device, queue))
 }
 
+/// Keeps only the modifiers the driver can create the render-target image
+/// with, preserving the compositor's preference order.
+///
+/// # Errors
+///
+/// * [`PipelineError::NoCompatibleModifier`] — no entry of `modifiers`
+///   supports the (format, usage, dma-buf export) combination.
+fn compatible_modifiers(
+    instance: &ash::Instance,
+    physical: vk::PhysicalDevice,
+    modifiers: &[u64],
+) -> Result<Vec<u64>, PipelineError> {
+    let compatible: Vec<u64> = modifiers
+        .iter()
+        .copied()
+        .filter(|&modifier| modifier_supported(instance, physical, modifier))
+        .collect();
+    if compatible.is_empty() {
+        return Err(PipelineError::NoCompatibleModifier);
+    }
+    Ok(compatible)
+}
+
+/// Creates the offscreen render-target image with DRM-modifier tiling and
+/// the external-memory chain, registering it with `cleanup`.
+///
+/// Note the chain: ImageCreateInfo -> modifier list -> external memory.
+/// The image uses DRM-format-modifier tiling so the driver-chosen modifier
+/// can be queried back after creation.
+///
+/// # Errors
+///
+/// * [`PipelineError::ImageCreate`] — `vkCreateImage` failed.
+fn create_target_image(
+    device: &ash::Device,
+    cleanup: &mut Cleanup,
+    width: u32,
+    height: u32,
+    modifiers: &[u64],
+) -> Result<vk::Image, PipelineError> {
+    let mut modifier_list =
+        vk::ImageDrmFormatModifierListCreateInfoEXT::default().drm_format_modifiers(modifiers);
+    let mut external_memory = vk::ExternalMemoryImageCreateInfo::default()
+        .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+    let image_info = vk::ImageCreateInfo::default()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(TARGET_FORMAT)
+        .extent(vk::Extent3D {
+            width,
+            height,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
+        .usage(target_usage())
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .initial_layout(vk::ImageLayout::UNDEFINED)
+        .push_next(&mut modifier_list)
+        .push_next(&mut external_memory);
+    // SAFETY: the pNext chain (`modifier_list` -> `external_memory`) and the
+    // modifier slice outlive the call.
+    let image = unsafe { device.create_image(&image_info, None) }.map_err(PipelineError::ImageCreate)?;
+    cleanup.image = Some(image);
+    Ok(image)
+}
+
+/// Creates the color-attachment view of the render-target image,
+/// registering it with `cleanup`.
+///
+/// # Errors
+///
+/// * [`PipelineError::ImageViewCreate`] — `vkCreateImageView` failed.
+fn create_target_view(
+    device: &ash::Device,
+    cleanup: &mut Cleanup,
+    image: vk::Image,
+) -> Result<vk::ImageView, PipelineError> {
+    let view_info = vk::ImageViewCreateInfo::default()
+        .image(image)
+        .view_type(vk::ImageViewType::TYPE_2D)
+        .format(TARGET_FORMAT)
+        .subresource_range(vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        });
+    // SAFETY: `image` is valid and the view info references it correctly.
+    let image_view =
+        unsafe { device.create_image_view(&view_info, None) }.map_err(PipelineError::ImageViewCreate)?;
+    cleanup.view = Some(image_view);
+    Ok(image_view)
+}
+
+/// Allocates exportable device-local memory for the render-target image,
+/// binds it and registers both objects with `cleanup`.
+///
+/// A dedicated allocation is what dma-buf consumers expect in practice and
+/// is permitted (VK_EXT_image_drm_format_modifier does not require it).
+///
+/// # Errors
+///
+/// * [`PipelineError::NoSuitableMemoryType`] — no memory type matches.
+/// * [`PipelineError::MemoryAllocate`], [`PipelineError::MemoryBind`] —
+///   `vkAllocateMemory` / `vkBindImageMemory` failed.
+fn allocate_target_memory(
+    instance: &ash::Instance,
+    device: &ash::Device,
+    physical: vk::PhysicalDevice,
+    cleanup: &mut Cleanup,
+    image: vk::Image,
+) -> Result<vk::DeviceMemory, PipelineError> {
+    // SAFETY: the image handle is valid.
+    let requirements = unsafe { device.get_image_memory_requirements(image) };
+    // SAFETY: `physical` is valid and the driver fills the properties.
+    let memory_properties = unsafe { instance.get_physical_device_memory_properties(physical) };
+    let memory_type = find_memory_type(
+        &memory_properties,
+        requirements.memory_type_bits,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+    )
+    .ok_or(PipelineError::NoSuitableMemoryType)?;
+
+    let mut export_info =
+        vk::ExportMemoryAllocateInfo::default().handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+    let mut dedicated_info = vk::MemoryDedicatedAllocateInfo::default().image(image);
+    let allocation_info = vk::MemoryAllocateInfo::default()
+        .allocation_size(requirements.size)
+        .memory_type_index(memory_type)
+        .push_next(&mut export_info)
+        .push_next(&mut dedicated_info);
+    // SAFETY: the export/dedicated chain outlives the call and the size
+    // matches `requirements.size` as required for dedicated allocations.
+    let memory =
+        unsafe { device.allocate_memory(&allocation_info, None) }.map_err(PipelineError::MemoryAllocate)?;
+    cleanup.memory = Some(memory);
+    // SAFETY: `memory` satisfies the image's requirements and is large
+    // enough; offset 0 with an exclusive-sharing image is always valid.
+    unsafe { device.bind_image_memory(image, memory, 0) }.map_err(PipelineError::MemoryBind)?;
+    Ok(memory)
+}
+
+/// Exports the render-target allocation as a dma-buf fd for the Wayland
+/// layer.
+///
+/// # Errors
+///
+/// * [`PipelineError::MemoryFdExport`] — `vkGetMemoryFdKHR` failed.
+/// * [`PipelineError::Internal`] — the driver reported a negative fd.
+fn export_dmabuf_fd(
+    ext_memory_fd: &ash::khr::external_memory_fd::Device,
+    memory: vk::DeviceMemory,
+) -> Result<OwnedFd, PipelineError> {
+    let get_fd_info = vk::MemoryGetFdInfoKHR::default()
+        .memory(memory)
+        .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+    // SAFETY: the extension is enabled and `memory` was allocated with
+    // `VkExportMemoryAllocateInfo` advertising the DMA_BUF handle type.
+    let raw_fd =
+        unsafe { ext_memory_fd.get_memory_fd(&get_fd_info) }.map_err(PipelineError::MemoryFdExport)?;
+    if raw_fd < 0 {
+        return Err(PipelineError::Internal(
+            "vkGetMemoryFdKHR returned a negative file descriptor",
+        ));
+    }
+    // SAFETY: on success `vkGetMemoryFdKHR` transfers ownership of a valid
+    // open file descriptor to the application, so `OwnedFd` may adopt it.
+    Ok(unsafe { OwnedFd::from_raw(raw_fd) })
+}
+
+/// Queries the driver-chosen DRM modifier and the plane 0 layout of the
+/// render-target image.
+///
+/// # Errors
+///
+/// * [`PipelineError::ModifierQuery`] — the modifier query failed.
+/// * [`PipelineError::Internal`] — stride or offset exceeds `u32`.
+fn query_plane_layout(
+    device: &ash::Device,
+    ext_drm: &ash::ext::image_drm_format_modifier::Device,
+    image: vk::Image,
+) -> Result<(u64, u32, u32), PipelineError> {
+    let mut modifier_properties = vk::ImageDrmFormatModifierPropertiesEXT::default();
+    // SAFETY: the extension is enabled and the image was created with
+    // `VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT` (required by this query).
+    unsafe { ext_drm.get_image_drm_format_modifier_properties(image, &mut modifier_properties) }
+        .map_err(PipelineError::ModifierQuery)?;
+    let plane_subresource = vk::ImageSubresource {
+        aspect_mask: vk::ImageAspectFlags::MEMORY_PLANE_0_EXT,
+        mip_level: 0,
+        array_layer: 0,
+    };
+    // SAFETY: memory-plane layout is queryable for DRM-modifier images and
+    // plane 0 exists (the format has a single memory plane).
+    let plane_layout = unsafe { device.get_image_subresource_layout(image, plane_subresource) };
+    let stride = u32::try_from(plane_layout.row_pitch)
+        .map_err(|_| PipelineError::Internal("plane stride exceeds the u32 range"))?;
+    let offset = u32::try_from(plane_layout.offset)
+        .map_err(|_| PipelineError::Internal("plane offset exceeds the u32 range"))?;
+    Ok((modifier_properties.drm_format_modifier, stride, offset))
+}
+
+/// Creates the transient graphics command pool used to allocate frame
+/// command buffers.
+///
+/// # Errors
+///
+/// * [`PipelineError::CommandAllocation`] — `vkCreateCommandPool` failed.
+fn create_command_pool(device: &ash::Device, queue_family: u32) -> Result<vk::CommandPool, PipelineError> {
+    let pool_info = vk::CommandPoolCreateInfo::default()
+        .flags(vk::CommandPoolCreateFlags::TRANSIENT)
+        .queue_family_index(queue_family);
+    // SAFETY: the graphics family index is valid for this device.
+    unsafe { device.create_command_pool(&pool_info, None) }.map_err(PipelineError::CommandAllocation)
+}
+
 /// Owns partially-created Vulkan objects while [`PipelineContext::new`] runs
 /// so that every early `Err` return releases whatever was already created.
 ///
@@ -865,143 +1084,24 @@ impl PipelineContext {
         let ext_memory_fd = ash::khr::external_memory_fd::Device::new(&instance, &device);
         let ext_drm = ash::ext::image_drm_format_modifier::Device::new(&instance, &device);
         let ext_semaphore_fd = ash::khr::external_semaphore_fd::Device::new(&instance, &device);
-
-        let compatible_modifiers: Vec<u64> = modifiers
-            .iter()
-            .copied()
-            .filter(|&modifier| modifier_supported(&instance, physical, modifier))
-            .collect();
-        if compatible_modifiers.is_empty() {
-            return Err(PipelineError::NoCompatibleModifier);
-        }
-
-        // Note the chain: ImageCreateInfo -> modifier list -> external memory.
-        // The image uses DRM-format-modifier tiling so the driver-chosen
-        // modifier can be queried back after creation.
-        let mut modifier_list = vk::ImageDrmFormatModifierListCreateInfoEXT::default()
-            .drm_format_modifiers(&compatible_modifiers);
-        let mut external_memory = vk::ExternalMemoryImageCreateInfo::default()
-            .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
-        let image_info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
-            .format(TARGET_FORMAT)
-            .extent(vk::Extent3D {
-                width,
-                height,
-                depth: 1,
-            })
-            .mip_levels(1)
-            .array_layers(1)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
-            .usage(target_usage())
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .initial_layout(vk::ImageLayout::UNDEFINED)
-            .push_next(&mut modifier_list)
-            .push_next(&mut external_memory);
-        // SAFETY: the pNext chain (`modifier_list` -> `external_memory`) and the
-        // modifier slice outlive the call.
-        let image = unsafe { device.create_image(&image_info, None) }.map_err(PipelineError::ImageCreate)?;
-        cleanup.image = Some(image);
-
-        let view_info = vk::ImageViewCreateInfo::default()
-            .image(image)
-            .view_type(vk::ImageViewType::TYPE_2D)
-            .format(TARGET_FORMAT)
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: 1,
-                base_array_layer: 0,
-                layer_count: 1,
-            });
-        // SAFETY: `image` is valid and the view info references it correctly.
-        let image_view =
-            unsafe { device.create_image_view(&view_info, None) }.map_err(PipelineError::ImageViewCreate)?;
-        cleanup.view = Some(image_view);
-
-        // SAFETY: the image handle is valid.
-        let requirements = unsafe { device.get_image_memory_requirements(image) };
-        // SAFETY: `physical` is valid and the driver fills the properties.
-        let memory_properties = unsafe { instance.get_physical_device_memory_properties(physical) };
-        let memory_type = find_memory_type(
-            &memory_properties,
-            requirements.memory_type_bits,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        )
-        .ok_or(PipelineError::NoSuitableMemoryType)?;
-
-        let mut export_info = vk::ExportMemoryAllocateInfo::default()
-            .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
-        // A dedicated allocation is what dma-buf consumers expect in practice
-        // and is permitted (VK_EXT_image_drm_format_modifier does not require it).
-        let mut dedicated_info = vk::MemoryDedicatedAllocateInfo::default().image(image);
-        let allocation_info = vk::MemoryAllocateInfo::default()
-            .allocation_size(requirements.size)
-            .memory_type_index(memory_type)
-            .push_next(&mut export_info)
-            .push_next(&mut dedicated_info);
-        // SAFETY: the export/dedicated chain outlives the call and the size
-        // matches `requirements.size` as required for dedicated allocations.
-        let memory = unsafe { device.allocate_memory(&allocation_info, None) }
-            .map_err(PipelineError::MemoryAllocate)?;
-        cleanup.memory = Some(memory);
-        // SAFETY: `memory` satisfies the image's requirements and is large
-        // enough; offset 0 with an exclusive-sharing image is always valid.
-        unsafe { device.bind_image_memory(image, memory, 0) }.map_err(PipelineError::MemoryBind)?;
-
-        // Export the allocation as a dma-buf fd for the Wayland layer.
-        let get_fd_info = vk::MemoryGetFdInfoKHR::default()
-            .memory(memory)
-            .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
-        // SAFETY: the extension is enabled and `memory` was allocated with
-        // `VkExportMemoryAllocateInfo` advertising the DMA_BUF handle type.
-        let raw_fd =
-            unsafe { ext_memory_fd.get_memory_fd(&get_fd_info) }.map_err(PipelineError::MemoryFdExport)?;
-        if raw_fd < 0 {
-            return Err(PipelineError::Internal(
-                "vkGetMemoryFdKHR returned a negative file descriptor",
-            ));
-        }
-        // SAFETY: on success `vkGetMemoryFdKHR` transfers ownership of a valid
-        // open file descriptor to the application, so `OwnedFd` may adopt it.
-        let dmabuf_fd = unsafe { OwnedFd::from_raw(raw_fd) };
-
-        let mut modifier_properties = vk::ImageDrmFormatModifierPropertiesEXT::default();
-        // SAFETY: the extension is enabled and the image was created with
-        // `VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT` (required by this query).
-        unsafe { ext_drm.get_image_drm_format_modifier_properties(image, &mut modifier_properties) }
-            .map_err(PipelineError::ModifierQuery)?;
-        let plane_subresource = vk::ImageSubresource {
-            aspect_mask: vk::ImageAspectFlags::MEMORY_PLANE_0_EXT,
-            mip_level: 0,
-            array_layer: 0,
-        };
-        // SAFETY: memory-plane layout is queryable for DRM-modifier images and
-        // plane 0 exists (the format has a single memory plane).
-        let plane_layout = unsafe { device.get_image_subresource_layout(image, plane_subresource) };
-        let stride = u32::try_from(plane_layout.row_pitch)
-            .map_err(|_| PipelineError::Internal("plane stride exceeds the u32 range"))?;
-        let offset = u32::try_from(plane_layout.offset)
-            .map_err(|_| PipelineError::Internal("plane offset exceeds the u32 range"))?;
+        let compatible = compatible_modifiers(&instance, physical, modifiers)?;
+        let image = create_target_image(&device, &mut cleanup, width, height, &compatible)?;
+        create_target_view(&device, &mut cleanup, image)?;
+        let memory = allocate_target_memory(&instance, &device, physical, &mut cleanup, image)?;
+        let dmabuf_fd = export_dmabuf_fd(&ext_memory_fd, memory)?;
+        let (modifier, stride, offset) = query_plane_layout(&device, &ext_drm, image)?;
         let render_target = RenderTarget {
             dmabuf_fd,
             drm_format: DRM_FORMAT_XRGB8888,
-            modifier: modifier_properties.drm_format_modifier,
+            modifier,
             stride,
             offset,
             width,
             height,
         };
-        let pool_info = vk::CommandPoolCreateInfo::default()
-            .flags(vk::CommandPoolCreateFlags::TRANSIENT)
-            .queue_family_index(queue_family);
-        // SAFETY: the graphics family index is valid for this device.
-        let command_pool = unsafe { device.create_command_pool(&pool_info, None) }
-            .map_err(PipelineError::CommandAllocation)?;
-        cleanup.command_pool = Some(command_pool);
 
-        // Success: move everything out of the cleanup guard.
+        let command_pool = create_command_pool(&device, queue_family)?;
+        cleanup.command_pool = Some(command_pool);
         Ok(PipelineContext {
             _library: library,
             _entry: entry,

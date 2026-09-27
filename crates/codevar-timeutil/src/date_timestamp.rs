@@ -15,7 +15,6 @@
 
 //! The [`Timestamp`] struct and associated `impl`s.
 
-use alloc::string::String;
 use codevar_base::basic_time::TimeVal;
 use core::cmp::Ordering;
 use core::fmt;
@@ -113,7 +112,7 @@ impl From<TimeVal> for Timestamp {
     #[inline]
     fn from(value: TimeVal) -> Self {
         let nanos = i128::from(value.secs) * 1_000_000_000_i128 + i128::from(value.nsecs);
-        Self::from_nanoseconds(nanos).unwrap_or_else(|_| if nanos < 0 { Self::MIN } else { Self::MAX })
+        Self::from_nanoseconds(nanos).unwrap_or(if nanos < 0 { Self::MIN } else { Self::MAX })
     }
 }
 
@@ -143,7 +142,7 @@ impl Timestamp {
     pub fn now() -> Self {
         codevar_base::basic_time::SystemTime::now()
             .ok()
-            .map(|tv| Timestamp::from(tv))
+            .map(Timestamp::from)
             .unwrap_or(Self::UNIX_EPOCH)
     }
 
@@ -555,7 +554,6 @@ impl Timestamp {
     }
 
     /// Get the nanosecond of the timestamp in UTC.
-
     #[inline]
     pub const fn nanosecond(self) -> u32 {
         self.nanoseconds.get()
@@ -620,12 +618,10 @@ impl Timestamp {
             } else {
                 (0, nanos as u32)
             }
+        } else if nanos < 0 {
+            (-1, (nanos + Nanosecond::per_t::<i32>(Second)) as u32)
         } else {
-            if nanos < 0 {
-                (-1, (nanos + Nanosecond::per_t::<i32>(Second)) as u32)
-            } else {
-                (0, nanos as u32)
-            }
+            (0, nanos as u32)
         };
 
         let seconds = match self

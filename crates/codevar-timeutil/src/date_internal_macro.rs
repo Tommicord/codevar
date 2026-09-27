@@ -215,16 +215,6 @@ macro_rules! try_err {
     };
 }
 
-/// Macro to handle Option types with automatic error conversion.
-macro_rules! try_opt_err {
-    ($e:expr, $error:expr) => {
-        match $e {
-            Some(value) => value,
-            None => return Err($error),
-        }
-    };
-}
-
 pub(crate) use carry;
 pub(crate) use cascade;
 pub(crate) use const_try;
@@ -232,4 +222,3 @@ pub(crate) use const_try_opt;
 pub(crate) use div_floor;
 pub(crate) use ensure_ranged;
 pub(crate) use try_err;
-pub(crate) use try_opt_err;

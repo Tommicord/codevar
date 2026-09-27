@@ -147,7 +147,7 @@ impl UtcDateTime {
         {
             codevar_base::basic_time::SystemTime::now()
                 .ok()
-                .map(|tv| Timestamp::from(tv))
+                .map(Timestamp::from)
                 .map(|ts| Self::new(ts.date(), ts.time()))
                 .unwrap_or(Self::UNIX_EPOCH)
         }

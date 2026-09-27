@@ -40,9 +40,9 @@ impl FormatDescription<'_> {
     /// Convert the format description to an owned version, enabling it to be stored without regard
     /// for lifetime.
     #[inline]
-    pub fn to_owned(self) -> FormatDescription<'static> {
+    pub fn to_owned(&self) -> FormatDescription<'static> {
         FormatDescription {
-            inner: self.inner.into_owned(),
+            inner: self.inner.clone().into_owned(),
             max_bytes_needed: self.max_bytes_needed,
         }
     }
@@ -631,8 +631,7 @@ impl crate::date_formattable::Sealed for FormatDescriptionInner<'_> {
                         .calendar_year(state)
                         .narrow::<-9_999, 9_999>()
                         .ok_or_else(|| crate::date_error::ComponentRange::conditional("year"))?
-                        .try_into()
-                        .map_err(|_| crate::date_error::ComponentRange::conditional("year"))?,
+                        .into(),
                     *modifier,
                 )
                 .map_err(Into::into)
@@ -646,8 +645,7 @@ impl crate::date_formattable::Sealed for FormatDescriptionInner<'_> {
                     .iso_year(state)
                     .narrow::<-9_999, 9_999>()
                     .ok_or_else(|| crate::date_error::ComponentRange::conditional("year"))?
-                    .try_into()
-                    .map_err(|_| crate::date_error::ComponentRange::conditional("year"))?,
+                    .into(),
                 *modifier,
             )
             .map_err(Into::into),
@@ -667,8 +665,7 @@ impl crate::date_formattable::Sealed for FormatDescriptionInner<'_> {
                     output,
                     year.narrow::<-99, 99>()
                         .ok_or_else(|| crate::date_error::ComponentRange::conditional("century"))?
-                        .try_into()
-                        .map_err(|_| crate::date_error::ComponentRange::conditional("century"))?,
+                        .into(),
                     is_negative,
                     *modifier,
                 )
@@ -691,8 +688,7 @@ impl crate::date_formattable::Sealed for FormatDescriptionInner<'_> {
                     output,
                     year.narrow::<-99, 99>()
                         .ok_or_else(|| crate::date_error::ComponentRange::conditional("century"))?
-                        .try_into()
-                        .map_err(|_| crate::date_error::ComponentRange::conditional("century"))?,
+                        .into(),
                     is_negative,
                     *modifier,
                 )

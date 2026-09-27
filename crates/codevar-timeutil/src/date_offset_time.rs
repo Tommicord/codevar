@@ -15,7 +15,6 @@
 
 //! The [`OffsetDateTime`] struct and its associated `impl`s.
 
-use alloc::string::String;
 use codevar_base::basic_time::SystemTime;
 use core::cmp::Ordering;
 use core::fmt;
@@ -126,7 +125,7 @@ impl OffsetDateTime {
         {
             codevar_base::basic_time::SystemTime::now()
                 .ok()
-                .map(|tv| Timestamp::from(tv))
+                .map(Timestamp::from)
                 .map(|ts| Self::new_in_offset(ts.date(), ts.time(), UtcOffset::UTC))
                 .unwrap_or(Self::UNIX_EPOCH)
         }

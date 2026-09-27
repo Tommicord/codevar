@@ -26,8 +26,6 @@
 //! - **Reentrancy guard** — a single `AtomicU32` CAS; a recursive or
 //!   concurrent fault writes one short line and immediately re-raises with
 //!   `SIG_DFL` instead of deadlocking.
-//! - **Never catches `SIGKILL`/`SIGSTOP`**; job-control stop signals are
-//!   opt-in via [`Options::catch_job_control`].
 //!
 //! **Known limitation**: on ELF targets the unwind walker may deadlock if the
 //! crash occurs while the dynamic loader lock is held (`dl_iterate_phdr`);
@@ -80,10 +78,7 @@ impl fmt::Display for InstallError {
 
 impl core::error::Error for InstallError {}
 
-/// Installs signal handlers with default [`Options`].
-///
-/// Equivalent to `install_with(Options::default())`. Calling this when
-/// handlers are already installed is a no-op (`Ok`).
+/// Installs signal handlers
 ///
 /// # Errors
 ///
@@ -94,13 +89,13 @@ pub fn install() -> Result<(), InstallError> {
     install_handler()
 }
 
-/// Installs signal handlers according to `opts`.
+/// Installs signal handlers
 ///
 /// On Unix this registers a `SA_SIGINFO | SA_ONSTACK` handler for every
 /// enabled signal class, optionally installs a static alternate signal
 /// stack, and saves previous dispositions for [`uninstall`]. On Windows it
 /// registers a vectored exception handler, an unhandled-exception filter,
-/// and (when `catch_termination` is set) a console control handler.
+/// and a console control handler.
 ///
 /// Calling this when handlers are already installed is a no-op (`Ok`).
 ///

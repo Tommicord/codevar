@@ -16,7 +16,7 @@
 //! Lenient HTML5 parser that autocorrects broken markup into well-formed XML.
 //!
 //! Unlike the strict validator in [`crate::basic_xml`], this module never
-//! rejects syntactically broken input. Instead it implements a streaming
+//! rejects syntactically broken input. Instead, it implements a streaming
 //! subset of the WHATWG HTML tokenizer and tree construction algorithms,
 //! repairing the document on the fly:
 //!
@@ -73,66 +73,10 @@ use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec::Vec;
 use codevar_textlike_encode::encoding_utf8::utf8_valid_up_to;
-use core::fmt;
+use core::{fmt, mem};
 
 /// Default maximum accepted input size (64 MiB).
 pub const DEFAULT_MAX_INPUT_SIZE: usize = 64 * 1024 * 1024;
-
-/// HTML void elements: they never have children and are emitted as `<x/>`.
-static VOID_ELEMENTS: [&str; 16] = [
-    "area", "base", "basefont", "bgsound", "br", "col", "embed", "frame", "hr", "img", "input", "keygen",
-    "link", "meta", "param", "source", "track", "wbr",
-];
-
-/// Start tag names that break out of foreign (SVG/MathML) content, per the
-/// WHATWG tree construction rules. `font` is handled separately because it
-/// only breaks out when a `color`, `face` or `size` attribute is present.
-static BREAKOUT_ELEMENTS: [&str; 44] = [
-    "b",
-    "big",
-    "blockquote",
-    "body",
-    "br",
-    "center",
-    "code",
-    "dd",
-    "div",
-    "dl",
-    "dt",
-    "em",
-    "embed",
-    "h1",
-    "h2",
-    "h3",
-    "h4",
-    "h5",
-    "h6",
-    "head",
-    "hr",
-    "i",
-    "img",
-    "li",
-    "listing",
-    "menu",
-    "meta",
-    "nobr",
-    "ol",
-    "p",
-    "pre",
-    "ruby",
-    "s",
-    "small",
-    "span",
-    "strong",
-    "strike",
-    "sub",
-    "sup",
-    "table",
-    "tt",
-    "u",
-    "ul",
-    "var",
-];
 
 /// Elements that stop the common insertion-mode scope used by the
 /// autoclose rules below (mirrors HTML's default scope).
@@ -262,7 +206,7 @@ fn is_name_char(c: char) -> bool {
 ///
 /// ```
 /// use codevar_base::basic_html::normalize_name;
-/// assert_eq!(normalize_name("b(c)"), "b_c");
+/// assert_eq!(normalize_name("b(c)"), "b_c_");
 /// assert_eq!(normalize_name("div"), "div");
 /// ```
 #[must_use]
@@ -274,10 +218,8 @@ pub fn normalize_name(name: &str) -> Cow<'_, str> {
     for (i, c) in name.chars().enumerate() {
         let ok = if i == 0 { is_name_start(c) } else { is_name_char(c) };
         if !ok {
-            if i == 0 && is_name_char(c) {
-                // Valid continuation but not a valid start: fine after '_'.
-                continue;
-            }
+            // A NameChar that is not a NameStartChar at index 0 still forces a
+            // rebuild: the serialiser prefixes it with `_`.
             invalid = true;
         }
     }
@@ -3148,7 +3090,7 @@ impl HtmlParser {
     ///
     /// Loops internally so that a state can reconsume `c` (for example a
     /// non-`x` character after `&#`).
-    fn step_state(&mut self, mut c: char) {
+    fn step_state(&mut self, c: char) {
         loop {
             match self.state {
                 State::Data => {
@@ -3399,7 +3341,7 @@ impl HtmlParser {
                 }
                 State::MdDoctype(i) => {
                     let kw = b"DOCTYPE";
-                    if c.to_ascii_lowercase() == (kw[i] as char).to_ascii_lowercase() {
+                    if c.eq_ignore_ascii_case(&(kw[i] as char)) {
                         if i + 1 == kw.len() {
                             self.dt_quote = None;
                             self.dt_bracket = false;
@@ -3939,10 +3881,10 @@ impl HtmlParser {
                     if let Some(ch) = char::from_u32(c1) {
                         self.emit_ref_char(ch);
                     }
-                    if c2 != 0 {
-                        if let Some(ch) = char::from_u32(c2) {
-                            self.emit_ref_char(ch);
-                        }
+                    if c2 != 0
+                        && let Some(ch) = char::from_u32(c2)
+                    {
+                        self.emit_ref_char(ch);
                     }
                     self.pushback_replay(&buf[blen..]);
                 }
@@ -4384,7 +4326,10 @@ mod tests {
 
     #[test]
     fn consecutive_paragraphs_autoclose() {
-        assert_eq!(parse("<p>a<p>b"), "<p>a</p><p>b</p>");
+        // Two top-level elements, so the synthetic `<root>` wrapper applies.
+        assert_eq!(parse("<p>a<p>b"), "<root><p>a</p><p>b</p></root>");
+        // Nested inside a single root the autoclose is visible directly.
+        assert_eq!(parse("<div><p>a<p>b"), "<div><p>a</p><p>b</p></div>");
     }
 
     #[test]
@@ -4417,7 +4362,11 @@ mod tests {
 
     #[test]
     fn multiple_roots_are_wrapped() {
-        assert_eq!(parse("<div/><span/>"), "<root><div></div><span></span></root>");
+        assert_eq!(
+            parse("<div></div><span></span>"),
+            "<root><div></div><span></span></root>"
+        );
+        assert_eq!(parse("<div><span></span></div>"), "<div><span></span></div>");
     }
 
     #[test]
@@ -4455,8 +4404,8 @@ mod tests {
 
     #[test]
     fn invalid_names_are_normalized() {
-        assert_eq!(parse("<b(c)>x</b(c)>"), "<b_c>x</b_c>");
-        assert_eq!(normalize_name("b(c)"), "b_c");
+        assert_eq!(parse("<b(c)>x</b(c)>"), "<b_c_>x</b_c_>");
+        assert_eq!(normalize_name("b(c)"), "b_c_");
         assert_eq!(normalize_name(""), "_");
         assert_eq!(normalize_name("1st"), "_1st");
         assert_eq!(normalize_name("div"), "div");
@@ -4477,7 +4426,7 @@ mod tests {
     fn script_comment_escape_is_text() {
         assert_eq!(
             parse("<script><!-- <div> --> </script>"),
-            "<script>&lt;!- &lt;div&gt; --&gt; </script>"
+            "<script>&lt;!-- &lt;div&gt; --&gt; </script>"
         );
     }
 

@@ -14,7 +14,7 @@
 //! permissions and limitations under the License.
 
 use crate::date_adt_hack::EncodedConfig;
-use crate::date_format_description::{Component, FormatDescription, FormatDescriptionInner};
+use crate::date_format_description::{Component, FormatDescription};
 use crate::date_format_description_modifier::SubsecondDigits;
 use crate::date_well_know_iso8601::{DateKind, Iso8601, OffsetPrecision, TimePrecision};
 use crate::date_well_know_rfc2822::Rfc2822;

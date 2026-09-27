@@ -172,7 +172,7 @@ pub(crate) fn format_int_padded(
     for _ in digit_count..width {
         output.write_str("0")?;
     }
-    output.write_str(&*s)?;
+    output.write_str(&s)?;
     Ok(width as usize)
 }
 

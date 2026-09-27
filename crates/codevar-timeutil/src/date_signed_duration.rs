@@ -24,7 +24,7 @@ use core::time::Duration as StdDuration;
 use crate::date_error::ConversionRange;
 use crate::date_internal_macro::const_try_opt;
 use crate::date_unit::*;
-use deranged::{ri32, ri64};
+use deranged::ri32;
 use num_conv::prelude::*;
 
 #[derive(Debug)]

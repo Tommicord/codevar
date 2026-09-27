@@ -518,6 +518,15 @@ impl Default for LayerStack<'_> {
     }
 }
 
+/// The synchronization objects of one frame: an unsignaled fence, an
+/// optional wait semaphore (holding a temporary `sync_file` import) and a
+/// SYNC_FD-exportable signal semaphore.
+struct FrameSync {
+    fence: vk::Fence,
+    wait_semaphore: Option<vk::Semaphore>,
+    signal_semaphore: vk::Semaphore,
+}
+
 /// Frame orchestrator around a [`PipelineContext`].
 ///
 /// Mirrors rlgame's renderer subsystem: a state machine
@@ -686,33 +695,8 @@ impl<'p> RendererSubsystem<'p> {
                 state: self.state,
             });
         }
-        let context = self.context;
-        // SAFETY: exclusive access to the subsystem; a failed wait (device
-        // lost) is tolerated because the teardown below must still run.
-        unsafe {
-            let _ = context.device().device_wait_idle();
-        }
-        self.retire_frame_sync();
-        if self.phase != FramePhase::Idle {
-            // Discards a partially recorded or already finished command
-            // buffer: the device is idle, so nothing references it.
-            // SAFETY: the pool is `context`'s and idle at this point.
-            unsafe {
-                let _ = context
-                    .device()
-                    .reset_command_pool(context.command_pool(), vk::CommandPoolResetFlags::empty());
-            }
-            self.phase = FramePhase::Idle;
-        }
-        if let Some(command_buffer) = self.command_buffer.take() {
-            // SAFETY: the command buffer was allocated from this pool by
-            // `start` and is not pending (device idle, pool reset above).
-            unsafe {
-                context
-                    .device()
-                    .free_command_buffers(context.command_pool(), core::slice::from_ref(&command_buffer));
-            }
-        }
+        self.quiesce();
+        self.free_command_buffer();
         self.state = RendererState::Stopped;
         Ok(())
     }
@@ -741,77 +725,17 @@ impl<'p> RendererSubsystem<'p> {
     pub fn begin_frame(&mut self, wait_sync_file: Option<OwnedFd>) -> Result<(), RendererError> {
         self.require_running("begin_frame")?;
         self.require_phase(FramePhase::Idle, "begin_frame")?;
-        let context = self.context;
-        let device = context.device();
         if self.command_buffer.is_none() {
             return Err(RendererError::Internal(
                 "the subsystem is running without a command buffer",
             ));
         }
-        // Wait for the previous submission, then retire its sync objects.
-        if let Some(fence) = self.frame_fence {
-            // SAFETY: `fence` was created by this subsystem, is waited on
-            // with `&mut self` excluding concurrent use, and `u64::MAX`
-            // means the only failure is device loss (reported, not
-            // ignored).
-            unsafe { device.wait_for_fences(core::slice::from_ref(&fence), true, u64::MAX) }
-                .map_err(RendererError::FenceWait)?;
-        }
-        // The previous submission (if any) completed, so its fence and
-        // semaphores are no longer referenced by the queue.
-        self.retire_frame_sync();
+        self.retire_previous_frame()?;
 
-        // SAFETY: the previous command buffer execution completed (fence
-        // wait above, or no submission exists on the first frame), so
-        // resetting the pool cannot discard in-flight commands.
-        unsafe { device.reset_command_pool(context.command_pool(), vk::CommandPoolResetFlags::empty()) }
-            .map_err(RendererError::CommandPoolReset)?;
-
-        // Per-frame synchronization: fresh objects each frame because the
-        // SYNC_FD export unsignals the source semaphore (copy
-        // transference) and each object is used exactly once.
-        let wait_semaphore = if let Some(sync_fd) = wait_sync_file {
-            let semaphore = self.create_binary_semaphore(false)?;
-            match self.import_sync_fd(semaphore, sync_fd) {
-                Ok(()) => Some(semaphore),
-                Err(err) => {
-                    // SAFETY: the semaphore was just created and never
-                    // submitted, so destroying it is valid.
-                    unsafe { device.destroy_semaphore(semaphore, None) };
-                    return Err(err);
-                }
-            }
-        } else {
-            None
-        };
-        let signal_semaphore = match self.create_binary_semaphore(true) {
-            Ok(semaphore) => semaphore,
-            Err(err) => {
-                if let Some(semaphore) = wait_semaphore {
-                    // SAFETY: created this frame, never submitted.
-                    unsafe { device.destroy_semaphore(semaphore, None) };
-                }
-                return Err(err);
-            }
-        };
-        // A fresh unsignaled fence: it is signaled by this frame's submit
-        // and waited on at the start of the next one (no reset needed).
-        let fence = match self.create_frame_fence() {
-            Ok(fence) => fence,
-            Err(err) => {
-                // SAFETY: none of the semaphores was submitted.
-                unsafe {
-                    device.destroy_semaphore(signal_semaphore, None);
-                    if let Some(semaphore) = wait_semaphore {
-                        device.destroy_semaphore(semaphore, None);
-                    }
-                }
-                return Err(err);
-            }
-        };
-        self.frame_fence = Some(fence);
-        self.frame_wait_sem = wait_semaphore;
-        self.frame_signal_sem = Some(signal_semaphore);
+        let sync = self.create_frame_sync(wait_sync_file)?;
+        self.frame_fence = Some(sync.fence);
+        self.frame_wait_sem = sync.wait_semaphore;
+        self.frame_signal_sem = Some(sync.signal_semaphore);
         self.phase = FramePhase::Recording;
         Ok(())
     }
@@ -838,44 +762,9 @@ impl<'p> RendererSubsystem<'p> {
             self.discard_unsubmitted_frame();
             return Err(err);
         }
-        let context = self.context;
-        let device = context.device();
-        let fence = self
-            .frame_fence
-            .ok_or(RendererError::Internal("recorded frame without a fence"))?;
-        let signal_semaphore = self
-            .frame_signal_sem
-            .ok_or(RendererError::Internal(
-                "recorded frame without a signal semaphore",
-            ))?;
-        let command_buffer = self
-            .command_buffer
-            .ok_or(RendererError::Internal("recorded frame without a command buffer"))?;
-        let wait_stage = vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT;
-        let (wait_sems, wait_stages): (&[vk::Semaphore], &[vk::PipelineStageFlags]) =
-            match self.frame_wait_sem {
-                Some(ref semaphore) => (
-                    core::slice::from_ref(semaphore),
-                    core::slice::from_ref(&wait_stage),
-                ),
-                None => (&[], &[]),
-            };
-        let signal_sems = [signal_semaphore];
-        let command_buffers = [command_buffer];
-        let submit_info = vk::SubmitInfo::default()
-            .wait_semaphores(wait_sems)
-            .wait_dst_stage_mask(wait_stages)
-            .command_buffers(&command_buffers)
-            .signal_semaphores(&signal_sems);
-        // SAFETY: all handles are valid and live; the wait semaphore (if
-        // any) holds a temporary SYNC_FD import whose stage mask matches
-        // `wait_stages`; the signal semaphore and the fence are unsignaled
-        // (fresh), as required by `vkQueueSubmit`.
-        let submit_result =
-            unsafe { device.queue_submit(context.queue(), core::slice::from_ref(&submit_info), fence) };
-        if let Err(err) = submit_result {
+        if let Err(err) = self.submit_frame() {
             self.discard_unsubmitted_frame();
-            return Err(RendererError::Submit(err));
+            return Err(err);
         }
         self.phase = FramePhase::Submitted;
         Ok(())
@@ -948,49 +837,69 @@ impl<'p> RendererSubsystem<'p> {
             .ok_or(RendererError::Internal(
                 "frame recording requested without a command buffer",
             ))?;
+        self.begin_command_buffer(device, command_buffer)?;
+
+        // Handoff state for each frame: UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL
+        // (contents are discarded; the pass clears the attachment anyway).
+        record_attachment_transition(device, command_buffer, context.image());
+
+        let layer_result = self.run_render_pass(device, command_buffer, context);
+        if let Err(err) = layer_result {
+            // Close the command buffer so the pool can be reset by the
+            // caller's error handling; the recording result itself is
+            // secondary to the layer error being reported.
+            // SAFETY: the command buffer is still in the recording state.
+            let _ = unsafe { device.end_command_buffer(command_buffer) };
+            return Err(err);
+        }
+
+        // COLOR_ATTACHMENT_OPTIMAL -> GENERAL as the conservative handoff
+        // state for the external compositor: access through the exported
+        // dma-buf is not layout-tracked by Vulkan, and GENERAL is the safest
+        // state to leave the image in for non-Vulkan consumers.
+        record_handoff_transition(device, command_buffer, context.image());
+        // SAFETY: all recorded commands reference live objects of the
+        // borrowed pipeline context.
+        unsafe { device.end_command_buffer(command_buffer) }.map_err(RendererError::CommandRecord)
+    }
+
+    /// Opens the frame command buffer for one-time submission.
+    fn begin_command_buffer(
+        &self,
+        device: &ash::Device,
+        command_buffer: vk::CommandBuffer,
+    ) -> Result<(), RendererError> {
         let begin_info =
             vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
         // SAFETY: the command buffer was allocated from this pool and the
         // pool was reset at the start of the frame, so it is in the initial
         // state.
         unsafe { device.begin_command_buffer(command_buffer, &begin_info) }
-            .map_err(RendererError::CommandRecord)?;
+            .map_err(RendererError::CommandRecord)
+    }
 
-        // Handoff state for each frame: UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL
-        // (contents are discarded; the pass clears the attachment anyway).
-        let to_attachment = image_barrier(
-            context.image(),
-            vk::ImageLayout::UNDEFINED,
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            vk::AccessFlags::empty(),
-            vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-        );
-        // SAFETY: the command buffer is in the recording state and the
-        // barrier references the live render-target image; both stage and
-        // access masks are well-formed. The optional semaphore wait of this
-        // submission covers COLOR_ATTACHMENT_OUTPUT, i.e. this transition.
-        unsafe {
-            device.cmd_pipeline_barrier(
-                command_buffer,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[to_attachment],
-            );
-        }
-        let clear_value = vk::ClearValue {
-            color: vk::ClearColorValue {
-                float32: [0.00, 0.00, 0.00, 1.0],
-            },
-        };
+    /// Runs the dynamic-rendering pass: begin the pass, apply the dynamic
+    /// viewport/scissor, run every enabled layer, then end the pass.
+    ///
+    /// The pass is always closed, even when a layer hook fails, so the
+    /// command buffer is left in a consistent state for the caller's error
+    /// handling.
+    fn run_render_pass(
+        &mut self,
+        device: &ash::Device,
+        command_buffer: vk::CommandBuffer,
+        context: &'p PipelineContext,
+    ) -> Result<(), RendererError> {
         let color_attachment = vk::RenderingAttachmentInfo::default()
             .image_view(context.image_view())
             .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::STORE)
-            .clear_value(clear_value);
+            .clear_value(vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: [0.00, 0.00, 0.00, 1.0],
+                },
+            });
         let render_area = vk::Rect2D {
             offset: vk::Offset2D { x: 0, y: 0 },
             extent: vk::Extent2D {
@@ -1036,42 +945,179 @@ impl<'p> RendererSubsystem<'p> {
         };
         // SAFETY: the rendering scope opened above has not been ended yet.
         unsafe { device.cmd_end_rendering(command_buffer) };
-        if let Err(err) = layer_result {
-            // Close the command buffer so the pool can be reset by the
-            // caller's error handling; the recording result itself is
-            // secondary to the layer error being reported.
-            // SAFETY: the command buffer is still in the recording state.
-            let _ = unsafe { device.end_command_buffer(command_buffer) };
-            return Err(err);
-        }
+        layer_result
+    }
 
-        // COLOR_ATTACHMENT_OPTIMAL -> GENERAL as the conservative handoff
-        // state for the external compositor: access through the exported
-        // dma-buf is not layout-tracked by Vulkan, and GENERAL is the safest
-        // state to leave the image in for non-Vulkan consumers.
-        let to_general = image_barrier(
-            context.image(),
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            vk::ImageLayout::GENERAL,
-            vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-            vk::AccessFlags::empty(),
-        );
-        // SAFETY: the rendering scope above ended; the source stage/access
-        // cover everything this frame wrote to the image.
-        unsafe {
-            device.cmd_pipeline_barrier(
-                command_buffer,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[to_general],
-            );
+    /// Submits the recorded frame to the graphics queue, waiting on the
+    /// frame's optional wait semaphore and signaling its fence and signal
+    /// semaphore.
+    fn submit_frame(&mut self) -> Result<(), RendererError> {
+        let context = self.context;
+        let device = context.device();
+        let fence = self
+            .frame_fence
+            .ok_or(RendererError::Internal("recorded frame without a fence"))?;
+        let signal_semaphore = self
+            .frame_signal_sem
+            .ok_or(RendererError::Internal(
+                "recorded frame without a signal semaphore",
+            ))?;
+        let command_buffer = self
+            .command_buffer
+            .ok_or(RendererError::Internal("recorded frame without a command buffer"))?;
+        let wait_stage = vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT;
+        let (wait_sems, wait_stages): (&[vk::Semaphore], &[vk::PipelineStageFlags]) =
+            match self.frame_wait_sem {
+                Some(ref semaphore) => (
+                    core::slice::from_ref(semaphore),
+                    core::slice::from_ref(&wait_stage),
+                ),
+                None => (&[], &[]),
+            };
+        let signal_sems = [signal_semaphore];
+        let command_buffers = [command_buffer];
+        let submit_info = vk::SubmitInfo::default()
+            .wait_semaphores(wait_sems)
+            .wait_dst_stage_mask(wait_stages)
+            .command_buffers(&command_buffers)
+            .signal_semaphores(&signal_sems);
+        // SAFETY: all handles are valid and live; the wait semaphore (if
+        // any) holds a temporary SYNC_FD import whose stage mask matches
+        // `wait_stages`; the signal semaphore and the fence are unsignaled
+        // (fresh), as required by `vkQueueSubmit`.
+        unsafe { device.queue_submit(context.queue(), core::slice::from_ref(&submit_info), fence) }
+            .map_err(RendererError::Submit)
+    }
+
+    /// Waits for the previous submission, retires its synchronization
+    /// objects and resets the command pool for a fresh frame.
+    fn retire_previous_frame(&mut self) -> Result<(), RendererError> {
+        let context = self.context;
+        let device = context.device();
+        // Wait for the previous submission, then retire its sync objects.
+        if let Some(fence) = self.frame_fence {
+            // SAFETY: `fence` was created by this subsystem, is waited on
+            // with `&mut self` excluding concurrent use, and `u64::MAX`
+            // means the only failure is device loss (reported, not
+            // ignored).
+            unsafe { device.wait_for_fences(core::slice::from_ref(&fence), true, u64::MAX) }
+                .map_err(RendererError::FenceWait)?;
         }
-        // SAFETY: all recorded commands reference live objects of the
-        // borrowed pipeline context.
-        unsafe { device.end_command_buffer(command_buffer) }.map_err(RendererError::CommandRecord)
+        // The previous submission (if any) completed, so its fence and
+        // semaphores are no longer referenced by the queue.
+        self.retire_frame_sync();
+
+        // SAFETY: the previous command buffer execution completed (fence
+        // wait above, or no submission exists on the first frame), so
+        // resetting the pool cannot discard in-flight commands.
+        unsafe { device.reset_command_pool(context.command_pool(), vk::CommandPoolResetFlags::empty()) }
+            .map_err(RendererError::CommandPoolReset)
+    }
+
+    /// Creates the frame's synchronization objects: an optional wait
+    /// semaphore importing `wait_sync_file`, a SYNC_FD-exportable signal
+    /// semaphore and an unsignaled fence.
+    ///
+    /// Fresh objects are used each frame because the SYNC_FD export
+    /// unsignals the source semaphore (copy transference) and each object
+    /// is used exactly once. On failure every object created so far is
+    /// destroyed before the error is returned.
+    fn create_frame_sync(&self, wait_sync_file: Option<OwnedFd>) -> Result<FrameSync, RendererError> {
+        let device = self.context.device();
+        // Per-frame synchronization: the wait semaphore imports the
+        // caller's `sync_file` (ownership transferred to the driver on
+        // success, closed here on failure by `import_sync_fd`).
+        let wait_semaphore = if let Some(sync_fd) = wait_sync_file {
+            let semaphore = self.create_binary_semaphore(false)?;
+            match self.import_sync_fd(semaphore, sync_fd) {
+                Ok(()) => Some(semaphore),
+                Err(err) => {
+                    // SAFETY: the semaphore was just created and never
+                    // submitted, so destroying it is valid.
+                    unsafe { device.destroy_semaphore(semaphore, None) };
+                    return Err(err);
+                }
+            }
+        } else {
+            None
+        };
+        let signal_semaphore = match self.create_binary_semaphore(true) {
+            Ok(semaphore) => semaphore,
+            Err(err) => {
+                if let Some(semaphore) = wait_semaphore {
+                    // SAFETY: created this frame, never submitted.
+                    unsafe { device.destroy_semaphore(semaphore, None) };
+                }
+                return Err(err);
+            }
+        };
+        // A fresh unsignaled fence: it is signaled by this frame's submit
+        // and waited on at the start of the next one (no reset needed).
+        let fence = match self.create_frame_fence() {
+            Ok(fence) => fence,
+            Err(err) => {
+                // SAFETY: none of the semaphores was submitted.
+                unsafe {
+                    device.destroy_semaphore(signal_semaphore, None);
+                    if let Some(semaphore) = wait_semaphore {
+                        device.destroy_semaphore(semaphore, None);
+                    }
+                }
+                return Err(err);
+            }
+        };
+        Ok(FrameSync {
+            fence,
+            wait_semaphore,
+            signal_semaphore,
+        })
+    }
+
+    /// Waits for the device to go idle, retires the frame's
+    /// synchronization objects and discards any frame still recorded in
+    /// the command pool, returning the frame phase to idle.
+    ///
+    /// Failures of the device wait (device loss) are ignored: destroying
+    /// the handles is still the only way to release the host-side
+    /// resources.
+    fn quiesce(&mut self) {
+        let context = self.context;
+        // SAFETY: the caller has exclusive access to the subsystem, so no
+        // frame can be recording or submitting concurrently; a failed wait
+        // (device lost) is tolerated because the teardown must still run.
+        unsafe {
+            let _ = context.device().device_wait_idle();
+        }
+        self.retire_frame_sync();
+        if self.phase != FramePhase::Idle {
+            // The command buffer may hold a partial recording; the device
+            // is idle, so resetting the pool cannot discard in-flight
+            // commands.
+            // SAFETY: the pool is `context`'s and idle at this point.
+            unsafe {
+                let _ = context
+                    .device()
+                    .reset_command_pool(context.command_pool(), vk::CommandPoolResetFlags::empty());
+            }
+            self.phase = FramePhase::Idle;
+        }
+    }
+
+    /// Returns the frame command buffer to the pipeline's command pool.
+    ///
+    /// The device must already be idle (see [`Self::quiesce`]).
+    fn free_command_buffer(&mut self) {
+        if let Some(command_buffer) = self.command_buffer.take() {
+            let context = self.context;
+            // SAFETY: the command buffer was allocated from this pool by
+            // `start` and the device is idle (the caller waited before
+            // calling this).
+            unsafe {
+                context
+                    .device()
+                    .free_command_buffers(context.command_pool(), core::slice::from_ref(&command_buffer));
+            }
+        }
     }
 
     /// Creates a binary semaphore, optionally with SYNC_FD export enabled.
@@ -1213,30 +1259,69 @@ impl<'p> RendererSubsystem<'p> {
 
 impl<'p> Drop for RendererSubsystem<'p> {
     fn drop(&mut self) {
-        let context = self.context;
-        // SAFETY: `drop` has exclusive access to the subsystem, so no frame
-        // can be recording or submitting concurrently. A failed wait
-        // (device lost) is ignored: the GPU is gone and destroying the
-        // handles is still the correct way to release the host-side
-        // resources.
-        unsafe {
-            let _ = context.device().device_wait_idle();
-        }
-        // Retires the frame fence/semaphores after the idle wait (the SAFETY
-        // comment inside covers that precondition).
-        self.retire_frame_sync();
-        if let Some(command_buffer) = self.command_buffer.take() {
-            // SAFETY: the device is idle and the command buffer was
-            // allocated from this pool by `start`.
-            unsafe {
-                context
-                    .device()
-                    .free_command_buffers(context.command_pool(), core::slice::from_ref(&command_buffer));
-            }
-        }
+        // Waits for the device (ignoring device loss), retires the frame's
+        // synchronization objects and discards any recorded frame.
+        self.quiesce();
+        self.free_command_buffer();
         // The command pool, image, device and instance belong to `context`
         // and outlive `'p`, which outlives this subsystem; nothing else is
         // owned here, so no further destruction is required.
+    }
+}
+
+/// Records the barrier that opens the frame: UNDEFINED ->
+/// COLOR_ATTACHMENT_OPTIMAL (contents are discarded; the pass clears the
+/// attachment anyway).
+fn record_attachment_transition(device: &ash::Device, command_buffer: vk::CommandBuffer, image: vk::Image) {
+    let to_attachment = image_barrier(
+        image,
+        vk::ImageLayout::UNDEFINED,
+        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        vk::AccessFlags::empty(),
+        vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+    );
+    // SAFETY: the command buffer is in the recording state and the
+    // barrier references the live render-target image; both stage and
+    // access masks are well-formed. The optional semaphore wait of this
+    // submission covers COLOR_ATTACHMENT_OUTPUT, i.e. this transition.
+    unsafe {
+        device.cmd_pipeline_barrier(
+            command_buffer,
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[to_attachment],
+        );
+    }
+}
+
+/// Records the barrier that closes the frame: COLOR_ATTACHMENT_OPTIMAL ->
+/// GENERAL as the conservative handoff state for the external compositor:
+/// access through the exported dma-buf is not layout-tracked by Vulkan,
+/// and GENERAL is the safest state to leave the image in for non-Vulkan
+/// consumers.
+fn record_handoff_transition(device: &ash::Device, command_buffer: vk::CommandBuffer, image: vk::Image) {
+    let to_general = image_barrier(
+        image,
+        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        vk::ImageLayout::GENERAL,
+        vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+        vk::AccessFlags::empty(),
+    );
+    // SAFETY: the rendering scope above ended; the source stage/access
+    // cover everything this frame wrote to the image.
+    unsafe {
+        device.cmd_pipeline_barrier(
+            command_buffer,
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[to_general],
+        );
     }
 }
 

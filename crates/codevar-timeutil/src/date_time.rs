@@ -15,14 +15,13 @@
 
 use crate::date::{MAX_YEAR, MIN_YEAR};
 use crate::date_error::ComponentRange;
-use crate::date_internal_macro::{cascade, const_try, const_try_opt, div_floor, ensure_ranged};
+use crate::date_internal_macro::{cascade, ensure_ranged};
 use crate::date_num_fmt::{
-    four_to_six_digits, one_to_two_digits_no_padding, str_from_raw_parts, truncated_subsecond_from_nanos,
-    two_digits_zero_padded,
+    one_to_two_digits_no_padding, str_from_raw_parts, truncated_subsecond_from_nanos, two_digits_zero_padded,
 };
 use crate::date_signed_duration::SignedDuration;
 use crate::date_unit::{Day, Hour, Microsecond, Millisecond, Minute, Nanosecond, Second, Subsecond};
-use crate::date_util::{DateAdjustment, days_in_month_leap, days_in_year, is_leap_year, weeks_in_year};
+use crate::date_util::DateAdjustment;
 use core::cmp::Ordering;
 use core::fmt;
 use core::hash::{Hash, Hasher};

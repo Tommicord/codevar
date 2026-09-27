@@ -19,12 +19,9 @@
 //! cases. They have strict requirements, and may not return the most ergonomic types to avoid
 //! unnecessary allocations and copying.
 
-use core::hint;
 use core::mem::MaybeUninit;
 use core::ops::Deref;
 use core::{ptr, slice};
-#[cfg(feature = "formatting")]
-use deranged::ru64;
 use deranged::{ru8, ru16, ru32, ru64};
 
 static SINGLE_DIGITS: [u8; 10] = *b"0123456789";
