@@ -50,7 +50,7 @@ CI (`.github/workflows/rust.yml`) runs build, test, `cargo fmt --check`, and cli
 
 ### Style
 
-- Follow `rustfmt` settings in `.rustfmt.toml` (90-column width, 4-space indent, edition 2024).
+- Follow `rustfmt` settings in `.rustfmt.toml` (edition 2024).
 - Clippy is enabled with `clippy::all` and `clippy::pedantic` at the crate level.
 - Use `` on hot-path small functions, matching existing code.
 - `unsafe` is allowed at the crate level; document invariants when adding unsafe blocks.
@@ -125,7 +125,7 @@ New Rust files must include the Apache 2.0 copyright header used elsewhere:
 - Consider memory layout and cache efficiency
 - Profile performance changes before merging
 - Use `#[inline]` on hot-path small functions
-- Avoid storing `bool` inside structs, Use enums with custom BitOr overloads instead
+- Avoid storing more than one `bool` inside structs, Use enums with custom BitOr overloads instead
 
 ### Optimizing binary sizes
 - Use #![cfg_attr(not(test), no_std)] when adding new modules for reducing binary sizes

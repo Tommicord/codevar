@@ -16,17 +16,16 @@
 //! Terminal pixel port: reads Vulkan render target pixels and writes
 //! them to the terminal as ANSI true-color escape sequences.
 //!
-//! This module provides the [`Pixport`] struct which:
-//! - Creates a Vulkan staging buffer for image readback
-//! - Copies the current render target image to the staging buffer
-//! - Maps the buffer and converts pixels to ANSI RGB sequences
-//! - Writes the resulting ANSI string to stdout
-//! - Handles terminal size detection and adjustment
+//! The resampling filter may be set to [`PixportFilterType::Auto`], which
+//! picks a concrete filter from a terminal-size ladder built with the
+//! [`pixport_auto_filter_table!`] macro.
 
 use alloc::string::String;
 use core::fmt;
+use core::task::{Context, Poll, Waker};
 
-use self::simd::{AnsiColorConverter, PixportFilterType, ansi_cells_to_string};
+use self::ansi::{AnsiColorConverter, PixportFilterType, ansi_cells_to_string};
+use self::frame_pipe::{FramePipe, QueuedFrame};
 use crate::ui_pipeline::PipelineContext;
 use ash::vk;
 
@@ -60,8 +59,28 @@ pub enum PixportError {
     TerminalSizeUnavailable,
     /// The render target format is not supported for readback.
     UnsupportedFormat,
-    /// Internal invariant violated.
-    Internal(&'static str),
+    /// Driver allocated no command buffer.
+    NoCommandBuffer,
+    /// Failed to bind buffer memory.
+    BindBufferMemory(vk::Result),
+    /// Staging buffer not initialized.
+    StagingNotReady,
+    /// Command buffer not allocated.
+    CommandBufferNotAllocated,
+    /// Fence not created.
+    FenceNotCreated,
+    /// Render target dimensions exceed maximum.
+    RenderTargetTooLarge,
+    /// Frame dimensions overflow during validation.
+    FrameDimensionsOverflow,
+    /// Frame buffer size mismatch.
+    FrameSizeMismatch,
+    /// GPU sync poll failed (libc::poll returned error).
+    GpuSyncPollFailed,
+    /// GPU sync timed out.
+    GpuSyncTimeout,
+    /// Renderer subsystem error.
+    Renderer(crate::ui_renderer::RendererError),
 }
 
 impl fmt::Display for PixportError {
@@ -79,7 +98,17 @@ impl fmt::Display for PixportError {
             Self::TerminalWrite(err) => write!(f, "terminal write failed: {err}"),
             Self::TerminalSizeUnavailable => write!(f, "could not detect terminal size"),
             Self::UnsupportedFormat => write!(f, "render target format not supported for readback"),
-            Self::Internal(msg) => write!(f, "internal pixport error: {msg}"),
+            Self::NoCommandBuffer => write!(f, "driver allocated no command buffer"),
+            Self::BindBufferMemory(err) => write!(f, "failed to bind buffer memory: {err:?}"),
+            Self::StagingNotReady => write!(f, "staging buffer not initialized"),
+            Self::CommandBufferNotAllocated => write!(f, "command buffer not allocated"),
+            Self::FenceNotCreated => write!(f, "fence not created"),
+            Self::RenderTargetTooLarge => write!(f, "render target too large"),
+            Self::FrameDimensionsOverflow => write!(f, "frame dimensions overflow"),
+            Self::FrameSizeMismatch => write!(f, "frame buffer size mismatch"),
+            Self::GpuSyncPollFailed => write!(f, "GPU sync poll failed"),
+            Self::GpuSyncTimeout => write!(f, "GPU sync timed out"),
+            Self::Renderer(err) => write!(f, "renderer error: {err}"),
         }
     }
 }
@@ -93,39 +122,102 @@ impl From<codevar_consoleutil::ConsoleError> for PixportError {
 }
 
 impl From<crate::ui_renderer::RendererError> for PixportError {
-    fn from(_err: crate::ui_renderer::RendererError) -> Self {
-        Self::Internal("renderer error")
+    fn from(err: crate::ui_renderer::RendererError) -> Self {
+        Self::Renderer(err)
     }
 }
 
 /// Result type for pixport operations.
 pub type PixportResult<T> = Result<T, PixportError>;
 
+/// Vertical density of the terminal glyph grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CellDensity {
+    /// Each terminal cell draws one framebuffer row with '█'.
+    FullBlocks,
+    /// Each terminal cell draws two framebuffer rows with '▀'.
+    #[default]
+    HalfBlocks,
+}
+
+impl CellDensity {
+    /// Returns `true` if half-block mode is active.
+    #[inline]
+    #[must_use]
+    pub const fn is_half_blocks(self) -> bool {
+        matches!(self, Self::HalfBlocks)
+    }
+}
+
+/// Screen clear policy for frame presentation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClearPolicy {
+    /// Clear the entire screen before each frame.
+    #[default]
+    ClearBeforeFrame,
+    /// Preserve existing screen contents.
+    Preserve,
+}
+
+impl ClearPolicy {
+    /// Returns `true` if the screen should be cleared.
+    #[inline]
+    #[must_use]
+    pub const fn should_clear(self) -> bool {
+        matches!(self, Self::ClearBeforeFrame)
+    }
+}
+
 /// Configuration for the pixport readback.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct PixportConfig {
     /// Maximum number of terminal columns to render (clamped to terminal width).
     pub max_cols: u16,
     /// Maximum number of terminal rows to render (clamped to terminal height).
     pub max_rows: u16,
-    /// Whether to use half-block characters (▀) for 2x vertical density.
-    /// When true, each terminal cell represents 2 image rows.
-    pub use_half_blocks: bool,
-    /// Whether to clear the terminal before each frame.
-    pub clear_before_frame: bool,
+    /// Vertical density of the terminal glyph grid.
+    pub cell_density: CellDensity,
+    /// Screen clear policy for frame presentation.
+    pub clear_policy: ClearPolicy,
     /// Resampling filter used when mapping framebuffer pixels to terminal cells.
+    ///
+    /// [`PixportFilterType::Auto`] picks a concrete filter from the terminal
+    /// size ladder, re-evaluating it after every resize.
     pub filter: PixportFilterType,
 }
 
-impl Default for PixportConfig {
-    fn default() -> Self {
-        Self {
-            max_cols: 0, // use terminal width
-            max_rows: 0, // use terminal height
-            use_half_blocks: true,
-            clear_before_frame: true,
-            filter: PixportFilterType::default(),
-        }
+/// Escape sequence that clears the whole screen and homes the cursor.
+const CLEAR_SEQUENCE: &str = "\x1b[2J\x1b[H";
+
+/// Describes a terminal grid size change reported by
+/// [`Pixport::poll_terminal_resize`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalResize {
+    /// Columns before the resize.
+    pub previous_cols: u16,
+    /// Rows before the resize.
+    pub previous_rows: u16,
+    /// Columns after the resize.
+    pub cols: u16,
+    /// Rows after the resize.
+    pub rows: u16,
+}
+
+/// Compares a cached terminal grid against a freshly detected one.
+///
+/// Returns `Some` when either dimension changed. Split out of
+/// [`Pixport::poll_terminal_resize`] so the decision is unit-testable
+/// without a Vulkan context or a real terminal.
+fn detect_resize(previous_cols: u16, previous_rows: u16, cols: u16, rows: u16) -> Option<TerminalResize> {
+    if previous_cols == cols && previous_rows == rows {
+        None
+    } else {
+        Some(TerminalResize {
+            previous_cols,
+            previous_rows,
+            cols,
+            rows,
+        })
     }
 }
 
@@ -182,7 +274,21 @@ pub struct Pixport<'p> {
     pixel_format: PixportFormat,
     last_terminal_cols: u16,
     last_terminal_rows: u16,
+    /// Set when the terminal was resized since the last presented frame:
+    /// the next frame must clear the screen even if `clear_before_frame`
+    /// is disabled, otherwise stale cells survive outside the new grid.
+    force_clear: bool,
+    /// Waker of a suspended [`Pixport::capture_frame_async`] future, woken
+    /// by [`Pixport::notify_capture`].
+    capture_waker: Option<Waker>,
 }
+
+/// How long a single [`Pixport::poll_capture`] call blocks on the readback
+/// fence before returning [`Poll::Pending`]. The bounded slice guarantees
+/// progress under re-polling executors (see `render_loop::block_on`) while
+/// keeping idle wake-ups cheap.
+const CAPTURE_POLL_SLICE_NS: codevar_time_core::TimeDuration =
+    codevar_time_core::TimeDuration::from_millis(1);
 
 impl<'p> Pixport<'p> {
     /// Creates a new pixport for the given pipeline context.
@@ -210,6 +316,8 @@ impl<'p> Pixport<'p> {
             pixel_format: PixportFormat::Bgra8888,
             last_terminal_cols: terminal_cols,
             last_terminal_rows: terminal_rows,
+            force_clear: false,
+            capture_waker: None,
         })
     }
 
@@ -229,7 +337,7 @@ impl<'p> Pixport<'p> {
         let command_buffer = allocated
             .first()
             .copied()
-            .ok_or(PixportError::Internal("driver allocated no command buffer"))?;
+            .ok_or(PixportError::NoCommandBuffer)?;
 
         Ok(command_buffer)
     }
@@ -292,7 +400,7 @@ impl<'p> Pixport<'p> {
                     .device()
                     .bind_buffer_memory(buffer, memory, 0)
             }
-            .map_err(|_| PixportError::Internal("failed to bind buffer memory"))?;
+            .map_err(PixportError::BindBufferMemory)?;
             let mapped_ptr = unsafe {
                 self.context
                     .device()
@@ -389,7 +497,7 @@ impl<'p> Pixport<'p> {
         let staging_buf = self
             .staging_buffer
             .as_ref()
-            .ok_or(PixportError::Internal("staging buffer not initialized"))?;
+            .ok_or(PixportError::StagingNotReady)?;
         let width = render_target.width;
         let height = render_target.height;
         let bpp = self.pixel_format.bytes_per_pixel();
@@ -427,15 +535,15 @@ impl<'p> Pixport<'p> {
         Ok(())
     }
 
-    /// Reads the current frame from the GPU and converts to ANSI.
-    pub fn capture_frame(&mut self) -> PixportResult<String> {
-        self.ensure_staging_buffer()?;
+    /// Records and submits the GPU→staging readback without waiting for it.
+    ///
+    /// The copy is queued behind the frame that produced the render target,
+    /// so it can progress while the caller waits on other GPU work.
+    fn submit_readback(&mut self) -> PixportResult<()> {
         let command_buffer = self
             .command_buffer
-            .ok_or(PixportError::Internal("command buffer not allocated"))?;
-        let fence = self
-            .fence
-            .ok_or(PixportError::Internal("fence not created"))?;
+            .ok_or(PixportError::CommandBufferNotAllocated)?;
+        let fence = self.fence.ok_or(PixportError::FenceNotCreated)?;
         unsafe {
             self.context
                 .device()
@@ -469,25 +577,182 @@ impl<'p> Pixport<'p> {
             )
         }
         .map_err(PixportError::Submit)?;
+        Ok(())
+    }
+
+    /// Blocks until the readback submitted by [`Self::submit_readback`] has
+    /// finished and the staging buffer is CPU-visible.
+    fn wait_readback(&self) -> PixportResult<()> {
+        let fence = self.fence.ok_or(PixportError::FenceNotCreated)?;
         unsafe {
             self.context
                 .device()
                 .wait_for_fences(core::slice::from_ref(&fence), true, u64::MAX)
         }
         .map_err(PixportError::FenceWait)?;
-        let bytes = unsafe { core::slice::from_raw_parts(self.staging_mapped, self.staging_size as usize) };
-        let ansi = self.pixels_to_ansi(bytes)?;
-        Ok(ansi)
+        Ok(())
     }
 
-    /// Converts raw pixel data to ANSI escape sequences.
-    fn pixels_to_ansi(&self, pixels: &[u8]) -> PixportResult<String> {
+    /// Byte length of a tightly packed `width x height` readback.
+    fn pixel_len(&self, width: usize, height: usize) -> PixportResult<usize> {
+        width
+            .checked_mul(height)
+            .and_then(|n| n.checked_mul(self.pixel_format.bytes_per_pixel() as usize))
+            .ok_or(PixportError::RenderTargetTooLarge)
+    }
+
+    /// Copies the completed readback out of the staging buffer into an owned
+    /// [`QueuedFrame`] so the staging buffer can be reused immediately.
+    fn finish_capture(&mut self) -> PixportResult<QueuedFrame> {
         let render_target = self.context.render_target();
         let width = render_target.width as usize;
         let height = render_target.height as usize;
-        let bpp = self.pixel_format.bytes_per_pixel() as usize;
-        let stride = width * bpp;
+        let len = self.pixel_len(width, height)?;
+        if self.staging_mapped.is_null() || (self.staging_size as usize) < len {
+            return Err(PixportError::StagingNotReady);
+        }
+        // SAFETY: `staging_mapped` maps `staging_size` bytes of
+        // `staging_memory` (checked above; both are kept alive by
+        // `ensure_staging_buffer` and `Drop`), and the fence has signalled
+        // so the GPU no longer writes to the buffer.
+        let pixels = unsafe { core::slice::from_raw_parts(self.staging_mapped, len) }.to_vec();
+        QueuedFrame::new(
+            render_target.width,
+            render_target.height,
+            self.pixel_format,
+            pixels,
+        )
+    }
 
+    /// Reads the current frame from the GPU and converts it to ANSI,
+    /// blocking until the readback completes.
+    pub fn capture_frame(&mut self) -> PixportResult<String> {
+        self.ensure_staging_buffer()?;
+        self.submit_readback()?;
+        self.wait_readback()?;
+        self.staging_to_ansi()
+    }
+
+    /// Copies the staging buffer into an ANSI frame for the current terminal
+    /// grid, consuming any forced repaint from a resize.
+    fn staging_to_ansi(&mut self) -> PixportResult<String> {
+        let render_target = self.context.render_target();
+        let width = render_target.width as usize;
+        let height = render_target.height as usize;
+        let len = self.pixel_len(width, height)?;
+        if self.staging_mapped.is_null() || (self.staging_size as usize) < len {
+            return Err(PixportError::StagingNotReady);
+        }
+        // SAFETY: see `finish_capture`; the fence has signaled, so the copy
+        // is complete and the mapping outlives this borrow.
+        let pixels = unsafe { core::slice::from_raw_parts(self.staging_mapped, len) };
+        self.pixels_to_ansi(pixels)
+    }
+
+    /// Submits the readback for the current render target without waiting.
+    ///
+    /// Pair with [`Self::finish_capture_async`] (or [`Self::poll_capture`])
+    /// to collect the pixels later; [`Self::capture_frame_async`] does both.
+    pub fn begin_capture(&mut self) -> PixportResult<()> {
+        self.ensure_staging_buffer()?;
+        self.submit_readback()
+    }
+
+    /// Polls an in-flight readback started by [`Self::begin_capture`].
+    ///
+    /// Blocks for at most [`CAPTURE_POLL_SLICE_NS`] before returning
+    /// [`Poll::Pending`], so progress is guaranteed on any executor that
+    /// re-polls. The waker is stored and can be triggered out of band with
+    /// [`Self::notify_capture`].
+    pub fn poll_capture(&mut self, cx: &mut Context<'_>) -> Poll<PixportResult<QueuedFrame>> {
+        let fence = match self.fence {
+            Some(fence) => fence,
+            None => return Poll::Ready(Err(PixportError::FenceNotCreated)),
+        };
+        // SAFETY: `fence` was created by `create_fence` for this device and
+        // stays alive while `Pixport` exists.
+        let waited = unsafe {
+            self.context.device().wait_for_fences(
+                core::slice::from_ref(&fence),
+                true,
+                CAPTURE_POLL_SLICE_NS.as_millis() as u64,
+            )
+        };
+        match waited {
+            Ok(()) => {
+                self.capture_waker = None;
+                Poll::Ready(self.finish_capture())
+            }
+            Err(vk::Result::TIMEOUT) => {
+                self.capture_waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
+            Err(err) => Poll::Ready(Err(PixportError::FenceWait(err))),
+        }
+    }
+
+    /// Async capture: submits the GPU readback and resolves with the
+    /// framebuffer queued on the CPU side.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the same failures as [`Self::capture_frame`].
+    pub async fn capture_frame_async(&mut self) -> PixportResult<QueuedFrame> {
+        self.begin_capture()?;
+        self.finish_capture_async().await
+    }
+
+    /// Async half of [`Self::capture_frame_async`]: waits for a readback
+    /// previously submitted with [`Self::begin_capture`] and copies it out.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PixportError::FenceWait`] when the driver rejects the fence
+    /// wait, or [`PixportError::StagingNotReady`] when staging is not set up.
+    pub async fn finish_capture_async(&mut self) -> PixportResult<QueuedFrame> {
+        core::future::poll_fn(|cx| self.poll_capture(cx)).await
+    }
+
+    /// Wakes a suspended [`Self::capture_frame_async`] /
+    /// [`Self::finish_capture_async`] future.
+    ///
+    /// Intended for drivers that observe GPU progress (for example through a
+    /// `sync_file`); the re-polling `render_loop::block_on` driver does not
+    /// need it. No-op when no capture is pending.
+    pub fn notify_capture(&mut self) {
+        if let Some(waker) = self.capture_waker.take() {
+            waker.wake();
+        }
+    }
+
+    /// Converts raw pixel data to ANSI escape sequences.
+    ///
+    /// The frame is prefixed with a full clear when `clear_before_frame` is
+    /// set **or** when a resize forced a repaint (see
+    /// [`Self::poll_terminal_resize`]); the flag is consumed here.
+    fn pixels_to_ansi(&mut self, pixels: &[u8]) -> PixportResult<String> {
+        let clear = self.config.clear_policy.should_clear() || self.force_clear;
+        self.force_clear = false;
+        let render_target = self.context.render_target();
+        let width = render_target.width as usize;
+        let height = render_target.height as usize;
+        let stride = width * self.pixel_format.bytes_per_pixel() as usize;
+        self.convert_pixels(pixels, width, height, stride, clear)
+    }
+
+    /// Converts a framebuffer slice into an ANSI frame for the current
+    /// terminal grid, clamped by `max_cols` / `max_rows`.
+    ///
+    /// [`PixportFilterType::Auto`] resolves against the effective terminal
+    /// grid, so a resize immediately changes resampling quality.
+    fn convert_pixels(
+        &self,
+        pixels: &[u8],
+        width: usize,
+        height: usize,
+        stride: usize,
+        clear: bool,
+    ) -> PixportResult<String> {
         let term_cols = if self.config.max_cols > 0 {
             self.config.max_cols.min(self.last_terminal_cols)
         } else {
@@ -500,8 +765,8 @@ impl<'p> Pixport<'p> {
         } as usize;
 
         if term_cols == 0 || term_rows == 0 {
-            return Ok(if self.config.clear_before_frame {
-                String::from("\x1b[2J\x1b[H")
+            return Ok(if clear {
+                String::from(CLEAR_SEQUENCE)
             } else {
                 String::new()
             });
@@ -514,20 +779,44 @@ impl<'p> Pixport<'p> {
             stride,
             term_cols,
             term_rows,
-            self.config.use_half_blocks,
+            self.config.cell_density.is_half_blocks(),
         );
-        Ok(ansi_cells_to_string(
-            &cells,
-            term_cols,
-            term_rows,
-            self.config.clear_before_frame,
-        ))
+        Ok(ansi_cells_to_string(&cells, term_cols, term_rows, clear))
     }
 
     /// Writes the captured frame to the terminal.
     pub fn present_frame(&mut self, ansi: &str) -> PixportResult<()> {
         write_stdout(ansi.as_bytes())?;
         Ok(())
+    }
+
+    /// Presents one queued framebuffer as a *clear → render* pair.
+    ///
+    /// Conversion uses the **current** terminal grid and filter, so frames
+    /// queued before a resize are drawn correctly afterwards.
+    pub fn present_queued(&mut self, frame: &QueuedFrame) -> PixportResult<()> {
+        let width = frame.width() as usize;
+        let height = frame.height() as usize;
+        let stride = width * frame.format().bytes_per_pixel() as usize;
+        let content = self.convert_pixels(frame.pixels(), width, height, stride, false)?;
+        let mut out = String::with_capacity(CLEAR_SEQUENCE.len() + content.len());
+        out.push_str(CLEAR_SEQUENCE);
+        out.push_str(&content);
+        write_stdout(out.as_bytes())?;
+        Ok(())
+    }
+
+    /// Drains `pipe` and presents every queued framebuffer in order
+    /// (*clear → render → clear → render → …*).
+    ///
+    /// Returns how many frames were written.
+    pub fn present_pending(&mut self, pipe: &mut FramePipe) -> PixportResult<usize> {
+        let mut presented = 0usize;
+        while let Some(frame) = pipe.try_recv() {
+            self.present_queued(&frame)?;
+            presented += 1;
+        }
+        Ok(presented)
     }
 
     /// Captures and presents a single frame.
@@ -537,10 +826,28 @@ impl<'p> Pixport<'p> {
         Ok(())
     }
 
+    /// Detects a terminal window resize and refreshes the cached grid.
+    ///
+    /// Returns the change when the size differs from the last observation.
+    /// The next presented frame is forced to clear the screen so no stale
+    /// cells survive, and [`PixportFilterType::Auto`] re-resolves its filter
+    /// against the new grid.
+    pub fn poll_terminal_resize(&mut self) -> Option<TerminalResize> {
+        let cols = detect_terminal_width();
+        let rows = detect_terminal_height();
+        let resize = detect_resize(self.last_terminal_cols, self.last_terminal_rows, cols, rows)?;
+        self.last_terminal_cols = cols;
+        self.last_terminal_rows = rows;
+        self.force_clear = true;
+        Some(resize)
+    }
+
     /// Updates the terminal size from the OS.
+    ///
+    /// Equivalent to [`Self::poll_terminal_resize`] with the change ignored;
+    /// the forced repaint on the next frame still applies.
     pub fn update_terminal_size(&mut self) {
-        self.last_terminal_cols = detect_terminal_width();
-        self.last_terminal_rows = detect_terminal_height();
+        let _ = self.poll_terminal_resize();
     }
 
     /// Returns the current terminal size.
@@ -600,26 +907,12 @@ impl Drop for Pixport<'_> {
     }
 }
 
-/// Pixel format conversion and resampling for terminal output.
-///
-/// This module converts raw framebuffer pixels into ANSI true-color cells.
-/// It provides a single converter, [`AnsiColorConverter`], that supports
-/// multiple resampling filters ([`PixportFilterType`]) using a robust scalar
-/// implementation. The design is SIMD-ready: a hardware-accelerated path
-/// can be selected via [`AnsiColorConverter::is_simd_available`] when
-/// available.
-///
-/// # Resampling
-///
-/// Upscaling and downscaling use a separable 1-D convolution (a horizontal
-/// pass followed by a vertical pass). Kernel widths adapt to the scale
-/// factor (see [`PixportFilterType`]) so heavy downscaling stays anti-aliased.
-pub mod simd {
-    use alloc::string::String;
-    use alloc::vec::Vec;
-    use alloc::{format, vec};
-
+pub mod ansi {
     use super::PixportFormat;
+    use alloc::string::String;
+    use alloc::vec;
+    use alloc::vec::Vec;
+    use core::fmt::Write;
 
     /// RGB pixel with 8-bit channels.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -650,6 +943,10 @@ pub mod simd {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     #[non_exhaustive]
     pub enum PixportFilterType {
+        /// Picks a concrete filter from [`AUTO_FILTER_LADDER`] based on the
+        /// terminal grid size: quality-oriented filters for small grids
+        /// (cheap because few output pixels), fast filters for large grids.
+        Auto,
         /// Point sampling. Exact, fastest, no antialiasing.
         Nearest,
         /// Linear interpolation over a 2x2 neighborhood.
@@ -661,6 +958,168 @@ pub mod simd {
         Mitchell,
         /// High-quality Lanczos-3 windowed sinc interpolation.
         Lanczos3,
+    }
+
+    /// Fallback used by [`PixportFilterType::Auto`] when the ladder is empty
+    /// or an unresolved `Auto` reaches the kernel functions: the base rung,
+    /// i.e. the filter chosen for the smallest grids.
+    const BASE_AUTO_FILTER: PixportFilterType = PixportFilterType::Lanczos3;
+
+    /// One rung of the [`PixportFilterType::Auto`] ladder: from a
+    /// `cols x rows` terminal grid upwards, `filter` is selected.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct AutoFilterEntry {
+        /// Minimum terminal columns for this rung.
+        pub cols: u16,
+        /// Minimum terminal rows for this rung.
+        pub rows: u16,
+        /// Filter selected once the terminal grid reaches this rung.
+        pub filter: PixportFilterType,
+    }
+
+    /// Builds an `&'static [AutoFilterEntry]` ladder for
+    /// [`PixportFilterType::Auto`].
+    ///
+    /// Grid combinations may be written either compactly (`10x20`) or
+    /// spaced (`10 x 20`); each entry maps a grid to a concrete filter:
+    ///
+    /// ```ignore
+    /// pub const LADDER: &[AutoFilterEntry] = pixport_auto_filter_table![
+    ///     10x20 => PixportFilterType::Lanczos3,
+    ///     240x480 => PixportFilterType::Nearest,
+    /// ];
+    /// ```
+    ///
+    /// One form must be used for every entry of a single invocation. Rungs
+    /// should be listed in ascending grid size; each applies from its grid
+    /// up to (but excluding) the next one.
+    ///
+    /// Compact entries are split at expansion time by [`parse_size_pair`];
+    /// a malformed combination resolves to `(0, 0)` and therefore to the
+    /// smallest rung of the ladder.
+    #[macro_export]
+    macro_rules! pixport_auto_filter_table {
+        ($($cols:literal x $rows:literal => $filter:expr),+ $(,)?) => {
+            &[$( $crate::ui_terminal_pixport::ansi::AutoFilterEntry {
+                cols: $cols,
+                rows: $rows,
+                filter: $filter,
+            }),+]
+        };
+        ($($grid:literal => $filter:expr),+ $(,)?) => {
+            &[$( $crate::ui_terminal_pixport::ansi::AutoFilterEntry {
+                cols: $crate::ui_terminal_pixport::ansi::parse_size_pair(stringify!($grid)).0,
+                rows: $crate::ui_terminal_pixport::ansi::parse_size_pair(stringify!($grid)).1,
+                filter: $filter,
+            }),+]
+        };
+    }
+
+    /// Splits a compact `"COLSxROWS"` combination such as `"10x20"` into
+    /// `(cols, rows)`.
+    ///
+    /// Malformed input yields `(0, 0)`, which the `Auto` resolver treats as
+    /// "below the first rung" and maps to [`BASE_AUTO_FILTER`].
+    #[doc(hidden)]
+    pub const fn parse_size_pair(combination: &str) -> (u16, u16) {
+        let bytes = combination.as_bytes();
+        let mut split = 0usize;
+        while split < bytes.len() && bytes[split] != b'x' {
+            split += 1;
+        }
+        if split == 0 || split + 1 >= bytes.len() {
+            return (0, 0);
+        }
+        match (
+            parse_u16_in(bytes, 0, split),
+            parse_u16_in(bytes, split + 1, bytes.len()),
+        ) {
+            (Some(cols), Some(rows)) => (cols, rows),
+            _ => (0, 0),
+        }
+    }
+
+    /// Parses decimal `bytes[start..end]` as a `u16`, rejecting overflow
+    /// and junk. Index-based (rather than slice ranges) so the whole chain
+    /// stays `const`.
+    const fn parse_u16_in(bytes: &[u8], start: usize, end: usize) -> Option<u16> {
+        if start >= end {
+            return None;
+        }
+        let mut value: u32 = 0;
+        let mut i = start;
+        while i < end {
+            let digit = bytes[i];
+            if !digit.is_ascii_digit() {
+                return None;
+            }
+            value = value * 10 + (digit - b'0') as u32;
+            if value > u16::MAX as u32 {
+                return None;
+            }
+            i += 1;
+        }
+        Some(value as u16)
+    }
+
+    /// Terminal-size ladder consumed by [`PixportFilterType::Auto`].
+    ///
+    /// Small grids get the expensive, anti-aliased filters (their output is
+    /// tiny, so the cost is negligible while heavy downscaling needs the
+    /// quality); as the grid grows the ladder steps down to cheaper filters
+    /// so large terminals stay within their frame budget.
+    pub const AUTO_FILTER_LADDER: &[AutoFilterEntry] = crate::pixport_auto_filter_table![
+        10x20 => PixportFilterType::Lanczos3,
+        20x40 => PixportFilterType::Mitchell,
+        40x80 => PixportFilterType::Bicubic,
+        120x240 => PixportFilterType::Bilinear,
+        240x480 => PixportFilterType::Nearest,
+    ];
+
+    /// Resolves [`PixportFilterType::Auto`] for a `cols x rows` grid by
+    /// walking [`AUTO_FILTER_LADDER`].
+    ///
+    /// Rungs are compared by total cell count (`cols * rows`), so terminals
+    /// whose aspect ratio differs from the ladder entries still advance
+    /// through it. The last rung whose cell count is reached wins; grids
+    /// smaller than the first rung get [`BASE_AUTO_FILTER`].
+    pub const fn resolve_auto_filter(cols: usize, rows: usize) -> PixportFilterType {
+        if AUTO_FILTER_LADDER.is_empty() {
+            return BASE_AUTO_FILTER;
+        }
+        let cells = cols.saturating_mul(rows);
+        let mut picked = AUTO_FILTER_LADDER[0].filter;
+        let mut i = 0;
+        while i < AUTO_FILTER_LADDER.len() {
+            let rung = &AUTO_FILTER_LADDER[i];
+            if cells >= (rung.cols as usize) * (rung.rows as usize) {
+                picked = rung.filter;
+            }
+            i += 1;
+        }
+        picked
+    }
+
+    impl PixportFilterType {
+        /// Returns `true` for [`Self::Auto`].
+        #[inline]
+        #[must_use]
+        pub const fn is_auto(self) -> bool {
+            matches!(self, Self::Auto)
+        }
+
+        /// Resolves [`Self::Auto`] for a `cols x rows` output grid.
+        ///
+        /// Concrete variants return themselves, so resolution is idempotent
+        /// and safe to apply at every resampling layer.
+        #[inline]
+        #[must_use]
+        pub const fn resolve(self, cols: usize, rows: usize) -> Self {
+            match self {
+                Self::Auto => resolve_auto_filter(cols, rows),
+                other => other,
+            }
+        }
     }
 
     /// Precomputed 1-D filter weights for a single output coordinate.
@@ -676,8 +1135,17 @@ pub mod simd {
         }
     }
 
+    /// Kernel weight for `filter`.
+    ///
+    /// [`PixportFilterType::Auto`] is resolved by the callers before the
+    /// kernels are built; if one reaches here anyway it uses the base
+    /// fallback, mirroring [`resolve_auto_filter`] on an empty ladder.
     fn filter_weight(filter: PixportFilterType, x: f32) -> f32 {
         match filter {
+            PixportFilterType::Auto | PixportFilterType::Lanczos3 => {
+                let ax = x.abs();
+                if ax < 3.0 { sinc(ax) * sinc(ax / 3.0) } else { 0.0 }
+            }
             PixportFilterType::Nearest => 1.0,
             PixportFilterType::Bilinear => {
                 let a = x.abs();
@@ -704,10 +1172,6 @@ pub mod simd {
                     0.0
                 }
             }
-            PixportFilterType::Lanczos3 => {
-                let ax = x.abs();
-                if ax < 3.0 { sinc(ax) * sinc(ax / 3.0) } else { 0.0 }
-            }
         }
     }
 
@@ -719,13 +1183,15 @@ pub mod simd {
         }
     }
 
+    /// Filter radius for `filter`; see [`filter_weight`] for how
+    /// [`PixportFilterType::Auto`] is treated.
     fn filter_support(filter: PixportFilterType) -> f32 {
         match filter {
+            PixportFilterType::Auto | PixportFilterType::Lanczos3 => 3.0,
             PixportFilterType::Nearest => 0.0,
             PixportFilterType::Bilinear => 1.0,
             PixportFilterType::Bicubic => 2.0,
             PixportFilterType::Mitchell => 2.0,
-            PixportFilterType::Lanczos3 => 3.0,
         }
     }
 
@@ -913,16 +1379,11 @@ pub mod simd {
             self.filter = filter;
         }
 
-        /// Returns `false`: the current implementation runs the scalar fallback.
-        /// A SIMD-accelerated path can be selected here when available.
-        pub const fn is_simd_available(&self) -> bool {
-            false
-        }
-
         /// Samples the framebuffer at fractional coordinates `(x, y)`.
         ///
         /// Integer values correspond to pixel centers. Uses the configured
-        /// filter with unit filter scale.
+        /// filter with unit filter scale, resolving [`PixportFilterType::Auto`]
+        /// against the source dimensions.
         pub fn sample_pixel(
             &self,
             pixels: &[u8],
@@ -935,8 +1396,9 @@ pub mod simd {
             if width == 0 || height == 0 {
                 return RgbPixel { r: 0, g: 0, b: 0 };
             }
-            let xwin = build_window(self.filter, x, width, 1.0);
-            let ywin = build_window(self.filter, y, height, 1.0);
+            let filter = self.filter.resolve(width, height);
+            let xwin = build_window(filter, x, width, 1.0);
+            let ywin = build_window(filter, y, height, 1.0);
             let bpp = self.pixel_format.bytes_per_pixel() as usize;
             let mut r = 0.0f32;
             let mut g = 0.0f32;
@@ -963,6 +1425,9 @@ pub mod simd {
         }
 
         /// Resamples the framebuffer into `out_w x out_h` RGB pixels.
+        ///
+        /// [`PixportFilterType::Auto`] resolves against the output grid, so
+        /// every layer of the pipeline picks the filter for its own size.
         pub fn resample(
             &self,
             pixels: &[u8],
@@ -971,6 +1436,21 @@ pub mod simd {
             stride: usize,
             out_w: usize,
             out_h: usize,
+        ) -> Vec<RgbPixel> {
+            let filter = self.filter.resolve(out_w, out_h);
+            self.resample_with_filter(pixels, width, height, stride, out_w, out_h, filter)
+        }
+
+        /// [`Self::resample`] with an already resolved filter.
+        pub fn resample_with_filter(
+            &self,
+            pixels: &[u8],
+            width: usize,
+            height: usize,
+            stride: usize,
+            out_w: usize,
+            out_h: usize,
+            filter: PixportFilterType,
         ) -> Vec<RgbPixel> {
             let n = out_w * out_h;
             let mut temp = vec![0.0f32; n * 3];
@@ -982,7 +1462,7 @@ pub mod simd {
                 self.pixel_format,
                 out_w,
                 out_h,
-                self.filter,
+                filter,
                 &mut temp,
             );
             let mut out = Vec::with_capacity(n);
@@ -1001,6 +1481,10 @@ pub mod simd {
         /// `term_cols` and `term_rows` give the terminal grid size. When
         /// `use_half_blocks` is true, each terminal row represents two
         /// framebuffer rows (upper / lower) for 2x vertical density.
+        ///
+        /// [`PixportFilterType::Auto`] resolves against the terminal grid
+        /// (not the doubled half-block grid) so the selection is stable
+        /// across `use_half_blocks` toggles.
         pub fn pixels_to_ansi_cells(
             &self,
             pixels: &[u8],
@@ -1020,7 +1504,8 @@ pub mod simd {
             } else {
                 term_rows
             };
-            let rgb = self.resample(pixels, width, height, stride, out_w, out_h);
+            let filter = self.filter.resolve(term_cols, term_rows);
+            let rgb = self.resample_with_filter(pixels, width, height, stride, out_w, out_h, filter);
             let mut cells = Vec::with_capacity(term_cols * term_rows);
             let ch = if use_half_blocks { '▀' } else { '█' };
             for ty in 0..term_rows {
@@ -1058,26 +1543,25 @@ pub mod simd {
         if term_cols == 0 {
             return String::new();
         }
-        let mut ansi = String::with_capacity(cells.len() * 20);
+        let mut ansi = String::with_capacity(cells.len() * 24);
         let mut current_fg: Option<RgbPixel> = None;
         let mut current_bg: Option<RgbPixel> = None;
 
         if clear_before_frame {
             ansi.push_str("\x1b[2J\x1b[H");
         }
-
         for (idx, cell) in cells.iter().enumerate() {
             let term_x = idx % term_cols;
             if term_x == 0 {
-                ansi.push_str(&format!("\x1b[{};1H", idx / term_cols + 1));
+                let _ = write!(ansi, "\x1b[{};1H", idx / term_cols + 1);
             }
             if current_fg != Some(cell.fg) {
-                ansi.push_str(&format!("\x1b[38;2;{};{};{}m", cell.fg.r, cell.fg.g, cell.fg.b));
+                let _ = write!(ansi, "\x1b[38;2;{};{};{}m", cell.fg.r, cell.fg.g, cell.fg.b);
                 current_fg = Some(cell.fg);
             }
             if let Some(bg) = cell.bg {
                 if current_bg != Some(bg) {
-                    ansi.push_str(&format!("\x1b[48;2;{};{};{}m", bg.r, bg.g, bg.b));
+                    let _ = write!(ansi, "\x1b[48;2;{};{};{}m", bg.r, bg.g, bg.b);
                     current_bg = Some(bg);
                 }
             } else if current_bg.is_some() {
@@ -1091,13 +1575,244 @@ pub mod simd {
     }
 }
 
+/// Bounded CPU-side queue between asynchronous GPU readbacks and terminal
+/// presentation.
+///
+/// The producer (`Pixport::finish_capture_async`) and the consumer
+/// (`Pixport::present_pending`) are decoupled: several frames may be in
+/// flight while the terminal still paints the previous one. When the pipe
+/// overflows, the *oldest* frame is dropped so the screen always shows the
+/// most recent content; [`FramePipe::dropped`] counts them for diagnostics.
+pub mod frame_pipe {
+    use super::{PixportError, PixportFormat, PixportResult};
+    use alloc::collections::VecDeque;
+    use alloc::vec::Vec;
+    use core::task::{Context, Poll, Waker};
+
+    /// A completed GPU→CPU readback awaiting terminal presentation.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct QueuedFrame {
+        /// Monotonic production sequence number (0-based).
+        seq: u64,
+        /// Framebuffer width in pixels.
+        width: u32,
+        /// Framebuffer height in pixels.
+        height: u32,
+        /// Pixel layout of `pixels`.
+        format: PixportFormat,
+        /// Tightly packed pixels.
+        pixels: Vec<u8>,
+    }
+
+    impl QueuedFrame {
+        /// Wraps a readback buffer with its metadata.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`PixportError::FrameDimensionsOverflow`] when `pixels.len()` differs
+        /// from the tightly packed `width * height * bytes_per_pixel`
+        /// size, catching corrupted or truncated readbacks.
+        pub fn new(width: u32, height: u32, format: PixportFormat, pixels: Vec<u8>) -> PixportResult<Self> {
+            let expected = (width as usize)
+                .checked_mul(height as usize)
+                .and_then(|n| n.checked_mul(format.bytes_per_pixel() as usize))
+                .ok_or(PixportError::FrameDimensionsOverflow)?;
+            if pixels.len() != expected {
+                return Err(PixportError::FrameSizeMismatch);
+            }
+            Ok(Self {
+                seq: 0,
+                width,
+                height,
+                format,
+                pixels,
+            })
+        }
+
+        /// Sequence number assigned by [`FramePipe::push`].
+        #[must_use]
+        pub const fn seq(&self) -> u64 {
+            self.seq
+        }
+
+        /// Framebuffer width in pixels.
+        #[must_use]
+        pub const fn width(&self) -> u32 {
+            self.width
+        }
+
+        /// Framebuffer height in pixels.
+        #[must_use]
+        pub const fn height(&self) -> u32 {
+            self.height
+        }
+
+        /// Pixel layout of the stored buffer.
+        #[must_use]
+        pub const fn format(&self) -> PixportFormat {
+            self.format
+        }
+
+        /// Tightly packed pixel buffer.
+        #[must_use]
+        pub fn pixels(&self) -> &[u8] {
+            &self.pixels
+        }
+    }
+
+    /// Bounded FIFO of [`QueuedFrame`]s with a single waker slot.
+    #[derive(Debug)]
+    pub struct FramePipe {
+        queue: VecDeque<QueuedFrame>,
+        capacity: usize,
+        next_seq: u64,
+        dropped: u64,
+        closed: bool,
+        waker: Option<Waker>,
+    }
+
+    impl FramePipe {
+        /// Creates a pipe holding at most `capacity` frames.
+        ///
+        /// A capacity of 0 is raised to 1 so producers never spin on a pipe
+        /// that can never hold a frame.
+        #[must_use]
+        pub fn new(capacity: usize) -> Self {
+            Self {
+                queue: VecDeque::with_capacity(capacity.min(16)),
+                capacity: capacity.max(1),
+                next_seq: 0,
+                dropped: 0,
+                closed: false,
+                waker: None,
+            }
+        }
+
+        /// Maximum number of queued frames.
+        #[must_use]
+        pub const fn capacity(&self) -> usize {
+            self.capacity
+        }
+
+        /// Number of queued frames.
+        #[must_use]
+        pub fn len(&self) -> usize {
+            self.queue.len()
+        }
+
+        /// Whether no frames are queued.
+        #[must_use]
+        pub fn is_empty(&self) -> bool {
+            self.queue.is_empty()
+        }
+
+        /// How many frames were dropped because the pipe was full.
+        #[must_use]
+        pub const fn dropped(&self) -> u64 {
+            self.dropped
+        }
+
+        /// Whether the pipe was closed by [`Self::close`].
+        #[must_use]
+        pub const fn is_closed(&self) -> bool {
+            self.closed
+        }
+
+        /// Enqueues a frame, returning the oldest frame evicted by overflow.
+        ///
+        /// Always wakes the consumer: even an eviction means new content is
+        /// available for presentation.
+        pub fn push(&mut self, frame: QueuedFrame) -> Option<QueuedFrame> {
+            if self.closed {
+                return None;
+            }
+            let mut evicted = None;
+            if self.queue.len() >= self.capacity {
+                evicted = self.queue.pop_front();
+                if evicted.is_some() {
+                    self.dropped += 1;
+                }
+            }
+            let mut frame = frame;
+            frame.seq = self.next_seq;
+            self.next_seq = self.next_seq.wrapping_add(1);
+            self.queue.push_back(frame);
+            self.wake();
+            evicted
+        }
+
+        /// Dequeues the oldest frame without blocking.
+        #[must_use]
+        pub fn try_recv(&mut self) -> Option<QueuedFrame> {
+            let frame = self.queue.pop_front();
+            if frame.is_some() {
+                self.wake();
+            }
+            frame
+        }
+
+        /// Polls for the next frame.
+        ///
+        /// Returns [`Poll::Pending`] (and stores `cx`'s waker) while empty
+        /// and open; [`Poll::Ready(None)`] once [`Self::close`]d and drained.
+        pub fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Option<QueuedFrame>> {
+            match self.queue.pop_front() {
+                Some(frame) => {
+                    self.wake();
+                    Poll::Ready(Some(frame))
+                }
+                None if self.closed => Poll::Ready(None),
+                None => {
+                    let store = match &self.waker {
+                        Some(existing) if existing.will_wake(cx.waker()) => false,
+                        _ => true,
+                    };
+                    if store {
+                        self.waker = Some(cx.waker().clone());
+                    }
+                    Poll::Pending
+                }
+            }
+        }
+
+        /// Async variant of [`Self::poll_recv`]: resolves with the next
+        /// frame, or `None` once the pipe is closed and drained.
+        pub async fn recv(&mut self) -> Option<QueuedFrame> {
+            core::future::poll_fn(|cx| self.poll_recv(cx)).await
+        }
+
+        /// Closes the pipe: no further frames are accepted, pending waiters
+        /// finish once the queue drains.
+        pub fn close(&mut self) {
+            self.closed = true;
+            self.wake();
+        }
+
+        /// Drops every queued frame without counting them as dropped.
+        pub fn clear(&mut self) {
+            self.queue.clear();
+        }
+
+        /// Wakes a stored consumer waker, if any.
+        fn wake(&mut self) {
+            if let Some(waker) = self.waker.take() {
+                waker.wake();
+            }
+        }
+    }
+}
+
 /// High-level render loop for terminal-based rendering.
 pub mod render_loop {
-    use super::{Pixport, PixportConfig, PixportResult};
-    use crate::ui_pipeline::PipelineContext;
+    use super::frame_pipe::FramePipe;
+    use super::{Pixport, PixportConfig, PixportError, PixportResult};
+    use crate::ui_pipeline::{OwnedFd, PipelineContext};
     use crate::ui_renderer::{RenderLayer, RendererSubsystem};
     use alloc::boxed::Box;
     use codevar_consoleutil::console_ansi::{cursor, erase};
+    use core::future::Future;
+    use core::pin::Pin;
+    use core::task::{Context, Poll, Waker};
 
     /// Configuration for the terminal render loop.
     #[derive(Debug, Clone)]
@@ -1108,16 +1823,11 @@ pub mod render_loop {
         pub pixport_config: PixportConfig,
     }
 
-    impl Default for RenderLoopConfig {
-        fn default() -> Self {
-            Self {
-                frame_rate: codevar_time_core::TimeDuration::from_millis(16),
-                pixport_config: PixportConfig::default(),
-            }
-        }
-    }
-
     /// Runs a render loop that captures frames and outputs to terminal.
+    ///
+    /// `max_cols == 0` / `max_rows == 0` follow the live terminal size: the
+    /// loop polls for resizes every frame, forces a repaint on change, and
+    /// lets [`super::ansi::PixportFilterType::Auto`] re-pick its filter.
     pub fn run_terminal_render_loop<'p, L>(
         pipeline: &'p PipelineContext,
         mut renderer: RendererSubsystem<'p>,
@@ -1128,23 +1838,15 @@ pub mod render_loop {
         L: RenderLayer + 'p,
     {
         codevar_consoleutil::init_ansi_support();
-        let term_cols = codevar_consoleutil::detect_terminal_width();
-        let term_rows = codevar_consoleutil::detect_terminal_height();
-        let mut pixport_config = config.pixport_config;
-        if pixport_config.max_cols == 0 {
-            pixport_config.max_cols = term_cols;
-        }
-        if pixport_config.max_rows == 0 {
-            pixport_config.max_rows = term_rows;
-        }
         renderer.layers_mut().add(Box::new(layer))?;
-        let mut pixport = Pixport::new(pipeline, pixport_config)?;
+        let mut pixport = Pixport::new(pipeline, config.pixport_config)?;
         codevar_consoleutil::write_stdout(cursor::hide().as_bytes())?;
         codevar_consoleutil::write_stdout(erase::screen().as_bytes())?;
 
         let frame_duration = config.frame_rate;
         loop {
             let frame_start = codevar_time_core::SystemTime::monotonic_nanos();
+            let _ = pixport.poll_terminal_resize();
             renderer.begin_frame(None)?;
             renderer.render_frame()?;
             let sync_file = renderer.end_frame()?;
@@ -1173,7 +1875,7 @@ pub mod render_loop {
     }
 
     /// Wait for GPU synchronization using a sync file.
-    fn wait_for_gpu_sync(sync_file: &crate::ui_pipeline::OwnedFd) -> PixportResult<()> {
+    fn wait_for_gpu_sync(sync_file: &OwnedFd) -> PixportResult<()> {
         let mut descriptor = libc::pollfd {
             fd: sync_file.as_raw(),
             events: libc::POLLIN,
@@ -1181,16 +1883,155 @@ pub mod render_loop {
         };
         let ready = unsafe { libc::poll(&mut descriptor, 1, 5000) };
         if ready <= 0 {
-            return Err(super::PixportError::Internal("timed out waiting for GPU"));
+            return Err(PixportError::GpuSyncTimeout);
         }
         Ok(())
+    }
+
+    /// Deadline for [`wait_gpu_sync_async`]: 5 seconds, matching the
+    /// blocking [`wait_for_gpu_sync`] timeout.
+    const GPU_SYNC_TIMEOUT_NS: u64 = 5_000_000_000;
+
+    /// Async variant of [`wait_for_gpu_sync`].
+    ///
+    /// Checks the sync file in bounded non-blocking slices (1 ms sleep plus
+    /// a cooperative yield between them) so an executor stays responsive,
+    /// giving up after [`GPU_SYNC_TIMEOUT_NS`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PixportError::GpuSyncPollFailed`] when `poll(2)` fails or
+    /// [`PixportError::GpuSyncTimeout`] when the deadline passes before the
+    /// GPU signals readiness.
+    pub async fn wait_gpu_sync_async(sync_file: &OwnedFd) -> PixportResult<()> {
+        let deadline = codevar_time_core::SystemTime::monotonic_nanos().saturating_add(GPU_SYNC_TIMEOUT_NS);
+        loop {
+            let mut descriptor = libc::pollfd {
+                fd: sync_file.as_raw(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let ready = unsafe { libc::poll(&mut descriptor, 1, 0) };
+            if ready > 0 {
+                return Ok(());
+            }
+            if ready < 0 {
+                return Err(PixportError::GpuSyncPollFailed);
+            }
+            if codevar_time_core::SystemTime::monotonic_nanos() >= deadline {
+                return Err(PixportError::GpuSyncTimeout);
+            }
+            sleep_for(codevar_time_core::TimeDuration::from_millis(1));
+            yield_now().await;
+        }
+    }
+
+    /// Yields to the executor once: the first poll returns [`Poll::Pending`]
+    /// after waking the current task, the second [`Poll::Ready`].
+    async fn yield_now() {
+        struct YieldNow(bool);
+
+        impl Future for YieldNow {
+            type Output = ();
+            fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+                if self.0 {
+                    Poll::Ready(())
+                } else {
+                    self.0 = true;
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+            }
+        }
+        YieldNow(false).await
+    }
+
+    /// Drives `future` to completion on the current thread.
+    ///
+    /// A minimal single-threaded executor for running
+    /// [`run_terminal_render_loop_async`] without an async runtime. Every
+    /// future in this module re-registers its waker or makes progress from
+    /// re-polling alone, so a no-op waker plus a 1 ms sleep on
+    /// [`Poll::Pending`] is sufficient (and never busy-spins).
+    pub fn block_on<F: Future>(future: F) -> F::Output {
+        let mut future = core::pin::pin!(future);
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        loop {
+            match future.as_mut().poll(&mut cx) {
+                Poll::Ready(output) => return output,
+                Poll::Pending => sleep_for(codevar_time_core::TimeDuration::from_millis(1)),
+            }
+        }
+    }
+
+    /// Asynchronous counterpart of [`run_terminal_render_loop`].
+    ///
+    /// Renders a frame, then awaits the GPU sync file and the readback
+    /// fence before queueing the framebuffer on `pipe`. Every frame that
+    /// completes is presented in order as a *clear → render* pair
+    /// (`super::Pixport::present_pending`), so overlapping GPU work never
+    /// tears the terminal: `clear → render → clear → render → …`.
+    ///
+    /// When the pipe is full, its oldest frame is dropped so the terminal
+    /// converges on the newest frame (see
+    /// [`super::frame_pipe::FramePipe::dropped`]).
+    ///
+    /// Drive it with [`block_on`] or another executor that keeps `pipe`
+    /// borrowed for the future's lifetime:
+    ///
+    /// ```ignore
+    /// let mut pipe = FramePipe::default();
+    /// render_loop::block_on(render_loop::run_terminal_render_loop_async(
+    ///     pipeline, renderer, layer, config, &mut pipe,
+    /// ))?;
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Propagates the same rendering, Vulkan and I/O failures as
+    /// [`run_terminal_render_loop`].
+    pub async fn run_terminal_render_loop_async<'p, L>(
+        pipeline: &'p PipelineContext,
+        mut renderer: RendererSubsystem<'p>,
+        layer: L,
+        config: RenderLoopConfig,
+        pipe: &mut FramePipe,
+    ) -> PixportResult<()>
+    where
+        L: RenderLayer + 'p,
+    {
+        codevar_consoleutil::init_ansi_support();
+        renderer.layers_mut().add(Box::new(layer))?;
+        let mut pixport = Pixport::new(pipeline, config.pixport_config)?;
+        codevar_consoleutil::write_stdout(cursor::hide().as_bytes())?;
+        codevar_consoleutil::write_stdout(erase::screen().as_bytes())?;
+
+        let frame_duration = config.frame_rate;
+        loop {
+            let frame_start = codevar_time_core::SystemTime::monotonic_nanos();
+            let _ = pixport.poll_terminal_resize();
+            renderer.begin_frame(None)?;
+            renderer.render_frame()?;
+            let sync_file = renderer.end_frame()?;
+            pixport.begin_capture()?;
+            wait_gpu_sync_async(&sync_file).await?;
+            drop(sync_file);
+            let frame = pixport.finish_capture_async().await?;
+            pipe.push(frame);
+            pixport.present_pending(pipe)?;
+            let elapsed = codevar_time_core::SystemTime::monotonic_nanos() - frame_start;
+            let elapsed_dur = codevar_time_core::TimeDuration::from_nanos(elapsed);
+            let remaining = frame_duration.saturating_sub(elapsed_dur);
+            sleep_for(remaining);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui_terminal_pixport::simd::{AnsiCell, RgbPixel};
+    use crate::ui_terminal_pixport::ansi::{AnsiCell, RgbPixel};
 
     #[test]
     fn test_pixel_format_bpp() {
@@ -1203,15 +2044,15 @@ mod tests {
         let config = PixportConfig::default();
         assert_eq!(config.max_cols, 0);
         assert_eq!(config.max_rows, 0);
-        assert!(config.use_half_blocks);
-        assert!(config.clear_before_frame);
+        assert!(config.clear_policy.should_clear());
+        assert!(config.cell_density.is_half_blocks());
         assert_eq!(config.filter, PixportFilterType::default());
     }
 
     #[test]
     fn test_nearest_color_converter() {
         let converter =
-            simd::AnsiColorConverter::with_filter(PixportFormat::Bgra8888, PixportFilterType::Nearest);
+            ansi::AnsiColorConverter::with_filter(PixportFormat::Bgra8888, PixportFilterType::Nearest);
         // 2x1 image: red, green
         let mut pixels = vec![0u8; 2 * 1 * 4];
         pixels[0..4].copy_from_slice(&[0, 0, 255, 255]); // red (BGRA)
@@ -1220,15 +2061,15 @@ mod tests {
         let cells = converter.pixels_to_ansi_cells(&pixels, 2, 1, 8, 2, 1, false);
 
         assert_eq!(cells.len(), 2);
-        assert_eq!(cells[0].fg, simd::RgbPixel { r: 255, g: 0, b: 0 });
-        assert_eq!(cells[1].fg, simd::RgbPixel { r: 0, g: 255, b: 0 });
+        assert_eq!(cells[0].fg, ansi::RgbPixel { r: 255, g: 0, b: 0 });
+        assert_eq!(cells[1].fg, ansi::RgbPixel { r: 0, g: 255, b: 0 });
         assert_eq!(cells[0].char, '█');
     }
 
     #[test]
     fn test_nearest_half_blocks() {
         let converter =
-            simd::AnsiColorConverter::with_filter(PixportFormat::Bgra8888, PixportFilterType::Nearest);
+            ansi::AnsiColorConverter::with_filter(PixportFormat::Bgra8888, PixportFilterType::Nearest);
         // 2x2 image
         let mut pixels = vec![0u8; 2 * 2 * 4];
         // Row 0: Red, Green
@@ -1241,19 +2082,18 @@ mod tests {
         let cells = converter.pixels_to_ansi_cells(&pixels, 2, 2, 8, 2, 1, true);
 
         assert_eq!(cells.len(), 2);
-        assert_eq!(cells[0].fg, simd::RgbPixel { r: 255, g: 0, b: 0 }); // upper red
-        assert_eq!(cells[0].bg, Some(simd::RgbPixel { r: 0, g: 0, b: 255 })); // lower blue
-        assert_eq!(cells[1].fg, simd::RgbPixel { r: 0, g: 255, b: 0 }); // upper green
-        assert_eq!(cells[1].bg, Some(simd::RgbPixel { r: 255, g: 255, b: 0 })); // lower yellow
+        assert_eq!(cells[0].fg, ansi::RgbPixel { r: 255, g: 0, b: 0 }); // upper red
+        assert_eq!(cells[0].bg, Some(ansi::RgbPixel { r: 0, g: 0, b: 255 })); // lower blue
+        assert_eq!(cells[1].fg, ansi::RgbPixel { r: 0, g: 255, b: 0 }); // upper green
+        assert_eq!(cells[1].bg, Some(ansi::RgbPixel { r: 255, g: 255, b: 0 })); // lower yellow
         assert_eq!(cells[0].char, '▀');
     }
 
     #[test]
     fn test_converter_defaults() {
-        let c = simd::AnsiColorConverter::new(PixportFormat::Bgra8888);
-        assert!(!c.is_simd_available());
+        let c = ansi::AnsiColorConverter::new(PixportFormat::Bgra8888);
         assert_eq!(c.filter(), PixportFilterType::Bilinear);
-        let c2 = simd::AnsiColorConverter::with_filter(PixportFormat::Bgra8888, PixportFilterType::Lanczos3);
+        let c2 = ansi::AnsiColorConverter::with_filter(PixportFormat::Bgra8888, PixportFilterType::Lanczos3);
         assert_eq!(c2.filter(), PixportFilterType::Lanczos3);
     }
 
@@ -1262,9 +2102,9 @@ mod tests {
         let mut pixels = vec![0u8; 2 * 1 * 4];
         pixels[0..4].copy_from_slice(&[0, 0, 255, 255]); // red
         pixels[4..8].copy_from_slice(&[255, 0, 0, 255]); // blue (BGRA: B=255)
-        let c = simd::AnsiColorConverter::with_filter(PixportFormat::Bgra8888, PixportFilterType::Bilinear);
+        let c = ansi::AnsiColorConverter::with_filter(PixportFormat::Bgra8888, PixportFilterType::Bilinear);
         let mid = c.sample_pixel(&pixels, 2, 1, 8, 0.5, 0.0);
-        assert_eq!(mid, simd::RgbPixel { r: 128, g: 0, b: 128 });
+        assert_eq!(mid, ansi::RgbPixel { r: 128, g: 0, b: 128 });
     }
 
     #[test]
@@ -1272,9 +2112,9 @@ mod tests {
         let mut pixels = vec![0u8; 2 * 1 * 4];
         pixels[0..4].copy_from_slice(&[0, 0, 255, 255]); // red
         pixels[4..8].copy_from_slice(&[255, 0, 0, 255]); // blue
-        let c = simd::AnsiColorConverter::with_filter(PixportFormat::Bgra8888, PixportFilterType::Bilinear);
+        let c = ansi::AnsiColorConverter::with_filter(PixportFormat::Bgra8888, PixportFilterType::Bilinear);
         let rgb = c.resample(&pixels, 2, 1, 8, 3, 1);
-        assert_eq!(rgb[0], simd::RgbPixel { r: 255, g: 0, b: 0 }); // left edge -> red
+        assert_eq!(rgb[0], ansi::RgbPixel { r: 255, g: 0, b: 0 });
         assert!(rgb[2].b > rgb[2].r); // right side leans blue
         assert!(rgb[1].r > 0 && rgb[1].b > 0); // middle is a blend
     }
@@ -1290,7 +2130,7 @@ mod tests {
             PixportFilterType::Mitchell,
             PixportFilterType::Lanczos3,
         ] {
-            let c = simd::AnsiColorConverter::with_filter(PixportFormat::Bgra8888, filter);
+            let c = ansi::AnsiColorConverter::with_filter(PixportFormat::Bgra8888, filter);
             let rgb = c.resample(&pixels, 2, 2, 8, 8, 8);
             assert!(
                 rgb.iter()

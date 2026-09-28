@@ -27,7 +27,8 @@
 //! normalises the result:
 //!
 //! ```rust
-//! # use codevar_base::basic_pathbuf::PathBuilder;
+//! use codevar_pathbuf::PathBuilder;
+//!
 //! let path = PathBuilder::new()
 //!     .root()
 //!     .push("usr")

@@ -43,7 +43,6 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 use codevar_base::basic_time::SystemTime;
-use codevar_env::{ENV_APP_ID, ENV_NAME};
 use codevar_logger::log_info;
 use codevar_wl_protocol::{
     BUFFER_DESTROY, BUFFER_PARAMS_ADD, BUFFER_PARAMS_CREATE_IMMED, BUFFER_PARAMS_DESTROY, BUFFER_RELEASE,
@@ -63,11 +62,6 @@ use core::fmt;
 use core::mem::ManuallyDrop;
 use core::time::Duration;
 
-/// Initial window width in surface local pixels (used when the first
-/// configure carries `0x0`).
-const DEFAULT_WIDTH: i32 = 640;
-/// Initial window height in surface local pixels.
-const DEFAULT_HEIGHT: i32 = 480;
 /// How long a single `dispatch` waits for Wayland events, in
 /// milliseconds.
 const DISPATCH_TIMEOUT_MS: u64 = 50;
@@ -76,7 +70,7 @@ const DISPATCH_TIMEOUT_MS: u64 = 50;
 const RELEASE_TIMEOUT_MS: u64 = 500;
 /// Milliseconds the renderer waits for the GPU through the
 /// exported `sync_file` before committing the buffer.
-const GPU_SYNC_TIMEOUT_MS: i32 = 5_000;
+const SYNC_TIMEOUT_MS: u32 = 5_000;
 /// Largest format table the implementation is willing to allocate.
 const MAX_FORMAT_TABLE_BYTES: usize = 1 << 20;
 
@@ -153,28 +147,15 @@ pub struct WindowInit {
     /// The application ID for the window.
     pub app_id: &'static CStr,
     /// Initial width in surface local pixels.
-    pub width: i32,
+    pub width: u32,
     /// Initial height in surface local pixels.
-    pub height: i32,
-}
-
-impl Default for WindowInit {
-    fn default() -> Self {
-        unsafe {
-            Self {
-                title: CStr::from_ptr(ENV_NAME.as_ptr() as *const libc::c_char),
-                app_id: CStr::from_ptr(ENV_APP_ID.as_ptr() as *const libc::c_char),
-                width: DEFAULT_WIDTH,
-                height: DEFAULT_HEIGHT,
-            }
-        }
-    }
+    pub height: u32,
 }
 
 /// Shared mutable state accessed from Wayland event listeners.
 struct WindowState {
-    width: i32,
-    height: i32,
+    width: u32,
+    height: u32,
     configure_serial: u32,
     pings: u32,
     deadline_ns: u64,
@@ -184,7 +165,7 @@ struct WindowState {
 }
 
 impl WindowState {
-    fn new(width: i32, height: i32) -> Self {
+    fn new(width: u32, height: u32) -> Self {
         Self {
             closed: false,
             width,
@@ -284,14 +265,14 @@ impl UiDisplay {
     /// Returns the current window width.
     #[inline]
     #[must_use]
-    pub fn width(&self) -> i32 {
+    pub fn width(&self) -> u32 {
         self.window_state.borrow().width
     }
 
     /// Returns the current window height.
     #[inline]
     #[must_use]
-    pub fn height(&self) -> i32 {
+    pub fn height(&self) -> u32 {
         self.window_state.borrow().height
     }
 
@@ -355,7 +336,6 @@ impl UiDisplay {
             SystemTime::monotonic_nanos() + SystemTime::secs_to_nanos(30)
         };
         let release_timeout_ns = SystemTime::millis_to_nanos(RELEASE_TIMEOUT_MS);
-
         while (self.frame_budget == 0 || frames < self.frame_budget)
             && !self.window_state.borrow().closed
             && SystemTime::monotonic_nanos() < deadline_ns
@@ -480,8 +460,8 @@ impl UiDisplay {
                 vec![
                     WlArgument::Int(0),
                     WlArgument::Int(0),
-                    WlArgument::Int(width),
-                    WlArgument::Int(height),
+                    WlArgument::Int(width as i32),
+                    WlArgument::Int(height as i32),
                 ],
             )
             .map_err(UiDisplayError::Wayland)?;
@@ -607,7 +587,7 @@ struct ProtocolGlobals {
 ///
 /// * [`UiDisplayError::Wayland`] — the connection, registry or roundtrip
 ///   failed.
-fn connect(width: i32, height: i32) -> Result<Connection, UiDisplayError> {
+fn connect(width: u32, height: u32) -> Result<Connection, UiDisplayError> {
     let transport = WlUnixTransport::connect_session().map_err(UiDisplayError::Wayland)?;
     let mut display = WlClientDisplay::connect(transport).map_err(UiDisplayError::Wayland)?;
     let registry = display
@@ -772,8 +752,8 @@ fn create_window_objects(
                         && *width > 0
                         && *height > 0
                     {
-                        window_state.borrow_mut().width = *width;
-                        window_state.borrow_mut().height = *height;
+                        window_state.borrow_mut().width = *width as u32;
+                        window_state.borrow_mut().height = *height as u32;
                     }
                 }
                 0
@@ -883,8 +863,8 @@ fn ack_configure(
             vec![
                 WlArgument::Int(0),
                 WlArgument::Int(0),
-                WlArgument::Int(width),
-                WlArgument::Int(height),
+                WlArgument::Int(width as i32),
+                WlArgument::Int(height as i32),
             ],
         )
         .map_err(UiDisplayError::Wayland)?;
@@ -1008,8 +988,8 @@ fn create_wl_buffer(
     display: &mut WlClientDisplay<WlUnixTransport>,
     dmabuf: WlProxyId,
     pipeline: &PipelineContext,
-    width: i32,
-    height: i32,
+    width: u32,
+    height: u32,
     window_state: &Rc<RefCell<WindowState>>,
 ) -> Result<WlProxyId, UiDisplayError> {
     let target = pipeline.render_target();
@@ -1035,8 +1015,8 @@ fn create_wl_buffer(
             params,
             BUFFER_PARAMS_CREATE_IMMED,
             vec![
-                WlArgument::Int(width),
-                WlArgument::Int(height),
+                WlArgument::Int(width as i32),
+                WlArgument::Int(height as i32),
                 WlArgument::Uint(target.drm_format),
                 WlArgument::Uint(0),
             ],
@@ -1176,7 +1156,7 @@ fn wait_for_gpu(sync_file: &OwnedFd) -> Result<(), UiDisplayError> {
         events: libc::POLLIN,
         revents: 0,
     };
-    let ready = unsafe { libc::poll(&mut descriptor, 1, GPU_SYNC_TIMEOUT_MS) };
+    let ready = unsafe { libc::poll(&mut descriptor, 1, SYNC_TIMEOUT_MS as libc::c_int) };
     if ready <= 0 {
         return Err(UiDisplayError::Timeout(
             "timed out waiting for the GPU".to_string(),

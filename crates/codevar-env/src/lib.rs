@@ -667,14 +667,6 @@ pub static ENV_PLUGINS_DIR: &(dyn NamedEnvDir + Sync) = &LazyEnvDir(move || {
 /// App id is useful for Wayland compositor app registering,
 /// Note that is only available on Linux so only use it when interacting
 /// with the Wayland protocol
-///
-/// # Examples
-///
-/// ```rust
-/// use codevar_env::ENV_APP_DIR;
-///
-/// let app_id = ENV_APP_DIR.get();
-/// ```
 #[cfg(all(target_os = "linux", not(target_os = "wasi")))]
 pub static ENV_APP_ID: &'static str = "codevar.launcher";
 

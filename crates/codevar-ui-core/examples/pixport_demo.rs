@@ -38,8 +38,8 @@ use codevar_ui_core::ui_pipeline::PipelineContext;
 use codevar_ui_core::ui_renderer::{
     FrameContext, RenderLayer, RendererError, RendererSubsystem, load_spir_v,
 };
-use codevar_ui_core::ui_terminal_pixport::simd::PixportFilterType;
-use codevar_ui_core::ui_terminal_pixport::{PixportConfig, render_loop};
+use codevar_ui_core::ui_terminal_pixport::ansi::PixportFilterType;
+use codevar_ui_core::ui_terminal_pixport::{CellDensity, ClearPolicy, PixportConfig, render_loop};
 
 /// Render target width in pixels.
 const WIDTH: u32 = 640;
@@ -50,9 +50,6 @@ const HEIGHT: u32 = 480;
 static VERT_SPIRV: &[u8] = include_bytes!("shaders/triangle.vert.spv");
 /// Embedded fragment shader SPIR-V.
 static FRAG_SPIRV: &[u8] = include_bytes!("shaders/triangle.frag.spv");
-
-/// Every failure of the example is reported as a boxed error.
-type ExampleResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 fn main() {
     run();
@@ -71,12 +68,10 @@ fn run() {
     let pixport_config = PixportConfig {
         max_cols: term_cols,
         max_rows: term_rows,
-        use_half_blocks: true,
-        clear_before_frame: true,
+        cell_density: CellDensity::HalfBlocks,
+        clear_policy: ClearPolicy::ClearBeforeFrame,
         filter: PixportFilterType::Lanczos3,
     };
-    codevar_consoleutil::write_stdout(cursor::hide().as_bytes()).unwrap();
-    codevar_consoleutil::write_stdout(erase::screen().as_bytes()).unwrap();
     render_loop::run_terminal_render_loop(
         &pipeline,
         renderer,
@@ -87,8 +82,6 @@ fn run() {
         },
     )
     .unwrap();
-    codevar_consoleutil::write_stdout(cursor::show().as_bytes()).unwrap();
-    codevar_consoleutil::write_stdout(cursor::position(term_rows.saturating_add(2), 1).as_bytes()).unwrap();
 }
 
 /// Creates a shader module from validated SPIR-V words.

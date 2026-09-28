@@ -94,7 +94,7 @@ use core::fmt;
 
 use crate::ui_pipeline::{OwnedFd, PipelineContext};
 
-/// SPIR-V magic number as stored in a little-endian `.spv` file.
+/// SPIR-V magic number as stored in a little-endian.
 const SPIRV_MAGIC: u32 = 0x0723_0203;
 
 /// Lifecycle state of a [`RendererSubsystem`].
@@ -328,7 +328,7 @@ impl<'f> FrameContext<'f> {
     }
 }
 
-/// A piece of drawable content registered with a [`LayerStack`].
+/// A piece of drawable content registered with a [`LayerPipe`].
 ///
 /// One layer corresponds to one implementation of rlgame's
 /// `r_game_renderer_layer` concept: an independent contributor to the
@@ -348,7 +348,7 @@ pub trait RenderLayer {
 
     /// Whether the layer participates in a pass. Defaults to `true`;
     /// the stack can also override it with
-    /// [`LayerStack::set_enabled`].
+    /// [`LayerPipe::set_enabled`].
     #[must_use]
     fn enabled(&self) -> bool {
         true
@@ -389,11 +389,11 @@ impl LayerEntry<'_> {
 /// Layers are identified by [`RenderLayer::name`] (names must be unique)
 /// and drawn in ascending [`RenderLayer::priority`] order. The stack is
 /// re-sorted before every pass, so priorities may change at runtime.
-pub struct LayerStack<'p> {
+pub struct LayerPipe<'p> {
     entries: Vec<LayerEntry<'p>>,
 }
 
-impl<'p> LayerStack<'p> {
+impl<'p> LayerPipe<'p> {
     /// Creates an empty stack.
     #[must_use]
     pub const fn new() -> Self {
@@ -512,7 +512,7 @@ impl<'p> LayerStack<'p> {
     }
 }
 
-impl Default for LayerStack<'_> {
+impl Default for LayerPipe<'_> {
     fn default() -> Self {
         Self::new()
     }
@@ -530,7 +530,7 @@ struct FrameSync {
 /// Frame orchestrator around a [`PipelineContext`].
 ///
 /// Mirrors rlgame's renderer subsystem: a state machine
-/// ([`RendererState`]) plus a [`LayerStack`], borrowing all device-level
+/// ([`RendererState`]) plus a [`LayerPipe`], borrowing all device-level
 /// state from the pipeline context it is created with. The subsystem must
 /// not outlive that context (the borrow enforces it), and it must be
 /// dropped before it — dropping waits for the device to go idle and
@@ -541,7 +541,7 @@ pub struct RendererSubsystem<'p> {
     context: &'p PipelineContext,
     state: RendererState,
     phase: FramePhase,
-    layers: LayerStack<'p>,
+    layers: LayerPipe<'p>,
     command_buffer: Option<vk::CommandBuffer>,
     frame_fence: Option<vk::Fence>,
     frame_wait_sem: Option<vk::Semaphore>,
@@ -560,7 +560,7 @@ impl<'p> RendererSubsystem<'p> {
             context,
             state: RendererState::Stopped,
             phase: FramePhase::Idle,
-            layers: LayerStack::new(),
+            layers: LayerPipe::new(),
             command_buffer: None,
             frame_fence: None,
             frame_wait_sem: None,
@@ -594,14 +594,14 @@ impl<'p> RendererSubsystem<'p> {
     /// The layer stack driven by each frame.
     #[inline]
     #[must_use]
-    pub fn layers(&self) -> &LayerStack<'p> {
+    pub fn layers(&self) -> &LayerPipe<'p> {
         &self.layers
     }
 
     /// The layer stack driven by each frame, for mutation.
     #[inline]
     #[must_use]
-    pub fn layers_mut(&mut self) -> &mut LayerStack<'p> {
+    pub fn layers_mut(&mut self) -> &mut LayerPipe<'p> {
         &mut self.layers
     }
 
@@ -1469,7 +1469,7 @@ mod tests {
     /// order they were registered in.
     #[test]
     fn layers_run_in_priority_order() {
-        let mut stack = LayerStack::new();
+        let mut stack = LayerPipe::new();
         let noop = || Rc::new(RefCell::new(Vec::new()));
         stack
             .add(recording_layer("third", 30, true, &noop()))
@@ -1493,7 +1493,7 @@ mod tests {
     /// keeps only the first one.
     #[test]
     fn duplicate_layer_names_are_rejected() {
-        let mut stack = LayerStack::new();
+        let mut stack = LayerPipe::new();
         stack
             .add(recording_layer("ui", 0, true, &Rc::new(RefCell::new(Vec::new()))))
             .unwrap_or_else(|err| panic!("adding the first layer failed: {err}"));
@@ -1510,7 +1510,7 @@ mod tests {
     /// enabling an unknown layer reports [`RendererError::UnknownLayer`].
     #[test]
     fn remove_and_enable_lookups() {
-        let mut stack = LayerStack::new();
+        let mut stack = LayerPipe::new();
         stack
             .add(recording_layer("ui", 0, true, &Rc::new(RefCell::new(Vec::new()))))
             .unwrap_or_else(|err| panic!("adding the layer failed: {err}"));
@@ -1532,7 +1532,7 @@ mod tests {
     /// stack, which skips it during a pass.
     #[test]
     fn layer_disabled_flag_is_honoured_without_override() {
-        let mut stack = LayerStack::new();
+        let mut stack = LayerPipe::new();
         stack
             .add(recording_layer(
                 "hidden",

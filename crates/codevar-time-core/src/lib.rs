@@ -480,7 +480,7 @@ impl TimeDuration {
     /// # Examples
     ///
     /// ```
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// let five_duration = TimeDuration::new(5, 0);
     /// ```
@@ -509,7 +509,7 @@ impl TimeDuration {
     /// # Examples
     ///
     /// ```
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// let duration = TimeDuration::from_secs(5);
     ///
@@ -530,7 +530,7 @@ impl TimeDuration {
     /// # Examples
     ///
     /// ```
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// let duration = TimeDuration::from_millis(2_569);
     ///
@@ -556,7 +556,7 @@ impl TimeDuration {
     /// # Examples
     ///
     /// ```
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// let duration = TimeDuration::from_micros(1_000_002);
     ///
@@ -588,7 +588,7 @@ impl TimeDuration {
     /// # Examples
     ///
     /// ```
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// let duration = TimeDuration::from_nanos(1_000_000_123);
     ///
@@ -619,10 +619,10 @@ impl TimeDuration {
     /// # Examples
     ///
     /// ```
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// let nanos = 10_u128.pow(24) + 321;
-    /// let duration = TimeDuration::from_nanos_u128(nanos);
+    /// let duration = TimeDuration::from_nanos_u128(nanos).unwrap_or(TimeDuration::ZERO);
     ///
     /// assert_eq!(10_u64.pow(15), duration.as_secs());
     /// assert_eq!(321, duration.subsec_nanos());
@@ -648,7 +648,7 @@ impl TimeDuration {
     /// # Examples
     ///
     /// ```
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// assert!(TimeDuration::ZERO.is_zero());
     /// assert!(TimeDuration::new(0, 0).is_zero());
@@ -673,7 +673,7 @@ impl TimeDuration {
     /// # Examples
     ///
     /// ```
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// let duration = TimeDuration::new(5, 730_023_852);
     /// assert_eq!(duration.as_secs(), 5);
@@ -700,7 +700,7 @@ impl TimeDuration {
     /// # Examples
     ///
     /// ```
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// let duration = TimeDuration::from_millis(5_432);
     /// assert_eq!(duration.as_secs(), 5);
@@ -721,7 +721,7 @@ impl TimeDuration {
     /// # Examples
     ///
     /// ```
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// let duration = TimeDuration::from_micros(1_234_567);
     /// assert_eq!(duration.as_secs(), 1);
@@ -742,7 +742,7 @@ impl TimeDuration {
     /// # Examples
     ///
     /// ```
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// let duration = TimeDuration::from_millis(5_010);
     /// assert_eq!(duration.as_secs(), 5);
@@ -760,7 +760,7 @@ impl TimeDuration {
     /// # Examples
     ///
     /// ```
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// let duration = TimeDuration::new(5, 730_023_852);
     /// assert_eq!(duration.as_millis(), 5_730);
@@ -776,7 +776,7 @@ impl TimeDuration {
     /// # Examples
     ///
     /// ```
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// let duration = TimeDuration::new(5, 730_023_852);
     /// assert_eq!(duration.as_micros(), 5_730_023);
@@ -792,7 +792,7 @@ impl TimeDuration {
     /// # Examples
     ///
     /// ```
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// let duration = TimeDuration::new(5, 730_023_852);
     /// assert_eq!(duration.as_nanos(), 5_730_023_852);
@@ -808,7 +808,7 @@ impl TimeDuration {
     /// # Examples
     ///
     /// ```
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// assert_eq!(TimeDuration::new(100, 0).abs_diff(TimeDuration::new(80, 0)), TimeDuration::new(20, 0));
     /// assert_eq!(TimeDuration::new(100, 400_000_000).abs_diff(TimeDuration::new(110, 0)), TimeDuration::new(9, 600_000_000));
@@ -832,7 +832,7 @@ impl TimeDuration {
     /// # Examples
     ///
     /// ```
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// assert_eq!(TimeDuration::new(0, 0).checked_add(TimeDuration::new(0, 1)), Some(TimeDuration::new(0, 1)));
     /// assert_eq!(TimeDuration::new(1, 0).checked_add(TimeDuration::new(u64::MAX, 0)), None);
@@ -864,8 +864,7 @@ impl TimeDuration {
     /// # Examples
     ///
     /// ```
-    /// #![feature(duration_constants)]
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// assert_eq!(TimeDuration::new(0, 0).saturating_add(TimeDuration::new(0, 1)), TimeDuration::new(0, 1));
     /// assert_eq!(TimeDuration::new(1, 0).saturating_add(TimeDuration::new(u64::MAX, 0)), TimeDuration::MAX);
@@ -884,7 +883,7 @@ impl TimeDuration {
     /// # Examples
     ///
     /// ```
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// assert_eq!(TimeDuration::new(0, 1).checked_sub(TimeDuration::new(0, 0)), Some(TimeDuration::new(0, 1)));
     /// assert_eq!(TimeDuration::new(0, 0).checked_sub(TimeDuration::new(0, 1)), None);
@@ -915,7 +914,7 @@ impl TimeDuration {
     /// # Examples
     ///
     /// ```
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// assert_eq!(TimeDuration::new(0, 1).saturating_sub(TimeDuration::new(0, 0)), TimeDuration::new(0, 1));
     /// assert_eq!(TimeDuration::new(0, 0).saturating_sub(TimeDuration::new(0, 1)), TimeDuration::ZERO);
@@ -934,7 +933,7 @@ impl TimeDuration {
     /// # Examples
     ///
     /// ```
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// assert_eq!(TimeDuration::new(0, 500_000_001).checked_mul(2), Some(TimeDuration::new(1, 2)));
     /// assert_eq!(TimeDuration::new(u64::MAX - 1, 0).checked_mul(2), None);
@@ -963,8 +962,7 @@ impl TimeDuration {
     /// # Examples
     ///
     /// ```
-    /// #![feature(duration_constants)]
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// assert_eq!(TimeDuration::new(0, 500_000_001).saturating_mul(2), TimeDuration::new(1, 2));
     /// assert_eq!(TimeDuration::new(u64::MAX - 1, 0).saturating_mul(2), TimeDuration::MAX);
@@ -983,7 +981,7 @@ impl TimeDuration {
     /// # Examples
     ///
     /// ```
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// assert_eq!(TimeDuration::new(2, 0).checked_div(2), Some(TimeDuration::new(1, 0)));
     /// assert_eq!(TimeDuration::new(1, 0).checked_div(2), Some(TimeDuration::new(0, 500_000_000)));
@@ -1010,7 +1008,7 @@ impl TimeDuration {
     ///
     /// # Examples
     /// ```
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// let dur = TimeDuration::new(2, 700_000_000);
     /// assert_eq!(dur.as_secs_f64(), 2.7);
@@ -1027,7 +1025,7 @@ impl TimeDuration {
     ///
     /// # Examples
     /// ```
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// let dur = TimeDuration::new(2, 700_000_000);
     /// assert_eq!(dur.as_secs_f32(), 2.7);
@@ -1044,8 +1042,7 @@ impl TimeDuration {
     ///
     /// # Examples
     /// ```
-    /// #![feature(duration_millis_float)]
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// let dur = TimeDuration::new(2, 345_678_000);
     /// assert_eq!(dur.as_millis_f64(), 2_345.678);
@@ -1063,8 +1060,7 @@ impl TimeDuration {
     ///
     /// # Examples
     /// ```
-    /// #![feature(duration_millis_float)]
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// let dur = TimeDuration::new(2, 345_678_000);
     /// assert_eq!(dur.as_millis_f32(), 2_345.678);
@@ -1080,7 +1076,7 @@ impl TimeDuration {
     ///
     /// # Examples
     /// ```
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// let dur1 = TimeDuration::new(2, 700_000_000);
     /// let dur2 = TimeDuration::new(5, 400_000_000);
@@ -1099,7 +1095,7 @@ impl TimeDuration {
     ///
     /// # Examples
     /// ```
-    /// use codevar_core_time::TimeDuration;
+    /// use codevar_time_core::TimeDuration;
     ///
     /// let dur1 = TimeDuration::new(2, 700_000_000);
     /// let dur2 = TimeDuration::new(5, 400_000_000);
