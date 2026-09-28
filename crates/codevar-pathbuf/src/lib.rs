@@ -60,6 +60,9 @@
 //!
 //! [`libc`]: https://docs.rs/libc
 
+#![cfg_attr(not(test), no_std)]
+extern crate alloc;
+
 use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -665,11 +668,11 @@ fn is_reserved_device_name(name: &str) -> bool {
 
 cfg_if::cfg_if! {
     if #[cfg(all(unix, not(target_arch = "wasm32")))] {
-        use crate::basic_pathbuf::unix as sys;
+        use crate::unix as sys;
     } else if #[cfg(windows)] {
-        use crate::basic_pathbuf::windows as sys;
+        use crate::windows as sys;
     } else {
-        use crate::basic_pathbuf::unsupported as sys;
+        use crate::unsupported as sys;
     }
 }
 

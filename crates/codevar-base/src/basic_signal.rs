@@ -33,7 +33,7 @@
 
 use crate::basic_pretty_unwind::write_frame;
 use crate::basic_unwind::{Frame, capture_frames};
-use core::fmt::{self, Write};
+use core::fmt::{self, Write as _};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// Maximum number of frames captured by [`dump_backtrace`] and the signal
@@ -214,6 +214,7 @@ struct LineWriter {
 }
 
 impl LineWriter {
+    /// Creates a new `LineWriter`
     #[inline]
     fn new() -> Self {
         Self {
@@ -226,7 +227,7 @@ impl LineWriter {
     #[inline]
     fn flush(&mut self) {
         if self.len > 0 {
-            write_console(&self.buf[..self.len]);
+            let _ = codevar_consoleutil::write_stderr(&self.buf[..self.len]);
             self.len = 0;
         }
     }
@@ -374,45 +375,6 @@ fn install_alt_stack_impl(_buf: &mut [u8]) -> Result<(), InstallError> {
     Err(InstallError::Unsupported)
 }
 
-/// Writes `bytes` to stderr, retrying on `EINTR`. Best-effort: silently
-/// stops on hard errors (the crash path must not block or panic).
-#[cfg(unix)]
-fn write_console(bytes: &[u8]) {
-    let mut off = 0usize;
-    while off < bytes.len() {
-        // SAFETY: `bytes[off..]` is a valid read-only slice for the
-        // duration of the call; `write` does not retain the pointer.
-        let n = unsafe {
-            libc::write(
-                libc::STDERR_FILENO,
-                bytes[off..].as_ptr().cast(),
-                bytes.len() - off,
-            )
-        };
-        if n < 0 {
-            // SAFETY: `errno` is thread-local and valid immediately after
-            // a failed syscall on all supported Unix targets.
-            if unsafe { errno() } == libc::EINTR {
-                continue;
-            }
-            return;
-        }
-        off += n as usize;
-    }
-}
-
-/// Writes `bytes` to stderr via `WriteFile` on the cached standard-error
-/// handle. Best-effort: ignores failures.
-#[cfg(all(windows, not(target_vendor = "uwp")))]
-fn write_console(bytes: &[u8]) {
-    windows::write_stderr(bytes);
-}
-
-/// Writes `bytes` to stderr. No-op on targets without console support
-/// (e.g. `wasm32`).
-#[cfg(not(any(unix, all(windows, not(target_vendor = "uwp")))))]
-fn write_console(_bytes: &[u8]) {}
-
 /// Reads the calling thread's `errno` immediately after a failed syscall.
 ///
 /// # Safety
@@ -452,9 +414,8 @@ unsafe fn errno() -> i32 {
 
 #[cfg(unix)]
 mod unix {
-    use super::{
-        ENTERED, InstallError, dump_frames, is_fault_signal, signal_name, write_console, write_line,
-    };
+    use super::{ENTERED, InstallError, dump_frames, is_fault_signal, signal_name, write_line};
+    use codevar_io::{Stderr, Write};
     use core::ffi::c_void;
     use core::mem::{self, MaybeUninit};
     use core::ptr;
@@ -866,7 +827,8 @@ mod unix {
             .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            write_console(b"recursive signal during handling\n");
+            let mut stderr = Stderr::new();
+            let _ = stderr.write(b"recursive signal during handling\n");
             reset_and_raise(sig);
             return;
         }

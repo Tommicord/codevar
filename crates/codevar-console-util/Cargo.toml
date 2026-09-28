@@ -1,5 +1,5 @@
 [package]
-name = "codevar-consoleutil"
+name = "codevar-console-util"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -18,7 +18,7 @@ name = "codevar_consoleutil"
 libc = { workspace = true }
 heapless = { workspace = true }
 codevar-textlike-encode = { workspace = true }
-codevar-base = { workspace = true }
+codevar-env = { workspace = true }
 codevar-io = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]

@@ -148,9 +148,10 @@ version = "1.0.0"
 dependencies = [
  "backtrace-sys",
  "cfg-if",
- "codevar-fcware",
+ "codevar-console-util",
+ "codevar-io",
  "codevar-textlike-encode",
- "codevar-timeutil",
+ "codevar-time-util",
  "libc",
  "rustc-demangle",
  "spin 0.12.3",
@@ -161,10 +162,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "codevar-consoleutil"
+name = "codevar-console-util"
 version = "1.0.0"
 dependencies = [
- "codevar-base",
+ "codevar-env",
  "codevar-io",
  "codevar-textlike-encode",
  "heapless",
@@ -177,6 +178,16 @@ name = "codevar-dbus"
 version = "1.0.0"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "codevar-env"
+version = "1.0.0"
+dependencies = [
+ "cfg-if",
+ "codevar-pathbuf",
+ "libc",
+ "windows",
 ]
 
 [[package]]
@@ -195,7 +206,6 @@ dependencies = [
 name = "codevar-io"
 version = "1.0.0"
 dependencies = [
- "codevar-base",
  "codevar-textlike-encode",
  "defmt 0.3.100",
  "heapless",
@@ -210,10 +220,11 @@ version = "1.0.0"
 dependencies = [
  "ash",
  "codevar-base",
+ "codevar-env",
+ "codevar-logger",
  "codevar-ui-core",
  "codevar-wl-protocol",
  "libc",
- "log",
 ]
 
 [[package]]
@@ -221,13 +232,24 @@ name = "codevar-logger"
 version = "1.0.0"
 dependencies = [
  "cfg-if",
- "codevar-consoleutil",
+ "codevar-console-util",
  "codevar-io",
- "codevar-timeutil",
+ "codevar-time-util",
  "libc",
  "spin 0.12.3",
  "windows",
  "windows-link 0.100.0",
+]
+
+[[package]]
+name = "codevar-pathbuf"
+version = "1.0.0"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "wasm-bindgen",
+ "web-sys",
+ "windows",
 ]
 
 [[package]]
@@ -249,7 +271,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "codevar-timeutil"
+name = "codevar-time-util"
 version = "1.0.0"
 dependencies = [
  "codevar-time-core",
@@ -292,9 +314,12 @@ version = "1.0.0"
 dependencies = [
  "ash",
  "codevar-base",
+ "codevar-console-util",
+ "codevar-env",
+ "codevar-logger",
+ "codevar-time-core",
  "codevar-wl-protocol",
  "libc",
- "log",
  "spin 0.12.3",
  "windows-link 0.100.0",
 ]
@@ -332,8 +357,11 @@ dependencies = [
  "cfg-if",
  "codevar-base",
  "codevar-dbus",
+ "codevar-env",
+ "codevar-logger",
+ "codevar-pathbuf",
+ "const_format",
  "libc",
- "log",
  "spin 0.12.3",
  "windows-link 0.100.0",
 ]
@@ -353,6 +381,27 @@ name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
+
+[[package]]
+name = "const_format"
+version = "0.2.36"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4481a617ad9a412be3b97c5d403fef8ed023103368908b9c50af598ff467cc1e"
+dependencies = [
+ "const_format_proc_macros",
+ "konst",
+]
+
+[[package]]
+name = "const_format_proc_macros"
+version = "0.2.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d57c2eccfb16dbac1f4e61e206105db5820c9d26c3c472bc17c774259ef7744"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "unicode-xid",
+]
 
 [[package]]
 name = "count-digits"
@@ -706,6 +755,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "konst"
+version = "0.2.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "128133ed7824fcd73d6e7b17957c5eb7bacb885649bd8c69708b2331a10bcefb"
+dependencies = [
+ "konst_macro_rules",
+]
+
+[[package]]
+name = "konst_macro_rules"
+version = "0.2.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4933f3f57a8e9d9da04db23fb153356ecaf00cbd14aee46279c33dc80925c37"
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -734,12 +798,6 @@ checksum = "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965"
 dependencies = [
  "scopeguard",
 ]
-
-[[package]]
-name = "log"
-version = "0.4.34"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "macroweave"
@@ -1308,6 +1366,12 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-xid"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 
 [[package]]
 name = "version_check"

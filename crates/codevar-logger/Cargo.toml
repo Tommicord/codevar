@@ -15,8 +15,8 @@ cfg-if = { workspace = true }
 libc = { workspace = true }
 windows-link = { workspace = true }
 spin = { workspace = true }
-codevar-timeutil = { workspace = true }
-codevar-consoleutil = { workspace = true }
+codevar-time-util = { workspace = true }
+codevar-console-util = { workspace = true }
 codevar-io = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]

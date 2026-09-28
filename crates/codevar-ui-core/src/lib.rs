@@ -20,4 +20,5 @@ extern crate alloc;
 pub mod ui_display;
 pub mod ui_pipeline;
 pub mod ui_renderer;
+pub mod ui_terminal_pixport;
 pub mod ui_wnd_shell;

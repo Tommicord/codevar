@@ -12,11 +12,14 @@ name = "codevar_ui_core"
 
 [dependencies]
 ash = { workspace = true }
+libc = { workspace = true }
+spin = { workspace = true }
 codevar-base = { workspace = true }
 codevar-wl-protocol = { workspace = true }
-libc = { workspace = true }
-log = { workspace = true }
-spin = { workspace = true }
+codevar-logger = { workspace = true }
+codevar-console-util = { workspace = true }
+codevar-time-core = { workspace = true }
+codevar-env = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-link = { workspace = true }

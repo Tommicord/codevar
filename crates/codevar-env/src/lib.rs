@@ -29,7 +29,7 @@
 //! ## Examples
 //!
 //! ```rust
-//! use codevar_base::basic_env::{ENV_DIR, ENV_CONFIG_DIR, NamedEnvDir};
+//! use codevar_env::{ENV_DIR, ENV_CONFIG_DIR, NamedEnvDir};
 //!
 //! // Access the main configuration directory.
 //! let config_dir = ENV_CONFIG_DIR.get();
@@ -44,10 +44,13 @@
 //! for validated, platform-aware path construction instead of manual string
 //! concatenation.
 
-use crate::basic_pathbuf::PathBuilder;
+#![cfg_attr(not(test), no_std)]
+extern crate alloc;
+
 use alloc::boxed::Box;
 use alloc::ffi::CString;
 use alloc::string::String;
+use codevar_pathbuf::PathBuilder;
 
 cfg_if::cfg_if! {
     if #[cfg(any(unix, target_os = "macos"))] {
@@ -69,7 +72,7 @@ cfg_if::cfg_if! {
 /// # Examples
 ///
 /// ```rust
-/// use codevar_base::basic_env::env_var;
+/// use codevar_env::env_var;
 ///
 /// let home = env_var("HOME");
 /// ```
@@ -156,7 +159,7 @@ pub fn build_and_leak(builder: PathBuilder, fallback: &'static str) -> &'static 
 /// # Examples
 ///
 /// ```rust
-/// use codevar_base::basic_env::{EnvDir, NamedEnvDir};
+/// use codevar_env::{EnvDir, NamedEnvDir};
 ///
 /// let dir = EnvDir::new("/usr/bin");
 /// assert_eq!(dir.get(), "/usr/bin");
@@ -175,8 +178,8 @@ pub trait NamedEnvDir {
 /// # Examples
 ///
 /// ```rust
-/// use codevar_base::basic_env::EnvDir;
-/// use codevar_base::basic_env::NamedEnvDir;
+/// use codevar_env::EnvDir;
+/// use codevar_env::NamedEnvDir;
 ///
 /// let dir = EnvDir::new("/usr/bin");
 /// assert_eq!(dir.get(), "/usr/bin");
@@ -203,7 +206,7 @@ impl EnvDir {
 /// # Examples
 ///
 /// ```rust
-/// use codevar_base::basic_env::{LazyEnvDir, NamedEnvDir};
+/// use codevar_env::{LazyEnvDir, NamedEnvDir};
 ///
 /// let dir = LazyEnvDir::new(|| "/usr/local/bin");
 /// assert_eq!(dir.get(), "/usr/local/bin");
@@ -249,8 +252,8 @@ where
 /// # Examples
 ///
 /// ```rust
-/// use codevar_base::basic_env::ENV_SYSTEM_BIN_DIR;
-/// use codevar_base::basic_env::NamedEnvDir;
+/// use codevar_env::ENV_SYSTEM_BIN_DIR;
+/// use codevar_env::NamedEnvDir;
 ///
 /// let bin_dir = ENV_SYSTEM_BIN_DIR.get();
 /// ```
@@ -282,8 +285,8 @@ fn get_bin_dir() -> &'static str {
 /// # Examples
 ///
 /// ```rust
-/// use codevar_base::basic_env::ENV_NAME;
-/// use codevar_base::basic_env::NamedEnvDir;
+/// use codevar_env::ENV_NAME;
+/// use codevar_env::NamedEnvDir;
 ///
 /// assert_eq!(ENV_NAME, "codevar");
 /// ```
@@ -298,7 +301,7 @@ pub static ENV_NAME: &str = "codevar";
 /// # Examples
 ///
 /// ```rust
-/// use codevar_base::basic_env::ENV_APP_SHORT_NAME;
+/// use codevar_env::ENV_APP_SHORT_NAME;
 ///
 /// assert_eq!(ENV_APP_SHORT_NAME, "cv");
 /// ```
@@ -313,7 +316,7 @@ pub static ENV_APP_SHORT_NAME: &str = "cv";
 /// # Examples
 ///
 /// ```rust
-/// use codevar_base::basic_env::ENV_VERSION;
+/// use codevar_env::ENV_VERSION;
 ///
 /// assert_eq!(ENV_VERSION, env!("CARGO_PKG_VERSION"));
 /// ```
@@ -330,8 +333,8 @@ pub static ENV_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// # Examples
 ///
 /// ```rust
-/// use codevar_base::basic_env::ENV_SYSTEM_BIN_DIR;
-/// use codevar_base::basic_env::NamedEnvDir;
+/// use codevar_env::ENV_SYSTEM_BIN_DIR;
+/// use codevar_env::NamedEnvDir;
 ///
 /// let bin = ENV_SYSTEM_BIN_DIR.get();
 /// ```
@@ -347,8 +350,8 @@ pub static ENV_SYSTEM_BIN_DIR: &(dyn NamedEnvDir + Sync) = &LazyEnvDir(get_bin_d
 /// # Examples
 ///
 /// ```rust
-/// use codevar_base::basic_env::ENV_DIR;
-/// use codevar_base::basic_env::NamedEnvDir;
+/// use codevar_env::ENV_DIR;
+/// use codevar_env::NamedEnvDir;
 ///
 /// let dir = ENV_DIR.get();
 /// ```
@@ -374,8 +377,8 @@ pub static ENV_DIR: &(dyn NamedEnvDir + Sync) = &LazyEnvDir(move || {
 /// # Examples
 ///
 /// ```rust
-/// use codevar_base::basic_env::ENV_EXE_BIN_DIR;
-/// use codevar_base::basic_env::NamedEnvDir;
+/// use codevar_env::ENV_EXE_BIN_DIR;
+/// use codevar_env::NamedEnvDir;
 ///
 /// let bin = ENV_EXE_BIN_DIR.get();
 /// ```
@@ -398,8 +401,8 @@ pub static ENV_EXE_BIN_DIR: &(dyn NamedEnvDir + Sync) = &LazyEnvDir(move || {
 /// # Examples
 ///
 /// ```rust
-/// use codevar_base::basic_env::ENV_HOME_DIR;
-/// use codevar_base::basic_env::NamedEnvDir;
+/// use codevar_env::ENV_HOME_DIR;
+/// use codevar_env::NamedEnvDir;
 ///
 /// let home = ENV_HOME_DIR.get();
 /// ```
@@ -431,8 +434,8 @@ pub static ENV_HOME_DIR: &(dyn NamedEnvDir + Sync) = &LazyEnvDir(move || {
 /// # Examples
 ///
 /// ```rust
-/// use codevar_base::basic_env::ENV_CONFIG_DIR;
-/// use codevar_base::basic_env::NamedEnvDir;
+/// use codevar_env::ENV_CONFIG_DIR;
+/// use codevar_env::NamedEnvDir;
 ///
 /// let config = ENV_CONFIG_DIR.get();
 /// ```
@@ -488,8 +491,8 @@ pub static ENV_CONFIG_DIR: &(dyn NamedEnvDir + Sync) = &LazyEnvDir(move || {
 /// # Examples
 ///
 /// ```rust
-/// use codevar_base::basic_env::ENV_CACHE_DIR;
-/// use codevar_base::basic_env::NamedEnvDir;
+/// use codevar_env::ENV_CACHE_DIR;
+/// use codevar_env::NamedEnvDir;
 ///
 /// let cache = ENV_CACHE_DIR.get();
 /// ```
@@ -542,8 +545,8 @@ pub static ENV_CACHE_DIR: &(dyn NamedEnvDir + Sync) = &LazyEnvDir(move || {
 /// # Examples
 ///
 /// ```rust
-/// use codevar_base::basic_env::ENV_DATA_DIR;
-/// use codevar_base::basic_env::NamedEnvDir;
+/// use codevar_env::ENV_DATA_DIR;
+/// use codevar_env::NamedEnvDir;
 ///
 /// let data = ENV_DATA_DIR.get();
 /// ```
@@ -599,8 +602,8 @@ pub static ENV_DATA_DIR: &(dyn NamedEnvDir + Sync) = &LazyEnvDir(move || {
 /// # Examples
 ///
 /// ```rust
-/// use codevar_base::basic_env::ENV_LOGS_DIR;
-/// use codevar_base::basic_env::NamedEnvDir;
+/// use codevar_env::ENV_LOGS_DIR;
+/// use codevar_env::NamedEnvDir;
 ///
 /// let logs = ENV_LOGS_DIR.get();
 /// ```
@@ -637,15 +640,15 @@ pub static ENV_LOGS_DIR: &(dyn NamedEnvDir + Sync) = &LazyEnvDir(move || {
 
 /// The application plugins directory.
 ///
-/// This is the directory where Codevar stores plugin extensions. It is
+/// This is the directory where is stored plugin extensions. It is
 /// constructed as `<data_dir>/plugins` using [`PathBuilder`] from
 /// [`crate::basic_pathbuf`].
 ///
 /// # Examples
 ///
 /// ```rust
-/// use codevar_base::basic_env::ENV_PLUGINS_DIR;
-/// use codevar_base::basic_env::NamedEnvDir;
+/// use codevar_env::ENV_PLUGINS_DIR;
+/// use codevar_env::NamedEnvDir;
 ///
 /// let plugins = ENV_PLUGINS_DIR.get();
 /// ```
@@ -659,6 +662,22 @@ pub static ENV_PLUGINS_DIR: &(dyn NamedEnvDir + Sync) = &LazyEnvDir(move || {
     )
 });
 
+/// The application id
+///
+/// App id is useful for Wayland compositor app registering,
+/// Note that is only available on Linux so only use it when interacting
+/// with the Wayland protocol
+///
+/// # Examples
+///
+/// ```rust
+/// use codevar_env::ENV_APP_DIR;
+///
+/// let app_id = ENV_APP_DIR.get();
+/// ```
+#[cfg(all(target_os = "linux", not(target_os = "wasi")))]
+pub static ENV_APP_ID: &'static str = "codevar.launcher";
+
 /// The application assets directory.
 ///
 /// This is the directory where is stored bundled assets such as
@@ -668,8 +687,8 @@ pub static ENV_PLUGINS_DIR: &(dyn NamedEnvDir + Sync) = &LazyEnvDir(move || {
 /// # Examples
 ///
 /// ```rust
-/// use codevar_base::basic_env::ENV_ASSETS_DIR;
-/// use codevar_base::basic_env::NamedEnvDir;
+/// use codevar_env::ENV_ASSETS_DIR;
+/// use codevar_env::NamedEnvDir;
 ///
 /// let assets = ENV_ASSETS_DIR.get();
 /// ```
@@ -692,8 +711,8 @@ pub static ENV_ASSETS_DIR: &(dyn NamedEnvDir + Sync) = &LazyEnvDir(move || {
 /// # Examples
 ///
 /// ```rust
-/// use codevar_base::basic_env::ENV_TEMP_DIR;
-/// use codevar_base::basic_env::NamedEnvDir;
+/// use codevar_env::ENV_TEMP_DIR;
+/// use codevar_env::NamedEnvDir;
 ///
 /// let temp = ENV_TEMP_DIR.get();
 /// ```
@@ -733,8 +752,8 @@ pub static ENV_TEMP_DIR: &(dyn NamedEnvDir + Sync) = &LazyEnvDir(move || {
 /// # Examples
 ///
 /// ```rust
-/// use codevar_base::basic_env::ENV_SYSTEM_TEMP_DIR;
-/// use codevar_base::basic_env::NamedEnvDir;
+/// use codevar_env::ENV_SYSTEM_TEMP_DIR;
+/// use codevar_env::NamedEnvDir;
 ///
 /// let sys_temp = ENV_SYSTEM_TEMP_DIR.get();
 /// ```

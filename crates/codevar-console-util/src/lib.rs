@@ -331,11 +331,11 @@ pub fn update_terminal_width(width: u16) {
 
 /// Detect terminal width from environment or syscalls
 pub fn detect_terminal_width() -> u16 {
-    if let Some(columns) = codevar_base::basic_env::env_var("COLUMNS") {
-        if let Ok(w) = columns.parse::<u16>() {
-            update_terminal_width(w);
-            return w;
-        }
+    if let Some(columns) = codevar_env::env_var("COLUMNS")
+        && let Ok(w) = columns.parse::<u16>()
+    {
+        update_terminal_width(w);
+        return w;
     }
     #[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
     {
@@ -358,12 +358,10 @@ pub fn detect_terminal_width() -> u16 {
     ))]
     {
         use libc::{STDOUT_FILENO, TIOCGWINSZ, ioctl, winsize};
-        let mut ws: winsize = unsafe { core::mem::zeroed() };
-        if unsafe { ioctl(STDOUT_FILENO, TIOCGWINSZ, &mut ws) } >= 0 {
-            if ws.ws_col > 0 {
-                update_terminal_width(ws.ws_col);
-                return ws.ws_col;
-            }
+        let mut win_size: winsize = unsafe { core::mem::zeroed() };
+        if unsafe { ioctl(STDOUT_FILENO, TIOCGWINSZ, &mut win_size) } >= 0 && win_size.ws_col > 0 {
+            update_terminal_width(win_size.ws_col);
+            return win_size.ws_col;
         }
     }
     80
@@ -384,7 +382,7 @@ pub fn update_terminal_height(height: u16) {
 
 /// Detect terminal height
 pub fn detect_terminal_height() -> u16 {
-    if let Some(lines) = codevar_base::basic_env::env_var("LINES") {
+    if let Some(lines) = codevar_env::env_var("LINES") {
         if let Ok(h) = lines.parse::<u16>() {
             update_terminal_height(h);
             return h;
@@ -410,12 +408,10 @@ pub fn detect_terminal_height() -> u16 {
     ))]
     {
         use libc::{STDOUT_FILENO, TIOCGWINSZ, ioctl, winsize};
-        let mut ws: winsize = unsafe { core::mem::zeroed() };
-        if unsafe { ioctl(STDOUT_FILENO, TIOCGWINSZ, &mut ws) } >= 0 {
-            if ws.ws_row > 0 {
-                update_terminal_height(ws.ws_row);
-                return ws.ws_row;
-            }
+        let mut win_size: winsize = unsafe { core::mem::zeroed() };
+        if unsafe { ioctl(STDOUT_FILENO, TIOCGWINSZ, &mut win_size) } >= 0 && win_size.ws_row > 0 {
+            update_terminal_height(win_size.ws_row);
+            return win_size.ws_row;
         }
     }
     24 // Default fallback

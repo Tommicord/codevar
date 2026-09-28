@@ -1,5 +1,5 @@
 [package]
-name = "codevar-base"
+name = "codevar-pathbuf"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,25 +8,18 @@ license.workspace = true
 repository.workspace = true
 
 [lib]
-name = "codevar_base"
+name = "codevar_pathbuf"
 
 [features]
-nightly = []
+default = []
+wasm = []
 web-sys = ["dep:web-sys", "dep:wasm-bindgen"]
 
 [dependencies]
 cfg-if = { workspace = true }
 libc = { workspace = true }
-windows-link = { workspace = true }
-spin = { workspace = true }
-codevar-textlike-encode = { workspace = true }
-codevar-time-util = { workspace = true }
-codevar-console-util = { workspace = true }
-codevar-io = { workspace = true }
-rustc-demangle = { workspace = true }
-backtrace-sys = { workspace = true }
 web-sys = { version = "0.3", features = ["console"], optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Console"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }

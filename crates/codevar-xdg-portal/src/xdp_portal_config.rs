@@ -26,6 +26,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use codevar_dbus::{is_valid_bus_name, is_valid_interface_name};
+use codevar_logger::{log_debug, log_info, log_warn};
 
 use crate::xdp_error::PortalError;
 use crate::xdp_utils::{KeyFile, env_var};
@@ -236,18 +237,18 @@ impl PortalConfig {
     pub fn find(&self, interface: &str) -> Option<&PortalImpl> {
         for config in &self.configs {
             if config.prefers_none(interface) {
-                log::debug!("Found 'none' in configuration for {interface}");
+                log_debug!("Found 'none' in configuration for {interface}");
                 return None;
             }
             if let Some(impl_config) = self.impl_for_preference(config.preference(interface), interface) {
-                log::debug!(
+                log_debug!(
                     "Using {} for {interface} (interface specific config)",
                     impl_config.source
                 );
                 return Some(impl_config);
             }
             if let Some(impl_config) = self.impl_for_preference(config.default_portal.as_ref(), interface) {
-                log::debug!("Using {} for {interface} (default config)", impl_config.source);
+                log_debug!("Using {} for {interface} (default config)", impl_config.source);
                 return Some(impl_config);
             }
         }
@@ -311,7 +312,7 @@ impl PortalConfig {
     ) -> Option<&PortalImpl> {
         let preference = preference?;
         for portal in &preference.portals {
-            log::debug!("Found '{portal}' in configuration for {interface}");
+            log_debug!("Found '{portal}' in configuration for {interface}");
             if portal == "*" {
                 return self
                     .impls
@@ -323,11 +324,11 @@ impl PortalConfig {
                 .iter()
                 .find(|candidate| candidate.source == *portal);
             let Some(impl_config) = impl_config else {
-                log::info!("Requested backend {portal} does not exist. Skipping...");
+                log_info!("Requested backend {portal} does not exist. Skipping...");
                 continue;
             };
             if !impl_config.supports(interface) {
-                log::info!(
+                log_info!(
                     "Requested backend {}.portal does not support {interface}. Skipping...",
                     impl_config.source
                 );
@@ -348,7 +349,7 @@ impl PortalConfig {
             return;
         };
         let portals = preference.portals.join(";");
-        log::debug!("Found '{portals}' in configuration for {}", preference.interface);
+        log_debug!("Found '{portals}' in configuration for {}", preference.interface);
         for portal in &preference.portals {
             for candidate in &self.impls {
                 if candidate.source != *portal && portal != "*" {
@@ -358,17 +359,17 @@ impl PortalConfig {
                     .iter()
                     .any(|entry| entry.source == candidate.source)
                 {
-                    log::info!("Duplicate backend {}.portal. Skipping...", candidate.source);
+                    log_info!("Duplicate backend {}.portal. Skipping...", candidate.source);
                     continue;
                 }
                 if !candidate.supports(interface) {
-                    log::info!(
+                    log_info!(
                         "Requested backend {}.portal does not support {interface}. Skipping...",
                         candidate.source
                     );
                     continue;
                 }
-                log::debug!("Using {}.portal for {interface} (config)", candidate.source);
+                log_debug!("Using {}.portal for {interface} (config)", candidate.source);
                 out.push(candidate);
             }
         }
@@ -378,7 +379,7 @@ impl PortalConfig {
         let impl_config = self.impls.iter().find(|candidate| {
             candidate.dbus_name == GTK_FALLBACK_DBUS_NAME && candidate.supports(interface)
         })?;
-        log::warn!(
+        log_warn!(
             "Choosing {} for {interface} as a last-resort fallback",
             impl_config.source
         );
@@ -389,14 +390,14 @@ impl PortalConfig {
 /// Warns about the deprecated `UseIn` fallback, repeating the
 /// selection but only hinting at `portals.conf(5)` once per process.
 fn warn_use_in(source: &str, interface: &str, desktop: &str) {
-    log::warn!("Choosing {source} for {interface} via the deprecated UseIn key");
+    log_warn!("Choosing {source} for {interface} via the deprecated UseIn key");
     if !WARNED_PORTALS_CONF.swap(true, Ordering::Relaxed) {
-        log::warn!(
+        log_warn!(
             "The preferred method to match portal implementations to desktop \
              environments is to use the portals.conf(5) configuration file"
         );
     }
-    log::debug!("Using {source} for {interface} in {desktop} (fallback)");
+    log_debug!("Using {source} for {interface} in {desktop} (fallback)");
 }
 
 /// Parses the contents of one `.portal` file into a [`PortalImpl`].
@@ -433,7 +434,7 @@ pub fn parse_portal_file(source: &str, contents: &str) -> Result<PortalImpl, Por
                 "Not a portal backend interface: {interface}"
             )));
         }
-        log::debug!("portal implementation supports {interface}");
+        log_debug!("portal implementation supports {interface}");
     }
     let use_in = key_file
         .list("portal", "UseIn")
@@ -472,7 +473,7 @@ pub fn parse_preferred_config(contents: &str) -> Result<Option<PreferredConfig>,
             if config.default_portal.is_none() {
                 config.default_portal = Some(preference);
             } else {
-                log::warn!("Duplicate default key will get ignored");
+                log_warn!("Duplicate default key will get ignored");
             }
         } else {
             config.interfaces.push(preference);
@@ -720,13 +721,13 @@ fn list_dir(path: &str) -> Vec<String> {
 /// first file registered per source name.
 #[cfg(all(unix, not(target_arch = "wasm32")))]
 fn load_portals_dir(portals: &mut BTreeMap<String, PortalImpl>, dir: &str) {
-    log::debug!("load portals from {dir}");
+    log_debug!("load portals from {dir}");
     for name in list_dir(dir) {
         let Some(source) = name.strip_suffix(".portal") else {
             continue;
         };
         if portals.contains_key(source) {
-            log::debug!("Skipping duplicate source {source}");
+            log_debug!("Skipping duplicate source {source}");
             continue;
         }
         let path = format!("{dir}/{name}");
@@ -734,7 +735,7 @@ fn load_portals_dir(portals: &mut BTreeMap<String, PortalImpl>, dir: &str) {
             Ok(impl_config) => {
                 portals.insert(impl_config.source.clone(), impl_config);
             }
-            Err(error) => log::warn!("Error loading {path}: {error}"),
+            Err(error) => log_warn!("Error loading {path}: {error}"),
         }
     }
 }
@@ -744,10 +745,10 @@ fn load_portals_dir(portals: &mut BTreeMap<String, PortalImpl>, dir: &str) {
 #[cfg(all(unix, not(target_arch = "wasm32")))]
 fn load_portal_configuration_for_dir(base_directory: &str, portal_file: &str) -> Option<PreferredConfig> {
     let path = format!("{base_directory}/{portal_file}");
-    log::debug!("Looking for portals configuration in '{path}'");
+    log_debug!("Looking for portals configuration in '{path}'");
     let contents = read_file(&path).ok()?;
     parse_preferred_config(&contents).unwrap_or_else(|error| {
-        log::warn!("Error loading {path}: {error}");
+        log_warn!("Error loading {path}: {error}");
         None
     })
 }
@@ -759,12 +760,12 @@ fn load_config_directory(dir: &str, desktops: &[String]) -> Option<PreferredConf
     for desktop in desktops {
         let file = format!("{desktop}-portals.conf");
         if let Some(config) = load_portal_configuration_for_dir(dir, &file) {
-            log::debug!("Using portal configuration file '{dir}/{file}' for desktop '{desktop}'");
+            log_debug!("Using portal configuration file '{dir}/{file}' for desktop '{desktop}'");
             return Some(config);
         }
     }
     let config = load_portal_configuration_for_dir(dir, "portals.conf")?;
-    log::debug!("Using portal configuration file '{dir}/portals.conf' for non-specific desktop");
+    log_debug!("Using portal configuration file '{dir}/portals.conf' for non-specific desktop");
     Some(config)
 }
 

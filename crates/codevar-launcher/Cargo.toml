@@ -12,8 +12,9 @@ ash = { workspace = true }
 codevar-base = { workspace = true }
 codevar-ui-core = { workspace = true }
 codevar-wl-protocol = { workspace = true }
+codevar-env = { workspace = true }
 libc = { workspace = true }
-log = { workspace = true }
+codevar-logger = { workspace = true }
 
 [[bin]]
 name = "codevar"

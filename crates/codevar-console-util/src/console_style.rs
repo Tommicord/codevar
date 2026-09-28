@@ -764,11 +764,6 @@ pub mod presets {
         Style::new().fg(AnsiColor::Cyan)
     }
 
-    /// Timestamp style (dim, cyan)
-    pub fn timestamp() -> Style {
-        Style::new().fg(AnsiColor::Cyan).dim()
-    }
-
     /// Header style (bold, underlined)
     pub fn header() -> Style {
         Style::new().bold().underline()
@@ -849,10 +844,6 @@ mod tests {
         let success = presets::success();
         assert!(success.has_attr(StyleAttr::BOLD));
         assert_eq!(success.fg, Some(AnsiColor::Green));
-
-        let ts = presets::timestamp();
-        assert!(ts.has_attr(StyleAttr::DIM));
-        assert_eq!(ts.fg, Some(AnsiColor::Cyan));
     }
 
     #[test]

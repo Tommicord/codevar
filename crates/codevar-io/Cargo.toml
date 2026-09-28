@@ -20,7 +20,6 @@ name = "codevar_io"
 libc = { workspace = true }
 heapless = { workspace = true }
 codevar-textlike-encode = { workspace = true, optional = true }
-codevar-base = { workspace = true, optional = true }
 defmt = { workspace = true, optional = true }
 spin = { workspace = true }
 

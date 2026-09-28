@@ -22,15 +22,14 @@
 //! It directly implements the freedesktop.org trash specification
 //! (https://specifications.freedesktop.org/trash-spec/latest/).
 
-use codevar_base::xml;
-
 use crate::xdp_context::{MethodInvocation, PortalContext, PortalFn};
 use crate::xdp_error::{PortalError, XdpResult};
 use crate::xdp_utils::env_var;
 use alloc::ffi::CString;
 use alloc::format;
 use alloc::string::{String, ToString};
-use codevar_base::basic_pathbuf::{PathBuf, PathBuilder};
+use codevar_base::xml;
+use codevar_pathbuf::{PathBuf, PathBuilder};
 
 const TRASH_INTERFACE: &str = "org.freedesktop.portal.Trash";
 const TRASH_VERSION: u32 = 1;

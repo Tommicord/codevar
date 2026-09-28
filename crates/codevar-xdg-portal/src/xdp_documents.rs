@@ -58,6 +58,7 @@ use crate::xdp_app_info::{AppInfo, AppInfoKind};
 use crate::xdp_error::PortalError;
 use crate::xdp_utils::{documents_mountpoint, env_var, set_documents_mountpoint};
 use codevar_dbus::{BodyWriter, Connection, DbusError, DbusMessage, DbusResult, DbusTransport};
+use codevar_logger::{log_debug, log_warn};
 
 /// Bus name of the document portal service.
 pub const DOCUMENTS_DBUS_NAME: &str = "org.freedesktop.portal.Documents";
@@ -660,7 +661,7 @@ pub fn init_document_proxy<T: DbusTransport>(connection: &mut Connection<T>) -> 
             Ok(path)
         }
         Err(error) => {
-            log::warn!("Document portal fuse mount point unknown: {}", error.message());
+            log_warn!("Document portal fuse mount point unknown: {}", error.message());
             set_documents_mountpoint(None);
             Err(error)
         }
@@ -733,7 +734,7 @@ pub fn get_real_path_for_doc_id<T: DbusTransport>(
         .map_err(PortalError::from)
         .and_then(|reply| decode_path_reply(&reply, "Info"));
     if let Err(error) = &outcome {
-        log::debug!("document portal error for doc id '{doc_id}': {}", error.message());
+        log_debug!("document portal error for doc id '{doc_id}': {}", error.message());
     }
     outcome
 }

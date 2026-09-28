@@ -35,21 +35,16 @@
 //! 3. [`UiDisplay::stop`] tears down the protocol objects and the
 //!    renderer.
 
+use crate::ui_pipeline::{OwnedFd, PipelineContext, PipelineError};
+use crate::ui_renderer::{RendererError, RendererSubsystem};
 use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
-use core::cell::{Cell, RefCell};
-use core::ffi::CStr;
-use core::fmt;
-use core::mem::ManuallyDrop;
-use core::time::Duration;
-
-use crate::ui_pipeline::{OwnedFd, PipelineContext, PipelineError};
-use crate::ui_renderer::{RendererError, RendererSubsystem};
-use codevar_base::basic_signal;
 use codevar_base::basic_time::SystemTime;
+use codevar_env::{ENV_APP_ID, ENV_NAME};
+use codevar_logger::log_info;
 use codevar_wl_protocol::{
     BUFFER_DESTROY, BUFFER_PARAMS_ADD, BUFFER_PARAMS_CREATE_IMMED, BUFFER_PARAMS_DESTROY, BUFFER_RELEASE,
     COMPOSITOR_CREATE_SURFACE, COMPOSITOR_INTERFACE, DMABUF_CREATE_PARAMS, DMABUF_DESTROY,
@@ -62,7 +57,11 @@ use codevar_wl_protocol::{
     XDG_TOPLEVEL_CLOSE, XDG_TOPLEVEL_DESTROY, XDG_TOPLEVEL_SET_APP_ID, XDG_TOPLEVEL_SET_TITLE,
     XDG_WM_BASE_GET_XDG_SURFACE, XDG_WM_BASE_INTERFACE, XDG_WM_BASE_PING, XDG_WM_BASE_PONG,
 };
-use log::info;
+use core::cell::{Cell, RefCell};
+use core::ffi::CStr;
+use core::fmt;
+use core::mem::ManuallyDrop;
+use core::time::Duration;
 
 /// Initial window width in surface local pixels (used when the first
 /// configure carries `0x0`).
@@ -109,8 +108,6 @@ pub enum UiDisplayError {
     Renderer(RendererError),
     /// The Vulkan pipeline could not be created.
     Pipeline(PipelineError),
-    /// The signal handler could not be installed.
-    Signal(basic_signal::InstallError),
     /// The compositor closed the window before the first configure.
     WindowClosed,
     /// Timed out waiting for a Wayland event.
@@ -123,7 +120,6 @@ impl fmt::Display for UiDisplayError {
             Self::Wayland(err) => write!(f, "wayland error: {err}"),
             Self::Renderer(err) => write!(f, "renderer error: {err}"),
             Self::Pipeline(err) => write!(f, "pipeline error: {err}"),
-            Self::Signal(err) => write!(f, "signal error: {err}"),
             Self::WindowClosed => write!(f, "the compositor closed the window"),
             Self::Timeout(msg) => write!(f, "timeout: {msg}"),
         }
@@ -150,12 +146,6 @@ impl From<PipelineError> for UiDisplayError {
     }
 }
 
-impl From<basic_signal::InstallError> for UiDisplayError {
-    fn from(err: basic_signal::InstallError) -> Self {
-        Self::Signal(err)
-    }
-}
-
 /// Configuration for creating a new [`UiDisplay`] window.
 pub struct WindowInit {
     /// The title of the window.
@@ -170,25 +160,27 @@ pub struct WindowInit {
 
 impl Default for WindowInit {
     fn default() -> Self {
-        Self {
-            title: c"Codevar",
-            app_id: c"dev.codevar.window",
-            width: DEFAULT_WIDTH,
-            height: DEFAULT_HEIGHT,
+        unsafe {
+            Self {
+                title: CStr::from_ptr(ENV_NAME.as_ptr() as *const libc::c_char),
+                app_id: CStr::from_ptr(ENV_APP_ID.as_ptr() as *const libc::c_char),
+                width: DEFAULT_WIDTH,
+                height: DEFAULT_HEIGHT,
+            }
         }
     }
 }
 
 /// Shared mutable state accessed from Wayland event listeners.
 struct WindowState {
-    closed: bool,
     width: i32,
     height: i32,
     configure_serial: u32,
-    configured: bool,
     pings: u32,
-    buffer_released: bool,
     deadline_ns: u64,
+    configured: bool,
+    buffer_released: bool,
+    closed: bool,
 }
 
 impl WindowState {
@@ -230,10 +222,7 @@ impl UiDisplay {
     /// toplevel and xdg-shell handshake), [`negotiate_modifiers`] (linux-dmabuf
     /// feedback), then the Vulkan pipeline, renderer and `wl_buffer`.
     pub fn new(init: WindowInit) -> Result<Self, UiDisplayError> {
-        basic_signal::install().map_err(UiDisplayError::Signal)?;
-        info!("codevar: installing basic signal handler");
-
-        let deadline_ns = SystemTime::monotonic_nanos() + SystemTime::secs_to_nanos(30);
+        let deadline_ns = SystemTime::monotonic_nanos() + SystemTime::secs_to_nanos(8);
         let Connection {
             mut display,
             registry,
@@ -624,7 +613,7 @@ fn connect(width: i32, height: i32) -> Result<Connection, UiDisplayError> {
     let registry = display
         .get_registry()
         .map_err(UiDisplayError::Wayland)?;
-    info!("codevar: connected to Wayland compositor");
+    log_info!("connected to Wayland compositor");
     let window_state: Rc<RefCell<WindowState>> = Rc::new(RefCell::new(WindowState::new(width, height)));
     let globals: Globals = Rc::new(RefCell::new(Vec::new()));
     {

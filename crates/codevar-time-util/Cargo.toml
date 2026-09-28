@@ -1,5 +1,5 @@
 [package]
-name = "codevar-timeutil"
+name = "codevar-time-util"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

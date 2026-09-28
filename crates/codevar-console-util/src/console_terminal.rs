@@ -223,7 +223,7 @@ impl Terminal {
         if super::is_ansi_disabled() {
             return false;
         }
-        if let Some(colorterm) = codevar_base::basic_env::env_var("COLORTERM") {
+        if let Some(colorterm) = codevar_env::env_var("COLORTERM") {
             let ct_lower = colorterm.to_lowercase();
             if ct_lower == "truecolor" || ct_lower == "24bit" {
                 return true;
@@ -243,7 +243,7 @@ impl Terminal {
         if !Self::supports_ansi() {
             return false;
         }
-        if let Some(colorterm) = codevar_base::basic_env::env_var("COLORTERM") {
+        if let Some(colorterm) = codevar_env::env_var("COLORTERM") {
             let ct_lower = colorterm.to_lowercase();
             if ct_lower == "truecolor" || ct_lower == "24bit" {
                 return true;
@@ -264,17 +264,17 @@ impl Terminal {
 
     /// Check if terminal supports Unicode
     pub fn supports_unicode() -> bool {
-        if let Some(lang) = codevar_base::basic_env::env_var("LANG") {
+        if let Some(lang) = codevar_env::env_var("LANG") {
             if lang.to_lowercase().contains("utf") {
                 return true;
             }
         }
-        if let Some(lc_all) = codevar_base::basic_env::env_var("LC_ALL") {
+        if let Some(lc_all) = codevar_env::env_var("LC_ALL") {
             if lc_all.to_lowercase().contains("utf") {
                 return true;
             }
         }
-        if let Some(lc_ctype) = codevar_base::basic_env::env_var("LC_CTYPE") {
+        if let Some(lc_ctype) = codevar_env::env_var("LC_CTYPE") {
             if lc_ctype.to_lowercase().contains("utf") {
                 return true;
             }
@@ -301,10 +301,7 @@ impl Terminal {
     }
 
     pub fn detect_size() -> (u16, u16) {
-        if let (Some(w), Some(h)) = (
-            codevar_base::basic_env::env_var("COLUMNS"),
-            codevar_base::basic_env::env_var("LINES"),
-        ) {
+        if let (Some(w), Some(h)) = (codevar_env::env_var("COLUMNS"), codevar_env::env_var("LINES")) {
             if let (Ok(w), Ok(h)) = (w.parse::<u16>(), h.parse::<u16>()) {
                 Self::update_size(w, h);
                 return (w, h);
@@ -373,9 +370,9 @@ impl Terminal {
             width: Self::width(),
             height: Self::height(),
             caps,
-            term_program: codevar_base::basic_env::env_var("TERM_PROGRAM"),
-            term: codevar_base::basic_env::env_var("TERM"),
-            colorterm: codevar_base::basic_env::env_var("COLORTERM"),
+            term_program: codevar_env::env_var("TERM_PROGRAM"),
+            term: codevar_env::env_var("TERM"),
+            colorterm: codevar_env::env_var("COLORTERM"),
         }
     }
 

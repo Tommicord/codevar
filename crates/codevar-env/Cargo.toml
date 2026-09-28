@@ -1,0 +1,23 @@
+[package]
+name = "codevar-env"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+wasm = []
+
+[lib]
+name = "codevar_env"
+
+[dependencies]
+cfg-if = { workspace = true }
+libc = { workspace = true }
+codevar-pathbuf = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation"] }

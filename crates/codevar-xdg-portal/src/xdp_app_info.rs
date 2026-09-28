@@ -46,6 +46,7 @@ use crate::xdp_utils::{
     KeyFile, documents_mountpoint, env_var, get_alternate_document_path, is_valid_app_id, maybe_quote,
     shell_parse_argv, shell_quote,
 };
+use codevar_logger::log_debug;
 
 /// Engine recorded for flatpak applications, like `FLATPAK_ENGINE_ID`.
 const FLATPAK_ENGINE_ID: &str = "org.flatpak";
@@ -337,7 +338,7 @@ impl AppInfo {
             flags = flags | AppInfoFlags::HAS_NETWORK;
         }
         let usb_queries = usb_queries_from_info(&key_file, &id);
-        log::debug!("Found {} USB queries for app {id}", usb_queries.len());
+        log_debug!("Found {} USB queries for app {id}", usb_queries.len());
 
         Ok(Self {
             kind: AppInfoKind::Flatpak,
@@ -713,7 +714,7 @@ impl AppInfo {
         let prefix = &path[..index];
         let tryexec_path = format!("{prefix}exports/bin/{}", self.id);
         if !access(&tryexec_path, libc::X_OK) {
-            log::debug!("Wrapper script unexpectedly not executable or nonexistent: {tryexec_path}");
+            log_debug!("Wrapper script unexpectedly not executable or nonexistent: {tryexec_path}");
             return None;
         }
         Some(tryexec_path)
@@ -898,7 +899,7 @@ fn usb_queries_from_info(info: &KeyFile, app_id: &str) -> Vec<UsbQuery> {
             queries.push(query);
         }
     }
-    log::debug!(
+    log_debug!(
         "Found {} enumerable and {} hidden for app {app_id}",
         enumerable.len(),
         hidden.len()

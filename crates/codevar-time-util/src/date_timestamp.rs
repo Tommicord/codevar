@@ -140,7 +140,7 @@ impl Timestamp {
     /// Create a new `Timestamp` representing the current moment in time.
     #[inline]
     pub fn now() -> Self {
-        codevar_time_core::SystemTime::now()
+        codevar_time_core::SystemTime::realtime()
             .ok()
             .map(Timestamp::from)
             .unwrap_or(Self::UNIX_EPOCH)

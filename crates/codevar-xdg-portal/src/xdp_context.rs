@@ -23,6 +23,7 @@ use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use const_format::formatc;
 use core::time::Duration;
 
 use codevar_base::basic_xml::XmlBuilder;
@@ -37,6 +38,7 @@ use crate::xdp_session::{
     SESSION_BASE_PATH, SessionHandle, build_session_path, close_reason, extract_session_token,
 };
 use crate::xdp_utils::{OptionMap, encode_options};
+use codevar_logger::{log_debug, log_error};
 
 /// Desktop portal well-known object path.
 const DESKTOP_PATH: &str = "/org/freedesktop/portal/desktop";
@@ -323,7 +325,7 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
             match self.conn.recv_timeout(Duration::from_millis(100)) {
                 Ok(message) => {
                     if let Err(e) = self.handle_message(message) {
-                        log::error!("Error handling message: {}", e);
+                        log_error!("Error handling message: {}", e);
                     }
                 }
                 Err(DbusError::Timeout) => {
@@ -333,12 +335,12 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
                     return Err(PortalError::Failed(String::from("disconnected from bus")));
                 }
                 Err(e) => {
-                    log::error!("Error receiving message: {}", e);
+                    log_error!("Error receiving message: {}", e);
                 }
             }
 
             if let Err(e) = self.conn.flush() {
-                log::error!("Error flushing connection: {}", e);
+                log_error!("Error flushing connection: {}", e);
             }
         }
     }
@@ -376,11 +378,10 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
 
     /// Registers match rules for all registered interfaces.
     fn register_match_rules(&mut self) -> XdpResult<()> {
-        // Match rules for method calls on the desktop path and request/session paths
         let rules = [
-            format!("type='method_call',path='{}'", DESKTOP_PATH),
-            format!("type='method_call',path_namespace='{}'", REQUEST_BASE_PATH),
-            format!("type='method_call',path_namespace='{}'", SESSION_BASE_PATH),
+            formatc!("type='method_call',path='{}'", DESKTOP_PATH),
+            formatc!("type='method_call',path_namespace='{}'", REQUEST_BASE_PATH),
+            formatc!("type='method_call',path_namespace='{}'", SESSION_BASE_PATH),
         ];
         for rule in rules {
             self.conn
@@ -399,7 +400,7 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
         let inv = MethodInvocation::from_message(message)?;
 
         if self.verbose {
-            log::debug!(
+            log_debug!(
                 "Received method call: {}.{} on {} from {}",
                 inv.interface,
                 inv.member,
@@ -407,17 +408,14 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
                 inv.sender
             );
         }
-
         // Properties.Get/GetAll on the desktop path
         if inv.path == DESKTOP_PATH && inv.interface == PROPERTIES_INTERFACE {
             return self.handle_properties(inv);
         }
-
         // Introspectable.Introspect on the desktop path
         if inv.path == DESKTOP_PATH && inv.interface == INTROSPECTABLE_INTERFACE {
             return self.handle_introspect(inv);
         }
-
         // Request.Close on a request path
         if Self::is_request_path(&inv.path)
             && inv.interface == "org.freedesktop.portal.Request"
@@ -425,7 +423,6 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
         {
             return self.handle_request_close(inv);
         }
-
         // Session.Close on a session path
         if Self::is_session_path(&inv.path)
             && inv.interface == "org.freedesktop.portal.Session"
@@ -433,13 +430,10 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
         {
             return self.handle_session_close(inv);
         }
-
         // Portal method on a registered interface
         if let Some(handler) = self.find_method_handler(&inv.interface, &inv.member) {
             return handler(self, &inv);
         }
-
-        // Unknown method
         self.reply_err(
             &inv,
             "org.freedesktop.DBus.Error.UnknownMethod",

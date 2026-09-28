@@ -182,7 +182,6 @@ mod imp {
         let mut hi = n;
         while lo < hi {
             let mid = (lo + hi) >> 1;
-            // SAFETY: Using ptr::addr_of! to avoid mutable reference to static mut
             let entry = unsafe { &*modules_ptr.add(mid) };
             if ip < entry.base {
                 hi = mid;

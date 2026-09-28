@@ -26,6 +26,7 @@
 //! `XdpAppInfo` pointer, and the Dex future variants are left to the
 //! dispatch layer, which owns the asynchronous call machinery.
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::time::Duration;
@@ -33,6 +34,7 @@ use core::time::Duration;
 use codevar_dbus::{BodyWriter, Connection, DbusReader, DbusResult, DbusTransport};
 
 use crate::xdp_error::PortalError;
+use codevar_logger::{log_debug, log_warn};
 
 /// Bus name of the permission store service.
 pub const PERMISSION_STORE_DBUS_NAME: &str = "org.freedesktop.impl.portal.PermissionStore";
@@ -71,7 +73,7 @@ pub enum Permission {
 #[must_use]
 pub fn to_tristate(permissions: &[String]) -> Permission {
     if permissions.len() != 1 {
-        log::warn!("Wrong permission format, ignoring ({})", permissions.join(" "));
+        log_warn!("Wrong permission format, ignoring ({})", permissions.join(" "));
         return Permission::Unset;
     }
     match permissions[0].as_str() {
@@ -79,7 +81,7 @@ pub fn to_tristate(permissions: &[String]) -> Permission {
         "no" => Permission::No,
         "ask" => Permission::Ask,
         _ => {
-            log::warn!("Wrong permission format, ignoring ({})", permissions.join(" "));
+            log_warn!("Wrong permission format, ignoring ({})", permissions.join(" "));
             Permission::Unset
         }
     }
@@ -127,14 +129,14 @@ pub fn get_permissions<T: DbusTransport>(
     ) {
         Ok(reply) => reply,
         Err(error) => {
-            log::debug!("No '{table}' permissions found: {error}");
+            log_debug!("No '{table}' permissions found: {error}");
             return Ok(None);
         }
     };
     let mut reader = reply.body_reader();
     let permissions = decode_permissions(&mut reader, app_id)?;
     if permissions.is_none() {
-        log::debug!("No permissions stored for: {table} {id}, app {app_id}");
+        log_debug!("No permissions stored for: {table} {id}, app {app_id}");
     }
     Ok(permissions)
 }
@@ -186,7 +188,7 @@ pub fn set_permissions<T: DbusTransport>(
     ) {
         Ok(_) => Ok(()),
         Err(error) => {
-            log::warn!("Error updating permission store for {app_id}: {error}");
+            log_warn!("Error updating permission store for {app_id}: {error}");
             Err(PortalError::from(error))
         }
     }

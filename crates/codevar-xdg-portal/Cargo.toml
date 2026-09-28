@@ -15,6 +15,9 @@ cfg-if = { workspace = true }
 libc = { workspace = true }
 windows-link = { workspace = true }
 spin = { workspace = true }
-log = { workspace = true }
+codevar-logger = { workspace = true }
 codevar-dbus = { workspace = true }
 codevar-base = { workspace = true }
+codevar-env = { workspace = true }
+codevar-pathbuf = { workspace = true }
+const_format = { workspace = true }
