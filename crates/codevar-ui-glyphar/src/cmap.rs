@@ -885,10 +885,10 @@ fn lookup_uvs(raw: &[u8], base: u32, selector: u32) -> UvsAction {
         return UvsAction::NotCovered;
     };
 
-    if non_default != 0 {
-        if let Some(glyph) = find_uvs_glyph(raw, non_default, base) {
-            return UvsAction::UseGlyph(glyph);
-        }
+    if non_default != 0
+        && let Some(glyph) = find_uvs_glyph(raw, non_default, base)
+    {
+        return UvsAction::UseGlyph(glyph);
     }
     if default != 0 && uvs_in_default_range(raw, default, base) {
         return UvsAction::UseDefault;

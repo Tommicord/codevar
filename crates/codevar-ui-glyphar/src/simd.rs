@@ -1514,9 +1514,7 @@ mod tests {
             1.001,
             2.0,
         ]
-        .iter()
-        .copied()
-        .collect();
+        .to_vec();
         let mut expected = vec![0u8; values.len()];
         scalar::finalize(&values, &mut expected);
         let mut got = vec![0u8; values.len()];

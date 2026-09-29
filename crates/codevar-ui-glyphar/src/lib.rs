@@ -62,9 +62,9 @@ extern crate alloc;
 // TODO(module): pub mod atlas;
 pub mod cmap;
 pub mod font_file;
+pub mod glyf;
 #[cfg(test)]
 mod test_support;
-// TODO(module): pub mod glyf;
 // TODO(module): pub mod interpreter;
 // TODO(module): pub mod raster;
 // TODO(module): pub mod shaders;

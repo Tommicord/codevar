@@ -453,12 +453,10 @@ impl<'a> FontFile<'a> {
                     feature: "Type 1 sfnt (typ1)",
                 });
             }
-            other => {
+            _ => {
                 return Err(GlypharError::Malformed {
                     context: "sfnt version",
-                    detail: match other {
-                        _ => "unknown sfnt version tag",
-                    },
+                    detail: "unknown sfnt version tag",
                 });
             }
         }
@@ -590,10 +588,8 @@ impl<'a> FontFile<'a> {
         let fpgm = find_table(&records, *b"fpgm").map_or(&[][..], |r| &data[r]);
         let prep = find_table(&records, *b"prep").map_or(&[][..], |r| &data[r]);
         let os2 = find_table(&records, *b"OS/2").and_then(|r| parse_os2(&data[r]).ok());
-        let gasp = find_table(&records, *b"gasp").map_or_else(
-            || Vec::new(),
-            |r| parse_gasp(&data[r]).unwrap_or_else(|_| Vec::new()),
-        );
+        let gasp = find_table(&records, *b"gasp")
+            .map_or_else(Vec::new, |r| parse_gasp(&data[r]).unwrap_or_else(|_| Vec::new()));
         let cmap = find_table(&records, *b"cmap");
         let name = find_table(&records, *b"name");
         let kern = find_table(&records, *b"kern").map(|r| &data[r]);

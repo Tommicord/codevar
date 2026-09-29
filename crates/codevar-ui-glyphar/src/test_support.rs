@@ -183,7 +183,7 @@ fn assemble_sfnt(tables: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
     let mut offset = dir_start + dir_size;
     let mut head_offset = 0usize;
     for (tag, payload) in tables {
-        while offset % 4 != 0 {
+        while !offset.is_multiple_of(4) {
             offset += 1;
         }
         if **tag == *b"head" {
