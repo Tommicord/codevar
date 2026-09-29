@@ -89,7 +89,10 @@ pub fn find_tag(records: &[TableRecord], tag: u32) -> usize {
             return mid;
         }
     }
-    records.iter().position(|record| record.tag == tag).unwrap_or(records.len())
+    records
+        .iter()
+        .position(|record| record.tag == tag)
+        .unwrap_or(records.len())
 }
 
 /// Returns the first index `i` with `end_codes[i] >= code`.
@@ -258,8 +261,14 @@ fn dispatch_find_end_code(end_codes: &[u16], code: u16) -> Option<usize> {
             unsafe { avx512::find_end_code(end_codes, code) }
         }
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        Tier::Avx2 | Tier::Ssse3 | Tier::Sse2 => {
-            // SAFETY: all three tiers imply SSE2, and the kernel
+        Tier::Avx2 => {
+            // SAFETY: `Tier::Avx2` proved AVX2 + OS YMM state, and the
+            // kernel bounds-checks every load.
+            unsafe { avx2::find_end_code(end_codes, code) }
+        }
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        Tier::Ssse3 | Tier::Sse2 => {
+            // SAFETY: both tiers imply SSE2, and the kernel
             // bounds-checks every load.
             unsafe { sse2::find_end_code(end_codes, code) }
         }
@@ -450,23 +459,23 @@ pub(crate) mod scalar {
 mod sse2 {
     #[cfg(target_arch = "x86")]
     use core::arch::x86::{
-        __m128i, _mm_add_epi16, _mm_add_epi32, _mm_add_ps, _mm_and_si128, _mm_castps_si128,
-        _mm_castsi128_ps, _mm_cmpgt_epi16, _mm_cvtepi32_ps, _mm_cvtsi128_si32, _mm_cvttps_epi32,
-        _mm_loadu_ps, _mm_loadu_si128, _mm_min_ps, _mm_movemask_epi8, _mm_mul_ps, _mm_mulhi_epu16,
-        _mm_mullo_epi16, _mm_or_si128, _mm_packus_epi16, _mm_packs_epi32, _mm_set1_epi16, _mm_set1_epi32,
-        _mm_set1_ps, _mm_setzero_si128, _mm_slli_epi32, _mm_srai_epi16, _mm_srli_epi16, _mm_srli_epi32,
-        _mm_srli_si128, _mm_storeu_ps, _mm_storeu_si128, _mm_unpackhi_epi16, _mm_unpackhi_epi8,
-        _mm_unpacklo_epi16, _mm_unpacklo_epi64, _mm_unpacklo_epi8, _mm_xor_si128,
+        __m128i, _mm_add_epi16, _mm_add_epi32, _mm_add_ps, _mm_and_si128, _mm_castps_si128, _mm_castsi128_ps,
+        _mm_cmpgt_epi16, _mm_cvtepi32_ps, _mm_cvtsi128_si32, _mm_cvttps_epi32, _mm_loadu_ps, _mm_loadu_si128,
+        _mm_min_ps, _mm_movemask_epi8, _mm_mul_ps, _mm_mulhi_epu16, _mm_mullo_epi16, _mm_or_si128,
+        _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi16, _mm_set1_epi32, _mm_set1_ps, _mm_setzero_si128,
+        _mm_slli_epi32, _mm_srai_epi16, _mm_srli_epi16, _mm_srli_epi32, _mm_srli_si128, _mm_storeu_ps,
+        _mm_storeu_si128, _mm_unpackhi_epi8, _mm_unpackhi_epi16, _mm_unpackhi_epi64, _mm_unpacklo_epi8,
+        _mm_unpacklo_epi16, _mm_xor_si128,
     };
     #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::{
-        __m128i, _mm_add_epi16, _mm_add_epi32, _mm_add_ps, _mm_and_si128, _mm_castps_si128,
-        _mm_castsi128_ps, _mm_cmpgt_epi16, _mm_cvtepi32_ps, _mm_cvtsi128_si32, _mm_cvttps_epi32,
-        _mm_loadu_ps, _mm_loadu_si128, _mm_min_ps, _mm_movemask_epi8, _mm_mul_ps, _mm_mulhi_epu16,
-        _mm_mullo_epi16, _mm_or_si128, _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi16, _mm_set1_epi32,
-        _mm_set1_ps, _mm_setzero_si128, _mm_slli_epi32, _mm_srai_epi16, _mm_srli_epi16, _mm_srli_epi32,
-        _mm_srli_si128, _mm_storeu_ps, _mm_storeu_si128, _mm_unpackhi_epi16, _mm_unpackhi_epi8,
-        _mm_unpacklo_epi16, _mm_unpacklo_epi64, _mm_unpacklo_epi8, _mm_xor_si128,
+        __m128i, _mm_add_epi16, _mm_add_epi32, _mm_add_ps, _mm_and_si128, _mm_castps_si128, _mm_castsi128_ps,
+        _mm_cmpgt_epi16, _mm_cvtepi32_ps, _mm_cvtsi128_si32, _mm_cvttps_epi32, _mm_loadu_ps, _mm_loadu_si128,
+        _mm_min_ps, _mm_movemask_epi8, _mm_mul_ps, _mm_mulhi_epu16, _mm_mullo_epi16, _mm_or_si128,
+        _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi16, _mm_set1_epi32, _mm_set1_ps, _mm_setzero_si128,
+        _mm_slli_epi32, _mm_srai_epi16, _mm_srli_epi16, _mm_srli_epi32, _mm_srli_si128, _mm_storeu_ps,
+        _mm_storeu_si128, _mm_unpackhi_epi8, _mm_unpackhi_epi16, _mm_unpackhi_epi64, _mm_unpacklo_epi8,
+        _mm_unpacklo_epi16, _mm_xor_si128,
     };
 
     /// Input bytes consumed per checksum iteration.
@@ -508,7 +517,7 @@ mod sse2 {
         );
         let ends = _mm_or_si128(
             _mm_and_si128(_mm_srli_epi32(v, 24), _mm_set1_epi32(0x0000_00FF)),
-            _mm_and_si128(_mm_slli_epi32(v, 24), _mm_set1_epi32(0xFF00_0000)),
+            _mm_and_si128(_mm_slli_epi32(v, 24), _mm_set1_epi32(0xFF00_0000_u32 as i32)),
         );
         _mm_or_si128(mid, ends)
     }
@@ -521,11 +530,13 @@ mod sse2 {
     #[inline]
     #[target_feature(enable = "sse2")]
     pub(super) unsafe fn hsum_epi32(v: __m128i) -> u32 {
-        // SAFETY: register-only SSE2 operations: duplicate the high
-        // 64 bits, add, then duplicate the high 32 bits and add again.
-        let hi64 = _mm_unpacklo_epi64(v, v);
+        // SAFETY: register-only SSE2 operations: fold the two high
+        // 64-bit halves into the low ones (`[v0+v2, v1+v3, ...]`), then
+        // fold lane 1 into lane 0 with a 4-byte logical shift so lane 0
+        // becomes the wrapping sum of all four `u32` lanes.
+        let hi64 = _mm_unpackhi_epi64(v, v);
         let sum2 = _mm_add_epi32(v, hi64);
-        let sum1 = _mm_add_epi32(sum2, _mm_srli_si128(sum2, 8));
+        let sum1 = _mm_add_epi32(sum2, _mm_srli_si128(sum2, 4));
         _mm_cvtsi128_si32(sum1) as u32
     }
 
@@ -614,10 +625,20 @@ mod sse2 {
             unsafe {
                 let s = _mm_loadu_si128(src.as_ptr().add(i).cast::<__m128i>());
                 let d = _mm_loadu_si128(dst.as_ptr().add(i).cast::<__m128i>());
-                let lo =
-                    blend_u16x8(_mm_unpacklo_epi8(s, zero), _mm_unpacklo_epi8(d, zero), a, inv, magic);
-                let hi =
-                    blend_u16x8(_mm_unpackhi_epi8(s, zero), _mm_unpackhi_epi8(d, zero), a, inv, magic);
+                let lo = blend_u16x8(
+                    _mm_unpacklo_epi8(s, zero),
+                    _mm_unpacklo_epi8(d, zero),
+                    a,
+                    inv,
+                    magic,
+                );
+                let hi = blend_u16x8(
+                    _mm_unpackhi_epi8(s, zero),
+                    _mm_unpackhi_epi8(d, zero),
+                    a,
+                    inv,
+                    magic,
+                );
                 let bytes = _mm_packus_epi16(lo, hi);
                 _mm_storeu_si128(dst.as_mut_ptr().add(i).cast::<__m128i>(), bytes);
                 i += 16;
@@ -641,8 +662,7 @@ mod sse2 {
         // SAFETY: register-only SSE2 operations; every lane stays in
         // `0..=255`, so the saturating pack never clamps.
         let t = _mm_add_epi16(_mm_mullo_epi16(a, s), _mm_mullo_epi16(inv, d));
-        let q = _mm_srli_epi16(_mm_mulhi_epu16(t, magic), 7);
-        _mm_add_epi16(d, q)
+        _mm_srli_epi16(_mm_mulhi_epu16(t, magic), 7)
     }
 
     /// SSE2 `i16` → `f32` scale+offset; returns `i16`s consumed.
@@ -718,27 +738,27 @@ mod ssse3 {
 mod avx2 {
     #[cfg(target_arch = "x86")]
     use core::arch::x86::{
-        __m128i, __m256i, _mm256_add_epi16, _mm256_add_epi32, _mm256_add_ps, _mm256_and_si256,
+        __m128i, __m256i, _mm_add_epi32, _mm_loadu_si128, _mm_packs_epi32, _mm_packus_epi16,
+        _mm_storeu_si128, _mm256_add_epi16, _mm256_add_epi32, _mm256_add_ps, _mm256_and_si256,
         _mm256_castps_si256, _mm256_castsi256_ps, _mm256_castsi256_si128, _mm256_cmpgt_epi16,
         _mm256_cvtepi16_epi32, _mm256_cvtepi32_ps, _mm256_cvttps_epi32, _mm256_extracti128_si256,
         _mm256_loadu_ps, _mm256_loadu_si256, _mm256_min_ps, _mm256_movemask_epi8, _mm256_mul_ps,
         _mm256_mulhi_epu16, _mm256_mullo_epi16, _mm256_or_si256, _mm256_packus_epi16, _mm256_set1_epi16,
         _mm256_set1_epi32, _mm256_set1_ps, _mm256_setzero_si256, _mm256_slli_epi32, _mm256_srli_epi16,
-        _mm256_srli_epi32, _mm256_storeu_ps, _mm256_storeu_si256, _mm256_unpackhi_epi8,
-        _mm256_unpacklo_epi8, _mm256_xor_si256, _mm_add_epi32, _mm_loadu_si128, _mm_packus_epi16,
-        _mm_packs_epi32, _mm_storeu_si128,
+        _mm256_srli_epi32, _mm256_storeu_ps, _mm256_storeu_si256, _mm256_unpackhi_epi8, _mm256_unpacklo_epi8,
+        _mm256_xor_si256,
     };
     #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::{
-        __m128i, __m256i, _mm256_add_epi16, _mm256_add_epi32, _mm256_add_ps, _mm256_and_si256,
+        __m128i, __m256i, _mm_add_epi32, _mm_loadu_si128, _mm_packs_epi32, _mm_packus_epi16,
+        _mm_storeu_si128, _mm256_add_epi16, _mm256_add_epi32, _mm256_add_ps, _mm256_and_si256,
         _mm256_castps_si256, _mm256_castsi256_ps, _mm256_castsi256_si128, _mm256_cmpgt_epi16,
         _mm256_cvtepi16_epi32, _mm256_cvtepi32_ps, _mm256_cvttps_epi32, _mm256_extracti128_si256,
         _mm256_loadu_ps, _mm256_loadu_si256, _mm256_min_ps, _mm256_movemask_epi8, _mm256_mul_ps,
         _mm256_mulhi_epu16, _mm256_mullo_epi16, _mm256_or_si256, _mm256_packus_epi16, _mm256_set1_epi16,
         _mm256_set1_epi32, _mm256_set1_ps, _mm256_setzero_si256, _mm256_slli_epi32, _mm256_srli_epi16,
-        _mm256_srli_epi32, _mm256_storeu_ps, _mm256_storeu_si256, _mm256_unpackhi_epi8,
-        _mm256_unpacklo_epi8, _mm256_xor_si256, _mm_add_epi32, _mm_loadu_si128,
-        _mm_packs_epi32, _mm_packus_epi16, _mm_storeu_si128,
+        _mm256_srli_epi32, _mm256_storeu_ps, _mm256_storeu_si256, _mm256_unpackhi_epi8, _mm256_unpacklo_epi8,
+        _mm256_xor_si256,
     };
 
     /// Input bytes consumed per iteration.
@@ -781,7 +801,10 @@ mod avx2 {
         );
         let ends = _mm256_or_si256(
             _mm256_and_si256(_mm256_srli_epi32(v, 24), _mm256_set1_epi32(0x0000_00FF)),
-            _mm256_and_si256(_mm256_slli_epi32(v, 24), _mm256_set1_epi32(0xFF00_0000)),
+            _mm256_and_si256(
+                _mm256_slli_epi32(v, 24),
+                _mm256_set1_epi32(0xFF00_0000_u32 as i32),
+            ),
         );
         _mm256_or_si256(mid, ends)
     }
@@ -901,17 +924,10 @@ mod avx2 {
     /// Requires AVX2.
     #[inline]
     #[target_feature(enable = "avx2")]
-    unsafe fn blend_u16x16(
-        s: __m256i,
-        d: __m256i,
-        a: __m256i,
-        inv: __m256i,
-        magic: __m256i,
-    ) -> __m256i {
+    unsafe fn blend_u16x16(s: __m256i, d: __m256i, a: __m256i, inv: __m256i, magic: __m256i) -> __m256i {
         // SAFETY: register-only AVX2 operations.
         let t = _mm256_add_epi16(_mm256_mullo_epi16(a, s), _mm256_mullo_epi16(inv, d));
-        let q = _mm256_srli_epi16(_mm256_mulhi_epu16(t, magic), 7);
-        _mm256_add_epi16(d, q)
+        _mm256_srli_epi16(_mm256_mulhi_epu16(t, magic), 7)
     }
 
     /// AVX2 `i16` → `f32` scale+offset; returns `i16`s consumed.
@@ -934,7 +950,10 @@ mod avx2 {
                 let s = _mm256_set1_ps(scale);
                 let o = _mm256_set1_ps(offset);
                 _mm256_storeu_ps(dst.as_mut_ptr().add(i), _mm256_add_ps(_mm256_mul_ps(lo, s), o));
-                _mm256_storeu_ps(dst.as_mut_ptr().add(i + 8), _mm256_add_ps(_mm256_mul_ps(hi, s), o));
+                _mm256_storeu_ps(
+                    dst.as_mut_ptr().add(i + 8),
+                    _mm256_add_ps(_mm256_mul_ps(hi, s), o),
+                );
                 i += 16;
             }
         }
@@ -947,26 +966,27 @@ mod avx2 {
 mod avx512 {
     #[cfg(target_arch = "x86")]
     use core::arch::x86::{
-        __m128i, __m256i, __m512i, _mm256_add_epi32, _mm256_castsi256_si128, _mm256_extracti128_si256,
-        _mm256_loadu_si256, _mm256_storeu_si256, _mm512_add_epi16, _mm512_add_epi32, _mm512_add_ps,
-        _mm512_and_si512, _mm512_castps_si512, _mm512_castsi512_ps, _mm512_cmpge_epu16_mask,
-        _mm512_cvtepi16_epi32, _mm512_cvtepi32_ps, _mm512_cvtepu8_epi16, _mm512_cvtusepi16_epi8,
-        _mm512_cvtusepi32_epi8, _mm512_cvttps_epi32, _mm512_extracti64x4_epi64, _mm512_loadu_ps,
-        _mm512_loadu_si512, _mm512_min_ps, _mm512_mul_ps, _mm512_mulhi_epu16, _mm512_mullo_epi16,
-        _mm512_set1_epi16, _mm512_set1_epi32, _mm512_set1_ps, _mm512_setzero_si512, _mm512_shuffle_epi8,
-        _mm512_srli_epi16, _mm512_storeu_ps, _mm512_storeu_si512, _mm_add_epi32, _mm_cvtsi128_si32,
-        _mm_loadu_si128, _mm_set1_epi32, _mm_srli_si128, _mm_storeu_si128, _mm_unpacklo_epi64,
+        __m128i, __m256i, __m512i, _mm_add_epi32, _mm_cvtsi128_si32, _mm_loadu_si128, _mm_set1_epi32,
+        _mm_srli_si128, _mm_storeu_si128, _mm_unpackhi_epi64, _mm256_add_epi32, _mm256_castsi256_si128,
+        _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_storeu_si256, _mm512_add_epi16,
+        _mm512_add_epi32, _mm512_add_ps, _mm512_and_si512, _mm512_castps_si512, _mm512_castsi512_ps,
+        _mm512_cmpge_epu16_mask, _mm512_cvtepi16_epi32, _mm512_cvtepi32_ps, _mm512_cvtepu8_epi16,
+        _mm512_cvttps_epi32, _mm512_cvtusepi16_epi8, _mm512_cvtusepi32_epi8, _mm512_extracti64x4_epi64,
+        _mm512_loadu_ps, _mm512_loadu_si512, _mm512_min_ps, _mm512_mul_ps, _mm512_mulhi_epu16,
+        _mm512_mullo_epi16, _mm512_set1_epi16, _mm512_set1_epi32, _mm512_set1_ps, _mm512_setzero_si512,
+        _mm512_shuffle_epi8, _mm512_srli_epi16, _mm512_storeu_ps, _mm512_storeu_si512,
     };
     #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::{
-        __m128i, __m256i, __m512i, _mm256_add_epi32, _mm256_castsi256_si128, _mm256_extracti128_si256,
+        __m128i, __m256i, __m512i, _mm_add_epi32, _mm_cvtsi128_si32, _mm_srli_si128, _mm_storeu_si128,
+        _mm_unpackhi_epi64, _mm256_add_epi32, _mm256_castsi256_si128, _mm256_extracti128_si256,
         _mm256_loadu_si256, _mm256_storeu_si256, _mm512_add_epi16, _mm512_add_epi32, _mm512_and_si512,
         _mm512_castps_si512, _mm512_castsi512_ps, _mm512_cmpge_epu16_mask, _mm512_cvtepi16_epi32,
-        _mm512_cvtepi32_ps, _mm512_cvtepu8_epi16,
-        _mm512_cvttps_epi32, _mm512_cvtusepi16_epi8, _mm512_cvtusepi32_epi8, _mm512_extracti64x4_epi64, _mm512_loadu_ps, _mm512_loadu_si512,
+        _mm512_cvtepi32_ps, _mm512_cvtepu8_epi16, _mm512_cvttps_epi32, _mm512_cvtusepi16_epi8,
+        _mm512_cvtusepi32_epi8, _mm512_extracti64x4_epi64, _mm512_loadu_ps, _mm512_loadu_si512,
         _mm512_min_ps, _mm512_mul_ps, _mm512_mulhi_epu16, _mm512_mullo_epi16, _mm512_set1_epi16,
         _mm512_set1_epi32, _mm512_set1_ps, _mm512_setzero_si512, _mm512_shuffle_epi8, _mm512_srli_epi16,
-        _mm512_storeu_ps, _mm_add_epi32, _mm_cvtsi128_si32, _mm_srli_si128, _mm_storeu_si128, _mm_unpacklo_epi64,
+        _mm512_storeu_ps,
     };
     use core::arch::x86_64::{_mm512_add_ps, _mm512_castsi512_si256};
 
@@ -993,7 +1013,13 @@ mod avx512 {
     /// # Safety
     ///
     /// The CPU must support AVX-512 F+BW+DQ+VL and OS ZMM state.
-    #[target_feature(enable = "avx512f", enable = "avx512bw", enable = "avx512dq", enable = "avx512vl", enable = "avx2")]
+    #[target_feature(
+        enable = "avx512f",
+        enable = "avx512bw",
+        enable = "avx512dq",
+        enable = "avx512vl",
+        enable = "avx2"
+    )]
     pub(super) unsafe fn checksum(data: &[u8]) -> u32 {
         // SAFETY: `target_feature` guarantees the intrinsics; the loop
         // condition keeps every load inside `data`, and the mask is a
@@ -1022,11 +1048,17 @@ mod avx512 {
     ///
     /// Requires SSE2 (implied by AVX-512).
     #[inline]
-    #[target_feature(enable = "avx512f", enable = "avx512bw", enable = "avx512dq", enable = "avx512vl", enable = "avx2")]
+    #[target_feature(
+        enable = "avx512f",
+        enable = "avx512bw",
+        enable = "avx512dq",
+        enable = "avx512vl",
+        enable = "avx2"
+    )]
     unsafe fn hsum128(v: __m128i) -> u32 {
-        let hi64 = _mm_unpacklo_epi64(v, v);
+        let hi64 = _mm_unpackhi_epi64(v, v);
         let sum2 = _mm_add_epi32(v, hi64);
-        let sum1 = _mm_add_epi32(sum2, _mm_srli_si128(sum2, 8));
+        let sum1 = _mm_add_epi32(sum2, _mm_srli_si128(sum2, 4));
         _mm_cvtsi128_si32(sum1) as u32
     }
 
@@ -1036,7 +1068,13 @@ mod avx512 {
     /// # Safety
     ///
     /// The CPU must support AVX-512 F+BW+DQ+VL and OS ZMM state.
-    #[target_feature(enable = "avx512f", enable = "avx512bw", enable = "avx512dq", enable = "avx512vl", enable = "avx2")]
+    #[target_feature(
+        enable = "avx512f",
+        enable = "avx512bw",
+        enable = "avx512dq",
+        enable = "avx512vl",
+        enable = "avx2"
+    )]
     pub(super) unsafe fn find_end_code(end_codes: &[u16], code: u16) -> Option<usize> {
         let n = end_codes.len();
         let mut i = 0;
@@ -1059,7 +1097,13 @@ mod avx512 {
     /// # Safety
     ///
     /// The CPU must support AVX-512 F+BW+DQ+VL and OS ZMM state.
-    #[target_feature(enable = "avx512f", enable = "avx512bw", enable = "avx512dq", enable = "avx512vl", enable = "avx2")]
+    #[target_feature(
+        enable = "avx512f",
+        enable = "avx512bw",
+        enable = "avx512dq",
+        enable = "avx512vl",
+        enable = "avx2"
+    )]
     pub(super) unsafe fn finalize(acc: &[f32], out: &mut [u8]) -> usize {
         let n = acc.len().min(out.len());
         let mut i = 0;
@@ -1086,7 +1130,13 @@ mod avx512 {
     ///
     /// The CPU must support AVX-512 F+BW+DQ+VL and OS ZMM state;
     /// `dst`/`src` are clipped to equal length by the dispatcher.
-    #[target_feature(enable = "avx512f", enable = "avx512bw", enable = "avx512dq", enable = "avx512vl", enable = "avx2")]
+    #[target_feature(
+        enable = "avx512f",
+        enable = "avx512bw",
+        enable = "avx512dq",
+        enable = "avx512vl",
+        enable = "avx2"
+    )]
     pub(super) unsafe fn blend(dst: &mut [u8], src: &[u8], alpha: u8) -> usize {
         let n = dst.len().min(src.len());
         let a = _mm512_set1_epi16(i16::from(alpha));
@@ -1101,8 +1151,7 @@ mod avx512 {
                 let d = _mm512_cvtepu8_epi16(_mm256_loadu_si256(dst.as_ptr().add(i).cast::<__m256i>()));
                 let t = _mm512_add_epi16(_mm512_mullo_epi16(a, s), _mm512_mullo_epi16(inv, d));
                 let q = _mm512_srli_epi16(_mm512_mulhi_epu16(t, magic), 7);
-                let r = _mm512_add_epi16(d, q);
-                let bytes = _mm512_cvtusepi16_epi8(r);
+                let bytes = _mm512_cvtusepi16_epi8(q);
                 _mm256_storeu_si256(dst.as_mut_ptr().add(i).cast::<__m256i>(), bytes);
                 i += 32;
             }
@@ -1115,7 +1164,13 @@ mod avx512 {
     /// # Safety
     ///
     /// The CPU must support AVX-512 F+BW+DQ+VL and OS ZMM state.
-    #[target_feature(enable = "avx512f", enable = "avx512bw", enable = "avx512dq", enable = "avx512vl", enable = "avx2")]
+    #[target_feature(
+        enable = "avx512f",
+        enable = "avx512bw",
+        enable = "avx512dq",
+        enable = "avx512vl",
+        enable = "avx2"
+    )]
     pub(super) unsafe fn coords(src: &[i16], dst: &mut [f32], scale: f32, offset: f32) -> usize {
         let n = src.len().min(dst.len());
         let mut i = 0;
@@ -1148,12 +1203,12 @@ mod avx512 {
 #[cfg(target_arch = "aarch64")]
 mod neon {
     use core::arch::aarch64::{
-        uint16x8_t, uint32x4_t, uint8x8_t, vabsq_f32, vaddq_f32, vaddq_u16, vaddq_u32, vaddvq_u32,
-        vcgeq_u16, vcvtq_f32_s32, vcvtq_u32_f32, vdupq_n_f32, vdupq_n_u16, vdupq_n_u32, vget_high_s16,
-        vget_high_u16, vget_high_u8, vget_lane_u64, vget_low_s16, vget_low_u16, vget_low_u8, vld1q_f32,
-        vld1q_s16, vld1q_u16, vld1q_u8, vmovl_s16, vmovl_u16, vmovl_u8, vmovn_u16, vmovn_u32,
-        vmulq_f32, vmulq_n_f32, vmulq_u16, vmulq_u32, vcombine_u16, vcombine_u8, vreinterpret_u64_u8,
-        vreinterpretq_u32_u8, vrev32q_u8, vshrq_n_u32, vminq_f32, vst1_u8, vst1q_f32, vst1q_u8,
+        uint8x8_t, uint16x8_t, uint32x4_t, vabsq_f32, vaddq_f32, vaddq_u16, vaddq_u32, vaddvq_u32, vcgeq_u16,
+        vcombine_u8, vcombine_u16, vcvtq_f32_s32, vcvtq_u32_f32, vdupq_n_f32, vdupq_n_u16, vdupq_n_u32,
+        vget_high_s16, vget_high_u8, vget_high_u16, vget_lane_u64, vget_low_s16, vget_low_u8, vget_low_u16,
+        vld1q_f32, vld1q_s16, vld1q_u8, vld1q_u16, vminq_f32, vmovl_s16, vmovl_u8, vmovl_u16, vmovn_u16,
+        vmovn_u32, vmulq_f32, vmulq_n_f32, vmulq_u16, vmulq_u32, vreinterpret_u64_u8, vreinterpretq_u32_u8,
+        vrev32q_u8, vshrq_n_u32, vst1_u8, vst1q_f32, vst1q_u8,
     };
 
     /// NEON checksum over 16-byte blocks plus the scalar tail.
@@ -1278,13 +1333,14 @@ mod neon {
             let su = vmovl_u8(s);
             let du = vmovl_u8(d);
             let t = vaddq_u16(vmulq_u16(a, su), vmulq_u16(inv, du));
-            let lo = narrow_add(vmovl_u16(vget_low_u16(t)), vmovl_u16(vget_low_u16(du)));
-            let hi = narrow_add(vmovl_u16(vget_high_u16(t)), vmovl_u16(vget_high_u16(du)));
+            let lo = narrow_div255(vmovl_u16(vget_low_u16(t)));
+            let hi = narrow_div255(vmovl_u16(vget_high_u16(t)));
             vmovn_u16(vcombine_u16(lo, hi))
         }
     }
 
-    /// `d + floor(t * 0x8081 >> 23)` for four lanes at a time.
+    /// `floor(t * 0x8081 >> 23)` for four lanes at a time; `t` is the
+    /// full `a*s + (255-a)*d` sum, so the quotient *is* the result.
     ///
     /// `t * 0x8081 <= 65025 * 32897` fits an `u32`, and the shift is
     /// exact for every `t <= 66051`.
@@ -1294,12 +1350,9 @@ mod neon {
     /// Requires NEON.
     #[inline]
     #[target_feature(enable = "neon")]
-    unsafe fn narrow_add(t: uint32x4_t, d: uint32x4_t) -> uint16x8_t {
+    unsafe fn narrow_div255(t: uint32x4_t) -> uint16x8_t {
         // SAFETY: register-only NEON operations.
-        unsafe {
-            let q = vshrq_n_u32(vmulq_u32(t, vdupq_n_u32(0x8081)), 23);
-            vmovn_u32(vaddq_u32(d, q))
-        }
+        unsafe { vmovn_u32(vshrq_n_u32(vmulq_u32(t, vdupq_n_u32(0x8081)), 23)) }
     }
 
     /// NEON `i16` → `f32` scale+offset; returns `i16`s consumed.
@@ -1358,7 +1411,9 @@ mod tests {
     }
 
     fn pattern(len: usize) -> Vec<u8> {
-        (0..len).map(|i| (i.wrapping_mul(31) + 7) as u8).collect()
+        (0..len)
+            .map(|i| (i.wrapping_mul(31) + 7) as u8)
+            .collect()
     }
 
     #[test]
@@ -1374,7 +1429,9 @@ mod tests {
         let mut rng = Rng::new(0x5EED);
         for _ in 0..64 {
             let len = rng.below(300) as usize;
-            let data: Vec<u8> = (0..len).map(|_| u8::try_from(rng.below(256)).unwrap_or(0)).collect();
+            let data: Vec<u8> = (0..len)
+                .map(|_| u8::try_from(rng.below(256)).unwrap_or(0))
+                .collect();
             assert_eq!(table_checksum(&data), scalar::checksum(&data));
         }
     }
@@ -1404,17 +1461,21 @@ mod tests {
     fn find_end_code_matches_scalar_on_sorted_tables() {
         for len in [0usize, 1, 2, 7, 8, 9, 15, 16, 17, 31, 32, 33, 64, 100, 1000] {
             let codes = sorted_codes(len, u64::try_from(len).unwrap_or(1) + 3);
+            let mut rng = Rng::new(u64::try_from(len).unwrap_or(1) + 91);
             let mut queries: Vec<u16> = vec![0, 1, 0xFFFF, 0x8000];
             for _ in 0..24 {
-                queries.push(u16::try_from(Rng::new(len as u64).below(0x1_0000)).unwrap_or(0));
+                queries.push(rng.below(0x1_0000) as u16);
             }
             for &code in &codes {
                 queries.push(code);
                 queries.push(code.saturating_add(1));
-                queries = queries; // keep the loop body explicit
             }
             for code in queries {
-                assert_eq!(find_end_code(&codes, code), scalar::find_end_code(&codes, code), "len {len} code {code}");
+                assert_eq!(
+                    find_end_code(&codes, code),
+                    scalar::find_end_code(&codes, code),
+                    "len {len} code {code}"
+                );
             }
         }
     }
@@ -1439,8 +1500,19 @@ mod tests {
     #[test]
     fn finalize_matches_scalar() {
         let values: Vec<f32> = [
-            -2.0f32, -1.0, -0.5, -0.001, 0.0, 0.001, 0.5, 1.0 / 255.0, 127.0 / 255.0, 0.999, 1.0,
-            1.001, 2.0,
+            -2.0f32,
+            -1.0,
+            -0.5,
+            -0.001,
+            0.0,
+            0.001,
+            0.5,
+            1.0 / 255.0,
+            127.0 / 255.0,
+            0.999,
+            1.0,
+            1.001,
+            2.0,
         ]
         .iter()
         .copied()
@@ -1456,8 +1528,9 @@ mod tests {
     fn finalize_matches_scalar_random_rows() {
         let mut rng = Rng::new(0xC0FFEE);
         for len in [0usize, 1, 3, 4, 7, 8, 15, 16, 17, 31, 32, 33, 64, 65] {
-            let values: Vec<f32> =
-                (0..len).map(|_| (rng.below(2000) as i64 - 1000) as f32 / 700.0).collect();
+            let values: Vec<f32> = (0..len)
+                .map(|_| (rng.below(2000) as i64 - 1000) as f32 / 700.0)
+                .collect();
             let mut expected = vec![0u8; len];
             scalar::finalize(&values, &mut expected);
             let mut got = vec![0u8; len];
@@ -1478,8 +1551,12 @@ mod tests {
     fn blend_matches_scalar_for_every_alpha() {
         let len = 129;
         let mut rng = Rng::new(0xB1E7);
-        let src: Vec<u8> = (0..len).map(|_| u8::try_from(rng.below(256)).unwrap_or(0)).collect();
-        let dst: Vec<u8> = (0..len).map(|_| u8::try_from(rng.below(256)).unwrap_or(0)).collect();
+        let src: Vec<u8> = (0..len)
+            .map(|_| u8::try_from(rng.below(256)).unwrap_or(0))
+            .collect();
+        let dst: Vec<u8> = (0..len)
+            .map(|_| u8::try_from(rng.below(256)).unwrap_or(0))
+            .collect();
         for alpha in 0..=255u16 {
             let alpha = u8::try_from(alpha).unwrap_or(0);
             let mut expected = dst.clone();
@@ -1494,8 +1571,12 @@ mod tests {
     fn blend_matches_scalar_on_block_boundaries() {
         let mut rng = Rng::new(0x5AFE);
         for len in [0usize, 1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129, 255] {
-            let src: Vec<u8> = (0..len).map(|_| u8::try_from(rng.below(256)).unwrap_or(0)).collect();
-            let dst: Vec<u8> = (0..len).map(|_| u8::try_from(rng.below(256)).unwrap_or(0)).collect();
+            let src: Vec<u8> = (0..len)
+                .map(|_| u8::try_from(rng.below(256)).unwrap_or(0))
+                .collect();
+            let dst: Vec<u8> = (0..len)
+                .map(|_| u8::try_from(rng.below(256)).unwrap_or(0))
+                .collect();
             for alpha in [0u8, 1, 64, 127, 128, 200, 254, 255] {
                 let mut expected = dst.clone();
                 scalar::blend(&mut expected, &src, alpha);
@@ -1514,8 +1595,7 @@ mod tests {
             let s = u8::try_from(rng.below(256)).unwrap_or(0);
             let d = u8::try_from(rng.below(256)).unwrap_or(0);
             let a = u8::try_from(rng.below(256)).unwrap_or(0);
-            let reference =
-                (u32::from(s) * u32::from(a) + u32::from(d) * (255 - u32::from(a))) / 255;
+            let reference = (u32::from(s) * u32::from(a) + u32::from(d) * (255 - u32::from(a))) / 255;
             let mut dst = [d];
             blend_coverage(&mut dst, &[s], a);
             assert_eq!(u32::from(dst[0]), reference, "s {s} d {d} a {a}");
@@ -1533,8 +1613,9 @@ mod tests {
     fn coords_match_scalar() {
         let mut rng = Rng::new(0xC001D00D);
         for len in [0usize, 1, 7, 8, 15, 16, 17, 31, 32, 33, 64] {
-            let src: Vec<i16> =
-                (0..len).map(|_| rng.below(0x1_0000) as i16).collect();
+            let src: Vec<i16> = (0..len)
+                .map(|_| rng.below(0x1_0000) as i16)
+                .collect();
             for (scale, offset) in [(1.0f32, 0.0f32), (0.0, 0.0), (-1.5, 3.25), (7.0 / 1024.0, -0.5)] {
                 let mut expected = vec![0.0f32; len];
                 scalar::coords(&src, &mut expected, scale, offset);
@@ -1546,13 +1627,19 @@ mod tests {
     }
 
     fn record(tag: [u8; 4]) -> TableRecord {
-        TableRecord { tag: u32::from_be_bytes(tag), checksum: 0, offset: 0, length: 0 }
+        TableRecord {
+            tag: u32::from_be_bytes(tag),
+            checksum: 0,
+            offset: 0,
+            length: 0,
+        }
     }
 
     #[test]
     fn find_tag_binary_searches_a_sorted_directory() {
-        let tags: [[u8; 4]; 7] =
-            [*b"cmap", *b"fpgm", *b"glyf", *b"head", *b"hhea", *b"maxp", *b"name"];
+        let tags: [[u8; 4]; 7] = [
+            *b"cmap", *b"fpgm", *b"glyf", *b"head", *b"hhea", *b"maxp", *b"name",
+        ];
         let records: Vec<TableRecord> = tags.iter().map(|t| record(*t)).collect();
         for (i, tag) in tags.iter().enumerate() {
             assert_eq!(find_tag(&records, u32::from_be_bytes(*tag)), i);

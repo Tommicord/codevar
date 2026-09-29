@@ -36,6 +36,7 @@ use alloc::vec::Vec;
 pub struct SyntheticFont {
     with_kern: bool,
     with_cmap12: bool,
+    without_cmap: bool,
 }
 
 impl Default for SyntheticFont {
@@ -48,7 +49,11 @@ impl SyntheticFont {
     /// Creates a builder with the standard configuration.
     #[must_use]
     pub fn new() -> Self {
-        Self { with_kern: false, with_cmap12: false }
+        Self {
+            with_kern: false,
+            with_cmap12: false,
+            without_cmap: false,
+        }
     }
 
     /// Adds a legacy `kern` format-0 table with pair (1, 1) = −40.
@@ -62,6 +67,13 @@ impl SyntheticFont {
     #[must_use]
     pub fn with_cmap12(mut self) -> Self {
         self.with_cmap12 = true;
+        self
+    }
+
+    /// Omits the `cmap` table entirely.
+    #[must_use]
+    pub fn without_cmap(mut self) -> Self {
+        self.without_cmap = true;
         self
     }
 
@@ -80,11 +92,14 @@ impl SyntheticFont {
         let os2 = build_os2();
         let gasp = build_gasp();
         let name = build_name();
-        let cmap = build_cmap(self.with_cmap12);
+        let cmap = if self.without_cmap {
+            None
+        } else {
+            Some(build_cmap(self.with_cmap12))
+        };
         let kern = if self.with_kern { Some(build_kern()) } else { None };
 
         let mut tables: Vec<(&[u8; 4], Vec<u8>)> = vec![
-            (b"cmap", cmap),
             (b"cvt ", cvt),
             (b"fpgm", fpgm),
             (b"glyf", glyf),
@@ -98,6 +113,9 @@ impl SyntheticFont {
             (b"OS/2", os2),
             (b"prep", prep),
         ];
+        if let Some(cmap) = cmap {
+            tables.push((b"cmap", cmap));
+        }
         if let Some(kern) = kern {
             tables.push((b"kern", kern));
         }
@@ -141,7 +159,11 @@ fn table_checksum(data: &[u8]) -> u32 {
 /// Assembles the offset table + directory around `tables`.
 fn assemble_sfnt(tables: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
     let num = u16::try_from(tables.len()).unwrap_or(0);
-    let entry_selector = if num == 0 { 0 } else { 15 - num.leading_zeros() as u16 };
+    let entry_selector = if num == 0 {
+        0
+    } else {
+        15 - num.leading_zeros() as u16
+    };
     let search_range = 16u16 << entry_selector;
     let range_shift = num * 16 - search_range;
 
@@ -354,7 +376,12 @@ fn encode_composite_glyph(
 fn build_loca_glyf() -> (Vec<u8>, Vec<u8>) {
     // Glyph 0: quadratic blob — two on-curve, two off-curve points.
     let g0 = encode_simple_glyph(
-        &[(100, 0, true), (300, 600, false), (500, 0, true), (300, -200, false)],
+        &[
+            (100, 0, true),
+            (300, 600, false),
+            (500, 0, true),
+            (300, -200, false),
+        ],
         &[3],
         &[],
         (100, -200, 500, 600),
@@ -491,7 +518,11 @@ fn build_name() -> Vec<u8> {
 /// `cmap` with Windows BMP format 4 (and optional format 12).
 fn build_cmap(with_format12: bool) -> Vec<u8> {
     let sub4 = build_cmap_format4();
-    let sub12 = if with_format12 { Some(build_cmap_format12()) } else { None };
+    let sub12 = if with_format12 {
+        Some(build_cmap_format12())
+    } else {
+        None
+    };
 
     let mut encoding_records = Vec::new();
     // platform 3 / encoding 1 (BMP) -> format 4.
@@ -560,8 +591,7 @@ fn build_cmap_format4() -> Vec<u8> {
 
 /// Format 12 subtable mapping U+0020..U+0042 to glyph 1 (sparse groups).
 fn build_cmap_format12() -> Vec<u8> {
-    let groups: [(u32, u32, u32); 3] =
-        [(0x20, 0x20, 2), (0x41, 0x41, 1), (0x42, 0x42, 0)];
+    let groups: [(u32, u32, u32); 3] = [(0x20, 0x20, 2), (0x41, 0x41, 1), (0x42, 0x42, 0)];
     let mut out = Vec::new();
     push_u16(&mut out, 12); // format
     push_u16(&mut out, 0); // reserved
@@ -610,7 +640,8 @@ mod tests {
         let font = FontFile::parse(&bytes).expect("synthetic font");
         assert_eq!(font.num_glyphs(), 4);
         font.verify_checksums().expect("table checksums");
-        font.verify_font_checksum().expect("file checksum");
+        font.verify_font_checksum()
+            .expect("file checksum");
         assert_eq!(font.family_name().as_deref(), Some("Glyphar Test"));
         assert_eq!(font.advance_width(2), 250);
         assert!(font.glyph_range(2).expect("id 2").is_none());

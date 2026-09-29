@@ -72,7 +72,9 @@ impl<'a> Reader<'a> {
     #[inline]
     pub fn with_pos(data: &'a [u8], pos: usize) -> GlypharResult<Self> {
         if pos > data.len() {
-            return Err(GlypharError::Truncated { context: "reader start" });
+            return Err(GlypharError::Truncated {
+                context: "reader start",
+            });
         }
         Ok(Self { data, pos })
     }
@@ -113,7 +115,10 @@ impl<'a> Reader<'a> {
 
     /// Reads `n` raw bytes and advances the cursor.
     pub fn read_bytes(&mut self, n: usize, context: &'static str) -> GlypharResult<&'a [u8]> {
-        let end = self.pos.checked_add(n).ok_or(GlypharError::Truncated { context })?;
+        let end = self
+            .pos
+            .checked_add(n)
+            .ok_or(GlypharError::Truncated { context })?;
         if end > self.data.len() {
             return Err(GlypharError::Truncated { context });
         }
@@ -212,7 +217,11 @@ impl TableRecord {
         let raw = self.tag_bytes();
         let mut out = String::with_capacity(4);
         for b in raw {
-            out.push(if b.is_ascii_graphic() || b == b' ' { char::from(b) } else { '?' });
+            out.push(if b.is_ascii_graphic() || b == b' ' {
+                char::from(b)
+            } else {
+                '?'
+            });
         }
         out
     }
@@ -429,9 +438,21 @@ impl<'a> FontFile<'a> {
         let sfnt = r.read_u32("sfnt version")?;
         match sfnt {
             0x0001_0000 | 0x7472_7565 => {}
-            0x4F54_544F => return Err(GlypharError::Unsupported { feature: "CFF/CFF2 outlines (OTTO)" }),
-            0x7474_6366 => return Err(GlypharError::Unsupported { feature: "TrueType Collection (ttcf)" }),
-            0x7479_7031 => return Err(GlypharError::Unsupported { feature: "Type 1 sfnt (typ1)" }),
+            0x4F54_544F => {
+                return Err(GlypharError::Unsupported {
+                    feature: "CFF/CFF2 outlines (OTTO)",
+                });
+            }
+            0x7474_6366 => {
+                return Err(GlypharError::Unsupported {
+                    feature: "TrueType Collection (ttcf)",
+                });
+            }
+            0x7479_7031 => {
+                return Err(GlypharError::Unsupported {
+                    feature: "Type 1 sfnt (typ1)",
+                });
+            }
             other => {
                 return Err(GlypharError::Malformed {
                     context: "sfnt version",
@@ -447,7 +468,10 @@ impl<'a> FontFile<'a> {
         let _entry_selector = r.read_u16("entrySelector")?;
         let _range_shift = r.read_u16("rangeShift")?;
         if num_tables == 0 {
-            return Err(GlypharError::Malformed { context: "table directory", detail: "numTables is zero" });
+            return Err(GlypharError::Malformed {
+                context: "table directory",
+                detail: "numTables is zero",
+            });
         }
         let num = usize::from(num_tables);
         let mut records = Vec::with_capacity(num);
@@ -464,9 +488,16 @@ impl<'a> FontFile<'a> {
                     detail: "offset + length overflows",
                 })?;
             if end > data.len() {
-                return Err(GlypharError::Truncated { context: "table payload" });
+                return Err(GlypharError::Truncated {
+                    context: "table payload",
+                });
             }
-            records.push(TableRecord { tag, checksum, offset, length });
+            records.push(TableRecord {
+                tag,
+                checksum,
+                offset,
+                length,
+            });
         }
 
         let head_raw = find_table(&records, *b"head").ok_or(GlypharError::Malformed {
@@ -504,10 +535,16 @@ impl<'a> FontFile<'a> {
             });
         }
         if head.magic_number != 0x5F0F_3CF5 {
-            return Err(GlypharError::Malformed { context: "head magicNumber", detail: "expected 0x5F0F3CF5" });
+            return Err(GlypharError::Malformed {
+                context: "head magicNumber",
+                detail: "expected 0x5F0F3CF5",
+            });
         }
         if head.glyph_data_format != 0 {
-            return Err(GlypharError::Malformed { context: "head glyphDataFormat", detail: "must be zero" });
+            return Err(GlypharError::Malformed {
+                context: "head glyphDataFormat",
+                detail: "must be zero",
+            });
         }
         if hhea.number_of_h_metrics == 0 {
             return Err(GlypharError::Malformed {
@@ -522,21 +559,28 @@ impl<'a> FontFile<'a> {
             });
         }
         if !matches!(head.index_to_loc_format, 0 | 1) {
-            return Err(GlypharError::Malformed { context: "head indexToLocFormat", detail: "must be 0 or 1" });
+            return Err(GlypharError::Malformed {
+                context: "head indexToLocFormat",
+                detail: "must be 0 or 1",
+            });
         }
 
         let hmtx = &data[hmtx_raw];
         let need_hmtx = usize::from(hhea.number_of_h_metrics) * 4
             + (usize::from(maxp.num_glyphs) - usize::from(hhea.number_of_h_metrics)) * 2;
         if hmtx.len() < need_hmtx {
-            return Err(GlypharError::Truncated { context: "hmtx metrics" });
+            return Err(GlypharError::Truncated {
+                context: "hmtx metrics",
+            });
         }
 
         let loca = &data[loca_raw];
         let loca_entries = usize::from(maxp.num_glyphs) + 1;
         let loca_need = loca_entries * if head.index_to_loc_format == 0 { 2 } else { 4 };
         if loca.len() < loca_need {
-            return Err(GlypharError::Truncated { context: "loca offsets" });
+            return Err(GlypharError::Truncated {
+                context: "loca offsets",
+            });
         }
 
         let glyf = &data[glyf_raw];
@@ -546,9 +590,10 @@ impl<'a> FontFile<'a> {
         let fpgm = find_table(&records, *b"fpgm").map_or(&[][..], |r| &data[r]);
         let prep = find_table(&records, *b"prep").map_or(&[][..], |r| &data[r]);
         let os2 = find_table(&records, *b"OS/2").and_then(|r| parse_os2(&data[r]).ok());
-        let gasp = find_table(&records, *b"gasp").map_or_else(|| Vec::new(), |r| {
-            parse_gasp(&data[r]).unwrap_or_else(|_| Vec::new())
-        });
+        let gasp = find_table(&records, *b"gasp").map_or_else(
+            || Vec::new(),
+            |r| parse_gasp(&data[r]).unwrap_or_else(|_| Vec::new()),
+        );
         let cmap = find_table(&records, *b"cmap");
         let name = find_table(&records, *b"name");
         let kern = find_table(&records, *b"kern").map(|r| &data[r]);
@@ -684,16 +729,21 @@ impl<'a> FontFile<'a> {
         let long = self.head.index_to_loc_format == 1;
         let entry = |i: usize| -> GlypharResult<usize> {
             let off = i * if long { 4 } else { 2 };
-            let bytes = self.loca.get(off..off + if long { 4 } else { 2 }).ok_or(GlypharError::Truncated {
-                context: "loca entry",
-            })?;
+            let bytes = self
+                .loca
+                .get(off..off + if long { 4 } else { 2 })
+                .ok_or(GlypharError::Truncated {
+                    context: "loca entry",
+                })?;
             if long {
-                Ok(usize::try_from(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])).map_err(
-                    |_| GlypharError::Malformed {
-                        context: "loca entry",
-                        detail: "offset exceeds addressable size",
-                    },
-                )?)
+                Ok(
+                    usize::try_from(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])).map_err(
+                        |_| GlypharError::Malformed {
+                            context: "loca entry",
+                            detail: "offset exceeds addressable size",
+                        },
+                    )?,
+                )
             } else {
                 Ok(usize::from(u16::from_be_bytes([bytes[0], bytes[1]])) * 2)
             }
@@ -733,7 +783,10 @@ impl<'a> FontFile<'a> {
 
     /// `cvt` entries decoded to `i16` font-unit values.
     pub fn cvt_values(&self) -> Vec<i16> {
-        self.cvt.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]]) as i16).collect()
+        self.cvt
+            .chunks_exact(2)
+            .map(|c| u16::from_be_bytes([c[0], c[1]]) as i16)
+            .collect()
     }
 
     /// Raw `fpgm` (font program) instructions.
@@ -751,13 +804,13 @@ impl<'a> FontFile<'a> {
     /// Byte range of the best Unicode `cmap` subtable, if any.
     #[inline]
     pub fn cmap_range(&self) -> Option<Range> {
-        self.cmap
+        self.cmap.clone()
     }
 
     /// Byte range of the `name` table, if any.
     #[inline]
     pub fn name_range(&self) -> Option<Range> {
-        self.name
+        self.name.clone()
     }
 
     /// Raw `kern` table (legacy binary kerning), if present.
@@ -793,7 +846,7 @@ impl<'a> FontFile<'a> {
     /// order Windows, Unicode, Mac, and by English language ids.
     #[must_use]
     pub fn name_string(&self, name_id: u16) -> Option<String> {
-        let range = self.name?;
+        let range = self.name.clone()?;
         let raw = self.data.get(range.start..range.end)?;
         let mut r = Reader::with_pos(raw, 0).ok()?;
         let _format = r.read_u16("name format").ok()?;
@@ -802,7 +855,7 @@ impl<'a> FontFile<'a> {
         let mut best: Option<(u8, u16, &[u8])> = None;
         for _ in 0..count {
             let platform = r.read_u16("name platform").ok()?;
-            let encoding = r.read_u16("name encoding").ok()?;
+            let _encoding = r.read_u16("name encoding").ok()?;
             let language = r.read_u16("name language").ok()?;
             let id = r.read_u16("name id").ok()?;
             let off = r.read_u16("name offset").ok()?;
@@ -861,10 +914,15 @@ impl<'a> FontFile<'a> {
             }
             let payload = self
                 .data
-                .get(usize::try_from(record.offset).unwrap_or(usize::MAX)
-                    ..usize::try_from(record.offset).unwrap_or(usize::MAX)
-                        .saturating_add(usize::try_from(record.length).unwrap_or(usize::MAX)))
-                .ok_or(GlypharError::Truncated { context: "checksum payload" })?;
+                .get(
+                    usize::try_from(record.offset).unwrap_or(usize::MAX)
+                        ..usize::try_from(record.offset)
+                            .unwrap_or(usize::MAX)
+                            .saturating_add(usize::try_from(record.length).unwrap_or(usize::MAX)),
+                )
+                .ok_or(GlypharError::Truncated {
+                    context: "checksum payload",
+                })?;
             let actual = crate::simd::table_checksum(payload);
             if actual != record.checksum {
                 return Err(GlypharError::Malformed {
@@ -908,7 +966,13 @@ pub type Range = core::ops::Range<usize>;
 
 impl fmt::Display for TableRecord {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} ({} bytes @ 0x{:08X})", self.tag_string(), self.length, self.offset)
+        write!(
+            f,
+            "{} ({} bytes @ 0x{:08X})",
+            self.tag_string(),
+            self.length,
+            self.offset
+        )
     }
 }
 
@@ -943,8 +1007,10 @@ fn decode_name(platform: u16, bytes: &[u8]) -> Option<String> {
         }
         _ => {
             // Unicode / Windows: UTF-16BE.
-            let units: Vec<u16> =
-                bytes.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+            let units: Vec<u16> = bytes
+                .chunks_exact(2)
+                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                .collect();
             let mut out = String::with_capacity(units.len());
             for unit in char::decode_utf16(units) {
                 out.push(unit.ok()?);
@@ -1033,7 +1099,10 @@ fn parse_maxp(raw: &[u8]) -> GlypharResult<MaxpTable> {
     let version = r.read_u32("maxp version")?;
     let num_glyphs = r.read_u16("maxp numGlyphs")?;
     if num_glyphs == 0 {
-        return Err(GlypharError::Malformed { context: "maxp numGlyphs", detail: "font has no glyphs" });
+        return Err(GlypharError::Malformed {
+            context: "maxp numGlyphs",
+            detail: "font has no glyphs",
+        });
     }
     if version == 0x0000_5000 {
         return Ok(MaxpTable {
@@ -1055,7 +1124,10 @@ fn parse_maxp(raw: &[u8]) -> GlypharResult<MaxpTable> {
         });
     }
     if version != 0x0001_0000 {
-        return Err(GlypharError::Malformed { context: "maxp version", detail: "expected 0x00005000 or 0x00010000" });
+        return Err(GlypharError::Malformed {
+            context: "maxp version",
+            detail: "expected 0x00005000 or 0x00010000",
+        });
     }
     Ok(MaxpTable {
         version,
@@ -1146,7 +1218,10 @@ fn parse_gasp(raw: &[u8]) -> GlypharResult<Vec<GaspRange>> {
     for _ in 0..count {
         let max_range_ppem = r.read_u16("gasp maxRangePPEM")?;
         let gasp_behavior = r.read_u16("gasp gaspBehavior")?;
-        ranges.push(GaspRange { max_range_ppem, gasp_behavior });
+        ranges.push(GaspRange {
+            max_range_ppem,
+            gasp_behavior,
+        });
     }
     ranges.sort_by_key(|range| range.max_range_ppem);
     Ok(ranges)
@@ -1211,7 +1286,8 @@ fn parse_kern(raw: &[u8], left: u16, right: u16) -> Option<i16> {
                 }
             }
         }
-        r.seek(sub_start.checked_add(length)?, "kern subtable").ok()?;
+        r.seek(sub_start.checked_add(length)?, "kern subtable")
+            .ok()?;
     }
     None
 }
@@ -1226,7 +1302,7 @@ mod tests {
         let font_bytes = SyntheticFont::new().build();
         let font = FontFile::parse(&font_bytes).expect("synthetic font must parse");
         assert_eq!(font.units_per_em(), 1000);
-        assert_eq!(font.num_glyphs(), 3);
+        assert_eq!(font.num_glyphs(), 4);
         assert_eq!(font.hhea().ascender, 800);
         assert_eq!(font.maxp().max_stack_elements, 64);
         assert_eq!(font.family_name().as_deref(), Some("Glyphar Test"));
@@ -1253,7 +1329,8 @@ mod tests {
     fn checksums_match_for_synthetic_font() {
         let font_bytes = SyntheticFont::new().build();
         let font = FontFile::parse(&font_bytes).expect("parse");
-        font.verify_checksums().expect("table checksums must verify");
+        font.verify_checksums()
+            .expect("table checksums must verify");
     }
 
     #[test]
@@ -1271,7 +1348,9 @@ mod tests {
         font_bytes[..4].copy_from_slice(&0x4F54_544Fu32.to_be_bytes());
         assert_eq!(
             FontFile::parse(&font_bytes).err(),
-            Some(GlypharError::Unsupported { feature: "CFF/CFF2 outlines (OTTO)" })
+            Some(GlypharError::Unsupported {
+                feature: "CFF/CFF2 outlines (OTTO)"
+            })
         );
     }
 
@@ -1279,12 +1358,18 @@ mod tests {
     fn rejects_bad_head_magic() {
         let mut font_bytes = SyntheticFont::new().build();
         let font = FontFile::parse(&font_bytes).expect("parse");
-        let head = font.find_record(*b"head").expect("head record").offset as usize;
+        let head = font
+            .find_record(*b"head")
+            .expect("head record")
+            .offset as usize;
         // Overwrite the magic number (offset 12 inside head).
         font_bytes[head + 12..head + 16].copy_from_slice(&0u32.to_be_bytes());
         assert!(matches!(
             FontFile::parse(&font_bytes),
-            Err(GlypharError::Malformed { context: "head magicNumber", .. })
+            Err(GlypharError::Malformed {
+                context: "head magicNumber",
+                ..
+            })
         ));
     }
 

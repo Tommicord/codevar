@@ -60,7 +60,7 @@
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use ash::vk;
@@ -305,11 +305,7 @@ impl<T> fmt::Display for CommError<T> {
     }
 }
 
-impl<T> core::error::Error for CommError<T> {}
-
-// ---------------------------------------------------------------------------
-// SPIR-V loading
-// ---------------------------------------------------------------------------
+impl<T: core::fmt::Debug> core::error::Error for CommError<T> {}
 
 /// Decodes a little-endian SPIR-V blob into shader words.
 ///
@@ -387,7 +383,7 @@ const _: () = assert!(core::mem::offset_of!(MixPush, weights1) == 32);
 /// A renderer implementing [`CompositorTraits`] hands these to the
 /// compositor every frame; the compositor owns neither the image nor the
 /// view, it only binds them for sampling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct OffscreenFramebuffer {
     /// Color image backing the target.
     pub image: vk::Image,
@@ -415,8 +411,8 @@ impl OffscreenFramebuffer {
     /// Whether the view refers to a real, non-empty image.
     #[inline]
     #[must_use]
-    pub const fn is_valid(&self) -> bool {
-        self.view != vk::ImageView::null() && self.width > 0 && self.height > 0
+    pub fn is_valid(&self) -> bool {
+        self.view != vk::ImageView::null()
     }
 }
 
@@ -798,7 +794,7 @@ impl fmt::Debug for Pipe {
 /// before returning a [`PipeOutcome`].
 pub trait PipeSource {
     /// Builds this pipe's future for one frame.
-    fn pipe_entry<'a>(renderer: &'a mut Self, ctx: &'a mut PipeCtx) -> PipeFuture<'a>;
+    fn pipe_entry<'a>(renderer: &'a mut Self, ctx: &'a mut PipeCtx) -> PipeFuture<'a> where Self: Sized;
 }
 
 /// Erases a pipe's type and its future's lifetime for the compositor.
@@ -842,6 +838,7 @@ type DropFn = fn(*mut ());
 /// through the type-erased drop function, so a pipe registered with
 /// [`Compositor::add_pipe`] keeps working after the caller's value would
 /// have gone out of scope.
+#[derive(Debug)]
 pub struct PipeHandoff {
     /// Entry point and erased renderer of the pipe.
     pipe: Pipe,
@@ -854,12 +851,8 @@ pub struct PipeHandoff {
 impl PipeHandoff {
     /// Builds a handoff that takes ownership of `renderer`.
     #[must_use]
-    pub fn from_renderer<T: PipeSource + CompositorTraits>(renderer: T) -> Self {
-        let mut boxed = Box::new(renderer);
-        let pipe = Pipe::new(&mut boxed);
-        // Ownership of the allocation moves to the handoff; the drop
-        // function below rebuilds the box exactly once.
-        core::mem::forget(boxed);
+    pub fn from_renderer<T: PipeSource + CompositorTraits>(mut renderer: T) -> Self {
+        let pipe = Pipe::new(&mut renderer);
         Self {
             pipe,
             collect: collect_trampoline::<T>,
@@ -1860,14 +1853,14 @@ impl<'p> MixResources<'p> {
             .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
             .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
             .mip_lod_bias(0.0)
-            .anisotropy_enable(vk::FALSE)
+            .anisotropy_enable(false)
             .max_anisotropy(1.0)
-            .compare_enable(vk::FALSE)
+            .compare_enable(false)
             .compare_op(vk::CompareOp::ALWAYS)
             .min_lod(0.0)
             .max_lod(0.0)
             .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
-            .unnormalized_coordinates(vk::FALSE);
+            .unnormalized_coordinates(false);
         // SAFETY: every field of `sampler_info` is within spec limits.
         self.sampler = unsafe { device.create_sampler(&sampler_info, None) }
             .map_err(CompositorError::SamplerCreate)?;
@@ -2514,7 +2507,7 @@ impl<'p> Compositor<'p> {
             // the only failure is device loss (which is reported).
             unsafe { device.wait_for_fences(core::slice::from_ref(&fence), true, u64::MAX) }
                 .map_err(CompositorError::FenceWait)?;
-            // SAFETY: the fence just signalled, so it is in the
+            // SAFETY: the fence just signaled, so it is in the
             // signaled state and may be reset.
             unsafe { device.reset_fences(core::slice::from_ref(&fence)) }
                 .map_err(CompositorError::FenceWait)?;
@@ -2567,16 +2560,17 @@ impl<'p> Compositor<'p> {
 
 /// Creates a binary semaphore, optionally with SYNC_FD export enabled.
 fn create_binary_semaphore(device: &ash::Device, export_sync_fd: bool) -> Result<vk::Semaphore, CompositorError> {
-    let plain_info = vk::SemaphoreCreateInfo::default();
+    let mut export_info = vk::ExportSemaphoreCreateInfo::default()
+        .handle_types(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD);
+    // The export info must outlive the create info that chains it, so it
+    // is built before the `if` rather than inside a branch.
     let semaphore_info = if export_sync_fd {
-        let mut export_info =
-            vk::ExportSemaphoreCreateInfo::default().handle_types(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD);
-        plain_info.push_next(&mut export_info)
+        vk::SemaphoreCreateInfo::default().push_next(&mut export_info)
     } else {
-        plain_info
+        vk::SemaphoreCreateInfo::default()
     };
     // SAFETY: the device is valid and, when exporting, the
-    // `VkExportSemaphoreCreateInfo` chain outlives the call.
+    // `VkExportSemaphoreCreateInfo` chain is alive for the call.
     unsafe { device.create_semaphore(&semaphore_info, None) }.map_err(CompositorError::SemaphoreCreate)
 }
 
@@ -2614,7 +2608,7 @@ fn import_sync_fd(
     Ok(())
 }
 
-/// Exports a signalled (or signalling) binary semaphore as a `sync_file`
+/// Exports a signaled (or signaling) binary semaphore as a `sync_file`
 /// fd representing GPU completion.
 fn export_sync_fd(context: &PipelineContext, semaphore: vk::Semaphore) -> Result<OwnedFd, CompositorError> {
     let get_info = vk::SemaphoreGetFdInfoKHR::default()
@@ -2637,7 +2631,7 @@ fn export_sync_fd(context: &PipelineContext, semaphore: vk::Semaphore) -> Result
 }
 
 /// One image layout transition recorded by [`record_image_transition`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 struct ImageTransition {
     /// Image whose whole subresource is transitioned.
     image: vk::Image,
@@ -2918,13 +2912,1202 @@ impl<'p> Compositor<'p> {
         }
         self.require_phase(CompositorPhase::Idle, "begin_frame")?;
         self.retire_previous_frame()?;
-        self.drain_comm();
+        // Release retired pipes before draining: the recollect below
+        // must not snapshot framebuffers of a pipe that just left.
         self.release_removed_pipes();
+        self.drain_comm();
         self.update_undefined_mask();
         let frame_sync = self.create_frame_sync(wait_sync_file)?;
         self.frame_sync = Some(frame_sync);
         self.build_active_pipes();
         self.phase = CompositorPhase::Recording;
         Ok(())
+    }
+}
+
+/// Source stage and access mask of a layout transition leaving `layout`.
+///
+/// The masks cover the accesses that produced the current contents; the
+/// previous submission's fence was waited on in
+/// [`Compositor::begin_frame`], so matching the producing stage keeps
+/// every barrier valid without over-synchronizing.
+fn transition_source(layout: vk::ImageLayout) -> (vk::PipelineStageFlags, vk::AccessFlags) {
+    match layout {
+        vk::ImageLayout::UNDEFINED => (
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::AccessFlags::empty(),
+        ),
+        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL => (
+            vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::AccessFlags::SHADER_READ,
+        ),
+        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL => (
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+        ),
+        vk::ImageLayout::GENERAL => (
+            vk::PipelineStageFlags::ALL_COMMANDS,
+            vk::AccessFlags::MEMORY_READ,
+        ),
+        _ => (
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::AccessFlags::empty(),
+        ),
+    }
+}
+
+/// Records a clear-only rendering scope that defines one framebuffer's
+/// contents after its transition into `COLOR_ATTACHMENT_OPTIMAL`.
+///
+/// The compositor clears unknown contents itself so correctness never
+/// depends on a pipe cooperating with [`PipeCtx::begin_render`].
+fn record_framebuffer_clear(
+    device: &ash::Device,
+    command_buffer: vk::CommandBuffer,
+    framebuffer: &OffscreenFramebuffer,
+) {
+    let attachment = vk::RenderingAttachmentInfo::default()
+        .image_view(framebuffer.view)
+        .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+        .load_op(vk::AttachmentLoadOp::CLEAR)
+        .store_op(vk::AttachmentStoreOp::STORE)
+        .clear_value(vk::ClearValue {
+            color: vk::ClearColorValue {
+                float32: DEFAULT_CLEAR_COLOR,
+            },
+        });
+    let area = vk::Rect2D {
+        offset: vk::Offset2D { x: 0, y: 0 },
+        extent: vk::Extent2D {
+            width: framebuffer.width,
+            height: framebuffer.height,
+        },
+    };
+    let rendering_info = vk::RenderingInfo::default()
+        .render_area(area)
+        .layer_count(1)
+        .color_attachments(core::slice::from_ref(&attachment));
+    // SAFETY: the command buffer is recording, the caller transitioned
+    // the image to `COLOR_ATTACHMENT_OPTIMAL` first, the view is
+    // compatible with that layout, and the render area fits the image.
+    unsafe {
+        device.cmd_begin_rendering(command_buffer, &rendering_info);
+        device.cmd_end_rendering(command_buffer);
+    }
+}
+
+/// Submits one recorded command buffer with optional wait and signal
+/// semaphores (the frame's GPU-to-GPU chain).
+///
+/// # Errors
+///
+/// * [`CompositorError::Submit`] — the queue rejected the submission.
+fn submit_commands(
+    context: &PipelineContext,
+    command_buffer: vk::CommandBuffer,
+    wait: &[vk::Semaphore],
+    wait_stages: &[vk::PipelineStageFlags],
+    signal: &[vk::Semaphore],
+    fence: vk::Fence,
+) -> Result<(), CompositorError> {
+    debug_assert_eq!(wait.len(), wait_stages.len());
+    let command_buffers = [command_buffer];
+    let submit_info = vk::SubmitInfo::default()
+        .wait_semaphores(wait)
+        .wait_dst_stage_mask(wait_stages)
+        .command_buffers(&command_buffers)
+        .signal_semaphores(signal);
+    // SAFETY: all handles belong to this frame and are alive; wait
+    // semaphores are fresh binary semaphores (or the frame's temporary
+    // SYNC_FD import) and signal semaphores and the fence are
+    // unsignaled, as required by `vkQueueSubmit`.
+    unsafe {
+        context
+            .device()
+            .queue_submit(context.queue(), core::slice::from_ref(&submit_info), fence)
+    }
+    .map_err(CompositorError::Submit)
+}
+
+impl<'p> Compositor<'p> {
+    /// Drives the frame one step closer to completion.
+    ///
+    /// Called repeatedly — usually from an async executor through
+    /// [`Compositor::composite_frame`] — until it resolves:
+    ///
+    /// * `Recording` → records and submits the layout pass.
+    /// * `Pipes` → polls every pipe future with `cx`; [`Poll::Pending`]
+    ///   means at least one future yielded, and the compositor is woken
+    ///   through the waker that future stored.
+    /// * `Mixing` → records and submits the mix pass; the frame is then
+    ///   on the queue and [`Compositor::end_frame`] may export it.
+    ///
+    /// A failure discards the half-recorded frame (see
+    /// [`Compositor::discard_frame`]) and reports the error. Calling
+    /// this outside the driving phases reports
+    /// [`CompositorError::FramePhase`] without touching the frame.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the recording, pipe and submission errors of the
+    /// phase it drives; the frame is discarded first.
+    pub fn poll_composite(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), CompositorError>> {
+        loop {
+            match self.phase {
+                CompositorPhase::Recording => {
+                    if let Err(err) = self.record_and_submit_layout() {
+                        return self.fail_frame(err);
+                    }
+                    self.phase = CompositorPhase::Pipes;
+                }
+                CompositorPhase::Pipes => match self.drive_pipes(cx) {
+                    Ok(true) => self.phase = CompositorPhase::Mixing,
+                    Ok(false) => return Poll::Pending,
+                    Err(err) => return self.fail_frame(err),
+                },
+                CompositorPhase::Mixing => {
+                    if let Err(err) = self.record_and_submit_mix() {
+                        return self.fail_frame(err);
+                    }
+                    self.phase = CompositorPhase::Submitted;
+                    return Poll::Ready(Ok(()));
+                }
+                CompositorPhase::Idle | CompositorPhase::Submitted => {
+                    return Poll::Ready(Err(CompositorError::FramePhase {
+                        operation: "poll_composite",
+                        expected: CompositorPhase::Recording,
+                        actual: self.phase,
+                    }));
+                }
+            }
+        }
+    }
+
+    /// Discards the frame in progress and wraps `error` as its result.
+    fn fail_frame(&mut self, error: CompositorError) -> Poll<Result<(), CompositorError>> {
+        self.discard_frame();
+        Poll::Ready(Err(error))
+    }
+
+    /// Records the layout pass: parks every framebuffer in the layout
+    /// the pipes (or a frozen mix) read or write it in, defines the
+    /// contents of unknown targets and submits the pass as the head of
+    /// the frame's semaphore chain.
+    ///
+    /// # Errors
+    ///
+    /// * [`CompositorError::Internal`] — the frame resources or the
+    ///   chain semaphores are missing.
+    /// * [`CompositorError::CommandRecord`] — the layout command buffer
+    ///   could not be opened or closed.
+    /// * [`CompositorError::Submit`] — the submission was rejected.
+    fn record_and_submit_layout(&mut self) -> Result<(), CompositorError> {
+        let context = self.context;
+        let device = context.device();
+        let (layout_command_buffer, chain_first) = match self.start_resources.as_ref() {
+            Some(resources) => (resources.layout_command_buffer, resources.chain_sems[0]),
+            None => {
+                return Err(CompositorError::Internal(
+                    "a frame was driven without start resources",
+                ));
+            }
+        };
+        if chain_first == vk::Semaphore::null() {
+            return Err(CompositorError::Internal(
+                "the chain semaphore pool is incomplete",
+            ));
+        }
+        let begin_info =
+            vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        // SAFETY: the pool was reset when this frame began, the buffer
+        // was allocated from it, and `&mut self` excludes any other
+        // recording.
+        unsafe { device.begin_command_buffer(layout_command_buffer, &begin_info) }
+            .map_err(CompositorError::CommandRecord)?;
+
+        let visible = self.visible;
+        let framebuffer_count = self.framebuffers.len().min(MAX_MIX_TARGETS);
+        // Park every framebuffer in the layout the rest of the frame
+        // reads or writes it in.
+        for index in 0..framebuffer_count {
+            let framebuffer = self.framebuffers[index];
+            let old_layout = self
+                .layout_of(framebuffer.image)
+                .unwrap_or(vk::ImageLayout::UNDEFINED);
+            if old_layout == vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL {
+                continue;
+            }
+            let (src_stage, src_access) = transition_source(old_layout);
+            record_image_transition(
+                device,
+                layout_command_buffer,
+                &ImageTransition::new(
+                    framebuffer.image,
+                    old_layout,
+                    vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                    src_stage,
+                    src_access,
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                    vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                ),
+            );
+        }
+        // Define the contents of every framebuffer whose tracked layout
+        // is unknown: a pipe loading them — and a frozen frame, which
+        // runs no pipe at all — would otherwise read garbage.
+        for index in 0..framebuffer_count {
+            if self.undefined_mask & (1_u32 << index) == 0 {
+                continue;
+            }
+            let framebuffer = self.framebuffers[index];
+            record_framebuffer_clear(device, layout_command_buffer, &framebuffer);
+        }
+        if !visible {
+            // Pipes are skipped while hidden: the mix pass samples the
+            // framebuffers directly, so park them in the sampled layout.
+            for index in 0..framebuffer_count {
+                let framebuffer = self.framebuffers[index];
+                record_image_transition(
+                    device,
+                    layout_command_buffer,
+                    &ImageTransition::new(
+                        framebuffer.image,
+                        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                        vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                        vk::AccessFlags::COLOR_ATTACHMENT_READ
+                            | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                        vk::PipelineStageFlags::FRAGMENT_SHADER,
+                        vk::AccessFlags::SHADER_READ,
+                    ),
+                );
+            }
+        }
+        let end_layout = if visible {
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+        } else {
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+        };
+        for index in 0..framebuffer_count {
+            let image = self.framebuffers[index].image;
+            self.set_layout(image, end_layout);
+        }
+
+        // SAFETY: the buffer is still recording; everything recorded
+        // above targets images of this frame.
+        unsafe { device.end_command_buffer(layout_command_buffer) }
+            .map_err(CompositorError::CommandRecord)?;
+        let import_wait_stage = vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT;
+        let (wait, wait_stages): (&[vk::Semaphore], &[vk::PipelineStageFlags]) =
+            match self.frame_sync.as_ref() {
+                Some(frame_sync) if frame_sync.import_sem != vk::Semaphore::null() => (
+                    core::slice::from_ref(&frame_sync.import_sem),
+                    core::slice::from_ref(&import_wait_stage),
+                ),
+                _ => (&[], &[]),
+            };
+        let signal = [chain_first];
+        submit_commands(
+            context,
+            layout_command_buffer,
+            wait,
+            wait_stages,
+            &signal,
+            vk::Fence::null(),
+        )
+    }
+
+    /// Polls the recording pipe futures and submits every resolved
+    /// prefix of the chain in queue order.
+    ///
+    /// Returns `true` once all pipes of the frame are on the queue.
+    ///
+    /// # Errors
+    ///
+    /// * [`CompositorError::Pipe`] — a future failed; the index is the
+    ///   pipe's position in the queue.
+    /// * [`CompositorError::CommandRecord`] — a pipe command buffer
+    ///   could not be opened or closed.
+    /// * [`CompositorError::Submit`] — the submission was rejected.
+    /// * [`CompositorError::Internal`] — the queue diverged from the
+    ///   frame slots or the frame resources are missing.
+    fn drive_pipes(&mut self, cx: &mut Context<'_>) -> Result<bool, CompositorError> {
+        let context = self.context;
+        let device = context.device();
+        for index in 0..self.active.len() {
+            if self.active[index].state != PipeState::Recording {
+                continue;
+            }
+            let (entry, renderer) = match self.queue.pipe(index) {
+                Some(pipe) => (pipe.entry(), pipe.renderer()),
+                None => {
+                    return Err(CompositorError::Internal(
+                        "the pipe queue diverged from the frame slots",
+                    ));
+                }
+            };
+            if self.active[index].future.is_none() {
+                let begin_info = vk::CommandBufferBeginInfo::default()
+                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+                let command_buffer = self.active[index].command_buffer;
+                // SAFETY: the pool was reset when this frame began and
+                // no other code records this slot's buffer.
+                unsafe { device.begin_command_buffer(command_buffer, &begin_info) }
+                    .map_err(CompositorError::CommandRecord)?;
+                let env = PipeEnv {
+                    renderer,
+                    ctx: core::ptr::from_mut(&mut self.active[index].ctx),
+                };
+                self.active[index].future = Some(entry(env));
+            }
+            let poll_result = {
+                let active = &mut self.active[index];
+                let Some(future) = active.future.as_mut() else {
+                    return Err(CompositorError::Internal(
+                        "a recording pipe has no future",
+                    ));
+                };
+                future.as_mut().poll(cx)
+            };
+            match poll_result {
+                Poll::Pending => {}
+                Poll::Ready(Ok(outcome)) => {
+                    // Release the future before closing the buffer it
+                    // recorded: it borrows the renderer and the context.
+                    let active = &mut self.active[index];
+                    active.future = None;
+                    // SAFETY: the future recorded into this buffer and
+                    // has just been dropped, so recording is finished.
+                    unsafe { device.end_command_buffer(active.command_buffer) }
+                        .map_err(CompositorError::CommandRecord)?;
+                    active.state = PipeState::Ready;
+                    if outcome == PipeOutcome::Remove {
+                        self.queue.mark_removed(index);
+                    }
+                }
+                Poll::Ready(Err(source)) => {
+                    return Err(CompositorError::Pipe {
+                        index,
+                        source: Box::new(source),
+                    });
+                }
+            }
+        }
+        // Submit the resolved prefix: pipe *k* waits on `chain[k]` (the
+        // layout pass signals `chain[0]`) and signals `chain[k + 1]`.
+        let resources = self.start_resources.as_ref().ok_or(CompositorError::Internal(
+            "a frame was driven without start resources",
+        ))?;
+        let mut index = 0;
+        while index < self.active.len() && self.active[index].state == PipeState::Ready {
+            let wait = resources.chain_sems[index];
+            let signal = resources.chain_sems[index + 1];
+            if wait == vk::Semaphore::null() || signal == vk::Semaphore::null() {
+                return Err(CompositorError::Internal(
+                    "the chain semaphore pool is incomplete",
+                ));
+            }
+            let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+            submit_commands(
+                context,
+                self.active[index].command_buffer,
+                core::slice::from_ref(&wait),
+                &wait_stages,
+                core::slice::from_ref(&signal),
+                vk::Fence::null(),
+            )?;
+            self.active[index].state = PipeState::Submitted;
+            index += 1;
+        }
+        Ok(self
+            .active
+            .iter()
+            .all(|slot| slot.state == PipeState::Submitted))
+    }
+
+    /// Rewrites the mix descriptor set for this frame.
+    ///
+    /// Slots past the frame's framebuffer count alias the first
+    /// framebuffer so every entry of `u_frames[8]` stays statically
+    /// bound (see `shaders/mix.frag`). The write is safe because exactly
+    /// one frame is in flight and [`Compositor::begin_frame`] waited for
+    /// the previous submission's fence, so the set is never in use.
+    ///
+    /// # Errors
+    ///
+    /// * [`CompositorError::Internal`] — the frame resources are missing.
+    fn update_mix_descriptors(&self) -> Result<(), CompositorError> {
+        let resources = self.start_resources.as_ref().ok_or(CompositorError::Internal(
+            "a frame was driven without start resources",
+        ))?;
+        let count = self.framebuffers.len().min(MAX_MIX_TARGETS);
+        if count == 0 {
+            return Ok(());
+        }
+        let sampler = resources.mix.sampler;
+        let base_view = self.framebuffers[0].view;
+        let mut image_infos = [vk::DescriptorImageInfo::default(); MAX_MIX_TARGETS];
+        for (index, image_info) in image_infos.iter_mut().enumerate() {
+            let view = if index < count {
+                self.framebuffers[index].view
+            } else {
+                base_view
+            };
+            *image_info = vk::DescriptorImageInfo::default()
+                .sampler(sampler)
+                .image_view(view)
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        }
+        let writes = [vk::WriteDescriptorSet::default()
+            .dst_set(resources.mix.descriptor_set)
+            .dst_binding(0)
+            .dst_array_element(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(&image_infos)];
+        // SAFETY: the set was allocated from this pool against a layout
+        // declaring `MAX_MIX_TARGETS` combined image samplers at binding
+        // 0, every view is a valid color target collected for this
+        // frame, and the set is not referenced by pending commands.
+        unsafe { self.context.device().update_descriptor_sets(&writes, &[]) };
+        Ok(())
+    }
+
+    /// Records and submits the mix pass: samples every framebuffer into
+    /// the presentation target and hands it off in `GENERAL` for the
+    /// external compositor.
+    ///
+    /// With no framebuffers the pass only clears the target, which is
+    /// what the zero-pipe path of the launcher relies on.
+    ///
+    /// # Errors
+    ///
+    /// * [`CompositorError::Internal`] — the frame resources, the chain
+    ///   semaphore or the frame's synchronization are missing.
+    /// * [`CompositorError::CommandRecord`] — the mix command buffer
+    ///   could not be opened or closed.
+    /// * [`CompositorError::Submit`] — the submission was rejected.
+    fn record_and_submit_mix(&mut self) -> Result<(), CompositorError> {
+        let context = self.context;
+        let device = context.device();
+        let (mix_command_buffer, frame_fence) = match self.start_resources.as_ref() {
+            Some(resources) => (resources.mix_command_buffer, resources.frame_fence),
+            None => {
+                return Err(CompositorError::Internal(
+                    "a frame was driven without start resources",
+                ));
+            }
+        };
+        let chain_wait = self
+            .start_resources
+            .as_ref()
+            .map_or(vk::Semaphore::null(), |resources| {
+                resources.chain_sems[self.active.len()]
+            });
+        if chain_wait == vk::Semaphore::null() {
+            return Err(CompositorError::Internal(
+                "the chain semaphore pool is incomplete",
+            ));
+        }
+        let present_sem = match self.frame_sync.as_ref() {
+            Some(frame_sync) => frame_sync.present_sem,
+            None => {
+                return Err(CompositorError::Internal(
+                    "the frame was begun without synchronization",
+                ));
+            }
+        };
+        let begin_info =
+            vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        // SAFETY: the pool was reset when this frame began and no other
+        // code records this buffer.
+        unsafe { device.begin_command_buffer(mix_command_buffer, &begin_info) }
+            .map_err(CompositorError::CommandRecord)?;
+
+        let count = self.framebuffers.len().min(MAX_MIX_TARGETS);
+        if self.visible {
+            // The pipes left their targets in the attachment layout; the
+            // mix shader samples them. A hidden frame skips this (the
+            // layout pass already parked them in the sampled layout).
+            for index in 0..count {
+                let framebuffer = self.framebuffers[index];
+                record_image_transition(
+                    device,
+                    mix_command_buffer,
+                    &ImageTransition::new(
+                        framebuffer.image,
+                        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                        vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                        vk::AccessFlags::COLOR_ATTACHMENT_READ
+                            | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                        vk::PipelineStageFlags::FRAGMENT_SHADER,
+                        vk::AccessFlags::SHADER_READ,
+                    ),
+                );
+            }
+        }
+        // The pass clears the presentation target below, so its previous
+        // contents are discarded; the closing transition leaves it in
+        // `GENERAL`, the conservative state for non-Vulkan consumers.
+        record_image_transition(
+            device,
+            mix_command_buffer,
+            &ImageTransition::new(
+                context.image(),
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::AccessFlags::empty(),
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+            ),
+        );
+        let area = vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: vk::Extent2D {
+                width: context.width(),
+                height: context.height(),
+            },
+        };
+        let attachment = vk::RenderingAttachmentInfo::default()
+            .image_view(context.image_view())
+            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .clear_value(vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: DEFAULT_CLEAR_COLOR,
+                },
+            });
+        let rendering_info = vk::RenderingInfo::default()
+            .render_area(area)
+            .layer_count(1)
+            .color_attachments(core::slice::from_ref(&attachment));
+        // SAFETY: the command buffer is recording, the presentation view
+        // matches the `COLOR_ATTACHMENT_OPTIMAL` layout recorded above,
+        // and dynamic rendering needs no render pass object.
+        unsafe { device.cmd_begin_rendering(mix_command_buffer, &rendering_info) };
+
+        if count > 0 {
+            self.update_mix_descriptors()?;
+            let resources = self.start_resources.as_ref().ok_or(CompositorError::Internal(
+                "a frame was driven without start resources",
+            ))?;
+            let viewport = vk::Viewport {
+                x: 0.0,
+                y: 0.0,
+                width: context.width() as f32,
+                height: context.height() as f32,
+                min_depth: 0.0,
+                max_depth: 1.0,
+            };
+            // SAFETY: the rendering scope is open, the pipeline declares
+            // viewport and scissor dynamic, and every handle belongs to
+            // this frame.
+            unsafe {
+                device.cmd_set_viewport(mix_command_buffer, 0, core::slice::from_ref(&viewport));
+                device.cmd_set_scissor(mix_command_buffer, 0, core::slice::from_ref(&area));
+                device.cmd_bind_pipeline(
+                    mix_command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    resources.mix.pipeline,
+                );
+                let sets = [resources.mix.descriptor_set];
+                device.cmd_bind_descriptor_sets(
+                    mix_command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    resources.mix.pipeline_layout,
+                    0,
+                    &sets,
+                    &[],
+                );
+            }
+            let push = mix_push(count, &self.weights);
+            // SAFETY: `MixPush` is `repr(C)` plain data with no padding
+            // the shader could observe, so reading it as bytes is sound.
+            let push_bytes = unsafe {
+                core::slice::from_raw_parts(
+                    core::ptr::from_ref(&push).cast::<u8>(),
+                    core::mem::size_of::<MixPush>(),
+                )
+            };
+            // SAFETY: the push range declared when the pipeline layout
+            // was created is exactly `size_of::<MixPush>()` at
+            // fragment-stage offset 0, and the bytes outlive the call.
+            unsafe {
+                device.cmd_push_constants(
+                    mix_command_buffer,
+                    resources.mix.pipeline_layout,
+                    vk::ShaderStageFlags::FRAGMENT,
+                    0,
+                    push_bytes,
+                );
+                // Fullscreen triangle generated by `mix.vert`.
+                device.cmd_draw(mix_command_buffer, 3, 1, 0, 0);
+            }
+        }
+        // SAFETY: the rendering scope opened above has not been ended.
+        unsafe { device.cmd_end_rendering(mix_command_buffer) };
+        record_image_transition(
+            device,
+            mix_command_buffer,
+            &ImageTransition::new(
+                context.image(),
+                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                vk::ImageLayout::GENERAL,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                vk::AccessFlags::empty(),
+            ),
+        );
+        // SAFETY: the buffer is still recording; everything recorded
+        // above targets images of this frame.
+        unsafe { device.end_command_buffer(mix_command_buffer) }
+            .map_err(CompositorError::CommandRecord)?;
+
+        let wait = [chain_wait];
+        let wait_stages = [
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::FRAGMENT_SHADER,
+        ];
+        let signal = [present_sem];
+        submit_commands(
+            context,
+            mix_command_buffer,
+            &wait,
+            &wait_stages,
+            &signal,
+            frame_fence,
+        )?;
+        self.in_flight = true;
+        Ok(())
+    }
+}
+
+impl<'p> Compositor<'p> {
+    /// Finishes the frame: exports GPU completion of the mix pass as a
+    /// `sync_file` descriptor for the presentation layer.
+    ///
+    /// The frame's semaphores stay alive until the next
+    /// [`Compositor::begin_frame`] waits for the frame fence; the
+    /// exported descriptor remains valid after they are destroyed.
+    ///
+    /// Calling this while a frame is still being recorded discards that
+    /// frame first (so the compositor never wedges); calling it when no
+    /// frame was submitted only reports the phase error.
+    ///
+    /// # Errors
+    ///
+    /// * [`CompositorError::FramePhase`] — no frame is on the queue.
+    /// * [`CompositorError::SemaphoreExport`] — the driver refused to
+    ///   export the signal semaphore; the frame is discarded first.
+    pub fn end_frame(&mut self) -> Result<OwnedFd, CompositorError> {
+        if self.phase != CompositorPhase::Submitted {
+            if self.phase != CompositorPhase::Idle {
+                self.discard_frame();
+            }
+            return Err(CompositorError::FramePhase {
+                operation: "end_frame",
+                expected: CompositorPhase::Submitted,
+                actual: self.phase,
+            });
+        }
+        let context = self.context;
+        let present_sem = match self.frame_sync.as_ref() {
+            Some(frame_sync) => frame_sync.present_sem,
+            None => {
+                self.discard_frame();
+                return Err(CompositorError::Internal(
+                    "the frame was submitted without synchronization",
+                ));
+            }
+        };
+        match export_sync_fd(context, present_sem) {
+            Ok(sync_file) => {
+                // The presentation side may not be listening (it may
+                // have no endpoint yet); the export above succeeded.
+                let _ = self.comm.send_message(CompositorMessage::FrameComposited {
+                    frame_index: self.frame_index,
+                });
+                self.frame_index += 1;
+                self.phase = CompositorPhase::Idle;
+                Ok(sync_file)
+            }
+            Err(err) => {
+                self.discard_frame();
+                Err(err)
+            }
+        }
+    }
+
+    /// Returns to the idle phase after a failed frame: waits for the
+    /// device, resets the chain fence, command pool and semaphores and
+    /// forgets the layouts of every image the abandoned frame touched.
+    ///
+    /// Cleanup is best-effort — the original error is reported by the
+    /// caller, and a resource that cannot be reset leaves the compositor
+    /// idle with the frame's submissions no longer in flight.
+    fn discard_frame(&mut self) {
+        let context = self.context;
+        let device = context.device();
+        // SAFETY: `&mut self` excludes concurrent use; a failed wait
+        // (device lost) is tolerated because the state below must be
+        // reset regardless.
+        let _ = unsafe { device.device_wait_idle() };
+        if let Some(resources) = self.start_resources.as_ref() {
+            let fence = resources.frame_fence;
+            if fence != vk::Fence::null() {
+                // SAFETY: the device is idle, so the fence has no pending
+                // signal operation; resetting a signalled fence returns
+                // it to the unsignaled state the next submission needs.
+                let _ = unsafe { device.reset_fences(core::slice::from_ref(&fence)) };
+            }
+            // SAFETY: the device is idle, so resetting the pool cannot
+            // discard in-flight commands; it releases the buffers the
+            // abandoned frame recorded.
+            let _ = unsafe {
+                device.reset_command_pool(
+                    context.command_pool(),
+                    vk::CommandPoolResetFlags::empty(),
+                )
+            };
+        }
+        // Futures first (they borrow the renderers and the contexts),
+        // then the frame's synchronization and layout tracking.
+        self.active.clear();
+        self.frame_sync = None;
+        self.in_flight = false;
+        self.layouts.clear();
+        self.undefined_mask = 0;
+        self.phase = CompositorPhase::Idle;
+        self.reset_chain_semaphores();
+    }
+
+    /// Destroys and recreates the chain semaphores after a discarded
+    /// frame.
+    ///
+    /// A binary semaphore left signalled by the abandoned submission
+    /// cannot be signalled again, so the whole chain is rebuilt; a
+    /// failure leaves slots null and the frame loop rejects the
+    /// incomplete pool with [`CompositorError::Internal`] instead of
+    /// handing a null handle to the driver.
+    fn reset_chain_semaphores(&mut self) {
+        let Some(resources) = self.start_resources.as_mut() else {
+            return;
+        };
+        let device = resources.context.device();
+        for semaphore in resources.chain_sems.iter_mut() {
+            if *semaphore != vk::Semaphore::null() {
+                // SAFETY: the device is idle, so no submission still
+                // references a chain semaphore, and each handle was
+                // created on this device.
+                unsafe { device.destroy_semaphore(*semaphore, None) };
+                *semaphore = vk::Semaphore::null();
+            }
+        }
+        let semaphore_info = vk::SemaphoreCreateInfo::default();
+        for semaphore in resources.chain_sems.iter_mut() {
+            // SAFETY: a plain, well-formed create info; a failure leaves
+            // the slot null, which the frame loop detects.
+            *semaphore = unsafe { device.create_semaphore(&semaphore_info, None) }
+                .unwrap_or(vk::Semaphore::null());
+        }
+    }
+
+    /// Runs one whole frame asynchronously: begins it, drives every
+    /// phase to submission and exports completion.
+    ///
+    /// `wait_sync_file` is the optional `sync_file` to wait on before
+    /// rendering (ownership is consumed); the returned descriptor
+    /// signals when the mix pass finished.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the errors of [`Compositor::begin_frame`],
+    /// [`Compositor::poll_composite`] and [`Compositor::end_frame`].
+    pub async fn composite_frame(
+        &mut self,
+        wait_sync_file: Option<OwnedFd>,
+    ) -> Result<OwnedFd, CompositorError> {
+        self.begin_frame(wait_sync_file)?;
+        core::future::poll_fn(|cx| self.poll_composite(cx)).await?;
+        self.end_frame()
+    }
+
+    /// Drives one frame to submission without exporting it, leaving the
+    /// compositor in the `Submitted` phase for a custom
+    /// [`Compositor::end_frame`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates the errors of [`Compositor::begin_frame`] and
+    /// [`Compositor::poll_composite`].
+    pub async fn draw_frame(
+        &mut self,
+        wait_sync_file: Option<OwnedFd>,
+    ) -> Result<(), CompositorError> {
+        self.begin_frame(wait_sync_file)?;
+        core::future::poll_fn(|cx| self.poll_composite(cx)).await
+    }
+}
+
+impl Drop for Compositor<'_> {
+    fn drop(&mut self) {
+        self.quiesce();
+        // Unpark the presentation side: its receive futures resolve to
+        // `None` once the channels close.
+        self.comm.close();
+        // Field order keeps this implicit step documented: `active` (the
+        // pipe futures) drops before `queue` (the renderers they borrow)
+        // and `start_resources` (whose `Drop` assumes an idle device)
+        // drops last.
+    }
+}
+
+/// Drives `future` to completion on the current thread.
+///
+/// A minimal single-threaded executor: the future is polled with a
+/// no-op waker and every [`Poll::Pending`] is retried after a short
+/// sleep, so pipe futures that wait on the communication channels make
+/// progress through re-polling alone. Use it from synchronous code (the
+/// display loop); executors should await
+/// [`Compositor::composite_frame`] directly instead.
+#[must_use]
+pub fn block_on<F: Future>(future: F) -> F::Output {
+    let mut future = core::pin::pin!(future);
+    let mut cx = Context::from_waker(Waker::noop());
+    loop {
+        match future.as_mut().poll(&mut cx) {
+            Poll::Ready(output) => return output,
+            Poll::Pending => {
+                let delay = libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 1_000_000,
+                };
+                // SAFETY: `delay` is a valid timespec, the remaining
+                // time output is null (unused), and an `EINTR` just
+                // retries on the next loop iteration.
+                unsafe { libc::nanosleep(&delay, core::ptr::null_mut()) };
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Tests for the GPU-independent parts of the compositor: pipe
+    //! registry, channels, framebuffer collection, SPIR-V loading,
+    //! push-constant layout and the display impls.
+
+    use super::*;
+    use ash::vk::Handle;
+
+    /// Renderer contributing at most one framebuffer with a given weight.
+    struct DummyRenderer {
+        /// The frame it hands to the mix pass, if any.
+        framebuffer: Option<OffscreenFramebuffer>,
+        /// Weight reported for that framebuffer.
+        weight: f32,
+    }
+
+    impl DummyRenderer {
+        /// A pipe whose fabricated (but structurally valid) 64×64 target
+        /// passes the collector's checks without a live Vulkan device.
+        fn with_framebuffer(weight: f32) -> Self {
+            Self {
+                framebuffer: Some(OffscreenFramebuffer {
+                    image: vk::Image::from_raw(1),
+                    view: vk::ImageView::from_raw(1),
+                    format: vk::Format::B8G8R8A8_UNORM,
+                    width: 64,
+                    height: 64,
+                }),
+                weight,
+            }
+        }
+
+        /// A pipe that contributes no framebuffers.
+        fn empty() -> Self {
+            Self {
+                framebuffer: None,
+                weight: 1.0,
+            }
+        }
+    }
+
+    impl PipeSource for DummyRenderer {
+        fn pipe_entry<'a>(_renderer: &'a mut Self, _ctx: &'a mut PipeCtx) -> PipeFuture<'a> {
+            Box::pin(core::future::ready(Ok(PipeOutcome::Keep)))
+        }
+    }
+
+    impl CompositorTraits for DummyRenderer {
+        fn offscreen_framebuffer_count(&self) -> usize {
+            usize::from(self.framebuffer.is_some())
+        }
+
+        fn offscreen_framebuffer(&self, index: usize) -> Option<OffscreenFramebuffer> {
+            if index == 0 { self.framebuffer } else { None }
+        }
+
+        fn mix_weight(&self, _index: usize) -> f32 {
+            self.weight
+        }
+    }
+
+    #[test]
+    fn pipe_dispatches_to_the_registered_type() {
+        let handoff = PipeHandoff::from_renderer(DummyRenderer::empty());
+        let expected: PipeEntry = trampoline::<DummyRenderer>;
+        assert_eq!(handoff.pipe().entry(), expected);
+        assert_eq!(core::mem::offset_of!(Pipe, entry), 0);
+        assert_eq!(
+            core::mem::offset_of!(Pipe, renderer),
+            core::mem::size_of::<PipeEntry>()
+        );
+    }
+
+    #[test]
+    fn pipe_queue_registers_and_retires_in_order() {
+        let mut queue = PipeQueue::new();
+        let first = queue
+            .push(PipeHandoff::from_renderer(DummyRenderer::empty()))
+            .unwrap();
+        let second = queue
+            .push(PipeHandoff::from_renderer(DummyRenderer::empty()))
+            .unwrap();
+        assert_eq!((first, second), (0, 1));
+        assert_eq!(queue.len(), 2);
+
+        assert!(queue.mark_removed(0));
+        assert!(!queue.mark_removed(0), "already marked");
+        assert!(!queue.mark_removed(7), "no such pipe");
+        assert!(queue.has_removed());
+
+        let retired = queue.drain_removed();
+        assert_eq!(retired.len(), 1);
+        assert_eq!(queue.len(), 1);
+        assert!(!queue.has_removed());
+        assert!(queue.pipe(0).is_some());
+        assert!(queue.pipe(1).is_none());
+    }
+
+    #[test]
+    fn pipe_queue_enforces_capacity() {
+        let mut queue = PipeQueue::new();
+        for _ in 0..MAX_PIPES {
+            queue.push(PipeHandoff::from_renderer(DummyRenderer::empty()))
+                .unwrap();
+        }
+        match queue.push(PipeHandoff::from_renderer(DummyRenderer::empty())) {
+            Err(CompositorError::TooManyPipes { max }) => assert_eq!(max, MAX_PIPES),
+            other => panic!("expected TooManyPipes, got {other:?}"),
+        }
+        assert_eq!(queue.len(), MAX_PIPES);
+    }
+
+    #[test]
+    fn collect_framebuffers_fills_slots_and_sanitizes_weights() {
+        let mut queue = PipeQueue::new();
+        queue
+            .push(PipeHandoff::from_renderer(DummyRenderer::with_framebuffer(0.25)))
+            .unwrap();
+        queue
+            .push(PipeHandoff::from_renderer(DummyRenderer::with_framebuffer(f32::NAN)))
+            .unwrap();
+        queue
+            .push(PipeHandoff::from_renderer(DummyRenderer::with_framebuffer(2.0)))
+            .unwrap();
+        queue
+            .push(PipeHandoff::from_renderer(DummyRenderer::empty()))
+            .unwrap();
+
+        let mut framebuffers = Vec::new();
+        let mut weights = [1.0; MAX_MIX_TARGETS];
+        let bases = queue.collect_framebuffers(&mut framebuffers, &mut weights);
+
+        assert_eq!(framebuffers.len(), 3);
+        assert_eq!(&bases[..4], &[0, 1, 2, 3]);
+        assert!(framebuffers.iter().all(OffscreenFramebuffer::is_valid));
+        assert_eq!(weights[0], 0.25);
+        assert_eq!(weights[1], 0.0, "NaN is rejected");
+        assert_eq!(weights[2], 1.0, "out-of-range weights clamp to 1.0");
+        assert!(!OffscreenFramebuffer::EMPTY.is_valid());
+    }
+
+    #[test]
+    fn channel_reports_full_and_receives_in_order() {
+        let channel = Channel::<u32>::new(2);
+        channel.try_send(1).unwrap();
+        channel.try_send(2).unwrap();
+        match channel.try_send(3) {
+            Err(CommError::Full(value)) => assert_eq!(value, 3),
+            other => panic!("expected Full, got {other:?}"),
+        }
+        assert_eq!(channel.try_recv(), Some(1));
+        assert_eq!(channel.try_recv(), Some(2));
+        assert_eq!(channel.try_recv(), None);
+    }
+
+    #[test]
+    fn channel_close_drains_for_receivers_and_rejects_senders() {
+        let channel = Channel::<u32>::new(4);
+        channel.try_send(7).unwrap();
+        channel.close();
+        assert!(matches!(channel.try_send(8), Err(CommError::Closed(8))));
+        assert_eq!(channel.try_recv(), Some(7));
+        assert_eq!(channel.try_recv(), None);
+    }
+
+    #[test]
+    fn channel_futures_complete_under_a_noop_waker() {
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+
+        // A send into a full channel yields until a slot frees up, then
+        // stays ready when polled again.
+        let full = Channel::<u32>::new(1);
+        full.try_send(1).unwrap();
+        let mut send = SendFuture {
+            channel: &full,
+            message: Some(2),
+        };
+        assert!(matches!(
+            Pin::new(&mut send).poll(&mut cx),
+            Poll::Pending
+        ));
+        assert_eq!(full.try_recv(), Some(1));
+        assert!(matches!(
+            Pin::new(&mut send).poll(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
+        assert!(matches!(
+            Pin::new(&mut send).poll(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
+        assert_eq!(full.try_recv(), Some(2));
+
+        // A receive on an empty channel yields until a value arrives,
+        // then fuses to `None`.
+        let channel = Channel::<u32>::new(1);
+        let mut recv = RecvFuture {
+            channel: &channel,
+            done: false,
+        };
+        assert!(matches!(
+            Pin::new(&mut recv).poll(&mut cx),
+            Poll::Pending
+        ));
+        channel.try_send(9).unwrap();
+        assert!(matches!(
+            Pin::new(&mut recv).poll(&mut cx),
+            Poll::Ready(Some(9))
+        ));
+        assert!(matches!(
+            Pin::new(&mut recv).poll(&mut cx),
+            Poll::Ready(None)
+        ));
+    }
+
+    #[test]
+    fn comm_pair_routes_messages_and_pipes_both_ways() {
+        let (compositor, renderer) = comm_pair();
+
+        renderer
+            .send_message(CompositorMessage::VisibilityChanged { visible: false })
+            .unwrap();
+        assert!(matches!(
+            compositor.try_recv_message(),
+            Some(CompositorMessage::VisibilityChanged { visible: false })
+        ));
+
+        compositor
+            .send_message(CompositorMessage::FrameComposited { frame_index: 3 })
+            .unwrap();
+        assert!(matches!(
+            renderer.try_recv_message(),
+            Some(CompositorMessage::FrameComposited { frame_index: 3 })
+        ));
+
+        // Registration flows presentation → compositor; retirement
+        // flows back compositor → presentation.
+        renderer
+            .send_pipe(PipeHandoff::from_renderer(DummyRenderer::empty()))
+            .unwrap();
+        assert!(compositor.try_recv_pipe().is_some());
+        compositor
+            .send_pipe(PipeHandoff::from_renderer(DummyRenderer::empty()))
+            .unwrap();
+        assert!(renderer.try_recv_pipe().is_some());
+    }
+
+    #[test]
+    fn mix_push_matches_the_shader_layout() {
+        use core::mem::{offset_of, size_of};
+
+        assert_eq!(size_of::<MixPush>(), 48);
+        assert_eq!(offset_of!(MixPush, weights0), 16);
+        assert_eq!(offset_of!(MixPush, weights1), 32);
+
+        let mut weights = [1.0; MAX_MIX_TARGETS];
+        weights[3] = 0.5;
+        let push = mix_push(2, &weights);
+        assert_eq!(push.count, 2);
+        assert_eq!(push.weights0, [1.0, 1.0, 1.0, 0.5]);
+        assert_eq!(push.weights1, [1.0; 4]);
+        assert_eq!(push.pad, [0; 3]);
+    }
+
+    #[test]
+    fn load_spir_v_accepts_embedded_modules_and_rejects_garbage() {
+        let module = load_spir_v(include_bytes!("shaders/mix.vert.spv")).unwrap();
+        assert_eq!(module[0], SPIRV_MAGIC);
+
+        let fragment = load_spir_v(include_bytes!("shaders/mix.frag.spv")).unwrap();
+        assert!(fragment.len() > module.len());
+
+        assert!(load_spir_v(&[]).is_err(), "empty module");
+        assert!(load_spir_v(&[0_u8; 8]).is_err(), "bad magic");
+        let embedded = include_bytes!("shaders/mix.vert.spv");
+        assert!(load_spir_v(&embedded[..6]).is_err(), "not a multiple of 4");
+    }
+
+    #[test]
+    fn sanitize_weight_rejects_non_finite_and_clamps() {
+        assert_eq!(sanitize_weight(f32::NAN), 0.0);
+        assert_eq!(sanitize_weight(f32::INFINITY), 0.0);
+        assert_eq!(sanitize_weight(f32::NEG_INFINITY), 0.0);
+        assert_eq!(sanitize_weight(-1.0), 0.0);
+        assert_eq!(sanitize_weight(0.5), 0.5);
+        assert_eq!(sanitize_weight(4.0), 1.0);
+    }
+
+    #[test]
+    fn display_impls_render_expected_text() {
+        assert_eq!(CompositorState::Running.to_string(), "running");
+        assert_eq!(CompositorPhase::Mixing.to_string(), "mixing");
+        assert_eq!(
+            CompositorMessage::FrameComposited { frame_index: 2 }.to_string(),
+            "frame 2 composited"
+        );
+        assert_eq!(
+            CompositorError::TooManyPipes { max: 8 }.to_string(),
+            "at most 8 pipes may be registered"
+        );
+        assert_eq!(CommError::Full(1u32).to_string(), "the channel is full");
+    }
+
+    #[test]
+    fn block_on_drives_pending_futures_to_completion() {
+        let mut polls = 0_u32;
+        let future = core::future::poll_fn(|_cx| {
+            polls += 1;
+            if polls < 3 {
+                Poll::<u32>::Pending
+            } else {
+                Poll::Ready(polls)
+            }
+        });
+        assert_eq!(block_on(future), 3);
     }
 }

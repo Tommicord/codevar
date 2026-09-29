@@ -60,7 +60,7 @@
 extern crate alloc;
 
 // TODO(module): pub mod atlas;
-// TODO(module): pub mod cmap;
+pub mod cmap;
 pub mod font_file;
 #[cfg(test)]
 mod test_support;
@@ -71,8 +71,8 @@ mod test_support;
 pub mod simd;
 // TODO(module): pub mod subpixel;
 
-use core::fmt;
 use codevar_fcware::CompressorError;
+use core::fmt;
 
 /// Result alias used across the Glyphar engine.
 ///
@@ -177,7 +177,10 @@ impl fmt::Display for GlypharError {
                 write!(f, "{what} index {index} out of range for length {len}")
             }
             Self::StackUnderflow { needed, instruction } => {
-                write!(f, "{instruction} needed {needed} stack element(s) but the stack was shorter")
+                write!(
+                    f,
+                    "{instruction} needed {needed} stack element(s) but the stack was shorter"
+                )
             }
             Self::StackOverflow { limit } => write!(f, "interpreter stack overflow (limit {limit})"),
             Self::InvalidOpcode { opcode } => write!(f, "invalid or reserved opcode 0x{opcode:02X}"),
