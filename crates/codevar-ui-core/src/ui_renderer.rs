@@ -35,7 +35,7 @@
 //!    submission, resets the command pool and creates the frame's
 //!    synchronization objects (optionally importing a `sync_file` fd as
 //!    the wait semaphore).
-//! 2. [`RendererSubsystem::render_frame`] — records the command buffer
+//! 2. [`RendererSubsystem::present_frame`] — records the command buffer
 //!    (layout transition into a dynamic-rendering pass that runs every
 //!    enabled layer in priority order, then the handoff transition) and
 //!    submits it.
@@ -129,7 +129,7 @@ pub enum FramePhase {
     /// reset and the frame's synchronization objects exist, but nothing
     /// has been submitted yet.
     Recording,
-    /// [`RendererSubsystem::render_frame`] succeeded: the frame is on the
+    /// [`RendererSubsystem::present_frame`] succeeded: the frame is on the
     /// queue and its completion `sync_file` has not been exported yet.
     Submitted,
 }
@@ -756,8 +756,8 @@ impl<'p> RendererSubsystem<'p> {
     /// * [`RendererError::SemaphoreCreate`], [`RendererError::FenceCreate`],
     ///   [`RendererError::CommandPoolReset`], [`RendererError::Submit`] —
     ///   the frame could not be submitted.
-    pub fn render_frame(&mut self) -> Result<(), RendererError> {
-        self.require_phase(FramePhase::Recording, "render_frame")?;
+    pub fn present_frame(&mut self) -> Result<(), RendererError> {
+        self.require_phase(FramePhase::Recording, "present_frame")?;
         if let Err(err) = self.record_frame() {
             self.discard_unsubmitted_frame();
             return Err(err);
@@ -778,7 +778,7 @@ impl<'p> RendererSubsystem<'p> {
     /// to be handed to the presentation layer — either imported as the next
     /// frame's wait point or attached to a DRM syncobj acquire point.
     ///
-    /// Must be preceded by [`RendererSubsystem::render_frame`]. On success
+    /// Must be preceded by [`RendererSubsystem::present_frame`]. On success
     /// the frame phase returns to idle; if the export itself fails the
     /// frame stays submitted and is retired by the next
     /// [`RendererSubsystem::begin_frame`] or by stopping/dropping the
@@ -900,7 +900,7 @@ impl<'p> RendererSubsystem<'p> {
                     float32: [0.00, 0.00, 0.00, 1.0],
                 },
             });
-        let render_area = vk::Rect2D {
+        let present_area = vk::Rect2D {
             offset: vk::Offset2D { x: 0, y: 0 },
             extent: vk::Extent2D {
                 width: context.width(),
@@ -908,7 +908,7 @@ impl<'p> RendererSubsystem<'p> {
             },
         };
         let rendering_info = vk::RenderingInfo::default()
-            .render_area(render_area)
+            .render_area(present_area)
             .layer_count(1)
             .color_attachments(core::slice::from_ref(&color_attachment));
         // SAFETY: the image view is compatible with COLOR_ATTACHMENT_OPTIMAL
@@ -930,7 +930,7 @@ impl<'p> RendererSubsystem<'p> {
         // and pipelines are created with VIEWPORT/SCISSOR as dynamic states.
         unsafe {
             device.cmd_set_viewport(command_buffer, 0, core::slice::from_ref(&viewport));
-            device.cmd_set_scissor(command_buffer, 0, core::slice::from_ref(&render_area));
+            device.cmd_set_scissor(command_buffer, 0, core::slice::from_ref(&present_area));
         }
         let layer_result = {
             let mut frame = FrameContext::new(

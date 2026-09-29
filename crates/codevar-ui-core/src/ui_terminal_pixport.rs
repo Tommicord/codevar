@@ -285,7 +285,7 @@ pub struct Pixport<'p> {
 
 /// How long a single [`Pixport::poll_capture`] call blocks on the readback
 /// fence before returning [`Poll::Pending`]. The bounded slice guarantees
-/// progress under re-polling executors (see `render_loop::block_on`) while
+/// progress under re-polling executors (see `present_loop::block_on`) while
 /// keeping idle wake-ups cheap.
 const CAPTURE_POLL_SLICE_NS: codevar_time_core::TimeDuration =
     codevar_time_core::TimeDuration::from_millis(1);
@@ -295,8 +295,8 @@ impl<'p> Pixport<'p> {
     ///
     /// The pixport borrows the pipeline context and must not outlive it.
     pub fn new(context: &'p PipelineContext, config: PixportConfig) -> PixportResult<Self> {
-        let render_target = context.render_target();
-        if render_target.drm_format != DRM_FORMAT_XRGB8888 {
+        let present_target = context.present_target();
+        if present_target.drm_format != DRM_FORMAT_XRGB8888 {
             return Err(PixportError::UnsupportedFormat);
         }
         let command_buffer = Self::allocate_command_buffer(context)?;
@@ -350,9 +350,9 @@ impl<'p> Pixport<'p> {
 
     /// Ensures the staging buffer exists and is large enough for the current render target.
     fn ensure_staging_buffer(&mut self) -> PixportResult<()> {
-        let render_target = self.context.render_target();
-        let width = render_target.width as u64;
-        let height = render_target.height as u64;
+        let present_target = self.context.present_target();
+        let width = present_target.width as u64;
+        let height = present_target.height as u64;
         let bpp = self.pixel_format.bytes_per_pixel() as u64;
         let row_stride = width * bpp;
         let aligned_stride = (row_stride + 255) & !255;
@@ -493,13 +493,13 @@ impl<'p> Pixport<'p> {
 
     /// Records the copy from image to buffer.
     fn record_copy_image_to_buffer(&self, command_buffer: vk::CommandBuffer) -> PixportResult<()> {
-        let render_target = self.context.render_target();
+        let present_target = self.context.present_target();
         let staging_buf = self
             .staging_buffer
             .as_ref()
             .ok_or(PixportError::StagingNotReady)?;
-        let width = render_target.width;
-        let height = render_target.height;
+        let width = present_target.width;
+        let height = present_target.height;
         let bpp = self.pixel_format.bytes_per_pixel();
         let row_stride = width * bpp;
         let _aligned_stride = (row_stride + 255) & !255;
@@ -604,9 +604,9 @@ impl<'p> Pixport<'p> {
     /// Copies the completed readback out of the staging buffer into an owned
     /// [`QueuedFrame`] so the staging buffer can be reused immediately.
     fn finish_capture(&mut self) -> PixportResult<QueuedFrame> {
-        let render_target = self.context.render_target();
-        let width = render_target.width as usize;
-        let height = render_target.height as usize;
+        let present_target = self.context.present_target();
+        let width = present_target.width as usize;
+        let height = present_target.height as usize;
         let len = self.pixel_len(width, height)?;
         if self.staging_mapped.is_null() || (self.staging_size as usize) < len {
             return Err(PixportError::StagingNotReady);
@@ -617,8 +617,8 @@ impl<'p> Pixport<'p> {
         // so the GPU no longer writes to the buffer.
         let pixels = unsafe { core::slice::from_raw_parts(self.staging_mapped, len) }.to_vec();
         QueuedFrame::new(
-            render_target.width,
-            render_target.height,
+            present_target.width,
+            present_target.height,
             self.pixel_format,
             pixels,
         )
@@ -636,9 +636,9 @@ impl<'p> Pixport<'p> {
     /// Copies the staging buffer into an ANSI frame for the current terminal
     /// grid, consuming any forced repaint from a resize.
     fn staging_to_ansi(&mut self) -> PixportResult<String> {
-        let render_target = self.context.render_target();
-        let width = render_target.width as usize;
-        let height = render_target.height as usize;
+        let present_target = self.context.present_target();
+        let width = present_target.width as usize;
+        let height = present_target.height as usize;
         let len = self.pixel_len(width, height)?;
         if self.staging_mapped.is_null() || (self.staging_size as usize) < len {
             return Err(PixportError::StagingNotReady);
@@ -717,7 +717,7 @@ impl<'p> Pixport<'p> {
     /// [`Self::finish_capture_async`] future.
     ///
     /// Intended for drivers that observe GPU progress (for example through a
-    /// `sync_file`); the re-polling `render_loop::block_on` driver does not
+    /// `sync_file`); the re-polling `present_loop::block_on` driver does not
     /// need it. No-op when no capture is pending.
     pub fn notify_capture(&mut self) {
         if let Some(waker) = self.capture_waker.take() {
@@ -733,9 +733,9 @@ impl<'p> Pixport<'p> {
     fn pixels_to_ansi(&mut self, pixels: &[u8]) -> PixportResult<String> {
         let clear = self.config.clear_policy.should_clear() || self.force_clear;
         self.force_clear = false;
-        let render_target = self.context.render_target();
-        let width = render_target.width as usize;
-        let height = render_target.height as usize;
+        let present_target = self.context.present_target();
+        let width = present_target.width as usize;
+        let height = present_target.height as usize;
         let stride = width * self.pixel_format.bytes_per_pixel() as usize;
         self.convert_pixels(pixels, width, height, stride, clear)
     }
@@ -860,8 +860,8 @@ impl<'p> Pixport<'p> {
     /// Returns the render target size.
     #[inline]
     #[must_use]
-    pub fn render_target_size(&self) -> (u32, u32) {
-        let rt = self.context.render_target();
+    pub fn present_target_size(&self) -> (u32, u32) {
+        let rt = self.context.present_target();
         (rt.width, rt.height)
     }
 
@@ -1803,7 +1803,7 @@ pub mod frame_pipe {
 }
 
 /// High-level render loop for terminal-based rendering.
-pub mod render_loop {
+pub mod present_loop {
     use super::frame_pipe::FramePipe;
     use super::{Pixport, PixportConfig, PixportError, PixportResult};
     use crate::ui_pipeline::{OwnedFd, PipelineContext};
@@ -1828,7 +1828,7 @@ pub mod render_loop {
     /// `max_cols == 0` / `max_rows == 0` follow the live terminal size: the
     /// loop polls for resizes every frame, forces a repaint on change, and
     /// lets [`super::ansi::PixportFilterType::Auto`] re-pick its filter.
-    pub fn run_terminal_render_loop<'p, L>(
+    pub fn run_terminal_present_loop<'p, L>(
         pipeline: &'p PipelineContext,
         mut renderer: RendererSubsystem<'p>,
         layer: L,
@@ -1848,7 +1848,7 @@ pub mod render_loop {
             let frame_start = codevar_time_core::SystemTime::monotonic_nanos();
             let _ = pixport.poll_terminal_resize();
             renderer.begin_frame(None)?;
-            renderer.render_frame()?;
+            renderer.present_frame()?;
             let sync_file = renderer.end_frame()?;
             wait_for_gpu_sync(&sync_file)?;
             drop(sync_file);
@@ -1949,7 +1949,7 @@ pub mod render_loop {
     /// Drives `future` to completion on the current thread.
     ///
     /// A minimal single-threaded executor for running
-    /// [`run_terminal_render_loop_async`] without an async runtime. Every
+    /// [`run_terminal_present_loop_async`] without an async runtime. Every
     /// future in this module re-registers its waker or makes progress from
     /// re-polling alone, so a no-op waker plus a 1 ms sleep on
     /// [`Poll::Pending`] is sufficient (and never busy-spins).
@@ -1965,7 +1965,7 @@ pub mod render_loop {
         }
     }
 
-    /// Asynchronous counterpart of [`run_terminal_render_loop`].
+    /// Asynchronous counterpart of [`run_terminal_present_loop`].
     ///
     /// Renders a frame, then awaits the GPU sync file and the readback
     /// fence before queueing the framebuffer on `pipe`. Every frame that
@@ -1982,7 +1982,7 @@ pub mod render_loop {
     ///
     /// ```ignore
     /// let mut pipe = FramePipe::default();
-    /// render_loop::block_on(render_loop::run_terminal_render_loop_async(
+    /// present_loop::block_on(present_loop::run_terminal_present_loop_async(
     ///     pipeline, renderer, layer, config, &mut pipe,
     /// ))?;
     /// ```
@@ -1990,8 +1990,8 @@ pub mod render_loop {
     /// # Errors
     ///
     /// Propagates the same rendering, Vulkan and I/O failures as
-    /// [`run_terminal_render_loop`].
-    pub async fn run_terminal_render_loop_async<'p, L>(
+    /// [`run_terminal_present_loop`].
+    pub async fn run_terminal_present_loop_async<'p, L>(
         pipeline: &'p PipelineContext,
         mut renderer: RendererSubsystem<'p>,
         layer: L,
@@ -2012,7 +2012,7 @@ pub mod render_loop {
             let frame_start = codevar_time_core::SystemTime::monotonic_nanos();
             let _ = pixport.poll_terminal_resize();
             renderer.begin_frame(None)?;
-            renderer.render_frame()?;
+            renderer.present_frame()?;
             let sync_file = renderer.end_frame()?;
             pixport.begin_capture()?;
             wait_gpu_sync_async(&sync_file).await?;

@@ -16,7 +16,7 @@
 //! Pixport terminal demo: renders Vulkan frames directly to the terminal
 //! as ANSI true-color output without creating a Wayland window.
 //!
-//! This example demonstrates the [`Pixport`] and [`run_terminal_render_loop`]
+//! This example demonstrates the [`Pixport`] and [`run_terminal_present_loop`]
 //! functionality by:
 //! 1. Creating a Vulkan pipeline with offscreen render target
 //! 2. Rendering frames using the renderer subsystem
@@ -39,7 +39,7 @@ use codevar_ui_core::ui_renderer::{
     FrameContext, RenderLayer, RendererError, RendererSubsystem, load_spir_v,
 };
 use codevar_ui_core::ui_terminal_pixport::ansi::PixportFilterType;
-use codevar_ui_core::ui_terminal_pixport::{CellDensity, ClearPolicy, PixportConfig, render_loop};
+use codevar_ui_core::ui_terminal_pixport::{CellDensity, ClearPolicy, PixportConfig, present_loop};
 
 /// Render target width in pixels.
 const WIDTH: u32 = 640;
@@ -62,7 +62,7 @@ fn run() {
     let term_rows = codevar_consoleutil::detect_terminal_height();
     let modifiers = [0u64]; // Linear modifier
     let pipeline = PipelineContext::new(WIDTH, HEIGHT, &modifiers).unwrap();
-    let _target = pipeline.render_target();
+    let _target = pipeline.present_target();
     let mut renderer = RendererSubsystem::new(&pipeline);
     renderer.start().unwrap();
     let pixport_config = PixportConfig {
@@ -72,11 +72,11 @@ fn run() {
         clear_policy: ClearPolicy::ClearBeforeFrame,
         filter: PixportFilterType::Lanczos3,
     };
-    render_loop::run_terminal_render_loop(
+    present_loop::run_terminal_present_loop(
         &pipeline,
         renderer,
         TriangleLayer::new(&pipeline).unwrap(),
-        codevar_ui_core::ui_terminal_pixport::render_loop::RenderLoopConfig {
+        codevar_ui_core::ui_terminal_pixport::present_loop::RenderLoopConfig {
             frame_rate: codevar_time_core::TimeDuration::from_millis(16),
             pixport_config,
         },

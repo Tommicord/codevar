@@ -28,13 +28,13 @@
 //!   advertised in its linux-dmabuf feedback and exported as a dma-buf
 //!   file descriptor.
 //! * **`ui_renderer`:** the [`RendererSubsystem`] frame lifecycle
-//!   (`begin_frame` → `render_frame` → `end_frame`), here driven with
+//!   (`begin_frame` → `present_frame` → `end_frame`), here driven with
 //!   the [`TriangleLayer`] of this file as its only layer.
 //!
 //! Run it inside a Wayland session:
 //!
 //! ```text
-//! cargo run -p codevar-launcher --example render_hit
+//! cargo run -p codevar-launcher --example present_hit
 //! ```
 
 use std::cell::{Cell, RefCell};
@@ -214,7 +214,7 @@ fn run() -> ExampleResult<String> {
     display.marshal_request(
         toplevel,
         XDG_TOPLEVEL_SET_TITLE,
-        vec![WlArgument::Str(Some(String::from("Codevar render_hit demo")))],
+        vec![WlArgument::Str(Some(String::from("Codevar present_hit demo")))],
     )?;
     display.marshal_request(
         toplevel,
@@ -331,7 +331,7 @@ fn run() -> ExampleResult<String> {
         Err(_) if requested.len() == 1 => PipelineContext::new(width as u32, height as u32, &modifiers)?,
         Err(error) => return Err(error.into()),
     };
-    let target = pipeline.render_target();
+    let target = pipeline.present_target();
     let mut renderer = RendererSubsystem::new(&pipeline);
     renderer.start()?;
     renderer
@@ -399,7 +399,7 @@ fn run() -> ExampleResult<String> {
         // so the committed pixels are final (the alternative would be
         // implicit dma-buf fencing alone).
         renderer.begin_frame(None)?;
-        renderer.render_frame()?;
+        renderer.present_frame()?;
         let sync_file = renderer.end_frame()?;
         wait_for_gpu(&sync_file)?;
         drop(sync_file);
@@ -452,7 +452,7 @@ fn run() -> ExampleResult<String> {
     drop(pipeline);
 
     Ok(format!(
-        "render_hit: {frames} frames rendered into a {width}x{height} dma-buf window, \
+        "present_hit: {frames} frames rendered into a {width}x{height} dma-buf window, \
          {} pings answered, configure serial {serial}",
         pings.get()
     ))

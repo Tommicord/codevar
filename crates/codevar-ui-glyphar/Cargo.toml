@@ -1,0 +1,26 @@
+[package]
+name = "codevar-ui-glyphar"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "codevar_ui_glyphar"
+
+[dependencies]
+ash = { workspace = true }
+libc = { workspace = true }
+spin = { workspace = true }
+codevar-base = { workspace = true }
+codevar-fcware = { workspace = true }
+codevar-wl-protocol = { workspace = true }
+codevar-logger = { workspace = true }
+codevar-console-util = { workspace = true }
+codevar-time-core = { workspace = true }
+codevar-env = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-link = { workspace = true }

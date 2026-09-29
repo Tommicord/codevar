@@ -325,7 +325,7 @@ impl UiDisplay {
     /// wait for the compositor to release the previous buffer
     /// ([`Self::wait_for_buffer_release`]), request a `wl_surface.frame`
     /// callback ([`Self::request_frame_callback`]), render offscreen
-    /// ([`Self::render_frame`]), attach/damage/commit the dma-buf buffer
+    /// ([`Self::present_frame`]), attach/damage/commit the dma-buf buffer
     /// ([`Self::present_buffer`]) and wait for the callback
     /// ([`Self::wait_for_frame_callback`]).
     pub fn run(&mut self) -> Result<String, UiDisplayError> {
@@ -347,7 +347,7 @@ impl UiDisplay {
                 break;
             };
 
-            self.render_frame()?;
+            self.present_frame()?;
             self.present_buffer()?;
             self.wait_for_frame_callback(&callback.done, deadline_ns)?;
             self.destroy_frame_callback(callback.proxy);
@@ -412,7 +412,7 @@ impl UiDisplay {
     /// Renders one frame offscreen through the renderer subsystem and
     /// blocks until the GPU reports completion via the exported
     /// `sync_file`.
-    fn render_frame(&mut self) -> Result<(), UiDisplayError> {
+    fn present_frame(&mut self) -> Result<(), UiDisplayError> {
         let renderer = self
             .renderer
             .as_mut()
@@ -423,7 +423,7 @@ impl UiDisplay {
             .begin_frame(None)
             .map_err(UiDisplayError::Renderer)?;
         renderer
-            .render_frame()
+            .present_frame()
             .map_err(UiDisplayError::Renderer)?;
         let sync_file = renderer
             .end_frame()
@@ -992,7 +992,7 @@ fn create_wl_buffer(
     height: u32,
     window_state: &Rc<RefCell<WindowState>>,
 ) -> Result<WlProxyId, UiDisplayError> {
-    let target = pipeline.render_target();
+    let target = pipeline.present_target();
     let params = display
         .marshal_new_id(dmabuf, DMABUF_CREATE_PARAMS, Vec::new())
         .map_err(UiDisplayError::Wayland)?;

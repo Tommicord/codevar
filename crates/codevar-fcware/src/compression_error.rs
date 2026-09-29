@@ -16,7 +16,7 @@
 use core::fmt;
 
 /// FcWare compression error.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Copy)]
 pub enum CompressorError {
     /// Frame magic or layout is not recognized.
     InvalidFrame,

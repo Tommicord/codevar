@@ -460,7 +460,7 @@ fn device_score(device_type: vk::PhysicalDeviceType) -> u32 {
 
 /// Picks a memory type from `type_bits`, preferring one with all of
 /// `preferred` flags and falling back to the first type the image accepts.
-fn find_memory_type(
+pub(crate) fn find_memory_type(
     properties: &vk::PhysicalDeviceMemoryProperties,
     type_bits: u32,
     preferred: vk::MemoryPropertyFlags,
@@ -994,7 +994,7 @@ fn take_created<T>(slot: &mut Option<T>) -> Result<T, PipelineError> {
 ///
 /// Created through [`PipelineContext::new`]; resources are borrowed with
 /// the accessor methods below and the exported image layout
-/// is available through [`PipelineContext::render_target`]. Dropping the
+/// is available through [`PipelineContext::present_target`]. Dropping the
 /// context waits for the device to go idle and destroys every Vulkan
 /// object it owns.
 pub struct PipelineContext {
@@ -1014,7 +1014,7 @@ pub struct PipelineContext {
     image: vk::Image,
     image_view: vk::ImageView,
     memory: vk::DeviceMemory,
-    render_target: RenderTarget,
+    present_target: RenderTarget,
 }
 
 impl PipelineContext {
@@ -1090,7 +1090,7 @@ impl PipelineContext {
         let memory = allocate_target_memory(&instance, &device, physical, &mut cleanup, image)?;
         let dmabuf_fd = export_dmabuf_fd(&ext_memory_fd, memory)?;
         let (modifier, stride, offset) = query_plane_layout(&device, &ext_drm, image)?;
-        let render_target = RenderTarget {
+        let present_target = RenderTarget {
             dmabuf_fd,
             drm_format: DRM_FORMAT_XRGB8888,
             modifier,
@@ -1115,14 +1115,14 @@ impl PipelineContext {
             image,
             image_view: take_created(&mut cleanup.view)?,
             memory: take_created(&mut cleanup.memory)?,
-            render_target,
+            present_target,
         })
     }
 
     /// The exported render target (dma-buf fd + layout info).
     #[inline]
-    pub fn render_target(&self) -> &RenderTarget {
-        &self.render_target
+    pub fn present_target(&self) -> &RenderTarget {
+        &self.present_target
     }
 
     /// The Vulkan instance this context was created on.
@@ -1184,13 +1184,13 @@ impl PipelineContext {
     /// Render target width in pixels.
     #[inline]
     pub fn width(&self) -> u32 {
-        self.render_target.width
+        self.present_target.width
     }
 
     /// Render target height in pixels.
     #[inline]
     pub fn height(&self) -> u32 {
-        self.render_target.height
+        self.present_target.height
     }
 
     /// Vulkan format of the color attachment (`B8G8R8A8_UNORM`, the

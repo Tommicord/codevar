@@ -325,6 +325,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-ui-glyphar"
+version = "1.0.0"
+dependencies = [
+ "ash",
+ "codevar-base",
+ "codevar-console-util",
+ "codevar-env",
+ "codevar-fcware",
+ "codevar-logger",
+ "codevar-time-core",
+ "codevar-wl-protocol",
+ "libc",
+ "spin 0.12.3",
+ "windows-link 0.100.0",
+]
+
+[[package]]
 name = "codevar-wl-protocol"
 version = "1.0.0"
 dependencies = [

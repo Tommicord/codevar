@@ -15,7 +15,8 @@ members = [
     "crates/codevar-time-util",
     "crates/codevar-console-util",
     "crates/codevar-env",
-    "crates/codevar-io"
+    "crates/codevar-io",
+    "crates/codevar-ui-glyphar"
 ]
 resolver = "2"
 
@@ -82,6 +83,7 @@ codevar-wredit = { path = "crates/codevar-wredit" }
 codevar-wsocket = { path = "crates/codevar-wsocket" }
 codevar-xdg-portal = { path = "crates/codevar-xdg-portal" }
 codevar-ui-core = { path = "crates/codevar-ui-core" }
+codevar-ui-glyphar = { path = "crates/codevar-ui-glyphar" }
 codevar-logger = { path = "crates/codevar-logger" }
 codevar-console-util = { path = "crates/codevar-console-util" }
 codevar-io = { path = "crates/codevar-io" }
