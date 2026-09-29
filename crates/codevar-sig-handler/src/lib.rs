@@ -31,8 +31,11 @@
 //! crash occurs while the dynamic loader lock is held (`dl_iterate_phdr`);
 //! the reentrancy guard bounds the damage to one extra line of output.
 
-use crate::basic_pretty_unwind::write_frame;
-use crate::basic_unwind::{Frame, capture_frames};
+#![cfg_attr(not(test), no_std)]
+extern crate alloc;
+
+use codevar_pretty_unwind::write_frame;
+use codevar_unwinding::{Frame, capture_frames};
 use core::fmt::{self, Write as _};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -415,11 +418,11 @@ unsafe fn errno() -> i32 {
 #[cfg(unix)]
 mod unix {
     use super::{ENTERED, InstallError, dump_frames, is_fault_signal, signal_name, write_line};
-    use codevar_io::{Stderr, Write};
     use core::ffi::c_void;
     use core::mem::{self, MaybeUninit};
     use core::ptr;
     use core::sync::atomic::Ordering;
+    use codevar_io::{Stderr, Write};
 
     /// Maximum signals we track (fault + termination + job-control sets
     /// with Linux extras fits comfortably below this).
@@ -1413,7 +1416,7 @@ mod tests {
             before.sa_sigaction, during.sa_sigaction,
             "install must have replaced the disposition"
         );
-        assert!(during.sa_flags & libc::SA_SIGINFO != 0);
+        assert_ne!(during.sa_flags & libc::SA_SIGINFO, 0);
 
         uninstall().expect("uninstall must succeed");
         assert!(!is_installed());

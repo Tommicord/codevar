@@ -58,7 +58,6 @@ pub mod console_cursor;
 pub mod console_style;
 pub mod console_terminal;
 
-use codevar_io::Error;
 pub use console_ansi::{AnsiBuilder, AnsiCode, AnsiSequence};
 pub use console_clear::Clear;
 pub use console_cursor::Cursor;
@@ -202,10 +201,10 @@ pub fn write_stdout(bytes: &[u8]) -> Result<(), ConsoleError> {
         let mut stdout = Stdout::new();
         stdout
             .write_all(bytes)
-            .map_err(|e| ConsoleError::IoError(e.kind() as i32))?;
+            .map_err(|e| ConsoleError::IoError(e as i32))?;
         stdout
             .flush()
-            .map_err(|e| ConsoleError::IoError(e.kind() as i32))?;
+            .map_err(|e| ConsoleError::IoError(e as i32))?;
         Ok(())
     }
 }
@@ -248,10 +247,10 @@ pub fn write_stderr(bytes: &[u8]) -> Result<(), ConsoleError> {
         let mut stderr = Stderr::new();
         stderr
             .write_all(bytes)
-            .map_err(|e| ConsoleError::IoError(e.kind() as i32))?;
+            .map_err(|e| ConsoleError::IoError(e as i32))?;
         stderr
             .flush()
-            .map_err(|e| ConsoleError::IoError(e.kind() as i32))?;
+            .map_err(|e| ConsoleError::IoError(e as i32))?;
         Ok(())
     }
 }

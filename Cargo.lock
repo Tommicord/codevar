@@ -222,6 +222,8 @@ dependencies = [
  "codevar-base",
  "codevar-env",
  "codevar-logger",
+ "codevar-sig-handler",
+ "codevar-sig-module-base",
  "codevar-ui-core",
  "codevar-wl-protocol",
  "libc",
@@ -249,6 +251,55 @@ dependencies = [
  "libc",
  "wasm-bindgen",
  "web-sys",
+ "windows",
+]
+
+[[package]]
+name = "codevar-pretty-unwind"
+version = "1.0.0"
+dependencies = [
+ "backtrace-sys",
+ "cfg-if",
+ "codevar-textlike-encode",
+ "codevar-unwinding",
+ "defmt 0.3.100",
+ "heapless",
+ "libc",
+ "rustc-demangle",
+ "spin 0.12.3",
+ "wasm-bindgen",
+ "web-sys",
+ "windows",
+ "windows-link 0.100.0",
+]
+
+[[package]]
+name = "codevar-sig-handler"
+version = "1.0.0"
+dependencies = [
+ "cfg-if",
+ "codevar-console-util",
+ "codevar-io",
+ "codevar-pretty-unwind",
+ "codevar-textlike-encode",
+ "codevar-unwinding",
+ "defmt 0.3.100",
+ "heapless",
+ "libc",
+ "spin 0.12.3",
+ "windows",
+]
+
+[[package]]
+name = "codevar-sig-module-base"
+version = "1.0.0"
+dependencies = [
+ "cfg-if",
+ "codevar-textlike-encode",
+ "defmt 0.3.100",
+ "heapless",
+ "libc",
+ "spin 0.12.3",
  "windows",
 ]
 
@@ -309,6 +360,120 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-truetype"
+version = "1.0.0"
+dependencies = [
+ "codevar-truetype-autofit",
+ "codevar-truetype-cff",
+ "codevar-truetype-core",
+ "codevar-truetype-glyf",
+ "codevar-truetype-gzip",
+ "codevar-truetype-pshinter",
+ "codevar-truetype-psnames",
+ "codevar-truetype-raster",
+ "codevar-truetype-sfnt",
+ "codevar-truetype-smooth",
+ "codevar-truetype-ttcore",
+ "log",
+]
+
+[[package]]
+name = "codevar-truetype-autofit"
+version = "1.0.0"
+dependencies = [
+ "codevar-truetype-core",
+ "log",
+]
+
+[[package]]
+name = "codevar-truetype-cff"
+version = "1.0.0"
+dependencies = [
+ "codevar-truetype-core",
+ "codevar-truetype-pshinter",
+ "codevar-truetype-psnames",
+ "codevar-truetype-sfnt",
+ "log",
+]
+
+[[package]]
+name = "codevar-truetype-core"
+version = "1.0.0"
+dependencies = [
+ "codevar-io",
+ "codevar-logger",
+]
+
+[[package]]
+name = "codevar-truetype-glyf"
+version = "1.0.0"
+dependencies = [
+ "codevar-truetype-core",
+ "codevar-truetype-sfnt",
+ "codevar-truetype-ttcore",
+ "log",
+]
+
+[[package]]
+name = "codevar-truetype-gzip"
+version = "1.0.0"
+dependencies = [
+ "codevar-truetype-core",
+ "log",
+]
+
+[[package]]
+name = "codevar-truetype-pshinter"
+version = "1.0.0"
+dependencies = [
+ "codevar-truetype-core",
+ "log",
+]
+
+[[package]]
+name = "codevar-truetype-psnames"
+version = "1.0.0"
+dependencies = [
+ "codevar-truetype-core",
+ "log",
+]
+
+[[package]]
+name = "codevar-truetype-raster"
+version = "1.0.0"
+dependencies = [
+ "codevar-truetype-core",
+ "log",
+]
+
+[[package]]
+name = "codevar-truetype-sfnt"
+version = "1.0.0"
+dependencies = [
+ "codevar-truetype-core",
+ "codevar-truetype-gzip",
+ "codevar-truetype-psnames",
+ "log",
+]
+
+[[package]]
+name = "codevar-truetype-smooth"
+version = "1.0.0"
+dependencies = [
+ "codevar-truetype-core",
+ "log",
+]
+
+[[package]]
+name = "codevar-truetype-ttcore"
+version = "1.0.0"
+dependencies = [
+ "codevar-truetype-core",
+ "codevar-truetype-sfnt",
+ "log",
+]
+
+[[package]]
 name = "codevar-ui-core"
 version = "1.0.0"
 dependencies = [
@@ -325,19 +490,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "codevar-ui-glyphar"
+name = "codevar-unwinding"
 version = "1.0.0"
 dependencies = [
- "ash",
- "codevar-base",
- "codevar-console-util",
- "codevar-env",
- "codevar-fcware",
- "codevar-logger",
- "codevar-time-core",
- "codevar-wl-protocol",
+ "cfg-if",
+ "codevar-sig-module-base",
+ "codevar-textlike-encode",
+ "defmt 0.3.100",
+ "heapless",
  "libc",
  "spin 0.12.3",
+ "windows",
  "windows-link 0.100.0",
 ]
 
@@ -815,6 +978,12 @@ checksum = "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965"
 dependencies = [
  "scopeguard",
 ]
+
+[[package]]
+name = "log"
+version = "0.4.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "macroweave"

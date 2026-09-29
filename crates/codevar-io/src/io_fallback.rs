@@ -226,7 +226,7 @@ pub const STDIN_BUF_SIZE: usize = 0;
 
 /// Returns a writer suitable for panic output.
 /// On bare-metal, this will return an unsupported writer.
-pub fn panic_output() -> impl Write<Error = ErrorKind> {
+pub fn panic_output() -> impl Write<Error =ErrorKind> {
     Stderr::new()
 }
 

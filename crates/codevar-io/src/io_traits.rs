@@ -354,10 +354,4 @@ mod tests {
         let err: WriteFmtError<ErrorKind> = WriteFmtError::Other(ErrorKind::Other);
         assert!(matches!(err, WriteFmtError::Other(ErrorKind::Other)));
     }
-
-    #[test]
-    fn test_slice_write_error() {
-        let err = SliceWriteError::Full;
-        assert_eq!(err.kind(), ErrorKind::WriteZero);
-    }
 }

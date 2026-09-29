@@ -21,7 +21,10 @@
 //! usable from `no_std` and async-signal-safe contexts (for example writing
 //! into a fixed stack buffer inside a signal handler).
 
-use crate::basic_unwind::Frame;
+#![cfg_attr(not(test), no_std)]
+extern crate alloc;
+
+use codevar_unwinding::Frame;
 use alloc::string::ToString;
 use core::ffi::CStr;
 use core::fmt::{self, Write};
@@ -58,7 +61,6 @@ pub fn resolve_symbol(addr: usize) -> Option<(&'static str, &'static str)> {
                     ""
                 };
                 if !sname.is_empty() {
-                    // Demangle Rust symbol names
                     let demangled = rustc_demangle::demangle(sname).to_string();
                     // Note: This allocates, but only when a symbol is found.
                     // For async-signal-safe contexts, use the mangled name.
@@ -227,7 +229,7 @@ pub fn write_symbol_address<W: Write + ?Sized>(w: &mut W, frame: &Frame) -> fmt:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::basic_unwind::Frame;
+    use codevar_unwinding::Frame;
 
     /// Fixed-capacity `fmt::Write` sink backed by a stack buffer (no heap).
     struct StackBuf<const N: usize> {

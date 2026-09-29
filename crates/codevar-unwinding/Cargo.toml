@@ -1,0 +1,30 @@
+[package]
+name = "codevar-unwinding"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+nightly = []
+default = []
+async = []
+wasm = []
+
+[lib]
+name = "codevar_unwinding"
+
+[dependencies]
+libc = { workspace = true }
+heapless = { workspace = true }
+cfg-if = { workspace = true }
+windows-link = { workspace = true }
+codevar-textlike-encode = { workspace = true, optional = true }
+codevar-sig-module-base = { workspace = true }
+defmt = { workspace = true, optional = true }
+spin = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Console", "Win32_Storage_FileSystem"] }

@@ -21,9 +21,9 @@ layout(location = 0) out vec2 v_uv;
 
 void main() {
     vec2 uv = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));
-    // Vulkan's normalized texture coordinates have (0, 0) at the top-left
-    // of the image while clip space has (-1, -1) at the bottom-left, so
-    // the vertical axis is flipped here.
-    v_uv = vec2(uv.x, 1.0 - uv.y);
+    // No vertical flip: Vulkan clip space and image memory share one
+    // orientation (NDC y = -1 is framebuffer row 0, and uv.y = 0 samples
+    // row 0), so the UV identity already maps the image upright.
+    v_uv = uv;
     gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);
 }

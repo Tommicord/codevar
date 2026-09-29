@@ -1,0 +1,19 @@
+[package]
+name = "codevar-truetype-gzip"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "codevar_truetype_gzip"
+
+[features]
+default = []
+std = ["codevar-truetype-core/std"]
+
+[dependencies]
+log = { workspace = true }
+codevar-truetype-core = { workspace = true }

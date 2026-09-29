@@ -19,7 +19,7 @@
 //! This example demonstrates the [`Pixport`] and [`run_terminal_present_loop`]
 //! functionality by:
 //! 1. Creating a Vulkan pipeline with offscreen render target
-//! 2. Rendering frames using the renderer subsystem
+//! 2. Rendering frames through a compositor pipe
 //! 3. Capturing each frame via Pixport and writing ANSI to stdout
 //!
 //! Run it:
@@ -33,11 +33,11 @@
 //! Windows Terminal, etc.) support this.
 
 use ash::vk;
-use codevar_consoleutil::console_ansi::{cursor, erase};
-use codevar_ui_core::ui_pipeline::PipelineContext;
-use codevar_ui_core::ui_renderer::{
-    FrameContext, RenderLayer, RendererError, RendererSubsystem, load_spir_v,
+use codevar_ui_core::ui_base::{
+    Compositor, CompositorError, PipeSupplyTraits, OffscreenFramebuffer, OffscreenTarget, PipeCtx,
+    PipeFuture, PipeOutcome, PipeSource, load_spir_v,
 };
+use codevar_ui_core::ui_pipeline::PipelineContext;
 use codevar_ui_core::ui_terminal_pixport::ansi::PixportFilterType;
 use codevar_ui_core::ui_terminal_pixport::{CellDensity, ClearPolicy, PixportConfig, present_loop};
 
@@ -45,6 +45,9 @@ use codevar_ui_core::ui_terminal_pixport::{CellDensity, ClearPolicy, PixportConf
 const WIDTH: u32 = 640;
 /// Render target height in pixels.
 const HEIGHT: u32 = 480;
+/// Clear color of the triangle target (opaque black, matching the
+/// presentation clear).
+const CLEAR_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
 /// Embedded vertex shader SPIR-V.
 static VERT_SPIRV: &[u8] = include_bytes!("shaders/triangle.vert.spv");
@@ -63,8 +66,8 @@ fn run() {
     let modifiers = [0u64]; // Linear modifier
     let pipeline = PipelineContext::new(WIDTH, HEIGHT, &modifiers).unwrap();
     let _target = pipeline.present_target();
-    let mut renderer = RendererSubsystem::new(&pipeline);
-    renderer.start().unwrap();
+    let mut compositor = Compositor::new(&pipeline);
+    compositor.start().unwrap();
     let pixport_config = PixportConfig {
         max_cols: term_cols,
         max_rows: term_rows,
@@ -74,7 +77,7 @@ fn run() {
     };
     present_loop::run_terminal_present_loop(
         &pipeline,
-        renderer,
+        compositor,
         TriangleLayer::new(&pipeline).unwrap(),
         codevar_ui_core::ui_terminal_pixport::present_loop::RenderLoopConfig {
             frame_rate: codevar_time_core::TimeDuration::from_millis(16),
@@ -85,9 +88,9 @@ fn run() {
 }
 
 /// Creates a shader module from validated SPIR-V words.
-fn create_shader_module(device: &ash::Device, words: &[u32]) -> Result<vk::ShaderModule, RendererError> {
+fn create_shader_module(device: &ash::Device, words: &[u32]) -> Result<vk::ShaderModule, CompositorError> {
     let module_info = vk::ShaderModuleCreateInfo::default().code(words);
-    unsafe { device.create_shader_module(&module_info, None) }.map_err(RendererError::ShaderModuleCreate)
+    unsafe { device.create_shader_module(&module_info, None) }.map_err(CompositorError::ShaderModuleCreate)
 }
 
 /// Creates the graphics pipeline for the placeholder triangle.
@@ -96,7 +99,7 @@ fn create_pipeline(
     pipeline_layout: vk::PipelineLayout,
     vertex_module: vk::ShaderModule,
     fragment_module: vk::ShaderModule,
-) -> Result<vk::Pipeline, RendererError> {
+) -> Result<vk::Pipeline, CompositorError> {
     let color_format = PipelineContext::color_format();
     let shader_stages = [
         vk::PipelineShaderStageCreateInfo::default()
@@ -158,21 +161,22 @@ fn create_pipeline(
             None,
         )
     };
-    let pipelines = result.map_err(|(_, err)| RendererError::PipelineCreate(err))?;
+    let pipelines = result.map_err(|(_, err)| CompositorError::PipelineCreate(err))?;
     pipelines
         .first()
         .copied()
-        .ok_or(RendererError::Internal("driver returned no graphics pipeline"))
+        .ok_or(CompositorError::Internal("driver returned no graphics pipeline"))
 }
 
 struct TriangleLayer<'p> {
     context: &'p PipelineContext,
+    target: OffscreenTarget<'p>,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
 }
 
 impl<'p> TriangleLayer<'p> {
-    fn new(context: &'p PipelineContext) -> Result<Self, RendererError> {
+    fn new(context: &'p PipelineContext) -> Result<Self, CompositorError> {
         let device = context.device();
         let vertex_words = load_spir_v(VERT_SPIRV)?;
         let fragment_words = load_spir_v(FRAG_SPIRV)?;
@@ -193,7 +197,7 @@ impl<'p> TriangleLayer<'p> {
                     device.destroy_shader_module(vertex_module, None);
                     device.destroy_shader_module(fragment_module, None);
                 }
-                return Err(RendererError::PipelineLayoutCreate(err));
+                return Err(CompositorError::PipelineLayoutCreate(err));
             }
         };
 
@@ -214,31 +218,65 @@ impl<'p> TriangleLayer<'p> {
             device.destroy_shader_module(fragment_module, None);
         }
 
+        let target =
+            match OffscreenTarget::new(context, WIDTH, HEIGHT, PipelineContext::color_format()) {
+                Ok(target) => target,
+                Err(err) => {
+                    unsafe {
+                        device.destroy_pipeline(pipeline, None);
+                        device.destroy_pipeline_layout(pipeline_layout, None);
+                    }
+                    return Err(err);
+                }
+            };
+
         Ok(Self {
             context,
+            target,
             pipeline_layout,
             pipeline,
         })
     }
-}
 
-impl RenderLayer for TriangleLayer<'_> {
-    fn name(&self) -> &str {
-        "triangle"
-    }
-
-    fn priority(&self) -> i32 {
-        100
-    }
-
-    fn render(&mut self, frame: &mut FrameContext<'_>) -> Result<(), RendererError> {
-        let device = frame.device();
-        let command_buffer = frame.command_buffer();
+    /// Records one frame of the triangle into the pipe's offscreen target.
+    ///
+    /// # Errors
+    ///
+    /// * [`CompositorError::Internal`] — no framebuffer was collected for
+    ///   this pipe, so the target cannot be rendered into.
+    fn draw(&mut self, ctx: &mut PipeCtx) -> Result<PipeOutcome, CompositorError> {
+        ctx.begin_render(0, Some(CLEAR_COLOR))?;
+        let device = ctx.device();
+        let command_buffer = ctx.command_buffer();
+        // SAFETY: the rendering scope opened by `begin_render` is still
+        // open, the pipeline was created for this device, and the
+        // offscreen target shares the pipeline's color format.
         unsafe {
             device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
             device.cmd_draw(command_buffer, 3, 1, 0, 0);
         }
-        Ok(())
+        ctx.end_render();
+        Ok(PipeOutcome::Keep)
+    }
+}
+
+impl PipeSource for TriangleLayer<'_> {
+    fn pipe_entry<'a>(renderer: &'a mut Self, ctx: &'a mut PipeCtx) -> PipeFuture<'a> {
+        Box::pin(async move { renderer.draw(ctx) })
+    }
+}
+
+impl PipeSupplyTraits for TriangleLayer<'_> {
+    fn offscreen_framebuffer_count(&self) -> usize {
+        1
+    }
+
+    fn offscreen_framebuffer(&self, index: usize) -> Option<OffscreenFramebuffer> {
+        if index == 0 {
+            Some(self.target.framebuffer())
+        } else {
+            None
+        }
     }
 }
 

@@ -20,6 +20,9 @@
 //! `Rtl*` APIs on Windows) with a frame-pointer fallback. No external unwind
 //! library is linked.
 
+#![cfg_attr(not(test), no_std)]
+extern crate alloc;
+
 use core::ffi::c_void;
 #[cfg(all(unix, not(target_arch = "wasm32")))]
 use libc;
@@ -159,7 +162,7 @@ impl Frame {
     /// Constructs a new [`Frame`] for testing and pretty-printing purposes.
     #[inline]
     #[allow(dead_code)]
-    pub(crate) const fn new(ip: usize, sp: usize, module_base: Option<usize>) -> Self {
+    pub const fn new(ip: usize, sp: usize, module_base: Option<usize>) -> Self {
         Self { ip, sp, module_base }
     }
 }
@@ -2186,31 +2189,24 @@ mod elf {
     pub(super) fn module_base(ip: usize) -> Option<usize> {
         // `dl_iterate_phdr` is not async-signal-safe; skip when
         // unwinding inside a signal handler.
-        if crate::basic_signal::is_in_handler() {
-            return None;
-        }
         find(ip).base
     }
 
     #[cfg_attr(feature = "nightly", sanitize(address = "off"))]
     pub(super) fn trace_inner(cb: &mut dyn FnMut(&Frame) -> bool) {
-        // When inside a signal handler, skip ELF CFI unwinding because
-        // `dl_iterate_phdr` is not async-signal-safe. Fall back to
-        // frame-pointer walking only.
-        if crate::basic_signal::is_in_handler() {
-            super::walk(cb, None);
-        } else {
-            super::walk(cb, Some(|state: &mut UnwindState| cfi_or_fp(state)));
-        }
+        super::walk(
+            cb,
+            Some(|state: &mut UnwindState| {
+                fp::step(state);
+                cfi_or_fp(state)
+            }),
+        );
     }
 
     fn cfi_or_fp(state: &mut UnwindState) -> bool {
         let ip = state.regs.ip;
         // Skip `find` (which calls `dl_iterate_phdr`) when in a signal
         // handler; fall back to frame-pointer walking.
-        if crate::basic_signal::is_in_handler() {
-            return fp::step(state);
-        }
         let found = find(ip);
         if let Some((ef, elen)) = found.eh_frame
             && ef >= 4096
@@ -2379,7 +2375,7 @@ mod apple {
     }
 
     pub(super) fn module_base(ip: usize) -> Option<usize> {
-        if crate::basic_signal::is_in_handler() {
+        if crate::lib::is_in_handler() {
             return None;
         }
         find(ip).base
@@ -2390,7 +2386,7 @@ mod apple {
         super::walk(
             cb,
             Some(|state: &mut UnwindState| {
-                if crate::basic_signal::is_in_handler() {
+                if crate::lib::is_in_handler() {
                     return fp::step(state);
                 }
                 let found = find(state.regs.ip);
@@ -2639,7 +2635,7 @@ mod windows {
     allow(dead_code)
 )]
 fn walk(cb: &mut dyn FnMut(&Frame) -> bool, step_fn: Option<fn(&mut UnwindState) -> bool>) {
-    use crate::basic_module_base::module_base as cached_module_base;
+    use codevar_sig_module_base::module_base as cached_module_base;
 
     let Some(mut state) = capture::current() else {
         return;

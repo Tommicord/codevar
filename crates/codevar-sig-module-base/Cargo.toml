@@ -1,0 +1,29 @@
+[package]
+name = "codevar-sig-module-base"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+nightly = []
+default = []
+defmt = ["dep:defmt"]
+async = []
+wasm = []
+
+[lib]
+name = "codevar_sig_module_base"
+
+[dependencies]
+libc = { workspace = true }
+heapless = { workspace = true }
+codevar-textlike-encode = { workspace = true, optional = true }
+defmt = { workspace = true, optional = true }
+spin = { workspace = true }
+cfg-if = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Console", "Win32_Storage_FileSystem"] }

@@ -4,6 +4,10 @@ members = [
     "crates/codevar-textlike-encode",
     "crates/codevar-fcware",
     "crates/codevar-tls",
+    "crates/codevar-pretty-unwind",
+    "crates/codevar-unwinding",
+    "crates/codevar-sig-handler",
+    "crates/codevar-sig-module-base",
     "crates/codevar-wredit",
     "crates/codevar-wsocket",
     "crates/codevar-launcher",
@@ -16,7 +20,18 @@ members = [
     "crates/codevar-console-util",
     "crates/codevar-env",
     "crates/codevar-io",
-    "crates/codevar-ui-glyphar"
+    "crates/codevar-truetype",
+    "crates/codevar-truetype-core",
+    "crates/codevar-truetype-gzip",
+    "crates/codevar-truetype-raster",
+    "crates/codevar-truetype-smooth",
+    "crates/codevar-truetype-sfnt",
+    "crates/codevar-truetype-psnames",
+    "crates/codevar-truetype-pshinter",
+    "crates/codevar-truetype-autofit",
+    "crates/codevar-truetype-ttcore",
+    "crates/codevar-truetype-glyf",
+    "crates/codevar-truetype-cff"
 ]
 resolver = "2"
 
@@ -35,6 +50,7 @@ quote = "1.0"
 ash = { version = "0.38", default-features = false }
 libc = "0.2"
 cfg-if = "1.0.5"
+log = { version = "0.4", default-features = false }
 num-traits = { version = "0.2", default-features = false }
 cargo-ndk = "4.1.2"
 sha1 = "0.10"
@@ -81,14 +97,29 @@ codevar-time-util = { path = "crates/codevar-time-util" }
 codevar-time-core = { path = "crates/codevar-time-core" }
 codevar-wredit = { path = "crates/codevar-wredit" }
 codevar-wsocket = { path = "crates/codevar-wsocket" }
+codevar-sig-handler = { path = "crates/codevar-sig-handler" }
+codevar-sig-module-base = { path = "crates/codevar-sig-module-base" }
+codevar-unwinding = { path = "crates/codevar-unwinding" }
+codevar-pretty-unwind = { path = "crates/codevar-pretty-unwind" }
 codevar-xdg-portal = { path = "crates/codevar-xdg-portal" }
 codevar-ui-core = { path = "crates/codevar-ui-core" }
-codevar-ui-glyphar = { path = "crates/codevar-ui-glyphar" }
+codevar-truetype = { path = "crates/codevar-truetype" }
 codevar-logger = { path = "crates/codevar-logger" }
 codevar-console-util = { path = "crates/codevar-console-util" }
 codevar-io = { path = "crates/codevar-io" }
 codevar-env = { path = "crates/codevar-env" }
 codevar-pathbuf = { path = "crates/codevar-pathbuf" }
+codevar-truetype-core = { path = "crates/codevar-truetype-core" }
+codevar-truetype-gzip = { path = "crates/codevar-truetype-gzip" }
+codevar-truetype-raster = { path = "crates/codevar-truetype-raster" }
+codevar-truetype-smooth = { path = "crates/codevar-truetype-smooth" }
+codevar-truetype-sfnt = { path = "crates/codevar-truetype-sfnt" }
+codevar-truetype-psnames = { path = "crates/codevar-truetype-psnames" }
+codevar-truetype-pshinter = { path = "crates/codevar-truetype-pshinter" }
+codevar-truetype-autofit = { path = "crates/codevar-truetype-autofit" }
+codevar-truetype-ttcore = { path = "crates/codevar-truetype-ttcore" }
+codevar-truetype-glyf = { path = "crates/codevar-truetype-glyf" }
+codevar-truetype-cff = { path = "crates/codevar-truetype-cff" }
 
 [profile.dev]
 opt-level = 0

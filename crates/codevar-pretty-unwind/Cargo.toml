@@ -1,0 +1,33 @@
+[package]
+name = "codevar-pretty-unwind"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+async = []
+wasm = []
+
+[lib]
+name = "codevar_pretty_unwind"
+
+[dependencies]
+libc = { workspace = true }
+heapless = { workspace = true }
+cfg-if = { workspace = true }
+windows-link = { workspace = true }
+codevar-textlike-encode = { workspace = true, optional = true }
+codevar-unwinding = { workspace = true }
+rustc-demangle = { workspace = true }
+backtrace-sys = { workspace = true }
+web-sys = { version = "0.3", features = ["console"], optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+defmt = { workspace = true, optional = true }
+spin = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Console"] }

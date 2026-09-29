@@ -22,7 +22,7 @@
 //! compositor drives those futures from [`Compositor::poll_composite`],
 //! submits each pipe as its own queue submission chained with binary
 //! semaphores, and finally folds every offscreen framebuffer registered
-//! through [`CompositorTraits`] into the presentation target with a
+//! through [`PipeSupplyTraits`] into the presentation target with a
 //! fullscreen `mix()` pass (`shaders/mix.frag`).
 //!
 //! # Frame lifecycle
@@ -378,7 +378,7 @@ const _: () = assert!(core::mem::offset_of!(MixPush, weights1) == 32);
 
 /// View of one offscreen color target exposed to the mix pass.
 ///
-/// A renderer implementing [`CompositorTraits`] hands these to the
+/// A renderer implementing [`PipeSupplyTraits`] hands these to the
 /// compositor every frame; the compositor owns neither the image nor the
 /// view, it only binds them for sampling.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -420,7 +420,7 @@ impl OffscreenFramebuffer {
 /// [`Compositor::add_pipe`]; the compositor collects the targets once per
 /// frame (in queue order) and folds them into the presentation target
 /// with the mix pass.
-pub trait CompositorTraits {
+pub trait PipeSupplyTraits {
     /// Number of framebuffers this pipe contributes to the frame.
     fn offscreen_framebuffer_count(&self) -> usize;
 
@@ -745,7 +745,7 @@ impl PipeCtx {
 pub struct Pipe {
     /// Type-erased entry point called once per frame.
     entry: PipeEntry,
-    /// `*mut T` for the `PipeSource`/`CompositorTraits` type `T` this
+    /// `*mut T` for the `PipeSource`/`PipeSupplyTraits` type `T` this
     /// pipe was created from.
     renderer: *mut (),
 }
@@ -859,8 +859,16 @@ pub struct PipeHandoff {
 impl PipeHandoff {
     /// Builds a handoff that takes ownership of `renderer`.
     #[must_use]
-    pub fn from_renderer<T: PipeSource + CompositorTraits>(mut renderer: T) -> Self {
-        let pipe = Pipe::new(&mut renderer);
+    pub fn from_renderer<T: PipeSource + PipeSupplyTraits>(renderer: T) -> Self {
+        // The pipe records the address of the renderer, so the value
+        // must live on the heap for as long as the handoff owns it;
+        // `drop_trampoline` releases exactly this allocation.
+        let mut boxed = Box::new(renderer);
+        let pipe = Pipe::new(&mut *boxed);
+        // Taking the raw pointer transfers ownership out of the `Box`,
+        // so the local scope does not free what the pipe now points to.
+        let renderer = Box::into_raw(boxed);
+        debug_assert_eq!(renderer.cast::<()>(), pipe.renderer());
         Self {
             pipe,
             collect: collect_trampoline::<T>,
@@ -888,7 +896,7 @@ impl Drop for PipeHandoff {
 }
 
 /// Body of [`PipeHandoff::collect`] for the concrete renderer type.
-fn collect_trampoline<T: CompositorTraits>(
+fn collect_trampoline<T: PipeSupplyTraits>(
     renderer: *const (),
     framebuffers: &mut Vec<OffscreenFramebuffer>,
     weights: &mut [f32; MAX_MIX_TARGETS],
@@ -1651,7 +1659,7 @@ fn create_color_view(
 ///
 /// The target is created in `UNDEFINED` layout and is transitioned by
 /// the compositor's layout pass; a renderer exposes it through
-/// [`CompositorTraits`]. The `'p` lifetime keeps it from outliving the
+/// [`PipeSupplyTraits`]. The `'p` lifetime keeps it from outliving the
 /// [`PipelineContext`] that owns the device it releases on `Drop`.
 pub struct OffscreenTarget<'p> {
     /// Device that owns every handle below (`'p`).
@@ -2757,7 +2765,7 @@ impl<'p> Compositor<'p> {
     ///   queue may only grow between frames so slot indices stay stable.
     /// * [`CompositorError::TooManyPipes`] — [`MAX_PIPES`] pipes are
     ///   already registered; `renderer` is released again.
-    pub fn add_pipe<T: PipeSource + CompositorTraits>(
+    pub fn add_pipe<T: PipeSource + PipeSupplyTraits>(
         &mut self,
         renderer: T,
     ) -> Result<usize, CompositorError> {
@@ -3877,7 +3885,7 @@ mod tests {
         }
     }
 
-    impl CompositorTraits for DummyRenderer {
+    impl PipeSupplyTraits for DummyRenderer {
         fn offscreen_framebuffer_count(&self) -> usize {
             usize::from(self.framebuffer.is_some())
         }
@@ -3895,7 +3903,7 @@ mod tests {
     fn pipe_dispatches_to_the_registered_type() {
         let handoff = PipeHandoff::from_renderer(DummyRenderer::empty());
         let expected: PipeEntry = trampoline::<DummyRenderer>;
-        assert_eq!(handoff.pipe().entry(), expected);
+        assert!(core::ptr::fn_addr_eq(handoff.pipe().entry(), expected));
         assert_eq!(core::mem::offset_of!(Pipe, entry), 0);
         assert_eq!(
             core::mem::offset_of!(Pipe, renderer),

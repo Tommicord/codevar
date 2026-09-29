@@ -4,7 +4,8 @@ Instructions for AI coding agents working in the Codevar repository.
 
 ## Project overview
 
-Codevar is a high-performance code editor targeting for WASM (web) with plans for native desktop and mobile applications. The core library is written in Rust and the project is in early development. 
+Codevar is a high-performance code editor targeting for WASM (web) with plans for native desktop and mobile
+applications. The core library is written in Rust and the project is in early development.
 
 ### Key Features
 
@@ -83,7 +84,6 @@ New Rust files must include the Apache 2.0 copyright header used elsewhere:
 
 ## Testing
 
-- Add integration tests in `crates/codevar-core/tests/` for behavior that spans modules.
 - Keep unit tests close to the code when they only exercise one module.
 - Run `cargo test --workspace` before finishing work.
 - Only add tests that cover meaningful behavior; avoid trivial assertions.
@@ -101,7 +101,8 @@ New Rust files must include the Apache 2.0 copyright header used elsewhere:
 
 ### Error Handling Requirements
 
-- **FORBIDDEN use of `.unwrap()` or `.expect()` in production code** — instead, manage errors with Result or Option and handle them appropriately
+- **FORBIDDEN use of `.unwrap()` or `.expect()` in production code** — instead, manage errors with Result or Option and
+  handle them appropriately, that functions are only acceptable on testing, But not in production-code or doc examples
 - Use `?` operator for error propagation in functions returning `CompressorResult`
 - Use `.unwrap_or()`, `.unwrap_or_default()`, or `.unwrap_or_else()` for fallback values
 - `.unwrap()` and `.expect()` are ONLY permitted in unit tests with explicit justification
@@ -128,7 +129,8 @@ New Rust files must include the Apache 2.0 copyright header used elsewhere:
 - Avoid storing more than one `bool` inside structs, Use enums with custom BitOr overloads instead
 
 ### Optimizing binary sizes
-- Use #![cfg_attr(not(test), no_std)] when adding new modules for reducing binary sizes
+
+- Use #![cfg_attr (not (test), no_std)] when adding new modules for reducing binary sizes
 
 ### Unsafe Code Guidelines
 
@@ -170,6 +172,7 @@ New Rust files must include the Apache 2.0 copyright header used elsewhere:
 When adding CUDA or Vulkan compute shader support:
 
 #### CUDA Development
+
 - Design algorithms for massive parallelism (thousands of threads)
 - Minimize thread divergence within warps
 - Use shared memory for frequently accessed data
@@ -182,6 +185,7 @@ When adding CUDA or Vulkan compute shader support:
 - Profile and optimize based on actual hardware metrics
 
 #### Cross-Platform Compute
+
 - Abstract compute operations behind Rust interfaces
 - Support fallback to CPU implementations when GPU unavailable
 - Design algorithms that work efficiently on both CPU and GPU
@@ -205,7 +209,7 @@ Before considering code complete, verify:
 
 - [ ] No `.unwrap()` or `.expect()` in production code
 - [ ] No `panic!`, `abort()`, or panicking methods in production code
-- [ ] No `println!` or `eprintln!` — use `log` crate instead
+- [ ] No `println!` or `eprintln!` — use `codevar_logger` workspace crate instead
 - [ ] All unsafe code has proper documentation
 - [ ] Public APIs have comprehensive documentation
 - [ ] Error handling is comprehensive and proper
@@ -225,7 +229,7 @@ Before considering code complete, verify:
 ```rust
 // Correct: unsafe with proper documentation
 /// # Safety
-/// 
+///
 /// This function is safe to call when:
 /// - `ptr` is properly aligned for T
 /// - `ptr` points to initialized memory

@@ -17,8 +17,8 @@
 //! codevar UI stack.
 //!
 //! This module ties the Wayland protocol layer ([`codevar_wl_protocol`]),
-//! the Vulkan pipeline ([`crate::ui_pipeline`]) and the renderer
-//! ([`crate::ui_renderer`]) together into a single [`UiDisplay`] handle
+//! the Vulkan pipeline ([`crate::ui_pipeline`]) and the compositor
+//! ([`crate::ui_base`]) together into a single [`UiDisplay`] handle
 //! that initializes a window, renders frames and tears down the
 //! connection on drop.
 //!
@@ -33,10 +33,10 @@
 //!    `sync_file`, then attaches the resulting dma-buf buffer and
 //!    commits.
 //! 3. [`UiDisplay::stop`] tears down the protocol objects and the
-//!    renderer.
+//!    compositor.
 
+use crate::ui_base::{block_on, Compositor, CompositorError};
 use crate::ui_pipeline::{OwnedFd, PipelineContext, PipelineError};
-use crate::ui_renderer::{RendererError, RendererSubsystem};
 use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
@@ -68,7 +68,7 @@ const DISPATCH_TIMEOUT_MS: u64 = 50;
 /// How long to wait for `wl_buffer.release` before re-rendering
 /// anyway, in milliseconds.
 const RELEASE_TIMEOUT_MS: u64 = 500;
-/// Milliseconds the renderer waits for the GPU through the
+/// Milliseconds the display waits for the GPU through the
 /// exported `sync_file` before committing the buffer.
 const SYNC_TIMEOUT_MS: u32 = 5_000;
 /// Largest format table the implementation is willing to allocate.
@@ -98,8 +98,8 @@ struct FrameCallback {
 pub enum UiDisplayError {
     /// The Wayland connection failed.
     Wayland(WlError),
-    /// The renderer failed.
-    Renderer(RendererError),
+    /// The compositor failed.
+    Compositor(CompositorError),
     /// The Vulkan pipeline could not be created.
     Pipeline(PipelineError),
     /// The compositor closed the window before the first configure.
@@ -112,7 +112,7 @@ impl fmt::Display for UiDisplayError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Wayland(err) => write!(f, "wayland error: {err}"),
-            Self::Renderer(err) => write!(f, "renderer error: {err}"),
+            Self::Compositor(err) => write!(f, "compositor error: {err}"),
             Self::Pipeline(err) => write!(f, "pipeline error: {err}"),
             Self::WindowClosed => write!(f, "the compositor closed the window"),
             Self::Timeout(msg) => write!(f, "timeout: {msg}"),
@@ -128,9 +128,9 @@ impl From<WlError> for UiDisplayError {
     }
 }
 
-impl From<RendererError> for UiDisplayError {
-    fn from(err: RendererError) -> Self {
-        Self::Renderer(err)
+impl From<CompositorError> for UiDisplayError {
+    fn from(err: CompositorError) -> Self {
+        Self::Compositor(err)
     }
 }
 
@@ -188,7 +188,7 @@ pub struct UiDisplay {
     toplevel: Option<WlProxyId>,
     feedback: Option<WlProxyId>,
     pipeline: Option<PipelineContext>,
-    renderer: Option<ManuallyDrop<RendererSubsystem<'static>>>,
+    compositor: Option<ManuallyDrop<Compositor<'static>>>,
     buffer: Option<WlProxyId>,
     window_state: Rc<RefCell<WindowState>>,
     frame_budget: u32,
@@ -201,7 +201,7 @@ impl UiDisplay {
     /// [`connect`] (session + registry), [`bind_protocol_globals`] (globals
     /// and their listeners), [`create_window_objects`] (surface,
     /// toplevel and xdg-shell handshake), [`negotiate_modifiers`] (linux-dmabuf
-    /// feedback), then the Vulkan pipeline, renderer and `wl_buffer`.
+    /// feedback), then the Vulkan pipeline, compositor and `wl_buffer`.
     pub fn new(init: WindowInit) -> Result<Self, UiDisplayError> {
         let deadline_ns = SystemTime::monotonic_nanos() + SystemTime::secs_to_nanos(8);
         let Connection {
@@ -228,10 +228,10 @@ impl UiDisplay {
 
         let pipeline = PipelineContext::new(width as u32, height as u32, &modifiers)
             .map_err(UiDisplayError::Pipeline)?;
-        let mut renderer = create_renderer(&pipeline);
-        renderer
+        let mut compositor = create_compositor(&pipeline);
+        compositor
             .start()
-            .map_err(UiDisplayError::Renderer)?;
+            .map_err(UiDisplayError::Compositor)?;
         let buffer = create_wl_buffer(
             &mut display,
             protocol.dmabuf,
@@ -248,7 +248,7 @@ impl UiDisplay {
             toplevel: Some(toplevel),
             feedback,
             pipeline: Some(pipeline),
-            renderer: Some(renderer),
+            compositor: Some(compositor),
             buffer: Some(buffer),
             window_state,
             frame_budget: 0,
@@ -287,9 +287,9 @@ impl UiDisplay {
     #[inline]
     #[must_use]
     pub fn frames(&self) -> u64 {
-        self.renderer
+        self.compositor
             .as_ref()
-            .map_or(0, |r| r.frame_index())
+            .map_or(0, |c| c.frame_index())
     }
 
     /// Returns the number of pings answered.
@@ -312,11 +312,11 @@ impl UiDisplay {
         self.window_state.borrow_mut().deadline_ns = deadline_ns;
     }
 
-    /// Returns a mutable reference to the renderer subsystem.
+    /// Returns a mutable reference to the compositor.
     #[inline]
     #[must_use]
-    pub fn renderer_mut(&mut self) -> Option<&mut RendererSubsystem<'static>> {
-        self.renderer.as_deref_mut()
+    pub fn compositor_mut(&mut self) -> Option<&mut Compositor<'static>> {
+        self.compositor.as_deref_mut()
     }
 
     /// Runs the render loop.
@@ -409,25 +409,17 @@ impl UiDisplay {
         }))
     }
 
-    /// Renders one frame offscreen through the renderer subsystem and
+    /// Renders one frame offscreen through the compositor and
     /// blocks until the GPU reports completion via the exported
     /// `sync_file`.
     fn present_frame(&mut self) -> Result<(), UiDisplayError> {
-        let renderer = self
-            .renderer
+        let compositor = self
+            .compositor
             .as_mut()
-            .ok_or(UiDisplayError::Renderer(RendererError::Internal(
-                "renderer not started",
+            .ok_or(UiDisplayError::Compositor(CompositorError::Internal(
+                "compositor not started",
             )))?;
-        renderer
-            .begin_frame(None)
-            .map_err(UiDisplayError::Renderer)?;
-        renderer
-            .present_frame()
-            .map_err(UiDisplayError::Renderer)?;
-        let sync_file = renderer
-            .end_frame()
-            .map_err(UiDisplayError::Renderer)?;
+        let sync_file = block_on(compositor.composite_frame(None)).map_err(UiDisplayError::Compositor)?;
         wait_for_gpu(&sync_file)?;
         drop(sync_file);
         Ok(())
@@ -508,12 +500,12 @@ impl UiDisplay {
         Ok(())
     }
 
-    /// Stops the renderer.
+    /// Stops the compositor.
     pub fn stop(&mut self) -> Result<(), UiDisplayError> {
-        if let Some(renderer) = self.renderer.as_mut() {
-            renderer
+        if let Some(compositor) = self.compositor.as_mut() {
+            compositor
                 .stop()
-                .map_err(UiDisplayError::Renderer)?;
+                .map_err(UiDisplayError::Compositor)?;
         }
         Ok(())
     }
@@ -543,14 +535,14 @@ impl Drop for UiDisplay {
             let _ = display.flush();
         }
 
-        if let Some(mut renderer) = self.renderer.take() {
-            // SAFETY: the renderer was wrapped with `ManuallyDrop::new` in
+        if let Some(mut compositor) = self.compositor.take() {
+            // SAFETY: the compositor was wrapped with `ManuallyDrop::new` in
             // `UiDisplay::new` and is taken exactly once here, so it has not
             // been dropped before. Dropping it releases the Vulkan frame
-            // resources while `self.pipeline` (declared before `renderer`)
+            // resources while `self.pipeline` (declared before `compositor`)
             // is still alive.
             unsafe {
-                ManuallyDrop::drop(&mut renderer);
+                ManuallyDrop::drop(&mut compositor);
             }
         }
     }
@@ -782,7 +774,7 @@ fn create_window_objects(
             vec![WlArgument::Str(Some(
                 init.title
                     .to_str()
-                    .unwrap_or("Codevar")
+                    .unwrap_or(codevar_env::ENV_NAME)
                     .to_string(),
             ))],
         )
@@ -794,7 +786,7 @@ fn create_window_objects(
             vec![WlArgument::Str(Some(
                 init.app_id
                     .to_str()
-                    .unwrap_or("dev.codevar.window")
+                    .unwrap_or(codevar_env::ENV_APP_ID)
                     .to_string(),
             ))],
         )
@@ -959,21 +951,21 @@ fn negotiate_modifiers(
 /// Creates the frame orchestrator borrowing `pipeline` for the display's
 /// lifetime.
 ///
-/// # Safety of the returned value
+/// # Safety
 ///
-/// The renderer borrows from `pipeline` which is stored in
+/// The compositor borrows from `pipeline` which is stored in
 /// `UiDisplay::pipeline`. Both are owned by `UiDisplay` and `pipeline`
-/// outlives the renderer. The lifetime is transmuted to `'static` because
-/// the struct's ownership guarantees validity. `Drop` drops the renderer
+/// outlives the compositor. The lifetime is transmuted to `'static` because
+/// the struct's ownership guarantees validity. `Drop` drops the compositor
 /// before the pipeline, preserving the borrow invariant.
-fn create_renderer(pipeline: &PipelineContext) -> ManuallyDrop<RendererSubsystem<'static>> {
-    let renderer = RendererSubsystem::new(pipeline);
+fn create_compositor(pipeline: &PipelineContext) -> ManuallyDrop<Compositor<'static>> {
+    let compositor = Compositor::new(pipeline);
     // SAFETY: see the function documentation above.
     unsafe {
         ManuallyDrop::new(core::mem::transmute::<
-            RendererSubsystem<'_>,
-            RendererSubsystem<'static>,
-        >(renderer))
+            Compositor<'_>,
+            Compositor<'static>,
+        >(compositor))
     }
 }
 

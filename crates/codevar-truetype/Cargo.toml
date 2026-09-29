@@ -1,0 +1,25 @@
+[package]
+name = "codevar-truetype"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "codevar_truetype"
+
+[dependencies]
+log = { workspace = true }
+codevar-truetype-core = { workspace = true, features = ["std"] }
+codevar-truetype-gzip = { workspace = true, features = ["std"] }
+codevar-truetype-raster = { workspace = true }
+codevar-truetype-smooth = { workspace = true }
+codevar-truetype-sfnt = { workspace = true }
+codevar-truetype-psnames = { workspace = true }
+codevar-truetype-pshinter = { workspace = true }
+codevar-truetype-autofit = { workspace = true }
+codevar-truetype-ttcore = { workspace = true }
+codevar-truetype-glyf = { workspace = true }
+codevar-truetype-cff = { workspace = true }

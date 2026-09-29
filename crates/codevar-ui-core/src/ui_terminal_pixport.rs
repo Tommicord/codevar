@@ -79,8 +79,8 @@ pub enum PixportError {
     GpuSyncPollFailed,
     /// GPU sync timed out.
     GpuSyncTimeout,
-    /// Renderer subsystem error.
-    Renderer(crate::ui_renderer::RendererError),
+    /// Compositor error.
+    Compositor(crate::ui_base::CompositorError),
 }
 
 impl fmt::Display for PixportError {
@@ -108,7 +108,7 @@ impl fmt::Display for PixportError {
             Self::FrameSizeMismatch => write!(f, "frame buffer size mismatch"),
             Self::GpuSyncPollFailed => write!(f, "GPU sync poll failed"),
             Self::GpuSyncTimeout => write!(f, "GPU sync timed out"),
-            Self::Renderer(err) => write!(f, "renderer error: {err}"),
+            Self::Compositor(err) => write!(f, "compositor error: {err}"),
         }
     }
 }
@@ -121,9 +121,9 @@ impl From<codevar_consoleutil::ConsoleError> for PixportError {
     }
 }
 
-impl From<crate::ui_renderer::RendererError> for PixportError {
-    fn from(err: crate::ui_renderer::RendererError) -> Self {
-        Self::Renderer(err)
+impl From<crate::ui_base::CompositorError> for PixportError {
+    fn from(err: crate::ui_base::CompositorError) -> Self {
+        Self::Compositor(err)
     }
 }
 
@@ -1806,13 +1806,12 @@ pub mod frame_pipe {
 pub mod present_loop {
     use super::frame_pipe::FramePipe;
     use super::{Pixport, PixportConfig, PixportError, PixportResult};
+    use crate::ui_base::{Compositor, PipeSupplyTraits, PipeSource};
     use crate::ui_pipeline::{OwnedFd, PipelineContext};
-    use crate::ui_renderer::{RenderLayer, RendererSubsystem};
-    use alloc::boxed::Box;
     use codevar_consoleutil::console_ansi::{cursor, erase};
     use core::future::Future;
     use core::pin::Pin;
-    use core::task::{Context, Poll, Waker};
+    use core::task::{Context, Poll};
 
     /// Configuration for the terminal render loop.
     #[derive(Debug, Clone)]
@@ -1825,20 +1824,23 @@ pub mod present_loop {
 
     /// Runs a render loop that captures frames and outputs to terminal.
     ///
+    /// The compositor must already be [`Compositor::start`]ed; `layer` is
+    /// registered as its first pipe.
+    ///
     /// `max_cols == 0` / `max_rows == 0` follow the live terminal size: the
     /// loop polls for resizes every frame, forces a repaint on change, and
     /// lets [`super::ansi::PixportFilterType::Auto`] re-pick its filter.
-    pub fn run_terminal_present_loop<'p, L>(
+    pub fn run_terminal_present_loop<'p, T>(
         pipeline: &'p PipelineContext,
-        mut renderer: RendererSubsystem<'p>,
-        layer: L,
+        mut compositor: Compositor<'p>,
+        layer: T,
         config: RenderLoopConfig,
     ) -> PixportResult<()>
     where
-        L: RenderLayer + 'p,
+        T: PipeSource + PipeSupplyTraits,
     {
         codevar_consoleutil::init_ansi_support();
-        renderer.layers_mut().add(Box::new(layer))?;
+        compositor.add_pipe(layer)?;
         let mut pixport = Pixport::new(pipeline, config.pixport_config)?;
         codevar_consoleutil::write_stdout(cursor::hide().as_bytes())?;
         codevar_consoleutil::write_stdout(erase::screen().as_bytes())?;
@@ -1847,9 +1849,7 @@ pub mod present_loop {
         loop {
             let frame_start = codevar_time_core::SystemTime::monotonic_nanos();
             let _ = pixport.poll_terminal_resize();
-            renderer.begin_frame(None)?;
-            renderer.present_frame()?;
-            let sync_file = renderer.end_frame()?;
+            let sync_file = block_on(compositor.composite_frame(None))?;
             wait_for_gpu_sync(&sync_file)?;
             drop(sync_file);
             pixport.capture_and_present()?;
@@ -1948,21 +1948,13 @@ pub mod present_loop {
 
     /// Drives `future` to completion on the current thread.
     ///
-    /// A minimal single-threaded executor for running
+    /// A thin wrapper over [`crate::ui_base::block_on`] for running
     /// [`run_terminal_present_loop_async`] without an async runtime. Every
     /// future in this module re-registers its waker or makes progress from
-    /// re-polling alone, so a no-op waker plus a 1 ms sleep on
+    /// re-polling alone, so the delegated no-op waker plus a 1 ms sleep on
     /// [`Poll::Pending`] is sufficient (and never busy-spins).
     pub fn block_on<F: Future>(future: F) -> F::Output {
-        let mut future = core::pin::pin!(future);
-        let waker = Waker::noop();
-        let mut cx = Context::from_waker(waker);
-        loop {
-            match future.as_mut().poll(&mut cx) {
-                Poll::Ready(output) => return output,
-                Poll::Pending => sleep_for(codevar_time_core::TimeDuration::from_millis(1)),
-            }
-        }
+        crate::ui_base::block_on(future)
     }
 
     /// Asynchronous counterpart of [`run_terminal_present_loop`].
@@ -1983,7 +1975,7 @@ pub mod present_loop {
     /// ```ignore
     /// let mut pipe = FramePipe::default();
     /// present_loop::block_on(present_loop::run_terminal_present_loop_async(
-    ///     pipeline, renderer, layer, config, &mut pipe,
+    ///     pipeline, compositor, layer, config, &mut pipe,
     /// ))?;
     /// ```
     ///
@@ -1991,18 +1983,18 @@ pub mod present_loop {
     ///
     /// Propagates the same rendering, Vulkan and I/O failures as
     /// [`run_terminal_present_loop`].
-    pub async fn run_terminal_present_loop_async<'p, L>(
+    pub async fn run_terminal_present_loop_async<'p, T>(
         pipeline: &'p PipelineContext,
-        mut renderer: RendererSubsystem<'p>,
-        layer: L,
+        mut compositor: Compositor<'p>,
+        layer: T,
         config: RenderLoopConfig,
         pipe: &mut FramePipe,
     ) -> PixportResult<()>
     where
-        L: RenderLayer + 'p,
+        T: PipeSource + PipeSupplyTraits,
     {
         codevar_consoleutil::init_ansi_support();
-        renderer.layers_mut().add(Box::new(layer))?;
+        compositor.add_pipe(layer)?;
         let mut pixport = Pixport::new(pipeline, config.pixport_config)?;
         codevar_consoleutil::write_stdout(cursor::hide().as_bytes())?;
         codevar_consoleutil::write_stdout(erase::screen().as_bytes())?;
@@ -2011,9 +2003,7 @@ pub mod present_loop {
         loop {
             let frame_start = codevar_time_core::SystemTime::monotonic_nanos();
             let _ = pixport.poll_terminal_resize();
-            renderer.begin_frame(None)?;
-            renderer.present_frame()?;
-            let sync_file = renderer.end_frame()?;
+            let sync_file = compositor.composite_frame(None).await?;
             pixport.begin_capture()?;
             wait_gpu_sync_async(&sync_file).await?;
             drop(sync_file);
