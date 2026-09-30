@@ -1,0 +1,24 @@
+name: Semgrep
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  schedule:
+    - cron: '0 0 * * 0'
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    name: Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out codebase
+        uses: actions/checkout@v4
+      - name: Run Semgrep CLI
+        run: |
+          pip install semgrep
+          semgrep ci --config=auto
