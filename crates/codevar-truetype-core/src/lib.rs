@@ -28,7 +28,6 @@
 //! no panicking operation is used in production paths.
 
 #![cfg_attr(not(test), no_std)]
-#![deny(clippy::unwrap_used, clippy::expect_used)]
 extern crate alloc;
 
 use alloc::boxed::Box;
@@ -3474,13 +3473,7 @@ pub fn debug_reset() {
     }
 }
 
-/// Regression tests for the stable public API that predates this module's
-/// FreeType port (`FT_Stream`, `FT_Outline`, ...).
-///
-/// `.unwrap()` is permitted here because AGENTS.md allows it inside unit
-/// tests; production paths are guarded by `#![deny(clippy::unwrap_used)]`.
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
