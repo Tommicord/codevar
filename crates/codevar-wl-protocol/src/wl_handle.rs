@@ -1435,6 +1435,9 @@ impl WlList {
         if other.is_empty() {
             return;
         }
+        if (self.prev.is_null() || self.next.is_null()) {
+            self.init();
+        }
         // Safety: `other` is non-empty, so its first and last nodes are valid
         // nodes of the same list; `self` and `other` are distinct lists.
         unsafe {
