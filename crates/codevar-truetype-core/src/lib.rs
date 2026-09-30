@@ -37,6 +37,7 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
+use core::ops::{Deref, DerefMut};
 
 /// Result alias used by every fallible entry point of this crate.
 ///
@@ -1678,7 +1679,7 @@ struct StreamState {
 /// lock); in practice a face owns its stream exclusively.
 pub struct Stream {
     origin: StreamOrigin,
-    state: core::cell::RefCell<StreamState>,
+    state: LibCell<StreamState>,
 }
 
 impl Stream {
@@ -1687,7 +1688,7 @@ impl Stream {
         let size = data.as_bytes().len() as u64;
         Stream {
             origin: StreamOrigin::Memory(data),
-            state: core::cell::RefCell::new(StreamState {
+            state: LibCell::new(StreamState {
                 size,
                 pos: 0,
                 frame_active: false,
@@ -1720,7 +1721,7 @@ impl Stream {
         let size = source.size().unwrap_or(0);
         Stream {
             origin: StreamOrigin::External(source),
-            state: core::cell::RefCell::new(StreamState {
+            state: LibCell::new(StreamState {
                 size,
                 pos: 0,
                 frame_active: false,
@@ -1734,14 +1735,22 @@ impl Stream {
     pub fn size(&self) -> u64 {
         match &self.origin {
             StreamOrigin::Memory(d) => d.as_bytes().len() as u64,
-            StreamOrigin::External(_) => self.state.borrow().size,
+            StreamOrigin::External(_) => match self.state.borrow() {
+                Ok(state) => state.size,
+                Err(_) => 0,
+            },
         }
     }
 
     /// `FT_Stream_Pos`: the current position.
     #[inline]
     pub fn pos(&self) -> u64 {
-        self.state.borrow().pos
+        // A conflict here can only mean a logic error inside the port;
+        // report position 0 instead of aborting (no-panic policy).
+        match self.state.borrow() {
+            Ok(state) => state.pos,
+            Err(_) => 0,
+        }
     }
 
     /// `FT_Stream_Seek`: moves the current position.
@@ -1752,7 +1761,7 @@ impl Stream {
         if pos > self.size() {
             return Err(TtError::INVALID_STREAM_SEEK);
         }
-        self.state.borrow_mut().pos = pos;
+        self.state.borrow_mut()?.pos = pos;
         Ok(())
     }
 
@@ -1797,7 +1806,7 @@ impl Stream {
             }
             StreamOrigin::External(src) => src.read_at(pos, &mut buf[..count])?,
         };
-        self.state.borrow_mut().pos = pos + read as u64;
+        self.state.borrow_mut()?.pos = pos + read as u64;
         if read < buf.len() {
             return Err(TtError::INVALID_STREAM_OPERATION);
         }
@@ -1839,8 +1848,7 @@ impl Stream {
         }
         let mut state = self
             .state
-            .try_borrow_mut()
-            .map_err(|_| TtError::NESTED_FRAME_ACCESS)?;
+            .borrow_mut_with(TtError::NESTED_FRAME_ACCESS)?;
         if state.frame_active {
             return Err(TtError::NESTED_FRAME_ACCESS);
         }
@@ -1880,7 +1888,7 @@ impl Stream {
                 }
                 state.pos = pos + count as u64;
                 state.frame_active = true;
-                let data = core::cell::RefMut::map(state, |s| s.frame_buf.as_mut_slice());
+                let data = LibRefMut::map(state, |s| s.frame_buf.as_mut_slice());
                 Ok(Frame {
                     stream: self,
                     cursor: 0,
@@ -1910,7 +1918,7 @@ impl Stream {
                 let slice = bytes
                     .get(pos as usize..pos as usize + count)
                     .ok_or(TtError::INVALID_FRAME_READ)?;
-                self.state.borrow_mut().pos = pos + count as u64;
+                self.state.borrow_mut()?.pos = pos + count as u64;
                 Ok(CowFrame::Borrowed(slice))
             }
             StreamOrigin::External(src) => {
@@ -1919,7 +1927,7 @@ impl Stream {
                 if read < count {
                     return Err(TtError::INVALID_FRAME_OPERATION);
                 }
-                self.state.borrow_mut().pos = pos + count as u64;
+                self.state.borrow_mut()?.pos = pos + count as u64;
                 Ok(CowFrame::Owned(buf))
             }
         }
@@ -1982,7 +1990,7 @@ enum FrameData<'a> {
     /// Zero-copy view of the immutable memory base.
     Borrowed(&'a [u8]),
     /// Borrow of `Stream::state.frame_buf` (external sources).
-    Buffered(core::cell::RefMut<'a, [u8]>),
+    Buffered(LibRefMut<'a, [u8]>),
 }
 
 /// An active stream frame (the `cursor`/`limit` window of FreeType's
@@ -2107,7 +2115,7 @@ impl Drop for Frame<'_> {
         // Replacing the frame data first drops the `RefMut` (releasing
         // the RefCell borrow) before the active flag is cleared.
         self.data = FrameData::Borrowed(&[]);
-        if let Ok(mut state) = self.stream.state.try_borrow_mut() {
+        if let Ok(mut state) = self.stream.state.borrow_mut() {
             state.frame_active = false;
         }
     }
@@ -2168,17 +2176,202 @@ impl core::ops::Deref for CowFrame<'_> {
 /// FreeType mutates through a shared handle (`FT_Face`, `FT_GlyphSlot`,
 /// `FT_Size`, `FT_Library`, module objects, ...).
 ///
-/// It is a thin wrapper over [`core::cell::RefCell`] that reports both
-/// runtime borrow failures as [`TtError`] instead of panicking, so no
-/// production path can abort the process.
+/// The cell replaces C's unchecked aliasing with a runtime borrow flag
+/// stored in an atomic integer.  Its semantics mirror
+/// [`core::cell::RefCell`] (shared borrows may overlap, an exclusive
+/// borrow excludes all others) but, unlike `RefCell`, the cell is `Sync`
+/// so that `Arc<Face>` and friends can be shipped between threads.
+/// Conflicting borrows are reported as [`TtError`] instead of panicking,
+/// so no production path can abort the process.
 ///
 /// # Borrow failures
 ///
 /// A failed borrow means the caller re-entered an object that is already
 /// mutably borrowed, which is a logic error. It is reported as
-/// [`TtError::INVALID_HANDLE`].
-pub struct LibCell<T> {
-    inner: core::cell::RefCell<T>,
+/// [`TtError::INVALID_HANDLE`] (or a caller-supplied error through
+/// [`LibCell::borrow_with`] / [`LibCell::borrow_mut_with`]).
+///
+/// # Thread safety
+///
+/// `LibCell<T>` is `Sync` only when `T` is `Send + Sync`; sharing a cell
+/// across threads then relies on the caller respecting the same
+/// single-writer discipline FreeType requires (one thread per object).
+pub struct LibCell<T: ?Sized> {
+    /// Borrow flag: `-1` = exclusively borrowed, `>= 0` = shared count.
+    flag: core::sync::atomic::AtomicI32,
+    value: core::cell::UnsafeCell<T>,
+}
+
+/// # Safety
+///
+/// The value can only be reached through the borrow protocol implemented
+/// by [`LibCell`], which guarantees that `&T` is handed out only while no
+/// exclusive borrow exists.  Sharing `&LibCell<T>` across threads is
+/// therefore sound as long as `T` itself may be accessed from any thread,
+/// i.e. `T: Send + Sync`.
+unsafe impl<T: ?Sized + Send + Sync> Sync for LibCell<T> {}
+
+/// A shared borrow guard of a [`LibCell`], released on drop.
+pub struct LibRef<'a, T: ?Sized> {
+    flag: &'a core::sync::atomic::AtomicI32,
+    value: *const T,
+    _marker: core::marker::PhantomData<&'a T>,
+}
+
+/// An exclusive borrow guard of a [`LibCell`], released on drop.
+pub struct LibRefMut<'a, T: ?Sized> {
+    flag: &'a core::sync::atomic::AtomicI32,
+    value: *mut T,
+    _marker: core::marker::PhantomData<&'a mut T>,
+}
+
+impl<'a, T: ?Sized> Deref for LibRef<'a, T> {
+    type Target = T;
+    #[inline]
+    fn deref(&self) -> &T {
+        // SAFETY: the flag was incremented only from a non-negative value,
+        // so no exclusive borrow can be active while this guard lives.
+        unsafe { &*self.value }
+    }
+}
+
+impl<T: ?Sized> Drop for LibRef<'_, T> {
+    #[inline]
+    fn drop(&mut self) {
+        // Balance the increment performed in `borrow`; the flag cannot be
+        // `-1` here because the exclusive path CAS's from exactly `0`.
+        let prev = self
+            .flag
+            .fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
+        debug_assert!(prev > 0);
+    }
+}
+
+impl<'a, T: ?Sized> Deref for LibRefMut<'a, T> {
+    type Target = T;
+    #[inline]
+    fn deref(&self) -> &T {
+        // SAFETY: the flag is `-1`, so this guard is the only accessor.
+        unsafe { &*self.value }
+    }
+}
+
+impl<'a, T: ?Sized> DerefMut for LibRefMut<'a, T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut T {
+        // SAFETY: the flag is `-1`, so this guard is the only accessor.
+        unsafe { &mut *self.value }
+    }
+}
+
+impl<T: ?Sized> Drop for LibRefMut<'_, T> {
+    #[inline]
+    fn drop(&mut self) {
+        // Only this guard may have set the flag to `-1`; release it.
+        self.flag
+            .store(0, core::sync::atomic::Ordering::Release);
+    }
+}
+
+impl<'a, T: ?Sized> LibRef<'a, T> {
+    /// Reborrows a shared guard as a guard of a sub-field, exactly like
+    /// [`core::cell::Ref::map`].
+    #[inline]
+    pub fn map<U: ?Sized>(guard: LibRef<'a, T>, f: impl FnOnce(&T) -> &U) -> LibRef<'a, U> {
+        let flag = guard.flag;
+        let base = guard.value;
+        // SAFETY: `base` is valid for as long as the original guard lives;
+        // the borrow flag is carried over to the mapped guard, so the
+        // exclusivity invariant is preserved.
+        let value: *const U = f(unsafe { &*base });
+        core::mem::forget(guard);
+        LibRef {
+            flag,
+            value,
+            _marker: core::marker::PhantomData,
+        }
+    }
+}
+
+impl<'a, T: ?Sized> LibRefMut<'a, T> {
+    /// Reborrows an exclusive guard as a guard of a sub-field, exactly
+    /// like [`core::cell::RefMut::map`] (used by the stream frame code).
+    #[inline]
+    pub fn map<U: ?Sized>(guard: LibRefMut<'a, T>, f: impl FnOnce(&mut T) -> &mut U) -> LibRefMut<'a, U> {
+        let flag = guard.flag;
+        let base = guard.value;
+        // SAFETY: `base` is valid for as long as the original guard lives;
+        // the borrow flag is carried over to the mapped guard, so the
+        // exclusivity invariant is preserved.
+        let value: *mut U = f(unsafe { &mut *base });
+        core::mem::forget(guard);
+        LibRefMut {
+            flag,
+            value,
+            _marker: core::marker::PhantomData,
+        }
+    }
+}
+
+impl<T: ?Sized> LibCell<T> {
+    /// Shared borrow (`FT_...` accessors that only read).
+    ///
+    /// Reports [`TtError::INVALID_HANDLE`] when the cell is already
+    /// exclusively borrowed.
+    #[inline]
+    pub fn borrow(&self) -> TtResult<LibRef<'_, T>> {
+        self.borrow_with(TtError::INVALID_HANDLE)
+    }
+
+    /// Shared borrow that reports `err` on conflict (used by the stream
+    /// frame discipline, which distinguishes nested frame access).
+    #[inline]
+    pub fn borrow_with(&self, err: TtError) -> TtResult<LibRef<'_, T>> {
+        self.flag
+            .fetch_update(
+                core::sync::atomic::Ordering::AcqRel,
+                core::sync::atomic::Ordering::Acquire,
+                |f| {
+                    if (0..i32::MAX).contains(&f) {
+                        Some(f + 1)
+                    } else {
+                        None
+                    }
+                },
+            )
+            .map_err(|_| err)?;
+        Ok(LibRef {
+            flag: &self.flag,
+            value: self.value.get(),
+            _marker: core::marker::PhantomData,
+        })
+    }
+
+    /// Exclusive borrow (the mutation path used by FreeType's drivers).
+    ///
+    /// Reports [`TtError::INVALID_HANDLE`] when the cell is already
+    /// borrowed.
+    #[inline]
+    pub fn borrow_mut(&self) -> TtResult<LibRefMut<'_, T>> {
+        self.borrow_mut_with(TtError::INVALID_HANDLE)
+    }
+
+    /// Exclusive borrow that reports `err` on conflict.
+    #[inline]
+    pub fn borrow_mut_with(&self, err: TtError) -> TtResult<LibRefMut<'_, T>> {
+        self.flag
+            .fetch_update(
+                core::sync::atomic::Ordering::AcqRel,
+                core::sync::atomic::Ordering::Acquire,
+                |f| if f == 0 { Some(-1) } else { None },
+            )
+            .map_err(|_| err)?;
+        Ok(LibRefMut {
+            flag: &self.flag,
+            value: self.value.get(),
+            _marker: core::marker::PhantomData,
+        })
+    }
 }
 
 impl<T> LibCell<T> {
@@ -2186,24 +2379,9 @@ impl<T> LibCell<T> {
     #[inline]
     pub const fn new(value: T) -> Self {
         LibCell {
-            inner: core::cell::RefCell::new(value),
+            flag: core::sync::atomic::AtomicI32::new(0),
+            value: core::cell::UnsafeCell::new(value),
         }
-    }
-
-    /// Shared borrow (`FT_...` accessors that only read).
-    #[inline]
-    pub fn borrow(&self) -> TtResult<core::cell::Ref<'_, T>> {
-        self.inner
-            .try_borrow()
-            .map_err(|_| TtError::INVALID_HANDLE)
-    }
-
-    /// Exclusive borrow (the mutation path used by FreeType's drivers).
-    #[inline]
-    pub fn borrow_mut(&self) -> TtResult<core::cell::RefMut<'_, T>> {
-        self.inner
-            .try_borrow_mut()
-            .map_err(|_| TtError::INVALID_HANDLE)
     }
 
     /// Replaces the contents, returning the previous value.
@@ -2223,13 +2401,22 @@ impl<T> LibCell<T> {
     /// Mutable access through `&mut self` (no runtime check possible).
     #[inline]
     pub fn get_mut(&mut self) -> &mut T {
-        self.inner.get_mut()
+        self.value.get_mut()
+    }
+
+    /// Shared access through `&self` when the caller holds `&mut self`
+    /// (no runtime check possible).
+    #[inline]
+    pub fn get_ref(&self) -> &T {
+        // SAFETY: `&mut self` (or the caller's exclusivity) rules out
+        // concurrent guards.
+        unsafe { &*self.value.get() }
     }
 
     /// Unwraps the cell, yielding the inner value.
     #[inline]
     pub fn into_inner(self) -> T {
-        self.inner.into_inner()
+        self.value.into_inner()
     }
 }
 
@@ -2249,8 +2436,8 @@ impl<T> From<T> for LibCell<T> {
 
 impl<T: fmt::Debug> fmt::Debug for LibCell<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.inner.try_borrow() {
-            Ok(v) => f.debug_tuple("LibCell").field(&v).finish(),
+        match self.borrow() {
+            Ok(v) => f.debug_tuple("LibCell").field(&*v).finish(),
             Err(_) => f.write_str("LibCell(<borrowed>)"),
         }
     }
@@ -3880,16 +4067,14 @@ impl Hash {
     }
 
     fn insert(&mut self, key: HashKey, data: usize, overwrite: bool) -> TtResult<()> {
-        if !self.is_num != matches!(key, HashKey::Str(_)) {
+        if self.is_num == matches!(key, HashKey::Str(_)) {
             return Err(TtError::INVALID_ARGUMENT);
         }
         let index = self.bucket(&key);
         match self.table.get(index).and_then(Option::as_ref) {
             Some(_) => {
-                if overwrite {
-                    if let Some(Some(node)) = self.table.get_mut(index) {
-                        node.data = data;
-                    }
+                if overwrite && let Some(Some(node)) = self.table.get_mut(index) {
+                    node.data = data;
                 }
                 Ok(())
             }
@@ -4252,7 +4437,7 @@ impl GlyphLoader {
         // Offset the contour ends of the just-loaded image by the number of
         // points that were already in the base image.
         for index in n_base_contours..(n_base_contours + n_curr_contours) {
-            if let Some(end) = self.base.contours.get_mut(index as usize) {
+            if let Some(end) = self.base.contours.get_mut(index) {
                 *end = end.wrapping_add_unsigned(n_base_points as u16);
             }
         }
@@ -4344,10 +4529,10 @@ impl GlyphLoader {
         if index > self.base.contours.len() {
             return Err(TtError::INVALID_OUTLINE);
         }
-        if index > 0 {
-            if let Some(previous) = self.base.contours.get_mut(index - 1) {
-                *previous = (self.base.n_points as i32 + self.current_points as i32 - 1) as i16;
-            }
+        if index > 0
+            && let Some(previous) = self.base.contours.get_mut(index - 1)
+        {
+            *previous = (self.base.n_points as i32 + self.current_points as i32 - 1) as i16;
         }
         self.base.contours.truncate(index);
         self.base.contours.push(0);

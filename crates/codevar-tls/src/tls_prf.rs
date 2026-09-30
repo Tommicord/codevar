@@ -94,13 +94,12 @@ pub fn hmac_hash(alg: HashAlgorithm, key: &[u8], data: &[u8]) -> TlsResult<Vec<u
 }
 
 /// Constant-time equality for MAC / Finished verify_data.
+///
+/// Re-exported from [`crate::tls_crypto_ct`] so every comparison in the
+/// handshake goes through the same branch-free implementation.
 #[must_use]
 pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    use subtle::ConstantTimeEq;
-    if a.len() != b.len() {
-        return false;
-    }
-    a.ct_eq(b).into()
+    crate::tls_crypto_ct::ct_eq(a, b)
 }
 
 #[cfg(test)]

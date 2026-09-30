@@ -60,8 +60,8 @@
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::format;
+use alloc::rc::Rc;
 use alloc::string::String;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use ash::vk;
 use core::fmt;
@@ -532,6 +532,10 @@ pub struct PipeCtx {
 
 impl PipeCtx {
     /// Builds the context for one pipe of one frame.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "raw Vulkan handle plus the frame geometry this context snapshots"
+    )]
     fn new(
         device: *const ash::Device,
         command_buffer: vk::CommandBuffer,
@@ -1389,7 +1393,7 @@ impl<T> Future for RecvFuture<'_, T> {
 #[derive(Clone)]
 pub struct CompositorEndpoint {
     /// Shared channels.
-    hub: Arc<CommHub>,
+    hub: Rc<CommHub>,
 }
 
 impl CompositorEndpoint {
@@ -1478,7 +1482,7 @@ impl CompositorComm for CompositorEndpoint {
 #[derive(Clone)]
 pub struct RendererEndpoint {
     /// Shared channels.
-    hub: Arc<CommHub>,
+    hub: Rc<CommHub>,
 }
 
 impl RendererEndpoint {
@@ -1560,11 +1564,9 @@ impl CompositorComm for RendererEndpoint {
 /// Creates a connected pair of endpoints with fresh channels.
 #[must_use]
 pub fn comm_pair() -> (CompositorEndpoint, RendererEndpoint) {
-    let hub = Arc::new(CommHub::new());
+    let hub = Rc::new(CommHub::new());
     (
-        CompositorEndpoint {
-            hub: Arc::clone(&hub),
-        },
+        CompositorEndpoint { hub: Rc::clone(&hub) },
         RendererEndpoint { hub },
     )
 }
@@ -2256,7 +2258,7 @@ pub struct Compositor<'p> {
     phase: CompositorPhase,
     /// Pipes of the frame in progress; dropped before `queue` so their
     /// futures release the renderers they borrow.
-    active: Vec<Box<ActivePipe>>,
+    active: Vec<ActivePipe>,
     /// Registered pipes in mix order.
     queue: PipeQueue,
     /// Channels to the presentation side.
@@ -2366,7 +2368,7 @@ impl<'p> Compositor<'p> {
     #[must_use]
     pub fn renderer_endpoint(&self) -> RendererEndpoint {
         RendererEndpoint {
-            hub: Arc::clone(&self.comm.hub),
+            hub: Rc::clone(&self.comm.hub),
         }
     }
 
@@ -2925,12 +2927,12 @@ impl<'p> Compositor<'p> {
                 base,
                 &self.framebuffers,
             );
-            self.active.push(Box::new(ActivePipe {
+            self.active.push(ActivePipe {
                 future: None,
                 ctx,
                 command_buffer,
                 state: PipeState::Recording,
-            }));
+            });
         }
     }
 

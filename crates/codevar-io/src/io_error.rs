@@ -960,7 +960,7 @@ impl<E: core::error::Error + 'static> core::error::Error for WriteFmtError<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Error, Read};
+    use crate::Read;
     use std::error::Error as StdError;
 
     #[test]

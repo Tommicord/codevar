@@ -489,7 +489,7 @@ macro_rules! log_warn {
 #[cfg(test)]
 mod tests {
     use crate::{
-        __logger::*, DEFAULT_WRITER, LogError, LogLevel, LogWriter, is_enabled, log_raw, log_with_timestamp,
+        DEFAULT_WRITER, LogError, LogLevel, LogWriter, is_enabled, log_raw, log_with_timestamp,
         set_log_writer, set_min_log_level,
     };
 
@@ -607,8 +607,8 @@ mod tests {
         let stdout = TEST_WRITER.stdout.lock();
         let stderr = TEST_WRITER.stderr.lock();
 
-        assert!(stdout.len() > 0);
-        assert!(stderr.len() > 0);
+        assert!(!stdout.is_empty());
+        assert!(!stderr.is_empty());
         assert!(
             core::str::from_utf8(&stdout)
                 .unwrap()

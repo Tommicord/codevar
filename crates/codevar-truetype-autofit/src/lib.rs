@@ -307,7 +307,7 @@ impl Direction {
 /// not differ enough (heuristic value 14, approx. 4.1 degrees).
 #[inline]
 pub fn direction_compute(dx: Pos, dy: Pos) -> Direction {
-    let (dir, mut ll, mut ss);
+    let (dir, ll, ss);
     if dy >= dx {
         if dy >= -dx {
             dir = Direction::Up;

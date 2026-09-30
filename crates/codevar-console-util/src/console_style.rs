@@ -740,27 +740,27 @@ pub mod presets {
 
     /// Error style (red, bold)
     pub fn error() -> Style {
-        Style::new().fg(AnsiColor::Red).bold()
+        Style::new().fg(AnsiColor::BrightRed).bold()
     }
 
     /// Warning style (yellow, bold)
     pub fn warning() -> Style {
-        Style::new().fg(AnsiColor::Yellow).bold()
+        Style::new().fg(AnsiColor::BrightYellow).bold()
     }
 
     /// Success style (green, bold)
     pub fn success() -> Style {
-        Style::new().fg(AnsiColor::Green).bold()
+        Style::new().fg(AnsiColor::BrightGreen).bold()
     }
 
     /// Info style (blue, bold)
     pub fn info() -> Style {
-        Style::new().fg(AnsiColor::Blue).bold()
+        Style::new().fg(AnsiColor::BrightBlue).bold()
     }
 
     /// Debug style (cyan)
     pub fn debug() -> Style {
-        Style::new().fg(AnsiColor::Cyan)
+        Style::new().fg(AnsiColor::BrightCyan)
     }
 
     /// Header style (bold, underlined)
@@ -838,11 +838,11 @@ mod tests {
     fn test_presets() {
         let error = presets::error();
         assert!(error.has_attr(StyleAttr::BOLD));
-        assert_eq!(error.fg, Some(AnsiColor::Red));
+        assert_eq!(error.fg, Some(AnsiColor::BrightRed));
 
         let success = presets::success();
         assert!(success.has_attr(StyleAttr::BOLD));
-        assert_eq!(success.fg, Some(AnsiColor::Green));
+        assert_eq!(success.fg, Some(AnsiColor::BrightGreen));
     }
 
     #[test]

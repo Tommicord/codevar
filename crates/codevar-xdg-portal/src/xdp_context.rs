@@ -385,7 +385,7 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
         ];
         for rule in rules {
             self.conn
-                .add_match(&rule, Duration::from_secs(5))?;
+                .add_match(rule, Duration::from_secs(5))?;
         }
         Ok(())
     }

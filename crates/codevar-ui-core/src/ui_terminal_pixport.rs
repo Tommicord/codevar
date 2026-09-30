@@ -20,7 +20,6 @@
 //! picks a concrete filter from a terminal-size ladder built with the
 //! [`pixport_auto_filter_table!`] macro.
 
-#![cfg_attr(not(test), no_std)]
 extern crate alloc;
 
 use alloc::string::String;
@@ -1258,6 +1257,10 @@ pub mod ansi {
         libm::roundf(v.clamp(0.0, 255.0)) as u8
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "source geometry, output geometry and filter do not group naturally"
+    )]
     fn resample_rgb_f32(
         pixels: &[u8],
         width: usize,
@@ -1295,8 +1298,7 @@ pub mod ansi {
         let mut temp = vec![0.0f32; out_w * height * 3];
         for y in 0..height {
             let row = pixels.get(y * stride..y * stride + width * bpp);
-            for x in 0..out_w {
-                let win = &x_windows[x];
+            for (x, win) in x_windows.iter().enumerate() {
                 let base = (y * out_w + x) * 3;
                 let mut r = 0.0f32;
                 let mut g = 0.0f32;
@@ -1323,8 +1325,7 @@ pub mod ansi {
             })
             .collect();
 
-        for oy in 0..out_h {
-            let ywin = &y_windows[oy];
+        for (oy, ywin) in y_windows.iter().enumerate() {
             for ox in 0..out_w {
                 let mut r = 0.0f32;
                 let mut g = 0.0f32;
@@ -1445,6 +1446,10 @@ pub mod ansi {
         }
 
         /// [`Self::resample`] with an already resolved filter.
+        #[allow(
+            clippy::too_many_arguments,
+            reason = "mirrors resample_rgb_f32's source and output split"
+        )]
         pub fn resample_with_filter(
             &self,
             pixels: &[u8],
@@ -1488,6 +1493,10 @@ pub mod ansi {
         /// [`PixportFilterType::Auto`] resolves against the terminal grid
         /// (not the doubled half-block grid) so the selection is stable
         /// across `use_half_blocks` toggles.
+        #[allow(
+            clippy::too_many_arguments,
+            reason = "framebuffer geometry, terminal grid and half-block flag"
+        )]
         pub fn pixels_to_ansi_cells(
             &self,
             pixels: &[u8],
@@ -1766,11 +1775,7 @@ pub mod frame_pipe {
                 }
                 None if self.closed => Poll::Ready(None),
                 None => {
-                    let store = match &self.waker {
-                        Some(existing) if existing.will_wake(cx.waker()) => false,
-                        _ => true,
-                    };
-                    if store {
+                    if !matches!(&self.waker, Some(existing) if existing.will_wake(cx.waker())) {
                         self.waker = Some(cx.waker().clone());
                     }
                     Poll::Pending
@@ -2047,7 +2052,7 @@ mod tests {
         let converter =
             ansi::AnsiColorConverter::with_filter(PixportFormat::Bgra8888, PixportFilterType::Nearest);
         // 2x1 image: red, green
-        let mut pixels = vec![0u8; 2 * 1 * 4];
+        let mut pixels = vec![0u8; 2 * 4];
         pixels[0..4].copy_from_slice(&[0, 0, 255, 255]); // red (BGRA)
         pixels[4..8].copy_from_slice(&[0, 255, 0, 255]); // green (BGRA)
 
@@ -2092,7 +2097,7 @@ mod tests {
 
     #[test]
     fn test_bilinear_upsample_midpoint() {
-        let mut pixels = vec![0u8; 2 * 1 * 4];
+        let mut pixels = vec![0u8; 2 * 4];
         pixels[0..4].copy_from_slice(&[0, 0, 255, 255]); // red
         pixels[4..8].copy_from_slice(&[255, 0, 0, 255]); // blue (BGRA: B=255)
         let c = ansi::AnsiColorConverter::with_filter(PixportFormat::Bgra8888, PixportFilterType::Bilinear);
@@ -2102,7 +2107,7 @@ mod tests {
 
     #[test]
     fn test_upsample_gradient() {
-        let mut pixels = vec![0u8; 2 * 1 * 4];
+        let mut pixels = vec![0u8; 2 * 4];
         pixels[0..4].copy_from_slice(&[0, 0, 255, 255]); // red
         pixels[4..8].copy_from_slice(&[255, 0, 0, 255]); // blue
         let c = ansi::AnsiColorConverter::with_filter(PixportFormat::Bgra8888, PixportFilterType::Bilinear);

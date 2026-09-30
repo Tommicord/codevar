@@ -13,7 +13,6 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-use subtle::ConstantTimeEq;
 use zeroize::Zeroize;
 
 const KEY_LEN: usize = 32;
@@ -43,7 +42,7 @@ pub fn open(key: &[u8], nonce: &[u8; 12], aad: &[u8], ciphertext: &[u8]) -> Resu
     }
     let (ct, tag) = ciphertext.split_at(ciphertext.len() - TAG_LEN);
     let expected = poly1305_aead_tag(key, nonce, aad, ct);
-    if !bool::from(expected.ct_eq(tag)) {
+    if !crate::tls_crypto_ct::ct_eq(&expected, tag) {
         return Err(());
     }
     let mut plain = vec![0u8; ct.len()];

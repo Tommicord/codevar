@@ -292,7 +292,7 @@ pub trait WriteReady: ErrorType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Cursor, ErrorKind, ReadExactError, SliceWriteError, io_error::Error};
+    use crate::{Cursor, ErrorKind, ReadExactError};
 
     #[test]
     fn test_read_trait_bounds() {

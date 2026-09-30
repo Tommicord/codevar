@@ -459,7 +459,7 @@ impl TimeDuration {
     ///
     /// assert_eq!(TimeDuration::MAX, TimeDuration::new(u64::MAX, 1_000_000_000 - 1));
     /// ```
-    pub const MAX: TimeDuration = TimeDuration::from_nanos((NANOS_PER_SEC - 1) as u64);
+    pub const MAX: TimeDuration = TimeDuration::new(u64::MAX, NANOS_PER_SEC - 1);
 
     /// Creates a new `TimeDuration` from the specified number of whole seconds and
     /// additional nanoseconds.

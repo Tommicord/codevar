@@ -294,6 +294,64 @@ impl DbusTransport for UnixTransport {
         }
     }
 
+    fn wait(&mut self, timeout: Option<Duration>, interest: DbusPollEvents) -> DbusResult<DbusPollEvents> {
+        // SAFETY: `fd` is a valid Unix file descriptor opened by
+        // `UnixTransport::connect_to`; `pollfd` is a trivial struct.
+        let mut fds = [libc::pollfd {
+            fd: self.fd,
+            events: if interest.contains(DbusPollEvents::READABLE) {
+                libc::POLLIN
+            } else {
+                0
+            } | if interest.contains(DbusPollEvents::WRITABLE) {
+                libc::POLLOUT
+            } else {
+                0
+            },
+            revents: 0,
+        }];
+        let millis = timeout
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(-1) as libc::c_int;
+        // SAFETY: `fds` points to a valid single-element array and
+        // `poll` writes only into `revents`.
+        let n = unsafe { libc::poll(fds.as_mut_ptr(), 1, millis) };
+        if n < 0 {
+            let errno = unsafe { *libc::__errno_location() };
+            if errno == libc::EINTR {
+                return Ok(DbusPollEvents::EMPTY);
+            }
+            return Err(DbusError::io("poll", errno));
+        }
+        if n == 0 {
+            return Err(DbusError::Timeout);
+        }
+        let revents = fds[0].revents as u32;
+        let mut out = DbusPollEvents::EMPTY;
+        if revents & (libc::POLLIN as u32) != 0 {
+            out |= DbusPollEvents::READABLE;
+        }
+        if revents & (libc::POLLOUT as u32) != 0 {
+            out |= DbusPollEvents::WRITABLE;
+        }
+        if revents & (libc::POLLHUP as u32 | libc::POLLERR as u32) != 0 {
+            out |= DbusPollEvents::HANGUP;
+        }
+        Ok(out)
+    }
+
+    fn now_ms(&self) -> u64 {
+        // SAFETY: `clock_gettime` is safe because `CLOCK_MONOTONIC`
+        // is a valid clock ID and `ts` is a properly aligned
+        // writable struct.
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+        (ts.tv_sec as u64) * 1_000 + (ts.tv_nsec as u64) / 1_000_000
+    }
+
     fn take_fds(&mut self) -> Vec<i32> {
         Vec::from(core::mem::take(&mut self.pending_fds))
     }
@@ -369,64 +427,6 @@ impl DbusTransport for UnixTransport {
             // descriptors; the caller closes its copies.
             return Ok(n as usize);
         }
-    }
-
-    fn wait(&mut self, timeout: Option<Duration>, interest: DbusPollEvents) -> DbusResult<DbusPollEvents> {
-        // SAFETY: `fd` is a valid Unix file descriptor opened by
-        // `UnixTransport::connect_to`; `pollfd` is a trivial struct.
-        let mut fds = [libc::pollfd {
-            fd: self.fd,
-            events: if interest.contains(DbusPollEvents::READABLE) {
-                libc::POLLIN
-            } else {
-                0
-            } | if interest.contains(DbusPollEvents::WRITABLE) {
-                libc::POLLOUT
-            } else {
-                0
-            },
-            revents: 0,
-        }];
-        let millis = timeout
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(-1) as libc::c_int;
-        // SAFETY: `fds` points to a valid single-element array and
-        // `poll` writes only into `revents`.
-        let n = unsafe { libc::poll(fds.as_mut_ptr(), 1, millis) };
-        if n < 0 {
-            let errno = unsafe { *libc::__errno_location() };
-            if errno == libc::EINTR {
-                return Ok(DbusPollEvents::EMPTY);
-            }
-            return Err(DbusError::io("poll", errno));
-        }
-        if n == 0 {
-            return Err(DbusError::Timeout);
-        }
-        let revents = fds[0].revents as u32;
-        let mut out = DbusPollEvents::EMPTY;
-        if revents & (libc::POLLIN as u32) != 0 {
-            out |= DbusPollEvents::READABLE;
-        }
-        if revents & (libc::POLLOUT as u32) != 0 {
-            out |= DbusPollEvents::WRITABLE;
-        }
-        if revents & (libc::POLLHUP as u32 | libc::POLLERR as u32) != 0 {
-            out |= DbusPollEvents::HANGUP;
-        }
-        Ok(out)
-    }
-
-    fn now_ms(&self) -> u64 {
-        // SAFETY: `clock_gettime` is safe because `CLOCK_MONOTONIC`
-        // is a valid clock ID and `ts` is a properly aligned
-        // writable struct.
-        let mut ts = libc::timespec {
-            tv_sec: 0,
-            tv_nsec: 0,
-        };
-        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
-        (ts.tv_sec as u64) * 1_000 + (ts.tv_nsec as u64) / 1_000_000
     }
 }
 
