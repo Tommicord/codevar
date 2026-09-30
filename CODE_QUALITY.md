@@ -75,7 +75,7 @@ debug_assert!(condition, "Debug invariant check");
 #### Strict Requirements
 
 - **NEVER use `println!` or `eprintln!` for production logging**
-- **ALWAYS use the `log` crate macros: `error!`, `warn!`, `info!`, `debug!`, `trace!`**
+- **Use the `codevar_logger` crate macros for logging: `log_with_error!`, `log_with_warn!`, `log_with_info!`, `log_with_debug!`, `log_with_irr!`**
 - Configure appropriate log levels for different environments
 - Structure log messages with context and relevant data
 - Avoid excessive logging in hot paths

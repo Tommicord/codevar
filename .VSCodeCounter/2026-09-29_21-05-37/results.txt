@@ -1,0 +1,434 @@
+Date : 2026-09-29 21:05:37
+Directory : /home/tommicord/Documentos/Proyectos/codevar/codevar
+Total : 265 files,  96458 codes, 20401 comments, 10727 blanks, all 127586 lines
+
+Languages
++-----------------+------------+------------+------------+------------+------------+
+| language        | files      | code       | comment    | blank      | total      |
++-----------------+------------+------------+------------+------------+------------+
+| Rust            |        200 |     92,876 |     20,233 |     10,093 |    123,202 |
+| TOML            |         41 |      2,452 |          5 |        311 |      2,768 |
+| Markdown        |          3 |        576 |          0 |        174 |        750 |
+| Docker          |          5 |        120 |         62 |         56 |        238 |
+| Gradle          |          3 |        115 |          0 |         23 |        138 |
+| YAML            |          3 |         98 |         14 |         11 |        123 |
+| Shell Script    |          1 |         89 |         11 |         15 |        115 |
+| Batch           |          1 |         41 |         32 |         22 |         95 |
+| GLSL            |          2 |         33 |         43 |         12 |         88 |
+| XML             |          2 |         24 |          0 |          3 |         27 |
+| Java Properties |          3 |         21 |          1 |          3 |         25 |
+| Java            |          1 |         13 |          0 |          4 |         17 |
++-----------------+------------+------------+------------+------------+------------+
+
+Directories
++-----------------------------------------------------------------------------------------------------------------------+------------+------------+------------+------------+------------+
+| path                                                                                                                  | files      | code       | comment    | blank      | total      |
++-----------------------------------------------------------------------------------------------------------------------+------------+------------+------------+------------+------------+
+| .                                                                                                                     |        265 |     96,458 |     20,401 |     10,727 |    127,586 |
+| . (Files)                                                                                                             |         15 |      2,478 |         37 |        411 |      2,926 |
+| .cargo                                                                                                                |          1 |          6 |          0 |          2 |          8 |
+| .github                                                                                                               |          1 |         32 |          0 |          3 |         35 |
+| .github/workflows                                                                                                     |          1 |         32 |          0 |          3 |         35 |
+| android                                                                                                               |          4 |        120 |          0 |         25 |        145 |
+| android (Files)                                                                                                       |          1 |         83 |          0 |         18 |        101 |
+| android/src                                                                                                           |          3 |         37 |          0 |          7 |         44 |
+| android/src/main                                                                                                      |          3 |         37 |          0 |          7 |         44 |
+| android/src/main (Files)                                                                                              |          1 |         21 |          0 |          2 |         23 |
+| android/src/main/java                                                                                                 |          1 |         13 |          0 |          4 |         17 |
+| android/src/main/java/net                                                                                             |          1 |         13 |          0 |          4 |         17 |
+| android/src/main/java/net/codevar                                                                                     |          1 |         13 |          0 |          4 |         17 |
+| android/src/main/res                                                                                                  |          1 |          3 |          0 |          1 |          4 |
+| android/src/main/res/values                                                                                           |          1 |          3 |          0 |          1 |          4 |
+| crates                                                                                                                |        236 |     93,559 |     20,276 |     10,217 |    124,052 |
+| crates/codevar-base                                                                                                   |          9 |      7,487 |      1,423 |        446 |      9,356 |
+| crates/codevar-base (Files)                                                                                           |          1 |         28 |          0 |          4 |         32 |
+| crates/codevar-base/src                                                                                               |          8 |      7,459 |      1,423 |        442 |      9,324 |
+| crates/codevar-console-util                                                                                           |          7 |      2,229 |        473 |        347 |      3,049 |
+| crates/codevar-console-util (Files)                                                                                   |          1 |         21 |          0 |          4 |         25 |
+| crates/codevar-console-util/src                                                                                       |          6 |      2,208 |        473 |        343 |      3,024 |
+| crates/codevar-dbus                                                                                                   |         12 |      4,409 |      1,427 |        495 |      6,331 |
+| crates/codevar-dbus (Files)                                                                                           |          1 |         12 |          0 |          3 |         15 |
+| crates/codevar-dbus/src                                                                                               |         11 |      4,397 |      1,427 |        492 |      6,316 |
+| crates/codevar-env                                                                                                    |          2 |        499 |        379 |         61 |        939 |
+| crates/codevar-env (Files)                                                                                            |          1 |         19 |          0 |          4 |         23 |
+| crates/codevar-env/src                                                                                                |          1 |        480 |        379 |         57 |        916 |
+| crates/codevar-fcware                                                                                                 |         13 |      2,166 |        377 |        205 |      2,748 |
+| crates/codevar-fcware (Files)                                                                                         |          1 |         22 |          0 |          6 |         28 |
+| crates/codevar-fcware/src                                                                                             |         12 |      2,144 |        377 |        199 |      2,720 |
+| crates/codevar-io                                                                                                     |         13 |      3,471 |      1,135 |        562 |      5,168 |
+| crates/codevar-io (Files)                                                                                             |          1 |         23 |          0 |          4 |         27 |
+| crates/codevar-io/src                                                                                                 |         12 |      3,448 |      1,135 |        558 |      5,141 |
+| crates/codevar-launcher                                                                                               |          3 |         54 |         30 |          8 |         92 |
+| crates/codevar-launcher (Files)                                                                                       |          1 |         21 |          0 |          2 |         23 |
+| crates/codevar-launcher/src                                                                                           |          2 |         33 |         30 |          6 |         69 |
+| crates/codevar-launcher/src (Files)                                                                                   |          1 |          2 |         15 |          2 |         19 |
+| crates/codevar-launcher/src/bin                                                                                       |          1 |         31 |         15 |          4 |         50 |
+| crates/codevar-logger                                                                                                 |          2 |        488 |        108 |         77 |        673 |
+| crates/codevar-logger (Files)                                                                                         |          1 |         20 |          0 |          3 |         23 |
+| crates/codevar-logger/src                                                                                             |          1 |        468 |        108 |         74 |        650 |
+| crates/codevar-pathbuf                                                                                                |          2 |      1,354 |        321 |        151 |      1,826 |
+| crates/codevar-pathbuf (Files)                                                                                        |          1 |         21 |          0 |          4 |         25 |
+| crates/codevar-pathbuf/src                                                                                            |          1 |      1,333 |        321 |        147 |      1,801 |
+| crates/codevar-pretty-unwind                                                                                          |          2 |        256 |         77 |         26 |        359 |
+| crates/codevar-pretty-unwind (Files)                                                                                  |          1 |         29 |          0 |          4 |         33 |
+| crates/codevar-pretty-unwind/src                                                                                      |          1 |        227 |         77 |         22 |        326 |
+| crates/codevar-sig-handler                                                                                            |          2 |      1,048 |        346 |        124 |      1,518 |
+| crates/codevar-sig-handler (Files)                                                                                    |          1 |         29 |          0 |          4 |         33 |
+| crates/codevar-sig-handler/src                                                                                        |          1 |      1,019 |        346 |        120 |      1,485 |
+| crates/codevar-sig-module-base                                                                                        |          2 |        248 |         65 |         33 |        346 |
+| crates/codevar-sig-module-base (Files)                                                                                |          1 |         25 |          0 |          4 |         29 |
+| crates/codevar-sig-module-base/src                                                                                    |          1 |        223 |         65 |         29 |        317 |
+| crates/codevar-textlike-encode                                                                                        |          8 |      4,704 |        231 |        259 |      5,194 |
+| crates/codevar-textlike-encode (Files)                                                                                |          1 |         18 |          0 |          5 |         23 |
+| crates/codevar-textlike-encode/src                                                                                    |          7 |      4,686 |        231 |        254 |      5,171 |
+| crates/codevar-time-core                                                                                              |          2 |        853 |        522 |        118 |      1,493 |
+| crates/codevar-time-core (Files)                                                                                      |          1 |         15 |          0 |          2 |         17 |
+| crates/codevar-time-core/src                                                                                          |          1 |        838 |        522 |        116 |      1,476 |
+| crates/codevar-time-util                                                                                              |         28 |     12,903 |      2,722 |      1,727 |     17,352 |
+| crates/codevar-time-util (Files)                                                                                      |          1 |         22 |          0 |          3 |         25 |
+| crates/codevar-time-util/src                                                                                          |         27 |     12,881 |      2,722 |      1,724 |     17,327 |
+| crates/codevar-tls                                                                                                    |         28 |     11,063 |      1,489 |      1,198 |     13,750 |
+| crates/codevar-tls (Files)                                                                                            |          1 |         33 |          0 |          4 |         37 |
+| crates/codevar-tls/src                                                                                                |         26 |     10,697 |      1,452 |      1,157 |     13,306 |
+| crates/codevar-tls/tests                                                                                              |          1 |        333 |         37 |         37 |        407 |
+| crates/codevar-truetype                                                                                               |          2 |         23 |          0 |          4 |         27 |
+| crates/codevar-truetype (Files)                                                                                       |          1 |         23 |          0 |          3 |         26 |
+| crates/codevar-truetype-autofit                                                                                       |          2 |         13 |         14 |          4 |         31 |
+| crates/codevar-truetype-autofit (Files)                                                                               |          1 |         13 |          0 |          3 |         16 |
+| crates/codevar-truetype-autofit/src                                                                                   |          1 |          0 |         14 |          1 |         15 |
+| crates/codevar-truetype-cff                                                                                           |          2 |         16 |         14 |          4 |         34 |
+| crates/codevar-truetype-cff (Files)                                                                                   |          1 |         16 |          0 |          3 |         19 |
+| crates/codevar-truetype-cff/src                                                                                       |          1 |          0 |         14 |          1 |         15 |
+| crates/codevar-truetype-core                                                                                          |          2 |      2,089 |        771 |        293 |      3,153 |
+| crates/codevar-truetype-core (Files)                                                                                  |          1 |         16 |          0 |          3 |         19 |
+| crates/codevar-truetype-core/src                                                                                      |          1 |      2,073 |        771 |        290 |      3,134 |
+| crates/codevar-truetype-glyf                                                                                          |          2 |         15 |         14 |          4 |         33 |
+| crates/codevar-truetype-glyf (Files)                                                                                  |          1 |         15 |          0 |          3 |         18 |
+| crates/codevar-truetype-glyf/src                                                                                      |          1 |          0 |         14 |          1 |         15 |
+| crates/codevar-truetype-gzip                                                                                          |          2 |         16 |         14 |          5 |         35 |
+| crates/codevar-truetype-gzip (Files)                                                                                  |          1 |         16 |          0 |          4 |         20 |
+| crates/codevar-truetype-gzip/src                                                                                      |          1 |          0 |         14 |          1 |         15 |
+| crates/codevar-truetype-pshinter                                                                                      |          2 |         13 |         14 |          4 |         31 |
+| crates/codevar-truetype-pshinter (Files)                                                                              |          1 |         13 |          0 |          3 |         16 |
+| crates/codevar-truetype-pshinter/src                                                                                  |          1 |          0 |         14 |          1 |         15 |
+| crates/codevar-truetype-psnames                                                                                       |          2 |        805 |        264 |        139 |      1,208 |
+| crates/codevar-truetype-psnames (Files)                                                                               |          1 |         13 |          0 |          3 |         16 |
+| crates/codevar-truetype-psnames/src                                                                                   |          1 |        792 |        264 |        136 |      1,192 |
+| crates/codevar-truetype-raster                                                                                        |          2 |         13 |         14 |          4 |         31 |
+| crates/codevar-truetype-raster (Files)                                                                                |          1 |         13 |          0 |          3 |         16 |
+| crates/codevar-truetype-raster/src                                                                                    |          1 |          0 |         14 |          1 |         15 |
+| crates/codevar-truetype-sfnt                                                                                          |          2 |         15 |         14 |          4 |         33 |
+| crates/codevar-truetype-sfnt (Files)                                                                                  |          1 |         15 |          0 |          3 |         18 |
+| crates/codevar-truetype-sfnt/src                                                                                      |          1 |          0 |         14 |          1 |         15 |
+| crates/codevar-truetype-smooth                                                                                        |          2 |         13 |         14 |          4 |         31 |
+| crates/codevar-truetype-smooth (Files)                                                                                |          1 |         13 |          0 |          3 |         16 |
+| crates/codevar-truetype-smooth/src                                                                                    |          1 |          0 |         14 |          1 |         15 |
+| crates/codevar-truetype-ttcore                                                                                        |          2 |         14 |         14 |          4 |         32 |
+| crates/codevar-truetype-ttcore (Files)                                                                                |          1 |         14 |          0 |          3 |         17 |
+| crates/codevar-truetype-ttcore/src                                                                                    |          1 |          0 |         14 |          1 |         15 |
+| crates/codevar-truetype/src                                                                                           |          1 |          0 |          0 |          1 |          1 |
+| crates/codevar-ui-core                                                                                                |         13 |      8,749 |      3,070 |        807 |     12,626 |
+| crates/codevar-ui-core (Files)                                                                                        |          1 |         22 |          0 |          3 |         25 |
+| crates/codevar-ui-core/examples                                                                                       |          3 |      1,593 |        408 |        114 |      2,115 |
+| crates/codevar-ui-core/src                                                                                            |          9 |      7,134 |      2,662 |        690 |     10,486 |
+| crates/codevar-ui-core/src (Files)                                                                                    |          7 |      7,101 |      2,619 |        678 |     10,398 |
+| crates/codevar-ui-core/src/shaders                                                                                    |          2 |         33 |         43 |         12 |         88 |
+| crates/codevar-unwinding                                                                                              |          2 |      2,847 |        234 |        204 |      3,285 |
+| crates/codevar-unwinding (Files)                                                                                      |          1 |         26 |          0 |          4 |         30 |
+| crates/codevar-unwinding/src                                                                                          |          1 |      2,821 |        234 |        200 |      3,255 |
+| crates/codevar-wl-protocol                                                                                            |         20 |     10,486 |      2,115 |      1,069 |     13,670 |
+| crates/codevar-wl-protocol (Files)                                                                                    |          1 |         13 |          0 |          2 |         15 |
+| crates/codevar-wl-protocol/examples                                                                                   |          1 |        310 |         65 |         29 |        404 |
+| crates/codevar-wl-protocol/src                                                                                        |         12 |      7,161 |      1,779 |        782 |      9,722 |
+| crates/codevar-wl-protocol/tests                                                                                      |          6 |      3,002 |        271 |        256 |      3,529 |
+| crates/codevar-wredit                                                                                                 |          2 |         10 |          0 |          3 |         13 |
+| crates/codevar-wredit (Files)                                                                                         |          1 |         10 |          0 |          1 |         11 |
+| crates/codevar-wredit/src                                                                                             |          1 |          0 |          0 |          2 |          2 |
+| crates/codevar-wsocket                                                                                                |         12 |      5,448 |        744 |        640 |      6,832 |
+| crates/codevar-wsocket (Files)                                                                                        |          1 |         20 |          0 |          3 |         23 |
+| crates/codevar-wsocket/src                                                                                            |         11 |      5,428 |        744 |        637 |      6,809 |
+| crates/codevar-xdg-portal                                                                                             |         28 |      9,742 |      1,827 |      1,184 |     12,753 |
+| crates/codevar-xdg-portal (Files)                                                                                     |          1 |         21 |          0 |          2 |         23 |
+| crates/codevar-xdg-portal/src                                                                                         |         27 |      9,721 |      1,827 |      1,182 |     12,730 |
+| docker                                                                                                                |          6 |        245 |         87 |         67 |        399 |
+| docker (Files)                                                                                                        |          2 |        144 |         25 |         22 |        191 |
+| docker/linux                                                                                                          |          1 |         25 |         11 |         10 |         46 |
+| docker/macos                                                                                                          |          1 |         27 |         18 |         13 |         58 |
+| docker/wasm                                                                                                           |          1 |         23 |         17 |         11 |         51 |
+| docker/windows                                                                                                        |          1 |         26 |         16 |         11 |         53 |
+| gradle                                                                                                                |          2 |         18 |          1 |          2 |         21 |
+| gradle (Files)                                                                                                        |          1 |         11 |          1 |          1 |         13 |
+| gradle/wrapper                                                                                                        |          1 |          7 |          0 |          1 |          8 |
++-----------------------------------------------------------------------------------------------------------------------+------------+------------+------------+------------+------------+
+
+Files
++-----------------------------------------------------------------------------------------------------------------------+-----------------+------------+------------+------------+------------+
+| filename                                                                                                              | language        | code       | comment    | blank      | total      |
++-----------------------------------------------------------------------------------------------------------------------+-----------------+------------+------------+------------+------------+
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/.cargo/config.toml                                               | TOML            |          6 |          0 |          2 |          8 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/.github/workflows/rust.yml                                       | YAML            |         32 |          0 |          3 |         35 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/.rustfmt.toml                                                    | TOML            |          7 |          0 |          0 |          7 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/AGENTS.md                                                        | Markdown        |        186 |          0 |         60 |        246 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/CODE_QUALITY.md                                                  | Markdown        |        378 |          0 |        109 |        487 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/Cargo-ndk.toml                                                   | TOML            |          7 |          0 |          3 |         10 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/Cargo.lock                                                       | TOML            |      1,642 |          2 |        187 |      1,831 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/Cargo.toml                                                       | TOML            |        137 |          0 |          7 |        144 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/Dockerfile                                                       | Docker          |         19 |          0 |         11 |         30 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/README.md                                                        | Markdown        |         12 |          0 |          5 |         17 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/android/build.gradle                                             | Gradle          |         83 |          0 |         18 |        101 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/android/src/main/AndroidManifest.xml                             | XML             |         21 |          0 |          2 |         23 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/android/src/main/java/net/codevar/MainActivity.java              | Java            |         13 |          0 |          4 |         17 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/android/src/main/res/values/strings.xml                          | XML             |          3 |          0 |          1 |          4 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/build.gradle                                                     | Gradle          |         13 |          0 |          2 |         15 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/clippy.toml                                                      | TOML            |          0 |          3 |          0 |          3 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-base/Cargo.toml                                   | TOML            |         28 |          0 |          4 |         32 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-base/src/basic_base64.rs                          | Rust            |        644 |        252 |         69 |        965 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-base/src/basic_cpuid.rs                           | Rust            |        819 |        288 |         77 |      1,184 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-base/src/basic_daemon.rs                          | Rust            |          0 |          0 |          2 |          2 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-base/src/basic_html.rs                            | Rust            |      4,232 |        251 |        109 |      4,592 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-base/src/basic_time.rs                            | Rust            |        298 |        133 |         51 |        482 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-base/src/basic_url.rs                             | Rust            |        903 |        286 |         84 |      1,273 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-base/src/basic_xml.rs                             | Rust            |        554 |        199 |         47 |        800 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-base/src/lib.rs                                   | Rust            |          9 |         14 |          3 |         26 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-console-util/Cargo.toml                           | TOML            |         21 |          0 |          4 |         25 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-console-util/src/console_ansi.rs                  | Rust            |        418 |        162 |         56 |        636 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-console-util/src/console_clear.rs                 | Rust            |        213 |         48 |         41 |        302 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-console-util/src/console_cursor.rs                | Rust            |        190 |         44 |         38 |        272 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-console-util/src/console_style.rs                 | Rust            |        688 |         81 |         98 |        867 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-console-util/src/console_terminal.rs              | Rust            |        392 |         42 |         67 |        501 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-console-util/src/lib.rs                           | Rust            |        307 |         96 |         43 |        446 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-dbus/Cargo.toml                                   | TOML            |         12 |          0 |          3 |         15 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-dbus/src/dbus_addr.rs                             | Rust            |        188 |         59 |         24 |        271 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-dbus/src/dbus_auth.rs                             | Rust            |        229 |         70 |         24 |        323 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-dbus/src/dbus_conn.rs                             | Rust            |        612 |        200 |         62 |        874 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-dbus/src/dbus_error.rs                            | Rust            |        144 |         47 |         24 |        215 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-dbus/src/dbus_marshal.rs                          | Rust            |        619 |        240 |         92 |        951 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-dbus/src/dbus_message.rs                          | Rust            |      1,438 |        342 |        134 |      1,914 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-dbus/src/dbus_names.rs                            | Rust            |        216 |         75 |         24 |        315 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-dbus/src/dbus_signature.rs                        | Rust            |        300 |         72 |         34 |        406 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-dbus/src/dbus_transport.rs                        | Rust            |        127 |        110 |         27 |        264 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-dbus/src/dbus_unix.rs                             | Rust            |        483 |        170 |         40 |        693 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-dbus/src/lib.rs                                   | Rust            |         41 |         42 |          7 |         90 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-env/Cargo.toml                                    | TOML            |         19 |          0 |          4 |         23 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-env/src/lib.rs                                    | Rust            |        480 |        379 |         57 |        916 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-fcware/Cargo.toml                                 | TOML            |         22 |          0 |          6 |         28 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-fcware/src/compression.rs                         | Rust            |        234 |         59 |         29 |        322 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-fcware/src/compression_bits.rs                    | Rust            |        175 |         41 |         22 |        238 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-fcware/src/compression_bitward.rs                 | Rust            |        229 |         18 |         12 |        259 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-fcware/src/compression_delta.rs                   | Rust            |        140 |         22 |          8 |        170 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-fcware/src/compression_dysu.rs                    | Rust            |        337 |         26 |         17 |        380 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-fcware/src/compression_error.rs                   | Rust            |        126 |         37 |         26 |        189 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-fcware/src/compression_frame.rs                   | Rust            |        186 |         42 |         17 |        245 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-fcware/src/compression_huffman.rs                 | Rust            |        176 |         18 |         10 |        204 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-fcware/src/compression_lzmatch.rs                 | Rust            |        115 |         30 |         13 |        158 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-fcware/src/compression_stream.rs                  | Rust            |        217 |         37 |         22 |        276 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-fcware/src/compression_valmap.rs                  | Rust            |        190 |         28 |         16 |        234 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-fcware/src/lib.rs                                 | Rust            |         19 |         19 |          7 |         45 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-io/Cargo.toml                                     | TOML            |         23 |          0 |          4 |         27 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-io/src/io_async_traits.rs                         | Rust            |         96 |        136 |         24 |        256 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-io/src/io_cursor.rs                               | Rust            |        583 |         70 |         79 |        732 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-io/src/io_error.rs                                | Rust            |        593 |        400 |         81 |      1,074 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-io/src/io_fallback.rs                             | Rust            |        185 |         61 |         52 |        298 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-io/src/io_impls.rs                                | Rust            |        235 |         14 |         30 |        279 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-io/src/io_std.rs                                  | Rust            |         10 |         26 |          4 |         40 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-io/src/io_terminal.rs                             | Rust            |        308 |         70 |         47 |        425 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-io/src/io_traits.rs                               | Rust            |        153 |        175 |         30 |        358 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-io/src/io_unix.rs                                 | Rust            |        277 |         62 |         51 |        390 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-io/src/io_wasi.rs                                 | Rust            |        268 |         43 |         49 |        360 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-io/src/io_windows.rs                              | Rust            |        708 |         55 |         96 |        859 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-io/src/lib.rs                                     | Rust            |         32 |         23 |         15 |         70 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-launcher/Cargo.toml                               | TOML            |         21 |          0 |          2 |         23 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-launcher/src/bin/main.rs                          | Rust            |         31 |         15 |          4 |         50 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-launcher/src/lib.rs                               | Rust            |          2 |         15 |          2 |         19 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-logger/Cargo.toml                                 | TOML            |         20 |          0 |          3 |         23 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-logger/src/lib.rs                                 | Rust            |        468 |        108 |         74 |        650 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-pathbuf/Cargo.toml                                | TOML            |         21 |          0 |          4 |         25 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-pathbuf/src/lib.rs                                | Rust            |      1,333 |        321 |        147 |      1,801 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-pretty-unwind/Cargo.toml                          | TOML            |         29 |          0 |          4 |         33 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-pretty-unwind/src/lib.rs                          | Rust            |        227 |         77 |         22 |        326 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-sig-handler/Cargo.toml                            | TOML            |         29 |          0 |          4 |         33 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-sig-handler/src/lib.rs                            | Rust            |      1,019 |        346 |        120 |      1,485 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-sig-module-base/Cargo.toml                        | TOML            |         25 |          0 |          4 |         29 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-sig-module-base/src/lib.rs                        | Rust            |        223 |         65 |         29 |        317 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-textlike-encode/Cargo.toml                        | TOML            |         18 |          0 |          5 |         23 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-textlike-encode/src/encoding.rs                   | Rust            |      1,233 |         25 |         91 |      1,349 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-textlike-encode/src/encoding_ascii.rs             | Rust            |        398 |         16 |         36 |        450 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-textlike-encode/src/encoding_handles.rs           | Rust            |      1,165 |         18 |         36 |      1,219 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-textlike-encode/src/encoding_single_byte.rs       | Rust            |        452 |        115 |         29 |        596 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-textlike-encode/src/encoding_utf16.rs             | Rust            |        417 |         14 |         21 |        452 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-textlike-encode/src/encoding_utf8.rs              | Rust            |      1,014 |         29 |         38 |      1,081 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-textlike-encode/src/lib.rs                        | Rust            |          7 |         14 |          3 |         24 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-core/Cargo.toml                              | TOML            |         15 |          0 |          2 |         17 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-core/src/lib.rs                              | Rust            |        838 |        522 |        116 |      1,476 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/Cargo.toml                              | TOML            |         22 |          0 |          3 |         25 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date.rs                             | Rust            |      1,689 |        308 |        220 |      2,217 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date_adt_hack.rs                    | Rust            |        122 |         35 |         10 |        167 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date_component_provider.rs          | Rust            |        457 |         70 |         83 |        610 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date_error.rs                       | Rust            |        307 |         38 |         45 |        390 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date_format_description.rs          | Rust            |        671 |        128 |         18 |        817 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date_format_description_modifier.rs | Rust            |        566 |        238 |         91 |        895 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date_formattable.rs                 | Rust            |        353 |         33 |         20 |        406 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date_formatting.rs                  | Rust            |        786 |        110 |         66 |        962 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date_internal_macro.rs              | Rust            |        170 |         40 |         15 |        225 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date_iso8601.rs                     | Rust            |        191 |         27 |         17 |        235 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date_metadata.rs                    | Rust            |        211 |         26 |         21 |        258 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date_month.rs                       | Rust            |        353 |         25 |         34 |        412 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date_num_fmt.rs                     | Rust            |        381 |        170 |         79 |        630 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date_offset_time.rs                 | Rust            |        639 |        159 |        117 |        915 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date_plain.rs                       | Rust            |        785 |        149 |        124 |      1,058 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date_signed_duration.rs             | Rust            |      1,449 |        290 |        206 |      1,945 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date_time.rs                        | Rust            |        908 |        142 |        140 |      1,190 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date_timestamp.rs                   | Rust            |        762 |        200 |        137 |      1,099 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date_unit.rs                        | Rust            |        260 |         23 |         24 |        307 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date_utc_offset.rs                  | Rust            |        519 |        105 |         67 |        691 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date_utc_time.rs                    | Rust            |        524 |        162 |         95 |        781 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date_util.rs                        | Rust            |        264 |         55 |         31 |        350 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date_weekday.rs                     | Rust            |        254 |         32 |         28 |        314 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date_well_know_iso8601.rs           | Rust            |        138 |        102 |         19 |        259 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date_well_know_rfc2822.rs           | Rust            |          2 |         18 |          3 |         23 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/date_well_know_rfc3339.rs           | Rust            |          2 |         18 |          3 |         23 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-time-util/src/lib.rs                              | Rust            |        118 |         19 |         11 |        148 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/Cargo.toml                                    | TOML            |         33 |          0 |          4 |         37 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/lib.rs                                    | Rust            |         39 |         14 |          3 |         56 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/tls_aead.rs                               | Rust            |        142 |         27 |         18 |        187 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/tls_alert.rs                              | Rust            |        262 |         58 |         28 |        348 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/tls_cert.rs                               | Rust            |        616 |        119 |         75 |        810 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/tls_client.rs                             | Rust            |        612 |         68 |         49 |        729 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/tls_codec.rs                              | Rust            |        392 |         41 |         51 |        484 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/tls_connection.rs                         | Rust            |        541 |         79 |         56 |        676 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/tls_connection_conf.rs                    | Rust            |        431 |         66 |         46 |        543 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/tls_crypto_aes_gcm.rs                     | Rust            |        322 |         26 |         35 |        383 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/tls_crypto_chacha20poly1305.rs            | Rust            |        377 |         40 |         43 |        460 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/tls_crypto_device.rs                      | Rust            |        127 |         30 |         16 |        173 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/tls_crypto_hash.rs                        | Rust            |        122 |         26 |         19 |        167 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/tls_crypto_random.rs                      | Rust            |        173 |         33 |         30 |        236 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/tls_error.rs                              | Rust            |        215 |         38 |         22 |        275 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/tls_extensions.rs                         | Rust            |        715 |         65 |         75 |        855 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/tls_handshake.rs                          | Rust            |        918 |        131 |         92 |      1,141 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/tls_hkdf.rs                               | Rust            |        273 |         38 |         27 |        338 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/tls_ids.rs                                | Rust            |        766 |        140 |         80 |        986 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/tls_key_schedule.rs                       | Rust            |        506 |         83 |         58 |        647 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/tls_kx.rs                                 | Rust            |        239 |         30 |         27 |        296 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/tls_prf.rs                                | Rust            |        241 |         28 |         21 |        290 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/tls_record.rs                             | Rust            |        698 |         57 |         73 |        828 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/tls_server.rs                             | Rust            |        593 |         57 |         61 |        711 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/tls_sign.rs                               | Rust            |        685 |         73 |         68 |        826 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/tls_stream.rs                             | Rust            |        536 |         56 |         56 |        648 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/src/tls_transcript.rs                         | Rust            |        156 |         29 |         28 |        213 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-tls/tests/handshake.rs                            | Rust            |        333 |         37 |         37 |        407 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-truetype-autofit/Cargo.toml                       | TOML            |         13 |          0 |          3 |         16 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-truetype-autofit/src/lib.rs                       | Rust            |          0 |         14 |          1 |         15 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-truetype-cff/Cargo.toml                           | TOML            |         16 |          0 |          3 |         19 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-truetype-cff/src/lib.rs                           | Rust            |          0 |         14 |          1 |         15 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-truetype-core/Cargo.toml                          | TOML            |         16 |          0 |          3 |         19 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-truetype-core/src/lib.rs                          | Rust            |      2,073 |        771 |        290 |      3,134 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-truetype-glyf/Cargo.toml                          | TOML            |         15 |          0 |          3 |         18 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-truetype-glyf/src/lib.rs                          | Rust            |          0 |         14 |          1 |         15 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-truetype-gzip/Cargo.toml                          | TOML            |         16 |          0 |          4 |         20 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-truetype-gzip/src/lib.rs                          | Rust            |          0 |         14 |          1 |         15 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-truetype-pshinter/Cargo.toml                      | TOML            |         13 |          0 |          3 |         16 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-truetype-pshinter/src/lib.rs                      | Rust            |          0 |         14 |          1 |         15 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-truetype-psnames/Cargo.toml                       | TOML            |         13 |          0 |          3 |         16 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-truetype-psnames/src/lib.rs                       | Rust            |        792 |        264 |        136 |      1,192 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-truetype-raster/Cargo.toml                        | TOML            |         13 |          0 |          3 |         16 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-truetype-raster/src/lib.rs                        | Rust            |          0 |         14 |          1 |         15 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-truetype-sfnt/Cargo.toml                          | TOML            |         15 |          0 |          3 |         18 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-truetype-sfnt/src/lib.rs                          | Rust            |          0 |         14 |          1 |         15 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-truetype-smooth/Cargo.toml                        | TOML            |         13 |          0 |          3 |         16 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-truetype-smooth/src/lib.rs                        | Rust            |          0 |         14 |          1 |         15 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-truetype-ttcore/Cargo.toml                        | TOML            |         14 |          0 |          3 |         17 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-truetype-ttcore/src/lib.rs                        | Rust            |          0 |         14 |          1 |         15 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-truetype/Cargo.toml                               | TOML            |         23 |          0 |          3 |         26 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-truetype/src/lib.rs                               | Rust            |          0 |          0 |          1 |          1 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-ui-core/Cargo.toml                                | TOML            |         22 |          0 |          3 |         25 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-ui-core/examples/pixport_demo.rs                  | Rust            |        230 |         50 |         23 |        303 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-ui-core/examples/render_hit.rs                    | Rust            |        672 |        172 |         44 |        888 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-ui-core/examples/render_mix.rs                    | Rust            |        691 |        186 |         47 |        924 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-ui-core/src/lib.rs                                | Rust            |          8 |         14 |          4 |         26 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-ui-core/src/shaders/mix.frag                      | GLSL            |         26 |         24 |          8 |         58 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-ui-core/src/shaders/mix.vert                      | GLSL            |          7 |         19 |          4 |         30 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-ui-core/src/ui_base.rs                            | Rust            |      2,771 |      1,108 |        268 |      4,147 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-ui-core/src/ui_display.rs                         | Rust            |        923 |        208 |         77 |      1,208 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-ui-core/src/ui_pipeline.rs                        | Rust            |        836 |        371 |         75 |      1,282 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-ui-core/src/ui_renderer.rs                        | Rust            |        964 |        499 |         98 |      1,561 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-ui-core/src/ui_terminal_pixport.rs                | Rust            |      1,599 |        405 |        155 |      2,159 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-ui-core/src/ui_wnd_shell.rs                       | Rust            |          0 |         14 |          1 |         15 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-unwinding/Cargo.toml                              | TOML            |         26 |          0 |          4 |         30 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-unwinding/src/lib.rs                              | Rust            |      2,821 |        234 |        200 |      3,255 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wl-protocol/Cargo.toml                            | TOML            |         13 |          0 |          2 |         15 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wl-protocol/examples/xdg_window.rs                | Rust            |        310 |         65 |         29 |        404 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wl-protocol/src/lib.rs                            | Rust            |         29 |         30 |          6 |         65 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wl-protocol/src/wl_client.rs                      | Rust            |        892 |        209 |         76 |      1,177 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wl-protocol/src/wl_conn.rs                        | Rust            |        661 |        154 |         69 |        884 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wl-protocol/src/wl_core.rs                        | Rust            |        427 |         92 |         47 |        566 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wl-protocol/src/wl_dmabuf.rs                      | Rust            |        441 |         88 |         52 |        581 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wl-protocol/src/wl_drm_syncobj.rs                 | Rust            |        344 |         61 |         38 |        443 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wl-protocol/src/wl_error.rs                       | Rust            |        130 |         43 |         21 |        194 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wl-protocol/src/wl_evloop.rs                      | Rust            |        541 |        150 |         75 |        766 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wl-protocol/src/wl_handle.rs                      | Rust            |      1,334 |        327 |        188 |      1,849 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wl-protocol/src/wl_server.rs                      | Rust            |      1,301 |        281 |        116 |      1,698 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wl-protocol/src/wl_unix.rs                        | Rust            |        463 |        226 |         40 |        729 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wl-protocol/src/wl_xdg_shell.rs                   | Rust            |        598 |        118 |         54 |        770 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wl-protocol/tests/client_server.rs                | Rust            |        324 |         37 |         45 |        406 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wl-protocol/tests/core_protocol.rs                | Rust            |        620 |         41 |         43 |        704 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wl-protocol/tests/linux_dmabuf.rs                 | Rust            |        754 |         77 |         50 |        881 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wl-protocol/tests/linux_drm_syncobj.rs            | Rust            |        479 |         47 |         35 |        561 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wl-protocol/tests/unix_socket.rs                  | Rust            |        315 |         35 |         46 |        396 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wl-protocol/tests/xdg_toplevel.rs                 | Rust            |        510 |         34 |         37 |        581 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wredit/Cargo.toml                                 | TOML            |         10 |          0 |          1 |         11 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wredit/src/lib.rs                                 | Rust            |          0 |          0 |          2 |          2 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wsocket/Cargo.toml                                | TOML            |         20 |          0 |          3 |         23 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wsocket/src/lib.rs                                | Rust            |         26 |         14 |          3 |         43 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wsocket/src/ws_client.rs                          | Rust            |        484 |         70 |         65 |        619 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wsocket/src/ws_connection.rs                      | Rust            |      1,069 |        118 |        109 |      1,296 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wsocket/src/ws_error.rs                           | Rust            |        306 |         52 |         34 |        392 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wsocket/src/ws_frame.rs                           | Rust            |        880 |         83 |        101 |      1,064 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wsocket/src/ws_handshake.rs                       | Rust            |        797 |        123 |         88 |      1,008 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wsocket/src/ws_ids.rs                             | Rust            |        450 |         74 |         46 |        570 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wsocket/src/ws_message.rs                         | Rust            |        147 |         34 |         26 |        207 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wsocket/src/ws_server.rs                          | Rust            |        462 |         65 |         68 |        595 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wsocket/src/ws_stream.rs                          | Rust            |        488 |         53 |         58 |        599 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-wsocket/src/ws_utf8.rs                            | Rust            |        319 |         58 |         39 |        416 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/Cargo.toml                             | TOML            |         21 |          0 |          2 |         23 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/lib.rs                             | Rust            |         28 |         14 |          4 |         46 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_account.rs                     | Rust            |         85 |         18 |         21 |        124 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_app_info.rs                    | Rust            |      1,125 |        265 |        124 |      1,514 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_clipboard.rs                   | Rust            |        232 |         19 |         43 |        294 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_context.rs                     | Rust            |        604 |        104 |         57 |        765 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_documents.rs                   | Rust            |      1,132 |        333 |        119 |      1,584 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_dynamic_launcher.rs            | Rust            |        274 |         20 |         53 |        347 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_error.rs                       | Rust            |        146 |         48 |         19 |        213 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_flatpak.rs                     | Rust            |        243 |         62 |         45 |        350 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_memory_monitor.rs              | Rust            |         99 |         24 |         22 |        145 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_method_info.rs                 | Rust            |        766 |         37 |         15 |        818 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_network_monitor.rs             | Rust            |        218 |         24 |         48 |        290 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_notification.rs                | Rust            |        135 |         19 |         26 |        180 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_permissions.rs                 | Rust            |        272 |         93 |         32 |        397 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_portal_config.rs               | Rust            |        804 |        147 |         80 |      1,031 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_proxy_resolver.rs              | Rust            |        110 |         24 |         21 |        155 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_registry.rs                    | Rust            |        105 |         25 |         25 |        155 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_remote_desktop.rs              | Rust            |        561 |         27 |         55 |        643 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_request.rs                     | Rust            |        148 |         42 |         20 |        210 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_screenshot.rs                  | Rust            |        124 |         18 |         29 |        171 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_session.rs                     | Rust            |        147 |         45 |         20 |        212 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_trash.rs                       | Rust            |        215 |         23 |         22 |        260 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_uri.rs                         | Rust            |        192 |         18 |         41 |        251 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_usb.rs                         | Rust            |        310 |         24 |         49 |        383 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_utils.rs                       | Rust            |      1,270 |        270 |        126 |      1,666 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_validate.rs                    | Rust            |        245 |         66 |         37 |        348 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/crates/codevar-xdg-portal/src/xdp_wallpaper.rs                   | Rust            |        131 |         18 |         29 |        178 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/docker-compose.yml                                               | YAML            |         11 |          0 |          1 |         12 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/docker/build.sh                                                  | Shell Script    |         89 |         11 |         15 |        115 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/docker/docker-compose.yml                                        | YAML            |         55 |         14 |          7 |         76 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/docker/linux/Dockerfile                                          | Docker          |         25 |         11 |         10 |         46 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/docker/macos/Dockerfile                                          | Docker          |         27 |         18 |         13 |         58 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/docker/wasm/Dockerfile                                           | Docker          |         23 |         17 |         11 |         51 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/docker/windows/Dockerfile                                        | Docker          |         26 |         16 |         11 |         53 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/gradle.properties                                                | Java Properties |          3 |          0 |          1 |          4 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/gradle/gradle-daemon-jvm.properties                              | Java Properties |         11 |          1 |          1 |         13 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/gradle/wrapper/gradle-wrapper.properties                         | Java Properties |          7 |          0 |          1 |          8 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/gradlew.bat                                                      | Batch           |         41 |         32 |         22 |         95 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/rust-toolchain.toml                                              | TOML            |          3 |          0 |          0 |          3 |
+| /home/tommicord/Documentos/Proyectos/codevar/codevar/settings.gradle                                                  | Gradle          |         19 |          0 |          3 |         22 |
+| Total                                                                                                                 |                 |     96,458 |     20,401 |     10,727 |    127,586 |
++-----------------------------------------------------------------------------------------------------------------------+-----------------+------------+------------+------------+------------+

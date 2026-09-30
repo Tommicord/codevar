@@ -862,7 +862,7 @@ mod unix {
 
 #[cfg(all(windows, not(target_vendor = "uwp")))]
 mod windows {
-    use super::{ENTERED, InstallError};
+    use super::{signal_name, InstallError, ENTERED};
     use super::{capture_frames, dump_frames, write_console, write_frame, write_line};
     use core::ffi::c_void;
     use core::fmt::{self, Write as _};
@@ -1042,18 +1042,11 @@ mod windows {
 
     /// Shared dump body: header + frames. Caller owns `ENTERED`.
     fn dump_exception(code: u32, fault_addr: usize, ip: usize) {
-        write_line(format_args!(
-            "=== codevar: {} ({code:#010x}) ===",
-            exception_name(code)
-        ));
-        if fault_addr != 0 {
-            write_line(format_args!("fault address: {fault_addr:#018x}"));
-        }
-        if ip != 0 {
-            write_line(format_args!("fault IP:      {ip:#018x}"));
-        }
-        write_line(format_args!("--- backtrace ---"));
-        dump_frames();
+        write_line(format_args!("Caught signal {} ({sig})", signal_name(sig)));
+        write_line(format_args!("fault address: {fault_addr:#018x}"));
+        write_line(format_args!("fault IP:      {ip:#018x}"));
+        write_line(format_args!("Backtrace: "));
+        let _ = dump_frames();
     }
 
     /// Stack-overflow-safe dump: static scratch only, minimal stack use.
@@ -1237,18 +1230,14 @@ mod windows {
             .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            write_console(b"codevar: recursive signal during handling\n");
+            write_console(b"Recursive signal during handling\n");
             // SAFETY: current process handle is always valid.
             unsafe {
                 TerminateProcess(GetCurrentProcess(), exit_code as u32);
             }
             return 1;
         }
-
-        write_console(b"=== codevar: ");
         write_console(name);
-        write_console(b" ===\n");
-        write_line(format_args!("--- backtrace ---"));
         dump_frames();
 
         // SAFETY: current process handle is always valid.
