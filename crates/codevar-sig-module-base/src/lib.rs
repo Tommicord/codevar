@@ -28,7 +28,6 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(all(unix, not(target_arch = "wasm32")))]
 mod imp {
     use super::*;
-    use libc;
 
     /// Maximum number of cached modules.
     const MAX_MODULES: usize = 256;

@@ -34,8 +34,8 @@
 
 use ash::vk;
 use codevar_ui_core::ui_base::{
-    Compositor, CompositorError, PipeSupplyTraits, OffscreenFramebuffer, OffscreenTarget, PipeCtx,
-    PipeFuture, PipeOutcome, PipeSource, load_spir_v,
+    Compositor, CompositorError, OffscreenFramebuffer, OffscreenTarget, PipeCtx, PipeFuture, PipeOutcome,
+    PipeSource, PipeSupplyTraits, load_spir_v,
 };
 use codevar_ui_core::ui_pipeline::PipelineContext;
 use codevar_ui_core::ui_terminal_pixport::ansi::PixportFilterType;
@@ -218,17 +218,16 @@ impl<'p> TriangleLayer<'p> {
             device.destroy_shader_module(fragment_module, None);
         }
 
-        let target =
-            match OffscreenTarget::new(context, WIDTH, HEIGHT, PipelineContext::color_format()) {
-                Ok(target) => target,
-                Err(err) => {
-                    unsafe {
-                        device.destroy_pipeline(pipeline, None);
-                        device.destroy_pipeline_layout(pipeline_layout, None);
-                    }
-                    return Err(err);
+        let target = match OffscreenTarget::new(context, WIDTH, HEIGHT, PipelineContext::color_format()) {
+            Ok(target) => target,
+            Err(err) => {
+                unsafe {
+                    device.destroy_pipeline(pipeline, None);
+                    device.destroy_pipeline_layout(pipeline_layout, None);
                 }
-            };
+                return Err(err);
+            }
+        };
 
         Ok(Self {
             context,

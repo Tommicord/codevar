@@ -20,6 +20,7 @@ codevar-logger = { workspace = true }
 codevar-console-util = { workspace = true }
 codevar-time-core = { workspace = true }
 codevar-env = { workspace = true }
+libm = "0.2.16"
 
 [target.'cfg(windows)'.dependencies]
 windows-link = { workspace = true }

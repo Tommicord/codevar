@@ -769,7 +769,7 @@ pub fn is_ebadf(err: &ErrorKind) -> bool {
 }
 
 /// Returns a writer suitable for panic output.
-pub fn panic_output() -> impl Write<Error =ErrorKind> {
+pub fn panic_output() -> impl Write<Error = ErrorKind> {
     Stderr::new()
 }
 

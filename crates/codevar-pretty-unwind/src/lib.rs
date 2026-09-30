@@ -24,8 +24,8 @@
 #![cfg_attr(not(test), no_std)]
 extern crate alloc;
 
-use codevar_unwinding::Frame;
 use alloc::string::ToString;
+use codevar_unwinding::Frame;
 use core::ffi::CStr;
 use core::fmt::{self, Write};
 

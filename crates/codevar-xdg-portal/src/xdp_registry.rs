@@ -19,14 +19,13 @@
 //! D-Bus connections and associate them with an application ID that
 //! will be used in portal APIs. Only host applications can register.
 
-use codevar_base::xml;
-
 use crate::xdp_app_info::AppInfo;
 use crate::xdp_context::{MethodInvocation, PortalContext, PortalFn, PortalInterface};
 use crate::xdp_error::{PortalError, XdpResult};
 use crate::xdp_utils::{OptionKey, OptionMap, decode_options, encode_options};
 use alloc::format;
 use alloc::string::{String, ToString};
+use codevar_base::xml;
 
 /// Interface name for the Registry portal.
 const REGISTRY_INTERFACE: &str = "org.freedesktop.host.portal.Registry";

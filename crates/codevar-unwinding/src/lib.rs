@@ -24,8 +24,6 @@
 extern crate alloc;
 
 use core::ffi::c_void;
-#[cfg(all(unix, not(target_arch = "wasm32")))]
-use libc;
 
 /// Hard cap on the number of frames reported by [`trace`] and
 /// [`capture_frames`].

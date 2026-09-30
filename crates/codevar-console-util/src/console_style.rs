@@ -350,8 +350,11 @@ impl AnsiColor {
     /// Create from 256-color index
     pub fn from_256(index: u8) -> Self {
         match index {
-            0..=7 => unsafe { core::mem::transmute(index) },
-            8..=15 => unsafe { core::mem::transmute(index) },
+            // SAFETY: `AnsiColor` is `#[repr(u8)]` with explicit discriminants
+            // covering `0..=15`, so every value in these ranges is a valid variant.
+            0..=7 => unsafe { core::mem::transmute::<u8, AnsiColor>(index) },
+            // SAFETY: same invariant as the `0..=7` arm above.
+            8..=15 => unsafe { core::mem::transmute::<u8, AnsiColor>(index) },
             16..=231 => {
                 // 6x6x6 color cube, map to nearest 16-color
                 let idx = index - 16;
@@ -698,20 +701,6 @@ impl StyledText {
         Self { style, text: s }
     }
 
-    /// Get the styled text as a string with ANSI codes
-    pub fn to_string(&self) -> String {
-        if self.style == Style::new() {
-            self.text.as_str().to_string()
-        } else {
-            alloc::format!(
-                "{}{}{}",
-                self.style.build(),
-                self.text.as_str(),
-                self.style.reset()
-            )
-        }
-    }
-
     /// Get the raw text without styling
     pub fn plain(&self) -> &str {
         self.text.as_str()
@@ -725,7 +714,17 @@ impl StyledText {
 
 impl fmt::Display for StyledText {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_string())
+        if self.style == Style::new() {
+            f.write_str(self.text.as_str())
+        } else {
+            write!(
+                f,
+                "{}{}{}",
+                self.style.build(),
+                self.text.as_str(),
+                self.style.reset()
+            )
+        }
     }
 }
 

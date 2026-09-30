@@ -184,6 +184,13 @@ impl DefaultLogWriter {
     }
 }
 
+impl Default for DefaultLogWriter {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LogWriter for DefaultLogWriter {
     #[inline]
     fn write_stdout(&self, bytes: &[u8]) -> Result<(), LogError> {
@@ -239,41 +246,23 @@ fn format_timestamp(buffer: &mut [u8], offset: usize) -> Result<usize, LogError>
 
 /// Writes the log level portion: "<LEVEL> "
 ///
-/// Appends the colored log level followed by a space and reset sequence.
-/// If `use_color` is false, writes the level without ANSI escape codes.
+/// Appends the level followed by a space. Color escape codes for the
+/// timestamp are handled by the caller.
 /// Returns the number of bytes written.
 #[inline]
-fn format_level(
-    buffer: &mut [u8],
-    offset: usize,
-    level: LogLevel,
-    use_color: bool,
-) -> Result<usize, LogError> {
+fn format_level(buffer: &mut [u8], offset: usize, level: LogLevel) -> Result<usize, LogError> {
     let level_str = level.as_str();
     let level_len = level_str.len();
-    if use_color {
-        let required = level_len + 1; // +1 for space
-        if offset + required >= buffer.len() {
-            return Err(LogError::BufferTooSmall);
-        }
-        let mut idx = offset;
-        buffer[idx..idx + level_len].copy_from_slice(level_str.as_bytes());
-        idx += level_len;
-        buffer[idx] = b' ';
-        idx += 1;
-        Ok(idx - offset)
-    } else {
-        let required = level_len + 1; // +1 for space
-        if offset + required >= buffer.len() {
-            return Err(LogError::BufferTooSmall);
-        }
-        let mut idx = offset;
-        buffer[idx..idx + level_len].copy_from_slice(level_str.as_bytes());
-        idx += level_len;
-        buffer[idx] = b' ';
-        idx += 1;
-        Ok(idx - offset)
+    let required = level_len + 1; // +1 for space
+    if offset + required >= buffer.len() {
+        return Err(LogError::BufferTooSmall);
     }
+    let mut idx = offset;
+    buffer[idx..idx + level_len].copy_from_slice(level_str.as_bytes());
+    idx += level_len;
+    buffer[idx] = b' ';
+    idx += 1;
+    Ok(idx - offset)
 }
 
 /// Writes the message portion: "message\n"
@@ -294,16 +283,7 @@ fn format_message(buffer: &mut [u8], offset: usize, message: &str) -> Result<usi
     Ok(msg_len + 1)
 }
 
-/// Writes a log message with timestamp and level in format "[<timestamp>:<level> message]"
-///
-/// This function formats the log message as a single line with the following structure:
-/// - Opening bracket: "["
-/// - UTC timestamp in ISO8601 format
-/// - Colon separator: ":"
-/// - Colored log level (DEBUG/INFO/ERROR/IRR) - colors applied only if output is a terminal
-/// - Space separator: " "
-/// - User message
-/// - Newline: "\n"
+/// Writes a log message with timestamp and level in format "[<timestamp>]:<level> message"
 ///
 /// Messages at ERROR and IRR levels are written to stderr; others to stdout.
 /// ANSI colors are automatically enabled only when the output stream is a terminal.
@@ -324,13 +304,7 @@ pub fn log_with_timestamp(level: LogLevel, message: &str) -> Result<(), LogError
         return Err(LogError::BufferTooSmall);
     }
     if use_color {
-        let color = match level {
-            LogLevel::Debug => AnsiColor::Cyan,
-            LogLevel::Info => AnsiColor::Green,
-            LogLevel::Error => AnsiColor::Red,
-            LogLevel::Irr => AnsiColor::Magenta,
-        };
-        let color_seq = color.fg();
+        let color_seq = AnsiColor::Green.fg();
         let color_bytes = color_seq.as_bytes();
         let reset_seq = AnsiStyle::Reset.sequence();
         let reset_bytes = reset_seq.as_bytes();
@@ -348,7 +322,7 @@ pub fn log_with_timestamp(level: LogLevel, message: &str) -> Result<(), LogError
         idx += 1;
         buffer[idx] = b':';
         idx += 1;
-        let level_written = format_level(&mut buffer, idx, level, use_color)?;
+        let level_written = format_level(&mut buffer, idx, level)?;
         idx += level_written;
         let msg_written = format_message(&mut buffer, idx, message)?;
         idx += msg_written;
@@ -363,7 +337,7 @@ pub fn log_with_timestamp(level: LogLevel, message: &str) -> Result<(), LogError
         idx += 1;
         buffer[idx] = b':';
         idx += 1;
-        let level_written = format_level(&mut buffer, idx, level, use_color)?;
+        let level_written = format_level(&mut buffer, idx, level)?;
         idx += level_written;
         let msg_written = format_message(&mut buffer, idx, message)?;
         idx += msg_written;
@@ -386,6 +360,7 @@ pub fn log_raw(bytes: &[u8]) -> Result<(), LogError> {
 #[allow(unused)]
 pub mod __logger {
     use crate::{LogError, LogLevel, log_raw, log_with_timestamp};
+    use alloc::string::ToString;
     use codevar_consoleutil::console_style::presets;
 
     /// Writes a raw string to the console without timestamp or level

@@ -324,12 +324,12 @@ impl PortalConfig {
                 .iter()
                 .find(|candidate| candidate.source == *portal);
             let Some(impl_config) = impl_config else {
-                log_info!("Requested backend {portal} does not exist. Skipping...");
+                log_info!("Requested backend {portal} does not exist. Skipping");
                 continue;
             };
             if !impl_config.supports(interface) {
                 log_info!(
-                    "Requested backend {}.portal does not support {interface}. Skipping...",
+                    "Requested backend {}.portal does not support {interface}. Skipping",
                     impl_config.source
                 );
                 continue;
@@ -359,12 +359,12 @@ impl PortalConfig {
                     .iter()
                     .any(|entry| entry.source == candidate.source)
                 {
-                    log_info!("Duplicate backend {}.portal. Skipping...", candidate.source);
+                    log_info!("Duplicate backend {}.portal. Skipping", candidate.source);
                     continue;
                 }
                 if !candidate.supports(interface) {
                     log_info!(
-                        "Requested backend {}.portal does not support {interface}. Skipping...",
+                        "Requested backend {}.portal does not support {interface}. Skipping",
                         candidate.source
                     );
                     continue;
@@ -434,7 +434,7 @@ pub fn parse_portal_file(source: &str, contents: &str) -> Result<PortalImpl, Por
                 "Not a portal backend interface: {interface}"
             )));
         }
-        log_debug!("portal implementation supports {interface}");
+        log_debug!("portal supports {interface}");
     }
     let use_in = key_file
         .list("portal", "UseIn")

@@ -52,12 +52,6 @@ use alloc::ffi::CString;
 use alloc::string::String;
 use codevar_pathbuf::PathBuilder;
 
-cfg_if::cfg_if! {
-    if #[cfg(any(unix, target_os = "macos"))] {
-        use libc;
-    }
-}
-
 /// Reads an environment variable using platform-specific APIs.
 ///
 /// On Unix systems this uses [`libc::getenv`]. On Windows this uses
@@ -668,7 +662,7 @@ pub static ENV_PLUGINS_DIR: &(dyn NamedEnvDir + Sync) = &LazyEnvDir(move || {
 /// Note that is only available on Linux so only use it when interacting
 /// with the Wayland protocol
 #[cfg(all(target_os = "linux", not(target_os = "wasi")))]
-pub static ENV_APP_ID: &'static str = "codevar.launcher";
+pub static ENV_APP_ID: &str = "codevar.launcher";
 
 /// The application assets directory.
 ///

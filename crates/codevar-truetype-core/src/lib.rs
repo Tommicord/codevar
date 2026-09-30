@@ -32,6 +32,7 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::format;
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -1253,10 +1254,6 @@ pub struct Bitmap {
     pub num_grays: u16,
     /// The pixel format of the buffer.
     pub pixel_mode: PixelMode,
-    /// Palette format (unused, kept for API fidelity).
-    pub palette_mode: u8,
-    /// Optional palette (unused by the renderers, kept for API fidelity).
-    pub palette: Option<Vec<u8>>,
 }
 
 impl Bitmap {
@@ -1270,8 +1267,6 @@ impl Bitmap {
             buffer: Vec::new(),
             num_grays: 0,
             pixel_mode: PixelMode::None,
-            palette_mode: 0,
-            palette: None,
         }
     }
 
@@ -1315,8 +1310,6 @@ impl Bitmap {
             buffer: vec![0u8; size],
             num_grays,
             pixel_mode,
-            palette_mode: 0,
-            palette: None,
         })
     }
 
@@ -3470,6 +3463,1029 @@ pub fn debug_init(spec: &str) {
 pub fn debug_reset() {
     for slot in TRACE_LEVELS.iter() {
         slot.store(0, core::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// A stable handle to an element of a [`List`].
+///
+/// Handles are never reused, so a handle whose element was removed is
+/// always reported as missing instead of aliasing a later element.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct NodeId(usize);
+
+#[derive(Debug)]
+struct ListEntry<T> {
+    data: T,
+    prev: Option<usize>,
+    next: Option<usize>,
+}
+
+/// `FT_List`: an ordered doubly linked list (the list processing of
+/// `ftutil.c`, with `FT_List_Add`, `FT_List_Insert`, `FT_List_Find`,
+/// `FT_List_Remove`, `FT_List_Up`, `FT_List_Iterate` and
+/// `FT_List_Finalize`).
+///
+/// FreeType links nodes with raw pointers; this port keeps the same
+/// operations on an index-based slab so no `unsafe` is required. The list
+/// owns its elements: dropping the list drops every element.
+#[derive(Debug)]
+pub struct List<T> {
+    entries: Vec<Option<ListEntry<T>>>,
+    head: Option<usize>,
+    tail: Option<usize>,
+    len: usize,
+}
+
+impl<T> List<T> {
+    /// Creates an empty list (`FT_ListRec` with both links `NULL`).
+    #[inline]
+    pub const fn new() -> Self {
+        List {
+            entries: Vec::new(),
+            head: None,
+            tail: None,
+            len: 0,
+        }
+    }
+
+    /// The number of elements in the list.
+    #[inline]
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// `true` when the list holds no element.
+    #[inline]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Appends `data` at the tail of the list (`FT_List_Add`).
+    pub fn add(&mut self, data: T) -> NodeId {
+        let id = NodeId(self.entries.len());
+        self.entries.push(Some(ListEntry {
+            data,
+            prev: self.tail,
+            next: None,
+        }));
+        match self.tail {
+            Some(tail) => {
+                if let Some(Some(entry)) = self.entries.get_mut(tail) {
+                    entry.next = Some(id.0);
+                }
+            }
+            None => self.head = Some(id.0),
+        }
+        self.tail = Some(id.0);
+        self.len += 1;
+        id
+    }
+
+    /// Inserts `data` at the head of the list (`FT_List_Insert`).
+    pub fn insert(&mut self, data: T) -> NodeId {
+        let id = NodeId(self.entries.len());
+        self.entries.push(Some(ListEntry {
+            data,
+            prev: None,
+            next: self.head,
+        }));
+        match self.head {
+            Some(head) => {
+                if let Some(Some(entry)) = self.entries.get_mut(head) {
+                    entry.prev = Some(id.0);
+                }
+            }
+            None => self.tail = Some(id.0),
+        }
+        self.head = Some(id.0);
+        self.len += 1;
+        id
+    }
+
+    /// Returns the handle of the first element equal to `data`
+    /// (`FT_List_Find`).
+    pub fn find(&self, data: &T) -> Option<NodeId>
+    where
+        T: PartialEq,
+    {
+        let mut cursor = self.head;
+        while let Some(index) = cursor {
+            let entry = self.entries.get(index)?;
+            let entry = entry.as_ref()?;
+            if entry.data == *data {
+                return Some(NodeId(index));
+            }
+            cursor = entry.next;
+        }
+        None
+    }
+
+    /// Returns `true` when `id` currently designates an element.
+    #[inline]
+    pub fn contains(&self, id: NodeId) -> bool {
+        self.entries
+            .get(id.0)
+            .is_some_and(Option::is_some)
+    }
+
+    /// Returns a shared reference to the element of `id`.
+    #[inline]
+    pub fn get(&self, id: NodeId) -> Option<&T> {
+        self.entries
+            .get(id.0)?
+            .as_ref()
+            .map(|entry| &entry.data)
+    }
+
+    /// Returns an exclusive reference to the element of `id`.
+    #[inline]
+    pub fn get_mut(&mut self, id: NodeId) -> Option<&mut T> {
+        self.entries
+            .get_mut(id.0)?
+            .as_mut()
+            .map(|entry| &mut entry.data)
+    }
+
+    /// Unlinks and returns the element of `id` (`FT_List_Remove`).
+    ///
+    /// Unlike FreeType, which assumes the node really is linked, an unknown
+    /// or already removed handle simply returns `None`.
+    pub fn remove(&mut self, id: NodeId) -> Option<T> {
+        if !self.contains(id) {
+            return None;
+        }
+        let entry = self.entries.get_mut(id.0)?.take()?;
+        if let Some(prev) = entry.prev {
+            if let Some(Some(p)) = self.entries.get_mut(prev) {
+                p.next = entry.next;
+            }
+        } else {
+            self.head = entry.next;
+        }
+        if let Some(next) = entry.next {
+            if let Some(Some(n)) = self.entries.get_mut(next) {
+                n.prev = entry.prev;
+            }
+        } else {
+            self.tail = entry.prev;
+        }
+        self.len -= 1;
+        Some(entry.data)
+    }
+
+    /// Moves `id` to the head of the list (`FT_List_Up`), used to maintain
+    /// LRU ordering. Returns `false` for an unknown handle.
+    pub fn up(&mut self, id: NodeId) -> bool {
+        if !self.contains(id) || self.head == Some(id.0) {
+            return self.contains(id);
+        }
+        let (prev, next) = match self.entries.get(id.0).and_then(Option::as_ref) {
+            Some(entry) => (entry.prev, entry.next),
+            None => return false,
+        };
+        if let Some(prev) = prev {
+            if let Some(Some(p)) = self.entries.get_mut(prev) {
+                p.next = next;
+            }
+        } else {
+            return false;
+        }
+        if let Some(next) = next {
+            if let Some(Some(n)) = self.entries.get_mut(next) {
+                n.prev = prev;
+            }
+        } else {
+            self.tail = prev;
+        }
+        if let Some(Some(entry)) = self.entries.get_mut(id.0) {
+            entry.prev = None;
+            entry.next = self.head;
+        }
+        if let Some(Some(head)) = self.entries.get_mut(self.head.unwrap_or(0)) {
+            head.prev = Some(id.0);
+        }
+        self.head = Some(id.0);
+        true
+    }
+
+    /// Iterates over the elements from head to tail.
+    pub fn iter(&self) -> ListIter<'_, T> {
+        ListIter {
+            list: self,
+            cursor: self.head,
+        }
+    }
+
+    /// Calls `f` on every element in order until it returns an error
+    /// (`FT_List_Iterate`).
+    pub fn iterate<F>(&self, mut f: F) -> TtResult<()>
+    where
+        F: FnMut(&T) -> TtResult<()>,
+    {
+        for data in self.iter() {
+            f(data)?;
+        }
+        Ok(())
+    }
+
+    /// Consumes the list, calling `destroy` on each element in order
+    /// (`FT_List_Finalize`).
+    pub fn finalize<F>(mut self, mut destroy: F)
+    where
+        F: FnMut(T),
+    {
+        while let Some(id) = self.head {
+            match self.remove(NodeId(id)) {
+                Some(data) => destroy(data),
+                None => break,
+            }
+        }
+    }
+}
+
+impl<T> Default for List<T> {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Iterator over the elements of a [`List`], head first.
+pub struct ListIter<'a, T> {
+    list: &'a List<T>,
+    cursor: Option<usize>,
+}
+
+impl<'a, T> Iterator for ListIter<'a, T> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let index = self.cursor?;
+        let entry = self.list.entries.get(index)?.as_ref()?;
+        self.cursor = entry.next;
+        Some(&entry.data)
+    }
+}
+
+/// The initial number of buckets of a [`Hash`] (`INITIAL_HT_SIZE`).
+const INITIAL_HT_SIZE: usize = 241;
+
+/// A key of a [`Hash`], the Rust port of the `FT_Hashkey` union.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HashKey {
+    /// A string key (`FT_Hashkey::str`).
+    Str(String),
+    /// A numeric key (`FT_Hashkey::num`).
+    Num(i32),
+}
+
+/// One entry of a [`Hash`] (`FT_Hashnode`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HashNode {
+    /// The key this node is indexed by.
+    pub key: HashKey,
+    /// The value stored under `key`.
+    pub data: usize,
+}
+
+/// `FT_Hash`: the chained-through-buckets hash table of `fthash.c`.
+///
+/// The layout is bit-compatible with FreeType's: buckets are probed
+/// *backwards* from `hash % size` with wrap-around, the table doubles (and
+/// its load limit becomes `size / 3`) when `used >= limit`, and the hash is
+/// FreeType's Mocklisp function.
+#[derive(Debug)]
+pub struct Hash {
+    table: Vec<Option<HashNode>>,
+    size: usize,
+    limit: usize,
+    used: usize,
+    is_num: bool,
+}
+
+impl Hash {
+    /// `ft_hash_str_init`: creates a table indexed by strings.
+    pub fn new_str() -> Self {
+        Self::init(true)
+    }
+
+    /// `ft_hash_num_init`: creates a table indexed by integers.
+    pub fn new_num() -> Self {
+        Self::init(false)
+    }
+
+    fn init(is_num: bool) -> Self {
+        let size = INITIAL_HT_SIZE;
+        Hash {
+            table: vec![None; size],
+            size,
+            limit: size / 3,
+            used: 0,
+            is_num,
+        }
+    }
+
+    /// The current number of buckets.
+    #[inline]
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    /// The number of stored entries.
+    #[inline]
+    pub fn used(&self) -> usize {
+        self.used
+    }
+
+    /// Mocklisp hash of a string key (`hash_str_lookup`).
+    fn str_hash(key: &str) -> u64 {
+        let mut res: u64 = 0;
+        for byte in key.bytes() {
+            res = res
+                .wrapping_shl(5)
+                .wrapping_sub(res)
+                .wrapping_add(u64::from(byte));
+        }
+        res
+    }
+
+    /// Mocklisp hash of a numeric key (`hash_num_lookup`).
+    fn num_hash(num: i32) -> u64 {
+        let num = u64::from(num as u32);
+        let mut res = num & 0xFF;
+        res = res
+            .wrapping_shl(5)
+            .wrapping_sub(res)
+            .wrapping_add((num >> 8) & 0xFF);
+        res = res
+            .wrapping_shl(5)
+            .wrapping_sub(res)
+            .wrapping_add((num >> 16) & 0xFF);
+        res = res
+            .wrapping_shl(5)
+            .wrapping_sub(res)
+            .wrapping_add((num >> 24) & 0xFF);
+        res
+    }
+
+    /// Returns the index of the bucket holding `key` (empty or not),
+    /// probing downwards with wrap-around (`hash_bucket`).
+    fn bucket(&self, key: &HashKey) -> usize {
+        let res = match key {
+            HashKey::Str(s) => Self::str_hash(s),
+            HashKey::Num(n) => Self::num_hash(*n),
+        };
+        let mut index = (res % self.size as u64) as usize;
+        while let Some(Some(node)) = self.table.get(index) {
+            if Self::key_eq(&node.key, key) {
+                break;
+            }
+            if index == 0 {
+                index = self.size - 1;
+            } else {
+                index -= 1;
+            }
+        }
+        index
+    }
+
+    fn key_eq(a: &HashKey, b: &HashKey) -> bool {
+        match (a, b) {
+            (HashKey::Str(x), HashKey::Str(y)) => x.as_bytes().first() == y.as_bytes().first() && x == y,
+            (HashKey::Num(x), HashKey::Num(y)) => x == y,
+            _ => false,
+        }
+    }
+
+    /// Doubles the table and reinserts every node (`hash_rehash`).
+    fn rehash(&mut self) -> TtResult<()> {
+        let old = core::mem::take(&mut self.table);
+        let new_size = self
+            .size
+            .checked_mul(2)
+            .ok_or(TtError::ARRAY_TOO_LARGE)?;
+        if new_size > u32::MAX as usize {
+            return Err(TtError::ARRAY_TOO_LARGE);
+        }
+        self.size = new_size;
+        self.limit = new_size / 3;
+        self.table = vec![None; new_size];
+        for node in old.into_iter().flatten() {
+            let index = self.bucket(&node.key);
+            if let Some(slot) = self.table.get_mut(index) {
+                *slot = Some(node);
+            }
+        }
+        Ok(())
+    }
+
+    fn insert(&mut self, key: HashKey, data: usize, overwrite: bool) -> TtResult<()> {
+        if !self.is_num != matches!(key, HashKey::Str(_)) {
+            return Err(TtError::INVALID_ARGUMENT);
+        }
+        let index = self.bucket(&key);
+        match self.table.get(index).and_then(Option::as_ref) {
+            Some(_) => {
+                if overwrite {
+                    if let Some(Some(node)) = self.table.get_mut(index) {
+                        node.data = data;
+                    }
+                }
+                Ok(())
+            }
+            None => {
+                if let Some(slot) = self.table.get_mut(index) {
+                    *slot = Some(HashNode { key, data });
+                }
+                if self.used >= self.limit {
+                    self.rehash()?;
+                }
+                self.used += 1;
+                Ok(())
+            }
+        }
+    }
+
+    fn lookup(&self, key: &HashKey) -> Option<usize> {
+        let index = self.bucket(key);
+        self.table
+            .get(index)
+            .and_then(Option::as_ref)
+            .map(|node| node.data)
+    }
+
+    /// `ft_hash_str_insert`: stores `data` under `key`, replacing any
+    /// previous value.
+    pub fn str_insert(&mut self, key: &str, data: usize) -> TtResult<()> {
+        self.insert(HashKey::Str(String::from(key)), data, true)
+    }
+
+    /// `ft_hash_str_insert_no_overwrite`: stores `data` only when `key` is
+    /// absent.
+    pub fn str_insert_no_overwrite(&mut self, key: &str, data: usize) -> TtResult<()> {
+        self.insert(HashKey::Str(String::from(key)), data, false)
+    }
+
+    /// `ft_hash_num_insert`: stores `data` under `key`, replacing any
+    /// previous value.
+    pub fn num_insert(&mut self, key: i32, data: usize) -> TtResult<()> {
+        self.insert(HashKey::Num(key), data, true)
+    }
+
+    /// `ft_hash_num_insert_no_overwrite`: stores `data` only when `key` is
+    /// absent.
+    pub fn num_insert_no_overwrite(&mut self, key: i32, data: usize) -> TtResult<()> {
+        self.insert(HashKey::Num(key), data, false)
+    }
+
+    /// `ft_hash_str_lookup`: the value stored under `key`, if any.
+    pub fn str_lookup(&self, key: &str) -> Option<usize> {
+        if !self.is_num {
+            self.lookup(&HashKey::Str(String::from(key)))
+        } else {
+            None
+        }
+    }
+
+    /// `ft_hash_num_lookup`: the value stored under `key`, if any.
+    pub fn num_lookup(&self, key: i32) -> Option<usize> {
+        if self.is_num {
+            self.lookup(&HashKey::Num(key))
+        } else {
+            None
+        }
+    }
+
+    /// Iterates over every stored entry (the `ft_hash_*_iterator` family).
+    pub fn iter(&self) -> impl Iterator<Item = (&HashKey, usize)> + '_ {
+        self.table
+            .iter()
+            .flatten()
+            .map(|node| (&node.key, node.data))
+    }
+}
+
+impl Default for Hash {
+    #[inline]
+    fn default() -> Self {
+        Self::new_str()
+    }
+}
+
+/// `FT_SubGlyphRec`: one component of a composite glyph.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SubGlyph {
+    /// The index of the component glyph.
+    pub index: i32,
+    /// `SUBGLYPH_FLAG_XXX` bits.
+    pub flags: u16,
+    /// First argument (offset or point index).
+    pub arg1: i32,
+    /// Second argument (offset or point index).
+    pub arg2: i32,
+    /// The component transform.
+    pub transform: Matrix,
+}
+
+/// `FT_GlyphLoaderRec`: the internal object used to load several glyphs
+/// together (see `ftgloadr.c`), most notably for composites.
+///
+/// # Storage model
+///
+/// FreeType lets `current` point *into* `base`'s arrays so that a
+/// [`GlyphLoader::add`] only bumps counters. The port keeps a single
+/// storage as well: the base outline owns the buffers and the current image
+/// is described by `base.n_points + current_points .. ` counters on top of
+/// them, so writes overwrite the stale region exactly like the C pointers
+/// do. [`GlyphLoader::base_outline`] then hands out the assembled image
+/// without copying.
+///
+/// The `memory` handle of the C struct is dropped: allocation goes through
+/// the global Rust allocator, which is what [`Memory`] routes to anyway.
+#[derive(Debug)]
+pub struct GlyphLoader {
+    max_points: usize,
+    max_contours: usize,
+    max_subglyphs: usize,
+    use_extra: bool,
+    load_points: bool,
+    base: Outline,
+    base_subglyphs: usize,
+    current_points: usize,
+    current_contours: usize,
+    current_subglyphs: usize,
+    extra_points: Vec<Vector>,
+    extra_points2: Vec<Vector>,
+    subglyphs: Vec<SubGlyph>,
+}
+
+impl GlyphLoader {
+    /// `FT_GlyphLoader_New`: creates an empty loader.
+    pub fn new() -> Self {
+        GlyphLoader {
+            max_points: 0,
+            max_contours: 0,
+            max_subglyphs: 0,
+            use_extra: false,
+            load_points: true,
+            base: Outline::new(),
+            base_subglyphs: 0,
+            current_points: 0,
+            current_contours: 0,
+            current_subglyphs: 0,
+            extra_points: Vec::new(),
+            extra_points2: Vec::new(),
+            subglyphs: Vec::new(),
+        }
+    }
+
+    /// `FT_GlyphLoader_CreateExtra`: allocates the two extra point tables
+    /// used by hinter code that keeps a second set of points.
+    pub fn create_extra(&mut self) -> TtResult<()> {
+        self.use_extra = true;
+        let max = self.max_points;
+        self.extra_points.resize(max, Vector::default());
+        self.extra_points2.resize(max, Vector::default());
+        Ok(())
+    }
+
+    /// `true` when the two extra point tables are active.
+    #[inline]
+    pub fn uses_extra(&self) -> bool {
+        self.use_extra
+    }
+
+    /// `true` when [`GlyphLoader::add_point`] actually stores coordinates.
+    ///
+    /// Drivers that only count points (metrics-only loads) clear this flag,
+    /// mirroring the `load_points` field of FreeType's build helpers.
+    #[inline]
+    pub fn load_points(&self) -> bool {
+        self.load_points
+    }
+
+    /// Enables or disables point coordinate storage.
+    #[inline]
+    pub fn set_load_points(&mut self, load_points: bool) {
+        self.load_points = load_points;
+    }
+
+    /// `FT_GlyphLoader_Reset`: frees every table and starts from zero.
+    pub fn reset(&mut self) {
+        self.base.clear();
+        self.base.flags = 0;
+        self.max_points = 0;
+        self.max_contours = 0;
+        self.max_subglyphs = 0;
+        self.use_extra = false;
+        self.base_subglyphs = 0;
+        self.current_points = 0;
+        self.current_contours = 0;
+        self.current_subglyphs = 0;
+        self.extra_points.clear();
+        self.extra_points2.clear();
+        self.subglyphs.clear();
+    }
+
+    /// `FT_GlyphLoader_Done`: releases every allocation.
+    #[inline]
+    pub fn done(&mut self) {
+        self.reset();
+    }
+
+    /// `FT_GlyphLoader_Rewind`: clears the stack without releasing the
+    /// allocated tables.
+    pub fn rewind(&mut self) {
+        self.base.n_points = 0;
+        self.base.n_contours = 0;
+        self.base_subglyphs = 0;
+        self.current_points = 0;
+        self.current_contours = 0;
+        self.current_subglyphs = 0;
+    }
+
+    /// `FT_GlyphLoader_Prepare`: empties the current image so a new glyph
+    /// can be loaded on top of the base one.
+    pub fn prepare(&mut self) {
+        self.current_points = 0;
+        self.current_contours = 0;
+        self.current_subglyphs = 0;
+    }
+
+    /// The assembled base image (`loader->base.outline`), borrowed.
+    #[inline]
+    pub fn base_outline(&self) -> &Outline {
+        &self.base
+    }
+
+    /// The subglyphs of the base image (`loader->base.subglyphs`).
+    #[inline]
+    pub fn base_subglyphs(&self) -> &[SubGlyph] {
+        let end = self.base_subglyphs.min(self.subglyphs.len());
+        &self.subglyphs[..end]
+    }
+
+    /// The number of points of the image currently being built.
+    #[inline]
+    pub fn current_point_count(&self) -> usize {
+        self.current_points
+    }
+
+    /// The number of contours of the image currently being built.
+    #[inline]
+    pub fn current_contour_count(&self) -> usize {
+        self.current_contours
+    }
+
+    /// The points of the image currently being built.
+    #[inline]
+    pub fn current_points(&self) -> &[Vector] {
+        let start = self.base.n_points as usize;
+        let end = start + self.current_points;
+        self.base.points.get(start..end).unwrap_or(&[])
+    }
+
+    /// The tags of the image currently being built.
+    #[inline]
+    pub fn current_tags(&self) -> &[u8] {
+        let start = self.base.n_points as usize;
+        let end = start + self.current_points;
+        self.base.tags.get(start..end).unwrap_or(&[])
+    }
+
+    /// The raw storage index at which the current image starts.
+    #[inline]
+    fn current_start(&self) -> usize {
+        self.base.n_points as usize + self.current_points
+    }
+
+    /// Grows the point/contour tables so that `n_points` more points and
+    /// `n_contours` more contours fit (`FT_GlyphLoader_CheckPoints`).
+    pub fn check_points(&mut self, n_points: usize, n_contours: usize) -> TtResult<()> {
+        let new_points = (self.base.n_points as usize)
+            .checked_add(self.current_points)
+            .and_then(|value| value.checked_add(n_points))
+            .ok_or(TtError::ARRAY_TOO_LARGE)?;
+        if new_points > self.max_points {
+            let padded = pad_ceil(new_points as i64, 8) as usize;
+            if padded > OUTLINE_POINTS_MAX as usize {
+                return Err(TtError::ARRAY_TOO_LARGE);
+            }
+            self.max_points = padded;
+            self.base.points.resize(padded, Vector::default());
+            self.base.tags.resize(padded, 0);
+            if self.use_extra {
+                self.extra_points
+                    .resize(padded, Vector::default());
+                self.extra_points2
+                    .resize(padded, Vector::default());
+            }
+            self.shrink_storage();
+        }
+
+        let new_contours = (self.base.n_contours as usize)
+            .checked_add(self.current_contours)
+            .and_then(|value| value.checked_add(n_contours))
+            .ok_or(TtError::ARRAY_TOO_LARGE)?;
+        if new_contours > self.max_contours {
+            let padded = pad_ceil(new_contours as i64, 4) as usize;
+            if padded > OUTLINE_CONTOURS_MAX as usize {
+                return Err(TtError::ARRAY_TOO_LARGE);
+            }
+            self.max_contours = padded;
+            self.base.contours.resize(padded, 0);
+            self.shrink_storage();
+        }
+        Ok(())
+    }
+
+    /// Drops the stale tail beyond the base image (the region the C code
+    /// overwrites through its interior pointers).
+    fn shrink_storage(&mut self) {
+        let points = self.base.n_points as usize + self.current_points;
+        if self.base.points.len() > points {
+            self.base.points.truncate(points);
+            self.base.tags.truncate(points);
+            if self.use_extra {
+                self.extra_points.truncate(points);
+                self.extra_points2.truncate(points);
+            }
+        }
+        let contours = self.base.n_contours as usize + self.current_contours;
+        if self.base.contours.len() > contours {
+            self.base.contours.truncate(contours);
+        }
+    }
+
+    /// Grows the subglyph table (`FT_GlyphLoader_CheckSubGlyphs`).
+    pub fn check_sub_glyphs(&mut self, n_subs: usize) -> TtResult<()> {
+        let new_max = (self.base_subglyphs + self.current_subglyphs)
+            .checked_add(n_subs)
+            .ok_or(TtError::ARRAY_TOO_LARGE)?;
+        if new_max > self.max_subglyphs {
+            let padded = pad_ceil(new_max as i64, 2) as usize;
+            self.max_subglyphs = padded;
+            self.subglyphs.resize(padded, SubGlyph::default());
+            let end = self.base_subglyphs + self.current_subglyphs;
+            self.subglyphs.truncate(end);
+        }
+        Ok(())
+    }
+
+    /// Appends the current image to the base one and prepares for another
+    /// (`FT_GlyphLoader_Add`).
+    pub fn add(&mut self) {
+        let n_curr_contours = self.current_contours;
+        let n_base_points = self.base.n_points;
+        let n_base_contours = self.base.n_contours as usize;
+
+        self.base.n_points = self
+            .base
+            .n_points
+            .saturating_add_unsigned(self.current_points as u16);
+        self.base.n_contours = self
+            .base
+            .n_contours
+            .saturating_add_unsigned(self.current_contours as u16);
+        self.base_subglyphs += self.current_subglyphs;
+
+        // Offset the contour ends of the just-loaded image by the number of
+        // points that were already in the base image.
+        for index in n_base_contours..(n_base_contours + n_curr_contours) {
+            if let Some(end) = self.base.contours.get_mut(index as usize) {
+                *end = end.wrapping_add_unsigned(n_base_points as u16);
+            }
+        }
+
+        self.prepare();
+    }
+
+    /// Copies the points of `source`'s base image into this loader
+    /// (`FT_GlyphLoader_CopyPoints`).
+    pub fn copy_points(&mut self, source: &GlyphLoader) -> TtResult<()> {
+        let n_points = source.base.n_points as usize;
+        let n_contours = source.base.n_contours as usize;
+        self.check_points(n_points, n_contours)?;
+        let start = self.base.n_points as usize + self.current_points;
+        self.base.points.truncate(start);
+        self.base.tags.truncate(start);
+        self.base
+            .points
+            .extend_from_slice(&source.base.points[..n_points.min(source.base.points.len())]);
+        self.base
+            .tags
+            .extend_from_slice(&source.base.tags[..n_points.min(source.base.tags.len())]);
+        let cstart = self.base.n_contours as usize + self.current_contours;
+        self.base.contours.truncate(cstart);
+        self.base
+            .contours
+            .extend_from_slice(&source.base.contours[..n_contours.min(source.base.contours.len())]);
+        if self.use_extra && source.use_extra {
+            self.extra_points.clear();
+            self.extra_points2.clear();
+            self.extra_points
+                .extend_from_slice(&source.extra_points[..n_points.min(source.extra_points.len())]);
+            self.extra_points2
+                .extend_from_slice(&source.extra_points2[..n_points.min(source.extra_points2.len())]);
+        }
+        Ok(())
+    }
+
+    /// Adds a point to the current image without checking for space
+    /// (`t1_builder_add_point`).
+    ///
+    /// `flag` is `1` for an on-curve point and `0` for an off-curve point,
+    /// exactly like the byte FreeType's build helpers pass.
+    pub fn add_point(&mut self, x: Pos, y: Pos, flag: u8) {
+        let index = self.current_start();
+        if index > self.base.points.len() {
+            return;
+        }
+        if self.load_points {
+            self.base.points.truncate(index);
+            self.base.tags.truncate(index);
+            if self.use_extra {
+                self.extra_points.truncate(index);
+                self.extra_points2.truncate(index);
+            }
+            self.base.points.push(Vector { x, y });
+            self.base
+                .tags
+                .push(if flag != 0 { CURVE_TAG_ON } else { CURVE_TAG_CUBIC });
+        } else {
+            self.base.points.truncate(index);
+            self.base.tags.truncate(index);
+            if self.use_extra {
+                self.extra_points.truncate(index);
+                self.extra_points2.truncate(index);
+            }
+            self.base.points.push(Vector::default());
+            self.base.tags.push(0);
+        }
+        self.current_points += 1;
+    }
+
+    /// Checks for space and then adds an on-curve point
+    /// (`t1_builder_add_point1`).
+    pub fn add_point1(&mut self, x: Pos, y: Pos) -> TtResult<()> {
+        self.check_points(1, 0)?;
+        self.add_point(x, y, 1);
+        Ok(())
+    }
+
+    /// Starts a new contour in the current image (`t1_builder_add_contour`).
+    pub fn add_contour(&mut self) -> TtResult<()> {
+        if !self.load_points {
+            self.current_contours += 1;
+            return Ok(());
+        }
+        self.check_points(0, 1)?;
+        let index = self.base.n_contours as usize + self.current_contours;
+        if index > self.base.contours.len() {
+            return Err(TtError::INVALID_OUTLINE);
+        }
+        if index > 0 {
+            if let Some(previous) = self.base.contours.get_mut(index - 1) {
+                *previous = (self.base.n_points as i32 + self.current_points as i32 - 1) as i16;
+            }
+        }
+        self.base.contours.truncate(index);
+        self.base.contours.push(0);
+        self.current_contours += 1;
+        Ok(())
+    }
+
+    /// Closes the current contour (`t1_builder_close_contour`): a trailing
+    /// on-curve point that coincides with the contour's first point is
+    /// dropped, and single point contours are discarded.
+    pub fn close_contour(&mut self) {
+        if self.current_contours == 0 {
+            return;
+        }
+        let base_contours = self.base.n_contours as usize;
+        let base_points = self.base.n_points as usize;
+        let contour_index = base_contours + self.current_contours - 1;
+        let first = if base_contours + self.current_contours <= 1 {
+            0
+        } else if contour_index >= 1 {
+            match self.base.contours.get(contour_index - 1) {
+                Some(&end) => end as usize + 1,
+                None => 0,
+            }
+        } else {
+            0
+        };
+        let n_points = base_points + self.current_points;
+        if n_points > first {
+            let p1 = self.base.points.get(first).copied();
+            let p2 = self.base.points.get(n_points - 1).copied();
+            let control = self.base.tags.get(n_points - 1).copied();
+            if let (Some(p1), Some(p2)) = (p1, p2)
+                && p1 == p2
+                && control == Option::from(CURVE_TAG_ON)
+            {
+                self.current_points -= 1;
+                let index = base_points + self.current_points;
+                self.base.points.truncate(index);
+                self.base.tags.truncate(index);
+                if self.use_extra {
+                    self.extra_points.truncate(index);
+                    self.extra_points2.truncate(index);
+                }
+            }
+        }
+        let n_points = base_points + self.current_points;
+        if self.current_contours > 0 && first == n_points.saturating_sub(1) && n_points > 0 {
+            self.current_contours -= 1;
+            self.current_points -= 1;
+            let pindex = base_points + self.current_points;
+            self.base.points.truncate(pindex);
+            self.base.tags.truncate(pindex);
+            let cindex = base_contours + self.current_contours;
+            self.base.contours.truncate(cindex);
+            if self.use_extra {
+                self.extra_points.truncate(pindex);
+                self.extra_points2.truncate(pindex);
+            }
+        }
+    }
+}
+
+impl Default for GlyphLoader {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// `FT_Size_Metrics`: the scaled metrics of a [`Size`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct SizeMetrics {
+    /// The horizontal ppem (whole pixels per EM).
+    pub x_ppem: u16,
+    /// The vertical ppem.
+    pub y_ppem: u16,
+    /// 16.16 scale converting font units to 26.6 horizontal pixels.
+    pub x_scale: Fixed,
+    /// 16.16 scale converting font units to 26.6 vertical pixels.
+    pub y_scale: Fixed,
+    /// The scaled ascender, in 26.6 pixels.
+    pub ascender: Pos,
+    /// The scaled descender, in 26.6 pixels.
+    pub descender: Pos,
+    /// The scaled text height, in 26.6 pixels.
+    pub height: Pos,
+    /// The scaled maximal advance, in 26.6 pixels.
+    pub max_advance: Pos,
+}
+
+/// `FT_Size_RequestRec`: a request passed to [`Face::request_size`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SizeRequest {
+    /// How `width` and `height` are to be interpreted.
+    pub request_type: SizeRequestType,
+    /// The requested width.
+    pub width: i64,
+    /// The requested height.
+    pub height: i64,
+    /// Horizontal resolution in dpi (0 means 72 dpi is not implied).
+    pub hori_resolution: u32,
+    /// Vertical resolution in dpi.
+    pub vert_resolution: u32,
+}
+
+impl SizeRequest {
+    /// Creates a nominal (character size) request.
+    #[inline]
+    pub const fn nominal(width: i64, height: i64) -> Self {
+        SizeRequest {
+            request_type: SizeRequestType::Nominal,
+            width,
+            height,
+            hori_resolution: 0,
+            vert_resolution: 0,
+        }
+    }
+
+    /// `FT_REQUEST_WIDTH`: the requested width in 26.6 pixels.
+    #[inline]
+    pub fn request_width(&self) -> i64 {
+        if self.hori_resolution != 0 {
+            (self.width * i64::from(self.hori_resolution) + 36) / 72
+        } else {
+            self.width
+        }
+    }
+
+    /// `FT_REQUEST_HEIGHT`: the requested height in 26.6 pixels.
+    #[inline]
+    pub fn request_height(&self) -> i64 {
+        if self.vert_resolution != 0 {
+            (self.height * i64::from(self.vert_resolution) + 36) / 72
+        } else {
+            self.height
+        }
     }
 }
 

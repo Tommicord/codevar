@@ -30,6 +30,9 @@
 //! - the PostScript glyph name tables (`ft_standard_glyph_names`,
 //!   Macintosh and SID name indices, Standard/Expert encodings) exposed
 //!   through [`ps_get_macintosh_name`] and [`ps_get_standard_strings`],
+//! - the mandated API layer ([`macintosh_name`], [`adobe_std_strings`],
+//!   [`unicode_value`], [`standard_encoding_table`],
+//!   [`expert_encoding_table`], [`unicodes_init`], [`UnicodeMap`]),
 //! - the `postscript-cmaps` service record ([`PsCMapsService`]) and the
 //!   `psnames` module class ([`PSNAMES_MODULE_CLASS`]).
 //!
@@ -560,6 +563,12 @@ pub fn ps_unicodes_char_index(table: &PsUnicodes, unicode: u32) -> u32 {
 /// Returns `0` and resets `*unicode` to `0` when the table is exhausted.
 pub fn ps_unicodes_char_next(table: &PsUnicodes, unicode: &mut u32) -> u32 {
     let mut result = 0_u32;
+    // The C code computes `*pchar_code + 1` in `FT_ULong`, so the maximum
+    // code point is exhausted instead of wrapping back to `0`.
+    if *unicode == u32::MAX {
+        *unicode = 0;
+        return 0;
+    }
     let mut char_code = unicode.wrapping_add(1);
 
     let maps = table.maps();
@@ -603,6 +612,143 @@ pub fn ps_unicodes_char_next(table: &PsUnicodes, unicode: &mut u32) -> u32 {
 
     *unicode = char_code;
     result
+}
+
+/// Return the Macintosh glyph name for `name_index` as bytes
+/// (`FT_Mac_Name`).
+///
+/// Wraps [`ps_get_macintosh_name`] but reports an out-of-range index as
+/// `None` instead of clamping to index `0`, so unknown indices yield no
+/// name at all.
+#[inline]
+pub fn macintosh_name(name_index: u32) -> Option<&'static [u8]> {
+    let index = usize::try_from(name_index).ok()?;
+    let offset = usize::try_from(*FT_MAC_NAMES.get(index)?).ok()?;
+    Some(standard_glyph_name(offset).as_bytes())
+}
+
+/// Return the Adobe Standard Strings entry for `sid` as bytes
+/// (`FT_Adobe_Std_Strings`).
+///
+/// Returns `None` when `sid` is out of range, matching the C function
+/// returning `NULL`.
+#[inline]
+pub fn adobe_std_strings(sid: u32) -> Option<&'static [u8]> {
+    let index = usize::try_from(sid).ok()?;
+    let offset = usize::try_from(*FT_SID_NAMES.get(index)?).ok()?;
+    Some(standard_glyph_name(offset).as_bytes())
+}
+
+/// Return the Unicode value of a glyph name, if the name has one
+/// (`PS_Unicode_ValueFunc`).
+///
+/// Wraps [`ps_unicode_value`]: names the C implementation cannot resolve
+/// return `0`, which is reported as `None`.  The [`VARIANT_BIT`] of glyph
+/// variants such as `A.swash` is preserved.
+#[inline]
+pub fn unicode_value(glyph_name: &str) -> Option<u32> {
+    let value = ps_unicode_value(glyph_name);
+    if value == 0 { None } else { Some(value) }
+}
+
+/// The Adobe Standard Encoding (`T1_StandardEncoding`): character code to
+/// Standard Strings index.
+#[inline]
+pub fn standard_encoding_table() -> &'static [u16; 256] {
+    &T1_STANDARD_ENCODING
+}
+
+/// The Adobe Expert Encoding (`T1_ExpertEncoding`): character code to
+/// Standard Strings index.
+#[inline]
+pub fn expert_encoding_table() -> &'static [u16; 256] {
+    &T1_EXPERT_ENCODING
+}
+
+/// A Unicode character map built from glyph Unicode values
+/// (`PS_UnicodesRec`).
+///
+/// Wraps the [`PsUnicodes`] table built by [`unicodes_init`] and exposes
+/// the mandated lookup and iteration API.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UnicodeMap {
+    /// Entries sorted by [`base_glyph`] and then by `unicode`.
+    table: PsUnicodes,
+}
+
+impl UnicodeMap {
+    /// Wrap a table produced by [`ps_unicodes_init`].
+    #[inline]
+    pub fn from_ps_unicodes(table: PsUnicodes) -> Self {
+        Self { table }
+    }
+
+    /// The underlying [`PsUnicodes`] table.
+    #[inline]
+    pub fn ps_unicodes(&self) -> &PsUnicodes {
+        &self.table
+    }
+
+    /// Return the glyph index mapped to `char_code`, if any.
+    ///
+    /// A base glyph always wins over a variant that shares its Unicode
+    /// value; `None` is returned for unmapped code points.
+    #[inline]
+    pub fn char_index(&self, char_code: u32) -> Option<u32> {
+        let glyph_index = ps_unicodes_char_index(&self.table, char_code);
+        if glyph_index == 0 { None } else { Some(glyph_index) }
+    }
+
+    /// Return the first mapped code point greater than `char_code`
+    /// together with its glyph index (`FT_Get_Next_Char` semantics).
+    ///
+    /// Returns `None` when the map holds no code point above `char_code`.
+    pub fn char_next(&self, char_code: u32) -> Option<(u32, u32)> {
+        let mut next = char_code;
+        let glyph_index = ps_unicodes_char_next(&self.table, &mut next);
+        if glyph_index == 0 {
+            None
+        } else {
+            Some((next, glyph_index))
+        }
+    }
+}
+
+/// Build a [`UnicodeMap`] from a glyph index to Unicode value lookup
+/// (`PS_Unicodes_InitFunc`).
+///
+/// `lookup` receives a glyph index and returns the Unicode value of that
+/// glyph — with [`VARIANT_BIT`] set for glyph variants — or `None` when the
+/// glyph has no Unicode value.  The full 16-bit glyph index range
+/// `0..=u32::from(u16::MAX)` is probed in order.
+///
+/// Because the lookup yields values rather than glyph names, the extra
+/// glyph list of the C implementation (which adds a second Unicode value
+/// for names such as `Delta`) cannot be applied and is skipped.
+///
+/// Returns an empty map when no glyph resolves to a Unicode value, and a
+/// truncated map if the allocator runs out of memory.
+pub fn unicodes_init(lookup: &mut dyn FnMut(u32) -> Option<u32>) -> UnicodeMap {
+    let mut maps = Vec::new();
+
+    for glyph_index in 0..=u32::from(u16::MAX) {
+        if maps.len() == maps.capacity() && maps.try_reserve(64).is_err() {
+            break;
+        }
+        if let Some(unicode) = lookup(glyph_index)
+            && base_glyph(unicode) != 0
+        {
+            maps.push(PsUniMap { unicode, glyph_index });
+        }
+    }
+
+    maps.sort_unstable_by(compare_uni_maps);
+    UnicodeMap {
+        table: PsUnicodes {
+            num_maps: maps.len() as u32,
+            maps,
+        },
+    }
 }
 
 /// Signature of the Unicode map builder (`PS_Unicodes_InitFunc`).
@@ -1143,5 +1289,147 @@ mod tests {
         let mut unicode = 0_u32;
         assert_eq!((PSCMAPS_INTERFACE.unicodes_char_next)(&init, &mut unicode), 5);
         assert_eq!(unicode, 0x0020);
+    }
+
+    #[test]
+    fn mandated_api_macintosh_name() {
+        assert_eq!(macintosh_name(0), Some(&b".notdef"[..]));
+        assert_eq!(macintosh_name(1), Some(&b".null"[..]));
+        assert_eq!(macintosh_name(257), Some(&b"dcroat"[..]));
+        // unknown indices report no name instead of clamping to 0
+        assert_eq!(macintosh_name(FT_NUM_MAC_NAMES as u32), None);
+        assert_eq!(macintosh_name(u32::MAX), None);
+    }
+
+    #[test]
+    fn mandated_api_adobe_std_strings() {
+        assert_eq!(adobe_std_strings(0), Some(&b".notdef"[..]));
+        assert_eq!(adobe_std_strings(1), Some(&b"space"[..]));
+        assert_eq!(adobe_std_strings(34), Some(&b"A"[..]));
+        assert_eq!(adobe_std_strings(390), Some(&b"Semibold"[..]));
+        assert_eq!(adobe_std_strings(FT_NUM_SID_NAMES as u32), None);
+        assert_eq!(adobe_std_strings(u32::MAX), None);
+    }
+
+    #[test]
+    fn mandated_api_unicode_value() {
+        assert_eq!(unicode_value("uni0041"), Some(0x0041));
+        assert_eq!(unicode_value("A"), Some(0x0041));
+        // variants keep the variant bit
+        assert_eq!(unicode_value("A.swash"), Some(0x0041 | VARIANT_BIT));
+        // unresolvable names report no value
+        assert_eq!(unicode_value("uni004"), None);
+        assert_eq!(unicode_value("foobar"), None);
+        assert_eq!(unicode_value(".notdef"), None);
+        assert_eq!(unicode_value(""), None);
+    }
+
+    #[test]
+    fn mandated_api_encoding_tables() {
+        let standard = standard_encoding_table();
+        let expert = expert_encoding_table();
+        assert_eq!(standard, &T1_STANDARD_ENCODING);
+        assert_eq!(expert, &T1_EXPERT_ENCODING);
+        assert_eq!(standard.len(), 256);
+        assert_eq!(expert.len(), 256);
+        // 'A' -> SID 34 -> "A" in the Standard Encoding
+        assert_eq!(adobe_std_strings(u32::from(standard[65])), Some(&b"A"[..]));
+        // 'A' -> SID 253 -> "asuperior" in the Expert Encoding
+        assert_eq!(adobe_std_strings(u32::from(expert[65])), Some(&b"asuperior"[..]));
+        assert_eq!(standard[0], 0);
+    }
+
+    #[test]
+    fn mandated_api_unicode_map_lookup_and_iteration() {
+        // fake glyph table: 0 = unnamed, 1 = "A", 2 = "B",
+        // 3 = "A.swash" (variant), 4 = "uni0043"
+        let mut lookup = |glyph: u32| match glyph {
+            1 => Some(0x0041),
+            2 => Some(0x0042),
+            3 => Some(0x0041 | VARIANT_BIT),
+            4 => Some(0x0043),
+            _ => None,
+        };
+        let map = unicodes_init(&mut lookup);
+
+        // the base glyph wins over the variant sharing its code point
+        assert_eq!(map.char_index(0x0041), Some(1));
+        assert_eq!(map.char_index(0x0042), Some(2));
+        assert_eq!(map.char_index(0x0043), Some(4));
+        assert_eq!(map.char_index(0x0044), None);
+        assert_eq!(map.char_index(0), None);
+
+        // iteration walks the mapped code points in increasing order
+        assert_eq!(map.char_next(0x0040), Some((0x0041, 1)));
+        assert_eq!(map.char_next(0x0041), Some((0x0042, 2)));
+        assert_eq!(map.char_next(0x0042), Some((0x0043, 4)));
+        assert_eq!(map.char_next(0x0043), None);
+
+        let mut seen = Vec::new();
+        let mut cursor = 0_u32;
+        while let Some((code, glyph)) = map.char_next(cursor) {
+            seen.push((code, glyph));
+            cursor = code;
+        }
+        assert_eq!(seen, vec![(0x0041, 1), (0x0042, 2), (0x0043, 4)]);
+
+        // the wrapped table is exposed for the low-level API
+        assert_eq!(map.ps_unicodes().num_maps(), 4);
+        assert_eq!(map.ps_unicodes().maps().len(), 4);
+    }
+
+    /// Build a [`UnicodeMap`] from the synthetic font name table through the
+    /// mandated value-only lookup.
+    fn map_from_names() -> UnicodeMap {
+        let mut lookup = |glyph: u32| match FONT_NAMES.get(glyph as usize) {
+            Some(name) => {
+                let value = ps_unicode_value(name);
+                if value == 0 { None } else { Some(value) }
+            }
+            None => None,
+        };
+        unicodes_init(&mut lookup)
+    }
+
+    #[test]
+    fn mandated_api_unicode_map_from_glyph_names() {
+        let map = map_from_names();
+
+        // the extra glyph list needs glyph names and is not applied by the
+        // value-only lookup, so `space`/`hyphen` add no second mapping
+        assert_eq!(map.ps_unicodes().num_maps(), 6);
+        assert_eq!(map.char_index(0x0020), Some(5));
+        assert_eq!(map.char_index(0x002D), Some(6));
+        assert_eq!(map.char_index(0x0041), Some(1)); // base beats "A.swash"
+        assert_eq!(map.char_index(0x0043), Some(4));
+        assert_eq!(map.char_index(0x00A0), None);
+
+        // wrapping the low-level builder keeps the same behaviour
+        let low_level = UnicodeMap::from_ps_unicodes(
+            ps_unicodes_init(FONT_NAMES.len() as u32, &font_glyph_name).unwrap_or_default(),
+        );
+        assert_eq!(low_level.char_index(0x0041), Some(1));
+    }
+
+    #[test]
+    fn mandated_api_unicode_map_empty() {
+        let mut lookup = |_: u32| None;
+        let map = unicodes_init(&mut lookup);
+        assert_eq!(map.ps_unicodes().num_maps(), 0);
+        assert_eq!(map.char_index(0x0041), None);
+        assert_eq!(map.char_next(0), None);
+    }
+
+    #[test]
+    fn char_next_at_max_code_point_exhausts() {
+        // the C implementation computes the next code point in `FT_ULong`;
+        // U+FFFF_FFFF must exhaust the table instead of wrapping to 0
+        let table = ps_unicodes_init(FONT_NAMES.len() as u32, &font_glyph_name).unwrap_or_default();
+        let mut unicode = u32::MAX;
+        assert_eq!(ps_unicodes_char_next(&table, &mut unicode), 0);
+        assert_eq!(unicode, 0);
+
+        let map = UnicodeMap::from_ps_unicodes(table);
+        assert_eq!(map.char_next(u32::MAX), None);
     }
 }

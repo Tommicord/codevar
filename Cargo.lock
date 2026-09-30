@@ -184,7 +184,6 @@ dependencies = [
 name = "codevar-env"
 version = "1.0.0"
 dependencies = [
- "cfg-if",
  "codevar-pathbuf",
  "libc",
  "windows",
@@ -402,6 +401,7 @@ version = "1.0.0"
 dependencies = [
  "codevar-io",
  "codevar-logger",
+ "libm",
 ]
 
 [[package]]
@@ -485,6 +485,7 @@ dependencies = [
  "codevar-time-core",
  "codevar-wl-protocol",
  "libc",
+ "libm",
  "spin 0.12.3",
  "windows-link 0.100.0",
 ]

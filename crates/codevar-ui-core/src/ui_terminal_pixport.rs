@@ -20,6 +20,9 @@
 //! picks a concrete filter from a terminal-size ladder built with the
 //! [`pixport_auto_filter_table!`] macro.
 
+#![cfg_attr(not(test), no_std)]
+extern crate alloc;
+
 use alloc::string::String;
 use core::fmt;
 use core::task::{Context, Poll, Waker};
@@ -1179,7 +1182,7 @@ pub mod ansi {
         if x.abs() < 1e-6 {
             1.0
         } else {
-            (x * core::f32::consts::PI).sin() / x
+            libm::sinf(x * core::f32::consts::PI) / x
         }
     }
 
@@ -1204,7 +1207,7 @@ pub mod ansi {
             };
         }
         if filter == PixportFilterType::Nearest {
-            let idx = center.round() as usize;
+            let idx = libm::roundf(center) as usize;
             let idx = idx.clamp(0, size - 1);
             return WeightWindow {
                 start: idx,
@@ -1214,7 +1217,7 @@ pub mod ansi {
         }
         let radius = filter_support(filter) * filter_scale;
         let mut x_min = (center - radius).max(0.0) as usize;
-        let mut x_max_exclusive = ((center + radius).ceil().min(size as f32)) as usize;
+        let mut x_max_exclusive = libm::ceilf((center + radius).min(size as f32)) as usize;
         // Ensure at least one tap (edge/clamp case).
         if x_max_exclusive <= x_min {
             x_max_exclusive = x_min + 1;
@@ -1252,7 +1255,7 @@ pub mod ansi {
 
     #[inline]
     fn clamp_u8(v: f32) -> u8 {
-        v.clamp(0.0, 255.0).round() as u8
+        libm::roundf(v.clamp(0.0, 255.0)) as u8
     }
 
     fn resample_rgb_f32(
@@ -1806,7 +1809,7 @@ pub mod frame_pipe {
 pub mod present_loop {
     use super::frame_pipe::FramePipe;
     use super::{Pixport, PixportConfig, PixportError, PixportResult};
-    use crate::ui_base::{Compositor, PipeSupplyTraits, PipeSource};
+    use crate::ui_base::{Compositor, PipeSource, PipeSupplyTraits};
     use crate::ui_pipeline::{OwnedFd, PipelineContext};
     use codevar_consoleutil::console_ansi::{cursor, erase};
     use core::future::Future;

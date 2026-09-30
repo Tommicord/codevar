@@ -65,13 +65,40 @@ pub fn utc_datetime_now() -> Option<UtcDateTime> {
     Timestamp::now().to_utc()
 }
 
+/// The error type returned by [`format_utc_iso8601`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FormatError {
+    /// The output buffer is too small to hold the formatted timestamp.
+    BufferTooSmall,
+    /// The timestamp could not be converted to a UTC date-time.
+    InvalidTimestamp,
+}
+
+impl core::fmt::Display for FormatError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::BufferTooSmall => f.write_str("the output buffer is too small"),
+            Self::InvalidTimestamp => f.write_str("the timestamp is not a valid UTC date-time"),
+        }
+    }
+}
+
+impl core::error::Error for FormatError {}
+
 /// Formats a UTC timestamp as an ISO 8601 string (YYYY-MM-DDTHH:MM:SS.sssssssssZ).
 /// The buffer must be at least 32 bytes.
-pub fn format_utc_iso8601(ts: Timestamp, buf: &mut [u8]) -> Result<usize, ()> {
+///
+/// # Errors
+///
+/// Returns [`FormatError::BufferTooSmall`] when `buf` holds fewer than 32 bytes
+/// and [`FormatError::InvalidTimestamp`] when `ts` cannot be converted to a UTC
+/// date-time.
+pub fn format_utc_iso8601(ts: Timestamp, buf: &mut [u8]) -> Result<usize, FormatError> {
     if buf.len() < 32 {
-        return Err(());
+        return Err(FormatError::BufferTooSmall);
     }
-    let utc = ts.to_utc().ok_or(())?;
+    let utc = ts.to_utc().ok_or(FormatError::InvalidTimestamp)?;
     let (year, month, day) = utc.to_calendar_date();
     let (hour, minute, second, nanosecond) = utc.time().as_hms_nano();
 
@@ -110,9 +137,9 @@ pub fn format_utc_iso8601(ts: Timestamp, buf: &mut [u8]) -> Result<usize, ()> {
 }
 
 #[inline]
-fn write_i32_fixed(buf: &mut [u8], mut val: i32, width: usize) -> Result<(), ()> {
+fn write_i32_fixed(buf: &mut [u8], mut val: i32, width: usize) -> Result<(), FormatError> {
     if buf.len() < width {
-        return Err(());
+        return Err(FormatError::BufferTooSmall);
     }
     if val < 0 {
         buf[0] = b'-';
@@ -123,9 +150,9 @@ fn write_i32_fixed(buf: &mut [u8], mut val: i32, width: usize) -> Result<(), ()>
 }
 
 #[inline]
-fn write_u32_fixed(buf: &mut [u8], mut val: u32, width: usize) -> Result<(), ()> {
+fn write_u32_fixed(buf: &mut [u8], mut val: u32, width: usize) -> Result<(), FormatError> {
     if buf.len() < width {
-        return Err(());
+        return Err(FormatError::BufferTooSmall);
     }
     for i in (0..width).rev() {
         buf[i] = b'0' + (val % 10) as u8;
@@ -135,9 +162,9 @@ fn write_u32_fixed(buf: &mut [u8], mut val: u32, width: usize) -> Result<(), ()>
 }
 
 #[inline]
-fn write_u8_fixed(buf: &mut [u8], mut val: u8, width: usize) -> Result<(), ()> {
+fn write_u8_fixed(buf: &mut [u8], mut val: u8, width: usize) -> Result<(), FormatError> {
     if buf.len() < width {
-        return Err(());
+        return Err(FormatError::BufferTooSmall);
     }
     for i in (0..width).rev() {
         buf[i] = b'0' + (val % 10);

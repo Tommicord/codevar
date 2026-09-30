@@ -52,8 +52,8 @@ use std::time::{Duration, Instant};
 
 use ash::vk;
 use codevar_ui_core::ui_base::{
-    block_on, Compositor, CompositorError, PipeSupplyTraits, OffscreenFramebuffer, OffscreenTarget,
-    PipeCtx, PipeFuture, PipeOutcome, PipeSource,
+    Compositor, CompositorError, OffscreenFramebuffer, OffscreenTarget, PipeCtx, PipeFuture, PipeOutcome,
+    PipeSource, PipeSupplyTraits, block_on,
 };
 use codevar_ui_core::ui_pipeline::{OwnedFd, PipelineContext};
 use codevar_wl_protocol::{
@@ -799,7 +799,9 @@ impl PipeSource for SplitPipe<'_> {
     fn pipe_entry<'a>(renderer: &'a mut Self, ctx: &'a mut PipeCtx) -> PipeFuture<'a> {
         Box::pin(async move {
             ctx.begin_render(0, Some(renderer.base))?;
-            let rect = renderer.split.rect(renderer.target.width(), renderer.target.height());
+            let rect = renderer
+                .split
+                .rect(renderer.target.width(), renderer.target.height());
             let attachment = [vk::ClearAttachment {
                 aspect_mask: vk::ImageAspectFlags::COLOR,
                 color_attachment: 0,

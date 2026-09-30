@@ -15,7 +15,6 @@ wasm = []
 name = "codevar_env"
 
 [dependencies]
-cfg-if = { workspace = true }
 libc = { workspace = true }
 codevar-pathbuf = { workspace = true }
 

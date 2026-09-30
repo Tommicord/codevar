@@ -125,11 +125,9 @@ pub fn strip_ansi(input: &str) -> alloc::string::String {
                 in_escape = false;
                 in_csi = false;
             }
-        } else {
-            if ch.is_ascii_alphabetic() || ch == '~' {
-                in_escape = false;
-                in_csi = false;
-            }
+        } else if ch.is_ascii_alphabetic() || ch == '~' {
+            in_escape = false;
+            in_csi = false;
         }
     }
     result
@@ -381,11 +379,11 @@ pub fn update_terminal_height(height: u16) {
 
 /// Detect terminal height
 pub fn detect_terminal_height() -> u16 {
-    if let Some(lines) = codevar_env::env_var("LINES") {
-        if let Ok(h) = lines.parse::<u16>() {
-            update_terminal_height(h);
-            return h;
-        }
+    if let Some(lines) = codevar_env::env_var("LINES")
+        && let Ok(h) = lines.parse::<u16>()
+    {
+        update_terminal_height(h);
+        return h;
     }
     #[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
     {

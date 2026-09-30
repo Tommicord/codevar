@@ -35,7 +35,7 @@ pub fn seal(key: &[u8], nonce: &[u8; 12], aad: &[u8], plaintext: &[u8]) -> Resul
     Ok(out)
 }
 
-/// Opens ciphertext||tag produced by [`seal`].
+/// Opens ciphertext or tag produced by [`seal`].
 #[allow(clippy::result_unit_err)]
 pub fn open(key: &[u8], nonce: &[u8; 12], aad: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, ()> {
     if key.len() != KEY_LEN || ciphertext.len() < TAG_LEN {

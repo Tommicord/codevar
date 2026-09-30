@@ -357,7 +357,6 @@ impl SystemTime {
 #[repr(transparent)]
 struct TimeNanos(u32);
 const _: () = {
-    assert!(u32::MIN == 0);
     let ulow: u32 = 0u32;
     let uhigh: u32 = 999_999_999u32;
     assert!(ulow <= uhigh);
@@ -365,15 +364,6 @@ const _: () = {
 };
 
 impl TimeNanos {
-    #[inline]
-    pub const fn new(val: u32) -> Option<Self> {
-        if val >= 0u32 && val <= 999_999_999u32 {
-            Some(TimeNanos(val))
-        } else {
-            None
-        }
-    }
-
     /// Constructs an instance of this type from the underlying integer
     /// primitive without checking whether its zero.
     ///
@@ -638,7 +628,7 @@ impl TimeDuration {
         let subsec_nanos = unsafe { TimeNanos::new_unchecked(subsec_nanos) };
 
         Some(TimeDuration {
-            secs: secs as u64,
+            secs,
             nanos: subsec_nanos,
         })
     }
@@ -748,7 +738,6 @@ impl TimeDuration {
     /// assert_eq!(duration.as_secs(), 5);
     /// assert_eq!(duration.subsec_nanos(), 10_000_000);
     /// ```
-
     #[must_use]
     #[inline]
     pub const fn subsec_nanos(&self) -> u32 {
@@ -873,8 +862,7 @@ impl TimeDuration {
                   without modifying the original"]
     #[inline]
     pub fn saturating_add(self, rhs: TimeDuration) -> TimeDuration {
-        self.checked_add(rhs)
-            .unwrap_or_else(|| TimeDuration::MAX)
+        self.checked_add(rhs).unwrap_or(TimeDuration::MAX)
     }
 
     /// Checked `TimeDuration` subtraction. Computes `self - other`, returning [`None`]
@@ -924,7 +912,7 @@ impl TimeDuration {
     #[inline]
     pub fn saturating_sub(self, rhs: TimeDuration) -> TimeDuration {
         self.checked_sub(rhs)
-            .unwrap_or_else(|| TimeDuration::ZERO)
+            .unwrap_or(TimeDuration::ZERO)
     }
 
     /// Checked `TimeDuration` multiplication. Computes `self * other`, returning
@@ -949,7 +937,7 @@ impl TimeDuration {
         self.secs.checked_mul(rhs as u64).and_then(|s| {
             if let Some(secs) = s.checked_add(extra_secs) {
                 debug_assert!(nanos < NANOS_PER_SEC);
-                return Some(TimeDuration::new(secs, nanos));
+                Some(TimeDuration::new(secs, nanos))
             } else {
                 None
             }
@@ -971,8 +959,7 @@ impl TimeDuration {
                   without modifying the original"]
     #[inline]
     pub fn saturating_mul(self, rhs: u32) -> TimeDuration {
-        self.checked_mul(rhs)
-            .unwrap_or_else(|| TimeDuration::MAX)
+        self.checked_mul(rhs).unwrap_or(TimeDuration::MAX)
     }
 
     /// Checked `TimeDuration` division. Computes `self / other`, returning [`None`]
@@ -1212,7 +1199,7 @@ macro_rules! sum_durations {
         total_secs = total_secs
             .checked_add(total_nanos / NANOS_PER_SEC as u64)
             .expect("overflow in iter::sum over durations");
-        total_nanos = total_nanos % NANOS_PER_SEC as u64;
+        total_nanos %= NANOS_PER_SEC as u64;
         TimeDuration::new(total_secs, total_nanos as u32)
     }};
 }

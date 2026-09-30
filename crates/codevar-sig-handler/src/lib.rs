@@ -418,11 +418,11 @@ unsafe fn errno() -> i32 {
 #[cfg(unix)]
 mod unix {
     use super::{ENTERED, InstallError, dump_frames, is_fault_signal, signal_name, write_line};
+    use codevar_io::{Stderr, Write};
     use core::ffi::c_void;
     use core::mem::{self, MaybeUninit};
     use core::ptr;
     use core::sync::atomic::Ordering;
-    use codevar_io::{Stderr, Write};
 
     /// Maximum signals we track (fault + termination + job-control sets
     /// with Linux extras fits comfortably below this).
@@ -862,7 +862,7 @@ mod unix {
 
 #[cfg(all(windows, not(target_vendor = "uwp")))]
 mod windows {
-    use super::{signal_name, InstallError, ENTERED};
+    use super::{ENTERED, InstallError, signal_name};
     use super::{capture_frames, dump_frames, write_console, write_frame, write_line};
     use core::ffi::c_void;
     use core::fmt::{self, Write as _};

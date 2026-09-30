@@ -264,15 +264,6 @@ pub struct SimpleMessage {
     pub message: &'static str,
 }
 
-/// The type of raw OS error codes returned by [`Error::raw_os_error`].
-///
-/// This is an [`i32`] on all currently supported platforms, but platforms
-/// added in the future (such as UEFI) may use a different primitive type like
-/// [`usize`]. Use `as`or [`into`] conversions where applicable to ensure maximum
-/// portability.
-///
-/// [`into`]: Into::into
-type RawOsError = i32;
 // Only derive debug in tests, to make sure it
 // doesn't accidentally get printed.
 #[cfg_attr(test, derive(Debug))]
@@ -298,7 +289,7 @@ unsafe impl Send for Repr {}
 unsafe impl Sync for Repr {}
 
 impl Repr {
-    pub(super) fn new_custom(b: Box<Custom>) -> Self {
+    fn new_custom(b: Box<Custom>) -> Self {
         let p = Box::into_raw(b).cast::<u8>();
         // Should only be possible if an allocator handed out a pointer with
         // wrong alignment.
@@ -324,7 +315,10 @@ impl Repr {
         let res = Self(unsafe { NonNull::new_unchecked(tagged) }, PhantomData);
         // quickly smoke-check we encoded the right thing (This generally will
         // only run in std's tests, unless the user uses -Zbuild-std)
-        debug_assert!(matches!(res.data(), ErrorData::Custom(_)), "repr(custom) encoding failed");
+        debug_assert!(
+            matches!(res.data(), ErrorData::Custom(_)),
+            "repr(custom) encoding failed"
+        );
         res
     }
 
@@ -349,23 +343,26 @@ impl Repr {
     #[inline]
     pub(super) const fn new_simple_message(m: &'static SimpleMessage) -> Self {
         // Safety: References are never null.
-        Self(unsafe { NonNull::new_unchecked(m as *const _ as *mut ()) }, PhantomData)
+        Self(
+            unsafe { NonNull::new_unchecked(m as *const _ as *mut ()) },
+            PhantomData,
+        )
     }
 
     #[inline]
-    pub(super) fn data(&self) -> ErrorData<&Custom> {
+    fn data(&self) -> ErrorData<&Custom> {
         // Safety: We're a Repr, decode_repr is fine.
         unsafe { decode_repr(self.0, |c| &*c) }
     }
 
     #[inline]
-    pub(super) fn data_mut(&mut self) -> ErrorData<&mut Custom> {
+    fn data_mut(&mut self) -> ErrorData<&mut Custom> {
         // Safety: We're a Repr, decode_repr is fine.
         unsafe { decode_repr(self.0, |c| &mut *c) }
     }
 
     #[inline]
-    pub(super) fn into_data(self) -> ErrorData<Box<Custom>> {
+    fn into_data(self) -> ErrorData<Box<Custom>> {
         let this = core::mem::ManuallyDrop::new(self);
         // Safety: We're a Repr, decode_repr is fine. The `Box::from_raw` is
         // safe because we prevent double-drop using `ManuallyDrop`.
@@ -413,7 +410,10 @@ where
             // It would be correct for us to use `ptr::byte_sub` here (see the
             // comment above the `wrapping_add` call in `new_custom` for why),
             // but it isn't clear that it makes a difference, so we don't.
-            let custom = ptr.as_ptr().wrapping_byte_sub(TAG_CUSTOM).cast::<Custom>();
+            let custom = ptr
+                .as_ptr()
+                .wrapping_byte_sub(TAG_CUSTOM)
+                .cast::<Custom>();
             ErrorData::Custom(make_custom(custom))
         }
         _ => {
@@ -508,8 +508,8 @@ static_assert!(@usize_eq: size_of::<Box<Custom>>(), 8);
 
 static_assert!((TAG_MASK + 1).is_power_of_two());
 // And they must have sufficient alignment.
-static_assert!(align_of::<SimpleMessage>() >= TAG_MASK + 1);
-static_assert!(align_of::<Custom>() >= TAG_MASK + 1);
+static_assert!(align_of::<SimpleMessage>() > TAG_MASK);
+static_assert!(align_of::<Custom>() > TAG_MASK);
 
 static_assert!(@usize_eq: TAG_MASK & TAG_SIMPLE_MESSAGE, TAG_SIMPLE_MESSAGE);
 static_assert!(@usize_eq: TAG_MASK & TAG_CUSTOM, TAG_CUSTOM);
@@ -580,7 +580,9 @@ impl From<ErrorKind> for Error {
     /// ```
     #[inline]
     fn from(kind: ErrorKind) -> Error {
-        Error {repr: Repr::new_simple(kind)}
+        Error {
+            repr: Repr::new_simple(kind),
+        }
     }
 }
 
@@ -618,7 +620,9 @@ impl Error {
         Self::_new(kind, error.into())
     }
     fn _new(kind: ErrorKind, error: Box<dyn error::Error + Send + Sync>) -> Error {
-        Error { repr: Repr::new_custom(Box::new(Custom { kind, error })) }
+        Error {
+            repr: Repr::new_custom(Box::new(Custom { kind, error })),
+        }
     }
 
     /// Creates a new I/O error from an arbitrary error payload.
@@ -658,7 +662,9 @@ impl Error {
     #[inline]
     #[doc(hidden)]
     pub const fn from_static_message(msg: &'static SimpleMessage) -> Error {
-        Self { repr: Repr::new_simple_message(msg) }
+        Self {
+            repr: Repr::new_simple_message(msg),
+        }
     }
 
     /// Returns a reference to the inner error wrapped by this error (if any).
@@ -822,7 +828,7 @@ impl alloc::fmt::Debug for Repr {
 impl alloc::fmt::Display for Error {
     fn fmt(&self, fmt: &mut alloc::fmt::Formatter<'_>) -> alloc::fmt::Result {
         match self.repr.data() {
-            ErrorData::Custom(ref c) => c.error.fmt(fmt),
+            ErrorData::Custom(c) => c.error.fmt(fmt),
             ErrorData::Simple(kind) => write!(fmt, "{}", kind.as_str()),
             ErrorData::SimpleMessage(msg) => msg.message.fmt(fmt),
         }

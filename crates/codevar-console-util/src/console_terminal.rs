@@ -264,20 +264,14 @@ impl Terminal {
 
     /// Check if terminal supports Unicode
     pub fn supports_unicode() -> bool {
-        if let Some(lang) = codevar_env::env_var("LANG") {
-            if lang.to_lowercase().contains("utf") {
-                return true;
-            }
+        if codevar_env::env_var("LANG").is_some_and(|lang| lang.to_lowercase().contains("utf")) {
+            return true;
         }
-        if let Some(lc_all) = codevar_env::env_var("LC_ALL") {
-            if lc_all.to_lowercase().contains("utf") {
-                return true;
-            }
+        if codevar_env::env_var("LC_ALL").is_some_and(|lc_all| lc_all.to_lowercase().contains("utf")) {
+            return true;
         }
-        if let Some(lc_ctype) = codevar_env::env_var("LC_CTYPE") {
-            if lc_ctype.to_lowercase().contains("utf") {
-                return true;
-            }
+        if codevar_env::env_var("LC_CTYPE").is_some_and(|lc_ctype| lc_ctype.to_lowercase().contains("utf")) {
+            return true;
         }
 
         // Most modern terminals support Unicode
@@ -301,11 +295,11 @@ impl Terminal {
     }
 
     pub fn detect_size() -> (u16, u16) {
-        if let (Some(w), Some(h)) = (codevar_env::env_var("COLUMNS"), codevar_env::env_var("LINES")) {
-            if let (Ok(w), Ok(h)) = (w.parse::<u16>(), h.parse::<u16>()) {
-                Self::update_size(w, h);
-                return (w, h);
-            }
+        if let (Some(w), Some(h)) = (codevar_env::env_var("COLUMNS"), codevar_env::env_var("LINES"))
+            && let (Ok(w), Ok(h)) = (w.parse::<u16>(), h.parse::<u16>())
+        {
+            Self::update_size(w, h);
+            return (w, h);
         }
         #[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
         {
@@ -331,13 +325,11 @@ impl Terminal {
         {
             use libc::{STDOUT_FILENO, TIOCGWINSZ, ioctl, winsize};
             let mut ws: winsize = unsafe { core::mem::zeroed() };
-            if unsafe { ioctl(STDOUT_FILENO, TIOCGWINSZ, &mut ws) } >= 0 {
-                if ws.ws_col > 0 && ws.ws_row > 0 {
-                    let width = ws.ws_col;
-                    let height = ws.ws_row;
-                    Self::update_size(width, height);
-                    return (width, height);
-                }
+            if unsafe { ioctl(STDOUT_FILENO, TIOCGWINSZ, &mut ws) } >= 0 && ws.ws_col > 0 && ws.ws_row > 0 {
+                let width = ws.ws_col;
+                let height = ws.ws_row;
+                Self::update_size(width, height);
+                return (width, height);
             }
         }
         (80, 24)
@@ -445,11 +437,6 @@ impl Terminal {
         }
         let mut mode = 0u32;
         unsafe { GetConsoleMode(handle, &mut mode) }.is_ok()
-    }
-
-    #[cfg(not(all(target_os = "windows", not(target_arch = "wasm32"))))]
-    fn windows_vt_supported() -> bool {
-        false
     }
 }
 

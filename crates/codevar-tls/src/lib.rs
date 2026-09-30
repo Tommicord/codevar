@@ -22,6 +22,7 @@ pub mod tls_connection;
 pub mod tls_connection_conf;
 pub mod tls_crypto_aes_gcm;
 pub mod tls_crypto_chacha20poly1305;
+pub mod tls_crypto_ct;
 pub mod tls_crypto_device;
 pub mod tls_crypto_hash;
 pub mod tls_crypto_random;

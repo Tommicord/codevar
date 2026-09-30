@@ -69,12 +69,6 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
-cfg_if::cfg_if! {
-    if #[cfg(all(unix, not(target_arch = "wasm32")))] {
-        use libc;
-    }
-}
-
 /// Maximum file size (16 MiB) accepted by [`read`] and [`read_to_string`].
 const MAX_FILE_SIZE: usize = 16 * 1024 * 1024;
 

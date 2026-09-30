@@ -98,7 +98,7 @@ impl TlsAead {
         open(keys.alg, &keys.key, &nonce, aad, ciphertext)
     }
 
-    /// TLS 1.2 AES-GCM (RFC 5288): nonce = 4-byte salt || 8-byte explicit nonce.
+    /// TLS 1.2 AES-GCM (RFC 5288): nonce = 4-byte salt, 8-byte explicit nonce.
     pub fn encrypt_tls12_gcm(
         keys: &AeadKey,
         explicit_nonce: [u8; 8],

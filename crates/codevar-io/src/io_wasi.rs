@@ -325,7 +325,7 @@ pub fn is_ebadf(err: &ErrorKind) -> bool {
 pub const STDIN_BUF_SIZE: usize = 8192;
 
 /// Returns a writer suitable for panic output.
-pub fn panic_output() -> impl Write<Error =ErrorKind> {
+pub fn panic_output() -> impl Write<Error = ErrorKind> {
     Stderr::new()
 }
 
