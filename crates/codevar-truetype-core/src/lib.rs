@@ -813,7 +813,7 @@ impl fmt::Debug for LoadFlags {
     }
 }
 
-/// Flags for [`Open_Args::flags`] (`OPEN_XXX`).
+/// Flags for [`OpenArgs::flags`] (`OPEN_XXX`).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[repr(transparent)]
 pub struct OpenFlags(pub u32);
@@ -2857,7 +2857,7 @@ fn ft_hypot_approx(x: i64, y: i64) -> i64 {
 /// point by `(dx, dy)`.
 ///
 /// This is the scalar reference implementation; the SIMD dispatcher
-/// (`translate_points_simd`) must produce bit-identical results.
+/// (`translate_points`) must produce bit-identical results.
 #[inline]
 pub fn translate_points(points: &mut [Vector], dx: Pos, dy: Pos) {
     for p in points.iter_mut() {
@@ -2870,7 +2870,7 @@ pub fn translate_points(points: &mut [Vector], dx: Pos, dy: Pos) {
 /// to every point with [`vector_transform`].
 ///
 /// This is the scalar reference implementation; the SIMD dispatcher
-/// (`transform_points_simd`) must produce bit-identical results.
+/// (`transform_points`) must produce bit-identical results.
 #[inline]
 pub fn transform_points(points: &mut [Vector], matrix: &Matrix) {
     for p in points.iter_mut() {
@@ -4671,6 +4671,2701 @@ impl SizeRequest {
         } else {
             self.height
         }
+    }
+}
+
+impl<T: Copy> LibCell<T> {
+    /// Copies the current value out of the cell (shared borrow).
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_HANDLE`] — the cell is currently exclusively
+    ///   borrowed by another accessor.
+    #[inline]
+    pub fn get(&self) -> TtResult<T> {
+        Ok(*self.borrow()?)
+    }
+
+    /// Stores `value` in the cell (exclusive borrow).
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_HANDLE`] — the cell is currently borrowed.
+    #[inline]
+    pub fn set(&self, value: T) -> TtResult<()> {
+        self.replace(value)?;
+        Ok(())
+    }
+}
+
+/// `FT_Parameter`: a tagged, type-erased open parameter (`FT_OpenArgs.param`).
+///
+/// FreeType passes driver-specific records (incremental-interface
+/// descriptors, `T1_FontInfo` hints, ...) as C `(tag, data)` pairs; here the
+/// payload is a boxed `Any` and the tag identifies it.
+pub struct Parameter {
+    /// The four-byte parameter tag (e.g. `incremental`).
+    pub tag: Tag,
+    /// The type-erased payload; downcast by the receiving driver.
+    pub data: Box<dyn core::any::Any + Send + Sync>,
+}
+
+/// `FT_OpenArgs`: arguments to `FT_Open_Face` (`FT_OPEN_XXX` flags).
+///
+/// Corresponds to `FT_OpenArgsRec`; exactly the fields selected by
+/// `flags` are used.  `pathname` is a plain path string instead of a C
+/// `char*`, and the driver is identified by its static class instead of a
+/// raw `FT_Driver` pointer.
+#[derive(Default)]
+pub struct OpenArgs {
+    /// Bit set of [`OpenFlags`] describing which fields are valid.
+    pub flags: OpenFlags,
+    /// `OPEN_MEMORY`: the font file image (copied by [`Stream::from_data`]).
+    pub memory: Option<Vec<u8>>,
+    /// `OPEN_PATHNAME`: filesystem path of the font file.
+    pub pathname: Option<String>,
+    /// `OPEN_STREAM`: a user-provided stream source.
+    pub stream: Option<Arc<dyn StreamSource>>,
+    /// `OPEN_DRIVER`: restrict probing to this driver class.
+    pub driver: Option<&'static DriverClass>,
+    /// `OPEN_PARAMS`: extra driver parameters.
+    pub params: Vec<Parameter>,
+}
+
+/// Function pointer of `FT_Bitmap_LcdFilterFunc`: filters `bitmap` in place
+/// for the given render mode.
+pub type LcdFilterFunc = fn(bitmap: &mut Bitmap, mode: RenderMode, state: &LcdFilterState);
+
+/// The per-library LCD filter state (`library->lcd_weights`,
+/// `lcd_filter_func`, `lcd_extra`, `lcd_filter` in FreeType).
+///
+/// The filter is **off by default** (exactly like the zero-initialised
+/// `FT_LibraryRec`); call [`LcdFilterState::set_filter`] to activate it.
+/// The smooth renderer pads its bitmaps by [`LcdFilterState::extra`] pixels
+/// and applies the filter after rasterisation, mirroring
+/// `ftsmooth.c`'s `lcd_filter_func` calls.
+#[derive(Clone, Debug)]
+pub struct LcdFilterState {
+    /// The selected filter (recorded for `FT_Library_GetLcdFilter`).
+    pub filter: LcdFilter,
+    /// The 5-tap FIR weights used by [`Self::apply`] in FIR mode.
+    pub weights: [u8; 5],
+    /// Extra pixels of padding the renderer must add on each side
+    /// (`lcd_extra`; 2 for the FIR filters, 0 otherwise).
+    pub extra: i32,
+    /// The active filter function; `None` means filtering is disabled.
+    pub func: Option<LcdFilterFunc>,
+}
+
+impl Default for LcdFilterState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LcdFilterState {
+    /// Creates the default (inactive) state, matching a freshly
+    /// zero-allocated `FT_LibraryRec`: no filter, `extra == 0`.
+    #[inline]
+    pub const fn new() -> Self {
+        LcdFilterState {
+            filter: LcdFilter::None,
+            weights: [0; 5],
+            extra: 0,
+            func: None,
+        }
+    }
+
+    /// `FT_Library_SetLcdFilter`: selects `filter`.
+    ///
+    /// Mirrors the `FT_CONFIG_OPTION_SUBPIXEL_RENDERING` branch of
+    /// `FT_Library_SetLcdFilter`: installs the default/light FIR tables or
+    /// the legacy intra-pixel filter (the `USE_LEGACY` branch of
+    /// ftlcdfil.c), or disables filtering for [`LcdFilter::None`].
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_ARGUMENT`] — [`LcdFilter::Legacy1`]: FreeType
+    ///   2.6.0 has no `FT_LCD_FILTER_LEGACY1` case, so its `default:`
+    ///   branch reports `Invalid_Argument` for the raw value `3`.
+    pub fn set_filter(&mut self, filter: LcdFilter) -> TtResult<()> {
+        match filter {
+            LcdFilter::None => {
+                self.func = None;
+                self.extra = 0;
+            }
+            LcdFilter::Default => {
+                // ftlcdfil.c: default_filter = { 0x10, 0x40, 0x70, 0x40, 0x10 }
+                // (sums above 256: a cheap gamma correction).
+                self.weights = [0x10, 0x40, 0x70, 0x40, 0x10];
+                self.func = Some(fir_filter);
+                self.extra = 2;
+            }
+            LcdFilter::Light => {
+                // ftlcdfil.c: light_filter = { 0x00, 0x55, 0x56, 0x55, 0x00 }
+                self.weights = [0x00, 0x55, 0x56, 0x55, 0x00];
+                self.func = Some(fir_filter);
+                self.extra = 2;
+            }
+            LcdFilter::Legacy => {
+                self.func = Some(legacy_filter);
+                self.extra = 0;
+            }
+            LcdFilter::Legacy1 => return Err(TtError::INVALID_ARGUMENT),
+        }
+        self.filter = filter;
+        Ok(())
+    }
+
+    /// `FT_Library_SetLcdFilterWeights`: installs custom FIR weights.
+    ///
+    /// `weights` must contain exactly five taps (the C API copies 5 bytes).
+    /// As in C, this only replaces the taps; the filter function is
+    /// installed by [`Self::set_filter`] (call it afterwards for the
+    /// change to take effect if no FIR filter is active yet).
+    pub fn set_weights(&mut self, weights: [u8; 5]) {
+        self.weights = weights;
+    }
+
+    /// `true` when a filter is installed (renderers check
+    /// `library->lcd_filter_func != NULL` before padding and filtering).
+    #[inline]
+    pub fn is_active(&self) -> bool {
+        self.func.is_some()
+    }
+
+    /// Applies the active filter to `bitmap` (no-op when disabled);
+    /// the shared entry point called by the smooth renderer after
+    /// rasterisation.
+    #[inline]
+    pub fn apply(&self, bitmap: &mut Bitmap, mode: RenderMode) {
+        if let Some(func) = self.func {
+            func(bitmap, mode, self);
+        }
+    }
+}
+
+/// `_ft_lcd_filter_fir`: in-place 5-tap FIR filter for the default and
+/// light filters (ftlcdfil.c), horizontal for [`RenderMode::Lcd`] and
+/// vertical for [`RenderMode::LcdV`].
+fn fir_filter(bitmap: &mut Bitmap, mode: RenderMode, state: &LcdFilterState) {
+    let weights = state.weights;
+    let width = bitmap.width;
+    let height = bitmap.rows;
+
+    // Horizontal in-place FIR filter (the C code requires width >= 4).
+    if mode == RenderMode::Lcd && width >= 4 {
+        for y in 0..height {
+            // `row`/`row_mut` honour the pitch flow of the bitmap.
+            let row = match bitmap.row_mut(y) {
+                Some(row) => row,
+                None => return,
+            };
+            let mut fir = [0u32; 4];
+
+            let val = u32::from(row[0]);
+            fir[0] = u32::from(weights[2]) * val;
+            fir[1] = u32::from(weights[3]) * val;
+            fir[2] = u32::from(weights[4]) * val;
+            fir[3] = 0;
+
+            let val = u32::from(row[1]);
+            fir[0] += u32::from(weights[1]) * val;
+            fir[1] += u32::from(weights[2]) * val;
+            fir[2] += u32::from(weights[3]) * val;
+            fir[3] += u32::from(weights[4]) * val;
+
+            for xx in 2..width as usize {
+                let val = u32::from(row[xx]);
+                let mut pix = fir[0] + u32::from(weights[0]) * val;
+                fir[0] = fir[1] + u32::from(weights[1]) * val;
+                fir[1] = fir[2] + u32::from(weights[2]) * val;
+                fir[2] = fir[3] + u32::from(weights[3]) * val;
+                fir[3] = u32::from(weights[4]) * val;
+
+                pix = fir_saturate(pix);
+                row[xx - 2] = pix as u8;
+            }
+
+            // Trailing taps for the last two columns (C epilogue).
+            row[width as usize - 2] = fir_saturate(fir[0]) as u8;
+            row[width as usize - 1] = fir_saturate(fir[1]) as u8;
+        }
+    }
+    // Vertical in-place FIR filter (the C code requires height >= 4).
+    // A column spans several rows, so the pixels are extracted first
+    // (shared borrows) and the filtered values written back afterwards
+    // (exclusive borrows), mirroring the C loop with `col += pitch`.
+    else if mode == RenderMode::LcdV && height >= 4 {
+        let h = height as usize;
+        for x in 0..width as usize {
+            let mut column = Vec::with_capacity(h);
+            for y in 0..height {
+                column.push(
+                    bitmap
+                        .row(y)
+                        .and_then(|row| row.get(x).copied())
+                        .map_or(0, u32::from),
+                );
+            }
+
+            let mut fir = [0u32; 4];
+            let val = column[0];
+            fir[0] = u32::from(weights[2]) * val;
+            fir[1] = u32::from(weights[3]) * val;
+            fir[2] = u32::from(weights[4]) * val;
+            fir[3] = 0;
+
+            let val = column[1];
+            fir[0] += u32::from(weights[1]) * val;
+            fir[1] += u32::from(weights[2]) * val;
+            fir[2] += u32::from(weights[3]) * val;
+            fir[3] += u32::from(weights[4]) * val;
+
+            let mut out = vec![0u8; h];
+            for yy in 2..h {
+                let val = column[yy];
+                let pix = fir[0] + u32::from(weights[0]) * val;
+                fir[0] = fir[1] + u32::from(weights[1]) * val;
+                fir[1] = fir[2] + u32::from(weights[2]) * val;
+                fir[2] = fir[3] + u32::from(weights[3]) * val;
+                fir[3] = u32::from(weights[4]) * val;
+                out[yy - 2] = fir_saturate(pix) as u8;
+            }
+            out[h - 2] = fir_saturate(fir[0]) as u8;
+            out[h - 1] = fir_saturate(fir[1]) as u8;
+
+            for y in 0..height {
+                if let Some(row) = bitmap.row_mut(y)
+                    && let Some(cell) = row.get_mut(x)
+                {
+                    *cell = out[y as usize];
+                }
+            }
+        }
+    }
+}
+
+/// The FIR rounding + saturation idiom of ftlcdfil.c:
+/// `pix >>= 8; pix |= (FT_UInt)-(FT_Int)(pix >> 8); return (FT_Byte)pix;`
+#[inline]
+fn fir_saturate(pix: u32) -> u32 {
+    let pix = pix >> 8;
+    let pix = pix | (pix >> 8).wrapping_neg();
+    pix & 0xFF
+}
+
+/// `_ft_lcd_filter_legacy`: the legacy intra-pixel filter of ftlcdfil.c
+/// (`USE_LEGACY`), horizontal for [`RenderMode::Lcd`] and vertical for
+/// [`RenderMode::LcdV`].
+fn legacy_filter(bitmap: &mut Bitmap, mode: RenderMode, _state: &LcdFilterState) {
+    // ftlcdfil.c: `static const unsigned int filters[3][3]`.
+    const FILTERS: [[u32; 3]; 3] = [
+        [65538 * 9 / 13, 65538 / 6, 65538 / 13],
+        [65538 * 3 / 13, 65538 * 4 / 6, 65538 * 3 / 13],
+        [65538 / 13, 65538 / 6, 65538 * 9 / 13],
+    ];
+
+    let width = bitmap.width;
+    let height = bitmap.rows;
+
+    if mode == RenderMode::Lcd && width >= 3 {
+        for y in 0..height {
+            let row = match bitmap.row_mut(y) {
+                Some(row) => row,
+                None => return,
+            };
+            let mut xx = 0usize;
+            while xx + 3 <= width as usize {
+                let mut acc = [0u32; 3];
+                for (k, cell) in row[xx..xx + 3].iter().enumerate() {
+                    let p = u32::from(*cell);
+                    acc[0] += FILTERS[k][0] * p;
+                    acc[1] += FILTERS[k][1] * p;
+                    acc[2] += FILTERS[k][2] * p;
+                }
+                row[xx] = (acc[0] / 65536) as u8;
+                row[xx + 1] = (acc[1] / 65536) as u8;
+                row[xx + 2] = (acc[2] / 65536) as u8;
+                xx += 3;
+            }
+        }
+    } else if mode == RenderMode::LcdV && height >= 3 {
+        for x in 0..width as usize {
+            let mut yy = 0u32;
+            while yy + 3 <= height {
+                let mut acc = [0u32; 3];
+                for (k, weight) in FILTERS.iter().enumerate() {
+                    let p = bitmap
+                        .row(yy + k as u32)
+                        .and_then(|row| row.get(x))
+                        .copied()
+                        .unwrap_or(0);
+                    let p = u32::from(p);
+                    acc[0] += weight[0] * p;
+                    acc[1] += weight[1] * p;
+                    acc[2] += weight[2] * p;
+                }
+                for k in 0..3u32 {
+                    if let Some(row) = bitmap.row_mut(yy + k)
+                        && let Some(cell) = row.get_mut(x)
+                    {
+                        *cell = (acc[k as usize] / 65536) as u8;
+                    }
+                }
+                yy += 3;
+            }
+        }
+    }
+}
+
+/// `FT_SpanFunc`: callback invoked by a raster in direct-rendering mode
+/// with a batch of spans on scanline `y`.
+pub type SpanFunc = fn(y: i32, count: usize, spans: &[Span], user: &mut dyn core::any::Any);
+
+/// `FT_Raster_Params`: parameters passed to [`Raster::render`].
+///
+/// Field-by-field port of `FT_Raster_ParamsRec`.  The three fields marked
+/// "unused" in FreeType 2.6 (`black_spans`, `bit_test`, `bit_set`) are
+/// omitted; they are documented as deprecated/no-ops in `ftimage.h`.
+/// `target` is `&mut` because the C raster writes through the `const`
+/// pointer into the caller's bitmap buffer.
+pub struct RasterParams<'a> {
+    /// Target bitmap the raster writes into (unless [`RasterParams::user`]
+    /// direct mode is active).
+    pub target: &'a mut Bitmap,
+    /// The source outline.
+    pub source: &'a Outline,
+    /// `FT_RASTER_FLAG_XXX` bits (see [`RasterFlags`]).
+    pub flags: RasterFlags,
+    /// Direct-rendering span callback ([`RasterFlags::DIRECT`]).
+    pub gray_spans: Option<SpanFunc>,
+    /// Opaque user data handed to [`RasterParams::gray_spans`].
+    pub user: Option<&'a mut dyn core::any::Any>,
+    /// Clip box ([`RasterFlags::CLIP`]).
+    pub clip_box: BBox,
+}
+
+/// `FT_Raster_Funcs.raster_render` and friends, modelled as the trait a
+/// raster object implements (the C `FT_Raster` opaque handle).
+///
+/// Implementations must be usable from any thread (`Send + Sync`) because
+/// renderer modules are shared through [`Library`].
+pub trait Raster: Send + Sync {
+    /// `FT_Raster_ResetFunc`: (re)uses `pool` (of `pool_size` bytes) as
+    /// workspace; `None` means the raster allocates internally.
+    /// `library->raster_pool` is `NULL` in FreeType 2.6, so `None` is the
+    /// normal path.
+    fn reset(&mut self, pool: Option<&mut [u8]>, pool_size: usize);
+
+    /// `FT_Raster_SetModeFunc`: sets a raster-specific mode.
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_ARGUMENT`] — the tag is unknown to this raster.
+    fn set_mode(&mut self, mode: u64, value: &mut dyn core::any::Any) -> TtResult<()>;
+
+    /// `FT_Raster_RenderFunc`: rasterises `params.source` into
+    /// `params.target`.
+    ///
+    /// # Errors
+    ///
+    /// FreeType's `RASTER_XXX` errors (corrupt source, overflow,
+    /// uninitialized raster, ...) are mapped to the corresponding
+    /// [`TtError`] values.
+    fn render(&mut self, params: &mut RasterParams<'_>) -> TtResult<()>;
+}
+
+/// `FT_Raster_Funcs`: the static descriptor of a rasterizer
+/// (`ftrend1.c`'s `ft_raster1_raster_class`, `ftsmooth.c`'s gray raster).
+///
+/// The C record also carries `raster_reset/set_mode/render/done` function
+/// pointers; in Rust those are the [`Raster`] trait methods, so only the
+/// factory and glyph format remain static.
+pub struct RasterFuncs {
+    /// `glyph_format` served by rasters of this class
+    /// (`FT_GLYPH_FORMAT_OUTLINE`).
+    pub glyph_format: GlyphFormat,
+    /// `FT_Raster_NewFunc`: creates a raster object.
+    pub new: fn(memory: &Memory) -> TtResult<Box<dyn Raster>>,
+}
+
+/// `FT_Module_Constructor`: module instance initialiser.
+pub type ModuleInitFunc = fn(module: &mut Module) -> TtResult<()>;
+
+/// `FT_Module_Destructor`: module instance finaliser.
+pub type ModuleDoneFunc = fn(module: &mut Module);
+
+/// `FT_Module_Requester`: returns the module's service `id` (see
+/// [`ServiceDesc`]); the result must be a `&'static` interface record.
+pub type ModuleRequesterFunc =
+    fn(module: &Module, id: &str) -> Option<&'static (dyn core::any::Any + Send + Sync)>;
+
+/// `FT_Module_Class`: the static descriptor of a module.
+///
+/// Field-for-field port of `FT_Module_ClassRec`.  `module_size` keeps the
+/// C byte size for documentation/compatibility (Rust sizes objects itself);
+/// `module_interface` and `get_interface` expose the service records
+/// (`FT_SERVICE_ID_XXX` lookups).
+pub struct ModuleClass {
+    /// The kind of class, used to recover the concrete driver/renderer
+    /// descriptor from a [`ModuleClass`] reference (the C code casts
+    /// `root` back to `FT_Driver_Class`/`FT_Renderer_Class`).
+    pub kind: ModuleKind,
+    /// `FT_MODULE_XXX` bit set (font driver, renderer, hinter, ...).
+    pub module_flags: u32,
+    /// `sizeof` of the C instance record (informational).
+    pub module_size: i64,
+    /// Module name as used by `FT_Get_Module` (e.g. `"truetype"`).
+    pub module_name: &'static str,
+    /// `FT_VERSION` of the module (16.16 fixed).
+    pub module_version: Fixed,
+    /// FreeType version the module requires (16.16 fixed).
+    pub module_requires: Fixed,
+    /// The module's primary service interface (or `NULL`).
+    pub module_interface: Option<&'static (dyn core::any::Any + Send + Sync)>,
+    /// `FT_Module_Constructor`.
+    pub module_init: Option<ModuleInitFunc>,
+    /// `FT_Module_Destructor`.
+    pub module_done: Option<ModuleDoneFunc>,
+    /// `FT_Module_Requester`.
+    pub get_interface: Option<ModuleRequesterFunc>,
+}
+
+/// `FT_ServiceDescRec`: a `(service id, interface)` pair of a module's
+/// service list (`FT_SERVICES_GET`).
+pub struct ServiceDesc {
+    /// Service identifier (e.g. `"postscript-names"`).
+    pub id: &'static str,
+    /// The interface record exported for `id`.
+    pub interface: &'static (dyn core::any::Any + Send + Sync),
+}
+
+/// Looks up `id` in `services` (equivalent of `ft_service_list_lookup`).
+#[must_use]
+pub fn service_list_lookup(
+    services: &'static [ServiceDesc],
+    id: &str,
+) -> Option<&'static (dyn core::any::Any + Send + Sync)> {
+    services
+        .iter()
+        .find(|desc| desc.id == id)
+        .map(|desc| desc.interface)
+}
+
+/// Discriminates a [`ModuleClass`] as a plain module, font driver or
+/// renderer (see [`ModuleClass::kind`]).
+#[derive(Clone, Copy)]
+pub enum ModuleKind {
+    /// A plain module with no class extension.
+    Plain,
+    /// A font driver class (`FT_Driver_ClassRec.root` embedding).
+    Driver(&'static DriverClass),
+    /// A renderer class (`FT_Renderer_ClassRec.root` embedding).
+    Renderer(&'static RendererClass),
+}
+
+impl ModuleKind {
+    /// The driver class when [`Self::Driver`].
+    #[inline]
+    pub fn as_driver(self) -> Option<&'static DriverClass> {
+        match self {
+            Self::Driver(class) => Some(class),
+            _ => None,
+        }
+    }
+
+    /// The renderer class when [`Self::Renderer`].
+    #[inline]
+    pub fn as_renderer(self) -> Option<&'static RendererClass> {
+        match self {
+            Self::Renderer(class) => Some(class),
+            _ => None,
+        }
+    }
+}
+
+/// The instance-specific part of a loaded [`Module`], mirroring the C
+/// union of driver/renderer/`FT_ModuleRec` extra data.
+#[derive(Default)]
+pub enum ModuleInstance {
+    /// A plain module (psnames, pshinter, autohinter): no extra state
+    /// beyond the class descriptor.
+    #[default]
+    Plain,
+    /// A font driver: state lives in its faces.
+    Driver,
+    /// A renderer module (`FT_RendererRec`): owns the lazily-created
+    /// raster object and reports the glyph format it renders.
+    Renderer {
+        /// The raster object (`FT_RendererRec.raster`), created by
+        /// `raster_class.new` during module init.
+        raster: LibCell<Option<Box<dyn Raster>>>,
+        /// `FT_Renderer_Class.glyph_format`.
+        glyph_format: GlyphFormat,
+    },
+}
+
+/// `FT_Module`: a loaded module instance (`FT_ModuleRec`).
+///
+/// `library` is a weak back-reference so the `Library -> Module -> Library`
+/// cycle is broken (the C code uses raw pointers with manual ownership).
+pub struct Module {
+    /// The static class descriptor.
+    pub clazz: &'static ModuleClass,
+    /// Owning library (weak; upgraded on demand).
+    pub library: alloc::sync::Weak<Library>,
+    /// Instance-specific state (raster for renderers, nothing for plain
+    /// modules, nothing for drivers — driver state lives in faces).
+    pub instance: ModuleInstance,
+}
+
+impl Module {
+    /// Upgrades the library back-reference.
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_LIBRARY_HANDLE`] — the library was already
+    ///   dropped (only possible during shutdown).
+    pub fn library(&self) -> TtResult<Arc<Library>> {
+        self.library
+            .upgrade()
+            .ok_or(TtError::INVALID_LIBRARY_HANDLE)
+    }
+
+    /// The module name (`clazz.module_name`).
+    #[inline]
+    pub fn name(&self) -> &'static str {
+        self.clazz.module_name
+    }
+}
+
+/// `FT_Renderer_RenderFunc`: rasterises `slot`'s image with the given raw
+/// render mode (as packed by [`LoadFlags::target`]).
+pub type RendererRenderFunc =
+    fn(renderer: &Module, slot: &mut GlyphSlot, mode: u32, origin: Option<&Vector>) -> TtResult<()>;
+
+/// `FT_Renderer_TransformFunc`: applies `matrix`/`delta` to the glyph
+/// image held in `slot`.
+pub type RendererTransformFunc =
+    fn(renderer: &Module, slot: &mut GlyphSlot, matrix: &Matrix, delta: &Vector) -> TtResult<()>;
+
+/// `FT_Renderer_GetCBoxFunc`: returns the control box of the glyph image.
+pub type RendererGetCBoxFunc = fn(renderer: &Module, slot: &GlyphSlot, acbox: &mut BBox);
+
+/// `FT_Renderer_SetModeFunc`: forwards a mode tag (e.g.
+/// `FT_MODULE_DRIVER_HAS_HINTER`-style ids from `ftsmooth.h`) to the
+/// renderer or its raster.
+///
+/// # Errors
+///
+/// * [`TtError::INVALID_ARGUMENT`] — unknown mode tag.
+pub type RendererSetModeFunc =
+    fn(renderer: &mut Module, mode_tag: u64, value: &mut dyn core::any::Any) -> TtResult<()>;
+
+/// `FT_Renderer_Class`: the static descriptor of a renderer module
+/// (`FT_DEFINE_RENDERER` in `ftrend1.c`/`ftsmooth.c`).
+pub struct RendererClass {
+    /// The root module descriptor (`FT_DEFINE_ROOT_MODULE`).
+    pub root: ModuleClass,
+    /// The glyph format this renderer handles.
+    pub glyph_format: GlyphFormat,
+    /// `render_glyph`: mandatory for usable renderers.
+    pub render_glyph: Option<RendererRenderFunc>,
+    /// `transform_glyph`.
+    pub transform_glyph: Option<RendererTransformFunc>,
+    /// `get_glyph_cbox`.
+    pub get_glyph_cbox: Option<RendererGetCBoxFunc>,
+    /// `set_mode`.
+    pub set_mode: Option<RendererSetModeFunc>,
+    /// The rasterizer class backing this renderer (`raster_class`);
+    /// `NULL` for renderers that do not use `FT_Raster` (e.g. the plotter
+    /// is not provided by this port).
+    pub raster_class: Option<&'static RasterFuncs>,
+}
+
+/// `FT_Face_InitFunc`: constructs a face from an open stream.
+///
+/// `typeface_index` selects the face inside a collection (for TrueType
+/// collections, high bits may carry named-instance indices); `params` are
+/// the `FT_OpenArgs` parameters.
+pub type FaceInitFunc =
+    fn(stream: &Stream, face: &mut Face, typeface_index: i32, params: &[Parameter]) -> TtResult<()>;
+
+/// `FT_Face_DoneFunc`: releases every resource a driver allocated for
+/// `face` (the driver-specific part of `face.driver_data` included).
+pub type FaceDoneFunc = fn(face: &mut Face);
+
+/// `FT_Size_InitFunc`: constructs the driver-specific part of `size`
+/// (stored in `size.internal`); the parent face is passed explicitly.
+pub type SizeInitFunc = fn(face: &Face, size: &mut Size) -> TtResult<()>;
+
+/// `FT_Size_DoneFunc`: releases the driver-specific part of `size`.
+pub type SizeDoneFunc = fn(face: &Face, size: &mut Size);
+
+/// `FT_Slot_InitFunc`: constructs the driver-specific part of `slot`
+/// (stored in `slot.driver_data`); the parent face is passed explicitly.
+pub type SlotInitFunc = fn(face: &Face, slot: &mut GlyphSlot) -> TtResult<()>;
+
+/// `FT_Slot_DoneFunc`: releases the driver-specific part of `slot`.
+pub type SlotDoneFunc = fn(face: &Face, slot: &mut GlyphSlot);
+
+/// `FT_Size_RequestFunc`: applies a new character size using the driver's
+/// own scaling; the base layer calls it only for scalable faces when the
+/// driver provides it (otherwise [`Face::request_metrics`] runs).
+pub type SizeRequestFunc = fn(face: &Face, size: &mut Size, req: &SizeRequest) -> TtResult<()>;
+
+/// `FT_Size_SelectFunc`: selects a fixed strike by index
+/// (`available_sizes[strike_index]`; the C `FT_ULong` index becomes
+/// `usize`).
+pub type SizeSelectFunc = fn(face: &Face, size: &mut Size, strike_index: usize) -> TtResult<()>;
+
+/// `FT_Slot_LoadFunc`: loads `glyph_index` into `slot` at the scale of
+/// `size`, honouring `load_flags`.  This is the only mandatory driver
+/// method besides [`FaceInitFunc`].
+pub type SlotLoadFunc = fn(
+    face: &Face,
+    slot: &mut GlyphSlot,
+    size: &Size,
+    glyph_index: u32,
+    load_flags: LoadFlags,
+) -> TtResult<()>;
+
+/// `FT_Face_GetKerningFunc`: returns the unscaled kerning vector (font
+/// units) for a glyph pair; scaling for [`KerningMode`] is applied by the
+/// base layer.
+pub type GetKerningFunc = fn(face: &Face, left_glyph: u32, right_glyph: u32) -> TtResult<Vector>;
+
+/// `FT_Face_AttachFunc`: reads additional face data (AFM/PFM/CIDMap)
+/// from an attached stream.
+pub type AttachFunc = fn(face: &Face, stream: &mut Stream) -> TtResult<()>;
+
+/// `FT_Face_GetAdvancesFunc`: fills `advances[0..count]` with advance
+/// widths (font units) of glyphs `first..first + count` without loading
+/// images.  `flags` carries the `FT_LOAD_XXX`/vertical bit (C passes
+/// `FT_Int32`); drivers that cannot batch fall back to per-glyph loads in
+/// the base layer.
+pub type GetAdvancesFunc =
+    fn(face: &Face, first: u32, count: u32, flags: u32, advances: &mut [Fixed]) -> TtResult<()>;
+
+/// `FT_Driver_ClassRec`: the static descriptor of a font driver.
+///
+/// Field-for-field port of the C record (`ftdriver.h`).  The
+/// `face_object_size`/`size_object_size`/`slot_object_size` members keep
+/// the C byte sizes for documentation; Rust allocates the objects itself.
+/// `init_face` and `load_glyph` are mandatory (as in C, where every other
+/// method may be `NULL`).
+pub struct DriverClass {
+    /// The root module descriptor (`FT_Module_ClassRec root`).
+    pub root: ModuleClass,
+    /// `sizeof` of the C face extension (informational).
+    pub face_object_size: i64,
+    /// `sizeof` of the C size extension (informational).
+    pub size_object_size: i64,
+    /// `sizeof` of the C slot extension (informational).
+    pub slot_object_size: i64,
+    /// `init_face`: mandatory face constructor.
+    pub init_face: FaceInitFunc,
+    /// `done_face`.
+    pub done_face: Option<FaceDoneFunc>,
+    /// `init_size`.
+    pub init_size: Option<SizeInitFunc>,
+    /// `done_size`.
+    pub done_size: Option<SizeDoneFunc>,
+    /// `init_slot`.
+    pub init_slot: Option<SlotInitFunc>,
+    /// `done_slot`.
+    pub done_slot: Option<SlotDoneFunc>,
+    /// `load_glyph`: mandatory glyph loader.
+    pub load_glyph: SlotLoadFunc,
+    /// `get_kerning` (`NULL` when the format has no kerning).
+    pub get_kerning: Option<GetKerningFunc>,
+    /// `attach_file`.
+    pub attach_file: Option<AttachFunc>,
+    /// `get_advances`.
+    pub get_advances: Option<GetAdvancesFunc>,
+    /// `request_size`.
+    pub request_size: Option<SizeRequestFunc>,
+    /// `select_size`.
+    pub select_size: Option<SizeSelectFunc>,
+}
+
+impl DriverClass {
+    /// `FT_DRIVER_IS_SCALABLE(x)`: the driver supports scalable outlines.
+    #[inline]
+    pub fn is_scalable(&self) -> bool {
+        self.root.module_flags & MODULE_DRIVER_SCALABLE != 0
+    }
+
+    /// `FT_DRIVER_USES_OUTLINES(x)`: the driver produces outlines (the
+    /// inverse of [`MODULE_DRIVER_NO_OUTLINES`]).
+    #[inline]
+    pub fn uses_outlines(&self) -> bool {
+        self.root.module_flags & MODULE_DRIVER_NO_OUTLINES == 0
+    }
+
+    /// `FT_DRIVER_HAS_HINTER(x)`: the driver provides its own hinter.
+    #[inline]
+    pub fn has_hinter(&self) -> bool {
+        self.root.module_flags & MODULE_DRIVER_HAS_HINTER != 0
+    }
+}
+
+/// `FT_CMap_InitFunc`: initialises the cmap's driver-specific part,
+/// storing it through [`CharMap::data`]; `init_data` is the opaque
+/// `FT_CMap_New` payload (may be `None`).
+pub type CMapInitFunc =
+    fn(cmap: &CharMap, init_data: Option<&(dyn core::any::Any + Send + Sync)>) -> TtResult<()>;
+
+/// `FT_CMap_DoneFunc`: releases the cmap's driver-specific part.
+pub type CMapDoneFunc = fn(cmap: &CharMap);
+
+/// `FT_CMap_CharIndexFunc`: maps a character code to a glyph index
+/// (`0` when unmapped).
+pub type CMapCharIndexFunc = fn(cmap: &CharMap, char_code: u32) -> u32;
+
+/// `FT_CMap_CharNextFunc`: advances from `char_code` (exclusive) to the
+/// next mapped code, writing it back through the reference and returning
+/// its glyph index (`0` at the end of the map).
+pub type CMapCharNextFunc = fn(cmap: &CharMap, char_code: &mut u32) -> u32;
+
+/// `FT_CMap_CharVarIndexFunc` (format 14): the glyph index associated
+/// with `char_code` + variation selector, or 0.
+pub type CMapCharVarIndexFunc =
+    fn(cmap: &CharMap, unicode_cmap: &CharMap, char_code: u32, variant_selector: u32) -> u32;
+
+/// `FT_CMap_CharVarIsDefaultFunc` (format 14): `true` when the default
+/// variant is used for the pair.
+pub type CMapCharVarIsDefaultFunc = fn(cmap: &CharMap, char_code: u32, variant_selector: u32) -> bool;
+
+/// `FT_CMap_VariantListFunc` (format 14): lists all variation selectors
+/// (C returns a `0`-terminated array).
+pub type CMapVariantListFunc = fn(cmap: &CharMap) -> Option<Vec<u32>>;
+
+/// `FT_CMap_CharVariantListFunc` (format 14): lists the selectors for one
+/// character code.
+pub type CMapCharVariantListFunc = fn(cmap: &CharMap, char_code: u32) -> Option<Vec<u32>>;
+
+/// `FT_CMap_VariantCharListFunc` (format 14): lists the characters for
+/// one selector.
+pub type CMapVariantCharListFunc = fn(cmap: &CharMap, variant_selector: u32) -> Option<Vec<u32>>;
+
+/// `FT_CMap_ClassRec`: the static descriptor of a character-map format
+/// (encoding driver), e.g. the Unicode format 4/12 classes of the sfnt
+/// module.
+///
+/// The C `size` member (instance byte size) is kept for documentation;
+/// Rust stores the cmap payload in [`CharMap::data`] instead.
+pub struct CMapClass {
+    /// `sizeof` of the C cmap extension (informational).
+    pub size: u64,
+    /// `init`: mandatory (C calls it unconditionally in `FT_CMap_New`).
+    pub init: CMapInitFunc,
+    /// `done`: mandatory.
+    pub done: CMapDoneFunc,
+    /// `char_index`.
+    pub char_index: CMapCharIndexFunc,
+    /// `char_next`.
+    pub char_next: CMapCharNextFunc,
+    /// `char_var_index` (format 14 only).
+    pub char_var_index: Option<CMapCharVarIndexFunc>,
+    /// `char_var_default` (format 14 only).
+    pub char_var_default: Option<CMapCharVarIsDefaultFunc>,
+    /// `variant_list` (format 14 only).
+    pub variant_list: Option<CMapVariantListFunc>,
+    /// `charvariant_list` (format 14 only).
+    pub charvariant_list: Option<CMapCharVariantListFunc>,
+    /// `variantchar_list` (format 14 only).
+    pub variantchar_list: Option<CMapVariantCharListFunc>,
+}
+
+/// `FT_CMapRec` + `FT_CharMapRec`: a character map of a face.
+///
+/// The owning face is a weak reference (the face holds `Arc<CharMap>`s —
+/// a strong back-reference would form a cycle).  The payload written by
+/// [`CMapInitFunc`] lives in [`Self::data`], so `init`/`done` take only
+/// `&CharMap`.
+pub struct CharMap {
+    /// The owning face (weak; upgrade with [`CharMap::face`]).
+    pub face: alloc::sync::Weak<Face>,
+    /// The encoding tag (`FT_ENCODING_XXX`).
+    pub encoding: Encoding,
+    /// The sfnt platform identifier (`TT_PLATFORM_XXX`).
+    pub platform_id: u16,
+    /// The sfnt encoding identifier.
+    pub encoding_id: u16,
+    /// The static format class.
+    pub clazz: &'static CMapClass,
+    /// The format-specific payload, written by [`CMapInitFunc`].
+    pub data: LibCell<Option<Box<dyn core::any::Any + Send + Sync>>>,
+}
+
+impl CharMap {
+    /// Upgrades the face back-reference; `None` once the face is gone.
+    #[inline]
+    pub fn face(&self) -> Option<Arc<Face>> {
+        self.face.upgrade()
+    }
+
+    /// `FT_Get_Char_Index`: maps `char_code` through this cmap.
+    #[inline]
+    pub fn char_index(&self, char_code: u32) -> u32 {
+        (self.clazz.char_index)(self, char_code)
+    }
+
+    /// `FT_Get_Next_Char`: advances past `char_code`, returning
+    /// `(next_code, glyph_index)`; `None` when the map is exhausted.
+    #[inline]
+    pub fn char_next(&self, char_code: u32) -> Option<(u32, u32)> {
+        let mut next = char_code;
+        let index = (self.clazz.char_next)(self, &mut next);
+        // C leaves `*achar_code` untouched when the map is exhausted.
+        if index == 0 && next == char_code {
+            None
+        } else {
+            Some((next, index))
+        }
+    }
+}
+
+/// `FT_Slot_InternalRec`: the base-layer bookkeeping of a glyph slot.
+///
+/// Kept in [`GlyphSlot::internal`]; `flags` holds
+/// [`GLYPH_OWN_BITMAP`] when the slot owns its bitmap buffer.
+pub struct SlotInternal {
+    /// The glyph loader used while loading outlines (`NULL`-equivalent:
+    /// `None` for drivers without outlines).
+    pub loader: Option<GlyphLoader>,
+    /// `FT_GLYPH_OWN_BITMAP` and related bits.
+    pub flags: u32,
+    /// The glyph was transformed after loading (`slot->internal`).
+    pub glyph_transformed: bool,
+    /// The transform applied by the driver hinter (`glyph_matrix`).
+    pub glyph_matrix: Matrix,
+}
+
+/// `FT_GlyphSlotRec`: the image of one glyph (a scaled, hinted outline or
+/// bitmap).
+///
+/// Deviations from C: the `face` and `next` members are replaced by the
+/// owning [`Face`]'s slot list (creation order; the newest slot is
+/// active); `control_data`/`control_len` merge into one owned buffer;
+/// the struct extension used by C drivers (via `slot_object_size`) lives
+/// in [`Self::driver_data`].
+pub struct GlyphSlot {
+    /// The library that created the slot.
+    pub library: Arc<Library>,
+    /// Client-specific data (`slot->generic`).
+    pub generic: Generic,
+    /// The glyph metrics (font units before scaling, 26.6 pixels after).
+    pub metrics: GlyphMetrics,
+    /// Unscaled horizontal advance in 16.16 units (`linearHoriAdvance`).
+    pub linear_hori_advance: Fixed,
+    /// Unscaled vertical advance in 16.16 units.
+    pub linear_vert_advance: Fixed,
+    /// The scaled advance vector.
+    pub advance: Vector,
+    /// The image format currently held ([`GlyphFormat::None`] after
+    /// [`GlyphSlot::clear`]).
+    pub format: GlyphFormat,
+    /// The rasterized bitmap ([`Self::format`] is
+    /// [`GlyphFormat::Bitmap`] after rendering).
+    pub bitmap: Bitmap,
+    /// The bitmap's left bearing (horizontal).
+    pub bitmap_left: i32,
+    /// The bitmap's top bearing (vertical).
+    pub bitmap_top: i32,
+    /// The outline (scaled and hinted).
+    pub outline: Outline,
+    /// The subglyph description for composite glyphs.
+    pub subglyphs: Vec<SubGlyph>,
+    /// Driver-provided control data (instructions, hint segments; C keeps
+    /// it as a pointer + length pair).
+    pub control_data: Option<Vec<u8>>,
+    /// The left/right point displacement after hinting (`lsb_delta`).
+    pub lsb_delta: Pos,
+    /// See [`Self::lsb_delta`].
+    pub rsb_delta: Pos,
+    /// The rasterizer's scratch data (`slot->other`).
+    pub other: Option<Box<dyn core::any::Any + Send + Sync>>,
+    /// Base-layer bookkeeping (loader, ownership flags); `None` until
+    /// [`SlotInitFunc`] runs.
+    pub internal: Option<SlotInternal>,
+    /// The driver's extended slot data (C: struct embedding).
+    pub driver_data: Option<Box<dyn core::any::Any + Send + Sync>>,
+}
+
+impl GlyphSlot {
+    /// The number of subglyphs.
+    #[inline]
+    pub fn num_subglyphs(&self) -> usize {
+        self.subglyphs.len()
+    }
+
+    /// `ft_glyphslot_free_bitmap`: releases the bitmap buffer when the
+    /// slot owns it and zeroes the dimensions (a Rust `Vec` cannot be
+    /// `NULL` like the C buffer pointer, so the row view must collapse).
+    pub fn free_bitmap(&mut self) {
+        let owned = self
+            .internal
+            .as_mut()
+            .is_some_and(|internal| internal.flags & GLYPH_OWN_BITMAP != 0);
+        if owned {
+            if let Some(internal) = self.internal.as_mut() {
+                internal.flags &= !GLYPH_OWN_BITMAP;
+            }
+            self.bitmap.rows = 0;
+            self.bitmap.width = 0;
+            self.bitmap.pitch = 0;
+            self.bitmap.buffer.clear();
+        }
+    }
+
+    /// `ft_glyphslot_clear`: resets every public field of the slot after
+    /// releasing the owned bitmap (kept: `library`, `internal`,
+    /// `driver_data`, `generic`, `outline` structure, `advance` — see the
+    /// per-field notes below for exact C parity).
+    pub fn clear(&mut self) {
+        self.free_bitmap();
+        self.metrics = GlyphMetrics::default();
+        self.outline.clear();
+        self.bitmap.rows = 0;
+        self.bitmap.width = 0;
+        self.bitmap.pitch = 0;
+        self.bitmap.num_grays = 0;
+        self.bitmap.pixel_mode = PixelMode::default();
+        self.bitmap_left = 0;
+        self.bitmap_top = 0;
+        self.subglyphs.clear();
+        self.control_data = None;
+        self.other = None;
+        self.format = GlyphFormat::None;
+        self.linear_hori_advance = 0;
+        self.linear_vert_advance = 0;
+        self.lsb_delta = 0;
+        self.rsb_delta = 0;
+    }
+}
+
+/// `FT_SizeRec`: a scaled instance of a face (a character size).
+///
+/// Deviation from C: the `face` member is replaced by explicit `&Face`
+/// parameters; `internal` (empty in C) plus the driver's struct extension
+/// merge into [`Self::internal`].
+pub struct Size {
+    /// Client-specific data (`size->generic`).
+    pub generic: Generic,
+    /// The scaled metrics (`FT_Size_Metrics`).
+    pub metrics: SizeMetrics,
+    /// The driver's size data (C: `size->internal` + struct extension).
+    pub internal: Option<Box<dyn core::any::Any + Send + Sync>>,
+}
+
+/// The transform applied to glyphs after loading (`face->internal`
+/// transform members of FreeType), installed by `FT_Set_Transform`.
+pub struct FaceInternal {
+    /// The 16.16 matrix (active when [`Self::transform_flags`] bit 0).
+    pub transform_matrix: Matrix,
+    /// The untransformed delta added after the matrix (bit 1).
+    pub transform_delta: Vector,
+    /// `transform_flags`: 1 = matrix active, 2 = delta active.
+    pub transform_flags: u32,
+    /// `face->internal->ignore_unpatented_hinter`: disables the patented
+    /// TrueType interpreter when set through
+    /// [`PARAM_TAG_UNPATENTED_HINTING`].
+    pub ignore_unpatented_hinter: bool,
+}
+
+/// `FT_FaceRec`: one font face (file with selectable face index).
+///
+/// Deviations from C: `glyph`/`size`/`charmap` (active-object pointers)
+/// become explicit active indices into [`Self::glyphs`], [`Self::sizes`]
+/// and [`Self::charmaps`]; `num_fixed_sizes`/`num_charmaps` are derived;
+/// `memory` is available through [`Face::memory`]; `extensions` (unused
+/// in C) and the `services` cache are omitted; the C struct extension
+/// used by drivers lives in [`Self::driver_data`]; [`Self::generic`],
+/// [`Self::autohint`] and [`Self::internal`] are [`LibCell`]s so
+/// callbacks can update them through `&self`, and [`Self::this`] points
+/// back at the owning `Arc` (built with `Arc::new_cyclic`).
+pub struct Face {
+    /// The number of faces in the file (`num_faces`).
+    pub num_faces: i64,
+    /// The face index inside the file (`face_index`).
+    pub face_index: i64,
+    /// Bit set of [`FACE_FLAG_XXX`] (`face_flags`).
+    pub face_flags: i64,
+    /// Bit set of [`STYLE_FLAG_XXX`] (`style_flags`).
+    pub style_flags: i64,
+    /// The number of glyphs (`num_glyphs`).
+    pub num_glyphs: i64,
+    /// The family name, if available.
+    pub family_name: Option<String>,
+    /// The style name, if available.
+    pub style_name: Option<String>,
+    /// The available bitmap strikes (`available_sizes`).
+    pub available_sizes: Vec<BitmapSize>,
+    /// All character maps of the face (`charmaps`).
+    pub charmaps: LibCell<Vec<Arc<CharMap>>>,
+    /// The active character map (`charmap`); `None` when the face has
+    /// none or none is selected.
+    pub active_charmap: LibCell<Option<Arc<CharMap>>>,
+    /// Client-specific data (`generic`).
+    pub generic: LibCell<Generic>,
+    /// The font bounding box in font units (`bbox`).
+    pub bbox: BBox,
+    /// The design units per EM (`units_per_EM`).
+    pub units_per_em: u16,
+    /// The typographic ascender in font units.
+    pub ascender: i16,
+    /// The typographic descender in font units.
+    pub descender: i16,
+    /// The typographic line height in font units.
+    pub height: i16,
+    /// The maximal horizontal advance in font units.
+    pub max_advance_width: i16,
+    /// The maximal vertical advance in font units (0 when unused).
+    pub max_advance_height: i16,
+    /// The vertical position of the underline relative to the baseline.
+    pub underline_position: i16,
+    /// The underline thickness in font units.
+    pub underline_thickness: i16,
+    /// Every glyph slot of the face in creation order (`glyph` list);
+    /// `None` marks a removed slot.
+    pub glyphs: LibCell<Vec<Option<GlyphSlot>>>,
+    /// The index of the active glyph slot (the newest one, matching the
+    /// C list head); `None` once every slot was removed.
+    pub active_glyph: LibCell<Option<usize>>,
+    /// Every size of the face (`sizes_list`); `None` marks a removed
+    /// size.
+    pub sizes: LibCell<Vec<Option<Size>>>,
+    /// The index of the active size (`size`); the base layer guarantees
+    /// at least one exists while the face is alive.
+    pub active_size: LibCell<Option<usize>>,
+    /// Face-specific auto-hinter data (`autohint` generic).
+    pub autohint: LibCell<Generic>,
+    /// The font driver module that created the face (weak — the library
+    /// owns the module).
+    pub driver: alloc::sync::Weak<Module>,
+    /// The face's input stream; dropped with the face unless
+    /// [`FACE_FLAG_EXTERNAL_STREAM`] is set (an external stream only
+    /// releases its source reference, like the C API's client stream).
+    pub stream: Stream,
+    /// The transform and hinter configuration (`face->internal`).
+    pub internal: LibCell<FaceInternal>,
+    /// The driver's extended face data (C: struct embedding).
+    pub driver_data: Option<Box<dyn core::any::Any + Send + Sync>>,
+    /// The owning `Arc` back-reference, populated by `Arc::new_cyclic`
+    /// during construction; needed by [`Face::add_charmap`], which only
+    /// has `&self`.
+    pub this: alloc::sync::Weak<Face>,
+}
+
+impl Face {
+    /// The library's allocator ([`FT_FACE_MEMORY`]-equivalent; the
+    /// allocator is a zero-sized object in this port).
+    #[inline]
+    pub fn memory(&self) -> Memory {
+        Memory
+    }
+
+    /// Upgrades the owning library through the driver module.
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_LIBRARY_HANDLE`] — the library is gone (only
+    ///   during shutdown).
+    pub fn library(&self) -> TtResult<Arc<Library>> {
+        let driver = self
+            .driver
+            .upgrade()
+            .ok_or(TtError::INVALID_DRIVER_HANDLE)?;
+        driver.library()
+    }
+
+    /// The driver class of this face (via [`ModuleClass::kind`]).
+    #[inline]
+    pub fn driver_class(&self) -> Option<&'static DriverClass> {
+        let driver = self.driver.upgrade()?;
+        driver.clazz.kind.as_driver()
+    }
+
+    /// The driver-specific face data, downcast to `T`.
+    #[inline]
+    pub fn driver_data<T: 'static>(&self) -> Option<&T> {
+        self.driver_data
+            .as_ref()
+            .and_then(|data| data.downcast_ref::<T>())
+    }
+
+    /// Mutable access to the driver-specific face data.
+    #[inline]
+    pub fn driver_data_mut<T: 'static>(&mut self) -> Option<&mut T> {
+        self.driver_data
+            .as_mut()
+            .and_then(|data| data.downcast_mut::<T>())
+    }
+
+    /// `FT_IS_SCALABLE(face)`.
+    #[inline]
+    pub fn is_scalable(&self) -> bool {
+        self.face_flags & FACE_FLAG_SCALABLE != 0
+    }
+
+    /// `FT_HAS_FIXED_SIZES(face)`.
+    #[inline]
+    pub fn has_fixed_sizes(&self) -> bool {
+        self.face_flags & FACE_FLAG_FIXED_SIZES != 0
+    }
+
+    /// `FT_IS_FIXED_WIDTH(face)`.
+    #[inline]
+    pub fn has_fixed_width(&self) -> bool {
+        self.face_flags & FACE_FLAG_FIXED_WIDTH != 0
+    }
+
+    /// `FT_IS_SFNT(face)`.
+    #[inline]
+    pub fn is_sfnt(&self) -> bool {
+        self.face_flags & FACE_FLAG_SFNT != 0
+    }
+
+    /// `FT_HAS_HORIZONTAL(face)`.
+    #[inline]
+    pub fn has_horizontal(&self) -> bool {
+        self.face_flags & FACE_FLAG_HORIZONTAL != 0
+    }
+
+    /// `FT_HAS_VERTICAL(face)`.
+    #[inline]
+    pub fn has_vertical(&self) -> bool {
+        self.face_flags & FACE_FLAG_VERTICAL != 0
+    }
+
+    /// `FT_HAS_KERNING(face)`.
+    #[inline]
+    pub fn has_kerning(&self) -> bool {
+        self.face_flags & FACE_FLAG_KERNING != 0
+    }
+
+    /// `FT_HAS_GLYPH_NAMES(face)`.
+    #[inline]
+    pub fn has_glyph_names(&self) -> bool {
+        self.face_flags & FACE_FLAG_GLYPH_NAMES != 0
+    }
+
+    /// `FT_HAS_EXTERNAL_STREAM(face)`.
+    #[inline]
+    pub fn has_external_stream(&self) -> bool {
+        self.face_flags & FACE_FLAG_EXTERNAL_STREAM != 0
+    }
+
+    /// `FT_DRIVER_HAS_HINTER(face)`-equivalent ([`FACE_FLAG_HINTER`]).
+    #[inline]
+    pub fn has_hinter(&self) -> bool {
+        self.face_flags & FACE_FLAG_HINTER != 0
+    }
+
+    /// `FT_IS_CID_KEYED(face)`.
+    #[inline]
+    pub fn is_cid_keyed(&self) -> bool {
+        self.face_flags & FACE_FLAG_CID_KEYED != 0
+    }
+
+    /// `FT_IS_TRICKY(face)`.
+    #[inline]
+    pub fn is_tricky(&self) -> bool {
+        self.face_flags & FACE_FLAG_TRICKY != 0
+    }
+
+    /// `FT_HAS_COLOR(face)`.
+    #[inline]
+    pub fn has_color(&self) -> bool {
+        self.face_flags & FACE_FLAG_COLOR != 0
+    }
+
+    /// The number of bitmap strikes (`num_fixed_sizes`).
+    #[inline]
+    pub fn num_fixed_sizes(&self) -> usize {
+        self.available_sizes.len()
+    }
+
+    /// The number of character maps (`num_charmaps`).
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_HANDLE`] — the cell is currently borrowed.
+    pub fn num_charmaps(&self) -> TtResult<usize> {
+        Ok(self.charmaps.borrow()?.len())
+    }
+
+    /// Creates a glyph slot (appended to [`Face::glyphs`]; in C the new
+    /// slot is prepended, so the newest slot is active) and runs the
+    /// driver's `init_slot`.
+    ///
+    /// Mirrors `FT_New_GlyphSlot`: the slot is fully initialised locally
+    /// first, `init_slot` runs before the list insert, and both steps are
+    /// undone on failure (C runs `ft_glyphslot_done` on its error paths).
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_DRIVER_HANDLE`] — the driver module is gone.
+    /// * [`TtError::INVALID_HANDLE`] — the slot cell is borrowed.
+    ///
+    /// Whatever the driver's [`SlotInitFunc`] returns is propagated; a
+    /// failed initialisation runs `done_slot` before returning.
+    pub fn new_glyph_slot(&self) -> TtResult<usize> {
+        let library = self.library()?;
+        let driver = self
+            .driver
+            .upgrade()
+            .ok_or(TtError::INVALID_DRIVER_HANDLE)?;
+        let class = driver
+            .clazz
+            .kind
+            .as_driver()
+            .ok_or(TtError::INVALID_DRIVER_HANDLE)?;
+        let mut slot = GlyphSlot {
+            library,
+            generic: Generic::default(),
+            metrics: GlyphMetrics::default(),
+            linear_hori_advance: 0,
+            linear_vert_advance: 0,
+            advance: Vector { x: 0, y: 0 },
+            format: GlyphFormat::None,
+            bitmap: Bitmap::default(),
+            bitmap_left: 0,
+            bitmap_top: 0,
+            outline: Outline::new(),
+            subglyphs: Vec::new(),
+            control_data: None,
+            lsb_delta: 0,
+            rsb_delta: 0,
+            other: None,
+            // `ft_glyphslot_init`: `internal` is always allocated; the
+            // glyph loader exists only for outline drivers.
+            internal: Some(SlotInternal {
+                loader: if class.uses_outlines() {
+                    Some(GlyphLoader::new())
+                } else {
+                    None
+                },
+                flags: 0,
+                glyph_transformed: false,
+                glyph_matrix: Matrix::default(),
+            }),
+            driver_data: None,
+        };
+
+        // `ft_glyphslot_init` runs `init_slot` before the list insert.
+        if let Some(init_slot) = class.init_slot
+            && let Err(error) = init_slot(self, &mut slot)
+        {
+            if let Some(done_slot) = class.done_slot {
+                done_slot(self, &mut slot);
+            }
+            return Err(error);
+        }
+
+        match self.glyphs.borrow_mut() {
+            Ok(mut slots) => {
+                slots.push(Some(slot));
+                let index = slots.len() - 1;
+                drop(slots);
+                self.active_glyph.set(Some(index))?;
+                Ok(index)
+            }
+            Err(error) => {
+                // The list could not be extended; undo `init_slot`.
+                slot.generic.finish();
+                if let Some(done_slot) = class.done_slot {
+                    done_slot(self, &mut slot);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Removes the slot at `index` (`FT_Done_GlyphSlot`): unlinks it,
+    /// relinks the active pointer when the active slot was removed (C's
+    /// `slot->next` walk — the next slot in creation order below it),
+    /// then runs the client [`Generic::finish`] and the driver's
+    /// `done_slot`.
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_SLOT_HANDLE`] — `index` is out of bounds or
+    ///   the slot was already removed.
+    /// * [`TtError::INVALID_DRIVER_HANDLE`] — the driver module is gone.
+    /// * [`TtError::INVALID_HANDLE`] — a cell is currently borrowed.
+    pub fn done_glyph_slot(&self, index: usize) -> TtResult<()> {
+        let driver = self
+            .driver
+            .upgrade()
+            .ok_or(TtError::INVALID_DRIVER_HANDLE)?;
+        let class = driver
+            .clazz
+            .kind
+            .as_driver()
+            .ok_or(TtError::INVALID_DRIVER_HANDLE)?;
+        let mut slots = self.glyphs.borrow_mut()?;
+        let mut slot = slots
+            .get_mut(index)
+            .and_then(Option::take)
+            .ok_or(TtError::INVALID_SLOT_HANDLE)?;
+
+        // `FT_Done_GlyphSlot`: unlink (above), relink when the head was
+        // removed, then the client finalizer and `ft_glyphslot_done`.
+        if self.active_glyph.get()? == Some(index) {
+            self.active_glyph
+                .set(slot_fallback(&slots, index))?;
+        }
+        slot.generic.finish();
+        if let Some(done_slot) = class.done_slot {
+            done_slot(self, &mut slot);
+        }
+        Ok(())
+    }
+
+    /// Borrows the slot list for inspection.
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_HANDLE`] — another thread holds the guard.
+    pub fn glyph_slots(&self) -> TtResult<LibRef<'_, Vec<Option<GlyphSlot>>>> {
+        self.glyphs.borrow()
+    }
+
+    /// Mutably borrows the slot list.
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_HANDLE`] — another thread holds the guard.
+    pub fn glyph_slots_mut(&self) -> TtResult<LibRefMut<'_, Vec<Option<GlyphSlot>>>> {
+        self.glyphs.borrow_mut()
+    }
+
+    /// The index of the active glyph slot (`None` when none exists).
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_HANDLE`] — the cell is currently borrowed.
+    #[inline]
+    pub fn active_glyph_index(&self) -> TtResult<Option<usize>> {
+        self.active_glyph.get()
+    }
+
+    /// Creates a size object (at least one exists per face; called by
+    /// the base layer during `FT_Open_Face`) and runs `init_size`.
+    ///
+    /// Mirrors `FT_New_Size`: `init_size` runs before the list insert,
+    /// which appends (C's `FT_List_ADD`), and the first size becomes
+    /// active.
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_DRIVER_HANDLE`] — the driver module is gone.
+    /// * [`TtError::INVALID_HANDLE`] — a cell is currently borrowed.
+    ///
+    /// Whatever the driver's [`SizeInitFunc`] returns is propagated; a
+    /// failing size is never linked into the list.
+    pub fn new_size(&self) -> TtResult<usize> {
+        let driver = self
+            .driver
+            .upgrade()
+            .ok_or(TtError::INVALID_DRIVER_HANDLE)?;
+        let class = driver
+            .clazz
+            .kind
+            .as_driver()
+            .ok_or(TtError::INVALID_DRIVER_HANDLE)?;
+        let mut size = Size {
+            generic: Generic::default(),
+            metrics: SizeMetrics::default(),
+            internal: None,
+        };
+
+        // `FT_New_Size` runs `init_size` before `FT_List_Add`.
+        if let Some(init_size) = class.init_size {
+            init_size(self, &mut size)?;
+        }
+
+        let index = {
+            let mut sizes = self.sizes.borrow_mut()?;
+            sizes.push(Some(size));
+            sizes.len() - 1
+        };
+        if self.active_size.get()?.is_none() {
+            self.active_size.set(Some(index))?;
+        }
+        Ok(index)
+    }
+
+    /// Removes the size at `index` (`FT_Done_Size`): unlinks it, and
+    /// when the active size was removed relinks the active pointer to
+    /// the list head — the oldest remaining size (C:
+    /// `face->sizes_list.head`), then runs the client
+    /// [`Generic::finish`] and `done_size` (`destroy_size` order).
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_SIZE_HANDLE`] — `index` is invalid.
+    /// * [`TtError::INVALID_DRIVER_HANDLE`] — the driver module is gone.
+    /// * [`TtError::INVALID_HANDLE`] — a cell is currently borrowed.
+    pub fn done_size(&self, index: usize) -> TtResult<()> {
+        let driver = self
+            .driver
+            .upgrade()
+            .ok_or(TtError::INVALID_DRIVER_HANDLE)?;
+        let class = driver
+            .clazz
+            .kind
+            .as_driver()
+            .ok_or(TtError::INVALID_DRIVER_HANDLE)?;
+        let mut sizes = self.sizes.borrow_mut()?;
+        let mut size = sizes
+            .get_mut(index)
+            .and_then(Option::take)
+            .ok_or(TtError::INVALID_SIZE_HANDLE)?;
+
+        // `FT_Done_Size`: relink the active pointer before destroying.
+        if self.active_size.get()? == Some(index) {
+            self.active_size.set(size_fallback(&sizes))?;
+        }
+        // `destroy_size`: client finalizer first, then `done_size`.
+        size.generic.finish();
+        if let Some(done_size) = class.done_size {
+            done_size(self, &mut size);
+        }
+        Ok(())
+    }
+
+    /// Borrows the size list for inspection.
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_HANDLE`] — another thread holds the guard.
+    pub fn sizes(&self) -> TtResult<LibRef<'_, Vec<Option<Size>>>> {
+        self.sizes.borrow()
+    }
+
+    /// Mutably borrows the size list.
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_HANDLE`] — another thread holds the guard.
+    pub fn sizes_mut(&self) -> TtResult<LibRefMut<'_, Vec<Option<Size>>>> {
+        self.sizes.borrow_mut()
+    }
+
+    /// The index of the active size.
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_HANDLE`] — the cell is currently borrowed.
+    #[inline]
+    pub fn active_size_index(&self) -> TtResult<Option<usize>> {
+        self.active_size.get()
+    }
+
+    /// Selects the active size.
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_SIZE_HANDLE`] — `index` does not name an
+    ///   existing size.
+    pub fn set_active_size(&self, index: usize) -> TtResult<()> {
+        let sizes = self.sizes.borrow()?;
+        let exists = sizes.get(index).is_some_and(Option::is_some);
+        if !exists {
+            return Err(TtError::INVALID_SIZE_HANDLE);
+        }
+        self.active_size.set(Some(index))?;
+        Ok(())
+    }
+
+    /// `FT_CMap_New`: appends a character map of class `clazz` to the
+    /// face and runs its `init` (payload via [`CharMap::data`]).
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_LIBRARY_HANDLE`] — the library is gone.
+    ///
+    /// Whatever [`CMapInitFunc`] returns is propagated; the map is
+    /// discarded on failure.
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_HANDLE`] — a cell is currently borrowed.
+    ///
+    /// The face must have been constructed with `Arc::new_cyclic`, so
+    /// [`Face::this`] is populated.
+    pub fn add_charmap(
+        &self,
+        clazz: &'static CMapClass,
+        encoding: Encoding,
+        platform_id: u16,
+        encoding_id: u16,
+        init_data: Option<&(dyn core::any::Any + Send + Sync)>,
+    ) -> TtResult<Arc<CharMap>> {
+        let face = self.this.clone();
+        let charmap = Arc::new(CharMap {
+            face,
+            encoding,
+            platform_id,
+            encoding_id,
+            clazz,
+            data: LibCell::new(None),
+        });
+        (clazz.init)(&charmap, init_data)?;
+        self.charmaps
+            .borrow_mut()?
+            .push(Arc::clone(&charmap));
+        Ok(charmap)
+    }
+
+    /// Selects the character map at `index` as active
+    /// (`FT_Set_Charmap` by index).
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_CHARMAP_HANDLE`] — `index` is out of bounds.
+    pub fn set_charmap(&self, index: usize) -> TtResult<()> {
+        let charmaps = self.charmaps.borrow()?;
+        let charmap = charmaps
+            .get(index)
+            .ok_or(TtError::INVALID_CHARMAP_HANDLE)?;
+        *self.active_charmap.borrow_mut()? = Some(Arc::clone(charmap));
+        Ok(())
+    }
+
+    /// `FT_Select_Charmap`: selects the map with the given encoding.
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_ARGUMENT`] — no such encoding exists on this
+    ///   face.
+    pub fn select_charmap(&self, encoding: Encoding) -> TtResult<()> {
+        let charmaps = self.charmaps.borrow()?;
+        let found = charmaps
+            .iter()
+            .find(|charmap| charmap.encoding == encoding);
+        match found {
+            Some(charmap) => {
+                *self.active_charmap.borrow_mut()? = Some(Arc::clone(charmap));
+                Ok(())
+            }
+            None => Err(TtError::INVALID_ARGUMENT),
+        }
+    }
+
+    /// `find_unicode_charmap` (ftobjs.c): selects the best Unicode map —
+    /// scanning backwards, a UCS-4 map (platform 3, encoding 10) wins
+    /// over a 16-bit map (platform 3, encoding 1), over any map with
+    /// [`Encoding::UNICODE`].
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_ARGUMENT`] — the face has no Unicode map.
+    pub fn find_unicode_charmap(&self) -> TtResult<()> {
+        let charmaps = self.charmaps.borrow()?;
+        let mut found: Option<Arc<CharMap>> = None;
+        let mut fallback: Option<Arc<CharMap>> = None;
+        for charmap in charmaps.iter().rev() {
+            if charmap.platform_id == 3 && charmap.encoding_id == 10 {
+                *self.active_charmap.borrow_mut()? = Some(Arc::clone(charmap));
+                return Ok(());
+            }
+            if found.is_none() && charmap.platform_id == 3 && charmap.encoding_id == 1 {
+                found = Some(Arc::clone(charmap));
+            }
+            if fallback.is_none() && charmap.encoding == Encoding::UNICODE {
+                fallback = Some(Arc::clone(charmap));
+            }
+        }
+        let best = found
+            .or(fallback)
+            .ok_or(TtError::INVALID_ARGUMENT)?;
+        *self.active_charmap.borrow_mut()? = Some(best);
+        Ok(())
+    }
+
+    /// The active character map (`face->charmap`).
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_HANDLE`] — the cell is currently borrowed.
+    pub fn active_charmap(&self) -> TtResult<Option<Arc<CharMap>>> {
+        Ok(self.active_charmap.borrow()?.clone())
+    }
+
+    /// `FT_Request_Metrics`: scales the active size according to `req`
+    /// using the base-layer formulas (driver [`SizeRequestFunc`] hooks
+    /// run instead in [`Face::request_size`], which the base layer
+    /// calls).
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_HANDLE`] — a cell is currently borrowed.
+    /// * [`TtError::INVALID_SIZE_HANDLE`] — the face has no active size.
+    pub fn request_metrics(&self, req: &SizeRequest) -> TtResult<()> {
+        let index = self
+            .active_size
+            .get()?
+            .ok_or(TtError::INVALID_SIZE_HANDLE)?;
+        let mut sizes = self.sizes.borrow_mut()?;
+        let size = sizes
+            .get_mut(index)
+            .and_then(Option::as_mut)
+            .ok_or(TtError::INVALID_SIZE_HANDLE)?;
+
+        if self.is_scalable() {
+            // The non-`Nominal` arms derive `w`/`h` first; `Scales`
+            // stores the requested scales directly and jumps straight to
+            // `Calculate_Ppem` (C: `goto Calculate_Ppem`).
+            let mut dimensions: Option<(i64, i64)> = None;
+            match req.request_type {
+                SizeRequestType::Nominal => {
+                    let w = i64::from(self.units_per_em);
+                    dimensions = Some((w, w));
+                }
+                SizeRequestType::RealDim => {
+                    let w = i64::from(self.ascender) - i64::from(self.descender);
+                    dimensions = Some((w, w));
+                }
+                SizeRequestType::BBox => {
+                    dimensions = Some((
+                        self.bbox.x_max - self.bbox.x_min,
+                        self.bbox.y_max - self.bbox.y_min,
+                    ));
+                }
+                SizeRequestType::Cell => {
+                    dimensions = Some((
+                        i64::from(self.max_advance_width),
+                        i64::from(self.ascender) - i64::from(self.descender),
+                    ));
+                }
+                SizeRequestType::Scales => {
+                    size.metrics.x_scale = req.width;
+                    size.metrics.y_scale = req.height;
+                    if size.metrics.x_scale == 0 {
+                        size.metrics.x_scale = size.metrics.y_scale;
+                    } else if size.metrics.y_scale == 0 {
+                        size.metrics.y_scale = size.metrics.x_scale;
+                    }
+                }
+            }
+
+            // `scaled` holds the values `Calculate_Ppem` rounds; for
+            // `Scales` it is only produced there (from `units_per_EM`).
+            let mut scaled = (0i64, 0i64);
+            if let Some((w_raw, h_raw)) = dimensions {
+                let mut w = w_raw;
+                let mut h = h_raw;
+                // "to be on the safe side"
+                if w < 0 {
+                    w = -w;
+                }
+                if h < 0 {
+                    h = -h;
+                }
+
+                let mut scaled_w = req.request_width();
+                let mut scaled_h = req.request_height();
+
+                if req.width != 0 {
+                    size.metrics.x_scale = div_fix(scaled_w, w);
+                    if req.height != 0 {
+                        size.metrics.y_scale = div_fix(scaled_h, h);
+                        if req.request_type == SizeRequestType::Cell {
+                            if size.metrics.y_scale > size.metrics.x_scale {
+                                size.metrics.y_scale = size.metrics.x_scale;
+                            } else {
+                                size.metrics.x_scale = size.metrics.y_scale;
+                            }
+                        }
+                    } else {
+                        size.metrics.y_scale = size.metrics.x_scale;
+                        scaled_h = mul_div(scaled_w, h, w);
+                    }
+                } else {
+                    size.metrics.x_scale = div_fix(scaled_h, h);
+                    size.metrics.y_scale = size.metrics.x_scale;
+                    scaled_w = mul_div(scaled_h, w, h);
+                }
+                scaled = (scaled_w, scaled_h);
+            }
+
+            // `Calculate_Ppem`: for every request but `Nominal` the ppem
+            // values derive from `units_per_EM` and the scales.
+            if req.request_type != SizeRequestType::Nominal {
+                scaled = (
+                    mul_fix(i64::from(self.units_per_em), size.metrics.x_scale),
+                    mul_fix(i64::from(self.units_per_em), size.metrics.y_scale),
+                );
+            }
+            size.metrics.x_ppem = ((scaled.0 + 32) >> 6) as u16;
+            size.metrics.y_ppem = ((scaled.1 + 32) >> 6) as u16;
+            self.recompute_scaled_metrics(&mut size.metrics);
+        } else {
+            // C: `FT_ZERO(metrics)` plus the identity scales.
+            size.metrics = SizeMetrics {
+                x_scale: 1 << 16,
+                y_scale: 1 << 16,
+                ..SizeMetrics::default()
+            };
+        }
+        Ok(())
+    }
+
+    /// `FT_Select_Metrics`: adopts the fixed strike at `strike_index`
+    /// into the active size (the fallback path of [`Face::select_size`]).
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_HANDLE`] — a cell is currently borrowed.
+    /// * [`TtError::INVALID_SIZE_HANDLE`] — the face has no active size.
+    /// * [`TtError::INVALID_PIXEL_SIZE`] — the strike index is out of
+    ///   bounds.
+    pub fn select_metrics(&self, strike_index: usize) -> TtResult<()> {
+        let index = self
+            .active_size
+            .get()?
+            .ok_or(TtError::INVALID_SIZE_HANDLE)?;
+        let mut sizes = self.sizes.borrow_mut()?;
+        let size = sizes
+            .get_mut(index)
+            .and_then(Option::as_mut)
+            .ok_or(TtError::INVALID_SIZE_HANDLE)?;
+        let bsize = self
+            .available_sizes
+            .get(strike_index)
+            .ok_or(TtError::INVALID_PIXEL_SIZE)?;
+
+        size.metrics.x_ppem = ((bsize.x_ppem + 32) >> 6) as u16;
+        size.metrics.y_ppem = ((bsize.y_ppem + 32) >> 6) as u16;
+
+        if self.is_scalable() {
+            size.metrics.x_scale = div_fix(bsize.x_ppem, i64::from(self.units_per_em));
+            size.metrics.y_scale = div_fix(bsize.y_ppem, i64::from(self.units_per_em));
+            self.recompute_scaled_metrics(&mut size.metrics);
+        } else {
+            size.metrics.x_scale = 1 << 16;
+            size.metrics.y_scale = 1 << 16;
+            size.metrics.ascender = bsize.y_ppem;
+            size.metrics.descender = 0;
+            // C promotes the short to `FT_Pos` before shifting.
+            size.metrics.height = i64::from(bsize.height) << 6;
+            size.metrics.max_advance = bsize.x_ppem;
+        }
+        Ok(())
+    }
+
+    /// `FT_Match_Size`: finds the bitmap strike matching `req` (only
+    /// [`SizeRequestType::Nominal`]; `ignore_width` ignores the width).
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_FACE_HANDLE`] — the face has no strikes.
+    /// * [`TtError::UNIMPLEMENTED_FEATURE`] — `req.request_type` is not
+    ///   [`SizeRequestType::Nominal`].
+    /// * [`TtError::INVALID_PIXEL_SIZE`] — no strike matches.
+    pub fn match_size(&self, req: &SizeRequest, ignore_width: bool) -> TtResult<usize> {
+        if !self.has_fixed_sizes() {
+            return Err(TtError::INVALID_FACE_HANDLE);
+        }
+        if req.request_type != SizeRequestType::Nominal {
+            return Err(TtError::UNIMPLEMENTED_FEATURE);
+        }
+
+        let mut w = req.request_width();
+        let mut h = req.request_height();
+        if req.width != 0 && req.height == 0 {
+            h = w;
+        } else if req.width == 0 && req.height != 0 {
+            w = h;
+        }
+        w = pix_round(w);
+        h = pix_round(h);
+
+        for (index, bsize) in self.available_sizes.iter().enumerate() {
+            if h != pix_round(bsize.y_ppem) {
+                continue;
+            }
+            if w == pix_round(bsize.x_ppem) || ignore_width {
+                return Ok(index);
+            }
+        }
+        Err(TtError::INVALID_PIXEL_SIZE)
+    }
+
+    /// `FT_Set_Transform`: installs the post-loading transform (or the
+    /// identity/null values when an option is `None`), exactly like
+    /// ftobjs.c resets `transform_flags` and re-derives them from the
+    /// matrix and delta.
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_HANDLE`] — the internal cell is borrowed.
+    pub fn set_transform(&self, matrix: Option<&Matrix>, delta: Option<&Vector>) -> TtResult<()> {
+        let mut internal = self.internal.borrow_mut()?;
+        internal.transform_flags = 0;
+
+        let matrix = matrix.copied().unwrap_or(Matrix::IDENTITY);
+        internal.transform_matrix = matrix;
+        if (matrix.xy | matrix.yx) != 0 || matrix.xx != 0x10000 || matrix.yy != 0x10000 {
+            internal.transform_flags |= 1;
+        }
+
+        let delta = delta.copied().unwrap_or(Vector::ZERO);
+        internal.transform_delta = delta;
+        if (delta.x | delta.y) != 0 {
+            internal.transform_flags |= 2;
+        }
+        Ok(())
+    }
+
+    /// `FT_Request_Size`: validates `req`, prefers the driver's
+    /// [`SizeRequestFunc`], falls back to bitmap-strike matching for
+    /// non-scalable faces with fixed sizes, else runs
+    /// [`Face::request_metrics`].
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_ARGUMENT`] — a negative request dimension
+    ///   (C also rejects `type >= FT_SIZE_REQUEST_TYPE_MAX`, which the
+    ///   exhaustive [`SizeRequestType`] enum makes impossible).
+    /// * [`TtError::INVALID_DRIVER_HANDLE`] — the driver module is gone.
+    /// * [`TtError::INVALID_HANDLE`] — a cell is currently borrowed.
+    /// * [`TtError::INVALID_SIZE_HANDLE`] — the face has no active size.
+    /// * [`TtError::INVALID_FACE_HANDLE`] — no strike matching on a
+    ///   face without fixed sizes (see [`Face::match_size`]).
+    /// * [`TtError::UNIMPLEMENTED_FEATURE`] / [`TtError::INVALID_PIXEL_SIZE`]
+    ///   — propagated from [`Face::match_size`].
+    ///
+    /// Whatever [`SizeRequestFunc`] returns is propagated.
+    pub fn request_size(&self, req: &SizeRequest) -> TtResult<()> {
+        if req.width < 0 || req.height < 0 {
+            return Err(TtError::INVALID_ARGUMENT);
+        }
+
+        let driver = self
+            .driver
+            .upgrade()
+            .ok_or(TtError::INVALID_DRIVER_HANDLE)?;
+        let class = driver
+            .clazz
+            .kind
+            .as_driver()
+            .ok_or(TtError::INVALID_DRIVER_HANDLE)?;
+        let index = self
+            .active_size
+            .get()?
+            .ok_or(TtError::INVALID_SIZE_HANDLE)?;
+
+        {
+            let mut sizes = self.sizes.borrow_mut()?;
+            let size = sizes
+                .get_mut(index)
+                .and_then(Option::as_mut)
+                .ok_or(TtError::INVALID_SIZE_HANDLE)?;
+            if let Some(request_size) = class.request_size {
+                return request_size(self, size, req);
+            }
+        }
+
+        // No driver hook: bitmap-only faces fall back to size matching.
+        if !self.is_scalable() && self.has_fixed_sizes() {
+            let strike = self.match_size(req, false)?;
+            return self.select_size(strike);
+        }
+
+        self.request_metrics(req)
+    }
+
+    /// `FT_Select_Size`: adopts a fixed strike, preferring the driver's
+    /// [`SizeSelectFunc`] over [`Face::select_metrics`].
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_FACE_HANDLE`] — the face has no fixed sizes.
+    /// * [`TtError::INVALID_ARGUMENT`] — `strike_index` is out of range
+    ///   (C also rejects negative indices; a `usize` cannot be one).
+    /// * [`TtError::INVALID_DRIVER_HANDLE`] — the driver module is gone.
+    /// * [`TtError::INVALID_HANDLE`] — a cell is currently borrowed.
+    /// * [`TtError::INVALID_SIZE_HANDLE`] — the face has no active size.
+    ///
+    /// Whatever [`SizeSelectFunc`] returns is propagated.
+    pub fn select_size(&self, strike_index: usize) -> TtResult<()> {
+        if !self.has_fixed_sizes() {
+            return Err(TtError::INVALID_FACE_HANDLE);
+        }
+        if strike_index >= self.available_sizes.len() {
+            return Err(TtError::INVALID_ARGUMENT);
+        }
+
+        let driver = self
+            .driver
+            .upgrade()
+            .ok_or(TtError::INVALID_DRIVER_HANDLE)?;
+        let class = driver
+            .clazz
+            .kind
+            .as_driver()
+            .ok_or(TtError::INVALID_DRIVER_HANDLE)?;
+        let index = self
+            .active_size
+            .get()?
+            .ok_or(TtError::INVALID_SIZE_HANDLE)?;
+
+        {
+            let mut sizes = self.sizes.borrow_mut()?;
+            let size = sizes
+                .get_mut(index)
+                .and_then(Option::as_mut)
+                .ok_or(TtError::INVALID_SIZE_HANDLE)?;
+            if let Some(select_size) = class.select_size {
+                return select_size(self, size, strike_index);
+            }
+        }
+
+        self.select_metrics(strike_index)
+    }
+
+    /// `ft_recompute_scaled_metrics`: derives the scaled
+    /// ascender/descender/height/max advance with grid fitting
+    /// (`GRID_FIT_METRICS` is defined in ftobjs.c).
+    pub fn recompute_scaled_metrics(&self, metrics: &mut SizeMetrics) {
+        metrics.ascender = pix_ceil(mul_fix(i64::from(self.ascender), metrics.y_scale));
+        metrics.descender = pix_floor(mul_fix(i64::from(self.descender), metrics.y_scale));
+        metrics.height = pix_round(mul_fix(i64::from(self.height), metrics.y_scale));
+        metrics.max_advance = pix_round(mul_fix(i64::from(self.max_advance_width), metrics.x_scale));
+    }
+}
+
+impl Drop for Face {
+    /// Mirrors `destroy_face` (ftobjs.c): auto-hinter finalizer, every
+    /// glyph slot newest first (C's `while (face->glyph)
+    /// FT_Done_GlyphSlot`, which runs each client finalizer), every size
+    /// oldest first (`FT_List_Finalize` walks the list head), the client
+    /// `generic` finalizer, every charmap, the driver's `done_face`, and
+    /// finally the stream (field drop order — for external streams only
+    /// the source reference is released).
+    fn drop(&mut self) {
+        // 1. face-specific auto-hinter data
+        self.autohint.get_mut().finish();
+
+        let class = self.driver_class();
+
+        // 2. every glyph slot, newest first, client finalizer before
+        //    `done_slot` (exactly like `FT_Done_GlyphSlot`)
+        if let Ok(mut slots) = self.glyphs.borrow_mut() {
+            for slot in slots.iter_mut().rev().flatten() {
+                slot.generic.finish();
+                if let Some(done_slot) = class.and_then(|class| class.done_slot) {
+                    done_slot(self, slot);
+                }
+            }
+            slots.clear();
+        }
+        let _ = self.active_glyph.set(None);
+
+        // 3. every size, oldest first (`FT_List_Finalize` starts at the
+        //    list head, which is the oldest since `FT_New_Size`
+        //    appends); `destroy_size` order: client finalizer, `done_size`
+        if let Ok(mut sizes) = self.sizes.borrow_mut() {
+            for size in sizes.iter_mut().flatten() {
+                size.generic.finish();
+                if let Some(done_size) = class.and_then(|class| class.done_size) {
+                    done_size(self, size);
+                }
+            }
+            sizes.clear();
+        }
+        let _ = self.active_size.set(None);
+
+        // 4. client-specific data
+        self.generic.get_mut().finish();
+
+        // 5. character maps (`destroy_charmaps`: `FT_CMap_Done` per map)
+        if let Ok(mut charmaps) = self.charmaps.borrow_mut() {
+            for charmap in charmaps.iter() {
+                (charmap.clazz.done)(charmap);
+            }
+            charmaps.clear();
+        }
+        let _ = self.active_charmap.replace(None);
+
+        // 6. the driver's done_face
+        if let Some(done_face) = class.and_then(|class| class.done_face) {
+            done_face(self);
+        }
+
+        // 7. the stream drops with the struct after this body (the
+        //    external-stream flag only means no client handle is
+        //    invalidated; releasing the source reference is correct).
+        //    `face->internal` (our `LibCell<FaceInternal>`) drops too.
+    }
+}
+
+/// The active-glyph-slot fallback of `FT_Done_GlyphSlot`: when the
+/// removed slot was the active (newest = list head) one, the new head is
+/// the next remaining slot below it in creation order (C walks the
+/// `slot->next` chain; `FT_New_GlyphSlot` prepends, so higher indices
+/// are newer).
+fn slot_fallback<T>(items: &[Option<T>], removed: usize) -> Option<usize> {
+    (0..removed)
+        .rev()
+        .find(|index| items.get(*index).is_some_and(Option::is_some))
+}
+
+/// The active-size fallback of `FT_Done_Size`: when the active size is
+/// removed, `face->size` becomes the list head — the oldest remaining
+/// size (the lowest index, since `FT_New_Size` appends).
+fn size_fallback<T>(items: &[Option<T>]) -> Option<usize> {
+    items.iter().position(Option::is_some)
+}
+
+/// `FT_DebugHook_Func` (ftmodapi.h): an optional debugger callback
+/// installed at [`Library::debug_hooks`].
+pub type DebugHookFunc = fn(arg: &mut dyn core::any::Any) -> TtResult<()>;
+
+/// `FT_LibraryRec`: the FreeType context — modules, renderers, faces and
+/// global settings.
+///
+/// Deviations from C: the module and face lists are reference-counted
+/// (`Arc`/`Weak`, replacing C's manual `FT_Add_Module`/`FT_List`), the
+/// renderer list is derived from [`Self::modules`], and `lcd_*` merge
+/// into [`Self::lcd`] (see [`LcdFilterState`]).
+pub struct Library {
+    /// The allocator (`memory`).
+    pub memory: Memory,
+    /// The FreeType major version (`version_major`).
+    pub version_major: i32,
+    /// The FreeType minor version (`version_minor`).
+    pub version_minor: i32,
+    /// The FreeType patch version (`version_patch`).
+    pub version_patch: i32,
+    /// The registered modules in registration order (`modules`; C keeps
+    /// `num_modules` — use [`Library::num_modules`]).
+    pub modules: LibCell<Vec<Arc<Module>>>,
+    /// The index of the current outline renderer (`cur_renderer`).
+    pub cur_renderer: LibCell<Option<usize>>,
+    /// The index of the auto-hinter module (`auto_hinter`).
+    pub auto_hinter: LibCell<Option<usize>>,
+    /// The scan-line conversion pool (`raster_pool`/`raster_pool_size`);
+    /// empty by default, exactly like the zero-initialised C field.
+    pub raster_pool: LibCell<Vec<u8>>,
+    /// The TrueType bytecode debugger hooks (`debug_hooks[4]`).
+    pub debug_hooks: [Option<DebugHookFunc>; 4],
+    /// The LCD filter state (`lcd_filter`, `lcd_extra`, `lcd_weights`,
+    /// `lcd_filter_func`); inactive by default (C never initialises it
+    /// in `FT_Library_New`).
+    pub lcd: LibCell<LcdFilterState>,
+    /// The faces currently alive (weak — dropped entries are reaped by
+    /// [`Library::reap_faces`]); C tracks this per driver list.
+    pub faces: LibCell<Vec<alloc::sync::Weak<Face>>>,
+}
+
+impl Default for Library {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Library {
+    /// Creates an empty library (module registration happens in the
+    /// base layer, `FT_New_Library`/`FT_Add_Default_Modules`).
+    #[must_use]
+    pub const fn new() -> Self {
+        Library {
+            memory: Memory,
+            version_major: 2,
+            version_minor: 6,
+            version_patch: 0,
+            modules: LibCell::new(Vec::new()),
+            cur_renderer: LibCell::new(None),
+            auto_hinter: LibCell::new(None),
+            raster_pool: LibCell::new(Vec::new()),
+            debug_hooks: [None; 4],
+            lcd: LibCell::new(LcdFilterState::new()),
+            faces: LibCell::new(Vec::new()),
+        }
+    }
+
+    /// The number of registered modules (`num_modules`).
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_HANDLE`] — the cell is currently borrowed.
+    pub fn num_modules(&self) -> TtResult<usize> {
+        Ok(self.modules.borrow()?.len())
+    }
+
+    /// `FT_Get_Module`: finds a module by name.
+    pub fn find_module(&self, name: &str) -> Option<Arc<Module>> {
+        let modules = self.modules.borrow().ok()?;
+        modules
+            .iter()
+            .find(|module| module.name() == name)
+            .cloned()
+    }
+
+    /// Finds a font-driver module by name (kind-checked).
+    pub fn find_driver(&self, name: &str) -> Option<Arc<Module>> {
+        let modules = self.modules.borrow().ok()?;
+        modules
+            .iter()
+            .find(|module| module.name() == name && module.clazz.kind.as_driver().is_some())
+            .cloned()
+    }
+
+    /// `FT_Get_Renderer`: finds the renderer serving `glyph_format`.
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::MISSING_MODULE`] — no registered renderer can render
+    ///   that format.
+    pub fn find_renderer(&self, glyph_format: GlyphFormat) -> TtResult<Arc<Module>> {
+        let modules = self.modules.borrow()?;
+        let found = modules.iter().find(|module| {
+            matches!(
+                &module.instance,
+                ModuleInstance::Renderer { glyph_format: format, .. } if *format == glyph_format
+            )
+        });
+        found.cloned().ok_or(TtError::MISSING_MODULE)
+    }
+
+    /// `FT_Add_Module`: registers `module` and runs its
+    /// [`ModuleInitFunc`] (the constructor sees the module before it is
+    /// owned by the library).
+    ///
+    /// Mirrors ftobjs.c: the required FreeType version is checked first,
+    /// a module with the same name is replaced only when the new
+    /// [`ModuleClass::module_version`] is higher (the previous instance
+    /// runs its [`ModuleDoneFunc`] when no other reference remains), and
+    /// the auto-hinter / current-renderer bookkeeping is updated after a
+    /// successful insert (C performs both before `module_init`, but
+    /// reverts the renderer on failure only — keeping both until success
+    /// yields the same final state without C's dangling `auto_hinter` on
+    /// a failed hinter init).
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_HANDLE`] — the cell is currently borrowed.
+    /// * [`TtError::INVALID_VERSION`] — `module_requires` is newer than
+    ///   this library (`Invalid_Version`).
+    /// * [`TtError::LOWER_MODULE_VERSION`] — same name, version not
+    ///   greater than the registered module's.
+    /// * [`TtError::TOO_MANY_DRIVERS`] — [`MAX_MODULES`] reached
+    ///   (`Too_Many_Drivers`).
+    ///
+    /// Whatever [`ModuleInitFunc`] returns is propagated.
+    pub fn add_module(&self, mut module: Module) -> TtResult<()> {
+        // `FREETYPE_VER_FIXED = (MAJOR << 16) | MINOR`
+        let version = (i64::from(self.version_major) << 16) | i64::from(self.version_minor);
+        if module.clazz.module_requires > version {
+            return Err(TtError::INVALID_VERSION);
+        }
+
+        {
+            let mut modules = self.modules.borrow_mut()?;
+            if let Some(position) = modules
+                .iter()
+                .position(|other| other.name() == module.name())
+            {
+                if module.clazz.module_version <= modules[position].clazz.module_version {
+                    return Err(TtError::LOWER_MODULE_VERSION);
+                }
+                // C removes the older module through `FT_Remove_Module`
+                // (running `module_done`); in Rust the previous instance
+                // is only fully destroyed once no `Arc` remains, so the
+                // destructor runs here in the usual case.
+                let replaced = modules.remove(position);
+                if let Ok(mut replaced) = Arc::try_unwrap(replaced)
+                    && let Some(done) = replaced.clazz.module_done
+                {
+                    done(&mut replaced);
+                }
+            }
+            if modules.len() >= MAX_MODULES {
+                return Err(TtError::TOO_MANY_DRIVERS);
+            }
+        }
+
+        if let Some(init) = module.clazz.module_init {
+            init(&mut module)?;
+        }
+
+        let is_outline_renderer = matches!(
+            &module.instance,
+            ModuleInstance::Renderer {
+                glyph_format: GlyphFormat::Outline,
+                ..
+            }
+        );
+        let is_hinter = module.clazz.module_flags & MODULE_HINTER != 0;
+
+        let index = {
+            let mut modules = self.modules.borrow_mut()?;
+            modules.push(Arc::new(module));
+            modules.len() - 1
+        };
+
+        // `ft_add_renderer` / `FT_MODULE_IS_HINTER` bookkeeping after a
+        // successful insert (the renderer list itself is derived from
+        // `self.modules`).
+        if is_outline_renderer {
+            self.cur_renderer.set(Some(index))?;
+        }
+        if is_hinter {
+            self.auto_hinter.set(Some(index))?;
+        }
+        Ok(())
+    }
+
+    /// Drops the weak entries of faces that are already gone.
+    pub fn reap_faces(&self) {
+        if let Ok(mut faces) = self.faces.borrow_mut() {
+            faces.retain(|face| face.strong_count() > 0);
+        }
+    }
+
+    /// `FT_Library_SetLcdFilter`: forwards to
+    /// [`LcdFilterState::set_filter`] on the library's filter state.
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_ARGUMENT`] — [`LcdFilter::Legacy1`], which
+    ///   FreeType 2.6.0 rejects (see [`LcdFilterState::set_filter`]).
+    /// * [`TtError::INVALID_HANDLE`] — the filter state is currently
+    ///   borrowed by a renderer.
+    pub fn set_lcd_filter(&self, filter: LcdFilter) -> TtResult<()> {
+        self.lcd.borrow_mut()?.set_filter(filter)
+    }
+}
+
+impl Outline {
+    /// `FT_Outline_Translate`: shifts every point by `(dx, dy)`.
+    #[inline]
+    pub fn translate(&mut self, dx: Pos, dy: Pos) {
+        translate_points(&mut self.points, dx, dy);
+    }
+
+    /// `FT_Outline_Transform`: applies `matrix` to every point.
+    #[inline]
+    pub fn transform(&mut self, matrix: &Matrix) {
+        transform_points(&mut self.points, matrix);
+    }
+}
+
+/// Runs the best available SIMD translator over the leading block-aligned
+/// prefix of `points`, finishes with the scalar tail (see the scalar
+/// reference [`translate_points`]), and returns how many points the vector
+/// kernel consumed (always a multiple of the kernel block size).
+///
+/// Selection follows the same run-time pattern as
+/// `codevar_base::basic_base64`: `codevar_base::basic_cpuid::has` decides,
+/// targets without a kernel consume nothing.
+///
+/// # Performance
+///
+/// The vector path processes whole blocks of points per iteration; inputs
+/// shorter than one block take the scalar path directly.  Results are
+/// bit-identical to [`translate_points`] (wrapping adds).
+#[must_use]
+pub fn translate_points(points: &mut [Vector], dx: Pos, dy: Pos) -> usize {
+    let consumed = simd_translate_points(points, dx, dy);
+    let mut index = consumed;
+    while index < points.len() {
+        points[index].x = points[index].x.wrapping_add(dx);
+        points[index].y = points[index].y.wrapping_add(dy);
+        index += 1;
+    }
+    consumed
+}
+
+/// SIMD-accelerated sibling of [`transform_points`]: vectorises the
+/// leading block-aligned prefix (each point is one `FT_MulFix` pair per
+/// matrix row, reproduced bit for bit), then runs the scalar tail.
+///
+/// Returns how many points the vector kernel consumed (0 when no kernel
+/// applies).  Results are bit-identical to [`transform_points`].
+#[must_use]
+pub fn transform_points(points: &mut [Vector], matrix: &Matrix) -> usize {
+    let consumed = simd_transform_points(points, matrix);
+    let mut index = consumed;
+    while index < points.len() {
+        vector_transform(&mut points[index], matrix);
+        index += 1;
+    }
+    consumed
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn simd_translate_points(points: &mut [Vector], dx: Pos, dy: Pos) -> usize {
+    if codevar_base::basic_cpuid::has(codevar_base::basic_cpuid::Feature::Sse2) {
+        // SAFETY: `has` confirmed SSE2 for this CPU (or it is compiled
+        // in); the kernel bounds-checks every access against `points`.
+        unsafe { sse2::translate_blocks(points, dx, dy) }
+    } else {
+        0
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn simd_translate_points(points: &mut [Vector], dx: Pos, dy: Pos) -> usize {
+    if codevar_base::basic_cpuid::has(codevar_base::basic_cpuid::Feature::Neon) {
+        // SAFETY: `has` confirmed NEON; the kernel bounds-checks `points`.
+        unsafe { neon::translate_blocks(points, dx, dy) }
+    } else {
+        0
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+fn simd_translate_points(points: &mut [Vector], dx: Pos, dy: Pos) -> usize {
+    // SAFETY: `simd128` is a compile-time target feature here; the
+    // kernel bounds-checks every access against `points`.
+    unsafe { wasm::translate_blocks(points, dx, dy) }
+}
+
+#[cfg(not(any(
+    target_arch = "x86",
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128"),
+)))]
+fn simd_translate_points(_points: &mut [Vector], _dx: Pos, _dy: Pos) -> usize {
+    0
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn simd_transform_points(points: &mut [Vector], matrix: &Matrix) -> usize {
+    if codevar_base::basic_cpuid::has(codevar_base::basic_cpuid::Feature::Sse2) {
+        // SAFETY: `has` confirmed SSE2; the kernel bounds-checks `points`.
+        unsafe { sse2::transform_blocks(points, matrix) }
+    } else {
+        0
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn simd_transform_points(points: &mut [Vector], matrix: &Matrix) -> usize {
+    if codevar_base::basic_cpuid::has(codevar_base::basic_cpuid::Feature::Neon) {
+        // SAFETY: `has` confirmed NEON; the kernel bounds-checks `points`.
+        unsafe { neon::transform_blocks(points, matrix) }
+    } else {
+        0
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+fn simd_transform_points(_points: &mut [Vector], _matrix: &Matrix) -> usize {
+    // Baseline SIMD128 has no exact reproduction of `mul_fix`'s
+    // 32x32 -> 64-bit low product (see the `wasm` module), so the
+    // transform runs on the scalar tail; translation is vectorised.
+    0
+}
+
+#[cfg(not(any(
+    target_arch = "x86",
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128"),
+)))]
+fn simd_transform_points(_points: &mut [Vector], _matrix: &Matrix) -> usize {
+    0
+}
+
+/// SSE2 kernels.  `Vector` (`#[repr(C)] { x, y }`) is exactly one
+/// 16-byte register (`x` in the low 64 bits, `y` in the high 64 bits),
+/// so translation is one `_mm_add_epi64` per point.
+///
+/// The fixed-point transform reproduces [`mul_fix`] per lane:
+/// `_mm_mul_epi32` computes the low 64 bits of two truncated 32-bit
+/// products (the truncation `mul_fix` starts with), the rounding
+/// constant and sign are added with 64-bit shifts, `>> 16` is applied,
+/// and the result is truncated to `i32` and sign-extended back to 64
+/// bits — bit-identical to the scalar reference.  Each matrix row
+/// `[xx, xy]` reduces to `[mul_fix(x, xx), mul_fix(y, xy)]`; adding a
+/// row to its 64-bit-lane-swapped copy broadcasts the row sum, and
+/// unpacking the low halves of both sums yields `[x', y']`.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+mod sse2 {
+    use super::{Matrix, Vector};
+    #[cfg(target_arch = "x86")]
+    use core::arch::x86::{
+        __m128i, _mm_add_epi64, _mm_and_si128, _mm_loadu_si128, _mm_mul_epi32, _mm_or_si128, _mm_set1_epi64x,
+        _mm_shuffle_epi32, _mm_slli_epi32, _mm_slli_epi64, _mm_srai_epi32, _mm_srli_epi32, _mm_srli_epi64,
+        _mm_storeu_si128, _mm_unpacklo_epi64,
+    };
+    #[cfg(target_arch = "x86_64")]
+    use core::arch::x86_64::{
+        __m128i, _mm_add_epi64, _mm_and_si128, _mm_loadu_si128, _mm_mul_epi32, _mm_or_si128, _mm_set1_epi64x,
+        _mm_shuffle_epi32, _mm_slli_epi32, _mm_slli_epi64, _mm_srai_epi32, _mm_srli_epi32, _mm_srli_epi64,
+        _mm_storeu_si128, _mm_unpacklo_epi64,
+    };
+
+    /// Points consumed per translation iteration (two points per round).
+    const BLOCK: usize = 2;
+
+    /// Translates `points[..len - len % BLOCK]` in place, returning the
+    /// number of translated points (a multiple of [`BLOCK`]).
+    ///
+    /// # Safety
+    ///
+    /// The CPU must support SSE2.
+    #[target_feature(enable = "sse2")]
+    pub(super) unsafe fn translate_blocks(points: &mut [Vector], dx: i64, dy: i64) -> usize {
+        // SAFETY: reads the two adjacent `i64` deltas as one
+        // register-sized value (unaligned read of 16 stack bytes).
+        let delta = unsafe { core::ptr::read_unaligned([dx, dy].as_ptr().cast::<__m128i>()) };
+        let base = points.as_mut_ptr();
+        let mut index = 0;
+        while index + BLOCK <= points.len() {
+            // SAFETY: `index + BLOCK <= points.len()` bounds-checks both
+            // 16-byte point slots; the load/store intrinsics touch
+            // exactly those bytes and run under this function's SSE2
+            // `target_feature`.
+            unsafe {
+                let pa = base.add(index).cast::<__m128i>();
+                _mm_storeu_si128(pa, _mm_add_epi64(_mm_loadu_si128(pa), delta));
+                let pb = base.add(index + 1).cast::<__m128i>();
+                _mm_storeu_si128(pb, _mm_add_epi64(_mm_loadu_si128(pb), delta));
+            }
+            index += BLOCK;
+        }
+        index
+    }
+
+    /// Translates every point of `points` through `matrix`, returning
+    /// the number of transformed points (always `points.len()` — the
+    /// loop consumes whole points).
+    ///
+    /// # Safety
+    ///
+    /// The CPU must support SSE2.
+    #[target_feature(enable = "sse2")]
+    pub(super) unsafe fn transform_blocks(points: &mut [Vector], matrix: &Matrix) -> usize {
+        // SAFETY: `Matrix` is `repr(C)` with four contiguous `i64`
+        // coefficients, so rows0/1 are the 16-byte pairs `[xx, xy]` and
+        // `[yx, yy]`; `read_unaligned` needs no alignment.  Each row's
+        // low lane feeds the `x` operand, matching the point layout
+        // `[x, y]`.
+        let (row0, row1) = unsafe {
+            let row0: __m128i = core::ptr::read_unaligned((&raw const matrix.xx).cast::<__m128i>());
+            let row1: __m128i = core::ptr::read_unaligned((&raw const matrix.yx).cast::<__m128i>());
+            (row0, row1)
+        };
+        let mut index = 0;
+        while index < points.len() {
+            // SAFETY: `index < points.len()`; the read and the write
+            // cover exactly one 16-byte point.
+            unsafe {
+                let p: __m128i = core::ptr::read_unaligned(points.as_ptr().add(index).cast::<__m128i>());
+                let products0 = reduce(_mm_mul_epi32(p, row0));
+                let products1 = reduce(_mm_mul_epi32(p, row1));
+                // Adding each row sum to its swapped-lane copy
+                // broadcasts it: `sum0 = [x', x']`, `sum1 = [y', y']`.
+                let sum0 = _mm_add_epi64(products0, swap_lanes(products0));
+                let sum1 = _mm_add_epi64(products1, swap_lanes(products1));
+                let out = _mm_unpacklo_epi64(sum0, sum1);
+                core::ptr::write_unaligned(points.as_mut_ptr().add(index).cast::<__m128i>(), out);
+            }
+            index += 1;
+        }
+        index
+    }
+
+    /// Reproduces [`mul_fix`] for both 64-bit lanes: `(prod + 0x8000 +
+    /// (prod >> 63)) >> 16`, truncated to `i32` and sign-extended to
+    /// 64 bits.
+    ///
+    /// # Safety
+    ///
+    /// Requires SSE2 (enabled by `target_feature` on the caller).
+    #[inline]
+    #[target_feature(enable = "sse2")]
+    unsafe fn reduce(products: __m128i) -> __m128i {
+        // `sign = prod >> 63` per lane: harvest bit 63 as a 32-bit sign
+        // mask and broadcast it to both halves of the 64-bit lane.
+        let hi = _mm_srli_epi64(products, 32);
+        let bit = _mm_srai_epi32(hi, 31);
+        let sign = _mm_or_si128(bit, _mm_slli_epi64(bit, 32));
+        let value = _mm_add_epi64(_mm_add_epi64(products, _mm_set1_epi64x(0x8000)), sign);
+        // Bits 16..47 of `value`: low half >> 16 OR high half << 16,
+        // both as 32-bit logical shifts.
+        let low = _mm_and_si128(value, _mm_set1_epi64x(0xFFFF_FFFF));
+        let high = _mm_srli_epi64(value, 32);
+        let shifted = _mm_or_si128(_mm_slli_epi32(high, 16), _mm_srli_epi32(low, 16));
+        // Truncate to `i32` and sign-extend to 64 bits.
+        let ext = _mm_srai_epi32(shifted, 31);
+        _mm_or_si128(shifted, _mm_slli_epi64(ext, 32))
+    }
+
+    /// Exchanges the two 64-bit lanes (`[a, b] -> [b, a]`).
+    ///
+    /// # Safety
+    ///
+    /// Requires SSE2 (enabled by `target_feature` on the caller).
+    #[inline]
+    #[target_feature(enable = "sse2")]
+    unsafe fn swap_lanes(value: __m128i) -> __m128i {
+        // 32-bit lanes `[l0, l1, l2, l3] -> [l2, l3, l0, l1]`: whole
+        // 64-bit lanes exchanged.  The immediate is
+        // `_MM_SHUFFLE(1, 0, 3, 2) = 78`, spelled out because the
+        // `_MM_SHUFFLE` macro is not yet stable as a `const fn`.
+        _mm_shuffle_epi32(value, 78)
+    }
+}
+
+/// NEON kernels mirroring the SSE2 design: one 128-bit register per
+/// point, the vector's even 32-bit lanes feeding `vmull_s32` (the
+/// truncating 32x32 -> 64 multiply shared with `_mm_mul_epi32`), and
+/// 64-bit lane exchanges via `vextq_s64` broadcasting each row sum.
+#[cfg(target_arch = "aarch64")]
+mod neon {
+    use super::{Matrix, Vector};
+    use core::arch::aarch64::{
+        int32x2_t, int64x2_t, vaddq_s64, vcombine_s64, vdupq_n_s64, vextq_s64, vget_low_s32, vget_low_s64,
+        vmovl_s32, vmovn_s64, vmull_s32, vreinterpretq_s32_s64, vshlq_s64, vuzpq_s32,
+    };
+
+    /// Points consumed per translation iteration.
+    const BLOCK: usize = 2;
+
+    /// Translates `points[..len - len % BLOCK]` in place, returning the
+    /// number of translated points (a multiple of [`BLOCK`]).
+    ///
+    /// # Safety
+    ///
+    /// The CPU must support NEON (always true on `aarch64`).
+    #[target_feature(enable = "neon")]
+    pub(super) unsafe fn translate_blocks(points: &mut [Vector], dx: i64, dy: i64) -> usize {
+        // SAFETY: reads the two adjacent `i64` deltas as one vector.
+        let delta = unsafe { core::ptr::read_unaligned([dx, dy].as_ptr().cast::<int64x2_t>()) };
+        let base = points.as_mut_ptr();
+        let mut index = 0;
+        while index + BLOCK <= points.len() {
+            // SAFETY: `index + BLOCK <= points.len()` bounds-checks both
+            // 16-byte point slots; the accesses touch exactly those
+            // bytes.
+            unsafe {
+                let pa = base.add(index).cast::<int64x2_t>();
+                core::ptr::write_unaligned(pa, vaddq_s64(core::ptr::read_unaligned(pa), delta));
+                let pb = base.add(index + 1).cast::<int64x2_t>();
+                core::ptr::write_unaligned(pb, vaddq_s64(core::ptr::read_unaligned(pb), delta));
+            }
+            index += BLOCK;
+        }
+        index
+    }
+
+    /// Translates every point of `points` through `matrix`, returning
+    /// the number of transformed points (always `points.len()`).
+    ///
+    /// # Safety
+    ///
+    /// The CPU must support NEON.
+    #[target_feature(enable = "neon")]
+    pub(super) unsafe fn transform_blocks(points: &mut [Vector], matrix: &Matrix) -> usize {
+        // SAFETY: `Matrix` is `repr(C)` with four contiguous `i64`
+        // coefficients; rows 0/1 are `[xx, xy]` and `[yx, yy]`, and the
+        // even 32-bit lanes keep each coefficient's low half (the `i32`
+        // domain of `mul_fix`).
+        let (row0, row1) = unsafe {
+            let row0: int64x2_t = core::ptr::read_unaligned((&raw const matrix.xx).cast::<int64x2_t>());
+            let row1: int64x2_t = core::ptr::read_unaligned((&raw const matrix.yx).cast::<int64x2_t>());
+            (even_i32(row0), even_i32(row1))
+        };
+        let mut index = 0;
+        while index < points.len() {
+            // SAFETY: `index < points.len()`; the read and the write
+            // cover exactly one 16-byte point.
+            unsafe {
+                let p: int64x2_t = core::ptr::read_unaligned(points.as_ptr().add(index).cast::<int64x2_t>());
+                let products0 = reduce(vmull_s32(even_i32(p), row0));
+                let products1 = reduce(vmull_s32(even_i32(p), row1));
+                // Adding each row sum to its 64-bit-lane-swapped copy
+                // broadcasts it; the low halves reassemble `[x', y']`.
+                let sum0 = vaddq_s64(products0, vextq_s64::<1>(products0, products0));
+                let sum1 = vaddq_s64(products1, vextq_s64::<1>(products1, products1));
+                core::ptr::write_unaligned(
+                    points.as_mut_ptr().add(index).cast::<int64x2_t>(),
+                    vcombine_s64(vget_low_s64(sum0), vget_low_s64(sum1)),
+                );
+            }
+            index += 1;
+        }
+        index
+    }
+
+    /// The low 32 bits of both 64-bit lanes (the vector's even 32-bit
+    /// lanes) as `int32x2_t` — the operand pair `vmull_s32` needs.
+    #[inline]
+    fn even_i32(value: int64x2_t) -> int32x2_t {
+        let lanes = vreinterpretq_s32_s64(value);
+        vget_low_s32(vuzpq_s32(lanes, lanes).0)
+    }
+
+    /// The NEON twin of the SSE2 `reduce` (see that module): adds the
+    /// rounding constant and sign, shifts arithmetically (negative
+    /// `vshlq_s64` counts are right shifts), truncates to `i32` and
+    /// sign-extends.
+    ///
+    /// # Safety
+    ///
+    /// Requires NEON (enabled by `target_feature` on the caller).
+    #[inline]
+    #[target_feature(enable = "neon")]
+    unsafe fn reduce(products: int64x2_t) -> int64x2_t {
+        let sign = vshlq_s64(products, vdupq_n_s64(-63));
+        let value = vaddq_s64(vaddq_s64(products, vdupq_n_s64(0x8000)), sign);
+        let shifted = vshlq_s64(value, vdupq_n_s64(-16));
+        vmovl_s32(vmovn_s64(shifted))
+    }
+}
+
+/// Wasm SIMD128 kernels: translation only.  Baseline SIMD128 has no
+/// instruction reproducing [`mul_fix`]'s exact 32x32 -> 64-bit low
+/// product (its `i64x2_mul` belongs to the non-baseline `mul`
+/// extension), so point transformation runs on the scalar tail — the
+/// wasm dispatcher of [`transform_points`] reports zero consumed
+/// points.
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+mod wasm {
+    use super::Vector;
+    use core::arch::wasm32::{i64x2_add, v128, v128_load, v128_store};
+
+    /// Points consumed per translation iteration.
+    const BLOCK: usize = 2;
+
+    /// Translates `points[..len - len % BLOCK]` in place, returning the
+    /// number of translated points (a multiple of [`BLOCK`]).
+    ///
+    /// # Safety
+    ///
+    /// The `simd128` target feature must be enabled.
+    #[target_feature(enable = "simd128")]
+    pub(super) unsafe fn translate_blocks(points: &mut [Vector], dx: i64, dy: i64) -> usize {
+        // SAFETY: reads the two adjacent `i64` deltas as one vector.
+        let delta: v128 = unsafe { core::ptr::read_unaligned([dx, dy].as_ptr().cast::<v128>()) };
+        let base = points.as_mut_ptr();
+        let mut index = 0;
+        while index + BLOCK <= points.len() {
+            // SAFETY: `index + BLOCK <= points.len()` bounds-checks both
+            // 16-byte point slots; `v128_load`/`v128_store` touch
+            // exactly those bytes.
+            unsafe {
+                let pa = base.add(index).cast::<v128>();
+                v128_store(pa, i64x2_add(v128_load(pa), delta));
+                let pb = base.add(index + 1).cast::<v128>();
+                v128_store(pb, i64x2_add(v128_load(pb), delta));
+            }
+            index += BLOCK;
+        }
+        index
     }
 }
 

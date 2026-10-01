@@ -30,14 +30,6 @@
 //! | `inflate.c`          | [`Inflater::inflate_run`] |
 //! | `ftgzip.c`           | [`GzipSource`], [`uncompress`], [`is_gzip`] |
 //!
-//! The port keeps zlib's state machines (same modes, same constants, same
-//! table-building algorithm in `huft_build`) and FreeType's gzip wrapper
-//! semantics (4 KiB input/output buffers, backward-seek reset, small-file
-//! pre-load), the `z_stream` callbacks and `FT_Stream` buffers become plain struct fields,
-//! all arithmetic that relied on C unsigned wraparound uses `wrapping_*`
-//! or explicitly bounded `u32`/`u64` operations, and no panicking
-//! operation is used in production paths.
-//!
 //! Memory is bounded: every allocation (32 KiB inflate window, 1440-entry
 //! Huffman arena, ≤316 code-length slots, 4 KiB I/O buffers, 32 KiB
 //! history ring, optional <40 KiB small-file image) is sized from
@@ -5360,10 +5352,6 @@ pub fn is_gzip(buf: &[u8]) -> bool {
     };
     m0 == 0x1F && m1 == 0x8B && m2 == Z_DEFLATED && (m3 & FT_GZIP_RESERVED) == 0
 }
-
-// ---------------------------------------------------------------------------
-// tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

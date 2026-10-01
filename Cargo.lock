@@ -387,9 +387,11 @@ dependencies = [
 name = "codevar-truetype-core"
 version = "1.0.0"
 dependencies = [
+ "codevar-base",
  "codevar-io",
  "codevar-logger",
  "libm",
+ "spin 0.12.3",
 ]
 
 [[package]]

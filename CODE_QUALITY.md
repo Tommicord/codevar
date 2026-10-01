@@ -292,31 +292,9 @@ impl ComputeManager {
 #### Block-Based Processing
 
 - Process data in fixed-size blocks (8×8 or 16×16 for optimal GPU scheduling)
-- Design algorithms for SIMD vectorization
 - Ensure memory alignment for optimal performance
 - Minimize data dependencies between blocks
 - Use efficient data structures for parallel access
-
-#### Examples
-
-```rust
-// ✅ CORRECT block-based parallel processing
-pub const BLOCK_SIZE: usize = 16;
-
-pub fn process_parallel(data: &[u8]) -> Vec<u8> {
-    let block_count = (data.len() + BLOCK_SIZE - 1) / BLOCK_SIZE;
-
-    (0..block_count)
-        .into_par_iter()
-        .map(|block_idx| {
-            let start = block_idx * BLOCK_SIZE;
-            let end = (start + BLOCK_SIZE).min(data.len());
-            process_block(&data[start..end])
-        })
-        .flatten()
-        .collect()
-}
-```
 
 ### Conflict Resolution for Parallel Execution
 
@@ -337,40 +315,6 @@ pub fn process_parallel(data: &[u8]) -> Vec<u8> {
 - **Provide examples** for complex algorithms
 - **Document performance characteristics** for public APIs
 - **Include panics/safety sections** where relevant
-
-#### Examples
-
-```rust
-// ✅ CORRECT documentation
-/// Merges two blocks of data using binary conflict resolution.
-///
-/// This function performs a deterministic merge of two data blocks using
-/// hash-based ordering to ensure consistent results across different executions.
-///
-/// # Arguments
-///
-/// * `block_a` - First data block to merge
-/// * `block_b` - Second data block to merge
-///
-/// # Returns
-///
-/// A vector containing the merged result in deterministic order.
-///
-/// # Performance
-///
-/// This function uses SIMD instructions when available and has O(n) complexity
-/// where n is the combined size of both blocks.
-///
-/// # Safety
-///
-/// This function uses unsafe SIMD operations but maintains the following invariants:
-/// - All memory accesses are within bounds
-/// - SIMD operations are only performed on supported architectures
-/// - Memory is properly aligned for SIMD operations
-pub fn merge_blocks(block_a: &[u8], block_b: &[u8]) -> Vec<u8> {
-    // Implementation
-}
-```
 
 ## Testing Standards
 

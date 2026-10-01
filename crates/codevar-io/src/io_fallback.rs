@@ -224,33 +224,6 @@ pub fn is_ebadf(err: &ErrorKind) -> bool {
 /// Standard input buffer size for fallback.
 pub const STDIN_BUF_SIZE: usize = 0;
 
-/// Returns a writer suitable for panic output.
-/// On bare-metal, this will return an unsupported writer.
-pub fn panic_output() -> impl Write<Error = ErrorKind> {
-    Stderr::new()
-}
-
-/// Trait for providing custom standard I/O implementations on bare-metal platforms.
-///
-/// Implement this trait to provide platform-specific standard I/O.
-/// The implementations can then be used through the standard I/O functions.
-pub trait StdIoCustom {
-    /// Read from standard input.
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, ErrorKind>;
-
-    /// Write to standard output.
-    fn write(&mut self, buf: &[u8]) -> Result<usize, ErrorKind>;
-
-    /// Write to standard error.
-    fn write_err(&mut self, buf: &[u8]) -> Result<usize, ErrorKind>;
-
-    /// Flush standard output.
-    fn flush_out(&mut self) -> Result<(), ErrorKind>;
-
-    /// Flush standard error.
-    fn flush_err(&mut self) -> Result<(), ErrorKind>;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

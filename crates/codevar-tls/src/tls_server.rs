@@ -398,7 +398,6 @@ impl TlsServerConnection {
             .common
             .suite
             .ok_or_else(|| TlsError::Internal("suite".into()))?;
-
         // ServerHello
         let mut ext = Vec::new();
         let idx = start_extensions(&mut ext);

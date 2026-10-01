@@ -39,44 +39,22 @@
 //! | `afloader.c`  | [`FaceAutohint::hint_glyph`] |
 //! | `afmodule.c`  | [`Autohinter`] configuration |
 //!
-//! ## Configuration
-//!
-//! The build mirrors FreeType's `ftoption.h` defaults for the
-//! auto-hinter:
-//!
-//! * `AF_CONFIG_OPTION_CJK`, `AF_CONFIG_OPTION_INDIC` and
-//!   `AF_CONFIG_OPTION_USE_WARPER` are **enabled**;
-//! * `AF_CONFIG_OPTION_CJK_BLUE_HANI_VERT` is disabled;
-//! * `FT_CONFIG_OPTION_USE_HARFBUZZ` is disabled, so OpenType feature
-//!   coverages (small caps, superior figures, ...) are never computed
-//!   and [`af_get_coverage`] is a no-op stub exactly as in FreeType;
-//! * `FT_OPTION_AUTOFIT2` is disabled, so the `latin2` writing system
-//!   is **not** part of [`WRITING_SYSTEM_CLASSES`] /
-//!   [`STYLE_CLASSES`]; its routines are still ported in the
-//!   [`latin2`] section and can be selected per glyph through
-//!   [`LoadOptions::writing_system_override`].
-//!
-//! ## Public API
-//!
-//! The integration surface is small:
-//!
-//! * [`GlyphProvider`] — the face abstraction (outlines, metrics and
-//!   character map access) implemented by the caller;
-//! * [`Autohinter`] / [`FaceAutohint`] — module level configuration
-//!   and per-face cached global metrics;
-//! * [`LoadOptions`] — scaler and rendering parameters for one glyph;
-//! * [`HintedMetrics`] — the resulting grid-fitted glyph metrics.
-//!
 //! ## SIMD
 //!
 //! Hot loops ship scalar reference implementations plus runtime
 //! dispatched vector kernels (SSE2/AVX2 on `x86_64`, NEON on
-//! `aarch64`). Every kernel is selected through the `*_simd`
+//! `aarch64`). Every kernel is selected through the `*`
 //! dispatcher, which is reachable from tests via the
-//! [`set_simd_backend`] override hook so that scalar and vector paths
+//! [`set_backend`] override hook so that scalar and vector paths
 //! can be compared for bit-identical output.
 #![cfg_attr(not(test), no_std)]
 extern crate alloc;
+
+pub mod cjk;
+pub mod hints;
+pub mod latin;
+pub mod metrics;
+pub mod ranges;
 
 use codevar_truetype_core::{Fixed, Pos, RenderMode};
 
@@ -139,7 +117,7 @@ pub struct Width {
 /// `af_sort_pos` (afangles.c): insertion-sorts `count` positions in
 /// ascending order.
 ///
-/// This is the scalar reference implementation; [`sort_positions_simd`]
+/// This is the scalar reference implementation; [`sort_positions`]
 /// must produce a bit-identical result (a sorted array is unique, so
 /// the vector path may use any sorting strategy).
 #[inline]
@@ -160,7 +138,7 @@ pub fn sort_positions(count: usize, table: &mut [Pos]) {
 /// `count` is updated to the number of surviving widths.
 ///
 /// This is the scalar reference implementation;
-/// [`sort_and_quantize_widths_simd`] must produce a bit-identical
+/// [`sort_and_quantize_widths`] must produce a bit-identical
 /// result.
 pub fn sort_and_quantize_widths(count: &mut usize, table: &mut [Width], threshold: Pos) {
     if *count <= 1 {
@@ -182,18 +160,15 @@ pub fn sort_and_quantize_widths(count: &mut usize, table: &mut [Width], threshol
     // compute and use mean values for clusters not larger than
     // `threshold`; this is very primitive and might not yield the best
     // result, but normally, using reference character `o', `*count' is
-    // 2, so the code below is fully sufficient
+    // 2, so is fully sufficient
     let mut i = 1usize;
     while i < *count {
         if table[i].org.wrapping_sub(cur_val) > threshold || i == *count - 1 {
             let mut sum: Pos = 0;
-
-            // fix loop for end of array
             let mut end = i;
             if table[i].org.wrapping_sub(cur_val) <= threshold && i == *count - 1 {
                 end = i + 1;
             }
-
             let mut j = cur_idx;
             while j < end {
                 sum = sum.wrapping_add(table[j].org);
@@ -209,8 +184,6 @@ pub fn sort_and_quantize_widths(count: &mut usize, table: &mut [Width], threshol
         }
         i += 1;
     }
-
-    // compress array to remove zero values
     let mut out = 1usize;
     let mut src = 1usize;
     while src < *count {
@@ -266,7 +239,7 @@ impl Dimension {
 ///
 /// The values are computed so that two vectors are in opposite
 /// directions iff `dir1 + dir2 == 0`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[repr(i8)]
 pub enum Direction {
     /// `AF_DIR_RIGHT`.
@@ -278,6 +251,7 @@ pub enum Direction {
     /// `AF_DIR_DOWN`.
     Down = -2,
     /// `AF_DIR_NONE`: the vector has no dominant direction.
+    #[default]
     None = 4,
 }
 

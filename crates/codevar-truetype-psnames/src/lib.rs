@@ -309,7 +309,7 @@ pub fn ps_unicode_value(glyph_name: &str) -> u32 {
 /// Unicode values of the extra glyphs that are added to built charmaps
 /// (`ft_extra_glyph_unicodes`).
 const FT_EXTRA_GLYPH_UNICODES: [u32; EXTRA_GLYPH_LIST_SIZE] = [
-    /* WGL 4 */
+    // WGL 4
     0x0394, 0x03A9, 0x2215, 0x00AD, 0x02C9, 0x03BC, 0x2219, 0x00A0, /* Romanian */
     0x021A, 0x021B,
 ];

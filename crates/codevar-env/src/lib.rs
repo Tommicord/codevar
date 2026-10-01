@@ -518,7 +518,7 @@ pub static ENV_CACHE_DIR: &(dyn NamedEnvDir + Sync) = &LazyEnvDir(move || {
         build_and_leak(
             PathBuilder::new()
                 .root()
-                .push(env_var("HOME").unwrap_or_else(|| String::from("/tmp")))
+                .push(env_var("HOME").unwrap_or_else(|| String::from("/tmp")).as_str())
                 .push(".cache")
                 .push(ENV_NAME),
             "/tmp/.cache/codevar",
@@ -575,7 +575,11 @@ pub static ENV_DATA_DIR: &(dyn NamedEnvDir + Sync) = &LazyEnvDir(move || {
         build_and_leak(
             PathBuilder::new()
                 .root()
-                .push(env_var("HOME").unwrap_or_else(|| String::from("/tmp")))
+                .push(
+                    env_var("HOME")
+                        .unwrap_or_else(|| String::from("/tmp"))
+                        .as_str()
+                )
                 .push(".local")
                 .push("share")
                 .push(ENV_NAME),

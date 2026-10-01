@@ -278,7 +278,7 @@ fn simd_encode(input: &[u8], out: &mut [u8]) -> usize {
 fn simd_encode(input: &[u8], out: &mut [u8]) -> usize {
     // SAFETY: `simd128` is a compile-time target feature here, and the
     // kernel bounds-checks every access against `input` and `out`.
-    unsafe { wasm_simd::encode_blocks(input, out) }
+    unsafe { wasm::encode_blocks(input, out) }
 }
 
 /// Targets without a vector kernel consume nothing and fall back to the
@@ -557,7 +557,7 @@ mod neon {
 /// WebAssembly SIMD128 encoder: the same reshuffle/translate strategy
 /// as the SSSE3 kernel, using `swizzle` lookups.
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
-mod wasm_simd {
+mod wasm {
     use super::simd_tables::{
         MUL_FACTOR, MUL_MASK_A, MUL_MASK_B, MULHI_BLEND, RESHUFFLE_MASK, TRANSLATE_OFFSETS,
     };

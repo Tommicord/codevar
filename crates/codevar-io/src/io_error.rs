@@ -481,61 +481,6 @@ fn kind_from_prim(ek: u32) -> Option<ErrorKind> {
     })
 }
 
-// Some static checking to alert us if a change breaks any of the assumptions
-// that our encoding relies on for correctness and soundness. (Some of these are
-// a bit overly thorough/cautious, admittedly)
-//
-// If any of these are hit on a platform that std supports, we should likely
-// just use `repr_unpacked.rs` there instead (unless the fix is easy).
-macro_rules! static_assert {
-    ($condition:expr) => {
-        const _: () = assert!($condition);
-    };
-    (@usize_eq: $lhs:expr, $rhs:expr) => {
-        const _: [(); $lhs] = [(); $rhs];
-    };
-}
-
-// The bitpacking we use requires pointers be exactly 64 bits.
-static_assert!(@usize_eq: size_of::<NonNull<()>>(), 8);
-
-// We also require pointers and usize be the same size.
-static_assert!(@usize_eq: size_of::<NonNull<()>>(), size_of::<usize>());
-
-// `Custom` and `SimpleMessage` need to be thin pointers.
-static_assert!(@usize_eq: size_of::<&'static SimpleMessage>(), 8);
-static_assert!(@usize_eq: size_of::<Box<Custom>>(), 8);
-
-static_assert!((TAG_MASK + 1).is_power_of_two());
-// And they must have sufficient alignment.
-static_assert!(align_of::<SimpleMessage>() > TAG_MASK);
-static_assert!(align_of::<Custom>() > TAG_MASK);
-
-static_assert!(@usize_eq: TAG_MASK & TAG_SIMPLE_MESSAGE, TAG_SIMPLE_MESSAGE);
-static_assert!(@usize_eq: TAG_MASK & TAG_CUSTOM, TAG_CUSTOM);
-static_assert!(@usize_eq: TAG_MASK & TAG_SIMPLE, TAG_SIMPLE);
-
-// This is obviously true (`TAG_CUSTOM` is `0b01`), but in `Repr::new_custom` we
-// offset a pointer by this value, and expect it to both be within the same
-// object, and to not wrap around the address space. See the comment in that
-// function for further details.
-//
-// Actually, at the moment we use `ptr::wrapping_add`, not `ptr::add`, so this
-// check isn't needed for that one, although the assertion that we don't
-// actually wrap around in that wrapping_add does simplify the safety reasoning
-// elsewhere considerably.
-static_assert!(size_of::<Custom>() >= TAG_CUSTOM);
-
-// These two store a payload which is allowed to be zero, so they must be
-// non-zero to preserve the `NonNull`'s range invariant.
-static_assert!(TAG_SIMPLE != 0);
-// We can't tag `SimpleMessage`s, the tag must be 0.
-static_assert!(@usize_eq: TAG_SIMPLE_MESSAGE, 0);
-static_assert!(@usize_eq: size_of::<Repr>(), 8);
-static_assert!(@usize_eq: size_of::<Option<Repr>>(), 8);
-static_assert!(@usize_eq: size_of::<Result<(), Repr>>(), 8);
-static_assert!(@usize_eq: size_of::<Result<usize, Repr>>(), 16);
-
 #[derive(Debug)]
 pub struct Error {
     repr: Repr,

@@ -1,0 +1,220 @@
+//! Copyright 2026 Codevar Project
+//! Licensed under the Apache License, Version 2.0 (the
+//! "License"); you may not use this file except in
+//! compliance with the License. You may obtain a copy of the
+//! License at
+//!
+//!   https://www.apache.org/licenses/LICENSE-2.0
+//!
+//! Unless required by applicable law or agreed to in
+//! writing, software distributed under the License is
+//! distributed on an "AS IS" BASIS, WITHOUT WARRANTIES
+//! OR CONDITIONS OF ANY KIND, either express or implied.
+//! See the License for the specific language governing
+//! permissions and limitations under the License.
+
+//! Style metrics (`AF_StyleMetricsRec` and its writing system
+//! derivations, `aftypes.h`).
+//!
+//! In FreeType every writing system allocates its own metrics
+//! structure (for example `AF_LatinMetricsRec`) whose first member is
+//! the common `AF_StyleMetricsRec`, and the auto-hinter downcasts the
+//! base pointer whenever it needs the derived fields.  This port keeps
+//! the same layout with a tagged [`StyleMetrics`] enum instead of an
+//! unsafe cast.
+
+use alloc::rc::Rc;
+use core::cell::Cell;
+
+use crate::cjk::CjkMetrics;
+use crate::latin::LatinMetrics;
+use crate::ranges::{Style, StyleClass, WritingSystem};
+use crate::Scaler;
+
+/// `AF_PROP_INCREASE_X_HEIGHT_MIN` (`afglobal.h`): smallest pixel
+/// size for which the x-height increase is applied.
+pub const PROP_INCREASE_X_HEIGHT_MIN: u32 = 6;
+/// `AF_PROP_INCREASE_X_HEIGHT_MAX` (`afglobal.h`): default (disabled)
+/// value of the `increase-x-height` property.
+pub const PROP_INCREASE_X_HEIGHT_MAX: u32 = 0;
+
+/// Face wide data shared between [`FaceGlobals`](crate::FaceGlobals)
+/// and every [`StyleMetrics`] of the face (`AF_FaceGlobalsRec` fields
+/// read through `metrics->globals` in C).
+///
+/// FreeType stores a back pointer to `AF_FaceGlobalsRec`; since the
+/// metrics live inside the globals structure this port shares a small
+/// `Rc` cell instead, which keeps the same aliasing behavior without
+/// unsafe code.
+#[derive(Debug)]
+pub struct GlobalsShared {
+    /// `face->units_per_EM`.
+    pub units_per_em: u16,
+    /// The `increase-x-height` property (`AF_PROP_INCREASE_X_HEIGHT_*`).
+    increase_x_height: Cell<u32>,
+}
+
+impl GlobalsShared {
+    /// Creates the shared cell for a face with the given
+    /// `units_per_EM`.
+    #[inline]
+    pub fn new(units_per_em: u16) -> GlobalsShared {
+        GlobalsShared {
+            units_per_em,
+            increase_x_height: Cell::new(PROP_INCREASE_X_HEIGHT_MAX),
+        }
+    }
+
+    /// Current value of the `increase-x-height` property.
+    #[inline]
+    pub fn increase_x_height(&self) -> u32 {
+        self.increase_x_height.get()
+    }
+
+    /// Updates the `increase-x-height` property (values outside
+    /// \[`PROP_INCREASE_X_HEIGHT_MIN` .. `PROP_INCREASE_X_HEIGHT_MAX`\]
+    /// are clamped by the property service, as in `afmodule.c`).
+    #[inline]
+    pub fn set_increase_x_height(&self, value: u32) {
+        self.increase_x_height.set(value);
+    }
+}
+
+/// `AF_StyleMetricsRec` (`aftypes.h`): the part of the global metrics
+/// common to every writing system.
+#[derive(Clone, Debug)]
+pub struct StyleMetricsRec {
+    /// The style class this metrics object was created for.
+    pub style_class: &'static StyleClass,
+    /// The scaler of the target size (updated for each glyph).
+    pub scaler: Scaler,
+    /// True if all digits of the face have the same width
+    /// (`AF_StyleMetricsRec::digits_have_same_width`).
+    pub digits_have_same_width: bool,
+    /// Face wide shared data (`AF_StyleMetricsRec::globals`).
+    pub globals: Rc<GlobalsShared>,
+}
+
+impl StyleMetricsRec {
+    /// Creates a base record for the given style and face.
+    #[inline]
+    pub fn new(style_class: &'static StyleClass, globals: Rc<GlobalsShared>) -> StyleMetricsRec {
+        StyleMetricsRec {
+            style_class,
+            scaler: Scaler::default(),
+            digits_have_same_width: false,
+            globals,
+        }
+    }
+}
+
+/// The per-writing-system global metrics of one style
+/// (`AF_StyleMetrics` and its derivations).
+///
+/// * [`StyleMetrics::Dummy`] is a plain `AF_StyleMetricsRec`
+///   (`afdummy.c` never allocates extra fields),
+/// * [`StyleMetrics::Latin`] is `AF_LatinMetricsRec` (`aflatin.h`,
+///   shared by `aflatin2.c`),
+/// * [`StyleMetrics::Cjk`] is `AF_CJKMetricsRec` (`afcjk.h`), also
+///   used by the Indic writing system (`afindic.c`).
+#[derive(Clone, Debug)]
+pub enum StyleMetrics {
+    /// Metrics of the dummy writing system.
+    Dummy(StyleMetricsRec),
+    /// Metrics of the Latin writing system.
+    Latin(LatinMetrics),
+    /// Metrics of the CJK (and Indic) writing system.
+    Cjk(CjkMetrics),
+}
+
+impl StyleMetrics {
+    /// Creates the metrics variant matching `writing_system` for a
+    /// style (mirrors `writing_system_class->style_metrics_size` plus
+    /// the `metrics->style_class` / `metrics->globals` assignment of
+    /// `af_face_globals_get_metrics`).
+    pub fn new(style_class: &'static StyleClass, globals: Rc<GlobalsShared>) -> StyleMetrics {
+        let root = StyleMetricsRec::new(style_class, globals);
+        match style_class.writing_system {
+            WritingSystem::Dummy => StyleMetrics::Dummy(root),
+            WritingSystem::Latin => StyleMetrics::Latin(LatinMetrics {
+                root,
+                units_per_em: 0,
+                axis: Default::default(),
+            }),
+            WritingSystem::Cjk | WritingSystem::Indic => StyleMetrics::Cjk(CjkMetrics {
+                root,
+                units_per_em: 0,
+                axis: Default::default(),
+            }),
+        }
+    }
+
+    /// The common part of the metrics (`(AF_StyleMetrics)metrics` in
+    /// C).
+    #[inline]
+    pub fn root(&self) -> &StyleMetricsRec {
+        match self {
+            StyleMetrics::Dummy(root) => root,
+            StyleMetrics::Latin(m) => &m.root,
+            StyleMetrics::Cjk(m) => &m.root,
+        }
+    }
+
+    /// Mutable access to the common part of the metrics.
+    #[inline]
+    pub fn root_mut(&mut self) -> &mut StyleMetricsRec {
+        match self {
+            StyleMetrics::Dummy(root) => root,
+            StyleMetrics::Latin(m) => &mut m.root,
+            StyleMetrics::Cjk(m) => &mut m.root,
+        }
+    }
+
+    /// The style class of this metrics object.
+    #[inline]
+    pub fn style_class(&self) -> &'static StyleClass {
+        self.root().style_class
+    }
+
+    /// The `AF_Style` of this metrics object.
+    #[inline]
+    pub fn style(&self) -> Style {
+        self.root().style_class.style
+    }
+
+    /// The scaler of the target size.
+    #[inline]
+    pub fn scaler(&self) -> &Scaler {
+        &self.root().scaler
+    }
+
+    /// Mutable access to the scaler of the target size.
+    #[inline]
+    pub fn scaler_mut(&mut self) -> &mut Scaler {
+        &mut self.root_mut().scaler
+    }
+
+    /// `face->units_per_EM`, as read through `hints->metrics`.
+    #[inline]
+    pub fn units_per_em_face(&self) -> u16 {
+        self.root().globals.units_per_em
+    }
+
+    /// The Latin metrics, if this is a Latin style.
+    #[inline]
+    pub fn latin(&self) -> Option<&LatinMetrics> {
+        match self {
+            StyleMetrics::Latin(m) => Some(m),
+            _ => None,
+        }
+    }
+
+    /// The CJK metrics, if this is a CJK or Indic style.
+    #[inline]
+    pub fn cjk(&self) -> Option<&CjkMetrics> {
+        match self {
+            StyleMetrics::Cjk(m) => Some(m),
+            _ => None,
+        }
+    }
+}
