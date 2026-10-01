@@ -12,8 +12,8 @@ name = "codevar_truetype_gzip"
 
 [features]
 default = []
-std = ["codevar-truetype-core/std"]
 
 [dependencies]
-log = { workspace = true }
+spin = { workspace = true }
+codevar-logger = { workspace = true }
 codevar-truetype-core = { workspace = true }

@@ -190,18 +190,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codevar-fcware"
-version = "1.0.0"
-dependencies = [
- "arc-swap",
- "cfg-if",
- "console_error_panic_hook",
- "wasm-bindgen",
- "webpki-roots",
- "windows-sys",
-]
-
-[[package]]
 name = "codevar-io"
 version = "1.0.0"
 dependencies = [
@@ -362,6 +350,7 @@ dependencies = [
 name = "codevar-truetype"
 version = "1.0.0"
 dependencies = [
+ "codevar-logger",
  "codevar-truetype-autofit",
  "codevar-truetype-cff",
  "codevar-truetype-core",
@@ -373,7 +362,6 @@ dependencies = [
  "codevar-truetype-sfnt",
  "codevar-truetype-smooth",
  "codevar-truetype-ttcore",
- "log",
 ]
 
 [[package]]
@@ -408,34 +396,35 @@ dependencies = [
 name = "codevar-truetype-glyf"
 version = "1.0.0"
 dependencies = [
+ "codevar-logger",
  "codevar-truetype-core",
  "codevar-truetype-sfnt",
  "codevar-truetype-ttcore",
- "log",
 ]
 
 [[package]]
 name = "codevar-truetype-gzip"
 version = "1.0.0"
 dependencies = [
+ "codevar-logger",
  "codevar-truetype-core",
- "log",
+ "spin 0.12.3",
 ]
 
 [[package]]
 name = "codevar-truetype-pshinter"
 version = "1.0.0"
 dependencies = [
+ "codevar-logger",
  "codevar-truetype-core",
- "log",
 ]
 
 [[package]]
 name = "codevar-truetype-psnames"
 version = "1.0.0"
 dependencies = [
+ "codevar-logger",
  "codevar-truetype-core",
- "log",
 ]
 
 [[package]]
@@ -545,16 +534,6 @@ dependencies = [
  "libc",
  "spin 0.12.3",
  "windows-link 0.100.0",
-]
-
-[[package]]
-name = "console_error_panic_hook"
-version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a06aeb73f470f66dcdbf7223caeebb85984942f22f1adb2a088cf9668146bbbc"
-dependencies = [
- "cfg-if",
- "wasm-bindgen",
 ]
 
 [[package]]

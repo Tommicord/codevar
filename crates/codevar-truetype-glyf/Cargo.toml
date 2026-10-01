@@ -11,7 +11,7 @@ repository.workspace = true
 name = "codevar_truetype_glyf"
 
 [dependencies]
-log = { workspace = true }
+codevar-logger = { workspace = true }
 codevar-truetype-core = { workspace = true }
 codevar-truetype-sfnt = { workspace = true }
 codevar-truetype-ttcore = { workspace = true }

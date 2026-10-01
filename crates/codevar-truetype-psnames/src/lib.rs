@@ -15,26 +15,9 @@
 
 //! # PostScript names module
 //!
-//! Faithful port of FreeType 2.6.5's `psnames` module
+//! Port of FreeType 2.6.5's `psnames` module
 //! (`src/psnames/{psmodule.c,pstables.h}`) and of the PostScript charmap
 //! service specification (`include/freetype/internal/services/svpscmap.h`).
-//!
-//! The module provides:
-//!
-//! - the compressed Adobe Glyph List lookup ([`ft_get_adobe_glyph_index`]),
-//! - glyph name to Unicode value resolution ([`ps_unicode_value`]) including
-//!   the `uniXXXX` / `uXXXX..` conventions and glyph variants (`A.swash`),
-//! - the Unicode charmap builder used by the Type 1, CFF and CID drivers
-//!   ([`ps_unicodes_init`], [`ps_unicodes_char_index`],
-//!   [`ps_unicodes_char_next`]),
-//! - the PostScript glyph name tables (`ft_standard_glyph_names`,
-//!   Macintosh and SID name indices, Standard/Expert encodings) exposed
-//!   through [`ps_get_macintosh_name`] and [`ps_get_standard_strings`],
-//! - the mandated API layer ([`macintosh_name`], [`adobe_std_strings`],
-//!   [`unicode_value`], [`standard_encoding_table`],
-//!   [`expert_encoding_table`], [`unicodes_init`], [`UnicodeMap`]),
-//! - the `postscript-cmaps` service record ([`PsCMapsService`]) and the
-//!   `psnames` module class ([`PSNAMES_MODULE_CLASS`]).
 //!
 //! FreeType configuration options `FT_CONFIG_OPTION_POSTSCRIPT_NAMES` and
 //! `FT_CONFIG_OPTION_ADOBE_GLYPH_LIST` are both enabled, matching this
@@ -56,6 +39,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use codevar_logger::log_error;
 use codevar_truetype_core::{TtError, TtResult};
 
 /// Identifier of the PostScript charmap service (`FT_SERVICE_ID_POSTSCRIPT_CMAPS`).
@@ -490,17 +474,13 @@ pub fn ps_unicodes_init<'a>(
 
     let count = maps.len();
     if count == 0 {
-        log::debug!("psnames: no Unicode glyph name found among {num_glyphs} glyphs");
+        log_error!("no Unicode glyph name found among {num_glyphs} glyphs");
         return Err(TtError::NO_UNICODE_GLYPH_NAME);
     }
-
-    // Reallocate if the number of used entries is much smaller.
     if (count as u64) < u64::from(num_glyphs) / 2 {
         maps.shrink_to(count);
     }
-
-    // Sort in increasing order of unicode values, taking care of glyph
-    // variants.
+    // Sort in increasing order of unicode values, taking care of glyph variants.
     maps.sort_unstable_by(compare_uni_maps);
 
     Ok(PsUnicodes {

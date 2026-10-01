@@ -357,17 +357,11 @@ pub fn log_raw(bytes: &[u8]) -> Result<(), LogError> {
 }
 
 #[doc(hidden)]
-#[allow(unused)]
-pub mod __logger {
-    use crate::{LogError, LogLevel, log_raw, log_with_timestamp};
+pub mod logger {
+    pub extern crate alloc;
+    use crate::{LogError, LogLevel, log_with_timestamp};
     use alloc::string::ToString;
     use codevar_consoleutil::console_style::presets;
-
-    /// Writes a raw string to the console without timestamp or level
-    #[inline]
-    pub(crate) fn log_raw_str(message: &str) -> Result<(), LogError> {
-        log_raw(message.as_bytes())
-    }
 
     /// Log with error style
     pub fn log_error(message: &str) -> Result<(), LogError> {
@@ -391,7 +385,7 @@ pub mod __logger {
     }
 
     /// Log with success style
-    pub(crate) fn log_success(message: &str) -> Result<(), LogError> {
+    pub fn log_success(message: &str) -> Result<(), LogError> {
         let style = presets::success();
         let styled = style.apply(message);
         log_with_timestamp(LogLevel::Info, &styled.to_string())
@@ -412,36 +406,12 @@ pub mod __logger {
     }
 }
 
-/// Macro for irrecoverable-level logging with timestamp
-#[macro_export]
-macro_rules! log_irr {
-    ($($arg:tt)*) => {{
-        let _ = $crate::__logger::log_irr($crate::log::LogLevel::Irr, &format!($($arg)*));
-    }};
-}
-
-/// Macro for raw logging (no timestamp, no level)
-#[macro_export]
-macro_rules! log_raw {
-    ($($arg:tt)*) => {{
-        let _ = $crate::__logger::log_raw_str(&format!($($arg)*));
-    }};
-}
-
-/// Macro for raw logging with pre-formatted string (avoids format! overhead)
-#[macro_export]
-macro_rules! log_raw_str {
-    ($msg:expr) => {{
-        let _ = $crate::__logger::log_raw_str($msg);
-    }};
-}
-
 /// Macro for styled debug logging
 #[macro_export]
 macro_rules! log_debug {
     ($($arg:tt)*) => {{
         if $crate::is_enabled($crate::LogLevel::Debug) {
-            let _ = $crate::__logger::log_debug(&format!($($arg)*));
+            let _ = $crate::logger::log_debug(&$crate::logger::alloc::format!($($arg)*));
         }
     }};
 }
@@ -451,7 +421,7 @@ macro_rules! log_debug {
 macro_rules! log_info {
     ($($arg:tt)*) => {{
         if $crate::is_enabled($crate::LogLevel::Info) {
-            let _ = $crate::__logger::log_info(&format!($($arg)*));
+            let _ = $crate::logger::log_info(&$crate::logger::alloc::format!($($arg)*));
         }
     }};
 }
@@ -461,7 +431,7 @@ macro_rules! log_info {
 macro_rules! log_success {
     ($($arg:tt)*) => {{
         if $crate::is_enabled($crate::LogLevel::Info) {
-            let _ = $crate::__logger::log_success(&format!($($arg)*));
+            let _ = $crate::logger::log_success(&$crate::logger::alloc::format!($($arg)*));
         }
     }};
 }
@@ -471,7 +441,7 @@ macro_rules! log_success {
 macro_rules! log_error {
     ($($arg:tt)*) => {{
         if $crate::is_enabled($crate::LogLevel::Error) {
-            let _ = $crate::__logger::log_error(&format!($($arg)*));
+            let _ = $crate::logger::log_error(&$crate::logger::alloc::format!($($arg)*));
         }
     }};
 }
@@ -481,8 +451,16 @@ macro_rules! log_error {
 macro_rules! log_warn {
     ($($arg:tt)*) => {{
         if $crate::is_enabled($crate::LogLevel::Error) {
-            let _ = $crate::__logger::log_warn(&format!($($arg)*));
+            let _ = $crate::logger::log_warn(&$crate::logger::alloc::format!($($arg)*));
         }
+    }};
+}
+
+/// Macro for irrecoverable-level logging with timestamp
+#[macro_export]
+macro_rules! log_irr {
+    ($($arg:tt)*) => {{
+        let _ = $crate::logger::log_irr(&$crate::logger::alloc::format!($($arg)*));
     }};
 }
 
@@ -557,19 +535,19 @@ mod tests {
 
     #[test]
     fn test_logs() {
-        let result = crate::__logger::log_error("error message");
+        let result = crate::logger::log_error("error message");
         assert!(result.is_ok() || matches!(result, Err(LogError::HandleUnavailable)));
 
-        let result = crate::__logger::log_warn("warning message");
+        let result = crate::logger::log_warn("warning message");
         assert!(result.is_ok() || matches!(result, Err(LogError::HandleUnavailable)));
 
-        let result = crate::__logger::log_success("success message");
+        let result = crate::logger::log_success("success message");
         assert!(result.is_ok() || matches!(result, Err(LogError::HandleUnavailable)));
 
-        let result = crate::__logger::log_info("info message");
+        let result = crate::logger::log_info("info message");
         assert!(result.is_ok() || matches!(result, Err(LogError::HandleUnavailable)));
 
-        let result = crate::__logger::log_debug("debug message");
+        let result = crate::logger::log_debug("debug message");
         assert!(result.is_ok() || matches!(result, Err(LogError::HandleUnavailable)));
     }
 

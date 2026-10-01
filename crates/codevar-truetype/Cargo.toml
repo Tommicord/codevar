@@ -11,9 +11,9 @@ repository.workspace = true
 name = "codevar_truetype"
 
 [dependencies]
-log = { workspace = true }
-codevar-truetype-core = { workspace = true, features = ["std"] }
-codevar-truetype-gzip = { workspace = true, features = ["std"] }
+codevar-logger = { workspace = true }
+codevar-truetype-core = { workspace = true }
+codevar-truetype-gzip = { workspace = true }
 codevar-truetype-raster = { workspace = true }
 codevar-truetype-smooth = { workspace = true }
 codevar-truetype-sfnt = { workspace = true }

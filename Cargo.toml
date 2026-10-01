@@ -2,7 +2,6 @@
 members = [
     "crates/codevar-base",
     "crates/codevar-textlike-encode",
-    "crates/codevar-fcware",
     "crates/codevar-tls",
     "crates/codevar-pretty-unwind",
     "crates/codevar-unwinding",
@@ -90,7 +89,6 @@ gettid = "0.1.4"
 pem = "3"
 codevar-dbus = { path = "crates/codevar-dbus" }
 codevar-base = { path = "crates/codevar-base" }
-codevar-fcware = { path = "crates/codevar-fcware" }
 codevar-textlike-encode = { path = "crates/codevar-textlike-encode" }
 codevar-tls = { path = "crates/codevar-tls" }
 codevar-wl-protocol = { path = "crates/codevar-wl-protocol" }
