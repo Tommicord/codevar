@@ -252,38 +252,38 @@ static TIBT_RANGES: &[UniRange] = &[UniRange::new(0x0F00, 0x0FFF)]; /* Tibetan *
 
 #[allow(clippy::too_many_lines)]
 static HANI_RANGES: &[UniRange] = &[
-    UniRange::new(0x1100, 0x11FF),     /* Hangul Jamo                             */
-    UniRange::new(0x2E80, 0x2EFF),     /* CJK Radicals Supplement                 */
-    UniRange::new(0x2F00, 0x2FDF),     /* Kangxi Radicals                         */
-    UniRange::new(0x2FF0, 0x2FFF),     /* Ideographic Description Characters      */
-    UniRange::new(0x3000, 0x303F),     /* CJK Symbols and Punctuation             */
-    UniRange::new(0x3040, 0x309F),     /* Hiragana                                */
-    UniRange::new(0x30A0, 0x30FF),     /* Katakana                                */
-    UniRange::new(0x3100, 0x312F),     /* Bopomofo                                */
-    UniRange::new(0x3130, 0x318F),     /* Hangul Compatibility Jamo               */
-    UniRange::new(0x3190, 0x319F),     /* Kanbun                                  */
-    UniRange::new(0x31A0, 0x31BF),     /* Bopomofo Extended                       */
-    UniRange::new(0x31C0, 0x31EF),     /* CJK Strokes                             */
-    UniRange::new(0x31F0, 0x31FF),     /* Katakana Phonetic Extensions            */
-    UniRange::new(0x3200, 0x32FF),     /* Enclosed CJK Letters and Months         */
-    UniRange::new(0x3300, 0x33FF),     /* CJK Compatibility                       */
-    UniRange::new(0x3400, 0x4DBF),     /* CJK Unified Ideographs Extension A      */
-    UniRange::new(0x4DC0, 0x4DFF),     /* Yijing Hexagram Symbols                 */
-    UniRange::new(0x4E00, 0x9FFF),     /* CJK Unified Ideographs                  */
-    UniRange::new(0xA960, 0xA97F),     /* Hangul Jamo Extended-A                  */
-    UniRange::new(0xAC00, 0xD7AF),     /* Hangul Syllables                        */
-    UniRange::new(0xD7B0, 0xD7FF),     /* Hangul Jamo Extended-B                  */
-    UniRange::new(0xF900, 0xFAFF),     /* CJK Compatibility Ideographs            */
-    UniRange::new(0xFE10, 0xFE1F),     /* Vertical forms                          */
-    UniRange::new(0xFE30, 0xFE4F),     /* CJK Compatibility Forms                 */
-    UniRange::new(0xFF00, 0xFFEF),     /* Halfwidth and Fullwidth Forms           */
-    UniRange::new(0x1B000, 0x1B0FF),   /* Kana Supplement                         */
-    UniRange::new(0x1D300, 0x1D35F),   /* Tai Xuan Hing Symbols                   */
-    UniRange::new(0x1F200, 0x1F2FF),   /* Enclosed Ideographic Supplement         */
-    UniRange::new(0x20000, 0x2A6DF),   /* CJK Unified Ideographs Extension B      */
-    UniRange::new(0x2A700, 0x2B73F),   /* CJK Unified Ideographs Extension C      */
-    UniRange::new(0x2B740, 0x2B81F),   /* CJK Unified Ideographs Extension D      */
-    UniRange::new(0x2F800, 0x2FA1F),   /* CJK Compatibility Ideographs Supplement */
+    UniRange::new(0x1100, 0x11FF),   /* Hangul Jamo                             */
+    UniRange::new(0x2E80, 0x2EFF),   /* CJK Radicals Supplement                 */
+    UniRange::new(0x2F00, 0x2FDF),   /* Kangxi Radicals                         */
+    UniRange::new(0x2FF0, 0x2FFF),   /* Ideographic Description Characters      */
+    UniRange::new(0x3000, 0x303F),   /* CJK Symbols and Punctuation             */
+    UniRange::new(0x3040, 0x309F),   /* Hiragana                                */
+    UniRange::new(0x30A0, 0x30FF),   /* Katakana                                */
+    UniRange::new(0x3100, 0x312F),   /* Bopomofo                                */
+    UniRange::new(0x3130, 0x318F),   /* Hangul Compatibility Jamo               */
+    UniRange::new(0x3190, 0x319F),   /* Kanbun                                  */
+    UniRange::new(0x31A0, 0x31BF),   /* Bopomofo Extended                       */
+    UniRange::new(0x31C0, 0x31EF),   /* CJK Strokes                             */
+    UniRange::new(0x31F0, 0x31FF),   /* Katakana Phonetic Extensions            */
+    UniRange::new(0x3200, 0x32FF),   /* Enclosed CJK Letters and Months         */
+    UniRange::new(0x3300, 0x33FF),   /* CJK Compatibility                       */
+    UniRange::new(0x3400, 0x4DBF),   /* CJK Unified Ideographs Extension A      */
+    UniRange::new(0x4DC0, 0x4DFF),   /* Yijing Hexagram Symbols                 */
+    UniRange::new(0x4E00, 0x9FFF),   /* CJK Unified Ideographs                  */
+    UniRange::new(0xA960, 0xA97F),   /* Hangul Jamo Extended-A                  */
+    UniRange::new(0xAC00, 0xD7AF),   /* Hangul Syllables                        */
+    UniRange::new(0xD7B0, 0xD7FF),   /* Hangul Jamo Extended-B                  */
+    UniRange::new(0xF900, 0xFAFF),   /* CJK Compatibility Ideographs            */
+    UniRange::new(0xFE10, 0xFE1F),   /* Vertical forms                          */
+    UniRange::new(0xFE30, 0xFE4F),   /* CJK Compatibility Forms                 */
+    UniRange::new(0xFF00, 0xFFEF),   /* Halfwidth and Fullwidth Forms           */
+    UniRange::new(0x1B000, 0x1B0FF), /* Kana Supplement                         */
+    UniRange::new(0x1D300, 0x1D35F), /* Tai Xuan Hing Symbols                   */
+    UniRange::new(0x1F200, 0x1F2FF), /* Enclosed Ideographic Supplement         */
+    UniRange::new(0x20000, 0x2A6DF), /* CJK Unified Ideographs Extension B      */
+    UniRange::new(0x2A700, 0x2B73F), /* CJK Unified Ideographs Extension C      */
+    UniRange::new(0x2B740, 0x2B81F), /* CJK Unified Ideographs Extension D      */
+    UniRange::new(0x2F800, 0x2FA1F), /* CJK Compatibility Ideographs Supplement */
 ];
 
 /// `af_script_classes[]` (afglobal.c, assembled from `afscript.h`):

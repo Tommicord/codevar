@@ -26,10 +26,10 @@
 use alloc::rc::Rc;
 use core::cell::Cell;
 
+use crate::Scaler;
 use crate::cjk::CjkMetrics;
 use crate::latin::LatinMetrics;
 use crate::ranges::{Style, StyleClass, WritingSystem};
-use crate::Scaler;
 
 /// `AF_PROP_INCREASE_X_HEIGHT_MIN` (`afglobal.h`): smallest pixel
 /// size for which the x-height increase is applied.

@@ -20,7 +20,7 @@
 //! reuses these metrics as well.
 
 use crate::metrics::StyleMetricsRec;
-use crate::{Width, BLUE_STRINGSET_MAX_LEN, DIMENSION_MAX};
+use crate::{BLUE_STRINGSET_MAX_LEN, DIMENSION_MAX, Width};
 
 /// `AF_CJK_MAX_WIDTHS` (`afcjk.h`): slots in a CJK standard-width
 /// table.

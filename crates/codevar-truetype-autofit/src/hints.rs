@@ -28,14 +28,14 @@
 use alloc::vec::Vec;
 
 use codevar_truetype_core::{
-    corner_is_flat, div_fix, mul_fix, Orientation, Outline, Pos, Fixed, CURVE_TAG_CONIC,
-    CURVE_TAG_CUBIC, CURVE_TAG_ON,
+    CURVE_TAG_CONIC, CURVE_TAG_CUBIC, CURVE_TAG_ON, Fixed, Orientation, Outline, Pos, corner_is_flat,
+    div_fix, mul_fix,
 };
 
 use crate::metrics::StyleMetrics;
 use crate::{
-    direction_compute, Dimension, Direction, DIMENSION_MAX, SCALER_FLAG_NO_ADVANCE,
-    SCALER_FLAG_NO_HORIZONTAL, SCALER_FLAG_NO_VERTICAL, SCALER_FLAG_NO_WARPER,
+    DIMENSION_MAX, Dimension, Direction, SCALER_FLAG_NO_ADVANCE, SCALER_FLAG_NO_HORIZONTAL,
+    SCALER_FLAG_NO_VERTICAL, SCALER_FLAG_NO_WARPER, direction_compute,
 };
 
 /// Point flag: no flags (`AF_FLAG_NONE`).
@@ -590,7 +590,8 @@ impl GlyphHints {
         // We reserve two additional point positions in FreeType,
         // used to hint metrics appropriately; a `Vec` grows lazily
         // instead, which is behaviorally identical here.
-        self.contours.resize(outline.n_contours as usize, 0);
+        self.contours
+            .resize(outline.n_contours as usize, 0);
         self.points
             .resize(outline.n_points as usize, Point::default());
     }
@@ -689,9 +690,7 @@ impl GlyphHints {
                 continue;
             }
 
-            if self.points[i].in_dir == Direction::None
-                && self.points[i].out_dir == Direction::None
-            {
+            if self.points[i].in_dir == Direction::None && self.points[i].out_dir == Direction::None {
                 // Check whether both vectors point into the same quadrant
                 let next_u = delta_index(self.points.len(), i, self.points[i].u);
                 let prev_v = delta_index(self.points.len(), i, self.points[i].v);
@@ -752,9 +751,7 @@ impl GlyphHints {
                         self.points[i].flags |= FLAG_WEAK_INTERPOLATION;
                     }
                 }
-            } else if i32::from(self.points[i].in_dir.code())
-                == -i32::from(self.points[i].out_dir.code())
-            {
+            } else if i32::from(self.points[i].in_dir.code()) == -i32::from(self.points[i].out_dir.code()) {
                 // Current point forms a spike
                 self.points[i].flags |= FLAG_WEAK_INTERPOLATION;
             }
@@ -796,8 +793,7 @@ impl GlyphHints {
 
         for s in 0..num_segments {
             let seg = self.axis[dim.index()].segments[s];
-            let (Some(edge_index), Some(first), Some(last)) = (seg.edge, seg.first, seg.last)
-            else {
+            let (Some(edge_index), Some(first), Some(last)) = (seg.edge, seg.first, seg.last) else {
                 continue;
             };
             if edge_index >= self.axis[dim.index()].edges.len() || first >= num_points {
@@ -865,9 +861,7 @@ impl GlyphHints {
                     edge.pos + (ou - edge.opos)
                 }
                 StrongLookup::OnEdge(pos) => pos,
-                StrongLookup::Between { before, after } => {
-                    self.interpolate_strong(dim, before, after, fu)
-                }
+                StrongLookup::Between { before, after } => self.interpolate_strong(dim, before, after, fu),
             };
 
             self.store_point(i, u, touch_flag, dim);
@@ -1181,7 +1175,13 @@ fn iup_contour(points: &mut [Point], start: usize, touch_flag: u16) {
         iup_interp(points, last_touched + 1, end_point, last_touched, first_touched);
     }
     if last_touched != first_touched && first_touched > 0 {
-        iup_interp(points, first_point, first_touched - 1, last_touched, first_touched);
+        iup_interp(
+            points,
+            first_point,
+            first_touched - 1,
+            last_touched,
+            first_touched,
+        );
     }
 }
 

@@ -425,7 +425,7 @@ pub const fn make_tag(x1: u8, x2: u8, x3: u8, x4: u8) -> Tag {
 
 /// A character map encoding identifier (usually a four-byte tag).
 ///
-/// Modelled as a newtype instead of a Rust enum because drivers may report
+/// Modeled as a newtype instead of a Rust enum because drivers may report
 /// platform encodings that are not part of FreeType's built-in list.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[repr(transparent)]
@@ -2841,7 +2841,7 @@ pub fn corner_is_flat(in_x: i64, in_y: i64, out_x: i64, out_y: i64) -> bool {
 
 /// `FT_HYPOT(x, y)` from `ftobjs.h`: the approximate `sqrt(x*x + y*y)`
 /// using `alpha = 1`, `beta = 3/8` (mutates its arguments in C, which is
-/// modelled here by taking them by value).
+/// modeled here by taking them by value).
 #[inline]
 fn ft_hypot_approx(x: i64, y: i64) -> i64 {
     let x = abs_pos(x);
@@ -2850,31 +2850,6 @@ fn ft_hypot_approx(x: i64, y: i64) -> i64 {
         x.wrapping_add(y.wrapping_mul(3) >> 3)
     } else {
         y.wrapping_add(x.wrapping_mul(3) >> 3)
-    }
-}
-
-/// The point loop of `FT_Outline_Translate` (ftoutln.c): shifts every
-/// point by `(dx, dy)`.
-///
-/// This is the scalar reference implementation; the SIMD dispatcher
-/// (`translate_points`) must produce bit-identical results.
-#[inline]
-pub fn translate_points(points: &mut [Vector], dx: Pos, dy: Pos) {
-    for p in points.iter_mut() {
-        p.x = p.x.wrapping_add(dx);
-        p.y = p.y.wrapping_add(dy);
-    }
-}
-
-/// The point loop of `FT_Outline_Transform` (ftoutln.c): applies `matrix`
-/// to every point with [`vector_transform`].
-///
-/// This is the scalar reference implementation; the SIMD dispatcher
-/// (`transform_points`) must produce bit-identical results.
-#[inline]
-pub fn transform_points(points: &mut [Vector], matrix: &Matrix) {
-    for p in points.iter_mut() {
-        vector_transform(p, matrix);
     }
 }
 
@@ -4739,10 +4714,10 @@ pub type LcdFilterFunc = fn(bitmap: &mut Bitmap, mode: RenderMode, state: &LcdFi
 /// The per-library LCD filter state (`library->lcd_weights`,
 /// `lcd_filter_func`, `lcd_extra`, `lcd_filter` in FreeType).
 ///
-/// The filter is **off by default** (exactly like the zero-initialised
+/// The filter is **off by default** (exactly like the zero-initialized
 /// `FT_LibraryRec`); call [`LcdFilterState::set_filter`] to activate it.
 /// The smooth renderer pads its bitmaps by [`LcdFilterState::extra`] pixels
-/// and applies the filter after rasterisation, mirroring
+/// and applies the filter after rasterization, mirroring
 /// `ftsmooth.c`'s `lcd_filter_func` calls.
 #[derive(Clone, Debug)]
 pub struct LcdFilterState {
@@ -4836,7 +4811,7 @@ impl LcdFilterState {
 
     /// Applies the active filter to `bitmap` (no-op when disabled);
     /// the shared entry point called by the smooth renderer after
-    /// rasterisation.
+    /// rasterization.
     #[inline]
     pub fn apply(&self, bitmap: &mut Bitmap, mode: RenderMode) {
         if let Some(func) = self.func {
@@ -4894,7 +4869,7 @@ fn fir_filter(bitmap: &mut Bitmap, mode: RenderMode, state: &LcdFilterState) {
     }
     // Vertical in-place FIR filter (the C code requires height >= 4).
     // A column spans several rows, so the pixels are extracted first
-    // (shared borrows) and the filtered values written back afterwards
+    // (shared borrows) and the filtered values written back afterward
     // (exclusive borrows), mirroring the C loop with `col += pitch`.
     else if mode == RenderMode::LcdV && height >= 4 {
         let h = height as usize;
@@ -5046,7 +5021,7 @@ pub struct RasterParams<'a> {
     pub clip_box: BBox,
 }
 
-/// `FT_Raster_Funcs.raster_render` and friends, modelled as the trait a
+/// `FT_Raster_Funcs.raster_render` and friends, modeled as the trait a
 /// raster object implements (the C `FT_Raster` opaque handle).
 ///
 /// Implementations must be usable from any thread (`Send + Sync`) because
@@ -5065,7 +5040,7 @@ pub trait Raster: Send + Sync {
     /// * [`TtError::INVALID_ARGUMENT`] — the tag is unknown to this raster.
     fn set_mode(&mut self, mode: u64, value: &mut dyn core::any::Any) -> TtResult<()>;
 
-    /// `FT_Raster_RenderFunc`: rasterises `params.source` into
+    /// `FT_Raster_RenderFunc`: rasterizes `params.source` into
     /// `params.target`.
     ///
     /// # Errors
@@ -5240,7 +5215,7 @@ impl Module {
     }
 }
 
-/// `FT_Renderer_RenderFunc`: rasterises `slot`'s image with the given raw
+/// `FT_Renderer_RenderFunc`: rasterizes `slot`'s image with the given raw
 /// render mode (as packed by [`LoadFlags::target`]).
 pub type RendererRenderFunc =
     fn(renderer: &Module, slot: &mut GlyphSlot, mode: u32, origin: Option<&Vector>) -> TtResult<()>;
@@ -5411,7 +5386,7 @@ impl DriverClass {
     }
 }
 
-/// `FT_CMap_InitFunc`: initialises the cmap's driver-specific part,
+/// `FT_CMap_InitFunc`: initializes the cmap's driver-specific part,
 /// storing it through [`CharMap::data`]; `init_data` is the opaque
 /// `FT_CMap_New` payload (may be `None`).
 pub type CMapInitFunc =
@@ -5902,7 +5877,7 @@ impl Face {
     /// slot is prepended, so the newest slot is active) and runs the
     /// driver's `init_slot`.
     ///
-    /// Mirrors `FT_New_GlyphSlot`: the slot is fully initialised locally
+    /// Mirrors `FT_New_GlyphSlot`: the slot is fully initialized locally
     /// first, `init_slot` runs before the list insert, and both steps are
     /// undone on failure (C runs `ft_glyphslot_done` on its error paths).
     ///
@@ -5912,7 +5887,7 @@ impl Face {
     /// * [`TtError::INVALID_HANDLE`] — the slot cell is borrowed.
     ///
     /// Whatever the driver's [`SlotInitFunc`] returns is propagated; a
-    /// failed initialisation runs `done_slot` before returning.
+    /// failed initialization runs `done_slot` before returning.
     pub fn new_glyph_slot(&self) -> TtResult<usize> {
         let library = self.library()?;
         let driver = self
@@ -6758,7 +6733,7 @@ pub struct Library {
     /// The TrueType bytecode debugger hooks (`debug_hooks[4]`).
     pub debug_hooks: [Option<DebugHookFunc>; 4],
     /// The LCD filter state (`lcd_filter`, `lcd_extra`, `lcd_weights`,
-    /// `lcd_filter_func`); inactive by default (C never initialises it
+    /// `lcd_filter_func`); inactive by default (C never initializes it
     /// in `FT_Library_New`).
     pub lcd: LibCell<LcdFilterState>,
     /// The faces currently alive (weak — dropped entries are reaped by
@@ -6948,8 +6923,8 @@ impl Library {
 impl Outline {
     /// `FT_Outline_Translate`: shifts every point by `(dx, dy)`.
     #[inline]
-    pub fn translate(&mut self, dx: Pos, dy: Pos) {
-        translate_points(&mut self.points, dx, dy);
+    pub fn translate(&mut self, dx: Pos, dy: Pos) -> usize {
+        translate_points(&mut self.points, dx, dy)
     }
 
     /// `FT_Outline_Transform`: applies `matrix` to every point.
@@ -6985,7 +6960,7 @@ pub fn translate_points(points: &mut [Vector], dx: Pos, dy: Pos) -> usize {
     consumed
 }
 
-/// SIMD-accelerated sibling of [`transform_points`]: vectorises the
+/// SIMD-accelerated sibling of [`transform_points`]: vectorizes the
 /// leading block-aligned prefix (each point is one `FT_MulFix` pair per
 /// matrix row, reproduced bit for bit), then runs the scalar tail.
 ///
@@ -7064,7 +7039,7 @@ fn simd_transform_points(points: &mut [Vector], matrix: &Matrix) -> usize {
 fn simd_transform_points(_points: &mut [Vector], _matrix: &Matrix) -> usize {
     // Baseline SIMD128 has no exact reproduction of `mul_fix`'s
     // 32x32 -> 64-bit low product (see the `wasm` module), so the
-    // transform runs on the scalar tail; translation is vectorised.
+    // transform runs on the scalar tail; translation is vectorized.
     0
 }
 

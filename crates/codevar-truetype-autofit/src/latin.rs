@@ -18,8 +18,8 @@
 //! The glyph analysis routines of `aflatin.c` (and the alternate
 //! `aflatin2.c` hinter) are ported in the [`super::latin`] module.
 
-use crate::{Width, BLUE_STRINGSET_MAX_LEN, DIMENSION_MAX, LATIN_MAX_WIDTHS};
 use crate::metrics::StyleMetricsRec;
+use crate::{BLUE_STRINGSET_MAX_LEN, DIMENSION_MAX, LATIN_MAX_WIDTHS, Width};
 
 /// `AF_LATIN_IS_TOP_BLUE` (`aflatin.h`): true for a top blue zone.
 pub const fn latin_is_top_blue(properties: u16) -> bool {
