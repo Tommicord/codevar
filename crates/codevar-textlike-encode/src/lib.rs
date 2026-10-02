@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Copyright 2026 Codevar Project
 //! Licensed under the Apache License, Version 2.0 (the
 //! "License"); you may not use this file except in
@@ -14,6 +12,10 @@
 //! OR CONDITIONS OF ANY KIND, either express or implied. See
 //! the License for the specific language governing
 //! permissions and limitations under the License.
+
+#![cfg_attr(not(test), no_std)]
+#![allow(dead_code)]
+extern crate alloc;
 
 pub mod encoding;
 pub mod encoding_ascii;

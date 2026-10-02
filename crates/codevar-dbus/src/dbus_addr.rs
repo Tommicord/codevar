@@ -27,6 +27,7 @@
 //! bytes outside the optional set are accepted leniently, matching the
 //! behaviour of deployed buses.
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -79,15 +80,13 @@ impl DbusAddress {
     /// is missing or an escape sequence is malformed.
     pub fn parse(entry: &str) -> DbusResult<Self> {
         let (transport, rest) = entry.split_once(':').ok_or_else(|| {
-            DbusError::invalid_address(alloc::format!(
-                "address `{entry}` is missing the transport separator"
-            ))
+            DbusError::invalid_address(format!("address `{entry}` is missing the transport separator"))
         })?;
         if transport.is_empty() {
             return Err(DbusError::invalid_address("transport name is empty"));
         }
         if transport.contains('=') || transport.contains(',') {
-            return Err(DbusError::invalid_address(alloc::format!(
+            return Err(DbusError::invalid_address(format!(
                 "invalid transport name `{transport}`"
             )));
         }
@@ -97,7 +96,7 @@ impl DbusAddress {
                 continue;
             }
             let (key, value) = pair.split_once('=').ok_or_else(|| {
-                DbusError::invalid_address(alloc::format!("address entry `{pair}` is missing `=`"))
+                DbusError::invalid_address(format!("address entry `{pair}` is missing `=`"))
             })?;
             if key.is_empty() {
                 return Err(DbusError::invalid_address("address key is empty"));
@@ -175,20 +174,16 @@ pub fn percent_decode(value: &str) -> DbusResult<String> {
         let high = bytes
             .get(index + 1)
             .and_then(|&digit| hex_digit(digit))
-            .ok_or_else(|| {
-                DbusError::invalid_address(alloc::format!("invalid escape sequence in `{value}`"))
-            })?;
+            .ok_or_else(|| DbusError::invalid_address(format!("invalid escape sequence in `{value}`")))?;
         let low = bytes
             .get(index + 2)
             .and_then(|&digit| hex_digit(digit))
-            .ok_or_else(|| {
-                DbusError::invalid_address(alloc::format!("invalid escape sequence in `{value}`"))
-            })?;
+            .ok_or_else(|| DbusError::invalid_address(format!("invalid escape sequence in `{value}`")))?;
         decoded.push(high << 4 | low);
         index += 3;
     }
     String::from_utf8(decoded)
-        .map_err(|_| DbusError::invalid_address(alloc::format!("`{value}` does not decode to valid UTF-8")))
+        .map_err(|_| DbusError::invalid_address(format!("`{value}` does not decode to valid UTF-8")))
 }
 
 const fn hex_digit(digit: u8) -> Option<u8> {

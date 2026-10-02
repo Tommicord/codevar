@@ -88,13 +88,13 @@ println!("Processing data: {}", data);
 eprintln!("Error occurred: {}", error);
 
 // ✅ CORRECT logging
-use log::{error, warn, info, debug, trace};
+use codevar_logger::{log_with_error, log_with_warn, log_with_info, log_with_debug, log_with_irr};
 
-error!("Failed to process request: {}", error);
-warn!("Cache miss for key: {}", key);
-info!("User logged in: user_id={}", user_id);
-debug!("Processing block: block_id={}, size={}", block_id, size);
-trace!("Detailed state: state={:?}", state);
+log_with_error!("Failed to process request: {}", error);
+log_with_warn!("Cache miss for key: {}", key);
+log_with_info!("User logged in: user_id={}", user_id);
+log_with_debug!("Processing block: block_id={}, size={}", block_id, size);
+log_with_irr!("CRITICAL error happened: Out of memory");
 ```
 
 ### Memory Management

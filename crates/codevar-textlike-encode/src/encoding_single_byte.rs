@@ -16,6 +16,7 @@
 use crate::encoding::{DecoderResult, EncoderResult, VariantDecoder};
 use crate::encoding_ascii::{ascii_to_basic_latin, basic_latin_to_ascii};
 use crate::encoding_handles::{ByteSource, CopyAsciiResult, Space, Utf8Destination};
+
 #[derive(Debug, Clone)]
 pub struct SingleByteDecoder {
     pub(crate) table: &'static [u16; 128],
@@ -193,7 +194,7 @@ impl SingleByteDecoder {
                         converted += 1;
                         // Next, handle ASCII punctuation and non-ASCII without
                         // going back to ASCII acceleration. Non-ASCII scripts
-                        // use ASCII punctuation, so this avoid going to
+                        // use ASCII punctuation, so this avoids going to
                         // acceleration just for punctuation/space and then
                         // failing. This is a significant boost to non-ASCII
                         // scripts.

@@ -11,5 +11,7 @@ repository.workspace = true
 name = "codevar_truetype_raster"
 
 [dependencies]
-log = { workspace = true }
+codevar-logger = { workspace = true }
 codevar-truetype-core = { workspace = true }
+ash = { workspace = true }
+libc = { workspace = true }

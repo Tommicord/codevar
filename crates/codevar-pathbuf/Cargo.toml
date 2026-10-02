@@ -17,6 +17,7 @@ web-sys = ["dep:web-sys", "dep:wasm-bindgen"]
 
 [dependencies]
 cfg-if = { workspace = true }
+codevar-textlike-encode = { workspace = true }
 libc = { workspace = true }
 web-sys = { version = "0.3", features = ["console"], optional = true }
 wasm-bindgen = { version = "0.2", optional = true }

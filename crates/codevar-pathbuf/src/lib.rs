@@ -24,7 +24,7 @@
 //! Use [`PathBuilder`] to construct validated paths step by step.
 //! Setters are infallible and only accumulate raw components;
 //! [`PathBuilder::build`] tokenizes, validates every component, and
-//! normalises the result:
+//! normalizes the result:
 //!
 //! ```rust
 //! use codevar_pathbuf::PathBuilder;
@@ -39,6 +39,16 @@
 //!     .expect("valid path");
 //! assert_eq!(path.as_str(), "/usr/local/bin.sh");
 //! ```
+//!
+//! ## Validated construction from encoded text
+//!
+//! [`PathBuf::from_utf8`] and [`PathBuf::from_utf16`] accept raw
+//! UTF-8 bytes or UTF-16 code units and reject malformed input —
+//! ill-formed byte sequences, unpaired surrogates, NUL and control
+//! characters — before a [`PathBuf`] is produced. The encoded forms
+//! are validated with the `codevar-textlike-encode` crate
+//! (`utf8_valid_up_to` / `utf16_valid_up_to`); [`PathError::NotUtf8`]
+//! and [`PathError::NotUtf16`] report the offset of the first defect.
 //!
 //! ## Platform-specific file reading
 //!
@@ -67,10 +77,9 @@ extern crate alloc;
 use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::vec::Vec;
+use codevar_textlike_encode::encoding::utf16_valid_up_to;
+use codevar_textlike_encode::encoding_utf8::utf8_valid_up_to;
 use core::fmt;
-
-/// Maximum file size (16 MiB) accepted by [`read`] and [`read_to_string`].
-const MAX_FILE_SIZE: usize = 16 * 1024 * 1024;
 
 /// Initial read buffer size for file I/O.
 const READ_BUF_SIZE: usize = 4096;
@@ -134,6 +143,85 @@ impl PathBuf {
     /// control character.
     pub fn parse_str(path: &str) -> Result<Self, PathError> {
         Self::from_str(path)
+    }
+
+    /// Creates a [`PathBuf`] from raw UTF-8 bytes, validating them.
+    ///
+    /// The bytes are first checked for well-formed UTF-8 with
+    /// `codevar_textlike_encode::encoding_utf8::utf8_valid_up_to`, then
+    /// the resulting string is checked with [`validate`] for empty
+    /// input, NUL bytes, and control characters.
+    ///
+    /// # Errors
+    ///
+    /// - [`PathError::NotUtf8`] with the byte offset of the first
+    ///   ill-formed UTF-8 sequence when `bytes` is not valid UTF-8.
+    /// - [`PathError::Empty`] when `bytes` is empty.
+    /// - [`PathError::InvalidCharacter`] when the path contains a NUL or
+    ///   control character.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use codevar_pathbuf::{PathBuf, PathError};
+    ///
+    /// let path = PathBuf::from_utf8(b"/usr/local").expect("valid path");
+    /// assert_eq!(path.as_str(), "/usr/local");
+    ///
+    /// let err = PathBuf::from_utf8(b"/foo\xffbar").expect_err("bad UTF-8");
+    /// assert!(matches!(err, PathError::NotUtf8(4)));
+    /// ```
+    pub fn from_utf8(bytes: &[u8]) -> Result<Self, PathError> {
+        let valid = utf8_valid_up_to(bytes);
+        if valid != bytes.len() {
+            return Err(PathError::NotUtf8(valid));
+        }
+        // `utf8_valid_up_to` accepted every byte; the re-check below only
+        // materializes the `&str` and cannot fail in practice.
+        let inner = core::str::from_utf8(bytes).map_err(|e| PathError::NotUtf8(e.valid_up_to()))?;
+        validate(inner)?;
+        Ok(Self {
+            inner: inner.to_owned(),
+        })
+    }
+
+    /// Creates a [`PathBuf`] from UTF-16 code units, validating them.
+    ///
+    /// The units are first checked for well-formed UTF-16 (no unpaired
+    /// surrogates) with `codevar_textlike_encode::encoding::utf16_valid_up_to`,
+    /// converted to UTF-8, and then checked with [`validate`] for empty
+    /// input, NUL bytes, and control characters.
+    ///
+    /// # Errors
+    ///
+    /// - [`PathError::NotUtf16`] with the code-unit offset of the first
+    ///   unpaired surrogate when `units` is not valid UTF-16.
+    /// - [`PathError::Empty`] when `units` is empty.
+    /// - [`PathError::InvalidCharacter`] when the path contains a NUL or
+    ///   control character.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use codevar_pathbuf::{PathBuf, PathError};
+    ///
+    /// let path = PathBuf::from_utf16(&[0x002f, 0x0074, 0x006d, 0x0070])
+    ///     .expect("valid path");
+    /// assert_eq!(path.as_str(), "/tmp");
+    ///
+    /// let err = PathBuf::from_utf16(&[0x0061, 0xD800]).expect_err("unpaired surrogate");
+    /// assert!(matches!(err, PathError::NotUtf16(1)));
+    /// ```
+    pub fn from_utf16(units: &[u16]) -> Result<Self, PathError> {
+        let valid = utf16_valid_up_to(units);
+        if valid != units.len() {
+            return Err(PathError::NotUtf16(valid));
+        }
+        // `utf16_valid_up_to` accepted every unit; the conversion below
+        // cannot fail in practice.
+        let inner = String::from_utf16(units).map_err(|_| PathError::NotUtf16(units.len()))?;
+        validate(&inner)?;
+        Ok(Self { inner })
     }
 
     /// Returns the path as a string slice.
@@ -577,20 +665,21 @@ impl Default for PathBuilder {
 
 /// Validates a full path.
 ///
+/// Scans by `char` so that control characters that are encoded with
+/// several UTF-8 bytes (the C1 controls `U+0080..=U+009F`, for
+/// example) are rejected as well as ASCII ones.
+///
 /// # Errors
 ///
 /// Returns [`PathError::Empty`] when `path` is empty, or
-/// [`PathError::InvalidCharacter`] when `path` contains a NUL or
-/// control character.
+/// [`PathError::InvalidCharacter`] with the byte offset of the first
+/// control character (including NUL).
 pub fn validate(path: &str) -> Result<(), PathError> {
     if path.is_empty() {
         return Err(PathError::Empty);
     }
-    for (i, byte) in path.bytes().enumerate() {
-        if byte == 0 {
-            return Err(PathError::InvalidCharacter(i));
-        }
-        if byte < 0x20 || byte == 0x7f {
+    for (i, c) in path.char_indices() {
+        if c.is_control() {
             return Err(PathError::InvalidCharacter(i));
         }
     }
@@ -607,8 +696,10 @@ pub fn is_valid(path: &str) -> bool {
 
 /// Validates a single path component.
 ///
-/// Rejects empty strings, `"."`, `".."`, NUL bytes, and control
-/// characters. On Windows targets reserved device names are rejected.
+/// Rejects empty strings, `"."`, `".."`, and control characters
+/// (including NUL) by scanning by `char`, so multi-byte-encoded
+/// control characters are caught too. On Windows targets reserved
+/// device names are rejected.
 pub fn validate_component(name: &str) -> Result<(), PathError> {
     if name.is_empty() {
         return Err(PathError::Empty);
@@ -616,11 +707,8 @@ pub fn validate_component(name: &str) -> Result<(), PathError> {
     if name == "." || name == ".." {
         return Err(PathError::ReservedName);
     }
-    for (i, byte) in name.bytes().enumerate() {
-        if byte == 0 {
-            return Err(PathError::InvalidCharacter(i));
-        }
-        if byte < 0x20 || byte == 0x7f {
+    for (i, c) in name.char_indices() {
+        if c.is_control() {
             return Err(PathError::InvalidCharacter(i));
         }
     }
@@ -713,10 +801,7 @@ pub fn write_string(path: &str, s: &str) -> Result<(), PathError> {
 /// See [`read`].
 pub fn read_to_string(path: &str) -> Result<String, PathError> {
     let bytes = sys::read(path)?;
-    if bytes.len() > MAX_FILE_SIZE {
-        return Err(PathError::Io { op: "read", code: 0 });
-    }
-    String::from_utf8(bytes).map_err(|_| PathError::NotUtf8)
+    String::from_utf8(bytes).map_err(|e| PathError::NotUtf8(e.utf8_error().valid_up_to()))
 }
 
 /// Returns `true` when the file at `path` exists and is readable.
@@ -777,11 +862,6 @@ mod unix {
                 unsafe { libc::close(fd) };
                 return Err(PathError::Io { op: "read", code: 0 });
             };
-            if bytes.len() + count > MAX_FILE_SIZE {
-                // SAFETY: the descriptor is open and will be closed.
-                unsafe { libc::close(fd) };
-                return Err(PathError::Io { op: "read", code: 0 });
-            }
             bytes.extend_from_slice(&buffer[..count]);
         }
         // SAFETY: the descriptor is open and will be closed.
@@ -816,7 +896,7 @@ mod unix {
             .len();
         // SAFETY: `getcwd` null-terminated the string at `len`.
         unsafe { buf.set_len(len) };
-        let s = String::from_utf8(buf).map_err(|_| PathError::NotUtf8)?;
+        let s = String::from_utf8(buf).map_err(|e| PathError::NotUtf8(e.utf8_error().valid_up_to()))?;
         Ok(PathBuf::from_string(s))
     }
 
@@ -1045,9 +1125,14 @@ mod windows {
                 code: code as i32,
             });
         }
-        // SAFETY: `len` code units form a valid UTF-16LE string.
+        // The API reports the length written; validate the code units
+        // before trusting them as text.
         let utf16 = &buf[..len as usize];
-        let s = String::from_utf16(utf16).map_err(|_| PathError::NotUtf8)?;
+        let valid = utf16_valid_up_to(utf16);
+        if valid != utf16.len() {
+            return Err(PathError::NotUtf16(valid));
+        }
+        let s = String::from_utf16(utf16).map_err(|_| PathError::NotUtf16(utf16.len()))?;
         Ok(PathBuf::from_string(s))
     }
 
@@ -1285,13 +1370,13 @@ pub fn from_file_uri(uri: &str) -> Result<PathBuf, PathError> {
     Ok(path)
 }
 
-/// Normalises a path for URI conversion.
+/// Normalizes a path for URI conversion.
 #[cfg(not(windows))]
 fn normalize_for_uri(path: &str) -> PathBuf {
     PathBuf::from_string(path.to_owned())
 }
 
-/// Normalises a path for URI conversion (Windows: backslashes → `/`, uppercase drive).
+/// Normalizes a path for URI conversion (Windows: backslashes → `/`, uppercase drive).
 #[cfg(windows)]
 fn normalize_for_uri(path: &str) -> PathBuf {
     let normalized: String = path
@@ -1344,7 +1429,7 @@ fn decode_percent_encoding(value: &str) -> Result<String, PathError> {
         decoded.push(byte);
         index += 3;
     }
-    String::from_utf8(decoded).map_err(|_| PathError::NotUtf8)
+    String::from_utf8(decoded).map_err(|e| PathError::NotUtf8(e.utf8_error().valid_up_to()))
 }
 
 /// Returns the value of a hexadecimal digit byte.
@@ -1357,7 +1442,7 @@ fn hex_digit(byte: u8) -> Option<u8> {
     }
 }
 
-/// Normalises a path string by resolving `.`/`..` segments.
+/// Normalizes a path string by resolving `.`/`..` segments.
 fn normalize(path: &str) -> String {
     let mut segments: Vec<&str> = Vec::new();
     for segment in path.split('/') {
@@ -1398,8 +1483,12 @@ pub enum PathError {
     /// An I/O operation failed. `op` names the operation; `code` is
     /// the platform error code.
     Io { op: &'static str, code: i32 },
-    /// The file contents are not valid UTF-8.
-    NotUtf8,
+    /// The input is not valid UTF-8; holds the byte offset of the
+    /// first ill-formed sequence.
+    NotUtf8(usize),
+    /// The input is not valid UTF-16; holds the code-unit offset of
+    /// the first unpaired surrogate.
+    NotUtf16(usize),
     /// The URI is malformed or does not use the `file` scheme.
     InvalidUri,
     /// The platform has no file I/O backend.
@@ -1418,7 +1507,12 @@ impl fmt::Display for PathError {
             Self::Io { op, code } => {
                 write!(f, "`{op}` failed (code {code})")
             }
-            Self::NotUtf8 => f.write_str("path is not valid UTF-8"),
+            Self::NotUtf8(offset) => {
+                write!(f, "path is not valid UTF-8 at byte offset {offset}")
+            }
+            Self::NotUtf16(offset) => {
+                write!(f, "path is not valid UTF-16 at code-unit offset {offset}")
+            }
             Self::InvalidUri => f.write_str("invalid file URI"),
             Self::Unsupported => f.write_str("file I/O not supported on this target"),
         }
@@ -1739,6 +1833,86 @@ mod tests {
     #[test]
     fn test_validate_component_rejects_empty() {
         assert!(matches!(validate_component(""), Err(PathError::Empty)));
+    }
+
+    #[test]
+    fn test_validate_rejects_c1_control() {
+        // U+0085 (NEL) is a C1 control character encoded with two
+        // UTF-8 bytes, which a plain byte scan would miss.
+        assert!(matches!(
+            validate("/foo\u{85}bar"),
+            Err(PathError::InvalidCharacter(4))
+        ));
+    }
+
+    #[test]
+    fn test_validate_accepts_non_ascii() {
+        assert!(is_valid("/home/café ☃"));
+    }
+
+    #[test]
+    fn test_from_utf8_valid() {
+        let p = PathBuf::from_utf8(b"/usr/local").unwrap();
+        assert_eq!(p.as_str(), "/usr/local");
+        let p = PathBuf::from_utf8("/home/café".as_bytes()).unwrap();
+        assert_eq!(p.as_str(), "/home/café");
+    }
+
+    #[test]
+    fn test_from_utf8_rejects_empty() {
+        assert!(matches!(PathBuf::from_utf8(b""), Err(PathError::Empty)));
+    }
+
+    #[test]
+    fn test_from_utf8_rejects_invalid_sequence() {
+        assert!(matches!(
+            PathBuf::from_utf8(b"/foo\xffbar"),
+            Err(PathError::NotUtf8(4))
+        ));
+    }
+
+    #[test]
+    fn test_from_utf8_rejects_truncated_sequence() {
+        assert!(matches!(
+            PathBuf::from_utf8(b"/caf\xc3"),
+            Err(PathError::NotUtf8(4))
+        ));
+    }
+
+    #[test]
+    fn test_from_utf8_rejects_control_character() {
+        assert!(matches!(
+            PathBuf::from_utf8(b"/foo\x01bar"),
+            Err(PathError::InvalidCharacter(4))
+        ));
+    }
+
+    #[test]
+    fn test_from_utf16_valid() {
+        let units: Vec<u16> = "/tmp/日本語".encode_utf16().collect();
+        let p = PathBuf::from_utf16(&units).unwrap();
+        assert_eq!(p.as_str(), "/tmp/日本語");
+    }
+
+    #[test]
+    fn test_from_utf16_rejects_empty() {
+        assert!(matches!(PathBuf::from_utf16(&[]), Err(PathError::Empty)));
+    }
+
+    #[test]
+    fn test_from_utf16_rejects_unpaired_surrogate() {
+        assert!(matches!(
+            PathBuf::from_utf16(&[0x0061, 0x0062, 0xD800]),
+            Err(PathError::NotUtf16(2))
+        ));
+    }
+
+    #[test]
+    fn test_from_utf16_rejects_control_character() {
+        assert!(matches!(
+            PathBuf::from_utf16(&[0x002f, 0x0061, 0x0001]),
+            Err(PathError::InvalidCharacter(2))
+        ));
     }
     #[test]
     fn test_to_file_uri() {

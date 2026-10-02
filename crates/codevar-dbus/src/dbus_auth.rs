@@ -20,6 +20,7 @@
 //! and falls back to [`ANONYMOUS`](AuthSession::with_anonymous) if the
 //! server rejects the requested mechanism.
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -205,17 +206,15 @@ impl AuthSession {
                     self.pending = b"AUTH ANONYMOUS\r\n".to_vec();
                     Ok(())
                 }
-                AuthState::AwaitAnonymous => Err(DbusError::auth(alloc::format!(
+                AuthState::AwaitAnonymous => Err(DbusError::auth(format!(
                     "server rejected all mechanisms ({mechanisms})"
                 ))),
                 _ => Err(DbusError::auth("REJECTED received out of state")),
             }
         } else if line.starts_with("ERROR") {
-            Err(DbusError::auth(alloc::format!("server reported error: {line}")))
+            Err(DbusError::auth(format!("server reported error: {line}")))
         } else {
-            Err(DbusError::auth(alloc::format!(
-                "unexpected server response: {line}"
-            )))
+            Err(DbusError::auth(format!("unexpected server response: {line}")))
         }
     }
 }

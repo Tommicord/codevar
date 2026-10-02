@@ -52,6 +52,9 @@ pub struct GlobalsShared {
     pub units_per_em: u16,
     /// The `increase-x-height` property (`AF_PROP_INCREASE_X_HEIGHT_*`).
     increase_x_height: Cell<u32>,
+    /// The `warping` property of the auto-hinter module, reached in C
+    /// through `metrics->globals->module->warping`.
+    warping: Cell<bool>,
 }
 
 impl GlobalsShared {
@@ -62,6 +65,7 @@ impl GlobalsShared {
         GlobalsShared {
             units_per_em,
             increase_x_height: Cell::new(PROP_INCREASE_X_HEIGHT_MAX),
+            warping: Cell::new(false),
         }
     }
 
@@ -77,6 +81,20 @@ impl GlobalsShared {
     #[inline]
     pub fn set_increase_x_height(&self, value: u32) {
         self.increase_x_height.set(value);
+    }
+
+    /// Current value of the module wide `warping` property
+    /// (`AF_ModuleRec::warping`, initialized to `0` by
+    /// `af_autofitter_init`).
+    #[inline]
+    pub fn warping(&self) -> bool {
+        self.warping.get()
+    }
+
+    /// Updates the module wide `warping` property.
+    #[inline]
+    pub fn set_warping(&self, value: bool) {
+        self.warping.set(value);
     }
 }
 
@@ -216,5 +234,111 @@ impl StyleMetrics {
             StyleMetrics::Cjk(m) => Some(m),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ranges::{STYLE_CLASSES, Style};
+
+    fn globals(units_per_em: u16) -> Rc<GlobalsShared> {
+        Rc::new(GlobalsShared::new(units_per_em))
+    }
+
+    fn metrics_for(style: Style, units_per_em: u16) -> StyleMetrics {
+        StyleMetrics::new(&STYLE_CLASSES[style.index()], globals(units_per_em))
+    }
+
+    #[test]
+    fn globals_shared_carries_upem_and_property() {
+        let shared = GlobalsShared::new(2048);
+        assert_eq!(shared.units_per_em, 2048);
+        assert_eq!(shared.increase_x_height(), PROP_INCREASE_X_HEIGHT_MAX);
+        shared.set_increase_x_height(12);
+        assert_eq!(shared.increase_x_height(), 12);
+        shared.set_increase_x_height(0);
+        assert_eq!(shared.increase_x_height(), 0);
+    }
+
+    #[test]
+    fn property_bounds_match_afglobal() {
+        assert_eq!(PROP_INCREASE_X_HEIGHT_MIN, 6);
+        assert_eq!(PROP_INCREASE_X_HEIGHT_MAX, 0);
+    }
+
+    #[test]
+    fn new_variant_matches_the_writing_system() {
+        assert!(matches!(
+            metrics_for(Style::NoneDflt, 1000),
+            StyleMetrics::Dummy(_)
+        ));
+        assert!(matches!(
+            metrics_for(Style::LatnDflt, 1000),
+            StyleMetrics::Latin(_)
+        ));
+        assert!(matches!(metrics_for(Style::HaniDflt, 1000), StyleMetrics::Cjk(_)));
+        assert!(
+            matches!(metrics_for(Style::BengDflt, 1000), StyleMetrics::Cjk(_)),
+            "Indic delegates to the CJK metrics"
+        );
+    }
+
+    #[test]
+    fn downcast_accessors_follow_the_variant() {
+        let latin = metrics_for(Style::LatnDflt, 1000);
+        assert!(latin.latin().is_some());
+        assert!(latin.cjk().is_none());
+
+        let cjk = metrics_for(Style::HaniDflt, 1000);
+        assert!(cjk.cjk().is_some());
+        assert!(cjk.latin().is_none());
+
+        let indic = metrics_for(Style::BengDflt, 1000);
+        assert!(indic.cjk().is_some());
+        assert!(indic.latin().is_none());
+
+        let dummy = metrics_for(Style::NoneDflt, 1000);
+        assert!(dummy.latin().is_none());
+        assert!(dummy.cjk().is_none());
+    }
+
+    #[test]
+    fn accessors_reach_into_the_shared_root() {
+        let mut metrics = metrics_for(Style::LatnDflt, 1000);
+        assert_eq!(metrics.style(), Style::LatnDflt);
+        assert_eq!(metrics.style_class().name, "latn_dflt");
+        assert_eq!(metrics.units_per_em_face(), 1000);
+        assert!(!metrics.root().digits_have_same_width);
+
+        metrics.scaler_mut().x_scale = 1 << 16;
+        assert_eq!(metrics.scaler().x_scale, 1 << 16);
+
+        metrics.root_mut().digits_have_same_width = true;
+        assert!(metrics.root().digits_have_same_width);
+        assert_eq!(metrics.style_class().style, Style::LatnDflt);
+    }
+
+    #[test]
+    fn base_record_starts_with_defaults() {
+        let record = StyleMetricsRec::new(&STYLE_CLASSES[Style::LatnDflt.index()], globals(2048));
+        assert_eq!(record.scaler, Scaler::default());
+        assert!(!record.digits_have_same_width);
+        assert_eq!(record.globals.units_per_em, 2048);
+        assert_eq!(record.style_class.style, Style::LatnDflt);
+
+        let cloned = record.clone();
+        assert_eq!(cloned.style_class.style, Style::LatnDflt);
+        assert_eq!(cloned.globals.units_per_em, 2048);
+    }
+
+    #[test]
+    fn shared_globals_are_visible_through_rc() {
+        let shared = globals(1000);
+        let mut metrics = StyleMetrics::new(&STYLE_CLASSES[Style::LatnDflt.index()], shared.clone());
+        metrics.scaler_mut().y_scale = 3 << 16;
+        assert_eq!(shared.increase_x_height(), PROP_INCREASE_X_HEIGHT_MAX);
+        assert_eq!(metrics.root().scaler.y_scale, 3 << 16);
+        assert_eq!(Rc::strong_count(&shared), 2);
     }
 }

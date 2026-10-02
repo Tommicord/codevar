@@ -98,3 +98,59 @@ pub struct CjkMetrics {
     /// Global metrics for both dimensions.
     pub axis: [CjkAxis; DIMENSION_MAX],
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{BLUE_PROPERTY_CJK_HORIZ, BLUE_PROPERTY_CJK_RIGHT, BLUE_PROPERTY_CJK_TOP, LATIN_MAX_WIDTHS};
+
+    #[test]
+    fn blue_properties_are_distinct_bits() {
+        assert_eq!(BLUE_PROPERTY_CJK_TOP, 1);
+        assert_eq!(BLUE_PROPERTY_CJK_HORIZ, 2);
+        assert_eq!(
+            BLUE_PROPERTY_CJK_RIGHT, BLUE_PROPERTY_CJK_TOP,
+            "the right zone aliases the top zone"
+        );
+    }
+
+    #[test]
+    fn cjk_blue_predicates_test_their_own_bit() {
+        assert!(cjk_is_top_blue(BLUE_PROPERTY_CJK_TOP));
+        assert!(!cjk_is_top_blue(0));
+        assert!(!cjk_is_top_blue(BLUE_PROPERTY_CJK_HORIZ));
+
+        assert!(cjk_is_horiz_blue(BLUE_PROPERTY_CJK_HORIZ));
+        assert!(!cjk_is_horiz_blue(BLUE_PROPERTY_CJK_TOP));
+
+        assert!(cjk_is_top_blue(BLUE_PROPERTY_CJK_RIGHT));
+        assert!(cjk_is_top_blue(BLUE_PROPERTY_CJK_TOP | BLUE_PROPERTY_CJK_HORIZ));
+    }
+
+    #[test]
+    fn flag_bits_are_distinct_powers_of_two() {
+        assert_eq!(CJK_BLUE_ACTIVE, 1);
+        assert_eq!(CJK_BLUE_TOP, 2);
+        assert_eq!(CJK_BLUE_ADJUSTMENT, 4);
+    }
+
+    #[test]
+    fn axis_default_is_zeroed_with_full_blue_slots() {
+        let axis = CjkAxis::default();
+        assert_eq!(axis.scale, 0);
+        assert_eq!(axis.delta, 0);
+        assert_eq!(axis.width_count, 0);
+        assert!(!axis.extra_light);
+        assert!(!axis.control_overshoot, "overshoot control is opt-in");
+        assert_eq!(axis.blue_count, 0);
+        assert_eq!(axis.widths.len(), CJK_MAX_WIDTHS);
+        assert_eq!(axis.widths.len(), LATIN_MAX_WIDTHS);
+        assert_eq!(axis.blues.len(), BLUE_STRINGSET_MAX_LEN);
+        assert!(axis.widths.iter().all(|w| *w == Width::default()));
+        assert!(
+            axis.blues
+                .iter()
+                .all(|blue| *blue == CjkBlue::default())
+        );
+    }
+}

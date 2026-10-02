@@ -114,3 +114,77 @@ pub struct LatinMetrics {
     /// Global metrics for both dimensions.
     pub axis: [LatinAxis; DIMENSION_MAX],
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{BLUE_PROPERTY_LATIN_LONG, BLUE_PROPERTY_LATIN_TOP};
+
+    #[test]
+    fn blue_properties_are_distinct_bits() {
+        assert_eq!(crate::BLUE_PROPERTY_LATIN_TOP, 1);
+        assert_eq!(crate::BLUE_PROPERTY_LATIN_NEUTRAL, 2);
+        assert_eq!(crate::BLUE_PROPERTY_LATIN_X_HEIGHT, 4);
+        assert_eq!(BLUE_PROPERTY_LATIN_LONG, 8);
+    }
+
+    #[test]
+    fn latin_blue_predicates_test_their_own_bit() {
+        assert!(latin_is_top_blue(BLUE_PROPERTY_LATIN_TOP));
+        assert!(!latin_is_top_blue(0));
+        assert!(!latin_is_top_blue(crate::BLUE_PROPERTY_LATIN_X_HEIGHT));
+
+        assert!(latin_is_neutral_blue(crate::BLUE_PROPERTY_LATIN_NEUTRAL));
+        assert!(!latin_is_neutral_blue(BLUE_PROPERTY_LATIN_TOP));
+
+        assert!(latin_is_x_height_blue(crate::BLUE_PROPERTY_LATIN_X_HEIGHT));
+        assert!(!latin_is_x_height_blue(crate::BLUE_PROPERTY_LATIN_NEUTRAL));
+
+        assert!(latin_is_long_blue(BLUE_PROPERTY_LATIN_LONG));
+        assert!(!latin_is_long_blue(crate::BLUE_PROPERTY_LATIN_NEUTRAL));
+
+        let combined = crate::BLUE_PROPERTY_LATIN_TOP | crate::BLUE_PROPERTY_LATIN_X_HEIGHT;
+        assert!(latin_is_top_blue(combined));
+        assert!(latin_is_x_height_blue(combined));
+        assert!(!latin_is_long_blue(combined));
+    }
+
+    #[test]
+    fn flag_bits_are_distinct_powers_of_two() {
+        for (flag, shift) in [
+            (LATIN_BLUE_ACTIVE, 0),
+            (LATIN_BLUE_TOP, 1),
+            (LATIN_BLUE_NEUTRAL, 2),
+            (LATIN_BLUE_ADJUSTMENT, 3),
+        ] {
+            assert_eq!(flag, 1 << shift);
+        }
+        for (flag, shift) in [
+            (LATIN_HINTS_HORZ_SNAP, 0),
+            (LATIN_HINTS_VERT_SNAP, 1),
+            (LATIN_HINTS_STEM_ADJUST, 2),
+            (LATIN_HINTS_MONO, 3),
+        ] {
+            assert_eq!(flag, 1 << shift);
+        }
+    }
+
+    #[test]
+    fn axis_default_is_zeroed_with_full_blue_slots() {
+        let axis = LatinAxis::default();
+        assert_eq!(axis.scale, 0);
+        assert_eq!(axis.delta, 0);
+        assert_eq!(axis.width_count, 0);
+        assert_eq!(axis.standard_width, 0);
+        assert!(!axis.extra_light);
+        assert_eq!(axis.blue_count, 0);
+        assert_eq!(axis.widths.len(), LATIN_MAX_WIDTHS);
+        assert_eq!(axis.blues.len(), BLUE_STRINGSET_MAX_LEN);
+        assert!(axis.widths.iter().all(|w| *w == Width::default()));
+        assert!(
+            axis.blues
+                .iter()
+                .all(|blue| *blue == LatinBlue::default())
+        );
+    }
+}

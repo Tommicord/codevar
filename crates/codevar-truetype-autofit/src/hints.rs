@@ -54,6 +54,9 @@ pub const FLAG_TOUCH_Y: u16 = 1 << 3;
 /// (`AF_FLAG_WEAK_INTERPOLATION`).
 pub const FLAG_WEAK_INTERPOLATION: u16 = 1 << 4;
 
+/// Edge flag: a freshly created edge with no further properties
+/// (`AF_EDGE_NORMAL`).
+pub const EDGE_NORMAL: u8 = 0;
 /// Edge flag: rounded edge (`AF_EDGE_ROUND`).
 pub const EDGE_ROUND: u8 = 1 << 0;
 /// Edge flag: serif edge (`AF_EDGE_SERIF`).
@@ -443,6 +446,17 @@ impl GlyphHints {
     }
 }
 
+/// `AF_HINTS_DO_BLUES` (`afhints.h`): blue zones take part in the
+/// hinting process.
+///
+/// FreeType only turns this off for `FT_DEBUG_AUTOFIT` builds, so the
+/// hint record is not an input of the predicate and the macro argument
+/// of the C call sites is dropped here.
+#[inline]
+pub const fn do_blues() -> bool {
+    true
+}
+
 /// `FT_Outline_Get_Orientation` (`ftoutln.c`): determines the fill
 /// direction of `outline` with the nonzero winding rule, operating on
 /// the polygon spanned by the control points.
@@ -767,7 +781,11 @@ impl GlyphHints {
     /// and assumes the caller sized it accordingly; this port clamps
     /// to the outline capacity instead of writing out of bounds.
     pub fn save(&self, outline: &mut Outline) {
-        let limit = self.points.len().min(outline.points.len());
+        let limit = self
+            .points
+            .len()
+            .min(outline.points.len())
+            .min(outline.tags.len());
         for (i, point) in self.points.iter().take(limit).enumerate() {
             outline.points[i].x = point.x;
             outline.points[i].y = point.y;
@@ -804,6 +822,9 @@ impl GlyphHints {
             let mut point = first;
             let mut steps = 0usize;
             loop {
+                if point >= num_points {
+                    break;
+                }
                 if horz {
                     self.points[point].x = pos;
                 } else {
@@ -1128,7 +1149,13 @@ fn compute_contour_vectors(points: &mut [Point], first: usize, near_limit: i32) 
 /// touched points of the contour starting at `start` and fills the
 /// untouched points between them (`af_glyph_hints_align_weak_points`).
 fn iup_contour(points: &mut [Point], start: usize, touch_flag: u16) {
+    if start >= points.len() {
+        return;
+    }
     let end_point = points[start].prev;
+    if end_point >= points.len() {
+        return;
+    }
     let first_point = start;
 
     // Find first touched point
@@ -1260,5 +1287,876 @@ fn iup_interp(points: &mut [Point], p1: usize, p2: usize, ref1: usize, ref2: usi
             }
             point.u = u;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::rc::Rc;
+
+    use codevar_truetype_core::Vector;
+
+    use crate::metrics::GlobalsShared;
+    use crate::ranges::{STYLE_CLASSES, Style};
+
+    /// Hints prepared for the given `units_per_EM` with identity
+    /// scales (`font units == 1/64th device pixels`).
+    fn hints_upem(upem: u16) -> GlyphHints {
+        let mut hints = GlyphHints::default();
+        let globals = Rc::new(GlobalsShared::new(upem));
+        let metrics = StyleMetrics::new(&STYLE_CLASSES[Style::LatnDflt.index()], globals);
+        hints.rescale(&metrics);
+        hints.x_scale = 1 << 16;
+        hints.y_scale = 1 << 16;
+        hints.xmin_delta = 5;
+        hints.xmax_delta = 7;
+        hints
+    }
+
+    /// Four-point square; `cw` selects the clockwise (TrueType) or
+    /// counter-clockwise (PostScript) point order.
+    fn square(cw: bool) -> Outline {
+        let coords: [(Pos, Pos); 4] = if cw {
+            [(0, 0), (0, 100), (100, 100), (100, 0)]
+        } else {
+            [(0, 0), (100, 0), (100, 100), (0, 100)]
+        };
+        let mut outline = Outline::new();
+        for (x, y) in coords {
+            outline.points.push(Vector::new(x, y));
+            outline.tags.push(CURVE_TAG_ON);
+        }
+        outline.contours.push(3);
+        outline.n_points = 4;
+        outline.n_contours = 1;
+        outline
+    }
+
+    /// Builds a single-contour outline from a coordinate list.
+    fn contour(coords: &[(i64, i64)], tags: &[u8]) -> Outline {
+        let mut outline = Outline::new();
+        for &(x, y) in coords {
+            outline.points.push(Vector::new(x, y));
+        }
+        outline.tags.extend_from_slice(tags);
+        outline.contours.push((coords.len() - 1) as i16);
+        outline.n_points = coords.len() as i16;
+        outline.n_contours = 1;
+        outline
+    }
+
+    /// Wires the circular `next`/`prev` links of `len` points.
+    fn link_ring(points: &mut [Point], len: usize) {
+        for (i, point) in points.iter_mut().enumerate().take(len) {
+            point.next = (i + 1) % len;
+            point.prev = (i + len - 1) % len;
+        }
+    }
+
+    /// Appends an edge with explicit `fpos`/`opos`/`pos`.
+    fn add_edge(hints: &mut GlyphHints, dim: Dimension, fpos: i16, opos: Pos, pos: Pos) {
+        let axis = &mut hints.axis[dim.index()];
+        axis.edges.push(Edge {
+            fpos,
+            opos,
+            pos,
+            ..Edge::default()
+        });
+    }
+
+    #[test]
+    fn segment_length_and_distance() {
+        let seg = Segment {
+            pos: 10,
+            min_coord: 5,
+            max_coord: 20,
+            ..Segment::default()
+        };
+        assert_eq!(seg.length(), 15);
+
+        let other = Segment {
+            pos: 3,
+            ..Segment::default()
+        };
+        assert_eq!(seg.distance(&other), 7);
+        assert_eq!(other.distance(&seg), 7);
+
+        let other = Segment {
+            pos: 12,
+            ..Segment::default()
+        };
+        assert_eq!(seg.distance(&other), 2);
+    }
+
+    #[test]
+    fn new_edge_sorts_by_fpos_with_minor_first() {
+        let mut axis = AxisHints::new();
+        assert_eq!(axis.num_edges(), 0);
+
+        axis.major_dir = Direction::Up;
+        let up10 = axis.new_edge(10, Direction::Up);
+        axis.edges[up10].fpos = 10;
+        axis.edges[up10].dir = Direction::Up;
+        assert_eq!(up10, 0);
+
+        let up5 = axis.new_edge(5, Direction::Up);
+        axis.edges[up5].fpos = 5;
+        axis.edges[up5].dir = Direction::Up;
+        assert_eq!(up5, 0, "smaller fpos shifts to the front");
+
+        let left10 = axis.new_edge(10, Direction::Left);
+        axis.edges[left10].fpos = 10;
+        axis.edges[left10].dir = Direction::Left;
+        assert_eq!(left10, 1, "minor direction at equal fpos comes first");
+
+        let up7 = axis.new_edge(7, Direction::Up);
+        axis.edges[up7].fpos = 7;
+        axis.edges[up7].dir = Direction::Up;
+        assert_eq!(up7, 1);
+
+        assert_eq!(axis.num_edges(), 4);
+        let fpos: alloc::vec::Vec<i16> = axis.edges.iter().map(|e| e.fpos).collect();
+        assert_eq!(fpos, [5, 7, 10, 10]);
+        assert_eq!(axis.edges[2].dir, Direction::Left);
+        assert_eq!(axis.edges[3].dir, Direction::Up);
+    }
+
+    #[test]
+    fn new_segment_appends() {
+        let mut axis = AxisHints::new();
+        assert_eq!(axis.new_segment(), 0);
+        assert_eq!(axis.new_segment(), 1);
+        assert_eq!(axis.num_segments(), 2);
+        assert_eq!(axis.num_edges(), 0);
+    }
+
+    #[test]
+    fn reload_square_loads_points_and_links() {
+        let mut hints = hints_upem(1000);
+        hints.reload(&square(true));
+
+        assert_eq!(hints.num_points(), 4);
+        assert_eq!(hints.num_contours(), 1);
+        assert_eq!(hints.contours, [0]);
+        assert_eq!(hints.xmin_delta, 0);
+        assert_eq!(hints.xmax_delta, 0);
+
+        for (i, &(fx, fy)) in [(0, 0), (0, 100), (100, 100), (100, 0)]
+            .iter()
+            .enumerate()
+        {
+            let point = &hints.points[i];
+            assert_eq!(point.fx, fx as i16);
+            assert_eq!(point.fy, fy as i16);
+            assert_eq!(point.ox, fx);
+            assert_eq!(point.oy, fy);
+            assert_eq!(point.x, fx);
+            assert_eq!(point.y, fy);
+            assert_eq!(point.flags, FLAG_NONE);
+            assert_eq!(point.flags & FLAG_WEAK_INTERPOLATION, 0);
+        }
+
+        assert_eq!(hints.points[0].prev, 3);
+        assert_eq!(hints.points[0].next, 1);
+        assert_eq!(hints.points[1].prev, 0);
+        assert_eq!(hints.points[2].next, 3);
+        assert_eq!(hints.points[3].prev, 2);
+        assert_eq!(hints.points[3].next, 0);
+
+        assert_eq!(hints.points[0].in_dir, Direction::Left);
+        assert_eq!(hints.points[0].out_dir, Direction::Up);
+        assert_eq!(hints.points[1].in_dir, Direction::Up);
+        assert_eq!(hints.points[1].out_dir, Direction::Right);
+        assert_eq!(hints.points[2].in_dir, Direction::Right);
+        assert_eq!(hints.points[2].out_dir, Direction::Down);
+        assert_eq!(hints.points[3].in_dir, Direction::Down);
+        assert_eq!(hints.points[3].out_dir, Direction::Left);
+
+        assert_eq!(hints.axis[Dimension::Hort.index()].major_dir, Direction::Up);
+        assert_eq!(hints.axis[Dimension::Vert.index()].major_dir, Direction::Left);
+    }
+
+    #[test]
+    fn reload_postscript_outline_sets_down_right_major_dirs() {
+        let mut hints = hints_upem(1000);
+        hints.reload(&square(false));
+        assert_eq!(hints.num_points(), 4);
+        assert_eq!(hints.axis[Dimension::Hort.index()].major_dir, Direction::Down);
+        assert_eq!(hints.axis[Dimension::Vert.index()].major_dir, Direction::Right);
+    }
+
+    #[test]
+    fn reload_accumulates_near_points_as_weak() {
+        let tags = [CURVE_TAG_ON; 5];
+        let outline = contour(&[(0, 0), (5, 0), (100, 0), (100, 100), (0, 100)], &tags);
+        let mut hints = hints_upem(1000);
+        hints.reload(&outline);
+
+        assert_eq!(hints.num_points(), 5);
+        assert_eq!(hints.contours, [0]);
+        assert_ne!(hints.points[1].flags & FLAG_WEAK_INTERPOLATION, 0);
+        for i in [0, 2, 3, 4] {
+            assert_eq!(hints.points[i].flags & FLAG_WEAK_INTERPOLATION, 0);
+        }
+        assert_eq!(hints.points[0].in_dir, Direction::Down);
+        assert_eq!(hints.points[0].out_dir, Direction::Right);
+        assert_eq!(hints.points[1].in_dir, Direction::Right);
+        assert_eq!(hints.points[1].out_dir, Direction::Right);
+        assert_eq!(hints.points[2].out_dir, Direction::Up);
+        assert_eq!(hints.points[4].in_dir, Direction::Left);
+        assert_eq!(hints.points[4].out_dir, Direction::Down);
+    }
+
+    #[test]
+    fn reload_quadrant_pass_tags_same_quadrant_series() {
+        let tags = [CURVE_TAG_ON; 4];
+        let outline = contour(&[(0, 0), (100, 90), (200, 180), (300, 90)], &tags);
+        let mut hints = hints_upem(1000);
+        hints.reload(&outline);
+
+        assert_ne!(hints.points[1].flags & FLAG_WEAK_INTERPOLATION, 0);
+        assert_eq!(hints.points[0].u, 2);
+        assert_eq!(hints.points[2].v, -2);
+        assert_eq!(hints.points[2].flags & FLAG_WEAK_INTERPOLATION, 0);
+        assert_eq!(hints.points[3].flags & FLAG_WEAK_INTERPOLATION, 0);
+    }
+
+    #[test]
+    fn reload_tags_conic_control_point_weak() {
+        let tags = [
+            CURVE_TAG_ON,
+            CURVE_TAG_CONIC,
+            CURVE_TAG_ON,
+            CURVE_TAG_ON,
+            CURVE_TAG_ON,
+        ];
+        let outline = contour(&[(0, 0), (100, 50), (200, 0), (200, 100), (0, 100)], &tags);
+        let mut hints = hints_upem(1000);
+        hints.reload(&outline);
+
+        let control = &hints.points[1];
+        assert_ne!(control.flags & FLAG_CONIC, 0);
+        assert_ne!(control.flags & FLAG_WEAK_INTERPOLATION, 0);
+        for i in [0, 2, 3, 4] {
+            assert_eq!(hints.points[i].flags & FLAG_WEAK_INTERPOLATION, 0);
+        }
+    }
+
+    #[test]
+    fn reload_malformed_outline_clears_analysis() {
+        let mut hints = hints_upem(1000);
+        hints.reload(&square(true));
+        assert_eq!(hints.num_points(), 4);
+
+        let mut bad = square(true);
+        bad.contours = alloc::vec![10];
+        hints.reload(&bad);
+        assert_eq!(hints.num_points(), 0);
+        assert_eq!(hints.num_contours(), 0);
+        assert!(
+            hints.axis[Dimension::Hort.index()]
+                .segments
+                .is_empty()
+        );
+        assert!(
+            hints.axis[Dimension::Hort.index()]
+                .edges
+                .is_empty()
+        );
+        assert_eq!(hints.axis[Dimension::Hort.index()].major_dir, Direction::Up);
+
+        let mut short = square(true);
+        short.n_points = 9;
+        hints.reload(&short);
+        assert_eq!(hints.num_points(), 0);
+    }
+
+    #[test]
+    fn reload_empty_outline_is_a_noop() {
+        let mut hints = hints_upem(1000);
+        hints.reload(&square(true));
+        hints.reload(&Outline::new());
+        assert_eq!(hints.num_points(), 0);
+        assert_eq!(hints.num_contours(), 0);
+        assert!(hints.points.is_empty());
+        assert!(hints.contours.is_empty());
+    }
+
+    #[test]
+    fn orientation_matches_fill_direction() {
+        assert_eq!(outline_get_orientation(&square(true)), Orientation::TrueType);
+        assert_eq!(outline_get_orientation(&square(false)), Orientation::Postscript);
+        assert_eq!(outline_get_orientation(&Outline::new()), Orientation::TrueType);
+
+        let collapsed = contour(&[(5, 0), (5, 100)], &[CURVE_TAG_ON, CURVE_TAG_ON]);
+        assert_eq!(outline_get_orientation(&collapsed), Orientation::None);
+
+        let mut bad = square(true);
+        bad.contours = alloc::vec![10];
+        assert_eq!(outline_get_orientation(&bad), Orientation::TrueType);
+    }
+
+    #[test]
+    fn save_writes_positions_and_tags() {
+        let mut hints = GlyphHints::default();
+        hints.points.resize(3, Point::default());
+        hints.points[0].x = 10;
+        hints.points[0].y = 20;
+        hints.points[0].flags = FLAG_CONIC;
+        hints.points[1].x = 30;
+        hints.points[1].y = 40;
+        hints.points[1].flags = FLAG_CUBIC;
+        hints.points[2].x = 50;
+        hints.points[2].y = 60;
+        hints.points[2].flags = FLAG_TOUCH_X;
+
+        let mut outline = square(true);
+        hints.save(&mut outline);
+        assert_eq!(outline.points[0], Vector::new(10, 20));
+        assert_eq!(outline.points[1], Vector::new(30, 40));
+        assert_eq!(outline.points[2], Vector::new(50, 60));
+        assert_eq!(outline.tags[0], CURVE_TAG_CONIC);
+        assert_eq!(outline.tags[1], CURVE_TAG_CUBIC);
+        assert_eq!(outline.tags[2], CURVE_TAG_ON);
+
+        hints.points.resize(10, Point::default());
+        hints.save(&mut outline);
+        assert_eq!(outline.points[0], Vector::new(10, 20));
+        assert_eq!(outline.points.len(), 4);
+    }
+
+    #[test]
+    fn align_edge_points_moves_segment_to_edge() {
+        let mut hints = GlyphHints::default();
+        hints.points.resize(4, Point::default());
+        link_ring(&mut hints.points, 4);
+        let axis = &mut hints.axis[Dimension::Hort.index()];
+        axis.edges.push(Edge {
+            pos: 64,
+            ..Edge::default()
+        });
+        let segment = axis.new_segment();
+        axis.segments[segment].edge = Some(0);
+        axis.segments[segment].first = Some(0);
+        axis.segments[segment].last = Some(2);
+
+        hints.align_edge_points(Dimension::Hort);
+        assert_eq!(hints.points[0].x, 64);
+        assert_eq!(hints.points[1].x, 64);
+        assert_eq!(hints.points[2].x, 64);
+        assert_eq!(hints.points[3].x, 0);
+        assert_ne!(hints.points[0].flags & FLAG_TOUCH_X, 0);
+        assert_ne!(hints.points[1].flags & FLAG_TOUCH_X, 0);
+        assert_ne!(hints.points[2].flags & FLAG_TOUCH_X, 0);
+        assert_eq!(hints.points[3].flags & FLAG_TOUCH_X, 0);
+    }
+
+    #[test]
+    fn align_edge_points_vertical_dimension() {
+        let mut hints = GlyphHints::default();
+        hints.points.resize(3, Point::default());
+        link_ring(&mut hints.points, 3);
+        let axis = &mut hints.axis[Dimension::Vert.index()];
+        axis.edges.push(Edge {
+            pos: -16,
+            ..Edge::default()
+        });
+        let segment = axis.new_segment();
+        axis.segments[segment].edge = Some(0);
+        axis.segments[segment].first = Some(1);
+        axis.segments[segment].last = Some(2);
+
+        hints.align_edge_points(Dimension::Vert);
+        assert_eq!(hints.points[0].y, 0);
+        assert_eq!(hints.points[1].y, -16);
+        assert_eq!(hints.points[2].y, -16);
+        assert_eq!(hints.points[1].flags & FLAG_TOUCH_X, 0);
+        assert_ne!(hints.points[1].flags & FLAG_TOUCH_Y, 0);
+    }
+
+    #[test]
+    fn align_edge_points_skips_invalid_segments() {
+        let mut hints = GlyphHints::default();
+        hints.points.resize(2, Point::default());
+        link_ring(&mut hints.points, 2);
+        hints.points[0].x = 7;
+        hints.points[1].x = 8;
+        let axis = &mut hints.axis[Dimension::Hort.index()];
+        axis.edges.push(Edge {
+            pos: 64,
+            ..Edge::default()
+        });
+
+        let dangling = axis.new_segment();
+        axis.segments[dangling].edge = Some(9);
+        axis.segments[dangling].first = Some(0);
+        axis.segments[dangling].last = Some(1);
+
+        let no_edge = axis.new_segment();
+        axis.segments[no_edge].edge = None;
+        axis.segments[no_edge].first = Some(0);
+        axis.segments[no_edge].last = Some(1);
+
+        let bad_first = axis.new_segment();
+        axis.segments[bad_first].edge = Some(0);
+        axis.segments[bad_first].first = Some(9);
+        axis.segments[bad_first].last = Some(1);
+
+        let corrupted = axis.new_segment();
+        axis.segments[corrupted].edge = Some(0);
+        axis.segments[corrupted].first = Some(0);
+        axis.segments[corrupted].last = Some(1);
+        hints.points[0].next = 99;
+
+        hints.align_edge_points(Dimension::Hort);
+        assert_eq!(hints.points[0].x, 64);
+        assert_eq!(hints.points[1].x, 8);
+    }
+
+    #[test]
+    fn align_strong_points_extrapolates_and_interpolates() {
+        let mut hints = GlyphHints::default();
+        add_edge(&mut hints, Dimension::Hort, 0, 0, 0);
+        add_edge(&mut hints, Dimension::Hort, 100, 100, 128);
+        hints.points.resize(6, Point::default());
+
+        hints.points[0].fx = -10;
+        hints.points[0].ox = -10;
+        hints.points[1].fx = 150;
+        hints.points[1].ox = 150;
+        hints.points[2].fx = 50;
+        hints.points[2].ox = 50;
+        hints.points[3].fx = 100;
+        hints.points[3].ox = 100;
+        hints.points[4].fx = 50;
+        hints.points[4].ox = 50;
+        hints.points[4].flags = FLAG_TOUCH_X;
+        hints.points[4].x = 777;
+        hints.points[5].fx = 50;
+        hints.points[5].ox = 50;
+        hints.points[5].flags = FLAG_WEAK_INTERPOLATION;
+        hints.points[5].x = 888;
+
+        hints.align_strong_points(Dimension::Hort);
+        let x: alloc::vec::Vec<Pos> = hints.points.iter().map(|p| p.x).collect();
+        assert_eq!(x, [-10, 178, 64, 128, 777, 888]);
+        for point in hints.points.iter().take(4) {
+            assert_ne!(point.flags & FLAG_TOUCH_X, 0);
+        }
+        assert_eq!(hints.points[4].flags & FLAG_TOUCH_X, FLAG_TOUCH_X);
+        assert_eq!(hints.points[5].flags & FLAG_TOUCH_X, 0);
+        let scale = hints.axis[Dimension::Hort.index()].edges[0].scale;
+        assert_eq!(scale, div_fix(128, 100));
+        assert_ne!(scale, 0);
+    }
+
+    #[test]
+    fn align_strong_points_no_edges_is_a_noop() {
+        let mut hints = GlyphHints::default();
+        hints.points.resize(2, Point::default());
+        hints.points[0].fx = 10;
+        hints.points[0].ox = 10;
+        hints.points[0].x = 42;
+        hints.points[1].fx = 20;
+        hints.points[1].ox = 20;
+        hints.points[1].x = 43;
+
+        hints.align_strong_points(Dimension::Hort);
+        assert_eq!(hints.points[0].x, 42);
+        assert_eq!(hints.points[1].x, 43);
+        assert_eq!(hints.points[0].flags & FLAG_TOUCH_X, 0);
+    }
+
+    #[test]
+    fn align_strong_points_binary_search_on_edge_is_exact() {
+        let mut hints = GlyphHints::default();
+        for fpos in (0i16..=800).step_by(100) {
+            add_edge(
+                &mut hints,
+                Dimension::Hort,
+                fpos,
+                Pos::from(fpos),
+                Pos::from(fpos) * 2,
+            );
+        }
+        hints.points.resize(1, Point::default());
+        hints.points[0].fx = 400;
+        hints.points[0].ox = 800;
+
+        hints.align_strong_points(Dimension::Hort);
+        assert_eq!(hints.points[0].x, 800);
+        assert_ne!(hints.points[0].flags & FLAG_TOUCH_X, 0);
+        for edge in &hints.axis[Dimension::Hort.index()].edges {
+            assert_eq!(edge.scale, 0, "exact hits must not interpolate");
+        }
+    }
+
+    #[test]
+    fn align_strong_points_binary_search_between_edges() {
+        let mut hints = GlyphHints::default();
+        for fpos in (0i16..=800).step_by(100) {
+            add_edge(
+                &mut hints,
+                Dimension::Hort,
+                fpos,
+                Pos::from(fpos),
+                Pos::from(fpos) * 2,
+            );
+        }
+        hints.points.resize(1, Point::default());
+        hints.points[0].fx = 350;
+        hints.points[0].ox = 700;
+
+        hints.align_strong_points(Dimension::Hort);
+        assert_eq!(hints.points[0].x, 700);
+        let edges = &hints.axis[Dimension::Hort.index()].edges;
+        assert_eq!(edges[3].scale, div_fix(200, 100));
+    }
+
+    #[test]
+    fn align_strong_points_linear_search_on_edge_is_exact() {
+        let mut hints = GlyphHints::default();
+        for fpos in (0i16..=700).step_by(100) {
+            add_edge(
+                &mut hints,
+                Dimension::Hort,
+                fpos,
+                Pos::from(fpos),
+                Pos::from(fpos),
+            );
+        }
+        hints.points.resize(1, Point::default());
+        hints.points[0].fx = 400;
+        hints.points[0].ox = 400;
+
+        hints.align_strong_points(Dimension::Hort);
+        assert_eq!(hints.points[0].x, 400);
+        for edge in &hints.axis[Dimension::Hort.index()].edges {
+            assert_eq!(edge.scale, 0, "exact hits must not interpolate");
+        }
+    }
+
+    #[test]
+    fn align_weak_points_shifts_single_touched() {
+        let mut hints = GlyphHints::default();
+        hints.points.resize(4, Point::default());
+        link_ring(&mut hints.points, 4);
+        hints.contours.push(0);
+        for (i, ox) in [0, 10, 20, 30].iter().enumerate() {
+            hints.points[i].ox = Pos::from(*ox);
+            hints.points[i].x = Pos::from(*ox);
+        }
+        hints.points[1].x = 15;
+        hints.points[1].flags = FLAG_TOUCH_X;
+
+        hints.align_weak_points(Dimension::Hort);
+        let x: alloc::vec::Vec<Pos> = hints.points.iter().map(|p| p.x).collect();
+        assert_eq!(x, [5, 15, 25, 35]);
+    }
+
+    #[test]
+    fn align_weak_points_interpolates_between_two_touched() {
+        let mut hints = GlyphHints::default();
+        hints.points.resize(4, Point::default());
+        link_ring(&mut hints.points, 4);
+        hints.contours.push(0);
+        for (i, ox) in [0, 10, 20, 30].iter().enumerate() {
+            hints.points[i].ox = Pos::from(*ox);
+            hints.points[i].x = Pos::from(*ox);
+        }
+        hints.points[0].x = 2;
+        hints.points[0].flags = FLAG_TOUCH_X;
+        hints.points[2].x = 26;
+        hints.points[2].flags = FLAG_TOUCH_X;
+
+        hints.align_weak_points(Dimension::Hort);
+        let x: alloc::vec::Vec<Pos> = hints.points.iter().map(|p| p.x).collect();
+        assert_eq!(x, [2, 14, 26, 36]);
+    }
+
+    #[test]
+    fn align_weak_points_without_touch_keeps_coordinates() {
+        let mut hints = GlyphHints::default();
+        hints.points.resize(3, Point::default());
+        link_ring(&mut hints.points, 3);
+        hints.contours.push(0);
+        for (i, ox) in [4, 8, 12].iter().enumerate() {
+            hints.points[i].ox = Pos::from(*ox);
+            hints.points[i].x = Pos::from(*ox) + 1;
+        }
+
+        hints.align_weak_points(Dimension::Hort);
+        let x: alloc::vec::Vec<Pos> = hints.points.iter().map(|p| p.x).collect();
+        assert_eq!(x, [5, 9, 13]);
+    }
+
+    #[test]
+    fn iup_shift_translates_untouched_points() {
+        let mut points = [Point::default(); 4];
+        for (i, (v, u)) in [(0i64, 0i64), (10, 99), (20, 20), (30, 30)]
+            .iter()
+            .enumerate()
+        {
+            points[i].v = *v;
+            points[i].u = *u;
+        }
+        iup_shift(&mut points, 0, 3, 1);
+        assert_eq!(
+            points
+                .iter()
+                .map(|p| p.u)
+                .collect::<alloc::vec::Vec<_>>(),
+            [89, 99, 109, 119]
+        );
+
+        let mut points = [Point::default(); 3];
+        points[0].v = 5;
+        points[0].u = 5;
+        points[1].v = 7;
+        points[1].u = 9;
+        points[2].v = 6;
+        points[2].u = 4;
+        iup_shift(&mut points, 0, 2, 0);
+        assert_eq!(
+            points
+                .iter()
+                .map(|p| p.u)
+                .collect::<alloc::vec::Vec<_>>(),
+            [5, 9, 4],
+            "zero delta must leave the contour untouched"
+        );
+    }
+
+    #[test]
+    fn iup_interp_scales_between_references() {
+        let mut points = [Point::default(); 4];
+        points[0].v = 0;
+        points[0].u = 2;
+        points[1].v = 10;
+        points[1].u = 0;
+        points[2].v = 20;
+        points[2].u = 26;
+        points[3].v = 30;
+        points[3].u = 0;
+
+        iup_interp(&mut points, 1, 1, 0, 2);
+        assert_eq!(points[1].u, 14);
+        iup_interp(&mut points, 3, 3, 0, 2);
+        assert_eq!(points[3].u, 36);
+        iup_interp(&mut points, 1, 1, 2, 0);
+        assert_eq!(points[1].u, 14, "reference order must not matter");
+        iup_interp(&mut points, 3, 1, 0, 2);
+        assert_eq!(points[3].u, 36, "empty range must be a no-op");
+    }
+
+    #[test]
+    fn iup_interp_equal_reference_positions() {
+        let mut points = [Point::default(); 4];
+        points[0].v = 10;
+        points[0].u = 2;
+        points[1].v = 5;
+        points[2].v = 15;
+        points[3].v = 10;
+        points[3].u = 12;
+
+        iup_interp(&mut points, 1, 2, 0, 3);
+        assert_eq!(points[1].u, -3);
+        assert_eq!(points[2].u, 17);
+    }
+
+    #[test]
+    fn iup_interp_equal_hints_pulls_to_common_value() {
+        let mut points = [Point::default(); 3];
+        points[0].v = 0;
+        points[0].u = 7;
+        points[1].v = 10;
+        points[2].v = 20;
+        points[2].u = 7;
+
+        iup_interp(&mut points, 1, 1, 0, 2);
+        assert_eq!(points[1].u, 7);
+    }
+
+    #[test]
+    fn scale_dim_applies_warp_scale_and_delta() {
+        let mut hints = GlyphHints::default();
+        hints.points.resize(3, Point::default());
+        hints.points[0].fx = 1;
+        hints.points[0].fy = 4;
+        hints.points[1].fx = 2;
+        hints.points[1].fy = 5;
+        hints.points[2].fx = 3;
+        hints.points[2].fy = 6;
+
+        hints.scale_dim(Dimension::Hort, 2 << 16, 5);
+        assert_eq!(hints.points[0].x, 7);
+        assert_eq!(hints.points[1].x, 9);
+        assert_eq!(hints.points[2].x, 11);
+
+        hints.scale_dim(Dimension::Vert, 1 << 16, -2);
+        assert_eq!(hints.points[0].y, 2);
+        assert_eq!(hints.points[1].y, 3);
+        assert_eq!(hints.points[2].y, 4);
+    }
+
+    #[test]
+    fn rescale_done_and_scaler_flags() {
+        let mut hints = GlyphHints::default();
+        assert!(hints.do_horizontal());
+        assert!(hints.do_vertical());
+        assert!(hints.do_advance());
+        assert!(hints.do_warp());
+
+        hints.scaler_flags = SCALER_FLAG_NO_VERTICAL | SCALER_FLAG_NO_ADVANCE;
+        assert!(hints.do_horizontal());
+        assert!(!hints.do_vertical());
+        assert!(!hints.do_advance());
+        assert!(hints.do_warp());
+
+        hints.other_flags = 4;
+        assert!(hints.test_other(4));
+        assert!(!hints.test_other(1));
+
+        let globals = Rc::new(GlobalsShared::new(2048));
+        let mut metrics = StyleMetrics::new(&STYLE_CLASSES[Style::LatnDflt.index()], globals);
+        metrics.scaler_mut().flags = SCALER_FLAG_NO_HORIZONTAL;
+        let mut hints = GlyphHints::default();
+        hints.rescale(&metrics);
+        assert_eq!(hints.scaler_flags, SCALER_FLAG_NO_HORIZONTAL);
+        assert_eq!(hints.units_per_em, 2048);
+        assert!(hints.metrics.is_some());
+        assert!(!hints.do_horizontal());
+        assert!(hints.do_vertical());
+
+        hints.points.resize(1, Point::default());
+        hints.contours.push(0);
+        hints.done();
+        assert!(hints.points.is_empty());
+        assert!(hints.contours.is_empty());
+        assert!(hints.metrics.is_none());
+        assert_eq!(hints.scaler_flags, 0);
+        assert_eq!(hints.other_flags, 0);
+        assert_eq!(hints.units_per_em, 0);
+        assert_eq!(hints.x_scale, 0);
+    }
+
+    #[test]
+    fn msb_shift_matches_ft_msb_formula() {
+        assert_eq!(msb_shift(0), 0);
+        assert_eq!(msb_shift(1), 0);
+        assert_eq!(msb_shift(1 << 14), 0);
+        assert_eq!(msb_shift(1 << 20), 6);
+        assert_eq!(msb_shift(u32::MAX), 17);
+    }
+
+    #[test]
+    fn delta_index_clamps_out_of_range() {
+        assert_eq!(delta_index(4, 1, 2), 3);
+        assert_eq!(delta_index(4, 1, -1), 0);
+        assert_eq!(delta_index(4, 1, -5), 0);
+        assert_eq!(delta_index(4, 1, 10), 3);
+        assert_eq!(delta_index(4, 3, 1), 3);
+    }
+
+    #[test]
+    fn quadrant_pass_tags_same_quadrant_vectors() {
+        let mut hints = GlyphHints::default();
+        hints.points.resize(3, Point::default());
+        hints.points[0].fx = 0;
+        hints.points[0].fy = 0;
+        hints.points[1].fx = 10;
+        hints.points[1].fy = 10;
+        hints.points[1].u = 1;
+        hints.points[1].v = -1;
+        hints.points[2].fx = 30;
+        hints.points[2].fy = 40;
+
+        hints.tag_quadrant_weak_points();
+        assert_ne!(hints.points[1].flags & FLAG_WEAK_INTERPOLATION, 0);
+        assert_eq!(hints.points[0].u, 2);
+        assert_eq!(hints.points[2].v, -2);
+
+        let mut hints = GlyphHints::default();
+        hints.points.resize(3, Point::default());
+        hints.points[1].fx = 10;
+        hints.points[1].fy = 10;
+        hints.points[1].u = 1;
+        hints.points[1].v = -1;
+        hints.points[2].fx = -10;
+        hints.points[2].fy = 40;
+
+        hints.tag_quadrant_weak_points();
+        assert_eq!(hints.points[1].flags & FLAG_WEAK_INTERPOLATION, 0);
+    }
+
+    #[test]
+    fn dominant_pass_classifies_control_segment_and_spike() {
+        let mut hints = GlyphHints::default();
+        hints.points.resize(3, Point::default());
+        hints.points[0].flags = FLAG_CONIC;
+        hints.points[0].in_dir = Direction::Right;
+        hints.points[0].out_dir = Direction::Up;
+        hints.points[1].in_dir = Direction::Up;
+        hints.points[1].out_dir = Direction::Up;
+        hints.points[2].in_dir = Direction::Right;
+        hints.points[2].out_dir = Direction::Left;
+
+        hints.tag_dominant_weak_points();
+        for point in &hints.points {
+            assert_ne!(point.flags & FLAG_WEAK_INTERPOLATION, 0);
+        }
+    }
+
+    #[test]
+    fn dominant_pass_tags_flat_corners_only() {
+        let mut hints = GlyphHints::default();
+        hints.points.resize(3, Point::default());
+        hints.points[0].fx = 0;
+        hints.points[0].fy = 0;
+        hints.points[1].fx = 100;
+        hints.points[1].fy = 100;
+        hints.points[1].u = 1;
+        hints.points[1].v = -1;
+        hints.points[2].fx = 200;
+        hints.points[2].fy = 200;
+
+        hints.tag_dominant_weak_points();
+        assert_ne!(hints.points[1].flags & FLAG_WEAK_INTERPOLATION, 0);
+        assert_eq!(hints.points[0].u, 2);
+        assert_eq!(hints.points[2].v, -2);
+
+        let mut hints = GlyphHints::default();
+        hints.points.resize(3, Point::default());
+        hints.points[0].fx = 0;
+        hints.points[0].fy = 0;
+        hints.points[1].fx = 100;
+        hints.points[1].fy = 100;
+        hints.points[1].u = 1;
+        hints.points[1].v = -1;
+        hints.points[2].fx = 10;
+        hints.points[2].fy = 0;
+
+        hints.tag_dominant_weak_points();
+        assert_eq!(
+            hints.points[1].flags & FLAG_WEAK_INTERPOLATION,
+            0,
+            "a sharp corner stays strong"
+        );
+    }
+
+    #[test]
+    fn adjust_contour_start_walks_back_over_near_points() {
+        let mut points = [Point::default(); 4];
+        for (i, fx) in [0i16, 2, 4, 6].iter().enumerate() {
+            points[i].fx = *fx;
+        }
+        link_ring(&mut points, 4);
+
+        assert_eq!(adjust_contour_start(&points, 0, 17), 1);
+        assert_eq!(adjust_contour_start(&points, 1, 17), 2);
+
+        points[3].fx = 100;
+        assert_eq!(adjust_contour_start(&points, 0, 17), 0);
     }
 }

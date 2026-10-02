@@ -11,5 +11,5 @@ repository.workspace = true
 name = "codevar_truetype_autofit"
 
 [dependencies]
-log = { workspace = true }
+codevar-logger = { workspace = true }
 codevar-truetype-core = { workspace = true }

@@ -28,7 +28,6 @@ extern crate alloc;
 mod io_cursor;
 mod io_error;
 mod io_impls;
-mod io_std;
 mod io_terminal;
 mod io_traits;
 

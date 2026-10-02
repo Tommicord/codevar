@@ -966,3 +966,114 @@ pub static STYLE_CLASSES: [StyleClass; STYLE_MAX] = [
         name: "hani_dflt",
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn style_classes_match_their_style_index() {
+        assert_eq!(STYLE_CLASSES.len(), STYLE_MAX);
+        for (index, class) in STYLE_CLASSES.iter().enumerate() {
+            assert_eq!(class.style.index(), index);
+            assert!(!class.name.is_empty());
+        }
+    }
+
+    #[test]
+    fn script_classes_match_their_script_index() {
+        assert_eq!(SCRIPT_CLASSES.len(), SCRIPT_MAX);
+        for (index, class) in SCRIPT_CLASSES.iter().enumerate() {
+            assert_eq!(class.script.index(), index);
+        }
+    }
+
+    #[test]
+    fn script_ranges_are_bounded_sorted_and_disjoint() {
+        for class in &SCRIPT_CLASSES {
+            let ranges = class.ranges;
+            for range in ranges {
+                assert!(range.first <= range.last, "{:?}", class.script);
+            }
+            for pair in ranges.windows(2) {
+                assert!(
+                    pair[0].last < pair[1].first,
+                    "ranges of {:?} must not overlap: {:#x}..{:#x} then {:#x}..{:#x}",
+                    class.script,
+                    pair[0].first,
+                    pair[0].last,
+                    pair[1].first,
+                    pair[1].last
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn script_index_roundtrip_maps_unknown_to_none() {
+        for index in 0..SCRIPT_MAX {
+            assert_eq!(Script::from_index(index).index(), index);
+        }
+        assert_eq!(Script::from_index(SCRIPT_MAX), Script::None);
+        assert_eq!(Script::from_index(999), Script::None);
+        assert_eq!(Script::None.index(), 6);
+        assert_eq!(SCRIPT_DEFAULT, Script::Latn);
+    }
+
+    #[test]
+    fn writing_system_indices_match_the_enum_order() {
+        assert_eq!(WritingSystem::Dummy.index(), 0);
+        assert_eq!(WritingSystem::Latin.index(), 1);
+        assert_eq!(WritingSystem::Cjk.index(), 2);
+        assert_eq!(WritingSystem::Indic.index(), 3);
+        assert_eq!(WRITING_SYSTEM_MAX, 4);
+    }
+
+    #[test]
+    fn fallback_style_is_cjk_hani_dflt() {
+        assert_eq!(STYLE_MAX, 49);
+        assert_eq!(STYLE_FALLBACK, 48);
+        let class = &STYLE_CLASSES[STYLE_FALLBACK];
+        assert_eq!(class.style, Style::HaniDflt);
+        assert_eq!(class.style.index(), STYLE_FALLBACK);
+        assert_eq!(class.writing_system, WritingSystem::Cjk);
+        assert_eq!(class.script, Script::Hani);
+        assert_eq!(class.blue_stringset, Some(crate::blue_stringset::HANI));
+        assert_eq!(class.name, "hani_dflt");
+    }
+
+    #[test]
+    fn style_blue_stringset_offsets_are_valid() {
+        for class in &STYLE_CLASSES {
+            if let Some(offset) = class.blue_stringset {
+                assert!(offset < crate::BLUE_STRINGSETS.len());
+                assert!(
+                    crate::BLUE_STRINGSETS[offset].string.is_some(),
+                    "set of {} must not start with a terminator",
+                    class.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unassigned_and_digit_flags_do_not_collide() {
+        assert_eq!(STYLE_UNASSIGNED, 0x7F);
+        assert_eq!(DIGIT, 0x80);
+        assert_eq!(STYLE_UNASSIGNED & DIGIT, 0);
+    }
+
+    #[test]
+    fn uni_range_new_stores_bounds() {
+        let range = UniRange::new(0x41, 0x5A);
+        assert_eq!(range.first, 0x41);
+        assert_eq!(range.last, 0x5A);
+        assert_eq!(
+            range,
+            UniRange {
+                first: 0x41,
+                last: 0x5A
+            }
+        );
+    }
+}

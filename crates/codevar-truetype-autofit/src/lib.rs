@@ -51,10 +51,13 @@
 extern crate alloc;
 
 pub mod cjk;
+pub mod dummy;
+pub mod face;
 pub mod hints;
 pub mod latin;
 pub mod metrics;
 pub mod ranges;
+pub mod warp;
 
 use codevar_truetype_core::{Fixed, Pos, RenderMode};
 
@@ -335,6 +338,10 @@ pub struct Scaler {
     pub render_mode: RenderMode,
     /// Additional control flags, `SCALER_FLAG_*`.
     pub flags: u32,
+    /// `face->size->metrics.x_ppem` (`AF_ScalerRec::face`, which this
+    /// port does not store): the horizontal pixel size the scaler
+    /// targets, read by `af_latin_metrics_scale_dim`.
+    pub x_ppem: u32,
 }
 
 impl Default for Scaler {
@@ -347,6 +354,7 @@ impl Default for Scaler {
             y_delta: 0,
             render_mode: RenderMode::Normal,
             flags: 0,
+            x_ppem: 0,
         }
     }
 }
@@ -633,4 +641,228 @@ pub mod blue_stringset {
     /// `AF_BLUE_STRINGSET_MAX`: number of stringset entries including
     /// the terminators (FreeType sizes `blues[]` with this bound).
     pub const MAX: usize = 48;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codevar_truetype_core::RenderMode;
+
+    #[test]
+    fn angle_diff_wraps_into_half_turn() {
+        assert_eq!(angle_diff(10, 300), -222);
+        assert_eq!(angle_diff(300, 10), 222);
+        assert_eq!(angle_diff(50, 50), 0);
+        assert_eq!(angle_diff(0, ANGLE_PI), 256);
+        assert_eq!(angle_diff(0, ANGLE_PI + 1), -255);
+        assert_eq!(angle_diff(ANGLE_PI, 0), 256);
+        assert_eq!(angle_diff(0, -1), -1);
+        assert_eq!(angle_diff(100, 100 + ANGLE_2PI), 0);
+    }
+
+    #[test]
+    fn sort_positions_sorts_only_the_given_count() {
+        let mut table = [3, 1, 2, 9];
+        sort_positions(3, &mut table);
+        assert_eq!(table, [1, 2, 3, 9]);
+
+        let mut table = [7, 5];
+        sort_positions(0, &mut table);
+        assert_eq!(table, [7, 5]);
+        sort_positions(1, &mut table);
+        assert_eq!(table, [7, 5]);
+    }
+
+    fn width(org: Pos) -> Width {
+        Width {
+            org,
+            cur: org * 2,
+            fit: org * 3,
+        }
+    }
+
+    #[test]
+    fn quantize_widths_merges_wide_cluster() {
+        let mut table = [width(30), width(11), width(10)];
+        let mut count = 3;
+        sort_and_quantize_widths(&mut count, &mut table, 5);
+        assert_eq!(count, 2);
+        assert_eq!(table[0].org, 10);
+        assert_eq!(table[1].org, 30);
+        assert_eq!(table[0].cur, 20, "compaction moves the whole record");
+        assert_eq!(table[1].fit, 90);
+    }
+
+    #[test]
+    fn quantize_widths_merges_final_cluster() {
+        let mut table = [width(12), width(10)];
+        let mut count = 2;
+        sort_and_quantize_widths(&mut count, &mut table, 5);
+        assert_eq!(count, 1);
+        assert_eq!(table[0].org, 11);
+    }
+
+    #[test]
+    fn quantize_widths_keeps_split_clusters_apart() {
+        let mut table = [width(10), width(50), width(52)];
+        let mut count = 3;
+        sort_and_quantize_widths(&mut count, &mut table, 5);
+        assert_eq!(count, 3);
+        assert_eq!(table[0].org, 10);
+        assert_eq!(table[1].org, 50);
+        assert_eq!(
+            table[2].org, 17,
+            "final cluster averages over the absolute end index (C quirk)"
+        );
+    }
+
+    #[test]
+    fn quantize_widths_single_entry_is_a_noop() {
+        let mut table = [width(40)];
+        let mut count = 1;
+        sort_and_quantize_widths(&mut count, &mut table, 5);
+        assert_eq!(count, 1);
+        assert_eq!(table[0].org, 40);
+
+        let mut count = 0;
+        sort_and_quantize_widths(&mut count, &mut table, 5);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn direction_compute_picks_the_dominant_arm() {
+        assert_eq!(direction_compute(100, 0), Direction::Right);
+        assert_eq!(direction_compute(-100, 0), Direction::Left);
+        assert_eq!(direction_compute(0, 100), Direction::Up);
+        assert_eq!(direction_compute(0, -100), Direction::Down);
+        assert_eq!(direction_compute(100, 7), Direction::Right);
+        assert_eq!(direction_compute(7, 100), Direction::Up);
+        assert_eq!(direction_compute(100, -7), Direction::Right);
+        assert_eq!(direction_compute(-100, 7), Direction::Left);
+        assert_eq!(direction_compute(-100, -7), Direction::Left);
+        assert_eq!(direction_compute(-7, -100), Direction::Down);
+    }
+
+    #[test]
+    fn direction_compute_rejects_near_diagonals() {
+        assert_eq!(direction_compute(100, 8), Direction::None);
+        assert_eq!(direction_compute(8, 100), Direction::None);
+        assert_eq!(direction_compute(100, 100), Direction::None);
+        assert_eq!(direction_compute(0, 0), Direction::None);
+        assert_eq!(direction_compute(-8, -100), Direction::None);
+    }
+
+    #[test]
+    fn direction_codes_roundtrip() {
+        for dir in [
+            Direction::Right,
+            Direction::Left,
+            Direction::Up,
+            Direction::Down,
+            Direction::None,
+        ] {
+            assert_eq!(Direction::from_code(dir.code()), dir);
+        }
+        assert_eq!(Direction::from_code(0), Direction::None);
+        assert_eq!(Direction::from_code(3), Direction::None);
+        assert_eq!(Direction::from_code(-5), Direction::None);
+        assert_eq!(Direction::None.code(), 4);
+        assert_eq!(Direction::default(), Direction::None);
+    }
+
+    #[test]
+    fn dimension_pair_helpers() {
+        assert_eq!(Dimension::Hort.other(), Dimension::Vert);
+        assert_eq!(Dimension::Vert.other(), Dimension::Hort);
+        assert_eq!(Dimension::Hort.index(), 0);
+        assert_eq!(Dimension::Vert.index(), 1);
+        assert_eq!(Dimension::ALL, [Dimension::Vert, Dimension::Hort]);
+        assert_eq!(Dimension::ALL.len(), DIMENSION_MAX);
+    }
+
+    #[test]
+    fn scaler_equal_scales_ignores_render_mode_and_flags() {
+        let a = Scaler {
+            x_scale: 1 << 16,
+            y_scale: 2 << 16,
+            x_delta: 7,
+            y_delta: -3,
+            ..Scaler::default()
+        };
+        let b = Scaler {
+            render_mode: RenderMode::Mono,
+            flags: SCALER_FLAG_NO_WARPER,
+            ..a
+        };
+        assert!(a.equal_scales(&b));
+        assert!(b.equal_scales(&a));
+
+        let c = Scaler {
+            x_scale: a.x_scale + 1,
+            ..a
+        };
+        assert!(!a.equal_scales(&c));
+
+        let d = Scaler {
+            y_delta: a.y_delta + 1,
+            ..a
+        };
+        assert!(!a.equal_scales(&d));
+    }
+
+    #[test]
+    fn blue_stringset_offsets_are_contiguous() {
+        let offsets = [
+            blue_stringset::ARAB,
+            blue_stringset::CYRL,
+            blue_stringset::DEVA,
+            blue_stringset::GREK,
+            blue_stringset::HEBR,
+            blue_stringset::LATN,
+            blue_stringset::TELU,
+            blue_stringset::THAI,
+            blue_stringset::HANI,
+        ];
+        assert_eq!(offsets, [0, 3, 9, 15, 22, 26, 33, 36, 44]);
+
+        for window in offsets.windows(2) {
+            let start = window[0];
+            let end = window[1];
+            let len = end - start;
+            assert!(len <= BLUE_STRINGSET_MAX_LEN + 1);
+            assert_eq!(
+                BLUE_STRINGSETS[end - 1].string,
+                None,
+                "set at {start} must end with a terminator"
+            );
+            assert!(
+                BLUE_STRINGSETS[start..end - 1]
+                    .iter()
+                    .all(|entry| entry.string.is_some()),
+                "set at {start} must start with live entries"
+            );
+        }
+
+        let last = blue_stringset::HANI;
+        assert_eq!(BLUE_STRINGSETS.len(), 47);
+        assert_eq!(BLUE_STRINGSETS.last().unwrap().string, None);
+        assert_eq!(last + 3, BLUE_STRINGSETS.len());
+        assert!(blue_stringset::MAX >= BLUE_STRINGSETS.len());
+    }
+
+    #[test]
+    fn blue_strings_are_sized_within_bounds() {
+        assert_eq!(BLUE_STRINGS.len(), 34);
+        for string in BLUE_STRINGS {
+            assert!(!string.is_empty());
+            assert!(string.chars().count() <= BLUE_STRING_MAX_LEN);
+        }
+        assert_eq!(BLUE_STRINGS[BlueString::LatinCapitalTop as usize], "THEZOCQS");
+        assert_eq!(
+            BLUE_STRINGS[BlueString::CjkTop as usize]
+                .chars()
+                .count(),
+            51
+        );
+    }
 }

@@ -2,6 +2,8 @@ use crate::encoding::{CoderResult, DecoderResult, EncoderResult, UTF_8, convert_
 use crate::encoding::{VariantDecoder, VariantEncoder};
 use crate::encoding_ascii::{ascii_to_basic_latin, basic_latin_to_ascii, validate_ascii};
 use crate::encoding_handles::{ByteSource, Space, Utf8Destination, Utf16Destination};
+use alloc::vec;
+use alloc::vec::Vec;
 
 #[repr(align(64))]
 pub struct Utf8Data {

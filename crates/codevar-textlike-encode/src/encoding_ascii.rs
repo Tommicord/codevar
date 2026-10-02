@@ -254,6 +254,10 @@ macro_rules! ascii_copy_impl_single {
 
 cfg_if! {
     if #[cfg(target_arch = "arm")] {
+        /// Mask with the high bit set in every byte of a `usize`, used to
+        /// detect non-ASCII bytes with word-at-a-time scans.
+        const ASCII_MASK: usize = usize::from_ne_bytes([0x80; core::mem::size_of::<usize>()]);
+
         #[inline(always)]
         fn ascii_valid_impl(bytes: &[u8]) -> Option<(u8, usize)> {
             let mut consumed = 0usize;

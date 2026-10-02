@@ -235,6 +235,7 @@ name = "codevar-pathbuf"
 version = "1.0.0"
 dependencies = [
  "cfg-if",
+ "codevar-textlike-encode",
  "libc",
  "wasm-bindgen",
  "web-sys",
@@ -368,8 +369,8 @@ dependencies = [
 name = "codevar-truetype-autofit"
 version = "1.0.0"
 dependencies = [
+ "codevar-logger",
  "codevar-truetype-core",
- "log",
 ]
 
 [[package]]
@@ -433,8 +434,10 @@ dependencies = [
 name = "codevar-truetype-raster"
 version = "1.0.0"
 dependencies = [
+ "ash",
+ "codevar-logger",
  "codevar-truetype-core",
- "log",
+ "libc",
 ]
 
 [[package]]

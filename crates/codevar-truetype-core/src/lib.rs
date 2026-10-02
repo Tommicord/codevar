@@ -25,7 +25,7 @@
 //! discipline, bitmap flow/pitch rules) while mapping ownership onto safe
 //! Rust: shared objects are reference counted (`Arc`) with interior mutability
 //! ([`LibCell`]) for the fields FreeType mutates through shared handles, and
-//! no panicking operation is used in production paths.
+//! no panicking operation are used.
 
 #![cfg_attr(not(test), no_std)]
 extern crate alloc;
@@ -6929,8 +6929,8 @@ impl Outline {
 
     /// `FT_Outline_Transform`: applies `matrix` to every point.
     #[inline]
-    pub fn transform(&mut self, matrix: &Matrix) {
-        transform_points(&mut self.points, matrix);
+    pub fn transform(&mut self, matrix: &Matrix) -> usize {
+        transform_points(&mut self.points, matrix)
     }
 }
 

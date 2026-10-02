@@ -20,9 +20,11 @@ use crate::encoding_utf8::{
     utf8_valid_up_to,
 };
 use crate::encoding_utf16::{Utf16Decoder, Utf16Encoder};
-use std::borrow::Cow;
-use std::cmp::PartialEq;
-use std::slice;
+use alloc::borrow::Cow;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use core::cmp::PartialEq;
+use core::slice;
 
 pub const NCR_EXTRA: usize = 10;
 
@@ -199,7 +201,7 @@ impl core::fmt::Display for EncodingError {
     }
 }
 
-impl std::error::Error for EncodingError {}
+impl core::error::Error for EncodingError {}
 
 #[derive(Debug, Clone)]
 pub struct Encoder {
