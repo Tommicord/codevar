@@ -1198,53 +1198,6 @@ mod windows {
     }
 }
 
-/// UTF-16 encoding helper for Windows.
-#[cfg(windows)]
-mod encode_utf16 {
-    use alloc::vec::Vec;
-
-    pub(super) fn encode_utf16(input: &[u8], out: &mut Vec<u16>) {
-        let mut i = 0;
-        while i < input.len() {
-            let byte = input[i];
-            if byte < 0x80 {
-                out.push(byte as u16);
-                i += 1;
-            } else if byte < 0xe0 {
-                if i + 1 >= input.len() {
-                    break;
-                }
-                let ch = ((byte & 0x1f) as u32) << 6 | ((input[i + 1] & 0x3f) as u32);
-                out.push(ch as u16);
-                i += 2;
-            } else if byte < 0xf0 {
-                if i + 2 >= input.len() {
-                    break;
-                }
-                let ch = ((byte & 0x0f) as u32) << 12
-                    | ((input[i + 1] & 0x3f) as u32) << 6
-                    | ((input[i + 2] & 0x3f) as u32);
-                out.push(ch as u16);
-                i += 3;
-            } else {
-                if i + 3 >= input.len() {
-                    break;
-                }
-                let ch = ((byte & 0x07) as u32) << 18
-                    | ((input[i + 1] & 0x3f) as u32) << 12
-                    | ((input[i + 2] & 0x3f) as u32) << 6
-                    | ((input[i + 3] & 0x3f) as u32);
-                let cp = ch as u32;
-                let lead = 0xd800 + ((cp - 0x10000) >> 10);
-                let trail = 0xdc00 + ((cp - 0x10000) & 0x3ff);
-                out.push(lead as u16);
-                out.push(trail as u16);
-                i += 4;
-            }
-        }
-    }
-}
-
 /// Fallback for targets without a file I/O backend (e.g. `wasm32`).
 #[cfg(not(any(all(unix, not(target_arch = "wasm32")), windows,)))]
 mod unsupported {

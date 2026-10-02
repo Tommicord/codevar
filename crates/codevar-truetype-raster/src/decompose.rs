@@ -82,11 +82,11 @@ pub fn decompose<D: Decomposer>(outline: &Outline, dec: &mut D) -> TtResult<()> 
         let v_last = point(outline, last)?;
         let mut v_control = v_start;
         let mut cur = first;
-        let tag = tag(outline, cur)?;
-        if tag == CURVE_TAG_CUBIC {
+        let tag_val = tag(outline, cur)?;
+        if tag_val == CURVE_TAG_CUBIC {
             return Err(TtError::INVALID_OUTLINE);
         }
-        if tag == CURVE_TAG_CONIC {
+        if tag_val == CURVE_TAG_CONIC {
             if tag(outline, last)? == CURVE_TAG_ON {
                 v_start = v_last;
                 limit -= 1;

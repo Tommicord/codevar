@@ -12,7 +12,7 @@ applications. The core library is written in Rust and the project is in early de
 - **WebAssembly Target**: Optimized for browser-based deployment with wasm-pack
 - **Vulkan Graphics**: High-performance rendering using Vulkan graphics API
 - **Collaborative Editing**: Real-time collaborative editing with CRDT-like conflict resolution
-- **Cross-Platform**: Support for web, desktop, and mobile platforms
+- **Run everywhere goal** Made for all operating systems including less common
 - **AI Integration**: Designed for future integration with AI agents like Claude Code
 - **High Performance**: SIMD optimizations and GPU compute shader support for parallel algorithms
 

@@ -476,7 +476,7 @@ impl PshAlignment {
 /// tables.
 ///
 /// The first pair of `blue_values`, and every pair of `other_blues`
-/// (signalled by `is_others`), describes a bottom zone; the remaining
+/// (signaled by `is_others`), describes a bottom zone; the remaining
 /// pairs of `blue_values` describe top zones. Zones sharing the same
 /// reference position are merged, keeping the largest delta.
 ///
@@ -630,7 +630,7 @@ fn psh_blues_set_zones(
 ///
 /// The bottom edge of the lowest zone is lowered by `fuzz`, the top edge
 /// of the highest zone is raised by `fuzz`, and the two edges of two
-/// neighbouring zones are pushed apart by `fuzz` unless the gap between
+/// neighboring zones are pushed apart by `fuzz` unless the gap between
 /// them is smaller than twice the fuzz, in which case they simply meet in
 /// the middle.
 fn psh_blues_expand_fuzz(zones: &mut [PshBlueZone; PS_GLOBALS_MAX_BLUE_ZONES], count: usize, fuzz: i32) {
@@ -1583,7 +1583,7 @@ pub struct PsHints {
     dimension: [PsDimension; 2],
 }
 
-/// `dimension` argument normalisation of `ps_hints_stem`
+/// `dimension` argument normalization of `ps_hints_stem`
 /// (`pshrec.c`): anything above 1 is mapped to dimension 1.
 #[inline]
 fn clamp_dimension(dimension: u32) -> usize {
@@ -2695,12 +2695,12 @@ fn psh_hint_align(
             hints[index].cur_len = fit_len;
 
             // stem adjustment snaps stem widths to standard ones to
-            // prevent unpleasant rounding artefacts
+            // prevent unpleasant rounding artifacts
             if options.stem_adjust {
                 if len <= 64 {
                     if len >= 32 {
                         // widen the stem to one pixel, centred on the
-                        // nearest pixel centre
+                        // nearest pixel center
                         pos = ft_pix_floor(pos + (len >> 1));
                         len = 64;
                     } else if len > 0 {
@@ -3211,7 +3211,7 @@ fn psh_glyph_init<'a>(glyph: &mut PshGlyph<'a>, outline: &Outline, ps_hints: &'a
 /// shape of glyphs like `S`.
 ///
 /// Every `goto Skip`/`goto Next` of the C function becomes a
-/// `continue`/`break` of a labelled loop over the contour.
+/// `continue`/`break` of a labeled loop over the contour.
 ///
 /// # Performance
 ///
@@ -3919,10 +3919,10 @@ fn psh_glyph_interpolate_normal_points(
 ///
 /// # Porting note
 ///
-/// The C local `delta` is declared outside of the contour loop, so a
+/// The C local `delta` is declared outside the contour loop, so a
 /// contour without any fitted point keeps the translation that the
 /// preceding one-fitted-point contour computed; this port preserves that
-/// behaviour.
+/// behavior.
 ///
 /// # Performance
 ///
@@ -4167,15 +4167,6 @@ pub fn ps_hints_apply(
     Ok(())
 }
 
-/***************************************************************************/
-/***************************************************************************/
-/*****                                                                 *****/
-/*****        PUBLIC INTERFACES AND MODULE FACADE                      *****/
-/*****            (pshints.h, pshmod.c, pshpic.c)                     *****/
-/*****                                                                 *****/
-/***************************************************************************/
-/***************************************************************************/
-
 /// `PSH_Globals_FuncsRec` (`pshints.h`): the function record with which
 /// the font drivers create, scale and destroy the font-wide globals.
 ///
@@ -4417,17 +4408,9 @@ impl Default for PshinterModule {
     }
 }
 
-/***************************************************************************/
-/***************************************************************************/
-/*****                                                                 *****/
-/*****                            TESTS                                *****/
-/*****                                                                 *****/
-/***************************************************************************/
-/***************************************************************************/
-
 #[cfg(test)]
 mod tests {
-    //! Behaviour tests that pin the FreeType 2.6 quirks this port has to
+    //! Behavior tests that pin the FreeType 2.6 quirks this port has to
     //! reproduce (delta decoding, 16-stem batches, the Type 2 mask bit
     //! layout) and the end-to-end hinting of a simple rectangle.
 
