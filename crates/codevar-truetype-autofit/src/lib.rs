@@ -59,6 +59,8 @@ pub mod metrics;
 pub mod ranges;
 pub mod warp;
 
+pub use face::{FaceGlobals, GlobalsConfig};
+
 use codevar_truetype_core::{Fixed, Pos, RenderMode};
 
 /// Number of dimensions hinted by the auto-hinter (`AF_DIMENSION_MAX`).

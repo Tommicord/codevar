@@ -13,7 +13,7 @@
 //! See the License for the specific language governing
 //! permissions and limitations under the License.
 
-//! `FT_Outline_Decompose` (FreeType 2.6, `src/base/ftoutln.c:51`).
+//! Outline decompose
 //!
 //! Walks every contour of an [`Outline`] and reports it as a sequence of
 //! `move_to`, `line_to`, `conic_to`, and `cubic_to` calls, exactly as the
@@ -80,7 +80,7 @@ pub fn decompose<D: Decomposer>(outline: &Outline, dec: &mut D) -> TtResult<()> 
         let mut limit = last;
         let mut v_start = point(outline, first)?;
         let v_last = point(outline, last)?;
-        let mut v_control = v_start;
+        let mut v_control;
         let mut cur = first;
         let tag_val = tag(outline, cur)?;
         if tag_val == CURVE_TAG_CUBIC {
@@ -178,6 +178,9 @@ fn tag(outline: &Outline, i: isize) -> TtResult<u8> {
     if i < 0 {
         return Err(TtError::INVALID_OUTLINE);
     }
-    let t = *outline.tags.get(i as usize).ok_or(TtError::INVALID_OUTLINE)?;
+    let t = *outline
+        .tags
+        .get(i as usize)
+        .ok_or(TtError::INVALID_OUTLINE)?;
     Ok(t & CURVE_TAG_MASK)
 }

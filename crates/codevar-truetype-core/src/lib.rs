@@ -2843,7 +2843,7 @@ pub fn corner_is_flat(in_x: i64, in_y: i64, out_x: i64, out_y: i64) -> bool {
 /// using `alpha = 1`, `beta = 3/8` (mutates its arguments in C, which is
 /// modeled here by taking them by value).
 #[inline]
-fn ft_hypot_approx(x: i64, y: i64) -> i64 {
+pub fn ft_hypot_approx(x: i64, y: i64) -> i64 {
     let x = abs_pos(x);
     let y = abs_pos(y);
     if x > y {

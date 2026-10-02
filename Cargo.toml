@@ -60,6 +60,7 @@ heapless = "0.9.3"
 windows-link = "0.100.0"
 spin = "0.12.3"
 hkdf = "0.12"
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Console", "Win32_Storage_FileSystem"] }
 hmac = "0.12"
 backtrace-sys = "0.1"
 const_format = { version = "0.2.36", features = ["fmt"] }

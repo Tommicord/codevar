@@ -208,11 +208,6 @@ pub trait AsyncWriteReady: ErrorType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        AsyncBufRead, AsyncRead, AsyncReadReady, AsyncSeek, AsyncWrite, AsyncWriteReady, ErrorKind,
-        ReadExactError, SeekFrom,
-    };
-
     #[test]
     fn test_async_read_trait_bounds() {
         fn assert_async_read<R: AsyncRead>(_r: R) {}

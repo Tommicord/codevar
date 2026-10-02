@@ -14,5 +14,9 @@
 //! permissions and limitations under the License.
 
 #![cfg_attr(not(test), no_std)]
+#![warn(missing_docs)]
+
+extern crate alloc;
 
 pub mod decompose;
+pub mod gray;
