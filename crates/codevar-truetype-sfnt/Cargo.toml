@@ -11,7 +11,9 @@ repository.workspace = true
 name = "codevar_truetype_sfnt"
 
 [dependencies]
-log = { workspace = true }
+bytes = { workspace = true, default-features = false }
+spin = { workspace = true }
+codevar-logger = { workspace = true }
 codevar-truetype-core = { workspace = true }
 codevar-truetype-gzip = { workspace = true }
 codevar-truetype-psnames = { workspace = true }

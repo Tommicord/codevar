@@ -4278,6 +4278,16 @@ impl GlyphLoader {
         &self.base
     }
 
+    /// The assembled base image (`loader->base.outline`), mutably borrowed.
+    ///
+    /// Drivers that build the current image by writing the contour ends
+    /// (rather than through [`GlyphLoader::add_contour`]) need this to
+    /// reach the shared storage.
+    #[inline]
+    pub fn base_outline_mut(&mut self) -> &mut Outline {
+        &mut self.base
+    }
+
     /// The subglyphs of the base image (`loader->base.subglyphs`).
     #[inline]
     pub fn base_subglyphs(&self) -> &[SubGlyph] {
@@ -4289,6 +4299,12 @@ impl GlyphLoader {
     #[inline]
     pub fn current_point_count(&self) -> usize {
         self.current_points
+    }
+
+    /// The number of subglyphs of the image currently being built.
+    #[inline]
+    pub fn current_subglyph_count(&self) -> usize {
+        self.current_subglyphs
     }
 
     /// The number of contours of the image currently being built.
@@ -4490,6 +4506,66 @@ impl GlyphLoader {
     pub fn add_point1(&mut self, x: Pos, y: Pos) -> TtResult<()> {
         self.check_points(1, 0)?;
         self.add_point(x, y, 1);
+        Ok(())
+    }
+
+    /// Appends a point carrying an explicit `CURVE_TAG_XXX` byte.
+    ///
+    /// [`GlyphLoader::add_point`] maps a zero flag to
+    /// [`CURVE_TAG_CUBIC`], which is what the Type 1/CFF builders want;
+    /// the TrueType `glyf` decoder needs [`CURVE_TAG_CONIC`] for its
+    /// off-curve points, so it stores the tag verbatim (only the two
+    /// low curve bits are kept).
+    ///
+    /// # Errors
+    ///
+    /// [`TtError::INVALID_OUTLINE`] when the point table has not been
+    /// grown with [`GlyphLoader::check_points`] to hold this point —
+    /// unlike [`GlyphLoader::add_point`] this path refuses to silently
+    /// drop the point.
+    pub fn add_point_tagged(&mut self, x: Pos, y: Pos, tag: u8) -> TtResult<()> {
+        let index = self.current_start();
+        if index > self.base.points.len() {
+            return Err(TtError::INVALID_OUTLINE);
+        }
+        self.base.points.truncate(index);
+        self.base.tags.truncate(index);
+        if self.use_extra {
+            self.extra_points.truncate(index);
+            self.extra_points2.truncate(index);
+        }
+        if self.load_points {
+            self.base.points.push(Vector { x, y });
+            self.base
+                .tags
+                .push(tag & (CURVE_TAG_ON | CURVE_TAG_CUBIC));
+        } else {
+            self.base.points.push(Vector::default());
+            self.base.tags.push(0);
+        }
+        self.current_points += 1;
+        Ok(())
+    }
+
+    /// Appends a subglyph to the image currently being built
+    /// (`FT_GlyphLoader_CheckSubGlyphs` followed by the write FreeType
+    /// performs through `current.subglyphs`).
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::ARRAY_TOO_LARGE`] — the subglyph table cannot grow
+    ///   any further.
+    /// * [`TtError::INVALID_OUTLINE`] — the table is shorter than the
+    ///   counters claim, i.e. it was not grown by the check above.
+    pub fn add_subglyph(&mut self, subglyph: SubGlyph) -> TtResult<()> {
+        self.check_sub_glyphs(1)?;
+        let end = self.base_subglyphs + self.current_subglyphs;
+        if end > self.subglyphs.len() {
+            return Err(TtError::INVALID_OUTLINE);
+        }
+        self.subglyphs.truncate(end);
+        self.subglyphs.push(subglyph);
+        self.current_subglyphs += 1;
         Ok(())
     }
 

@@ -61,7 +61,7 @@ pub trait Decomposer {
 /// point, or when a conic arc is followed by a non-conic/non-on point —
 /// the exact `Invalid_Outline` paths of the C routine.  Additional bounds
 /// checks defend against contours whose indices run past the backing
-/// slices (undefined behaviour in C).  Errors returned by `dec` are
+/// slices.  Errors returned by `dec` are
 /// propagated unchanged.
 ///
 /// # Complexity
@@ -159,7 +159,7 @@ pub fn decompose<D: Decomposer>(outline: &Outline, dec: &mut D) -> TtResult<()> 
 
 /// Reads the point at index `i`, mapping out-of-range indices to
 /// [`TtError::INVALID_OUTLINE`] instead of the C routine's undefined
-/// behaviour.
+/// behavior.
 #[inline]
 fn point(outline: &Outline, i: isize) -> TtResult<Vector> {
     if i < 0 {

@@ -14,4 +14,3 @@ name = "codevar_truetype_glyf"
 codevar-logger = { workspace = true }
 codevar-truetype-core = { workspace = true }
 codevar-truetype-sfnt = { workspace = true }
-codevar-truetype-ttcore = { workspace = true }

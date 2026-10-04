@@ -26,7 +26,6 @@
 //! `XdpAppInfo` pointer, and the Dex future variants are left to the
 //! dispatch layer, which owns the asynchronous call machinery.
 
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::time::Duration;
