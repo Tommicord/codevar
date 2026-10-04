@@ -99,6 +99,10 @@ pub const TAG_OTTO: Tag = make_tag(b'O', b'T', b'T', b'O');
 pub const TAG_SING: Tag = make_tag(b'S', b'I', b'N', b'G');
 /// `'meta'`: metadata table shipped together with `SING`.
 pub const TAG_META: Tag = make_tag(b'm', b'e', b't', b'a');
+/// `CBLC`: embedded color bitmap location (index) table.
+pub const TAG_CBLC: Tag = make_tag(b'C', b'B', b'L', b'C');
+/// `CBDT`: embedded color bitmap data table.
+pub const TAG_CBDT: Tag = make_tag(b'C', b'B', b'D', b'T');
 
 /// The original TrueType SFNT version (`0x00010000`).
 pub const SFNT_VERSION_1_0: u32 = 0x0001_0000;

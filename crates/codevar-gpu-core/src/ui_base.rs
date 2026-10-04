@@ -72,17 +72,6 @@ use spin::Mutex;
 
 use crate::ui_pipeline::{OwnedFd, PipelineContext};
 
-/// Number of offscreen framebuffers the mix pass folds into one frame.
-///
-/// Matches the `u_frames[8]` array of `shaders/mix.frag`.
-pub const MAX_MIX_TARGETS: usize = 8;
-
-/// Largest number of pipes that may be registered at once.
-///
-/// One chain semaphore is needed for the layout pass plus one per pipe,
-/// so the pipe count shares [`MAX_MIX_TARGETS`]'s bound.
-pub const MAX_PIPES: usize = MAX_MIX_TARGETS;
-
 /// Depth of each [`CompositorComm`] channel before a non-blocking send
 /// reports [`CommError::Full`].
 const CHANNEL_CAPACITY: usize = 64;
@@ -213,11 +202,6 @@ pub enum CompositorError {
     MemoryAllocate(vk::Result),
     /// `vkBindImageMemory` failed.
     MemoryBind(vk::Result),
-    /// More pipes were registered than [`MAX_PIPES`] allows.
-    TooManyPipes {
-        /// The pipe count the compositor accepts.
-        max: usize,
-    },
     /// A pipe could not be started or recorded.
     Pipe {
         /// Zero-based position of the failing pipe in the queue.
@@ -274,7 +258,6 @@ impl fmt::Display for CompositorError {
             Self::NoSuitableMemoryType => f.write_str("no suitable memory type for an offscreen image"),
             Self::MemoryAllocate(err) => write!(f, "offscreen memory allocation failed: {err:?}"),
             Self::MemoryBind(err) => write!(f, "binding offscreen memory failed: {err:?}"),
-            Self::TooManyPipes { max } => write!(f, "at most {max} pipes may be registered"),
             Self::Pipe { index, source } => write!(f, "pipe {index} failed: {source}"),
             Self::Internal(msg) => write!(f, "internal compositor error: {msg}"),
         }
@@ -355,26 +338,39 @@ fn shader_module(device: &ash::Device, bytes: &[u8]) -> Result<vk::ShaderModule,
 /// Push constant payload of the mix pass.
 ///
 /// The layout mirrors `MixPush` in `shaders/mix.frag`: `count` at offset
-/// 0, then two `vec4` weight groups at offsets 16 and 32. The explicit
+/// 0, then dynamic weight array starting at offset 16. The explicit
 /// padding keeps the block identical under the std140, std430 and scalar
 /// layout rules, so the byte range pushed by the compositor matches what
 /// the shader reads.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct MixPush {
     /// Number of framebuffers actually mixed (0 clears the target).
     pub count: u32,
     /// Explicit padding up to offset 16 (matches `layout(offset = 16)`).
     pub pad: [u32; 3],
-    /// Mix weights of framebuffers 0..4.
-    pub weights0: [f32; 4],
-    /// Mix weights of framebuffers 4..8.
-    pub weights1: [f32; 4],
+    /// Mix weights of framebuffers (dynamic size).
+    pub weights: Vec<f32>,
 }
 
-const _: () = assert!(core::mem::size_of::<MixPush>() == 48);
-const _: () = assert!(core::mem::offset_of!(MixPush, weights0) == 16);
-const _: () = assert!(core::mem::offset_of!(MixPush, weights1) == 32);
+impl MixPush {
+    /// Creates a new MixPush with the given weights.
+    #[must_use]
+    pub fn new(weights: Vec<f32>) -> Self {
+        let count = weights.len() as u32;
+        Self {
+            count,
+            pad: [0; 3],
+            weights,
+        }
+    }
+
+    /// Returns the total byte size of this push constant structure.
+    #[must_use]
+    pub fn byte_size(&self) -> usize {
+        16 + core::mem::size_of::<f32>() * self.weights.len()
+    }
+}
 
 /// View of one offscreen color target exposed to the mix pass.
 ///
@@ -523,11 +519,8 @@ pub struct PipeCtx {
     /// Global index of this pipe's first framebuffer inside
     /// [`PipeCtx::framebuffers`].
     base: usize,
-    /// Snapshot of the frame's framebuffers; slots at or after
-    /// [`PipeCtx::framebuffer_count`] are [`OffscreenFramebuffer::EMPTY`].
-    framebuffers: [OffscreenFramebuffer; MAX_MIX_TARGETS],
-    /// Number of valid entries in [`PipeCtx::framebuffers`].
-    framebuffer_count: usize,
+    /// Snapshot of the frame's framebuffers.
+    framebuffers: Vec<OffscreenFramebuffer>,
 }
 
 impl PipeCtx {
@@ -546,9 +539,6 @@ impl PipeCtx {
         base: usize,
         framebuffers: &[OffscreenFramebuffer],
     ) -> Self {
-        let mut snapshot = [OffscreenFramebuffer::EMPTY; MAX_MIX_TARGETS];
-        let count = framebuffers.len().min(MAX_MIX_TARGETS);
-        snapshot[..count].copy_from_slice(&framebuffers[..count]);
         Self {
             device,
             command_buffer,
@@ -557,8 +547,7 @@ impl PipeCtx {
             format,
             frame_index,
             base,
-            framebuffers: snapshot,
-            framebuffer_count: count,
+            framebuffers: framebuffers.to_vec(),
         }
     }
 
@@ -626,8 +615,8 @@ impl PipeCtx {
     /// Number of framebuffers collected for this frame.
     #[inline]
     #[must_use]
-    pub const fn framebuffer_count(&self) -> usize {
-        self.framebuffer_count
+    pub fn framebuffer_count(&self) -> usize {
+        self.framebuffers.len()
     }
 
     /// The pipe-local framebuffer at `local_index` (its global slot is
@@ -838,7 +827,7 @@ fn trampoline<T: PipeSource>(env: PipeEnv) -> PipeFuture<'static> {
 ///
 /// Arguments: the erased renderer, the frame's framebuffer list and the
 /// per-slot mix weights.
-type CollectFn = fn(*const (), &mut Vec<OffscreenFramebuffer>, &mut [f32; MAX_MIX_TARGETS]);
+type CollectFn = fn(*const (), &mut Vec<OffscreenFramebuffer>, &mut Vec<f32>);
 
 /// Releases the renderer owned by a [`PipeHandoff`].
 type DropFn = fn(*mut ());
@@ -888,7 +877,7 @@ impl PipeHandoff {
     }
 
     /// Collects this pipe's framebuffers and weights for one frame.
-    fn collect(&self, framebuffers: &mut Vec<OffscreenFramebuffer>, weights: &mut [f32; MAX_MIX_TARGETS]) {
+    fn collect(&self, framebuffers: &mut Vec<OffscreenFramebuffer>, weights: &mut Vec<f32>) {
         (self.collect)(self.pipe.renderer, framebuffers, weights);
     }
 }
@@ -903,24 +892,20 @@ impl Drop for PipeHandoff {
 fn collect_trampoline<T: PipeSupplyTraits>(
     renderer: *const (),
     framebuffers: &mut Vec<OffscreenFramebuffer>,
-    weights: &mut [f32; MAX_MIX_TARGETS],
+    weights: &mut Vec<f32>,
 ) {
     // SAFETY: the pointer is the renderer `PipeHandoff::from_renderer`
     // boxed for `T`; the handoff owns it and outlives the synchronous
     // collection below, which takes a shared borrow only.
     let renderer = unsafe { &*renderer.cast::<T>() };
     for index in 0..renderer.offscreen_framebuffer_count() {
-        if framebuffers.len() >= MAX_MIX_TARGETS {
-            break;
-        }
         let Some(framebuffer) = renderer.offscreen_framebuffer(index) else {
             continue;
         };
         if !framebuffer.is_valid() {
             continue;
         }
-        let slot = framebuffers.len();
-        weights[slot] = sanitize_weight(renderer.mix_weight(index));
+        weights.push(sanitize_weight(renderer.mix_weight(index)));
         framebuffers.push(framebuffer);
     }
 }
@@ -962,21 +947,12 @@ impl PipeQueue {
     }
 
     /// Appends `handoff` and returns its index.
-    ///
-    /// # Errors
-    ///
-    /// * [`CompositorError::TooManyPipes`] — the queue already holds
-    ///   [`MAX_PIPES`] pipes; the handoff is returned untouched inside
-    ///   the error path by the caller.
-    pub fn push(&mut self, handoff: PipeHandoff) -> Result<usize, CompositorError> {
-        if self.entries.len() >= MAX_PIPES {
-            return Err(CompositorError::TooManyPipes { max: MAX_PIPES });
-        }
+    pub fn push(&mut self, handoff: PipeHandoff) -> usize {
         self.entries.push(QueueEntry {
             handoff,
             remove: false,
         });
-        Ok(self.entries.len() - 1)
+        self.entries.len() - 1
     }
 
     /// Number of queued pipes.
@@ -1049,14 +1025,11 @@ impl PipeQueue {
     fn collect_framebuffers(
         &self,
         framebuffers: &mut Vec<OffscreenFramebuffer>,
-        weights: &mut [f32; MAX_MIX_TARGETS],
-    ) -> [usize; MAX_PIPES] {
-        let mut bases = [0; MAX_PIPES];
-        for (index, entry) in self.entries.iter().enumerate() {
-            if index >= MAX_PIPES {
-                break;
-            }
-            bases[index] = framebuffers.len();
+        weights: &mut Vec<f32>,
+    ) -> Vec<usize> {
+        let mut bases = Vec::with_capacity(self.entries.len());
+        for entry in self.entries.iter() {
+            bases.push(framebuffers.len());
             entry.handoff.collect(framebuffers, weights);
         }
         bases
@@ -1072,8 +1045,8 @@ pub enum CompositorMessage {
     FramebuffersChanged,
     /// Override the mix weight of framebuffer `slot`.
     MixWeightChanged {
-        /// Framebuffer slot, in `[0, MAX_MIX_TARGETS)`.
-        slot: u8,
+        /// Framebuffer slot index.
+        slot: usize,
         /// Requested weight; sanitized with [`sanitize_weight`].
         weight: f32,
     },
@@ -1786,13 +1759,12 @@ impl Drop for OffscreenTarget<'_> {
 /// GPU resources of the mix pass, created by [`Compositor::start`] and
 /// released when dropped (which [`Compositor::stop`] triggers).
 ///
-/// The descriptor set always covers [`MAX_MIX_TARGETS`] slots; the
-/// compositor aliases unused slots to the first framebuffer so every
-/// entry of `u_frames` stays statically bound (see `shaders/mix.frag`).
+/// The descriptor set covers a dynamic number of slots based on the
+/// actual number of framebuffers needed.
 struct MixResources<'p> {
     /// Device that owns every handle below.
     device: &'p ash::Device,
-    /// Set layout with one `u_frames[8]` binding at binding 0.
+    /// Set layout with dynamic array binding at binding 0.
     descriptor_set_layout: vk::DescriptorSetLayout,
     /// Pool backing the single mix descriptor set.
     descriptor_pool: vk::DescriptorPool,
@@ -1804,11 +1776,13 @@ struct MixResources<'p> {
     pipeline_layout: vk::PipelineLayout,
     /// Fullscreen-triangle graphics pipeline of the mix pass.
     pipeline: vk::Pipeline,
+    /// Maximum number of framebuffers this descriptor set can hold.
+    max_framebuffers: u32,
 }
 
 impl<'p> MixResources<'p> {
     /// All-null resources for `device`: [`Drop`] is a no-op on them.
-    fn empty(device: &'p ash::Device) -> Self {
+    fn empty(device: &'p ash::Device, max_framebuffers: u32) -> Self {
         Self {
             device,
             descriptor_set_layout: vk::DescriptorSetLayout::null(),
@@ -1817,6 +1791,7 @@ impl<'p> MixResources<'p> {
             sampler: vk::Sampler::null(),
             pipeline_layout: vk::PipelineLayout::null(),
             pipeline: vk::Pipeline::null(),
+            max_framebuffers,
         }
     }
 
@@ -1827,8 +1802,8 @@ impl<'p> MixResources<'p> {
     /// Propagates the [`CompositorError`] of the first step that fails;
     /// dropping the partially built resources releases everything that
     /// was already created.
-    fn create(context: &'p PipelineContext) -> Result<Self, CompositorError> {
-        let mut resources = Self::empty(context.device());
+    fn create(context: &'p PipelineContext, max_framebuffers: u32) -> Result<Self, CompositorError> {
+        let mut resources = Self::empty(context.device(), max_framebuffers);
         resources.create_descriptors(context)?;
         resources.create_pipeline(context)?;
         Ok(resources)
@@ -1840,7 +1815,7 @@ impl<'p> MixResources<'p> {
         let binding = vk::DescriptorSetLayoutBinding::default()
             .binding(0)
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(MAX_MIX_TARGETS as u32)
+            .descriptor_count(self.max_framebuffers)
             .stage_flags(vk::ShaderStageFlags::FRAGMENT);
         let bindings = [binding];
         let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
@@ -1850,12 +1825,12 @@ impl<'p> MixResources<'p> {
 
         let pool_size = vk::DescriptorPoolSize::default()
             .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(MAX_MIX_TARGETS as u32);
+            .descriptor_count(self.max_framebuffers);
         let pool_sizes = [pool_size];
         let pool_info = vk::DescriptorPoolCreateInfo::default()
             .max_sets(1)
             .pool_sizes(&pool_sizes);
-        // SAFETY: one set of `MAX_MIX_TARGETS` samplers matches the pool.
+        // SAFETY: one set of samplers matches the pool.
         self.descriptor_pool = unsafe { device.create_descriptor_pool(&pool_info, None) }
             .map_err(CompositorError::DescriptorPoolCreate)?;
 
@@ -1898,10 +1873,13 @@ impl<'p> MixResources<'p> {
     /// Creates the pipeline layout and the mix graphics pipeline.
     fn create_pipeline(&mut self, context: &PipelineContext) -> Result<(), CompositorError> {
         let device = context.device();
+        // Use a fixed maximum size for push constants (256 bytes should be enough
+        // for 16-bit count + 12 padding + up to 60 weights)
+        let max_push_size = 256u32;
         let push_range = vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
-            .size(core::mem::size_of::<MixPush>() as u32);
+            .size(max_push_size);
         let push_ranges = [push_range];
         let set_layouts = [self.descriptor_set_layout];
         let layout_info = vk::PipelineLayoutCreateInfo::default()
@@ -2048,16 +2026,9 @@ fn create_mix_graphics_pipeline(
 }
 
 /// Builds the push-constant payload of the mix pass.
-fn mix_push(count: usize, weights: &[f32; MAX_MIX_TARGETS]) -> MixPush {
-    MixPush {
-        count: u32::try_from(count).unwrap_or(0),
-        pad: [0; 3],
-        weights0: [weights[0], weights[1], weights[2], weights[3]],
-        weights1: [weights[4], weights[5], weights[6], weights[7]],
-    }
+fn mix_push(weights: &[f32]) -> MixPush {
+    MixPush::new(weights.to_vec())
 }
-
-const _: () = assert!(MAX_MIX_TARGETS == 8);
 
 /// Per-frame lifecycle of one pipe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2094,16 +2065,14 @@ struct StartResources<'p> {
     /// Pipeline backing every handle below.
     context: &'p PipelineContext,
     /// One primary command buffer per queue slot.
-    pipe_command_buffers: [vk::CommandBuffer; MAX_PIPES],
+    pipe_command_buffers: Vec<vk::CommandBuffer>,
     /// Command buffer of the frame's layout pass.
     layout_command_buffer: vk::CommandBuffer,
     /// Command buffer of the frame's mix pass.
     mix_command_buffer: vk::CommandBuffer,
-    /// Number of command buffers allocated (0 or `MAX_PIPES + 2`).
-    command_buffer_count: usize,
     /// Semaphore chain: `chain_sems[0]` is signalled by the layout pass,
     /// pipe *k* waits on `chain_sems[k]` and signals `chain_sems[k + 1]`.
-    chain_sems: [vk::Semaphore; MAX_PIPES + 1],
+    chain_sems: Vec<vk::Semaphore>,
     /// Fence of the whole chain, signalled by the mix submission.
     frame_fence: vk::Fence,
     /// Descriptor set, sampler and pipeline of the mix pass.
@@ -2120,28 +2089,50 @@ impl<'p> StartResources<'p> {
     ///   [`CompositorError::FenceCreate`] — a resource could not be
     ///   created; everything allocated before the failure is released by
     ///   this struct's `Drop`.
-    fn create(context: &'p PipelineContext) -> Result<Self, CompositorError> {
+    fn create(
+        context: &'p PipelineContext,
+        pipe_count: usize,
+        max_framebuffers: u32,
+    ) -> Result<Self, CompositorError> {
         let device = context.device();
         let mut resources = Self {
             context,
-            pipe_command_buffers: [vk::CommandBuffer::null(); MAX_PIPES],
+            pipe_command_buffers: Vec::with_capacity(pipe_count),
             layout_command_buffer: vk::CommandBuffer::null(),
             mix_command_buffer: vk::CommandBuffer::null(),
-            command_buffer_count: 0,
-            chain_sems: [vk::Semaphore::null(); MAX_PIPES + 1],
+            chain_sems: Vec::with_capacity(pipe_count + 1),
             frame_fence: vk::Fence::null(),
-            mix: MixResources::create(context)?,
+            mix: MixResources::create(context, max_framebuffers)?,
         };
+        if pipe_count > 0 {
+            let allocate_info = vk::CommandBufferAllocateInfo::default()
+                .command_pool(context.command_pool())
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(pipe_count as u32);
+            // SAFETY: the pool belongs to `context` and is alive for `'p`.
+            let allocated = unsafe { device.allocate_command_buffers(&allocate_info) }
+                .map_err(CompositorError::CommandAllocation)?;
+            if allocated.len() != pipe_count {
+                if !allocated.is_empty() {
+                    // SAFETY: the buffers were just allocated from this pool.
+                    unsafe { device.free_command_buffers(context.command_pool(), &allocated) };
+                }
+                return Err(CompositorError::Internal(
+                    "the driver allocated an unexpected number of command buffers",
+                ));
+            }
+            resources.pipe_command_buffers = allocated;
+        }
 
+        // Allocate layout and mix command buffers
         let allocate_info = vk::CommandBufferAllocateInfo::default()
             .command_pool(context.command_pool())
             .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count((MAX_PIPES + 2) as u32);
+            .command_buffer_count(2);
         // SAFETY: the pool belongs to `context` and is alive for `'p`.
         let allocated = unsafe { device.allocate_command_buffers(&allocate_info) }
             .map_err(CompositorError::CommandAllocation)?;
-        let expected = MAX_PIPES + 2;
-        if allocated.len() != expected {
+        if allocated.len() != 2 {
             if !allocated.is_empty() {
                 // SAFETY: the buffers were just allocated from this pool.
                 unsafe { device.free_command_buffers(context.command_pool(), &allocated) };
@@ -2150,18 +2141,17 @@ impl<'p> StartResources<'p> {
                 "the driver allocated an unexpected number of command buffers",
             ));
         }
-        resources
-            .pipe_command_buffers
-            .copy_from_slice(&allocated[..MAX_PIPES]);
-        resources.layout_command_buffer = allocated[MAX_PIPES];
-        resources.mix_command_buffer = allocated[MAX_PIPES + 1];
-        resources.command_buffer_count = expected;
+        resources.layout_command_buffer = allocated[0];
+        resources.mix_command_buffer = allocated[1];
 
+        // Allocate semaphore chain (one for layout pass + one per pipe)
+        let semaphore_count = pipe_count + 1;
         let semaphore_info = vk::SemaphoreCreateInfo::default();
-        for semaphore in resources.chain_sems.iter_mut() {
+        for _ in 0..semaphore_count {
             // SAFETY: a plain, well-formed create info.
-            *semaphore = unsafe { device.create_semaphore(&semaphore_info, None) }
+            let semaphore = unsafe { device.create_semaphore(&semaphore_info, None) }
                 .map_err(CompositorError::SemaphoreCreate)?;
+            resources.chain_sems.push(semaphore);
         }
 
         // SAFETY: a plain, well-formed create info; the fence starts
@@ -2188,12 +2178,16 @@ impl Drop for StartResources<'_> {
                     device.destroy_semaphore(*semaphore, None);
                 }
             }
-            if self.command_buffer_count > 0 {
+            if !self.pipe_command_buffers.is_empty() {
                 device.free_command_buffers(context.command_pool(), &self.pipe_command_buffers);
+            }
+            if self.layout_command_buffer != vk::CommandBuffer::null() {
                 device.free_command_buffers(
                     context.command_pool(),
                     core::slice::from_ref(&self.layout_command_buffer),
                 );
+            }
+            if self.mix_command_buffer != vk::CommandBuffer::null() {
                 device.free_command_buffers(
                     context.command_pool(),
                     core::slice::from_ref(&self.mix_command_buffer),
@@ -2266,9 +2260,9 @@ pub struct Compositor<'p> {
     /// Framebuffer snapshot of the current frame.
     framebuffers: Vec<OffscreenFramebuffer>,
     /// First mix slot of each queued pipe (see [`PipeCtx::base`]).
-    bases: [usize; MAX_PIPES],
+    bases: Vec<usize>,
     /// Per-slot mix weights, sanitized by the collector.
-    weights: [f32; MAX_MIX_TARGETS],
+    weights: Vec<f32>,
     /// Whether the snapshot must be rebuilt at the next `begin_frame`.
     framebuffers_dirty: bool,
     /// Whether the pipes are driven (see [`CompositorMessage::VisibilityChanged`]).
@@ -2278,8 +2272,8 @@ pub struct Compositor<'p> {
     /// Tracked layout of every composited image; empty means "contents
     /// unknown" (the next layout pass discards them).
     layouts: Vec<(vk::Image, vk::ImageLayout)>,
-    /// Bit *i* set when framebuffer *i* still holds `UNDEFINED` content.
-    undefined_mask: u32,
+    /// Bitmask tracking which framebuffers still hold `UNDEFINED` content.
+    undefined_mask: Vec<bool>,
     /// Frames whose `sync_file` was exported so far.
     frame_index: u64,
     /// Whether the frame fence still has to be waited on.
@@ -2306,13 +2300,13 @@ impl<'p> Compositor<'p> {
             queue: PipeQueue::new(),
             comm: endpoint,
             framebuffers: Vec::new(),
-            bases: [0; MAX_PIPES],
-            weights: [1.0; MAX_MIX_TARGETS],
+            bases: Vec::new(),
+            weights: Vec::new(),
             framebuffers_dirty: true,
             visible: true,
             pending_visible: None,
             layouts: Vec::new(),
-            undefined_mask: 0,
+            undefined_mask: Vec::new(),
             frame_index: 0,
             in_flight: false,
             frame_sync: None,
@@ -2412,7 +2406,8 @@ impl<'p> Compositor<'p> {
                 state: self.state,
             });
         }
-        self.start_resources = Some(StartResources::create(self.context)?);
+        // Start with minimal resources (0 pipes, 8 framebuffers as initial capacity)
+        self.start_resources = Some(StartResources::create(self.context, 0, 8)?);
         self.state = CompositorState::Running;
         self.phase = CompositorPhase::Idle;
         self.framebuffers_dirty = true;
@@ -2765,8 +2760,6 @@ impl<'p> Compositor<'p> {
     ///
     /// * [`CompositorError::FramePhase`] — a frame is in progress; the
     ///   queue may only grow between frames so slot indices stay stable.
-    /// * [`CompositorError::TooManyPipes`] — [`MAX_PIPES`] pipes are
-    ///   already registered; `renderer` is released again.
     pub fn add_pipe<T: PipeSource + PipeSupplyTraits>(
         &mut self,
         renderer: T,
@@ -2779,8 +2772,6 @@ impl<'p> Compositor<'p> {
     /// # Errors
     ///
     /// * [`CompositorError::FramePhase`] — a frame is in progress.
-    /// * [`CompositorError::TooManyPipes`] — the queue is full; the
-    ///   handoff is released again.
     pub fn add_handoff(&mut self, handoff: PipeHandoff) -> Result<usize, CompositorError> {
         if self.phase != CompositorPhase::Idle {
             return Err(CompositorError::FramePhase {
@@ -2789,7 +2780,7 @@ impl<'p> Compositor<'p> {
                 actual: self.phase,
             });
         }
-        let index = self.queue.push(handoff)?;
+        let index = self.queue.push(handoff);
         self.framebuffers_dirty = true;
         Ok(index)
     }
@@ -2835,7 +2826,7 @@ impl<'p> Compositor<'p> {
             match message {
                 CompositorMessage::FramebuffersChanged => self.framebuffers_dirty = true,
                 CompositorMessage::MixWeightChanged { slot, weight } => {
-                    weight_updates.push((usize::from(slot), weight));
+                    weight_updates.push((slot, weight));
                 }
                 CompositorMessage::VisibilityChanged { visible } => self.pending_visible = Some(visible),
                 // Presentation-side notifications have no effect on the
@@ -2845,9 +2836,7 @@ impl<'p> Compositor<'p> {
             }
         }
         while let Some(handoff) = self.comm.try_recv_pipe() {
-            if self.queue.push(handoff).is_err() {
-                break;
-            }
+            let _index = self.queue.push(handoff);
             self.framebuffers_dirty = true;
         }
         if self.framebuffers_dirty {
@@ -2855,7 +2844,7 @@ impl<'p> Compositor<'p> {
             self.framebuffers_dirty = false;
         }
         for (slot, weight) in weight_updates {
-            if slot < self.framebuffers.len() {
+            if slot < self.weights.len() {
                 self.weights[slot] = sanitize_weight(weight);
             }
         }
@@ -2883,7 +2872,7 @@ impl<'p> Compositor<'p> {
     /// Rebuilds the framebuffer snapshot and mix weights from the queue.
     fn recollect(&mut self) {
         self.framebuffers.clear();
-        self.weights = [1.0; MAX_MIX_TARGETS];
+        self.weights.clear();
         self.bases = self
             .queue
             .collect_framebuffers(&mut self.framebuffers, &mut self.weights);
@@ -2893,13 +2882,11 @@ impl<'p> Compositor<'p> {
     /// discard (unknown tracked layout), so pipes clear them instead of
     /// loading garbage.
     fn update_undefined_mask(&mut self) {
-        let mut mask = 0_u32;
-        for (index, framebuffer) in self.framebuffers.iter().enumerate() {
-            if index < MAX_MIX_TARGETS && self.layout_of(framebuffer.image).is_none() {
-                mask |= 1_u32 << index;
-            }
+        self.undefined_mask.clear();
+        for framebuffer in self.framebuffers.iter() {
+            self.undefined_mask
+                .push(self.layout_of(framebuffer.image).is_none());
         }
-        self.undefined_mask = mask;
     }
 
     /// Creates one active slot per queued pipe for this frame.
@@ -2936,6 +2923,27 @@ impl<'p> Compositor<'p> {
         }
     }
 
+    /// Reallocates resources if the pipe count or framebuffer count has changed.
+    fn reallocate_if_needed(&mut self) -> Result<(), CompositorError> {
+        let current_pipe_count = self.queue.len();
+        let current_framebuffer_count = self.framebuffers.len();
+        let max_framebuffers = current_framebuffer_count.max(8) as u32;
+        let Some(resources) = self.start_resources.as_ref() else {
+            return Ok(());
+        };
+        if resources.pipe_command_buffers.len() != current_pipe_count
+            || resources.mix.max_framebuffers < max_framebuffers
+        {
+            self.quiesce();
+            self.start_resources = Some(StartResources::create(
+                self.context,
+                current_pipe_count,
+                max_framebuffers,
+            )?);
+        }
+        Ok(())
+    }
+
     /// Starts one frame: retires the previous submission, drains the
     /// communication channels, refreshes the framebuffer snapshot and
     /// creates the frame's synchronization objects.
@@ -2969,6 +2977,7 @@ impl<'p> Compositor<'p> {
         self.release_removed_pipes();
         self.drain_comm();
         self.update_undefined_mask();
+        self.reallocate_if_needed()?;
         let frame_sync = self.create_frame_sync(wait_sync_file)?;
         self.frame_sync = Some(frame_sync);
         self.build_active_pipes();
@@ -3169,7 +3178,7 @@ impl<'p> Compositor<'p> {
             .map_err(CompositorError::CommandRecord)?;
 
         let visible = self.visible;
-        let framebuffer_count = self.framebuffers.len().min(MAX_MIX_TARGETS);
+        let framebuffer_count = self.framebuffers.len();
         // Park every framebuffer in the layout the rest of the frame
         // reads or writes it in.
         for index in 0..framebuffer_count {
@@ -3198,18 +3207,16 @@ impl<'p> Compositor<'p> {
         // Define the contents of every framebuffer whose tracked layout
         // is unknown: a pipe loading them — and a frozen frame, which
         // runs no pipe at all — would otherwise read garbage.
-        for index in 0..framebuffer_count {
-            if self.undefined_mask & (1_u32 << index) == 0 {
+        for (index, framebuffer) in self.framebuffers.iter().enumerate() {
+            if index < self.undefined_mask.len() && !self.undefined_mask[index] {
                 continue;
             }
-            let framebuffer = self.framebuffers[index];
-            record_framebuffer_clear(device, layout_command_buffer, &framebuffer);
+            record_framebuffer_clear(device, layout_command_buffer, framebuffer);
         }
         if !visible {
             // Pipes are skipped while hidden: the mix pass samples the
             // framebuffers directly, so park them in the sampled layout.
-            for index in 0..framebuffer_count {
-                let framebuffer = self.framebuffers[index];
+            for framebuffer in self.framebuffers.iter() {
                 record_image_transition(
                     device,
                     layout_command_buffer,
@@ -3230,8 +3237,13 @@ impl<'p> Compositor<'p> {
         } else {
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
         };
-        for index in 0..framebuffer_count {
-            let image = self.framebuffers[index].image;
+        // Collect images first to avoid borrow checker issues
+        let images: Vec<vk::Image> = self
+            .framebuffers
+            .iter()
+            .map(|fb| fb.image)
+            .collect();
+        for image in images {
             self.set_layout(image, end_layout);
         }
 
@@ -3370,11 +3382,9 @@ impl<'p> Compositor<'p> {
 
     /// Rewrites the mix descriptor set for this frame.
     ///
-    /// Slots past the frame's framebuffer count alias the first
-    /// framebuffer so every entry of `u_frames[8]` stays statically
-    /// bound (see `shaders/mix.frag`). The write is safe because exactly
-    /// one frame is in flight and [`Compositor::begin_frame`] waited for
-    /// the previous submission's fence, so the set is never in use.
+    /// The write is safe because exactly one frame is in flight and
+    /// [`Compositor::begin_frame`] waited for the previous submission's
+    /// fence, so the set is never in use.
     ///
     /// # Errors
     ///
@@ -3386,23 +3396,19 @@ impl<'p> Compositor<'p> {
             .ok_or(CompositorError::Internal(
                 "a frame was driven without start resources",
             ))?;
-        let count = self.framebuffers.len().min(MAX_MIX_TARGETS);
+        let count = self.framebuffers.len();
         if count == 0 {
             return Ok(());
         }
         let sampler = resources.mix.sampler;
-        let base_view = self.framebuffers[0].view;
-        let mut image_infos = [vk::DescriptorImageInfo::default(); MAX_MIX_TARGETS];
-        for (index, image_info) in image_infos.iter_mut().enumerate() {
-            let view = if index < count {
-                self.framebuffers[index].view
-            } else {
-                base_view
-            };
-            *image_info = vk::DescriptorImageInfo::default()
-                .sampler(sampler)
-                .image_view(view)
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        let mut image_infos: Vec<vk::DescriptorImageInfo> = Vec::with_capacity(count);
+        for framebuffer in self.framebuffers.iter() {
+            image_infos.push(
+                vk::DescriptorImageInfo::default()
+                    .sampler(sampler)
+                    .image_view(framebuffer.view)
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
+            );
         }
         let writes = [vk::WriteDescriptorSet::default()
             .dst_set(resources.mix.descriptor_set)
@@ -3411,9 +3417,9 @@ impl<'p> Compositor<'p> {
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .image_info(&image_infos)];
         // SAFETY: the set was allocated from this pool against a layout
-        // declaring `MAX_MIX_TARGETS` combined image samplers at binding
-        // 0, every view is a valid color target collected for this
-        // frame, and the set is not referenced by pending commands.
+        // declaring combined image samplers at binding 0, every view is a
+        // valid color target collected for this frame, and the set is not
+        // referenced by pending commands.
         unsafe {
             self.context
                 .device()
@@ -3473,13 +3479,12 @@ impl<'p> Compositor<'p> {
         unsafe { device.begin_command_buffer(mix_command_buffer, &begin_info) }
             .map_err(CompositorError::CommandRecord)?;
 
-        let count = self.framebuffers.len().min(MAX_MIX_TARGETS);
+        let count = self.framebuffers.len();
         if self.visible {
             // The pipes left their targets in the attachment layout; the
             // mix shader samples them. A hidden frame skips this (the
             // layout pass already parked them in the sampled layout).
-            for index in 0..count {
-                let framebuffer = self.framebuffers[index];
+            for framebuffer in self.framebuffers.iter() {
                 record_image_transition(
                     device,
                     mix_command_buffer,
@@ -3574,25 +3579,23 @@ impl<'p> Compositor<'p> {
                     &[],
                 );
             }
-            let push = mix_push(count, &self.weights);
-            // SAFETY: `MixPush` is `repr(C)` plain data with no padding
-            // the shader could observe, so reading it as bytes is sound.
-            let push_bytes = unsafe {
-                core::slice::from_raw_parts(
-                    core::ptr::from_ref(&push).cast::<u8>(),
-                    core::mem::size_of::<MixPush>(),
-                )
-            };
+            let push = mix_push(&self.weights);
+            let mut push_bytes: Vec<u8> = Vec::with_capacity(push.byte_size());
+            push_bytes.extend_from_slice(&push.count.to_le_bytes());
+            push_bytes.extend_from_slice(&[0u8; 12]); // padding
+            for weight in &push.weights {
+                push_bytes.extend_from_slice(&weight.to_le_bytes());
+            }
             // SAFETY: the push range declared when the pipeline layout
-            // was created is exactly `size_of::<MixPush>()` at
-            // fragment-stage offset 0, and the bytes outlive the call.
+            // was created is large enough for the actual data, and the
+            // bytes outlive the call.
             unsafe {
                 device.cmd_push_constants(
                     mix_command_buffer,
                     resources.mix.pipeline_layout,
                     vk::ShaderStageFlags::FRAGMENT,
                     0,
-                    push_bytes,
+                    &push_bytes,
                 );
                 // Fullscreen triangle generated by `mix.vert`.
                 device.cmd_draw(mix_command_buffer, 3, 1, 0, 0);
@@ -3727,7 +3730,7 @@ impl<'p> Compositor<'p> {
         self.frame_sync = None;
         self.in_flight = false;
         self.layouts.clear();
-        self.undefined_mask = 0;
+        self.undefined_mask.clear();
         self.phase = CompositorPhase::Idle;
         self.reset_chain_semaphores();
     }
@@ -3916,12 +3919,8 @@ mod tests {
     #[test]
     fn pipe_queue_registers_and_retires_in_order() {
         let mut queue = PipeQueue::new();
-        let first = queue
-            .push(PipeHandoff::from_renderer(DummyRenderer::empty()))
-            .unwrap();
-        let second = queue
-            .push(PipeHandoff::from_renderer(DummyRenderer::empty()))
-            .unwrap();
+        let first = queue.push(PipeHandoff::from_renderer(DummyRenderer::empty()));
+        let second = queue.push(PipeHandoff::from_renderer(DummyRenderer::empty()));
         assert_eq!((first, second), (0, 1));
         assert_eq!(queue.len(), 2);
 
@@ -3939,40 +3938,27 @@ mod tests {
     }
 
     #[test]
-    fn pipe_queue_enforces_capacity() {
+    fn pipe_queue_accepts_unlimited_pipes() {
         let mut queue = PipeQueue::new();
-        for _ in 0..MAX_PIPES {
-            queue
-                .push(PipeHandoff::from_renderer(DummyRenderer::empty()))
-                .unwrap();
+        // Test that we can add many pipes without hitting a capacity limit
+        for _ in 0..100 {
+            queue.push(PipeHandoff::from_renderer(DummyRenderer::empty()));
         }
-        match queue.push(PipeHandoff::from_renderer(DummyRenderer::empty())) {
-            Err(CompositorError::TooManyPipes { max }) => assert_eq!(max, MAX_PIPES),
-            other => panic!("expected TooManyPipes, got {other:?}"),
-        }
-        assert_eq!(queue.len(), MAX_PIPES);
+        assert_eq!(queue.len(), 100);
     }
 
     #[test]
     fn collect_framebuffers_fills_slots_and_sanitizes_weights() {
         let mut queue = PipeQueue::new();
-        queue
-            .push(PipeHandoff::from_renderer(DummyRenderer::with_framebuffer(0.25)))
-            .unwrap();
-        queue
-            .push(PipeHandoff::from_renderer(DummyRenderer::with_framebuffer(
-                f32::NAN,
-            )))
-            .unwrap();
-        queue
-            .push(PipeHandoff::from_renderer(DummyRenderer::with_framebuffer(2.0)))
-            .unwrap();
-        queue
-            .push(PipeHandoff::from_renderer(DummyRenderer::empty()))
-            .unwrap();
+        queue.push(PipeHandoff::from_renderer(DummyRenderer::with_framebuffer(0.25)));
+        queue.push(PipeHandoff::from_renderer(DummyRenderer::with_framebuffer(
+            f32::NAN,
+        )));
+        queue.push(PipeHandoff::from_renderer(DummyRenderer::with_framebuffer(2.0)));
+        queue.push(PipeHandoff::from_renderer(DummyRenderer::empty()));
 
         let mut framebuffers = Vec::new();
-        let mut weights = [1.0; MAX_MIX_TARGETS];
+        let mut weights = Vec::new();
         let bases = queue.collect_framebuffers(&mut framebuffers, &mut weights);
 
         assert_eq!(framebuffers.len(), 3);
@@ -4078,19 +4064,12 @@ mod tests {
 
     #[test]
     fn mix_push_matches_the_shader_layout() {
-        use core::mem::{offset_of, size_of};
-
-        assert_eq!(size_of::<MixPush>(), 48);
-        assert_eq!(offset_of!(MixPush, weights0), 16);
-        assert_eq!(offset_of!(MixPush, weights1), 32);
-
-        let mut weights = [1.0; MAX_MIX_TARGETS];
-        weights[3] = 0.5;
-        let push = mix_push(2, &weights);
-        assert_eq!(push.count, 2);
-        assert_eq!(push.weights0, [1.0, 1.0, 1.0, 0.5]);
-        assert_eq!(push.weights1, [1.0; 4]);
+        let weights = vec![1.0, 1.0, 1.0, 0.5];
+        let push = mix_push(&weights);
+        assert_eq!(push.count, 4);
+        assert_eq!(push.weights, weights);
         assert_eq!(push.pad, [0; 3]);
+        assert_eq!(push.byte_size(), 16 + 4 * 4);
     }
 
     #[test]
@@ -4124,10 +4103,6 @@ mod tests {
         assert_eq!(
             CompositorMessage::FrameComposited { frame_index: 2 }.to_string(),
             "frame 2 composited"
-        );
-        assert_eq!(
-            CompositorError::TooManyPipes { max: 8 }.to_string(),
-            "at most 8 pipes may be registered"
         );
         assert_eq!(CommError::Full(1u32).to_string(), "the channel is full");
     }

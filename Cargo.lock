@@ -196,6 +196,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-gpu-core"
+version = "1.0.0"
+dependencies = [
+ "ash",
+ "codevar-base",
+ "codevar-console-util",
+ "codevar-env",
+ "codevar-logger",
+ "codevar-time-core",
+ "codevar-wl-protocol",
+ "libc",
+ "libm",
+ "spin 0.12.3",
+ "windows-link 0.100.0",
+]
+
+[[package]]
 name = "codevar-io"
 version = "1.0.0"
 dependencies = [
@@ -214,10 +231,10 @@ dependencies = [
  "ash",
  "codevar-base",
  "codevar-env",
+ "codevar-gpu-core",
  "codevar-logger",
  "codevar-sig-handler",
  "codevar-sig-module-base",
- "codevar-ui-core",
  "codevar-wl-protocol",
  "libc",
 ]
@@ -234,6 +251,27 @@ dependencies = [
  "spin 0.12.3",
  "windows",
  "windows-link 0.100.0",
+]
+
+[[package]]
+name = "codevar-mergen"
+version = "1.0.0"
+dependencies = [
+ "codevar-mergen-shake",
+ "codevar-mergen-simd",
+ "libc",
+]
+
+[[package]]
+name = "codevar-mergen-shake"
+version = "1.0.0"
+
+[[package]]
+name = "codevar-mergen-simd"
+version = "1.0.0"
+dependencies = [
+ "cfg-if",
+ "codevar-base",
 ]
 
 [[package]]
@@ -356,22 +394,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codevar-truetype"
-version = "1.0.0"
-dependencies = [
- "codevar-logger",
- "codevar-truetype-autofit",
- "codevar-truetype-core",
- "codevar-truetype-glyf",
- "codevar-truetype-gzip",
- "codevar-truetype-pshinter",
- "codevar-truetype-psnames",
- "codevar-truetype-raster",
- "codevar-truetype-sfnt",
- "codevar-truetype-smooth",
-]
-
-[[package]]
 name = "codevar-truetype-autofit"
 version = "1.0.0"
 dependencies = [
@@ -388,6 +410,18 @@ dependencies = [
  "codevar-logger",
  "libm",
  "spin 0.12.3",
+]
+
+[[package]]
+name = "codevar-truetype-emoji-color"
+version = "1.0.0"
+dependencies = [
+ "codevar-logger",
+ "codevar-truetype-core",
+ "codevar-truetype-glyf",
+ "codevar-truetype-gzip",
+ "codevar-truetype-sfnt",
+ "codevar-truetype-smooth",
 ]
 
 [[package]]
@@ -452,23 +486,6 @@ version = "1.0.0"
 dependencies = [
  "codevar-truetype-core",
  "log",
-]
-
-[[package]]
-name = "codevar-ui-core"
-version = "1.0.0"
-dependencies = [
- "ash",
- "codevar-base",
- "codevar-console-util",
- "codevar-env",
- "codevar-logger",
- "codevar-time-core",
- "codevar-wl-protocol",
- "libc",
- "libm",
- "spin 0.12.3",
- "windows-link 0.100.0",
 ]
 
 [[package]]

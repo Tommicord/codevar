@@ -1,0 +1,18 @@
+[package]
+name = "codevar-mergen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "codevar_mergen"
+
+[dependencies]
+codevar-mergen-shake = { workspace = true }
+codevar-mergen-simd = { workspace = true }
+
+[target.'cfg(all(unix, not(target_arch = "wasm32")))'.dependencies]
+libc = { workspace = true }

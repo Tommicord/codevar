@@ -10,7 +10,7 @@ repository.workspace = true
 [dependencies]
 ash = { workspace = true }
 codevar-base = { workspace = true }
-codevar-ui-core = { workspace = true }
+codevar-gpu-core = { workspace = true }
 codevar-wl-protocol = { workspace = true }
 codevar-sig-module-base = { workspace = true }
 codevar-sig-handler = { workspace = true }

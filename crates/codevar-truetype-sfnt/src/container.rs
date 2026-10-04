@@ -54,7 +54,7 @@ pub struct TableRecord {
 /// Plain (non-collection) files are synthesized into a one-member TTC
 /// exactly like `sfnt_open_font` does: [`Self::offsets`] holds the single
 /// offset `0` and [`Self::is_collection`] is `false`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TtcHeader {
     /// The TTC version (`version` field; synthesized to `1 << 16` for
     /// plain files).
@@ -98,6 +98,7 @@ impl TtcHeader {
 /// Port of `tt_face_load_font_dir` + `check_table_dir` (`ttload.c`):
 /// the header is read at `base`, then every 16-byte record is validated
 /// and the invalid ones are dropped the way FreeType drops them.
+#[derive(Debug, Clone)]
 pub struct SfntDirectory<'a> {
     data: &'a [u8],
     sfnt_version: u32,
@@ -343,6 +344,7 @@ impl<'a> SfntDirectory<'a> {
 /// Port of `sfnt_open_font` + `sfnt_init_face` (`sfobjs.c`).  Use this
 /// type for pure container questions (how many fonts, which tables);
 /// [`crate::SfntFont`] layers the table parsers on top.
+#[derive(Debug, Clone)]
 pub struct SfntContainer<'a> {
     data: &'a [u8],
     ttc: TtcHeader,

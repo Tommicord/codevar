@@ -84,6 +84,7 @@ const APPLE_ID_UNICODE_32: u16 = 5;
 /// let glyph = font.char_index(u32::from(b'A'));
 /// let (advance, lsb) = font.metrics_for_glyph(glyph);
 /// ```
+#[derive(Debug, Clone)]
 pub struct SfntFont<'a> {
     container: SfntContainer<'a>,
     head: HeadTable,

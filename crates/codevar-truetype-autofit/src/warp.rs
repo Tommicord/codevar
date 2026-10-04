@@ -252,23 +252,10 @@ pub fn warper_compute(hints: &mut GlyphHints, dim: Dimension) -> (Fixed, Pos) {
         }
         margin
     };
-
-    if warper.wmin < warper.w0 - margin {
-        warper.wmin = warper.w0 - margin;
-    }
-
-    if warper.wmax > warper.w0 + margin {
-        warper.wmax = warper.w0 + margin;
-    }
-
-    if warper.wmin < warper.w0 * 3 / 4 {
-        warper.wmin = warper.w0 * 3 / 4;
-    }
-
-    if warper.wmax > warper.w0 * 5 / 4 {
-        warper.wmax = warper.w0 * 5 / 4;
-    }
-
+    warper.wmin = warper.wmin.max(warper.w0 - margin);
+    warper.wmax = warper.wmax.min(warper.w0 + margin);
+    warper.wmin = warper.wmin.max(warper.w0 * 3 / 4);
+    warper.wmax = warper.wmax.min(warper.w0 * 5 / 4);
     let mut w = warper.wmin;
     while w <= warper.wmax {
         let mut xx1 = warper.x1;
@@ -294,29 +281,21 @@ pub fn warper_compute(hints: &mut GlyphHints, dim: Dimension) -> (Fixed, Pos) {
         } else {
             base_distort = (xx1 - warper.x1) as WarpScore;
         }
-
         if xx2 < warper.x2 {
             base_distort += (warper.x2 - xx2) as WarpScore;
         } else {
             base_distort += (xx2 - warper.x2) as WarpScore;
         }
-
         base_distort = base_distort.wrapping_mul(10);
-
         let new_scale = org_scale.wrapping_add(div_fix(w - warper.w0, x2 - x1));
         let new_delta = xx1.wrapping_sub(mul_fix(x1, new_scale));
-
         warper.compute_line_best(new_scale, new_delta, xx1, xx2, base_distort, segments);
-
         w = w.wrapping_add(1);
     }
-
     let best_scale = warper.best_scale;
     let best_delta = warper.best_delta;
-
     hints.xmin_delta = mul_fix(x1, best_scale - org_scale).wrapping_add(best_delta);
     hints.xmax_delta = mul_fix(x2, best_scale - org_scale).wrapping_add(best_delta);
-
     (best_scale, best_delta)
 }
 

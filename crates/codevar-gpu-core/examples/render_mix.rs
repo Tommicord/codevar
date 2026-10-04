@@ -13,28 +13,37 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-//! Renders the codevar placeholder triangle into a real Wayland window.
+//! Renders a three-pipe pixel-mixing test into a real Wayland window.
 //!
-//! The example ties the three pieces of the UI stack together the way
-//! `codevar-wl-protocol/examples/xdg_window.rs` drives its `wl_shm`
-//! demo, but with the dmabuf path of the editor:
+//! Like `render_hit`, the example drives the dmabuf path
+//! (Wayland handshake plus a [`PipelineContext`]), but the frame itself
+//! is composited by [`Compositor`] from three independent pipes rather
+//! than a single layer:
 //!
-//! * **Wayland (this file):** registry, `xdg-shell` handshake
-//!   (`ack_configure`, `xdg_wm_base.ping`/`pong`, frame callbacks,
-//!   `wl_buffer.release`) and a `zwp_linux_dmabuf_v1` buffer built from
-//!   the exported dma-buf of the render target.
-//! * **`ui_pipeline`:** a swapchain-less [`PipelineContext`] whose
-//!   offscreen image is created with a modifier the compositor
-//!   advertised in its linux-dmabuf feedback and exported as a dma-buf
-//!   file descriptor.
-//! * **`ui_renderer`:** the [`RendererSubsystem`] frame lifecycle
-//!   (`begin_frame` → `present_frame` → `end_frame`), here driven with
-//!   the [`TriangleLayer`] of this file as its only layer.
+//! * [`SolidPipe`] — framebuffer 0: a full-screen red base. The mix
+//!   shader starts from framebuffer 0, so its weight is ignored.
+//! * [`SplitPipe`] (green/yellow halves, weight 0.5) — mixed over the
+//!   base, the left half becomes `(0.5, 0.5, 0)` and the right half
+//!   `(1.0, 0.5, 0)`.
+//! * [`SplitPipe`] (cyan/magenta halves, weight 0.25) — folds each half
+//!   again, leaving the four quadrants in four different colors:
+//!
+//!   | quadrant       | mixed color          |
+//!   |----------------|----------------------|
+//!   | top-left       | `(0.375, 0.625, 0.25)` |
+//!   | top-right      | `(0.750, 0.625, 0.25)` |
+//!   | bottom-left    | `(0.500, 0.375, 0.25)` |
+//!   | bottom-right   | `(0.875, 0.375, 0.25)` |
+//!
+//! Every pipe renders into its own [`OffscreenTarget`]; the compositor's
+//! layout pass transitions them, the mix pass folds them into the
+//! presentation target with the weights above, and the result is
+//! committed as the window's dma-buf buffer.
 //!
 //! Run it inside a Wayland session:
 //!
 //! ```text
-//! cargo run -p codevar-launcher --example present_hit
+//! cargo run -p codevar-gpu-core --example render_mix
 //! ```
 
 use std::cell::{Cell, RefCell};
@@ -42,10 +51,11 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use ash::vk;
-use codevar_ui_core::ui_pipeline::{OwnedFd, PipelineContext};
-use codevar_ui_core::ui_renderer::{
-    FrameContext, RenderLayer, RendererError, RendererSubsystem, load_spir_v,
+use codevar_gpu_core::ui_base::{
+    Compositor, CompositorError, OffscreenFramebuffer, OffscreenTarget, PipeCtx, PipeFuture, PipeOutcome,
+    PipeSource, PipeSupplyTraits, block_on,
 };
+use codevar_gpu_core::ui_pipeline::{OwnedFd, PipelineContext};
 use codevar_wl_protocol::{
     BUFFER_DESTROY, BUFFER_PARAMS_ADD, BUFFER_PARAMS_CREATE_IMMED, BUFFER_PARAMS_DESTROY, BUFFER_RELEASE,
     COMPOSITOR_CREATE_SURFACE, COMPOSITOR_INTERFACE, DMABUF_CREATE_PARAMS, DMABUF_DESTROY,
@@ -80,13 +90,23 @@ const GPU_SYNC_TIMEOUT_MS: i32 = 5_000;
 /// Largest format table the example is willing to allocate.
 const MAX_FORMAT_TABLE_BYTES: usize = 1 << 20;
 
-/// Embedded vertex shader SPIR-V.
-static VERT_SPIRV: &[u8] = include_bytes!("shaders/triangle.vert.spv");
-/// Embedded fragment shader SPIR-V.
-static FRAG_SPIRV: &[u8] = include_bytes!("shaders/triangle.frag.spv");
+/// Base pipe color: solid red across the whole target.
+const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+/// First overlay, left half.
+const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
+/// First overlay, right half.
+const YELLOW: [f32; 4] = [1.0, 1.0, 0.0, 1.0];
+/// Second overlay, top half.
+const CYAN: [f32; 4] = [0.0, 1.0, 1.0, 1.0];
+/// Second overlay, bottom half.
+const MAGENTA: [f32; 4] = [1.0, 0.0, 1.0, 1.0];
+/// Mix weight of the left/right overlay.
+const WEIGHT_HALF: f32 = 0.5;
+/// Mix weight of the top/bottom overlay.
+const WEIGHT_QUARTER: f32 = 0.25;
 
 /// Every failure of the example is reported as a boxed error so `?` works
-/// for Wayland, Vulkan and renderer errors alike.
+/// for Wayland, Vulkan and compositor errors alike.
 type ExampleResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 fn main() {
@@ -98,8 +118,8 @@ fn main() {
     }
 }
 
-/// Drives the whole example: Wayland window, Vulkan pipeline, render
-/// loop and teardown.
+/// Drives the whole example: Wayland window, Vulkan pipeline, three
+/// compositor pipes, render loop and teardown.
 fn run() -> ExampleResult<String> {
     let mut display = WlClientDisplay::connect(WlUnixTransport::connect_session()?)?;
     let registry = display.get_registry()?;
@@ -214,12 +234,12 @@ fn run() -> ExampleResult<String> {
     display.marshal_request(
         toplevel,
         XDG_TOPLEVEL_SET_TITLE,
-        vec![WlArgument::Str(Some(String::from("Codevar present_hit demo")))],
+        vec![WlArgument::Str(Some(String::from("Codevar render_mix demo")))],
     )?;
     display.marshal_request(
         toplevel,
         XDG_TOPLEVEL_SET_APP_ID,
-        vec![WlArgument::Str(Some(String::from("dev.codevar.render-hit")))],
+        vec![WlArgument::Str(Some(String::from("dev.codevar.render-mix")))],
     )?;
 
     // The first commit asks the compositor for the initial configure.
@@ -332,11 +352,23 @@ fn run() -> ExampleResult<String> {
         Err(error) => return Err(error.into()),
     };
     let target = pipeline.present_target();
-    let mut renderer = RendererSubsystem::new(&pipeline);
-    renderer.start()?;
-    renderer
-        .layers_mut()
-        .add(Box::new(TriangleLayer::new(&pipeline)?))?;
+    let mut compositor = Compositor::new(&pipeline);
+    compositor.start()?;
+    compositor.add_pipe(SolidPipe::new(&pipeline, RED)?)?;
+    compositor.add_pipe(SplitPipe::new(
+        &pipeline,
+        GREEN,
+        YELLOW,
+        Split::LeftRight,
+        WEIGHT_HALF,
+    )?)?;
+    compositor.add_pipe(SplitPipe::new(
+        &pipeline,
+        CYAN,
+        MAGENTA,
+        Split::TopBottom,
+        WEIGHT_QUARTER,
+    )?)?;
     let params = display.marshal_new_id(dmabuf, DMABUF_CREATE_PARAMS, Vec::new())?;
     display.marshal_request(
         params,
@@ -395,12 +427,11 @@ fn run() -> ExampleResult<String> {
                 0
             })?;
         }
-        // One frame: record, submit, export completion, wait for the GPU
-        // so the committed pixels are final (the alternative would be
-        // implicit dma-buf fencing alone).
-        renderer.begin_frame(None)?;
-        renderer.present_frame()?;
-        let sync_file = renderer.end_frame()?;
+        // One frame: every pipe records into its offscreen target, the
+        // mix pass folds them into the presentation target and the
+        // export signals completion; wait for the GPU so the committed
+        // pixels are final.
+        let sync_file = block_on(compositor.composite_frame(None))?;
         wait_for_gpu(&sync_file)?;
         drop(sync_file);
 
@@ -447,13 +478,16 @@ fn run() -> ExampleResult<String> {
     let _ = display.marshal_request(dmabuf, DMABUF_DESTROY, Vec::new());
     let _ = display.flush();
 
-    let _ = renderer.stop();
-    drop(renderer);
+    // Stopping waits for the device; dropping the compositor then
+    // releases the pipes (and their offscreen targets) before the
+    // pipeline that owns the device.
+    let _ = compositor.stop();
+    drop(compositor);
     drop(pipeline);
 
     Ok(format!(
-        "present_hit: {frames} frames rendered into a {width}x{height} dma-buf window, \
-         {} pings answered, configure serial {serial}",
+        "render_mix: {frames} frames of three-pipe mixing into a {width}x{height} \
+         dma-buf window, {} pings answered, configure serial {serial}",
         pings.get()
     ))
 }
@@ -621,211 +655,196 @@ fn wait_for_gpu(sync_file: &OwnedFd) -> ExampleResult<()> {
     Ok(())
 }
 
-/// Creates a shader module from validated SPIR-V words.
-fn create_shader_module(device: &ash::Device, words: &[u32]) -> Result<vk::ShaderModule, RendererError> {
-    let module_info = vk::ShaderModuleCreateInfo::default().code(words);
-    // SAFETY: `words` is a validated, 4-byte-aligned SPIR-V module that
-    // outlives the call.
-    unsafe { device.create_shader_module(&module_info, None) }.map_err(RendererError::ShaderModuleCreate)
+/// Creates an offscreen pipe target the size of the presentation target,
+/// so pipe-local rectangles line up with window pixels one to one.
+fn new_target<'p>(context: &'p PipelineContext) -> Result<OffscreenTarget<'p>, CompositorError> {
+    OffscreenTarget::new(
+        context,
+        context.width(),
+        context.height(),
+        PipelineContext::color_format(),
+    )
 }
 
-/// Creates the graphics pipeline for the placeholder triangle: embedded
-/// SPIR-V, no vertex input, dynamic viewport/scissor, dynamic rendering
-/// with a single `B8G8R8A8_UNORM` color attachment, no depth.
-fn create_pipeline(
-    device: &ash::Device,
-    pipeline_layout: vk::PipelineLayout,
-    vertex_module: vk::ShaderModule,
-    fragment_module: vk::ShaderModule,
-) -> Result<vk::Pipeline, RendererError> {
-    let color_format = PipelineContext::color_format();
-    let shader_stages = [
-        vk::PipelineShaderStageCreateInfo::default()
-            .stage(vk::ShaderStageFlags::VERTEX)
-            .module(vertex_module)
-            .name(c"main"),
-        vk::PipelineShaderStageCreateInfo::default()
-            .stage(vk::ShaderStageFlags::FRAGMENT)
-            .module(fragment_module)
-            .name(c"main"),
-    ];
-    let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
-    let input_assembly =
-        vk::PipelineInputAssemblyStateCreateInfo::default().topology(vk::PrimitiveTopology::TRIANGLE_LIST);
-    let viewport_state = vk::PipelineViewportStateCreateInfo::default()
-        .viewport_count(1)
-        .scissor_count(1);
-    let rasterization = vk::PipelineRasterizationStateCreateInfo::default()
-        .polygon_mode(vk::PolygonMode::FILL)
-        .cull_mode(vk::CullModeFlags::NONE)
-        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-        .line_width(1.0);
-    let multisample =
-        vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(vk::SampleCountFlags::TYPE_1);
-    let color_blend_attachment = vk::PipelineColorBlendAttachmentState {
-        blend_enable: vk::FALSE,
-        src_color_blend_factor: vk::BlendFactor::ONE,
-        dst_color_blend_factor: vk::BlendFactor::ZERO,
-        color_blend_op: vk::BlendOp::ADD,
-        src_alpha_blend_factor: vk::BlendFactor::ONE,
-        dst_alpha_blend_factor: vk::BlendFactor::ZERO,
-        alpha_blend_op: vk::BlendOp::ADD,
-        color_write_mask: vk::ColorComponentFlags::R
-            | vk::ColorComponentFlags::G
-            | vk::ColorComponentFlags::B
-            | vk::ColorComponentFlags::A,
-    };
-    let color_blend = vk::PipelineColorBlendStateCreateInfo::default()
-        .attachments(core::slice::from_ref(&color_blend_attachment));
-    let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-    let dynamic_state = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
-    let mut rendering_info = vk::PipelineRenderingCreateInfo::default()
-        .color_attachment_formats(core::slice::from_ref(&color_format));
-    let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
-        .stages(&shader_stages)
-        .vertex_input_state(&vertex_input)
-        .input_assembly_state(&input_assembly)
-        .viewport_state(&viewport_state)
-        .rasterization_state(&rasterization)
-        .multisample_state(&multisample)
-        .color_blend_state(&color_blend)
-        .dynamic_state(&dynamic_state)
-        .layout(pipeline_layout)
-        .push_next(&mut rendering_info);
-    // SAFETY: every referenced state structure outlives `pipeline_info`,
-    // the shader modules belong to `device` and `pipeline_layout` was
-    // created on the same device; the color format matches the render
-    // target because both come from `PipelineContext::color_format`.
-    let result = unsafe {
-        device.create_graphics_pipelines(
-            vk::PipelineCache::null(),
-            core::slice::from_ref(&pipeline_info),
-            None,
-        )
-    };
-    let pipelines = result.map_err(|(_, err)| RendererError::PipelineCreate(err))?;
-    pipelines
-        .first()
-        .copied()
-        .ok_or(RendererError::Internal("driver returned no graphics pipeline"))
-}
-
-/// The one layer of this example: the embedded placeholder triangle.
+/// The base pipe: fills its whole offscreen target with a solid color.
 ///
-/// The layer owns its graphics pipeline and therefore borrows the
-/// [`PipelineContext`] it was created from; registering it with the
-/// renderer keeps it inside the context's lifetime.
-struct TriangleLayer<'p> {
-    context: &'p PipelineContext,
-    pipeline_layout: vk::PipelineLayout,
-    pipeline: vk::Pipeline,
+/// Registered first, so its framebuffer is framebuffer 0 of the frame —
+/// the layer the mix shader starts from, whose weight is ignored.
+struct SolidPipe<'p> {
+    /// The pipe's offscreen color target.
+    target: OffscreenTarget<'p>,
+    /// Clear color of the whole target.
+    color: [f32; 4],
 }
 
-impl<'p> TriangleLayer<'p> {
-    /// Loads the embedded SPIR-V, builds an empty pipeline layout and a
-    /// dynamic-rendering graphics pipeline matching the render target.
+impl<'p> SolidPipe<'p> {
+    /// Creates a pipe whose target matches the presentation target.
     ///
     /// # Errors
     ///
-    /// * [`RendererError::ShaderLoad`] — an embedded module failed
-    ///   validation (corrupted build artifacts).
-    /// * [`RendererError::ShaderModuleCreate`], [`RendererError::PipelineLayoutCreate`],
-    ///   [`RendererError::PipelineCreate`] — the Vulkan call failed;
-    ///   everything created so far is destroyed again.
-    fn new(context: &'p PipelineContext) -> Result<Self, RendererError> {
-        let device = context.device();
-        let vertex_words = load_spir_v(VERT_SPIRV)?;
-        let fragment_words = load_spir_v(FRAG_SPIRV)?;
-        let vertex_module = create_shader_module(device, &vertex_words)?;
-        let fragment_module = match create_shader_module(device, &fragment_words) {
-            Ok(module) => module,
-            Err(err) => {
-                // SAFETY: the vertex module was created on this device
-                // and is not referenced by anything yet.
-                unsafe { device.destroy_shader_module(vertex_module, None) };
-                return Err(err);
-            }
-        };
-
-        // No descriptor sets and no push constants are needed.
-        let layout_info = vk::PipelineLayoutCreateInfo::default();
-        // SAFETY: a plain, well-formed create info with empty ranges.
-        let pipeline_layout = match unsafe { device.create_pipeline_layout(&layout_info, None) } {
-            Ok(layout) => layout,
-            Err(err) => {
-                // SAFETY: both modules were created on this device and are
-                // not referenced by anything yet.
-                unsafe {
-                    device.destroy_shader_module(vertex_module, None);
-                    device.destroy_shader_module(fragment_module, None);
-                }
-                return Err(RendererError::PipelineLayoutCreate(err));
-            }
-        };
-
-        let pipeline = match create_pipeline(device, pipeline_layout, vertex_module, fragment_module) {
-            Ok(pipeline) => pipeline,
-            Err(err) => {
-                // SAFETY: the layout and both modules were created on
-                // this device; the pipeline creation failed, so nothing
-                // else references them.
-                unsafe {
-                    device.destroy_pipeline_layout(pipeline_layout, None);
-                    device.destroy_shader_module(vertex_module, None);
-                    device.destroy_shader_module(fragment_module, None);
-                }
-                return Err(err);
-            }
-        };
-        // SAFETY: shader modules may be destroyed once the pipeline
-        // completed; the pipeline object does not reference them.
-        unsafe {
-            device.destroy_shader_module(vertex_module, None);
-            device.destroy_shader_module(fragment_module, None);
-        }
-
+    /// Propagates the [`OffscreenTarget::new`] failures (image, memory
+    /// or view creation).
+    fn new(context: &'p PipelineContext, color: [f32; 4]) -> Result<Self, CompositorError> {
         Ok(Self {
-            context,
-            pipeline_layout,
-            pipeline,
+            target: new_target(context)?,
+            color,
         })
     }
 }
 
-impl RenderLayer for TriangleLayer<'_> {
-    fn name(&self) -> &str {
-        "triangle"
-    }
-
-    fn priority(&self) -> i32 {
-        // Draws underneath every layer a real UI would add later.
-        100
-    }
-
-    fn render(&mut self, frame: &mut FrameContext<'_>) -> Result<(), RendererError> {
-        let device = frame.device();
-        let command_buffer = frame.command_buffer();
-        // SAFETY: the command buffer is inside the dynamic-rendering
-        // scope opened by the renderer and the pipeline was created on
-        // this device with the render target's color format.
-        unsafe {
-            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
-            device.cmd_draw(command_buffer, 3, 1, 0, 0);
-        }
-        Ok(())
+impl PipeSource for SolidPipe<'_> {
+    fn pipe_entry<'a>(renderer: &'a mut Self, ctx: &'a mut PipeCtx) -> PipeFuture<'a> {
+        Box::pin(async move {
+            ctx.begin_render(0, Some(renderer.color))?;
+            ctx.end_render();
+            Ok(PipeOutcome::Keep)
+        })
     }
 }
 
-impl Drop for TriangleLayer<'_> {
-    fn drop(&mut self) {
-        let device = self.context.device();
-        // SAFETY: the renderer waits for the device to go idle before its
-        // layer stack drops with it, both handles were created by `new`
-        // on this device and the pipeline context outlives the layer.
-        unsafe {
-            device.destroy_pipeline(self.pipeline, None);
-            device.destroy_pipeline_layout(self.pipeline_layout, None);
+impl PipeSupplyTraits for SolidPipe<'_> {
+    fn offscreen_framebuffer_count(&self) -> usize {
+        1
+    }
+
+    fn offscreen_framebuffer(&self, index: usize) -> Option<OffscreenFramebuffer> {
+        if index == 0 {
+            Some(self.target.framebuffer())
+        } else {
+            None
         }
+    }
+}
+
+/// Which half of a [`SplitPipe`] target receives the accent color.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Split {
+    /// Accent on the right half.
+    LeftRight,
+    /// Accent on the bottom half.
+    TopBottom,
+}
+
+impl Split {
+    /// The accent rectangle for a target of `width` × `height`.
+    ///
+    /// Odd extents keep the remainder on the accent side, so the two
+    /// halves always cover the whole target without a gap or overlap.
+    fn rect(&self, width: u32, height: u32) -> vk::Rect2D {
+        match self {
+            Self::LeftRight => vk::Rect2D {
+                offset: vk::Offset2D {
+                    x: (width / 2) as i32,
+                    y: 0,
+                },
+                extent: vk::Extent2D {
+                    width: width - width / 2,
+                    height,
+                },
+            },
+            Self::TopBottom => vk::Rect2D {
+                offset: vk::Offset2D {
+                    x: 0,
+                    y: (height / 2) as i32,
+                },
+                extent: vk::Extent2D {
+                    width,
+                    height: height - height / 2,
+                },
+            },
+        }
+    }
+}
+
+/// An overlay pipe: clears its target to `base`, overwrites one half
+/// with `accent`, and is folded into the frame at `weight`.
+struct SplitPipe<'p> {
+    /// The pipe's offscreen color target.
+    target: OffscreenTarget<'p>,
+    /// Color of the non-accent half.
+    base: [f32; 4],
+    /// Color of the accent half.
+    accent: [f32; 4],
+    /// Which half receives `accent`.
+    split: Split,
+    /// Mix weight of this framebuffer in `[0.0, 1.0]`.
+    weight: f32,
+}
+
+impl<'p> SplitPipe<'p> {
+    /// Creates a pipe whose target matches the presentation target.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the [`OffscreenTarget::new`] failures (image, memory
+    /// or view creation).
+    fn new(
+        context: &'p PipelineContext,
+        base: [f32; 4],
+        accent: [f32; 4],
+        split: Split,
+        weight: f32,
+    ) -> Result<Self, CompositorError> {
+        Ok(Self {
+            target: new_target(context)?,
+            base,
+            accent,
+            split,
+            weight,
+        })
+    }
+}
+
+impl PipeSource for SplitPipe<'_> {
+    fn pipe_entry<'a>(renderer: &'a mut Self, ctx: &'a mut PipeCtx) -> PipeFuture<'a> {
+        Box::pin(async move {
+            ctx.begin_render(0, Some(renderer.base))?;
+            let rect = renderer
+                .split
+                .rect(renderer.target.width(), renderer.target.height());
+            let attachment = [vk::ClearAttachment {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                color_attachment: 0,
+                clear_value: vk::ClearValue {
+                    color: vk::ClearColorValue {
+                        float32: renderer.accent,
+                    },
+                },
+            }];
+            let rects = [vk::ClearRect {
+                rect,
+                base_array_layer: 0,
+                layer_count: 1,
+            }];
+            // SAFETY: the rendering scope opened by `begin_render` is
+            // still open, attachment 0 is the scope's single color
+            // attachment, and `Split::rect` lies inside the framebuffer
+            // (it spans exactly one half of it).
+            unsafe {
+                ctx.device()
+                    .cmd_clear_attachments(ctx.command_buffer(), &attachment, &rects);
+            }
+            ctx.end_render();
+            Ok(PipeOutcome::Keep)
+        })
+    }
+}
+
+impl PipeSupplyTraits for SplitPipe<'_> {
+    fn offscreen_framebuffer_count(&self) -> usize {
+        1
+    }
+
+    fn offscreen_framebuffer(&self, index: usize) -> Option<OffscreenFramebuffer> {
+        if index == 0 {
+            Some(self.target.framebuffer())
+        } else {
+            None
+        }
+    }
+
+    fn mix_weight(&self, _index: usize) -> f32 {
+        self.weight
     }
 }
 
@@ -877,11 +896,30 @@ mod tests {
         assert_eq!(preferred_modifiers(&table, &[99]), Vec::new());
     }
 
-    /// The shaders embedded in the crate must always decode: this catches
-    /// corrupted build artifacts before any window is opened.
+    /// Both splits put the accent on the far half and keep odd extents
+    /// gap-free, which is what the four-quadrant expectation in the
+    /// module documentation assumes.
     #[test]
-    fn embedded_shaders_are_valid_spir_v() {
-        assert!(load_spir_v(VERT_SPIRV).is_ok());
-        assert!(load_spir_v(FRAG_SPIRV).is_ok());
+    fn split_rects_cover_their_half_without_gaps() {
+        let right = Split::LeftRight.rect(641, 480);
+        assert_eq!(
+            (
+                right.offset.x,
+                right.offset.y,
+                right.extent.width,
+                right.extent.height
+            ),
+            (320, 0, 321, 480)
+        );
+        let bottom = Split::TopBottom.rect(640, 481);
+        assert_eq!(
+            (
+                bottom.offset.x,
+                bottom.offset.y,
+                bottom.extent.width,
+                bottom.extent.height
+            ),
+            (0, 240, 640, 241)
+        );
     }
 }

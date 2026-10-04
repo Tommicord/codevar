@@ -1,5 +1,5 @@
 [package]
-name = "codevar-truetype"
+name = "codevar-truetype-emoji-color"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,16 +8,12 @@ license.workspace = true
 repository.workspace = true
 
 [lib]
-name = "codevar_truetype"
+name = "codevar_truetype_emoji_color"
 
 [dependencies]
 codevar-logger = { workspace = true }
 codevar-truetype-core = { workspace = true }
-codevar-truetype-gzip = { workspace = true }
-codevar-truetype-raster = { workspace = true }
-codevar-truetype-smooth = { workspace = true }
 codevar-truetype-sfnt = { workspace = true }
-codevar-truetype-psnames = { workspace = true }
-codevar-truetype-pshinter = { workspace = true }
-codevar-truetype-autofit = { workspace = true }
 codevar-truetype-glyf = { workspace = true }
+codevar-truetype-smooth = { workspace = true }
+codevar-truetype-gzip = { workspace = true }

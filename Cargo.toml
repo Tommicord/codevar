@@ -1,6 +1,9 @@
 [workspace]
 members = [
     "crates/codevar-base",
+    "crates/codevar-mergen",
+    "crates/codevar-mergen-shake",
+    "crates/codevar-mergen-simd",
     "crates/codevar-textlike-encode",
     "crates/codevar-tls",
     "crates/codevar-pretty-unwind",
@@ -12,15 +15,15 @@ members = [
     "crates/codevar-launcher",
     "crates/codevar-wl-protocol",
     "crates/codevar-xdg-portal",
-    "crates/codevar-ui-core",
+    "crates/codevar-gpu-core",
     "crates/codevar-logger",
     "crates/codevar-dbus",
     "crates/codevar-time-util",
     "crates/codevar-console-util",
     "crates/codevar-env",
     "crates/codevar-io",
-    "crates/codevar-truetype",
     "crates/codevar-truetype-core",
+    "crates/codevar-truetype-emoji-color",
     "crates/codevar-truetype-gzip",
     "crates/codevar-truetype-raster",
     "crates/codevar-truetype-smooth",
@@ -89,6 +92,9 @@ gettid = "0.1.4"
 pem = "3"
 
 codevar-dbus = { path = "crates/codevar-dbus" }
+codevar-mergen = { path = "crates/codevar-mergen" }
+codevar-mergen-shake = { path = "crates/codevar-mergen-shake" }
+codevar-mergen-simd = { path = "crates/codevar-mergen-simd" }
 codevar-base = { path = "crates/codevar-base" }
 codevar-textlike-encode = { path = "crates/codevar-textlike-encode" }
 codevar-tls = { path = "crates/codevar-tls" }
@@ -102,14 +108,14 @@ codevar-sig-module-base = { path = "crates/codevar-sig-module-base" }
 codevar-unwinding = { path = "crates/codevar-unwinding" }
 codevar-pretty-unwind = { path = "crates/codevar-pretty-unwind" }
 codevar-xdg-portal = { path = "crates/codevar-xdg-portal" }
-codevar-ui-core = { path = "crates/codevar-ui-core" }
-codevar-truetype = { path = "crates/codevar-truetype" }
+codevar-gpu-core = { path = "crates/codevar-gpu-core" }
 codevar-logger = { path = "crates/codevar-logger" }
 codevar-console-util = { path = "crates/codevar-console-util" }
 codevar-io = { path = "crates/codevar-io" }
 codevar-env = { path = "crates/codevar-env" }
 codevar-pathbuf = { path = "crates/codevar-pathbuf" }
 codevar-truetype-core = { path = "crates/codevar-truetype-core" }
+codevar-truetype-emoji-color = { path = "crates/codevar-truetype-emoji-color" }
 codevar-truetype-gzip = { path = "crates/codevar-truetype-gzip" }
 codevar-truetype-raster = { path = "crates/codevar-truetype-raster" }
 codevar-truetype-smooth = { path = "crates/codevar-truetype-smooth" }

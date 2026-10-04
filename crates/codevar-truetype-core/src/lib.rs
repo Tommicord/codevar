@@ -2328,7 +2328,7 @@ impl<T: ?Sized> LibCell<T> {
     #[inline]
     pub fn borrow_with(&self, err: TtError) -> TtResult<LibRef<'_, T>> {
         self.flag
-            .fetch_update(
+            .try_update(
                 core::sync::atomic::Ordering::AcqRel,
                 core::sync::atomic::Ordering::Acquire,
                 |f| {
@@ -2360,7 +2360,7 @@ impl<T: ?Sized> LibCell<T> {
     #[inline]
     pub fn borrow_mut_with(&self, err: TtError) -> TtResult<LibRefMut<'_, T>> {
         self.flag
-            .fetch_update(
+            .try_update(
                 core::sync::atomic::Ordering::AcqRel,
                 core::sync::atomic::Ordering::Acquire,
                 |f| if f == 0 { Some(-1) } else { None },

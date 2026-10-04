@@ -1,5 +1,5 @@
 [package]
-name = "codevar-ui-core"
+name = "codevar-gpu-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [lib]
-name = "codevar_ui_core"
+name = "codevar_gpu_core"
 
 [dependencies]
 ash = { workspace = true }

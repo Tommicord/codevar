@@ -1,0 +1,25 @@
+[package]
+name = "codevar-mergen-simd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "codevar_mergen_simd"
+
+[dependencies]
+cfg-if = { workspace = true }
+
+# `codevar-base` supplies the pinned CPU feature probe (`basic_cpuid`), but its
+# transitive dependency `codevar-time-core` does not build for
+# `wasm32-unknown-unknown` (`libc` exposes no `timespec`/`clock_gettime` there).
+# The same target gating is used by other workspace crates (e.g.
+# `codevar-mergen`). On `wasm32` this crate therefore answers tier support from
+# `cfg(target_feature)` only, which is exactly what `basic_cpuid` reports there
+# (user mode has no portable feature probe on wasm, so `detect()` is empty and
+# only compile-time features are reported).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+codevar-base = { workspace = true }
