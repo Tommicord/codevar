@@ -20,6 +20,4 @@ codevar-truetype-sfnt = { workspace = true }
 codevar-truetype-psnames = { workspace = true }
 codevar-truetype-pshinter = { workspace = true }
 codevar-truetype-autofit = { workspace = true }
-codevar-truetype-ttcore = { workspace = true }
 codevar-truetype-glyf = { workspace = true }
-codevar-truetype-cff = { workspace = true }

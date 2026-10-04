@@ -811,7 +811,7 @@ impl<'a, 'b> GrayWorker<'a, 'b> {
         ey1 = ey1.wrapping_add(i64::from(incr));
         self.set_cell(x >> PIXEL_BITS, ey1)?;
         if ey1 != ey2 {
-            p = ONE_PIXEL.wrapping_mul(dy);
+            p = ONE_PIXEL.wrapping_mul(dx);
             let (lift, rem) = div_mod_int_pair(p, dy)?;
             modulo = modulo.wrapping_sub(dy as i32 as i64);
             while ey1 != ey2 {

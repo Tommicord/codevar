@@ -3,7 +3,6 @@
 .idea/
 target/
 .DS_Store
-app/google-services.json
 build/
 /captures
 .externalNativeBuild

@@ -361,7 +361,6 @@ version = "1.0.0"
 dependencies = [
  "codevar-logger",
  "codevar-truetype-autofit",
- "codevar-truetype-cff",
  "codevar-truetype-core",
  "codevar-truetype-glyf",
  "codevar-truetype-gzip",
@@ -370,7 +369,6 @@ dependencies = [
  "codevar-truetype-raster",
  "codevar-truetype-sfnt",
  "codevar-truetype-smooth",
- "codevar-truetype-ttcore",
 ]
 
 [[package]]
@@ -379,17 +377,6 @@ version = "1.0.0"
 dependencies = [
  "codevar-logger",
  "codevar-truetype-core",
-]
-
-[[package]]
-name = "codevar-truetype-cff"
-version = "1.0.0"
-dependencies = [
- "codevar-truetype-core",
- "codevar-truetype-pshinter",
- "codevar-truetype-psnames",
- "codevar-truetype-sfnt",
- "log",
 ]
 
 [[package]]
@@ -464,15 +451,6 @@ name = "codevar-truetype-smooth"
 version = "1.0.0"
 dependencies = [
  "codevar-truetype-core",
- "log",
-]
-
-[[package]]
-name = "codevar-truetype-ttcore"
-version = "1.0.0"
-dependencies = [
- "codevar-truetype-core",
- "codevar-truetype-sfnt",
  "log",
 ]
 

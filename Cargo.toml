@@ -28,9 +28,7 @@ members = [
     "crates/codevar-truetype-psnames",
     "crates/codevar-truetype-pshinter",
     "crates/codevar-truetype-autofit",
-    "crates/codevar-truetype-ttcore",
     "crates/codevar-truetype-glyf",
-    "crates/codevar-truetype-cff"
 ]
 resolver = "2"
 
@@ -119,9 +117,7 @@ codevar-truetype-sfnt = { path = "crates/codevar-truetype-sfnt" }
 codevar-truetype-psnames = { path = "crates/codevar-truetype-psnames" }
 codevar-truetype-pshinter = { path = "crates/codevar-truetype-pshinter" }
 codevar-truetype-autofit = { path = "crates/codevar-truetype-autofit" }
-codevar-truetype-ttcore = { path = "crates/codevar-truetype-ttcore" }
 codevar-truetype-glyf = { path = "crates/codevar-truetype-glyf" }
-codevar-truetype-cff = { path = "crates/codevar-truetype-cff" }
 
 [profile.dev]
 opt-level = 0

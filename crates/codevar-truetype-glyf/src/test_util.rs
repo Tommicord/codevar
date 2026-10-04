@@ -313,15 +313,14 @@ pub fn composite_glyph(x_min: i16, y_min: i16, x_max: i16, y_max: i16, component
     let mut out = glyph_header(-1, x_min, y_min, x_max, y_max);
     for component in components {
         let words = component.flags & ARGS_ARE_WORDS != 0;
-        let xy_values = component.flags & ARGS_ARE_XY_VALUES != 0;
         push_u16(&mut out, component.flags);
         push_u16(&mut out, component.index);
+        // The width of the arguments depends only on `ARGS_ARE_WORDS`;
+        // whether they mean offsets or point indices changes nothing
+        // about the byte layout.
         if words {
             push_i16(&mut out, component.arg1 as i16);
             push_i16(&mut out, component.arg2 as i16);
-        } else if xy_values {
-            out.push(component.arg1 as u8);
-            out.push(component.arg2 as u8);
         } else {
             out.push(component.arg1 as u8);
             out.push(component.arg2 as u8);
