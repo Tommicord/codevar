@@ -51,11 +51,11 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use ash::vk;
-use codevar_gpu_core::ui_base::{
+use codevar_gpu_core::gpu_base::{
     Compositor, CompositorError, OffscreenFramebuffer, OffscreenTarget, PipeCtx, PipeFuture, PipeOutcome,
     PipeSource, PipeSupplyTraits, block_on,
 };
-use codevar_gpu_core::ui_pipeline::{OwnedFd, PipelineContext};
+use codevar_gpu_core::gpu_pipeline::{OwnedFd, PipelineContext};
 use codevar_wl_protocol::{
     BUFFER_DESTROY, BUFFER_PARAMS_ADD, BUFFER_PARAMS_CREATE_IMMED, BUFFER_PARAMS_DESTROY, BUFFER_RELEASE,
     COMPOSITOR_CREATE_SURFACE, COMPOSITOR_INTERFACE, DMABUF_CREATE_PARAMS, DMABUF_DESTROY,

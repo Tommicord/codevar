@@ -15,7 +15,7 @@
 
 //! Antialiasing scan converter
 //!
-//! the new "perfect" antialiasing renderer.  It computes the exact coverage of
+//! the "perfect" antialiasing renderer.  It computes the exact coverage of
 //! the outline on each pixel cell: [`outline_decompose`] walks every
 //! contour once, accumulating `(area, cover)` in a current [`Cell`],
 //! [`GrayWorker`] records cells in a per-band index (`ycells` + linked

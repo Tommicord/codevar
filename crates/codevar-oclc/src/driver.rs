@@ -1,0 +1,401 @@
+//! Copyright 2026 Codevar Project
+//! Licensed under the Apache License, Version 2.0 (the
+//! "License"); you may not use this file except in
+//! compliance with the License. You may obtain a copy of
+//! the License at
+//!
+//!   https://www.apache.org/licenses/LICENSE-2.0
+//!
+//! Unless required by applicable law or agreed to in
+//! writing, software distributed under the License is
+//! distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+//! CONDITIONS OF ANY KIND, either express or implied. See
+//! the License for the specific language governing
+//! permissions and limitations under the License.
+
+//! The compiler driver: arguments in, emission out.
+
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use codevar_cli_arg_parse::{ArgParser, validate_choice};
+use codevar_ocl_lex::{Base, LiteralKind, Token, TokenKind, tokenize};
+use codevar_ocl_parse::{optimize, parse};
+
+use crate::fs;
+
+/// Where to report bugs in the compiler itself (used by the ICE hook).
+pub const BUG_REPORT_URL: &str = "https://github.com/Tommicord/codevar/issues";
+
+/// Program name used in help, usage, and diagnostic prefixes.
+const PROGRAM: &str = "codevar-oclc";
+
+/// One-line description shown by `--help`.
+const ABOUT: &str = "Compile the Codevar OpenCL dialect to SPIR-V, CUDA PTX, or Metal.";
+
+/// Every stage accepted by `--emit` (future stages fail with a clear message).
+const EMIT_STAGES: &[&str] = &["tokens", "ast", "spirv", "ptx", "msl"];
+
+/// Stages that currently run to completion.
+const IMPLEMENTED_STAGES: &[&str] = &["tokens", "ast"];
+
+/// Stage used when `--emit` is absent.
+const DEFAULT_EMIT: &str = "tokens";
+
+/// Process exit status produced by the driver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Exit {
+    /// Compilation (or `--help`/`--version`) completed successfully.
+    Success,
+    /// A compilation, I/O, or internal failure occurred.
+    Failure,
+    /// The command line was invalid (bad flags, missing `INPUT`).
+    Usage,
+    /// An internal compiler error (panic) was reported; mirrors rustc's 101.
+    Ice,
+}
+
+impl Exit {
+    /// The POSIX-style numeric exit code for this status.
+    #[must_use]
+    #[inline]
+    pub const fn code(self) -> i32 {
+        match self {
+            Self::Success => 0,
+            Self::Failure => 1,
+            Self::Usage => 2,
+            Self::Ice => 101,
+        }
+    }
+}
+
+/// The compiler driver: a full command line plus the pipeline that consumes it.
+///
+/// Modeled on rustc's `RunCompiler`: constructed once from borrowed
+/// arguments, consumed by [`Driver::run`], which returns the process exit
+/// status instead of exiting itself so embedders and tests can drive it.
+///
+/// # Examples
+///
+/// ```
+/// use codevar_oclc::{Driver, Exit};
+///
+/// let args = vec![String::from("codevar-oclc"), String::from("--version")];
+/// assert_eq!(Driver::new(&args).run(), Exit::Success);
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct Driver<'a> {
+    args: &'a [String],
+}
+
+impl<'a> Driver<'a> {
+    /// Creates a driver over the complete command line, `argv[0]` included.
+    #[must_use]
+    pub const fn new(args: &'a [String]) -> Self {
+        Self { args }
+    }
+
+    /// Runs the compile pipeline and returns the exit status.
+    ///
+    /// Never panics on malformed input: every failure path reports a
+    /// diagnostic to stderr and returns a non-[`Exit::Success`] status.
+    pub fn run(self) -> Exit {
+        let at_args = self.args.get(1..).unwrap_or_default();
+        let borrowed: Vec<&str> = at_args.iter().map(String::as_str).collect();
+        let expanded = match expand_response_files(&borrowed) {
+            Ok(expanded) => expanded,
+            Err(message) => {
+                report_error(&message);
+                return Exit::Failure;
+            }
+        };
+        let parser = build_parser();
+        let matches = match parser.parse(expanded) {
+            Ok(matches) => matches,
+            Err(error) => {
+                report_usage(&error.to_string());
+                return Exit::Usage;
+            }
+        };
+        if matches.flag("help") {
+            return write_stdout_text(&parser.help());
+        }
+        if matches.flag("version") {
+            return write_stdout_text(&format!("{}\n", parser.version()));
+        }
+        let emit = match validate_choice("--emit", matches.option("emit"), EMIT_STAGES) {
+            Ok(emit) => emit.unwrap_or(DEFAULT_EMIT),
+            Err(error) => {
+                report_usage(&error.to_string());
+                return Exit::Usage;
+            }
+        };
+        let input = match matches.positional(0) {
+            Some(input) => input,
+            None => {
+                report_usage("missing required argument '<INPUT>'");
+                return Exit::Usage;
+            }
+        };
+        if !IMPLEMENTED_STAGES.contains(&emit) {
+            report_error(&format!(
+                "emission stage '{emit}' is not implemented yet (implemented stages: {})",
+                IMPLEMENTED_STAGES.join(", ")
+            ));
+            return Exit::Failure;
+        }
+        let source = match fs::read_source(input) {
+            Ok(source) => source,
+            Err(error) => {
+                report_error(&format!("cannot read '{input}': {error}"));
+                return Exit::Failure;
+            }
+        };
+        let display_path = if input == "-" { "<stdin>" } else { input };
+        let output = lex_source(&source);
+        if !output.diagnostics.is_empty() {
+            for diagnostic in &output.diagnostics {
+                report_diagnostic(display_path, &source, diagnostic.offset, &diagnostic.message);
+            }
+            return Exit::Failure;
+        }
+        let text = if emit == "ast" {
+            let parsed = parse(&source);
+            if !parsed.errors.is_empty() {
+                for error in &parsed.errors {
+                    report_diagnostic(display_path, &source, error.span.offset, &error.message);
+                }
+                return Exit::Failure;
+            }
+            let mut program = parsed.program;
+            let _ = optimize(&mut program);
+            format!("{program:#?}\n")
+        } else if output.lines.is_empty() {
+            String::new()
+        } else {
+            format!("{}\n", output.lines.join("\n"))
+        };
+        match matches.option("output") {
+            Some(path) => match fs::write_file(path, &text) {
+                Ok(()) => Exit::Success,
+                Err(error) => {
+                    report_error(&format!("cannot write '{path}': {error}"));
+                    Exit::Failure
+                }
+            },
+            None => write_stdout_text(&text),
+        }
+    }
+}
+
+/// Runs a full command line through [`Driver`] (the `run_compiler` free
+/// function shape; `args` includes `argv[0]`).
+///
+/// # Examples
+///
+/// ```
+/// let args = vec![String::from("codevar-oclc"), String::from("--version")];
+/// assert_eq!(codevar_oclc::run(&args).code(), 0);
+/// ```
+#[must_use]
+pub fn run(args: &[String]) -> Exit {
+    Driver::new(args).run()
+}
+
+/// Reads the OS command line (see [`crate::argv::raw_args`]) and runs it.
+///
+/// # Errors that produce [`Exit::Failure`]
+///
+/// A missing or undecodable command line is reported to stderr and returns
+/// [`Exit::Failure`].
+#[must_use]
+pub fn run_from_env() -> Exit {
+    match crate::argv::raw_args() {
+        Ok(args) => Driver::new(&args).run(),
+        Err(error) => {
+            report_error(&format!("failed to read the command line: {error}"));
+            Exit::Failure
+        }
+    }
+}
+
+/// Builds the compiler's flag definition (help text comes from the same
+/// definitions, so `--help` can never drift from what parses).
+pub(crate) fn build_parser() -> ArgParser {
+    ArgParser::new(PROGRAM, env!("CARGO_PKG_VERSION"), ABOUT)
+        .flag("help", Some('h'), "Print help information")
+        .flag("version", Some('V'), "Print version information")
+        .option(
+            "output",
+            Some('o'),
+            "FILE",
+            "Write output to FILE (default: stdout)",
+        )
+        .option("emit", None, "STAGE", "Select emission stage (default: tokens)")
+        .positional("INPUT", "Input source file, or - for stdin", false)
+}
+
+/// Expands `@response` file arguments using rustc's rules: a single level
+/// (expanded lines are never re-scanned), one line = one argument, UTF-8,
+/// `lines()` handling `\r\n`.
+///
+/// # Errors
+///
+/// Returns the diagnostic message when a referenced file cannot be read.
+pub(crate) fn expand_response_files(args: &[&str]) -> Result<Vec<String>, String> {
+    let mut expanded = Vec::with_capacity(args.len());
+    for argument in args {
+        if let Some(path) = argument.strip_prefix('@') {
+            let contents = fs::read_file(path)
+                .map_err(|error| format!("failed to load argument file '{path}': {error}"))?;
+            for line in contents.lines() {
+                expanded.push(String::from(line));
+            }
+        } else {
+            expanded.push(String::from(*argument));
+        }
+    }
+    Ok(expanded)
+}
+
+/// One lexical problem at a byte offset in the source.
+pub(crate) struct Diagnostic {
+    /// Byte offset of the offending token.
+    pub(crate) offset: u32,
+    /// Human-readable problem description.
+    pub(crate) message: String,
+}
+
+/// The formatted token dump plus every lexical diagnostic found.
+pub(crate) struct TokenOutput {
+    /// One `offset len kind` line per token, in source order.
+    pub(crate) lines: Vec<String>,
+    /// Diagnostics collected while scanning; empty means a clean lex.
+    pub(crate) diagnostics: Vec<Diagnostic>,
+}
+
+/// Formats every token of `source` as an `offset len kind` line and collects
+/// lexical diagnostics (unterminated literals, empty numbers, stray
+/// characters) without stopping at the first problem.
+pub(crate) fn lex_source(source: &str) -> TokenOutput {
+    let mut lines = Vec::new();
+    let mut diagnostics = Vec::new();
+    let mut offset: u32 = 0;
+    for token in tokenize(source) {
+        let start = offset as usize;
+        let end = start + token.len as usize;
+        let Some(text) = source.get(start..end) else {
+            break;
+        };
+        lines.push(format!("{offset:8} {:4} {:?}", token.len, token.kind));
+        if let Some(message) = token_diagnostic(text, token) {
+            diagnostics.push(Diagnostic { offset, message });
+        }
+        offset = end as u32;
+    }
+    TokenOutput { lines, diagnostics }
+}
+
+/// Returns the diagnostic for a single token, if it carries a lexical error
+/// flag (the lexer itself never fails; problems ride on token variants).
+fn token_diagnostic(text: &str, token: Token) -> Option<String> {
+    match token.kind {
+        TokenKind::Literal { kind, .. } => literal_diagnostic(text, kind),
+        TokenKind::BlockComment {
+            terminated: false, ..
+        } => Some(String::from("unterminated block comment")),
+        TokenKind::Lifetime {
+            starts_with_number: true,
+        } => Some(String::from("lifetimes cannot start with a number")),
+        TokenKind::Unknown => {
+            let character = text.chars().next().unwrap_or('\u{fffd}');
+            Some(format!("character not allowed in source code: {character:?}"))
+        }
+        TokenKind::UnknownPrefix => Some(format!("unknown literal prefix `{text}`")),
+        _ => None,
+    }
+}
+
+/// Returns the diagnostic for a literal token whose error flags are set.
+fn literal_diagnostic(text: &str, kind: LiteralKind) -> Option<String> {
+    match kind {
+        LiteralKind::Int { empty_int: true, .. } => Some(String::from("integer literal has no digits")),
+        LiteralKind::Float {
+            base,
+            empty_exponent: true,
+        } => {
+            if base == Base::Hexadecimal {
+                Some(String::from("hexadecimal float literal requires an exponent"))
+            } else {
+                Some(String::from("exponent has no digits"))
+            }
+        }
+        LiteralKind::Char { terminated: false } => Some(String::from("unterminated character literal")),
+        LiteralKind::Str { terminated: false } => Some(String::from("unterminated string literal")),
+        LiteralKind::RawStr { n_hashes: None } => match codevar_ocl_lex::validate_raw_str(text, 1) {
+            Ok(()) => Some(String::from("invalid raw string literal")),
+            Err(error) => Some(error.to_string()),
+        },
+        _ => None,
+    }
+}
+
+/// Computes the 1-based line and character column of byte `offset`.
+///
+/// A `offset` that lands inside a multi-byte character is moved back to the
+/// nearest character boundary so the slice below can never panic.
+pub(crate) fn line_column(source: &str, offset: u32) -> (u32, u32) {
+    let mut offset = (offset as usize).min(source.len());
+    while offset > 0 && !source.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    let prefix = &source[..offset];
+    let line = prefix
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+        + 1;
+    let column = match prefix.rfind('\n') {
+        Some(position) => prefix[position + 1..].chars().count() + 1,
+        None => prefix.chars().count() + 1,
+    };
+    (line as u32, column as u32)
+}
+
+/// Writes a `program: error: …` line to stderr.
+///
+/// A failed stderr write is dropped: there is nowhere else to report it, and
+/// the caller's exit status already conveys the failure.
+pub(crate) fn report_error(message: &str) {
+    let line = format!("{PROGRAM}: error: {message}\n");
+    let _ = codevar_consoleutil::write_stderr(line.as_bytes());
+}
+
+/// Writes a usage error plus a `--help` hint to stderr.
+///
+/// A failed stderr write is dropped (see [`report_error`]).
+pub(crate) fn report_usage(message: &str) {
+    let line = format!("{PROGRAM}: error: {message}\ntry '{PROGRAM} --help' for more information\n");
+    let _ = codevar_consoleutil::write_stderr(line.as_bytes());
+}
+
+/// Writes one `path:line:col: error: …` diagnostic to stderr.
+///
+/// A failed stderr write is dropped (see [`report_error`]).
+pub(crate) fn report_diagnostic(path: &str, source: &str, offset: u32, message: &str) {
+    let (line, column) = line_column(source, offset);
+    let text = format!("{path}:{line}:{column}: error: {message}\n");
+    let _ = codevar_consoleutil::write_stderr(text.as_bytes());
+}
+
+/// Writes compiler output to stdout, mapping a write failure to
+/// [`Exit::Failure`].
+fn write_stdout_text(text: &str) -> Exit {
+    match codevar_consoleutil::write_stdout(text.as_bytes()) {
+        Ok(()) => Exit::Success,
+        Err(_) => {
+            report_error("failed to write to stdout");
+            Exit::Failure
+        }
+    }
+}

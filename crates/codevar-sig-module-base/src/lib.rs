@@ -20,6 +20,8 @@
 //! then available for O(log n) lookup from signal handlers without calling
 //! any non-async-signal-safe functions.
 
+#![cfg_attr(not(test), no_std)]
+
 use core::ffi::CStr;
 use core::mem::MaybeUninit;
 use core::ptr;

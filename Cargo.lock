@@ -168,6 +168,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-cli-arg-parse"
+version = "1.0.0"
+
+[[package]]
 name = "codevar-console-util"
 version = "1.0.0"
 dependencies = [
@@ -275,6 +279,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-ocl-lex"
+version = "1.0.0"
+dependencies = [
+ "unicode-ident",
+]
+
+[[package]]
+name = "codevar-ocl-parse"
+version = "1.0.0"
+dependencies = [
+ "codevar-ocl-lex",
+]
+
+[[package]]
+name = "codevar-ocl-sar"
+version = "1.0.0"
+dependencies = [
+ "codevar-console-util",
+ "codevar-ocl-lex",
+ "codevar-ocl-parse",
+]
+
+[[package]]
+name = "codevar-oclc"
+version = "1.0.0"
+dependencies = [
+ "codevar-cli-arg-parse",
+ "codevar-console-util",
+ "codevar-logger",
+ "codevar-ocl-lex",
+ "codevar-ocl-parse",
+ "codevar-sig-handler",
+ "codevar-sig-module-base",
+ "libc",
+]
+
+[[package]]
 name = "codevar-pathbuf"
 version = "1.0.0"
 dependencies = [
@@ -363,7 +404,7 @@ dependencies = [
  "count-digits",
  "deranged",
  "js-sys",
- "libc",
+ "libm",
  "num-conv",
  "powerfmt",
 ]

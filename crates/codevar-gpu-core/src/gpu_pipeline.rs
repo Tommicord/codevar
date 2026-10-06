@@ -26,7 +26,7 @@
 //! no `VkSwapchainKHR` are required.
 //!
 //! Frame recording, submission and synchronization live one layer up,
-//! in [`crate::ui_renderer`], which borrows the accessors exposed
+//! in [`crate::gpu_ui_renderer`], which borrows the accessors exposed
 //! here
 //!
 //! # Library lifetime

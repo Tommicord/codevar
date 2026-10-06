@@ -70,7 +70,7 @@ use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 use spin::Mutex;
 
-use crate::ui_pipeline::{OwnedFd, PipelineContext};
+use crate::gpu_pipeline::{OwnedFd, PipelineContext};
 
 /// Depth of each [`CompositorComm`] channel before a non-blocking send
 /// reports [`CommError::Full`].
@@ -1586,7 +1586,7 @@ fn allocate_image_memory(
             .instance()
             .get_physical_device_memory_properties(context.physical_device())
     };
-    let memory_type = crate::ui_pipeline::find_memory_type(
+    let memory_type = crate::gpu_pipeline::find_memory_type(
         &properties,
         requirements.memory_type_bits,
         vk::MemoryPropertyFlags::DEVICE_LOCAL,

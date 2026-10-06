@@ -1,0 +1,31 @@
+[package]
+name = "codevar-oclc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["std"]
+std = ["dep:codevar-sig-module-base", "dep:codevar-logger"]
+
+[lib]
+name = "codevar_oclc"
+
+[dependencies]
+codevar-cli-arg-parse = { workspace = true }
+codevar-ocl-lex = { workspace = true }
+codevar-ocl-parse = { workspace = true }
+codevar-logger = { workspace = true, optional = true }
+codevar-console-util = { workspace = true }
+codevar-sig-handler = { workspace = true }
+codevar-sig-module-base = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[[bin]]
+name = "codevar-oclc"
+path = "src/bin/main.rs"

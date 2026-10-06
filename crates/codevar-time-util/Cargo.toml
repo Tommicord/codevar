@@ -17,7 +17,7 @@ name = "codevar_timeutil"
 
 [dependencies]
 codevar-time-core = { workspace = true }
-libc = { workspace = true }
+libm = { workspace = true }
 deranged = { workspace = true }
 num-conv = { workspace = true }
 powerfmt = { workspace = true }

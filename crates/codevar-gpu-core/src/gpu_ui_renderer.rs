@@ -19,7 +19,7 @@
 //! buffer, the frame's fence and semaphores, and an ordered stack of
 //! [`RenderLayer`]s, while device-level state (instance, device, queue,
 //! command pool and the offscreen render target) stays in
-//! [`PipelineContext`](crate::ui_pipeline::PipelineContext), which is
+//! [`PipelineContext`](crate::gpu_pipeline::PipelineContext), which is
 //! analogous to rlgame's `game_pipeline.c`.
 //!
 //! The subsystem is swapchain-less: a frame renders into the single
@@ -92,7 +92,7 @@ use alloc::vec::Vec;
 use ash::vk;
 use core::fmt;
 
-use crate::ui_pipeline::{OwnedFd, PipelineContext};
+use crate::gpu_pipeline::{OwnedFd, PipelineContext};
 
 /// SPIR-V magic number as stored in a little-endian.
 const SPIRV_MAGIC: u32 = 0x0723_0203;
@@ -1441,7 +1441,7 @@ mod tests {
     fn empty_modifier_list_is_rejected() {
         assert!(matches!(
             PipelineContext::new(640, 640, &[]),
-            Err(crate::ui_pipeline::PipelineError::EmptyModifierList)
+            Err(crate::gpu_pipeline::PipelineError::EmptyModifierList)
         ));
     }
 

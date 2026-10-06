@@ -1,0 +1,13 @@
+[package]
+name = "codevar-cli-arg-parse"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "codevar_cli_arg_parse"
+
+[dependencies]

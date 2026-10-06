@@ -17,7 +17,7 @@
 
 extern crate alloc;
 
-pub mod ui_base;
-pub mod ui_pipeline;
-pub mod ui_renderer;
-pub mod ui_wnd_shell;
+pub mod gpu_base;
+pub mod gpu_pipeline;
+pub mod gpu_ui_renderer;
+pub mod gpu_wnd_shell;

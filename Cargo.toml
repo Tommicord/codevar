@@ -32,6 +32,11 @@ members = [
     "crates/codevar-truetype-pshinter",
     "crates/codevar-truetype-autofit",
     "crates/codevar-truetype-glyf",
+    "crates/codevar-ocl-lex",
+    "crates/codevar-cli-arg-parse",
+    "crates/codevar-oclc",
+    "crates/codevar-ocl-parse",
+    "crates/codevar-ocl-sar",
 ]
 resolver = "2"
 
@@ -83,6 +88,7 @@ rand_core = "0.6"
 bsize = "0.3"
 count-digits = "0.5.1"
 subtle = "2.6"
+unicode-ident = "1.0.24"
 deranged = "0.5.2"
 num-conv = "0.2.2"
 libm = "0.2"
@@ -124,6 +130,11 @@ codevar-truetype-psnames = { path = "crates/codevar-truetype-psnames" }
 codevar-truetype-pshinter = { path = "crates/codevar-truetype-pshinter" }
 codevar-truetype-autofit = { path = "crates/codevar-truetype-autofit" }
 codevar-truetype-glyf = { path = "crates/codevar-truetype-glyf" }
+codevar-ocl-lex = { path = "crates/codevar-ocl-lex" }
+codevar-cli-arg-parse = { path = "crates/codevar-cli-arg-parse" }
+codevar-oclc = { path = "crates/codevar-oclc" }
+codevar-ocl-parse = { path = "crates/codevar-ocl-parse" }
+codevar-ocl-sar = { path = "crates/codevar-ocl-sar" }
 
 [profile.dev]
 opt-level = 0
