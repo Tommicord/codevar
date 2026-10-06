@@ -539,3 +539,72 @@ fn literal_text_is_preserved_verbatim() {
     };
     assert_eq!(text, "0xFFu8");
 }
+
+#[derive(Default)]
+struct IdCollector {
+    ids: Vec<crate::NodeId>,
+}
+
+impl crate::Visitor for IdCollector {
+    fn visit_expr(&mut self, expr: &crate::Expr) {
+        self.ids.push(expr.id);
+        crate::visit::walk_expr(self, expr);
+    }
+    fn visit_pat(&mut self, pat: &crate::Pat) {
+        self.ids.push(pat.id);
+        crate::visit::walk_pat(self, pat);
+    }
+}
+
+#[test]
+fn parser_mints_unique_non_dummy_node_ids() {
+    let output = parse("fn f(a: int) -> int { let b = a + 1; b }");
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let mut collector = IdCollector::default();
+    crate::walk_program(&mut collector, &output.program);
+    assert!(collector.ids.len() >= 6, "collected {:?}", collector.ids);
+    assert!(
+        collector
+            .ids
+            .iter()
+            .all(|id| *id != crate::NodeId::DUMMY)
+    );
+    let mut sorted = collector.ids.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(sorted.len(), collector.ids.len(), "ids must be unique");
+}
+
+#[test]
+fn expr_equality_ignores_node_ids() {
+    let output = parse("fn f() -> int { 1 }");
+    let func = first_fn(&output.program);
+    let tail: &crate::Expr = func.body.tail.as_ref().expect("tail expression");
+    let same_shape = crate::Expr {
+        id: crate::NodeId::from_raw(9999),
+        kind: tail.kind.clone(),
+        span: tail.span,
+    };
+    assert_eq!(*tail, same_shape);
+    let shifted = crate::Expr {
+        id: tail.id,
+        kind: tail.kind.clone(),
+        span: crate::Span::new(0, 0),
+    };
+    assert_ne!(*tail, shifted);
+}
+
+#[test]
+fn folding_reuses_replaced_node_ids() {
+    let mut output = parse("fn f() -> int { (1 + 2) + 3 }");
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let mut before = IdCollector::default();
+    crate::walk_program(&mut before, &output.program);
+    let report = crate::optimize(&mut output.program);
+    assert!(report.constant_folds >= 1, "{report:?}");
+    let mut after = IdCollector::default();
+    crate::walk_program(&mut after, &output.program);
+    for id in &after.ids {
+        assert!(before.ids.contains(id), "optimizer minted a new id: {id:?}");
+    }
+}

@@ -22,9 +22,8 @@
 //! every record against the slice bounds before it is stored, so later
 //! [`SfntDirectory::table`] lookups are infallible slice selections.
 
-use alloc::vec::Vec;
-
 use crate::tags::{TAG_HEAD, TAG_HMTX, TAG_TTCF, TAG_VMTX, is_sfnt_version};
+use alloc::vec::Vec;
 use bytes::Buf;
 use codevar_truetype_core::{Tag, TtError, TtResult};
 

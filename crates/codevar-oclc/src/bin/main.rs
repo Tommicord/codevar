@@ -15,33 +15,24 @@
 
 //! The `codevar-oclc` entry point.
 //!
-//! Two build modes, one pipeline:
+//! A `#[no_main]` Unix binary: the C runtime calls `main(argc, argv)`, which
+//! copies the arguments with [`codevar_oclc::argv::from_c_args`], installs
+//! the process hooks (logger level, signal handlers, and the ICE panic hook),
+//! and hands the command line to [`codevar_oclc::run`].
 //!
-//! - **`std` (default):** a regular `main` that installs the hooks and runs
-//!   the driver over `std::env::args_os`.
-//! - **freestanding (`--no-default-features`, Unix):** a `#[no_main]` binary
-//!   that receives `argc`/`argv` through the C runtime, copies them with
-//!   [`codevar_oclc::argv::from_c_args`], and provides its own
-//!   `#[panic_handler]` (ICE report + exit 101) and `#[global_allocator]`
-//!   (`malloc`/`free`), so the compiler runs without linking `std`.
-//!
-//! Because the linker runs with `-nodefaultlibs` when `std` is absent, the
-//! freestanding binary links `libc` explicitly (for `memcpy` and friends,
-//! which `core` references, plus `malloc`/`_exit`) and `libgcc_s` (for
-//! `_Unwind_Resume`, referenced by the precompiled `alloc` EH landing pads).
+//! The binary provides its own `#[global_allocator]` (`malloc`/`free`), so
+//! every allocation goes through the C runtime, and links `libc` explicitly
+//! (for `memcpy` and friends, which `core` references, plus `malloc`) and
+//! `libgcc_s` (for `_Unwind_Resume`, referenced by the precompiled `alloc`
+//! EH landing pads).
 
-#![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
-#![cfg_attr(all(not(feature = "std"), not(test)), no_main)]
-
-#[cfg(not(feature = "std"))]
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_main)]
 extern crate alloc;
+extern crate std;
 
-/// Installs process hooks and runs the driver over the OS command line.
-#[cfg(feature = "std")]
-fn main() {
-    codevar_oclc::setup::init();
-    std::process::exit(codevar_oclc::run_from_env().code());
-}
+#[cfg(all(not(test), unix))]
+use codevar_logger::LogLevel;
 
 /// Freestanding entry: copy `argc`/`argv`, initialize, run, return the exit
 /// code to the C runtime.
@@ -51,7 +42,7 @@ fn main() {
 /// The `argc`/`argv` contract of [`codevar_oclc::argv::from_c_args`] is
 /// satisfied by any C runtime that calls `main(argc, argv)`; this function
 /// must not be called with fabricated values.
-#[cfg(all(not(feature = "std"), not(test), unix))]
+#[cfg(all(not(test), unix))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn main(
     argc: core::ffi::c_int,
@@ -65,54 +56,49 @@ pub unsafe extern "C" fn main(
             return codevar_oclc::Exit::Usage.code();
         }
     };
-    codevar_oclc::setup::init();
+    codevar_logger::set_min_log_level(LogLevel::Error);
+    codevar_sig_module_base::init();
+    match codevar_sig_handler::install() {
+        Ok(()) => {}
+        Err(error) => codevar_logger::log_warn!("failed to install signal handler: {error}"),
+    }
+    install_ice_hook();
     codevar_oclc::run(&args).code()
 }
 
-/// The freestanding binary requires Unix (`libc` startup, `malloc`, and
-/// `/proc` or the C `argv` contract); use the default `std` feature elsewhere.
-#[cfg(all(not(feature = "std"), not(test), not(unix)))]
-compile_error!("codevar-oclc without the `std` feature requires a Unix target");
+/// Replaces the panic hook with one that reports an internal compiler error
+/// to stderr and exits with [`Exit::Ice`](codevar_oclc::Exit::Ice)'s code
+/// (101), matching rustc.
+///
+/// The hook never unwinds and never prints to stdout; it runs once, before
+/// any compilation work.
+#[cfg(all(not(test), unix))]
+fn install_ice_hook() {
+    std::panic::set_hook(std::boxed::Box::new(|info| {
+        let message = alloc::format!(
+            "internal compiler error: {info}\nthis is a bug in codevar-oclc: {}\n",
+            codevar_oclc::driver::BUG_REPORT_URL
+        );
+        let _ = codevar_consoleutil::write_stderr(message.as_bytes());
+        std::process::exit(codevar_oclc::Exit::Ice.code());
+    }));
+}
 
-#[cfg(all(not(feature = "std"), not(test), unix))]
+#[cfg(all(not(test), unix))]
 #[link(name = "c")]
 #[link(name = "gcc_s")]
 unsafe extern "C" {}
 
-/// Link-time stand-in for the personality routine referenced by the
-/// precompiled `alloc` landing pads. With `-C panic=abort` no unwinding ever
-/// reaches it (the [`handle_panic`] hook exits the process instead), so an
-/// empty body is safe; it exists to satisfy the linker.
-#[cfg(all(not(feature = "std"), not(test), unix))]
-#[unsafe(no_mangle)]
-extern "C" fn rust_eh_personality() {}
-
-/// Reports a panic as an internal compiler error and exits with code 101.
-///
-/// Formatting the banner itself may panic on allocation failure; the nested
-/// panic aborts the process, which still surfaces as a crash rather than
-/// undefined behavior.
-#[cfg(all(not(feature = "std"), not(test), unix))]
-#[panic_handler]
-fn handle_panic(info: &core::panic::PanicInfo<'_>) -> ! {
-    let message = alloc::format!(
-        "internal compiler error: {info}\nthis is a bug in codevar-oclc: {}\n",
-        codevar_oclc::driver::BUG_REPORT_URL
-    );
-    let _ = codevar_consoleutil::write_stderr(message.as_bytes());
-    unsafe { libc::_exit(codevar_oclc::Exit::Ice.code()) }
-}
-
 /// `malloc`-backed global allocator for the freestanding binary.
-#[cfg(all(not(feature = "std"), not(test), unix))]
+#[cfg(all(not(test), unix))]
 #[global_allocator]
 static GLOBAL: SystemAllocator = SystemAllocator;
 
 /// A global allocator delegating to the C runtime's `malloc`/`free`/`realloc`.
-#[cfg(all(not(feature = "std"), not(test), unix))]
+#[cfg(all(not(test), unix))]
 struct SystemAllocator;
 
-#[cfg(all(not(feature = "std"), not(test), unix))]
+#[cfg(all(not(test), unix))]
 unsafe impl core::alloc::GlobalAlloc for SystemAllocator {
     /// # Safety
     ///

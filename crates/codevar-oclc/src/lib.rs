@@ -24,12 +24,12 @@
 //!
 //! # `no_std` operation
 //!
-//! The library is `no_std` + [`alloc`] and compiles with the `std` feature
-//! disabled. Arguments then come from the C entry point ([`argv::from_c_args`])
-//! or Linux `/proc/self/cmdline` ([`argv::from_cmdline`]); files are read
-//! through a small `libc` layer ([`fs`]); diagnostics are written with
-//! `codevar-console-util`. The `std` feature (default) adds
-//! `std::env::args_os` and `std::fs` backends plus the ICE panic hook.
+//! The library is `no_std` + [`alloc`] and compiles with the optional `std`
+//! feature disabled. Arguments then come from the C entry point
+//! ([`argv::from_c_args`]) or Linux `/proc/self/cmdline`
+//! ([`argv::from_cmdline`]); files are read through [`fs`]; diagnostics are
+//! written with `codevar-console-util`. Enabling the `std` feature adds the
+//! `std::env::args_os` argument backend.
 //!
 //! # Exit codes
 //!
@@ -57,7 +57,6 @@ extern crate std;
 pub mod argv;
 pub mod driver;
 mod fs;
-pub mod setup;
 
 #[cfg(test)]
 mod tests;

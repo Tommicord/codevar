@@ -47,7 +47,9 @@ mod io_wasi;
 mod io_fallback;
 
 pub use io_cursor::Cursor;
-pub use io_error::{Error, ErrorKind, ErrorType, ReadExactError, SeekFrom, SliceWriteError, WriteFmtError};
+pub use io_error::{
+    ErrorKind, ErrorType, IoError, IoResult, ReadExactError, SeekFrom, SliceWriteError, WriteFmtError,
+};
 pub use io_terminal::{IsTerminal, is_terminal};
 pub use io_traits::{BufRead, Read, ReadReady, Seek, Write, WriteReady};
 

@@ -8,20 +8,26 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["std"]
-std = ["dep:codevar-sig-module-base", "dep:codevar-logger"]
+default = []
+# Enables the `std::env::args_os` argument backend (`argv::from_env`).
+std = []
 
 [lib]
 name = "codevar_oclc"
 
 [dependencies]
+bsize = { workspace = true }
+spin = { workspace = true }
 codevar-cli-arg-parse = { workspace = true }
 codevar-ocl-lex = { workspace = true }
 codevar-ocl-parse = { workspace = true }
-codevar-logger = { workspace = true, optional = true }
+codevar-ocl-sar = { workspace = true }
+codevar-logger = { workspace = true }
+codevar-pathbuf = { workspace = true }
+codevar-io = { workspace = true }
 codevar-console-util = { workspace = true }
 codevar-sig-handler = { workspace = true }
-codevar-sig-module-base = { workspace = true, optional = true }
+codevar-sig-module-base = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

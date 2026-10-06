@@ -400,7 +400,7 @@ impl fmt::Display for TtError {
 }
 impl core::error::Error for TtError {}
 
-impl From<TtError> for codevar_io::Error {
+impl From<TtError> for codevar_io::IoError {
     #[inline]
     fn from(err: TtError) -> Self {
         let kind = match err {
@@ -413,7 +413,7 @@ impl From<TtError> for codevar_io::Error {
             TtError::INVALID_STREAM_READ => codevar_io::ErrorKind::UnexpectedEof,
             _ => codevar_io::ErrorKind::Other,
         };
-        codevar_io::Error::new(kind, err)
+        codevar_io::IoError::new(kind, err)
     }
 }
 

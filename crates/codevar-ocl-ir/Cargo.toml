@@ -1,0 +1,15 @@
+[package]
+name = "codevar-ocl-ir"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "codevar_ocl_ir"
+
+[dependencies]
+codevar-ocl-parse = { workspace = true }
+codevar-ocl-sar = { workspace = true }

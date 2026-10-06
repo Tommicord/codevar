@@ -65,7 +65,7 @@
 //!
 //! ## URI conversion
 //!
-//! [`to_file_uri`] percent-encodes a path into a RFC-3986 `file:` URI
+//! [`to_file_uri`] percent-encodes a path into an RFC-3986 `file:` URI
 //! keeping path separators unescaped, and [`from_file_uri`] reverses
 //! that transformation (decoding and normalizing `.`/`..` segments).
 //!
@@ -82,7 +82,7 @@ use codevar_textlike_encode::encoding_utf8::utf8_valid_up_to;
 use core::fmt;
 
 /// Initial read buffer size for file I/O.
-const READ_BUF_SIZE: usize = 4096;
+const READ_BUF_SIZE: usize = 0x800;
 
 /// Separator used by the [`PathBuf`] builder.
 #[cfg(not(windows))]
@@ -91,6 +91,9 @@ pub const MAIN_SEPARATOR: char = '/';
 /// Separator used by the [`PathBuf`] builder on Windows.
 #[cfg(windows)]
 pub const MAIN_SEPARATOR: char = '/';
+
+/// Path result type.
+type PathResult<T> = Result<T, PathError>;
 
 /// An owning, mutable path stored as a UTF-8 [`String`].
 ///
@@ -491,7 +494,7 @@ impl PathBuf {
         self.is_absolute()
     }
 
-    /// Normalises the path by resolving `.` and `..` segments and
+    /// Normalizes the path by resolving `.` and `..` segments and
     /// collapsing repeated separators.
     #[must_use]
     pub fn normalize(&self) -> PathBuf {
@@ -519,6 +522,30 @@ impl PathBuf {
     /// Returns an iterator over the path components between separators.
     pub fn components(&self) -> impl Iterator<Item = &str> {
         self.inner.split('/').filter(|s| !s.is_empty())
+    }
+
+    /// Writes to the current file PathBuf points to.
+    pub fn write(&self, bytes: &[u8]) -> PathResult<()> {
+        #[cfg(target_family = "unix")]
+        {
+            unix::write(self.inner.as_str(), bytes)
+        }
+        #[cfg(target_os = "windows")]
+        {
+            windows::write(self.inner.as_str(), bytes)
+        }
+    }
+
+    /// Reads to the current file PathBuf points to.
+    pub fn read(&self) -> PathResult<Vec<u8>> {
+        #[cfg(target_family = "unix")]
+        {
+            unix::read(self.inner.as_str())
+        }
+        #[cfg(target_os = "windows")]
+        {
+            windows::read(self.inner.as_str())
+        }
     }
 
     /// Returns the number of components in the path.
@@ -581,7 +608,7 @@ impl<'a> Iterator for Ancestors<'a> {
 /// The responsibilities are split in two: the setters only accumulate
 /// raw components and are infallible, while [`build`](Self::build)
 /// tokenizes the accumulated path, validates each component, and
-/// normalises the result.
+/// normalizes the result.
 #[derive(Debug, Clone)]
 pub struct PathBuilder {
     buf: PathBuf,
@@ -636,7 +663,7 @@ impl PathBuilder {
     ///
     /// Validates the full path with [`validate`], tokenizes it into
     /// components and validates each one with [`validate_component`],
-    /// and finally normalises `.`/`..` segments and repeated
+    /// and finally normalizes `.`/`..` segments and repeated
     /// separators.
     ///
     /// # Errors

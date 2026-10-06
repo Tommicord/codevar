@@ -35,7 +35,7 @@ pub struct Stdin;
 
 /// A locked reference to the [`Stdin`] handle.
 ///
-/// This handle implements both the [`Read`] and [`BufRead`] traits.
+/// This handle implements the [`Read`] trait.
 #[derive(Debug)]
 pub struct StdinLock<'a> {
     _phantom: core::marker::PhantomData<&'a mut Stdin>,

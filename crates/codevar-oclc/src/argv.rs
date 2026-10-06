@@ -45,6 +45,8 @@
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use bsize::BSize;
+use codevar_pathbuf::{PathBuf, PathError};
 use core::ffi::{c_char, c_int};
 
 /// Maximum accepted size of the OS command line (2 MiB).
@@ -53,7 +55,7 @@ use core::ffi::{c_char, c_int};
 /// 128 KiB) per argument; 2 MiB leaves generous headroom while bounding the
 /// allocation a hostile or corrupted `/proc/self/cmdline` can trigger.
 #[cfg(target_os = "linux")]
-const CMDLINE_MAX_BYTES: usize = 2 * 1024 * 1024;
+const CMDLINE_MAX_BYTES: usize = BSize::mb(2).bytes();
 
 /// A failure to obtain the process command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,10 +71,7 @@ pub enum ArgvError {
         index: usize,
     },
     /// Reading `/proc/self/cmdline` failed; `detail` describes the OS error.
-    Io {
-        /// Human-readable description of the failure.
-        detail: String,
-    },
+    Io(String),
     /// The OS command line exceeds [`CMDLINE_MAX_BYTES`].
     TooLarge,
 }
@@ -88,7 +87,7 @@ impl core::fmt::Display for ArgvError {
                 )
             }
             Self::InvalidUtf8 { index } => write!(f, "argument {index} is not valid Unicode"),
-            Self::Io { detail } => write!(f, "failed to read the OS command line: {detail}"),
+            Self::Io(str) => write!(f, "failed to read the OS command line: {str}"),
             Self::TooLarge => write!(f, "the OS command line exceeds the size limit"),
         }
     }
@@ -113,7 +112,7 @@ impl core::error::Error for ArgvError {}
 /// - `argv` must be null, or must point to at least `argc` readable pointers.
 /// - Every non-null entry below `argc` must point to a NUL-terminated byte
 ///   string that outlives this call (the C runtime contract; the strings are
-///   copied before returning, so the caller may free them afterwards).
+///   copied before returning, so the caller may free them afterward).
 /// - The `argc`/`argv` pair must come from the process entry point or an
 ///   equivalent, still-live source; reading a freed `argv` is undefined.
 pub unsafe fn from_c_args(argc: c_int, argv: *const *const c_char) -> Result<Vec<String>, ArgvError> {
@@ -169,14 +168,18 @@ pub fn from_env() -> Result<Vec<String>, ArgvError> {
 /// - [`ArgvError::InvalidUtf8`] when an argument is not valid UTF-8.
 #[cfg(target_os = "linux")]
 pub fn from_cmdline() -> Result<Vec<String>, ArgvError> {
-    let bytes =
-        crate::fs::read_file_bytes("/proc/self/cmdline", CMDLINE_MAX_BYTES).map_err(|error| match error {
-            crate::fs::FsError::TooLarge { .. } => ArgvError::TooLarge,
-            crate::fs::FsError::Unsupported => ArgvError::Unsupported,
-            other => ArgvError::Io {
-                detail: other.to_string(),
-            },
+    let bytes = PathBuf::from_str("/proc/self/cmdline")
+        .map_err(|_| ArgvError::Io("cannot read /proc/self/cmdline".to_string()))?
+        .read()
+        .map_err(|e| match e {
+            PathError::Unsupported => ArgvError::Unsupported,
+            PathError::Empty => ArgvError::Io("empty path".to_string()),
+            PathError::InvalidCharacter(_) => ArgvError::Io("invalid utf8 char in path".to_string()),
+            _ => ArgvError::Io(e.to_string()),
         })?;
+    if bytes.len() > CMDLINE_MAX_BYTES {
+        return Err(ArgvError::TooLarge);
+    }
     decode_fields(parse_cmdline_bytes(&bytes)?)
 }
 

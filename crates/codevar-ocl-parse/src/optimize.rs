@@ -500,6 +500,7 @@ impl Optimizer {
             {
                 self.bump_algebraic(1);
                 let folded = Expr {
+                    id: b.id,
                     kind: const_kind(ConstVal::Int(value)),
                     span: b.span,
                 };
@@ -535,6 +536,7 @@ impl Optimizer {
             {
                 self.bump_algebraic(1);
                 let folded = Expr {
+                    id: b.id,
                     kind: const_kind(ConstVal::Int(value)),
                     span: b.span,
                 };
@@ -553,6 +555,7 @@ impl Optimizer {
                     op,
                     lhs,
                     rhs: Box::new(Expr {
+                        id: rhs.id,
                         kind: ExprKind::Binary {
                             op: inner,
                             lhs: a,
@@ -588,6 +591,7 @@ impl Optimizer {
                         false,
                         ExprKind::Cast {
                             expr: Box::new(Expr {
+                                id: inner.id,
                                 kind: other,
                                 span: inner_span,
                             }),
@@ -638,6 +642,7 @@ impl Optimizer {
                         false,
                         ExprKind::If {
                             cond: Box::new(Expr {
+                                id: cond.id,
                                 kind: other,
                                 span: cond_span,
                             }),
@@ -678,6 +683,7 @@ impl Optimizer {
                         false,
                         ExprKind::While {
                             cond: Box::new(Expr {
+                                id: cond.id,
                                 kind: other,
                                 span: cond_span,
                             }),
@@ -1361,12 +1367,14 @@ mod tests {
         );
         let literal = const_kind(ConstVal::Int(-7));
         let node = Expr {
+            id: crate::ast::NodeId::DUMMY,
             kind: literal,
             span: crate::Span::default(),
         };
         assert_eq!(int_value(&node), Some(-7));
         assert!(
             int_value(&Expr {
+                id: crate::ast::NodeId::DUMMY,
                 kind: ExprKind::Bool(true),
                 span: crate::Span::default(),
             })

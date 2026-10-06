@@ -34,10 +34,10 @@ const PROGRAM: &str = "codevar-oclc";
 const ABOUT: &str = "Compile the Codevar OpenCL dialect to SPIR-V, CUDA PTX, or Metal.";
 
 /// Every stage accepted by `--emit` (future stages fail with a clear message).
-const EMIT_STAGES: &[&str] = &["tokens", "ast", "spirv", "ptx", "msl"];
+const EMIT_STAGES: &[&str] = &["tokens", "ast", "analysis", "spirv", "ptx", "msl"];
 
 /// Stages that currently run to completion.
-const IMPLEMENTED_STAGES: &[&str] = &["tokens", "ast"];
+const IMPLEMENTED_STAGES: &[&str] = &["tokens", "ast", "analysis"];
 
 /// Stage used when `--emit` is absent.
 const DEFAULT_EMIT: &str = "tokens";
@@ -104,18 +104,12 @@ impl<'a> Driver<'a> {
         let borrowed: Vec<&str> = at_args.iter().map(String::as_str).collect();
         let expanded = match expand_response_files(&borrowed) {
             Ok(expanded) => expanded,
-            Err(message) => {
-                report_error(&message);
-                return Exit::Failure;
-            }
+            Err(message) => return failure(&message),
         };
         let parser = build_parser();
         let matches = match parser.parse(expanded) {
             Ok(matches) => matches,
-            Err(error) => {
-                report_usage(&error.to_string());
-                return Exit::Usage;
-            }
+            Err(error) => return usage(&error.to_string()),
         };
         if matches.flag("help") {
             return write_stdout_text(&parser.help());
@@ -125,66 +119,133 @@ impl<'a> Driver<'a> {
         }
         let emit = match validate_choice("--emit", matches.option("emit"), EMIT_STAGES) {
             Ok(emit) => emit.unwrap_or(DEFAULT_EMIT),
-            Err(error) => {
-                report_usage(&error.to_string());
-                return Exit::Usage;
-            }
+            Err(error) => return usage(&error.to_string()),
         };
         let input = match matches.positional(0) {
             Some(input) => input,
-            None => {
-                report_usage("missing required argument '<INPUT>'");
-                return Exit::Usage;
-            }
+            None => return usage("missing required argument '<INPUT>'"),
         };
         if !IMPLEMENTED_STAGES.contains(&emit) {
-            report_error(&format!(
+            return failure(&format!(
                 "emission stage '{emit}' is not implemented yet (implemented stages: {})",
                 IMPLEMENTED_STAGES.join(", ")
             ));
-            return Exit::Failure;
         }
         let source = match fs::read_source(input) {
             Ok(source) => source,
-            Err(error) => {
-                report_error(&format!("cannot read '{input}': {error}"));
-                return Exit::Failure;
-            }
+            Err(error) => return failure(&format!("cannot read '{input}': {error}")),
         };
         let display_path = if input == "-" { "<stdin>" } else { input };
-        let output = lex_source(&source);
-        if !output.diagnostics.is_empty() {
-            for diagnostic in &output.diagnostics {
-                report_diagnostic(display_path, &source, diagnostic.offset, &diagnostic.message);
+        let text = if emit == "analysis" {
+            // The semantic analyzer owns its own Unicode, lexical, and
+            // syntax gates, so it runs instead of (not after) the token
+            // dump: one source of truth per diagnostic.
+            let analyzed = codevar_ocl_sar::analyze(&source);
+            codevar_ocl_sar::emit_stderr(
+                &analyzed.diagnostics,
+                display_path,
+                &source,
+                codevar_ocl_sar::ColorChoice::Auto,
+            );
+            if analyzed.has_errors() {
+                return Exit::Failure;
             }
-            return Exit::Failure;
-        }
-        let text = if emit == "ast" {
-            let parsed = parse(&source);
-            if !parsed.errors.is_empty() {
-                for error in &parsed.errors {
-                    report_diagnostic(display_path, &source, error.span.offset, &error.message);
+            format_declarations(&analyzed.declarations)
+        } else {
+            let output = lex_source(&source);
+            if !output.diagnostics.is_empty() {
+                for diagnostic in &output.diagnostics {
+                    report_diagnostic(display_path, &source, diagnostic.offset, &diagnostic.message);
                 }
                 return Exit::Failure;
             }
-            let mut program = parsed.program;
-            let _ = optimize(&mut program);
-            format!("{program:#?}\n")
-        } else if output.lines.is_empty() {
-            String::new()
-        } else {
-            format!("{}\n", output.lines.join("\n"))
+            if emit == "ast" {
+                let parsed = parse(&source);
+                if !parsed.errors.is_empty() {
+                    for error in &parsed.errors {
+                        report_diagnostic(display_path, &source, error.span.offset, &error.message);
+                    }
+                    return Exit::Failure;
+                }
+                let mut program = parsed.program;
+                let _ = optimize(&mut program);
+                format!("{program:#?}\n")
+            } else if output.lines.is_empty() {
+                String::new()
+            } else {
+                format!("{}\n", output.lines.join("\n"))
+            }
         };
         match matches.option("output") {
             Some(path) => match fs::write_file(path, &text) {
                 Ok(()) => Exit::Success,
-                Err(error) => {
-                    report_error(&format!("cannot write '{path}': {error}"));
-                    Exit::Failure
-                }
+                Err(error) => failure(&format!("cannot write '{path}': {error}")),
             },
             None => write_stdout_text(&text),
         }
+    }
+}
+
+/// Renders the analyzer's resolved declarations, one line per item.
+///
+/// Mirrors the source shape so the dump can be diffed against the input:
+///
+/// ```text
+/// fn add(a: int, b: int) -> int
+/// struct Point { x: float, y: float }
+/// type Coord = Point
+/// #[kernel] fn vec_add(a: *mut float, b: *mut float, n: int) -> void
+/// ```
+fn format_declarations(declarations: &[codevar_ocl_sar::Declaration]) -> String {
+    let mut text = String::new();
+    for declaration in declarations {
+        let name = declaration.name.as_str();
+        match &declaration.kind {
+            codevar_ocl_sar::DeclKind::Function { params, ret, kernel } => {
+                if *kernel {
+                    text.push_str("#[kernel] ");
+                }
+                text.push_str("fn ");
+                text.push_str(name);
+                text.push('(');
+                push_typed_list(&mut text, params);
+                text.push_str(") -> ");
+                text.push_str(&format!("{ret}\n"));
+            }
+            codevar_ocl_sar::DeclKind::Struct { fields } => {
+                text.push_str("struct ");
+                text.push_str(name);
+                if fields.is_empty() {
+                    text.push_str(";\n");
+                    continue;
+                }
+                text.push_str(" { ");
+                push_typed_list(&mut text, fields);
+                text.push_str(" }\n");
+            }
+            codevar_ocl_sar::DeclKind::Alias { target } => {
+                text.push_str("type ");
+                text.push_str(name);
+                text.push_str(" = ");
+                text.push_str(&format!("{target}\n"));
+            }
+        }
+    }
+    text
+}
+
+/// Appends `name: type` pairs, separated by `", "`, to `out`.
+///
+/// Shared by the function-parameter and struct-field arms of
+/// [`format_declarations`], which differ only in their delimiters.
+fn push_typed_list(out: &mut String, items: &[(String, codevar_ocl_sar::Ty)]) {
+    for (index, (name, ty)) in items.iter().enumerate() {
+        if index > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(name);
+        out.push_str(": ");
+        out.push_str(&format!("{ty}"));
     }
 }
 
@@ -212,10 +273,7 @@ pub fn run(args: &[String]) -> Exit {
 pub fn run_from_env() -> Exit {
     match crate::argv::raw_args() {
         Ok(args) => Driver::new(&args).run(),
-        Err(error) => {
-            report_error(&format!("failed to read the command line: {error}"));
-            Exit::Failure
-        }
+        Err(error) => failure(&format!("failed to read the command line: {error}")),
     }
 }
 
@@ -379,6 +437,25 @@ pub(crate) fn report_usage(message: &str) {
     let _ = codevar_consoleutil::write_stderr(line.as_bytes());
 }
 
+/// Reports `message` through [`report_error`] and yields [`Exit::Failure`].
+///
+/// Keeps the error arms of [`Driver::run`]'s matches a single expression
+/// instead of repeating the report-then-return pair in every branch.
+#[inline]
+fn failure(message: &str) -> Exit {
+    report_error(message);
+    Exit::Failure
+}
+
+/// Reports `message` through [`report_usage`] and yields [`Exit::Usage`].
+///
+/// The usage-side counterpart of [`failure`].
+#[inline]
+fn usage(message: &str) -> Exit {
+    report_usage(message);
+    Exit::Usage
+}
+
 /// Writes one `path:line:col: error: …` diagnostic to stderr.
 ///
 /// A failed stderr write is dropped (see [`report_error`]).
@@ -393,9 +470,6 @@ pub(crate) fn report_diagnostic(path: &str, source: &str, offset: u32, message: 
 fn write_stdout_text(text: &str) -> Exit {
     match codevar_consoleutil::write_stdout(text.as_bytes()) {
         Ok(()) => Exit::Success,
-        Err(_) => {
-            report_error("failed to write to stdout");
-            Exit::Failure
-        }
+        Err(_) => failure("failed to write to stdout"),
     }
 }

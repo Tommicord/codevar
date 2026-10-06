@@ -87,6 +87,7 @@ pub(crate) fn parse_program(source: &str, tokens: &[SigToken]) -> (Program, Vec<
         errors: Vec::new(),
         depth: 0,
         depth_reported: false,
+        next_node_id: 0,
     };
     let items = parser.parse_items();
     let program = Program {
@@ -214,9 +215,22 @@ struct Parser<'a> {
     depth: u32,
     /// Whether the recursion limit was already reported.
     depth_reported: bool,
+    /// Next [`NodeId`] to mint; the only source of node identities.
+    next_node_id: u32,
 }
 
 impl<'a> Parser<'a> {
+    /// Mints the identity for the next [`Expr`] or [`Pat`] node.
+    fn mint_id(&mut self) -> NodeId {
+        let id = NodeId::from_raw(self.next_node_id);
+        self.next_node_id = self.next_node_id.saturating_add(1);
+        debug_assert!(
+            id != NodeId::DUMMY,
+            "node id space exhausted: cannot mint another identity"
+        );
+        id
+    }
+
     /// Span at end of input.
     fn eof_span(&self) -> Span {
         let len = u32::try_from(self.source.len()).unwrap_or(u32::MAX);
@@ -691,10 +705,12 @@ impl Parser<'_> {
             self.bump();
             match self.expect_ident("pattern name") {
                 Some((span, name)) => Pat {
+                    id: self.mint_id(),
                     kind: PatKind::Ident { name, mutable: true },
                     span: join(start, span),
                 },
                 None => Pat {
+                    id: self.mint_id(),
                     kind: PatKind::Error,
                     span: start,
                 },
@@ -702,11 +718,13 @@ impl Parser<'_> {
         } else if let Some((span, name)) = self.bump_ident() {
             if name == "_" {
                 Pat {
+                    id: self.mint_id(),
                     kind: PatKind::Wild,
                     span,
                 }
             } else {
                 Pat {
+                    id: self.mint_id(),
                     kind: PatKind::Ident { name, mutable: false },
                     span,
                 }
@@ -715,6 +733,7 @@ impl Parser<'_> {
             let span = self.span();
             self.error(span, String::from("expected pattern"));
             Pat {
+                id: self.mint_id(),
                 kind: PatKind::Error,
                 span,
             }
@@ -1063,6 +1082,7 @@ impl Parser<'_> {
         if !self.enter() {
             let span = self.span();
             return Expr {
+                id: self.mint_id(),
                 kind: ExprKind::Error,
                 span,
             };
@@ -1086,6 +1106,7 @@ impl Parser<'_> {
                 let ty = self.parse_type();
                 let span = join(lhs.span, ty.span);
                 lhs = Expr {
+                    id: self.mint_id(),
                     kind: ExprKind::Cast {
                         expr: Box::new(lhs),
                         ty: Box::new(ty),
@@ -1112,6 +1133,7 @@ impl Parser<'_> {
                     let rhs = self.parse_expr(lbp + 1);
                     let span = join(lhs.span, rhs.span);
                     lhs = Expr {
+                        id: self.mint_id(),
                         kind: ExprKind::Binary {
                             op,
                             lhs: Box::new(lhs),
@@ -1126,6 +1148,7 @@ impl Parser<'_> {
                     let rhs = self.parse_expr(BP_ASSIGN);
                     let span = join(lhs.span, rhs.span);
                     lhs = Expr {
+                        id: self.mint_id(),
                         kind: ExprKind::Assign {
                             op,
                             lhs: Box::new(lhs),
@@ -1142,6 +1165,7 @@ impl Parser<'_> {
                         .as_deref()
                         .map_or(lhs.span, |expr| join(lhs.span, expr.span));
                     lhs = Expr {
+                        id: self.mint_id(),
                         kind: ExprKind::Range {
                             start: Some(Box::new(lhs)),
                             end,
@@ -1316,6 +1340,7 @@ impl Parser<'_> {
                 let expr = self.parse_expr(BP_UNARY);
                 let span = join(start, expr.span);
                 Expr {
+                    id: self.mint_id(),
                     kind: ExprKind::Unary {
                         op,
                         expr: Box::new(expr),
@@ -1329,6 +1354,7 @@ impl Parser<'_> {
                 let expr = self.parse_expr(BP_UNARY);
                 let span = join(start, expr.span);
                 Expr {
+                    id: self.mint_id(),
                     kind: ExprKind::Unary {
                         op: UnaryOp::AddrOf { mutable },
                         expr: Box::new(expr),
@@ -1344,6 +1370,7 @@ impl Parser<'_> {
                     .as_deref()
                     .map_or(start, |expr| join(start, expr.span));
                 Expr {
+                    id: self.mint_id(),
                     kind: ExprKind::Range {
                         start: None,
                         end,
@@ -1366,6 +1393,7 @@ impl Parser<'_> {
                     let (args, end) = self.parse_call_args();
                     let span = join(expr.span, end);
                     expr = Expr {
+                        id: self.mint_id(),
                         kind: ExprKind::Call {
                             callee: Box::new(expr),
                             args,
@@ -1381,6 +1409,7 @@ impl Parser<'_> {
                         .unwrap_or_else(|| self.span());
                     let span = join(expr.span, end);
                     expr = Expr {
+                        id: self.mint_id(),
                         kind: ExprKind::Index {
                             expr: Box::new(expr),
                             index: Box::new(index),
@@ -1410,6 +1439,7 @@ impl Parser<'_> {
                     };
                     let span = join(expr.span, self.tokens[self.pos - 1].span);
                     expr = Expr {
+                        id: self.mint_id(),
                         kind: ExprKind::Field {
                             expr: Box::new(expr),
                             name: member,
@@ -1421,6 +1451,7 @@ impl Parser<'_> {
                     self.bump();
                     let span = join(expr.span, self.tokens[self.pos - 1].span);
                     expr = Expr {
+                        id: self.mint_id(),
                         kind: ExprKind::Try { expr: Box::new(expr) },
                         span,
                     };
@@ -1460,6 +1491,7 @@ impl Parser<'_> {
                 let span = self.eof_span();
                 self.error(span, String::from("expected expression"));
                 Expr {
+                    id: self.mint_id(),
                     kind: ExprKind::Error,
                     span,
                 }
@@ -1473,6 +1505,7 @@ impl Parser<'_> {
                 let span = token.span;
                 let text = String::from(self.text(span));
                 Expr {
+                    id: self.mint_id(),
                     kind: ExprKind::Literal {
                         text,
                         kind: token.kind,
@@ -1484,6 +1517,7 @@ impl Parser<'_> {
                 "true" => {
                     self.bump();
                     Expr {
+                        id: self.mint_id(),
                         kind: ExprKind::Bool(true),
                         span: start,
                     }
@@ -1491,6 +1525,7 @@ impl Parser<'_> {
                 "false" => {
                     self.bump();
                     Expr {
+                        id: self.mint_id(),
                         kind: ExprKind::Bool(false),
                         span: start,
                     }
@@ -1511,6 +1546,7 @@ impl Parser<'_> {
                         .as_deref()
                         .map_or(start, |expr| join(start, expr.span));
                     Expr {
+                        id: self.mint_id(),
                         kind: if is_return {
                             ExprKind::Return { expr: value }
                         } else {
@@ -1522,6 +1558,7 @@ impl Parser<'_> {
                 "continue" => {
                     self.bump();
                     Expr {
+                        id: self.mint_id(),
                         kind: ExprKind::Continue,
                         span: start,
                     }
@@ -1529,6 +1566,7 @@ impl Parser<'_> {
                 "else" | "fn" | "let" | "struct" | "type" | "in" | "as" | "mut" => {
                     self.error(start, String::from("expected expression"));
                     Expr {
+                        id: self.mint_id(),
                         kind: ExprKind::Error,
                         span: start,
                     }
@@ -1537,6 +1575,7 @@ impl Parser<'_> {
                     let path = self.parse_path();
                     let span = path.span;
                     Expr {
+                        id: self.mint_id(),
                         kind: ExprKind::Path(path),
                         span,
                     }
@@ -1546,6 +1585,7 @@ impl Parser<'_> {
                 let block = self.parse_block();
                 let span = block.span;
                 Expr {
+                    id: self.mint_id(),
                     kind: ExprKind::Block(block),
                     span,
                 }
@@ -1558,6 +1598,7 @@ impl Parser<'_> {
                     .map_or(self.eof_span(), |token| token.span);
                 self.error(token, String::from("unexpected character"));
                 Expr {
+                    id: self.mint_id(),
                     kind: ExprKind::Error,
                     span: token,
                 }
@@ -1565,6 +1606,7 @@ impl Parser<'_> {
             Some(_) => {
                 self.error(start, String::from("expected expression"));
                 Expr {
+                    id: self.mint_id(),
                     kind: ExprKind::Error,
                     span: start,
                 }
@@ -1582,6 +1624,7 @@ impl Parser<'_> {
                 .bump()
                 .map_or(self.eof_span(), |token| token.span);
             return Expr {
+                id: self.mint_id(),
                 kind: ExprKind::Tuple(Vec::new()),
                 span: join(start, end),
             };
@@ -1592,6 +1635,7 @@ impl Parser<'_> {
                 .bump()
                 .map_or(self.eof_span(), |token| token.span);
             return Expr {
+                id: self.mint_id(),
                 kind: first.kind,
                 span: join(start, end),
             };
@@ -1612,6 +1656,7 @@ impl Parser<'_> {
             .expect(TokenKind::CloseParen, "`)`")
             .unwrap_or_else(|| self.span());
         Expr {
+            id: self.mint_id(),
             kind: ExprKind::Tuple(elems),
             span: join(start, end),
         }
@@ -1636,6 +1681,7 @@ impl Parser<'_> {
             .expect(TokenKind::CloseBracket, "`]`")
             .unwrap_or_else(|| self.span());
         Expr {
+            id: self.mint_id(),
             kind: ExprKind::Array(elems),
             span: join(start, end),
         }
@@ -1680,6 +1726,7 @@ impl Parser<'_> {
         if !self.enter() {
             let span = self.span();
             return Expr {
+                id: self.mint_id(),
                 kind: ExprKind::Error,
                 span,
             };
@@ -1706,6 +1753,7 @@ impl Parser<'_> {
                 let block_span = block.span;
                 span = join(span, block_span);
                 Some(Box::new(Expr {
+                    id: self.mint_id(),
                     kind: ExprKind::Block(block),
                     span: block_span,
                 }))
@@ -1718,6 +1766,7 @@ impl Parser<'_> {
             None
         };
         Expr {
+            id: self.mint_id(),
             kind: ExprKind::If {
                 cond: Box::new(cond),
                 then,
@@ -1735,6 +1784,7 @@ impl Parser<'_> {
         let body = self.parse_block();
         let span = join(start, body.span);
         Expr {
+            id: self.mint_id(),
             kind: ExprKind::While {
                 cond: Box::new(cond),
                 body,
@@ -1750,6 +1800,7 @@ impl Parser<'_> {
         let body = self.parse_block();
         let span = join(start, body.span);
         Expr {
+            id: self.mint_id(),
             kind: ExprKind::Loop { body },
             span,
         }
@@ -1768,6 +1819,7 @@ impl Parser<'_> {
         let body = self.parse_block();
         let span = join(start, body.span);
         Expr {
+            id: self.mint_id(),
             kind: ExprKind::For {
                 pat,
                 iter: Box::new(iter),
@@ -1791,6 +1843,7 @@ mod tests {
             errors: Vec::new(),
             depth: 0,
             depth_reported: false,
+            next_node_id: 0,
         }
     }
 

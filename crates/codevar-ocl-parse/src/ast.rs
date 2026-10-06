@@ -26,6 +26,44 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use codevar_ocl_lex::TokenKind;
 
+/// Stable identity for an [`Expr`] or [`Pat`], minted by the parser.
+///
+/// The counter is shared by every node in one parse, so each id names
+/// exactly one node. Side tables produced by later stages — the semantic
+/// analyzer's type and resolution tables, and IR lowering — key their
+/// entries by these ids instead of spans, which may be shared.
+///
+/// Following rustc's `NodeId`, only the parser mints ids: passes that
+/// rewrite the tree (such as [`optimize`](crate::optimize)) reuse the id
+/// of the node they replace so existing tables stay valid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NodeId(u32);
+
+impl NodeId {
+    /// Id for nodes not produced by the parser (tests, rebuilt trees).
+    ///
+    /// Table lookups treat it as "no entry" rather than indexing.
+    pub const DUMMY: Self = Self(u32::MAX);
+
+    /// Creates an id from its raw counter value.
+    #[must_use]
+    pub const fn from_raw(value: u32) -> Self {
+        Self(value)
+    }
+
+    /// The id as a raw counter value.
+    #[must_use]
+    pub const fn as_raw(self) -> u32 {
+        self.0
+    }
+
+    /// The id as a table index; `None` for [`NodeId::DUMMY`].
+    #[must_use]
+    pub fn index(self) -> Option<usize> {
+        (self.0 != u32::MAX).then_some(self.0 as usize)
+    }
+}
+
 /// A complete source file.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
@@ -199,12 +237,22 @@ pub struct LetStmt {
 }
 
 /// A binding pattern.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Like [`Expr`], equality ignores the [`NodeId`].
+#[derive(Debug, Clone)]
 pub struct Pat {
+    /// Identity assigned by the parser.
+    pub id: NodeId,
     /// Shape of the pattern.
     pub kind: PatKind,
     /// Span of the pattern.
     pub span: Span,
+}
+
+impl PartialEq for Pat {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind && self.span == other.span
+    }
 }
 
 /// Kind of a [`Pat`].
@@ -303,12 +351,24 @@ pub enum GenericArg {
 }
 
 /// An expression.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// [`PartialEq`] compares shape and span only; the [`NodeId`] is
+/// identity, not structure, so rebuilt nodes compare equal to the
+/// originals they replace.
+#[derive(Debug, Clone)]
 pub struct Expr {
+    /// Identity assigned by the parser.
+    pub id: NodeId,
     /// Shape of the expression.
     pub kind: ExprKind,
     /// Span of the expression.
     pub span: Span,
+}
+
+impl PartialEq for Expr {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind && self.span == other.span
+    }
 }
 
 /// Kind of an [`Expr`].

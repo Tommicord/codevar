@@ -24,10 +24,13 @@
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+use codevar_ocl_parse::visit::{walk_expr, walk_pat, walk_type};
+use codevar_ocl_parse::{Expr, ExprKind, Pat, Type, TypeKind, Visitor, walk_program};
+
 use crate::{
-    AnalysisOutput, Builtin, BuiltinKind, BuiltinType, ColorChoice, DeclKind, MessageBuilder, Scalar, Ty,
-    analyze, analyze_bytes, builtins, codes, coerce, confusable_skeleton, lookup_builtin, lookup_builtin_fn,
-    render, substitute, unify,
+    AnalysisOutput, Builtin, BuiltinKind, BuiltinType, ColorChoice, DeclKind, MessageBuilder, NodeId, Res,
+    Scalar, Ty, analyze, analyze_bytes, builtins, codes, coerce, confusable_skeleton, lookup_builtin,
+    lookup_builtin_fn, render, substitute, unify,
 };
 
 /// Analyzes `source`, asserting no error was reported (warnings are fine).
@@ -73,10 +76,6 @@ fn warning_in(source: &str, code: &str) -> AnalysisOutput {
     output
 }
 
-// ---------------------------------------------------------------------------
-// Unicode gate
-// ---------------------------------------------------------------------------
-
 #[test]
 fn bidi_control_is_rejected() {
     let output = error_in("fn f() {}\u{202E}", codes::BIDI_CONTROL);
@@ -107,10 +106,6 @@ fn disallowed_control_character_is_rejected() {
 fn allowed_whitespace_is_accepted() {
     clean("fn f() {\n\tlet _x = 1;\r\n}");
 }
-
-// ---------------------------------------------------------------------------
-// Lexical gate
-// ---------------------------------------------------------------------------
 
 #[test]
 fn unknown_character_is_rejected() {
@@ -162,10 +157,6 @@ fn lexical_errors_suppress_semantic_analysis() {
     assert!(output.declarations.is_empty());
 }
 
-// ---------------------------------------------------------------------------
-// Parse gate
-// ---------------------------------------------------------------------------
-
 #[test]
 fn syntax_errors_suppress_semantic_analysis() {
     let output = analyze("fn f( { }");
@@ -177,10 +168,6 @@ fn syntax_errors_suppress_semantic_analysis() {
     );
     assert!(output.declarations.is_empty());
 }
-
-// ---------------------------------------------------------------------------
-// Type and expression checking
-// ---------------------------------------------------------------------------
 
 #[test]
 fn function_return_mismatch_is_reported() {
@@ -265,6 +252,34 @@ fn mutable_parameter_can_be_assigned() {
 }
 
 #[test]
+fn indexes_raw_pointers() {
+    clean("fn f(p: *mut float, i: int) -> float { p[i] }");
+}
+
+#[test]
+fn assigning_through_a_pointer_needs_no_mut_binding() {
+    clean("fn f(p: *mut float, i: int) { p[i] = 1.0; }");
+}
+
+#[test]
+fn assigning_through_a_const_pointer_is_reported() {
+    error_in(
+        "fn f(p: *const float, i: int) { p[i] = 1.0; }",
+        codes::ASSIGN_TO_IMMUTABLE,
+    );
+}
+
+#[test]
+fn field_assignment_through_a_pointer_needs_no_mut_binding() {
+    clean("struct P { x: float }\nfn f(p: *mut P) { p.x = 1.0; }");
+}
+
+#[test]
+fn immutable_array_elements_still_require_mut() {
+    error_in("fn f(a: [int; 4]) { a[0] = 1; }", codes::ASSIGN_TO_IMMUTABLE);
+}
+
+#[test]
 fn non_integer_index_is_reported() {
     error_in(
         "fn f() { let a = [1, 2]; let b = a[true]; }",
@@ -320,10 +335,6 @@ fn function_name_in_type_position_is_reported() {
     error_in("fn g() {}\nfn f() { let x: g; }", codes::NOT_A_TYPE);
 }
 
-// ---------------------------------------------------------------------------
-// Name resolution
-// ---------------------------------------------------------------------------
-
 #[test]
 fn multi_segment_path_is_reported() {
     error_in("fn f() { let x = std::max; }", codes::MULTI_SEGMENT_PATH);
@@ -376,10 +387,6 @@ fn continue_outside_loop_is_reported() {
 fn try_operator_is_reported() {
     error_in("fn f(a: int) -> int { a? }", codes::TRY_NOT_SUPPORTED);
 }
-
-// ---------------------------------------------------------------------------
-// Items, attributes, cycles
-// ---------------------------------------------------------------------------
 
 #[test]
 fn keyword_used_as_name_is_reported() {
@@ -439,10 +446,6 @@ fn duplicate_attribute_is_reported() {
     error_in("#[kernel]\n#[kernel]\nfn f() {}", codes::DUPLICATE_ATTRIBUTE);
 }
 
-// ---------------------------------------------------------------------------
-// Kernel rules
-// ---------------------------------------------------------------------------
-
 #[test]
 fn kernel_must_return_void() {
     error_in("#[kernel]\nfn k() -> int { 0 }", codes::KERNEL_RETURN);
@@ -477,10 +480,6 @@ fn direct_recursion_is_reported() {
 fn mutual_recursion_is_reported() {
     error_in("fn a() { b(); }\nfn b() { a(); }", codes::RECURSION);
 }
-
-// ---------------------------------------------------------------------------
-// Lints
-// ---------------------------------------------------------------------------
 
 #[test]
 fn unused_local_is_reported() {
@@ -556,10 +555,6 @@ fn lints_are_suppressed_when_errors_exist() {
     assert!(output.has_errors());
 }
 
-// ---------------------------------------------------------------------------
-// Diagnostics ordering and counting
-// ---------------------------------------------------------------------------
-
 #[test]
 fn diagnostics_are_sorted_by_source_position() {
     let output = analyze("fn a() { break; }\nfn b() { break; }");
@@ -581,10 +576,6 @@ fn warnings_do_not_set_has_errors() {
     assert_eq!(output.error_count(), 0);
     assert!(output.warning_count() > 0);
 }
-
-// ---------------------------------------------------------------------------
-// Built-ins
-// ---------------------------------------------------------------------------
 
 #[test]
 fn sqrt_checks_by_shape() {
@@ -631,10 +622,6 @@ fn barrier_arity_is_checked() {
 fn integer_builtin_keeps_its_shape() {
     clean("fn f() -> int { abs(-5) }");
 }
-
-// ---------------------------------------------------------------------------
-// Well-formed programs
-// ---------------------------------------------------------------------------
 
 #[test]
 fn simple_function_is_accepted() {
@@ -731,10 +718,6 @@ fn unit_struct_declares_no_fields() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Byte input
-// ---------------------------------------------------------------------------
-
 #[test]
 fn valid_utf8_bytes_are_analyzed() {
     let output = analyze_bytes(b"fn f() {}");
@@ -749,10 +732,6 @@ fn invalid_utf8_bytes_are_rejected() {
     assert!(output.find_code(codes::INVALID_UTF8).is_some());
     assert!(output.declarations.is_empty());
 }
-
-// ---------------------------------------------------------------------------
-// Type-system API
-// ---------------------------------------------------------------------------
 
 #[test]
 fn literal_coercion_follows_the_rules() {
@@ -788,7 +767,7 @@ fn unify_records_generic_substitutions() {
     assert!(unify(&generic, &actual, &mut substitutions));
     assert_eq!(substitutions, alloc::vec![(String::from("T"), actual.clone())]);
     assert_eq!(
-        substitute(&generic, &[String::from("T")], &[actual.clone()]),
+        substitute(&generic, &[String::from("T")], core::slice::from_ref(&actual)),
         actual
     );
 }
@@ -894,10 +873,6 @@ fn types_render_in_canonical_spelling() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Renderer
-// ---------------------------------------------------------------------------
-
 #[test]
 fn render_without_color_is_rustc_shaped() {
     let source = "fn f() -> int { true }";
@@ -941,4 +916,177 @@ fn render_handles_syntax_errors_without_codes() {
     let text = render(&output.diagnostics, "kernel.cl", source, ColorChoice::Never);
     assert!(text.contains("error:"), "rendered: {text}");
     assert!(!text.contains("error[E"), "rendered: {text}");
+}
+
+/// Collects node ids in pre-order, skipping the const array lengths
+/// that [`analyze`] evaluates without type-checking.
+#[derive(Debug, Default)]
+struct NodeIds {
+    exprs: Vec<NodeId>,
+    callees: Vec<NodeId>,
+    pats: Vec<NodeId>,
+}
+
+impl Visitor for NodeIds {
+    fn visit_expr(&mut self, expr: &Expr) {
+        self.exprs.push(expr.id);
+        if let ExprKind::Call { callee, .. } = &expr.kind {
+            self.callees.push(callee.id);
+        }
+        walk_expr(self, expr);
+    }
+
+    fn visit_pat(&mut self, pat: &Pat) {
+        self.pats.push(pat.id);
+        walk_pat(self, pat);
+    }
+
+    fn visit_type(&mut self, ty: &Type) {
+        if let TypeKind::Array { elem, .. } = &ty.kind {
+            self.visit_type(elem);
+            return;
+        }
+        walk_type(self, ty);
+    }
+}
+
+/// Node ids of `source`, parsed exactly as [`analyze`] parses it, so
+/// the ids line up with the recorded tables.
+fn node_ids(source: &str) -> NodeIds {
+    let parsed = codevar_ocl_parse::parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let mut ids = NodeIds::default();
+    walk_program(&mut ids, &parsed.program);
+    ids
+}
+
+#[test]
+fn every_checked_expression_records_a_type() {
+    let source = r#"
+        #[kernel]
+        fn vector_add(a: *const float, b: *const float, c: *mut float, n: int) {
+            let i = get_global_id(0);
+            if i < n {
+                c[i] = a[i] + b[i];
+            }
+        }
+
+        fn saxpy(a: float, x: *const float, y: *mut float, n: int) {
+            let i = get_global_id(0);
+            if i < n {
+                y[i] = a * x[i] + y[i];
+            }
+        }
+    "#;
+    let output = clean(source);
+    let ids = node_ids(source);
+    let mut missing = Vec::new();
+    for id in &ids.exprs {
+        if ids.callees.contains(id) {
+            continue;
+        }
+        if !output.types.contains(*id) {
+            missing.push(id.as_raw());
+        }
+    }
+    assert!(missing.is_empty(), "untyped expression ids: {missing:?}");
+    let mut unique = ids.exprs.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), ids.exprs.len(), "node ids must be unique");
+    assert!(ids.exprs.iter().all(|id| *id != NodeId::DUMMY));
+}
+
+#[test]
+fn type_table_records_proven_types_per_expression() {
+    let source = "fn f(a: int, b: float) -> float { a as float + b }";
+    let output = clean(source);
+    let ids = node_ids(source);
+    assert_eq!(ids.exprs.len(), 4, "{ids:?}");
+    assert_eq!(output.types.get(ids.exprs[0]), Some(&Ty::Scalar(Scalar::F32)));
+    assert_eq!(output.types.get(ids.exprs[1]), Some(&Ty::Scalar(Scalar::F32)));
+    assert_eq!(output.types.get(ids.exprs[2]), Some(&Ty::Scalar(Scalar::I32)));
+    assert_eq!(output.types.get(ids.exprs[3]), Some(&Ty::Scalar(Scalar::F32)));
+}
+
+#[test]
+fn value_paths_resolve_to_their_bindings() {
+    let source = "fn g(a: int) -> int { a }\nfn f() -> int { g(2) }";
+    let output = clean(source);
+    let ids = node_ids(source);
+    assert_eq!(
+        output.resolutions.get(ids.exprs[0]),
+        Some(&Res::Local { binding: ids.pats[0] })
+    );
+    assert_eq!(
+        output.resolutions.get(ids.exprs[2]),
+        Some(&Res::Function {
+            name: String::from("g")
+        })
+    );
+    assert!(
+        !output.types.contains(ids.exprs[2]),
+        "callees resolve by name and carry no value type"
+    );
+    assert_eq!(output.types.get(ids.exprs[1]), Some(&Ty::Scalar(Scalar::I32)));
+}
+
+#[test]
+fn builtin_callees_and_parameter_paths_resolve() {
+    let source = r#"
+        #[kernel]
+        fn vector_add(a: *const float, b: *const float, c: *mut float, n: int) {
+            let i = get_global_id(0);
+            if i < n {
+                c[i] = a[i] + b[i];
+            }
+        }
+    "#;
+    let output = clean(source);
+    let ids = node_ids(source);
+    assert_eq!(
+        output.resolutions.get(ids.exprs[1]),
+        Some(&Res::Builtin {
+            name: String::from("get_global_id")
+        })
+    );
+    assert_eq!(
+        output.resolutions.get(ids.exprs[5]),
+        Some(&Res::Local { binding: ids.pats[4] })
+    );
+    assert_eq!(
+        output.resolutions.get(ids.exprs[9]),
+        Some(&Res::Local { binding: ids.pats[2] })
+    );
+    assert_eq!(
+        output.resolutions.get(ids.exprs[13]),
+        Some(&Res::Local { binding: ids.pats[0] })
+    );
+}
+
+#[test]
+fn shadowed_paths_resolve_to_the_inner_binding() {
+    let source = "fn f() -> int { let x = 1; let y = x; { let x = 2; let z = x; x + y + z } }";
+    let output = clean(source);
+    let ids = node_ids(source);
+    assert_eq!(
+        output.resolutions.get(ids.exprs[1]),
+        Some(&Res::Local { binding: ids.pats[0] })
+    );
+    assert_eq!(
+        output.resolutions.get(ids.exprs[4]),
+        Some(&Res::Local { binding: ids.pats[2] })
+    );
+    assert_eq!(
+        output.resolutions.get(ids.exprs[7]),
+        Some(&Res::Local { binding: ids.pats[2] })
+    );
+    assert_eq!(
+        output.resolutions.get(ids.exprs[8]),
+        Some(&Res::Local { binding: ids.pats[1] })
+    );
+    assert_eq!(
+        output.resolutions.get(ids.exprs[9]),
+        Some(&Res::Local { binding: ids.pats[3] })
+    );
 }

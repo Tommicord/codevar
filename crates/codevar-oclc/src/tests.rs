@@ -227,6 +227,84 @@ fn ast_stage_reports_syntax_errors() {
     assert_eq!(exit, Exit::Failure);
 }
 
+/// `unwrap` is safe: the path and contents are constructed here.
+#[test]
+fn analysis_stage_writes_declarations() {
+    let input = temp_path("analysis-in.cl");
+    let output = temp_path("analysis-out.txt");
+    let source = "\
+struct Point { x: float, y: float }
+type Coord = Point;
+fn scale(p: Point) -> Point { p }
+#[kernel]
+fn vec_add(a: *mut float, b: *mut float, n: int) { let i = get_global_id(0); }
+";
+    fs::write_file(&input, source).unwrap();
+    cleanup(&output);
+
+    let args = args(&["--emit", "analysis", "-o", &output, &input]);
+    let exit = run(&args);
+    let dump = fs::read_file(&output).unwrap_or_default();
+    cleanup(&input);
+    cleanup(&output);
+
+    assert_eq!(exit, Exit::Success);
+    assert!(
+        dump.contains("struct Point { x: float, y: float }"),
+        "dump: {dump}"
+    );
+    assert!(dump.contains("type Coord = Point"), "dump: {dump}");
+    assert!(dump.contains("fn scale(p: Point) -> Point"), "dump: {dump}");
+    assert!(
+        dump.contains("#[kernel] fn vec_add(a: *mut float, b: *mut float, n: int) -> void"),
+        "dump: {dump}"
+    );
+}
+
+/// `unwrap` is safe: the path and contents are constructed here.
+#[test]
+fn analysis_stage_reports_semantic_errors() {
+    let input = temp_path("analysis-error.cl");
+    fs::write_file(&input, "fn f() -> int { true }\n").unwrap();
+
+    let args = args(&["--emit", "analysis", &input]);
+    let exit = run(&args);
+    cleanup(&input);
+
+    assert_eq!(exit, Exit::Failure);
+}
+
+/// `unwrap` is safe: the path and contents are constructed here.
+#[test]
+fn analysis_stage_treats_warnings_as_success() {
+    let input = temp_path("analysis-warn.cl");
+    let output = temp_path("analysis-warn-out.txt");
+    fs::write_file(&input, "fn f() { let unused = 1; }\n").unwrap();
+    cleanup(&output);
+
+    let args = args(&["--emit", "analysis", "-o", &output, &input]);
+    let exit = run(&args);
+    let dump = fs::read_file(&output).unwrap_or_default();
+    cleanup(&input);
+    cleanup(&output);
+
+    assert_eq!(exit, Exit::Success);
+    assert!(dump.contains("fn f() -> void"), "dump: {dump}");
+}
+
+/// `unwrap` is safe: the path and contents are constructed here.
+#[test]
+fn analysis_stage_gates_on_syntax_errors() {
+    let input = temp_path("analysis-syntax.cl");
+    fs::write_file(&input, "fn f( { }\n").unwrap();
+
+    let args = args(&["--emit", "analysis", &input]);
+    let exit = run(&args);
+    cleanup(&input);
+
+    assert_eq!(exit, Exit::Failure);
+}
+
 /// `unwrap` is safe: the response file is constructed here.
 #[test]
 fn response_file_expands_lines() {

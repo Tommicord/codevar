@@ -13,16 +13,19 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-#![deny(
+use crate::io_error::IoResult;
+use crate::{
+    BufRead, ErrorKind, IoError, Read, ReadExactError, ReadReady, Seek, SeekFrom, Write, WriteFmtError,
+    WriteReady,
+};
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::fmt;
+
+#[deny(
     clippy::missing_trait_methods,
     reason = "Methods should be forwarded to the underlying type"
 )]
-use core::fmt;
-
-use crate::{
-    BufRead, ErrorKind, Read, ReadExactError, ReadReady, Seek, SeekFrom, Write, WriteFmtError, WriteReady,
-};
-
 impl<T: ?Sized + Read> Read for &mut T {
     #[inline]
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
@@ -35,9 +38,13 @@ impl<T: ?Sized + Read> Read for &mut T {
     }
 }
 
+#[deny(
+    clippy::missing_trait_methods,
+    reason = "Methods should be forwarded to the underlying type"
+)]
 impl<T: ?Sized + BufRead> BufRead for &mut T {
     #[inline]
-    fn fill_buf(&mut self) -> Result<&[u8], Self::Error> {
+    fn fill_buf(&mut self) -> Result<&[u8], IoError> {
         T::fill_buf(self)
     }
 
@@ -45,8 +52,45 @@ impl<T: ?Sized + BufRead> BufRead for &mut T {
     fn consume(&mut self, amt: usize) {
         T::consume(self, amt);
     }
+
+    #[inline]
+    fn has_data_left(&mut self) -> IoResult<bool> {
+        T::has_data_left(self)
+    }
+
+    #[inline]
+    fn read_until(&mut self, byte: u8, buf: &mut Vec<u8>) -> IoResult<usize> {
+        T::read_until(self, byte, buf)
+    }
+
+    #[inline]
+    fn skip_until(&mut self, byte: u8) -> IoResult<usize> {
+        T::skip_until(self, byte)
+    }
+
+    #[inline]
+    fn read_line(&mut self, buf: &mut String) -> IoResult<usize> {
+        T::read_line(self, buf)
+    }
+
+    #[inline]
+    fn split(self, byte: u8) -> Split<Self> {
+        Split {
+            buf: self,
+            delim: byte,
+        }
+    }
+
+    #[inline]
+    fn lines(self) -> Lines<Self> {
+        Lines { buf: self }
+    }
 }
 
+#[deny(
+    clippy::missing_trait_methods,
+    reason = "Methods should be forwarded to the underlying type"
+)]
 impl<T: ?Sized + Write> Write for &mut T {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
@@ -75,6 +119,10 @@ impl<T: ?Sized + Write> Write for &mut T {
     }
 }
 
+#[deny(
+    clippy::missing_trait_methods,
+    reason = "Methods should be forwarded to the underlying type"
+)]
 impl<T: ?Sized + Seek> Seek for &mut T {
     #[inline]
     fn seek(&mut self, pos: SeekFrom) -> Result<u64, Self::Error> {
@@ -97,6 +145,138 @@ impl<T: ?Sized + Seek> Seek for &mut T {
     }
 }
 
+struct Guard<'a> {
+    buf: &'a mut Vec<u8>,
+    len: usize,
+}
+
+impl Drop for Guard<'_> {
+    fn drop(&mut self) {
+        unsafe {
+            self.buf.set_len(self.len);
+        }
+    }
+}
+
+pub(crate) unsafe fn append_to_string<F>(buf: &mut String, f: F) -> IoResult<usize>
+where
+    F: FnOnce(&mut Vec<u8>) -> IoResult<usize>,
+{
+    let mut g = Guard {
+        len: buf.len(),
+        buf: unsafe { buf.as_mut_vec() },
+    };
+    let ret = f(g.buf);
+
+    // SAFETY: the caller promises to only append data to `buf`
+    let appended = unsafe { g.buf.get_unchecked(g.len..) };
+    if str::from_utf8(appended).is_err() {
+        ret.and_then(|_| Err(IoError::from(ErrorKind::InvalidData)))
+    } else {
+        g.len = g.buf.len();
+        ret
+    }
+}
+
+#[derive(Debug)]
+pub struct Split<B> {
+    pub(crate) buf: B,
+    pub(crate) delim: u8,
+}
+
+impl<B: BufRead> Iterator for Split<B> {
+    type Item = IoResult<Vec<u8>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut buf = Vec::new();
+        match read_until(&mut self.buf, self.delim, &mut buf) {
+            Ok(0) => None,
+            Ok(_) => {
+                if buf.last() == Some(&self.delim) {
+                    let _ = buf.pop();
+                }
+                Some(Ok(buf))
+            }
+            Err(e) => Some(Err(e)),
+        }
+    }
+}
+
+pub struct Lines<B> {
+    pub(crate) buf: B,
+}
+
+impl<B: BufRead> Iterator for Lines<B> {
+    type Item = IoResult<String>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut buf = String::new();
+        match self.buf.read_line(&mut buf) {
+            Ok(0) => None,
+            Ok(_) => {
+                if buf.ends_with('\n') {
+                    let _ = buf.pop();
+                    if buf.ends_with('\r') {
+                        let _ = buf.pop();
+                    }
+                }
+                Some(Ok(buf))
+            }
+            Err(e) => Some(Err(e)),
+        }
+    }
+}
+
+pub(crate) fn read_until<R: BufRead + ?Sized>(r: &mut R, delim: u8, buf: &mut Vec<u8>) -> IoResult<usize> {
+    let mut read = 0;
+    loop {
+        let (done, used) = {
+            let available = r.fill_buf()?;
+            match memchr::memchr(delim, available) {
+                Some(i) => {
+                    buf.extend_from_slice(&available[..=i]);
+                    (true, i + 1)
+                }
+                None => {
+                    buf.extend_from_slice(available);
+                    (false, available.len())
+                }
+            }
+        };
+        r.consume(used);
+        read += used;
+        if done || used == 0 {
+            return Ok(read);
+        }
+    }
+}
+
+pub(crate) fn skip_until<R: BufRead + ?Sized>(r: &mut R, delim: u8) -> IoResult<usize> {
+    let mut read = 0;
+    loop {
+        let (done, used) = {
+            let available = match r.fill_buf() {
+                Ok(n) => n,
+                Err(ref e) if e.kind() == ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            };
+            match memchr::memchr(delim, available) {
+                Some(i) => (true, i + 1),
+                None => (false, available.len()),
+            }
+        };
+        r.consume(used);
+        read += used;
+        if done || used == 0 {
+            return Ok(read);
+        }
+    }
+}
+
+#[deny(
+    clippy::missing_trait_methods,
+    reason = "Methods should be forwarded to the underlying type"
+)]
 impl<T: ?Sized + ReadReady> ReadReady for &mut T {
     #[inline]
     fn read_ready(&mut self) -> Result<bool, Self::Error> {
@@ -104,6 +284,10 @@ impl<T: ?Sized + ReadReady> ReadReady for &mut T {
     }
 }
 
+#[deny(
+    clippy::missing_trait_methods,
+    reason = "Methods should be forwarded to the underlying type"
+)]
 impl<T: ?Sized + WriteReady> WriteReady for &mut T {
     #[inline]
     fn write_ready(&mut self) -> Result<bool, Self::Error> {

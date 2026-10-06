@@ -43,6 +43,7 @@ mod ast;
 mod optimize;
 mod parser;
 mod token_tree;
+pub mod visit;
 
 #[cfg(test)]
 mod tests;
@@ -50,6 +51,7 @@ mod tests;
 pub use ast::*;
 pub use optimize::{OptReport, optimize};
 pub use token_tree::{Delimiter, TokenTree, TokenTreeKind, build_token_trees};
+pub use visit::{Visitor, walk_program};
 
 use alloc::string::String;
 use alloc::vec::Vec;

@@ -188,7 +188,7 @@ pub enum ErrorKind {
 
     /// A custom error that does not fall under any other I/O error kind.
     ///
-    /// This can be used to construct your own [`Error`]s that do not match any
+    /// This can be used to construct your own [`IoError`]s that do not match any
     /// [`ErrorKind`].
     ///
     /// This [`ErrorKind`] is not used by the standard library.
@@ -481,8 +481,11 @@ fn kind_from_prim(ek: u32) -> Option<ErrorKind> {
     })
 }
 
+/// Result type used in IO operations.
+pub type IoResult<T> = Result<T, IoError>;
+
 #[derive(Debug)]
-pub struct Error {
+pub struct IoError {
     repr: Repr,
 }
 
@@ -509,35 +512,35 @@ impl alloc::fmt::Display for ErrorKind {
 
 /// Intended for use for errors not exposed to the user, where allocating onto
 /// the heap (for normal construction via Error::new) is too costly.
-impl From<ErrorKind> for Error {
-    /// Converts an [`ErrorKind`] into an [`Error`].
+impl From<ErrorKind> for IoError {
+    /// Converts an [`ErrorKind`] into an [`IoError`].
     ///
     /// This conversion creates a new error with a simple representation of error kind.
     ///
     /// # Examples
     ///
     /// ```
-    /// use codevar_io::{Error, ErrorKind};
+    /// use codevar_io::{IoError, ErrorKind};
     ///
     /// let not_found = ErrorKind::NotFound;
-    /// let error = Error::from(not_found);
+    /// let error = IoError::from(not_found);
     /// assert_eq!("entity not found", format!("{error}"));
     /// ```
     #[inline]
-    fn from(kind: ErrorKind) -> Error {
-        Error {
+    fn from(kind: ErrorKind) -> IoError {
+        IoError {
             repr: Repr::new_simple(kind),
         }
     }
 }
 
-impl Error {
+impl IoError {
     /// Creates a new I/O error from a known kind of error as well as an
     /// arbitrary error payload.
     ///
     /// This function is used to generically create I/O errors which do not
     /// originate from the OS itself. The `error` argument is an arbitrary
-    /// payload which will be contained in this [`Error`].
+    /// payload which will be contained in this [`IoError`].
     ///
     /// Note that this function allocates memory on the heap.
     /// If no extra payload is required, use the `From` conversion from
@@ -546,26 +549,26 @@ impl Error {
     /// # Examples
     ///
     /// ```
-    /// use codevar_io::{Error, ErrorKind};
+    /// use codevar_io::{IoError, ErrorKind};
     ///
     /// // errors can be created from strings
-    /// let custom_error = Error::new(ErrorKind::Other, "oh no!");
+    /// let custom_error = IoError::new(ErrorKind::Other, "oh no!");
     ///
     /// // errors can also be created from other errors
-    /// let custom_error2 = Error::new(ErrorKind::Interrupted, custom_error);
+    /// let custom_error2 = IoError::new(ErrorKind::Interrupted, custom_error);
     ///
     /// // creating an error without payload (and without memory allocation)
-    /// let eof_error = Error::from(ErrorKind::UnexpectedEof);
+    /// let eof_error = IoError::from(ErrorKind::UnexpectedEof);
     /// ```
     #[inline(never)]
-    pub fn new<E>(kind: ErrorKind, error: E) -> Error
+    pub fn new<E>(kind: ErrorKind, error: E) -> IoError
     where
         E: Into<Box<dyn error::Error + Send + Sync>>,
     {
         Self::_new(kind, error.into())
     }
-    fn _new(kind: ErrorKind, error: Box<dyn error::Error + Send + Sync>) -> Error {
-        Error {
+    fn _new(kind: ErrorKind, error: Box<dyn error::Error + Send + Sync>) -> IoError {
+        IoError {
             repr: Repr::new_custom(Box::new(Custom { kind, error })),
         }
     }
@@ -573,21 +576,21 @@ impl Error {
     /// Creates a new I/O error from an arbitrary error payload.
     ///
     /// This function is used to generically create I/O errors which do not
-    /// originate from the OS itself. It is a shortcut for [`Error::new`]
+    /// originate from the OS itself. It is a shortcut for [`IoError::new`]
     /// with [`ErrorKind::Other`].
     ///
     /// # Examples
     ///
     /// ```
-    /// use codevar_io::Error;
+    /// use codevar_io::IoError;
     ///
     /// // errors can be created from strings
-    /// let custom_error = Error::other("oh no!");
+    /// let custom_error = IoError::other("oh no!");
     ///
     /// // errors can also be created from other errors
-    /// let custom_error2 = Error::other(custom_error);
+    /// let custom_error2 = IoError::other(custom_error);
     /// ```
-    pub fn other<E>(error: E) -> Error
+    pub fn other<E>(error: E) -> IoError
     where
         E: Into<Box<dyn error::Error + Send + Sync>>,
     {
@@ -606,7 +609,7 @@ impl Error {
     /// str>(kind: ErrorKind)` in the future, when const generics allow that.
     #[inline]
     #[doc(hidden)]
-    pub const fn from_static_message(msg: &'static SimpleMessage) -> Error {
+    pub const fn from_static_message(msg: &'static SimpleMessage) -> IoError {
         Self {
             repr: Repr::new_simple_message(msg),
         }
@@ -626,10 +629,10 @@ impl Error {
     /// Returns a mutable reference to the inner error wrapped by this error
     /// (if any).
     ///
-    /// If this [`Error`] was constructed via [`new`] then this function will
+    /// If this [`IoError`] was constructed via [`new`] then this function will
     /// return [`Some`], otherwise it will return [`None`].
     ///
-    /// [`new`]: Error::new
+    /// [`new`]: IoError::new
     #[must_use]
     #[inline]
     pub fn get_mut(&mut self) -> Option<&mut (dyn error::Error + Send + Sync + 'static)> {
@@ -642,12 +645,12 @@ impl Error {
 
     /// Consumes the `Error`, returning its inner error (if any).
     ///
-    /// If this [`Error`] was constructed via [`new`] or [`other`],
+    /// If this [`IoError`] was constructed via [`new`] or [`other`],
     /// then this function will return [`Some`],
     /// otherwise it will return [`None`].
     ///
-    /// [`new`]: Error::new
-    /// [`other`]: Error::other
+    /// [`new`]: IoError::new
+    /// [`other`]: IoError::other
     #[must_use = "`self` will be dropped if the result is not used"]
     #[inline]
     pub fn into_inner(self) -> Option<Box<dyn error::Error + Send + Sync>> {
@@ -660,7 +663,7 @@ impl Error {
 
     /// Attempts to downcast the custom boxed error to `E`.
     ///
-    /// If this [`Error`] contains a custom boxed error,
+    /// If this [`IoError`] contains a custom boxed error,
     /// then it would attempt downcasting on the boxed error,
     /// otherwise it will return [`Err`].
     ///
@@ -669,7 +672,7 @@ impl Error {
     ///
     /// This method is meant to be a convenience routine for calling
     /// `Box<dyn Error + Sync + Send>::downcast` on the custom boxed error, returned by
-    /// [`Error::into_inner`].
+    /// [`IoError::into_inner`].
     ///
     ///
     /// # Examples
@@ -680,7 +683,7 @@ impl Error {
     ///
     /// #[derive(Debug)]
     /// enum E {
-    ///     Io(codevar_io::Error),
+    ///     Io(codevar_io::IoError),
     ///     SomeOtherVariant,
     /// }
     ///
@@ -692,18 +695,18 @@ impl Error {
     /// }
     /// impl Error for E {}
     ///
-    /// impl From<codevar_io::Error> for E {
-    ///     fn from(err: codevar_io::Error) -> E {
+    /// impl From<codevar_io::IoError> for E {
+    ///     fn from(err: codevar_io::IoError) -> E {
     ///         err.downcast::<E>()
     ///             .unwrap_or_else(E::Io)
     ///     }
     /// }
     ///
-    /// impl From<E> for codevar_io::Error {
-    ///     fn from(err: E) -> codevar_io::Error {
+    /// impl From<E> for codevar_io::IoError {
+    ///     fn from(err: E) -> codevar_io::IoError {
     ///         match err {
     ///             E::Io(io_error) => io_error,
-    ///             e => codevar_io::Error::new(codevar_io::ErrorKind::Other, e),
+    ///             e => codevar_io::IoError::new(codevar_io::ErrorKind::Other, e),
     ///         }
     ///     }
     /// }
@@ -711,16 +714,16 @@ impl Error {
     /// # fn main() {
     /// let e = E::SomeOtherVariant;
     /// // Convert it to an io::Error
-    /// let io_error = codevar_io::Error::from(e);
+    /// let io_error = codevar_io::IoError::from(e);
     /// // Cast it back to the original variant
     /// let e = E::from(io_error);
     /// assert!(matches!(e, E::SomeOtherVariant));
     ///
-    /// let io_error = codevar_io::Error::from(codevar_io::ErrorKind::AlreadyExists);
+    /// let io_error = codevar_io::IoError::from(codevar_io::ErrorKind::AlreadyExists);
     /// // Convert it to E
     /// let e = E::from(io_error);
     /// // Cast it back to the original variant
-    /// let io_error = codevar_io::Error::from(e);
+    /// let io_error = codevar_io::IoError::from(e);
     /// assert_eq!(io_error.kind(), codevar_io::ErrorKind::AlreadyExists);
     /// assert!(io_error.get_ref().is_none());
     /// # }
@@ -770,7 +773,7 @@ impl alloc::fmt::Debug for Repr {
     }
 }
 
-impl alloc::fmt::Display for Error {
+impl alloc::fmt::Display for IoError {
     fn fmt(&self, fmt: &mut alloc::fmt::Formatter<'_>) -> alloc::fmt::Result {
         match self.repr.data() {
             ErrorData::Custom(c) => c.error.fmt(fmt),
@@ -780,7 +783,7 @@ impl alloc::fmt::Display for Error {
     }
 }
 
-impl core::error::Error for Error {
+impl core::error::Error for IoError {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self.repr.data() {
             ErrorData::Simple(..) => None,

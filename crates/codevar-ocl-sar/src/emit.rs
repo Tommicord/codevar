@@ -217,6 +217,10 @@ fn render_diagnostic(
 }
 
 /// Renders one spanned label as an arrow, a code line, and a marker line.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "render context grouped by role; splitting it would obscure the layout code"
+)]
 fn render_label(
     out: &mut String,
     label: &Label,

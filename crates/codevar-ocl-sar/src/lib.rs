@@ -55,6 +55,7 @@ mod diagnostic;
 mod emit;
 mod lexcheck;
 mod literal;
+mod tables;
 mod types;
 mod unicode;
 
@@ -68,10 +69,11 @@ use codevar_ocl_parse::parse;
 
 pub use analyzer::{DeclKind, Declaration};
 pub use builtins::{Builtin, BuiltinKind, builtins, lookup_builtin_fn};
-pub use codevar_ocl_parse::Span;
+pub use codevar_ocl_parse::{NodeId, Span};
 pub use confusable::confusable_skeleton;
 pub use diagnostic::{Diagnostic, Label, MessageBuilder, Severity, codes};
 pub use emit::{ColorChoice, emit_stderr, render};
+pub use tables::{Res, ResolutionTable, TypeTable};
 pub use types::{BuiltinType, Scalar, Ty, coerce, lookup_builtin, substitute, unify};
 
 /// Everything one [`analyze`] call produces.
@@ -81,6 +83,15 @@ pub struct AnalysisOutput {
     pub diagnostics: Vec<Diagnostic>,
     /// Declarations the analyzer resolved, in source order.
     pub declarations: Vec<Declaration>,
+    /// Type of every type-checked expression, keyed by [`NodeId`].
+    ///
+    /// The table describes the tree that was analyzed: [`analyze`] runs
+    /// the analyzer directly on the parse output, so folding with
+    /// [`optimize`](codevar_ocl_parse::optimize) afterward must not be
+    /// applied to a tree whose tables are still consulted.
+    pub types: TypeTable,
+    /// Resolution of every resolved name use, keyed by [`NodeId`].
+    pub resolutions: ResolutionTable,
 }
 
 impl AnalysisOutput {
@@ -140,6 +151,8 @@ pub fn analyze(source: &str) -> AnalysisOutput {
         return AnalysisOutput {
             diagnostics,
             declarations: Vec::new(),
+            types: TypeTable::new(),
+            resolutions: ResolutionTable::new(),
         };
     }
 
@@ -153,15 +166,19 @@ pub fn analyze(source: &str) -> AnalysisOutput {
         return AnalysisOutput {
             diagnostics,
             declarations: Vec::new(),
+            types: TypeTable::new(),
+            resolutions: ResolutionTable::new(),
         };
     }
 
-    let (semantic, declarations) = analyzer::run(source, &parsed.program);
-    diagnostics.extend(semantic);
+    let analyzed = analyzer::run(source, &parsed.program);
+    diagnostics.extend(analyzed.diagnostics);
     sort_diagnostics(&mut diagnostics);
     AnalysisOutput {
         diagnostics,
-        declarations,
+        declarations: analyzed.declarations,
+        types: analyzed.types,
+        resolutions: analyzed.resolutions,
     }
 }
 
@@ -194,6 +211,8 @@ pub fn analyze_bytes(bytes: &[u8]) -> AnalysisOutput {
             return AnalysisOutput {
                 diagnostics: alloc::vec![diagnostic],
                 declarations: Vec::new(),
+                types: TypeTable::new(),
+                resolutions: ResolutionTable::new(),
             };
         }
     };

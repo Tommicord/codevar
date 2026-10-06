@@ -26,8 +26,8 @@ use alloc::vec::Vec;
 
 use codevar_ocl_lex::{Base, LiteralKind, TokenKind};
 use codevar_ocl_parse::{
-    Attr, BinaryOp, Block, Expr, ExprKind, FnItem, GenericArg, GenericParam, ItemKind, Pat, PatKind, Path,
-    Program, Span, Stmt, StmtKind, StructItem, Type, TypeAliasItem, TypeKind, TypePath, UnaryOp,
+    Attr, BinaryOp, Block, Expr, ExprKind, FnItem, GenericArg, GenericParam, ItemKind, NodeId, Pat, PatKind,
+    Path, Program, Span, Stmt, StmtKind, StructItem, Type, TypeAliasItem, TypeKind, TypePath, UnaryOp,
 };
 
 use crate::builtins::{Builtin, BuiltinKind, builtins, lookup_builtin_fn};
@@ -37,6 +37,7 @@ use crate::literal::{
     decode_escapes, float_scalar_for_suffix, float_value, int_digits_value, int_scalar_for_suffix,
     strip_raw_ident,
 };
+use crate::tables::{Res, ResolutionTable, TypeTable};
 use crate::types::{BuiltinType, Scalar, Ty, coerce, lookup_builtin, substitute, unify};
 
 /// Dialect keywords; these may not be declared as names.
@@ -278,6 +279,8 @@ struct Binding {
     ty: Ty,
     /// Span of the pattern that introduced it.
     span: Span,
+    /// Identity of the pattern that introduced it.
+    pat: NodeId,
     /// Where the binding came from and whether it has been read.
     state: BindingState,
 }
@@ -367,10 +370,28 @@ struct Sema<'a> {
     scopes: Vec<Scope>,
     /// The function whose body is being checked.
     ctx: Option<FnCtx>,
+    /// Types recorded for every type-checked expression.
+    types: TypeTable,
+    /// Resolutions recorded for every resolved name use.
+    resolutions: ResolutionTable,
 }
 
-/// Runs every semantic pass and returns the diagnostics plus declarations.
-pub(crate) fn run(source: &str, program: &Program) -> (Vec<Diagnostic>, Vec<Declaration>) {
+/// The analyzer's full result: diagnostics, declarations, and the side
+/// tables keyed by [`NodeId`].
+pub(crate) struct RunOutput {
+    /// Diagnostics from every pass, unsorted.
+    pub(crate) diagnostics: Vec<Diagnostic>,
+    /// Declarations in source order.
+    pub(crate) declarations: Vec<Declaration>,
+    /// Type of every type-checked expression.
+    pub(crate) types: TypeTable,
+    /// Resolution of every resolved name use.
+    pub(crate) resolutions: ResolutionTable,
+}
+
+/// Runs every semantic pass and returns diagnostics, declarations, and
+/// the side tables.
+pub(crate) fn run(source: &str, program: &Program) -> RunOutput {
     let defs = Defs::new(source, program);
     let mut sema = Sema::new(source, &defs);
     sema.validate_items();
@@ -382,7 +403,12 @@ pub(crate) fn run(source: &str, program: &Program) -> (Vec<Diagnostic>, Vec<Decl
     sema.check_struct_cycles();
     sema.report_unused();
     let declarations = sema.build_declarations();
-    (sema.diagnostics, declarations)
+    RunOutput {
+        diagnostics: sema.diagnostics,
+        declarations,
+        types: sema.types,
+        resolutions: sema.resolutions,
+    }
 }
 
 impl<'a> Sema<'a> {
@@ -400,6 +426,8 @@ impl<'a> Sema<'a> {
             resolving_aliases: Vec::new(),
             scopes: Vec::new(),
             ctx: None,
+            types: TypeTable::new(),
+            resolutions: ResolutionTable::new(),
         }
     }
 
@@ -422,10 +450,10 @@ impl<'a> Sema<'a> {
                     let name = strip_raw_ident(&function.name);
                     let span = decl_name_span(defs.source, item.span, "fn", name);
                     self.check_name(&function.name, span);
-                    if let Some(first) = defs.fns.get(name) {
-                        if first.index != index {
-                            self.report_duplicate(name, first.name_span, span);
-                        }
+                    if let Some(first) = defs.fns.get(name)
+                        && first.index != index
+                    {
+                        self.report_duplicate(name, first.name_span, span);
                     }
                     self.check_attrs(&item.attrs, true);
                 }
@@ -433,10 +461,10 @@ impl<'a> Sema<'a> {
                     let name = strip_raw_ident(&record.name);
                     let span = decl_name_span(defs.source, item.span, "struct", name);
                     self.check_name(&record.name, span);
-                    if let Some(first) = defs.structs.get(name) {
-                        if first.index != index {
-                            self.report_duplicate(name, first.name_span, span);
-                        }
+                    if let Some(first) = defs.structs.get(name)
+                        && first.index != index
+                    {
+                        self.report_duplicate(name, first.name_span, span);
                     }
                     self.check_attrs(&item.attrs, false);
                 }
@@ -444,10 +472,10 @@ impl<'a> Sema<'a> {
                     let name = strip_raw_ident(&alias.name);
                     let span = decl_name_span(defs.source, item.span, "type", name);
                     self.check_name(&alias.name, span);
-                    if let Some(first) = defs.aliases.get(name) {
-                        if first.index != index {
-                            self.report_duplicate(name, first.name_span, span);
-                        }
+                    if let Some(first) = defs.aliases.get(name)
+                        && first.index != index
+                    {
+                        self.report_duplicate(name, first.name_span, span);
                     }
                     self.check_attrs(&item.attrs, false);
                 }
@@ -1146,6 +1174,7 @@ impl<'a> Sema<'a> {
                 name: stripped.to_string(),
                 ty,
                 span: pat.span,
+                pat: pat.id,
                 state,
             });
         }
@@ -1259,12 +1288,23 @@ impl<'a> Sema<'a> {
     }
 
     /// Type-checks an expression, reporting every problem it finds.
+    ///
+    /// The resulting type is recorded in the [`TypeTable`] under the
+    /// expression's [`NodeId`]; children are checked through this
+    /// wrapper too, so a checked subtree fills the table bottom-up.
     fn check_expr(&mut self, expr: &Expr) -> Ty {
+        let ty = self.check_expr_inner(expr);
+        self.types.insert(expr.id, ty.clone());
+        ty
+    }
+
+    /// The type-checking body behind [`Self::check_expr`].
+    fn check_expr_inner(&mut self, expr: &Expr) -> Ty {
         match &expr.kind {
             ExprKind::Error => Ty::Error,
             ExprKind::Literal { text, kind } => self.literal_type(expr.span, text, *kind),
             ExprKind::Bool(_) => Ty::bool(),
-            ExprKind::Path(path) => self.path_value(path),
+            ExprKind::Path(path) => self.path_value(path, expr),
             ExprKind::Unary { op, expr: inner } => self.unary_type(*op, expr, inner),
             ExprKind::Binary { op, lhs, rhs } => {
                 let left = self.check_expr(lhs);
@@ -1475,7 +1515,10 @@ impl<'a> Sema<'a> {
     }
 
     /// Types a path used as a value: bindings, then items, then error.
-    fn path_value(&mut self, path: &Path) -> Ty {
+    ///
+    /// A successful binding lookup is recorded in the
+    /// [`ResolutionTable`] under `expr.id`.
+    fn path_value(&mut self, path: &Path, expr: &Expr) -> Ty {
         if path.segments.len() > 1 {
             self.report(
                 Diagnostic::error(path.span, "paths with `::` are not supported")
@@ -1489,8 +1532,10 @@ impl<'a> Sema<'a> {
         };
         let name = strip_raw_ident(&segment.name);
 
-        if let Some((_, ty, _)) = self.binding_of(name) {
+        if let Some((_, ty, _, binding)) = self.binding_of(name) {
             self.mark_binding_used(name);
+            self.resolutions
+                .insert(expr.id, Res::Local { binding });
             return ty;
         }
 
@@ -1596,7 +1641,7 @@ impl<'a> Sema<'a> {
             return;
         };
         let name = strip_raw_ident(&segment.name);
-        let Some((mutable, _, span)) = self.binding_of(name) else {
+        let Some((mutable, _, span, _)) = self.binding_of(name) else {
             return;
         };
         if !mutable {
@@ -1763,6 +1808,10 @@ impl<'a> Sema<'a> {
     }
 
     /// Reports a binary operator that its operands do not support.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "spans, operator, operands, and help read better as arguments"
+    )]
     fn report_bad_operands(
         &mut self,
         span: Span,
@@ -1874,7 +1923,7 @@ impl<'a> Sema<'a> {
         let name = strip_raw_ident(&segment.name);
         let args_span = call_args_span(whole, callee);
 
-        if let Some((_, ty, span)) = self.binding_of(name) {
+        if let Some((_, ty, span, _)) = self.binding_of(name) {
             self.mark_binding_used(name);
             self.report(
                 primary(
@@ -1890,6 +1939,12 @@ impl<'a> Sema<'a> {
         }
 
         if let Some(sig) = self.fn_sigs.get(name).cloned() {
+            self.resolutions.insert(
+                callee.id,
+                Res::Function {
+                    name: name.to_string(),
+                },
+            );
             self.references.insert(name.to_string());
             if let Some(current) = self.ctx.as_ref().map(|ctx| ctx.name.clone()) {
                 self.calls
@@ -1944,6 +1999,12 @@ impl<'a> Sema<'a> {
         }
 
         if let Some(builtin) = lookup_builtin_fn(name) {
+            self.resolutions.insert(
+                callee.id,
+                Res::Builtin {
+                    name: name.to_string(),
+                },
+            );
             let arg_types: Vec<Ty> = args
                 .iter()
                 .map(|arg| self.check_expr(arg))
@@ -1992,10 +2053,10 @@ impl<'a> Sema<'a> {
                     self.report(arity_diagnostic(args_span, 1, arg_types.len()));
                 }
                 let dimension = Ty::Scalar(Scalar::I32);
-                if let (Some(arg), Some(actual)) = (args.first(), arg_types.first()) {
-                    if !unify(&dimension, actual, &mut Vec::new()) {
-                        self.report_mismatch(arg.span, actual, &dimension);
-                    }
+                if let (Some(arg), Some(actual)) = (args.first(), arg_types.first())
+                    && !unify(&dimension, actual, &mut Vec::new())
+                {
+                    self.report_mismatch(arg.span, actual, &dimension);
                 }
                 Ty::Scalar(Scalar::U64)
             }
@@ -2014,17 +2075,18 @@ impl<'a> Sema<'a> {
                 if arg_types.len() != *arity as usize {
                     self.report(arity_diagnostic(args_span, *arity as usize, arg_types.len()));
                 }
-                if let (Some(arg), Some(actual)) = (args.first(), arg_types.first()) {
-                    if !is_bool(actual) && !actual.is_error() {
-                        self.report(primary(
-                            Diagnostic::error(
-                                arg.span,
-                                format!("`{}` expects a boolean value, found `{actual}`", builtin.name),
-                            )
-                            .with_code(codes::MISMATCHED_TYPES),
-                            format!("expected `bool`, found `{actual}`"),
-                        ));
-                    }
+                if let (Some(arg), Some(actual)) = (args.first(), arg_types.first())
+                    && !is_bool(actual)
+                    && !actual.is_error()
+                {
+                    self.report(primary(
+                        Diagnostic::error(
+                            arg.span,
+                            format!("`{}` expects a boolean value, found `{actual}`", builtin.name),
+                        )
+                        .with_code(codes::MISMATCHED_TYPES),
+                        format!("expected `bool`, found `{actual}`"),
+                    ));
                 }
                 Ty::bool()
             }
@@ -2227,15 +2289,15 @@ impl<'a> Sema<'a> {
             return Ty::Error;
         }
         for character in field.chars() {
-            if let Some(position) = set.find(character) {
-                if position >= lanes as usize {
-                    self.report(
-                        Diagnostic::error(span, format!("lane `{character}` is out of range for `{vector}`"))
-                            .with_code(codes::UNKNOWN_FIELD)
-                            .with_help(format!("`{vector}` only has lanes 0 to {}", lanes - 1)),
-                    );
-                    return Ty::Error;
-                }
+            if let Some(position) = set.find(character)
+                && position >= lanes as usize
+            {
+                self.report(
+                    Diagnostic::error(span, format!("lane `{character}` is out of range for `{vector}`"))
+                        .with_code(codes::UNKNOWN_FIELD)
+                        .with_help(format!("`{vector}` only has lanes 0 to {}", lanes - 1)),
+                );
+                return Ty::Error;
             }
         }
         if count == 1 {
@@ -2284,15 +2346,17 @@ impl<'a> Sema<'a> {
             let start_ty = start.as_deref().map(|expr| self.check_expr(expr));
             let end_ty = end.as_deref().map(|expr| self.check_expr(expr));
             for (expr, ty) in [(start.as_deref(), &start_ty), (end.as_deref(), &end_ty)] {
-                if let (Some(expr), Some(ty)) = (expr, ty) {
-                    if !is_int_like(ty) && !ty.is_error() && !ty.is_never() {
-                        self.report(
-                            Diagnostic::error(expr.span, "range endpoints must be integers")
-                                .with_code(codes::RANGE_NOT_ALLOWED)
-                                .with_help("step through integer bounds"),
-                        );
-                        return Ty::Error;
-                    }
+                if let (Some(expr), Some(ty)) = (expr, ty)
+                    && !is_int_like(ty)
+                    && !ty.is_error()
+                    && !ty.is_never()
+                {
+                    self.report(
+                        Diagnostic::error(expr.span, "range endpoints must be integers")
+                            .with_code(codes::RANGE_NOT_ALLOWED)
+                            .with_help("step through integer bounds"),
+                    );
+                    return Ty::Error;
                 }
             }
             let elem = match (&start_ty, &end_ty) {
@@ -2376,7 +2440,7 @@ impl<'a> Sema<'a> {
                     return;
                 };
                 let name = strip_raw_ident(&segment.name);
-                let Some((mutable, _, span)) = self.binding_of(name) else {
+                let Some((mutable, _, span, _)) = self.binding_of(name) else {
                     return;
                 };
                 if !mutable {
@@ -2395,7 +2459,14 @@ impl<'a> Sema<'a> {
                 }
             }
             ExprKind::Index { expr: base, .. } | ExprKind::Field { expr: base, .. } => {
-                self.check_assignable(base);
+                // Stores through a pointer or reference mutate the pointee,
+                // never the binding, so `p[i] = v` needs no `let mut p` —
+                // only a writable pointee.
+                if self.binds_indirection(base) {
+                    self.check_deref_assignable(base);
+                } else {
+                    self.check_assignable(base);
+                }
             }
             ExprKind::Unary {
                 op: UnaryOp::Deref,
@@ -2421,7 +2492,7 @@ impl<'a> Sema<'a> {
             return;
         };
         let name = strip_raw_ident(&segment.name);
-        let Some((_, ty, span)) = self.binding_of(name) else {
+        let Some((_, ty, span, _)) = self.binding_of(name) else {
             return;
         };
         if matches!(
@@ -2435,27 +2506,51 @@ impl<'a> Sema<'a> {
                         .with_label(span, "declared without `mut`"),
                     format!("`{name}` points at read-only memory"),
                 )
-                .with_help(format!("declare it as `*mut …`")),
+                .with_help("declare it as `*mut …`"),
             );
         }
+    }
+
+    /// True when `expr` is a single-segment path bound to a pointer or
+    /// reference — assignment through it mutates the pointee, not the binding.
+    fn binds_indirection(&self, expr: &Expr) -> bool {
+        let ExprKind::Path(path) = &expr.kind else {
+            return false;
+        };
+        if path.segments.len() != 1 {
+            return false;
+        }
+        let Some(segment) = path.segments.last() else {
+            return false;
+        };
+        let name = strip_raw_ident(&segment.name);
+        self.binding_of(name)
+            .is_some_and(|(_, ty, _, _)| matches!(ty, Ty::Ptr { .. } | Ty::Ref { .. }))
     }
 
     /// Types an index expression: `a[i]`.
     fn index_type(&mut self, base: &Expr, index: &Expr) -> Ty {
         let base_ty = self.check_expr(base);
         let index_ty = self.check_expr(index);
-        let element = match strip_indirection(&base_ty) {
+        // A reference reads through to its referent; a pointer keeps its own
+        // level — `p[i]` is `*(p + i)`, so `p: *mut [T; N]` yields the inner
+        // array while `p: *mut T` yields `T`.
+        let mut target = &base_ty;
+        while let Ty::Ref { inner, .. } = target {
+            target = inner;
+        }
+        let element = match target {
             Ty::Array { elem, .. } => (**elem).clone(),
             Ty::Ptr { inner, .. } => (**inner).clone(),
             Ty::Vector { elem, .. } => Ty::Scalar(*elem),
             Ty::Error | Ty::Never => Ty::Error,
-            other => {
-                let other = other.clone();
+            _ => {
+                let shown = base_ty.clone();
                 self.report(
                     primary(
-                        Diagnostic::error(base.span, format!("cannot index `{other}`"))
+                        Diagnostic::error(base.span, format!("cannot index `{shown}`"))
                             .with_code(codes::INVALID_INDEX),
-                        format!("`{other}` cannot be indexed"),
+                        format!("`{shown}` cannot be indexed"),
                     )
                     .with_help("only arrays, vectors, and pointers support `[]`"),
                 );
@@ -2536,9 +2631,7 @@ impl<'a> Sema<'a> {
             diagnostic = diagnostic.with_help("add a `return` expression");
         } else if expected.is_unit_like() {
             diagnostic = diagnostic.with_help("this function returns nothing; remove the value");
-        } else if is_float(actual) && is_int_like(expected) {
-            diagnostic = diagnostic.with_help("cast the value with `as`");
-        } else if is_bool(actual) && is_numeric(expected) {
+        } else if (is_float(actual) && is_int_like(expected)) || (is_bool(actual) && is_numeric(expected)) {
             diagnostic = diagnostic.with_help("cast the value with `as`");
         } else if is_bool(expected) && is_numeric(actual) {
             diagnostic = diagnostic.with_help("compare the value, for example `x != 0`");
@@ -2566,7 +2659,10 @@ impl<'a> Sema<'a> {
     }
 
     /// Looks a name up in the open scopes, innermost first.
-    fn binding_of(&self, name: &str) -> Option<(bool, Ty, Span)> {
+    ///
+    /// Returns the mutability, type, declaration span, and pattern id
+    /// of the innermost binding.
+    fn binding_of(&self, name: &str) -> Option<(bool, Ty, Span, NodeId)> {
         for scope in self.scopes.iter().rev() {
             if let Some(binding) = scope
                 .bindings
@@ -2574,7 +2670,12 @@ impl<'a> Sema<'a> {
                 .rev()
                 .find(|b| b.name == name)
             {
-                return Some((binding.state.is_mutable(), binding.ty.clone(), binding.span));
+                return Some((
+                    binding.state.is_mutable(),
+                    binding.ty.clone(),
+                    binding.span,
+                    binding.pat,
+                ));
             }
         }
         None
@@ -3031,8 +3132,7 @@ fn distance(left: &str, right: &str) -> usize {
     let left: Vec<char> = left.chars().collect();
     let right: Vec<char> = right.chars().collect();
     let mut previous: Vec<usize> = (0..=right.len()).collect();
-    let mut current = Vec::with_capacity(right.len() + 1);
-    current.resize(right.len() + 1, 0);
+    let mut current = alloc::vec![0; right.len() + 1];
     for (row, left_char) in left.iter().enumerate() {
         current[0] = row + 1;
         for (column, right_char) in right.iter().enumerate() {

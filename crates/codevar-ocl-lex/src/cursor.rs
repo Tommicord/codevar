@@ -117,12 +117,10 @@ impl<'a> Cursor<'a> {
     /// Moves to the next character, returning it, or `None` at end of input.
     pub(crate) fn bump(&mut self) -> Option<char> {
         let c = self.chars.next()?;
-
         #[cfg(debug_assertions)]
         {
             self.prev = c;
         }
-
         Some(c)
     }
 

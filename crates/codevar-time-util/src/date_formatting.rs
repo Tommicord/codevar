@@ -39,7 +39,6 @@ use deranged::{ru8, ru16, ru32};
 use num_conv::Widen;
 
 pub(crate) mod fmt_types {
-
     use deranged::{Option_ri32, Option_ru8, ri8, ri16, ri32, ru8, ru16};
     pub type Day = ru8<1, 31>;
     pub type OptionDay = Option_ru8<1, 31>;

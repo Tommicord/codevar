@@ -17,6 +17,7 @@ use alloc::vec::Vec;
 use core::cmp;
 use core::fmt;
 
+use crate::io_error::IoResult;
 use crate::{
     BufRead, ErrorType, Read, ReadExactError, ReadReady, Seek, SeekFrom, SliceWriteError, Write, WriteReady,
 };
@@ -205,7 +206,7 @@ impl Read for Cursor<Vec<u8>> {
 
 impl BufRead for Cursor<&[u8]> {
     #[inline]
-    fn fill_buf(&mut self) -> Result<&[u8], Self::Error> {
+    fn fill_buf(&mut self) -> IoResult<&[u8]> {
         Ok(self.remaining_slice())
     }
 
@@ -218,7 +219,7 @@ impl BufRead for Cursor<&[u8]> {
 // Implement BufRead for Cursor<&mut [u8]>
 impl BufRead for Cursor<&mut [u8]> {
     #[inline]
-    fn fill_buf(&mut self) -> Result<&[u8], Self::Error> {
+    fn fill_buf(&mut self) -> IoResult<&[u8]> {
         Ok(self.remaining_slice())
     }
 
@@ -230,7 +231,7 @@ impl BufRead for Cursor<&mut [u8]> {
 
 impl BufRead for Cursor<Vec<u8>> {
     #[inline]
-    fn fill_buf(&mut self) -> Result<&[u8], Self::Error> {
+    fn fill_buf(&mut self) -> IoResult<&[u8]> {
         Ok(self.remaining_slice())
     }
 
