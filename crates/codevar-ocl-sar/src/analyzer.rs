@@ -2879,7 +2879,7 @@ impl<'a> Sema<'a> {
             self.report(
                 Diagnostic::warning(span, message)
                     .with_code(codes::UNUSED_ITEM)
-                    .with_help("consider removing it if it is not needed"),
+                    .with_help("consider removing it if is not needed"),
             );
         }
     }

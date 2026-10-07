@@ -433,6 +433,14 @@ fn inst_text(module: &Module, ids: &Ids, labels: &[String], inst: &Inst) -> Stri
             }
             out
         }
+        Op::PtrAccessChain { base, indices } => {
+            let mut out = format!("{} {}", head("OpPtrAccessChain"), ids.val(*base));
+            for index in indices {
+                out.push(' ');
+                out.push_str(ids.val(*index));
+            }
+            out
+        }
         Op::CopyObject { operand } => format!("{} {}", head("OpCopyObject"), ids.val(*operand)),
         Op::Unary { op, operand } => format!("{} {}", head(&format!("Op{}", op.as_str())), ids.val(*operand)),
         Op::Binary { op, lhs, rhs } => format!(

@@ -818,6 +818,16 @@ pub enum Op {
         /// Indices into the pointee.
         indices: Vec<ValueId>,
     },
+    /// Offset a pointer to a non-aggregate target (`p[i]`).
+    ///
+    /// The first index is an element offset from `base`; any further
+    /// indices walk into the pointee when it is itself an aggregate.
+    PtrAccessChain {
+        /// Base pointer.
+        base: ValueId,
+        /// Element offset, then indices into the pointee.
+        indices: Vec<ValueId>,
+    },
     /// Bitwise copy.
     CopyObject {
         /// Source value.
@@ -1418,6 +1428,16 @@ impl Module {
     #[must_use]
     pub fn global(&self, id: ValueId) -> Option<&GlobalVar> {
         match self.value_kind(id) {
+            ValueKind::Global(global) => Some(global),
+            _ => None,
+        }
+    }
+
+    /// The global payload of `id`, mutably; `None` when `id` is not a
+    /// module-scope variable.
+    #[must_use]
+    pub fn global_mut(&mut self, id: ValueId) -> Option<&mut GlobalVar> {
+        match &mut self.values[id.index()].kind {
             ValueKind::Global(global) => Some(global),
             _ => None,
         }

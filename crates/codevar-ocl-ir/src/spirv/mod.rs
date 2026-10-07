@@ -4,7 +4,7 @@
 //! compliance with the License. You may obtain a copy of the
 //! License at
 //!
-//!   http://www.apache.org/licenses/LICENSE-2.0
+//!   https://www.apache.org/licenses/LICENSE-2.0
 //!
 //! Unless required by applicable law or agreed to in
 //! writing, software distributed under the License is
@@ -13,16 +13,12 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-//! The codevar launcher entry point.
+//! SPIR-V binary layer: opcode tables, module-to-binary emission, and
+//! binary validation.
+//!
+//! [`ops`] holds the machine-readable tables generated from the SPIR-V
+//! core grammar (opcode numbers, enumerant names, extended-instruction
+//! numbers), so the builder and the validator agree on the binary format
+//! by construction rather than by parallel hand-maintained constants.
 
-use codevar_logger::log_info;
-
-fn main() {
-    codevar_sig_module_base::init();
-    if let Err(e) = codevar_sig_handler::install() {
-        log_info!("error installing signal handler: {}", e);
-    } else {
-        log_info!("installed signal handler");
-    }
-    loop {}
-}
+pub mod ops;

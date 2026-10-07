@@ -2192,13 +2192,12 @@ mod elf {
 
     #[cfg_attr(feature = "nightly", sanitize(address = "off"))]
     pub(super) fn trace_inner(cb: &mut dyn FnMut(&Frame) -> bool) {
-        super::walk(
-            cb,
-            Some(|state: &mut UnwindState| {
-                fp::step(state);
-                cfi_or_fp(state)
-            }),
-        );
+        // Exactly one step per frame: `cfi_or_fp` applies DWARF CFI and
+        // already falls back to `fp::step` when CFI is unavailable. An extra
+        // `fp::step` here would advance `state` first, so CFI would then use
+        // an `ip` from one frame with registers from another and compute a
+        // bogus CFA, reading unrelated (possibly poisoned) stack memory.
+        super::walk(cb, Some(cfi_or_fp));
     }
 
     fn cfi_or_fp(state: &mut UnwindState) -> bool {

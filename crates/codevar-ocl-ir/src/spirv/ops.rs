@@ -86,6 +86,8 @@ pub const OP_STORE: u16 = 62;
 pub const OP_ACCESSCHAIN: u16 = 65;
 /// `OpInBoundsAccessChain`.
 pub const OP_INBOUNDSACCESSCHAIN: u16 = 66;
+/// `OpPtrAccessChain`.
+pub const OP_PTRACCESSCHAIN: u16 = 67;
 /// `OpDecorate`.
 pub const OP_DECORATE: u16 = 71;
 /// `OpCompositeConstruct`.
@@ -250,6 +252,7 @@ pub const fn op_name(opcode: u16) -> &'static str {
         62 => "OpStore",
         65 => "OpAccessChain",
         66 => "OpInBoundsAccessChain",
+        67 => "OpPtrAccessChain",
         71 => "OpDecorate",
         80 => "OpCompositeConstruct",
         81 => "OpCompositeExtract",
@@ -324,6 +327,7 @@ pub fn op_opcode(name: &str) -> Option<u16> {
     let name = name.strip_prefix("Op")?;
     let opcode = match name {
         "AccessChain" => 65,
+        "PtrAccessChain" => 67,
         "Bitcast" => 124,
         "BitwiseAnd" => 199,
         "BitwiseOr" => 197,
@@ -423,9 +427,13 @@ pub fn op_opcode(name: &str) -> Option<u16> {
     Some(opcode)
 }
 
+/// Addressing model `Logical`.
 pub const ADDRESSINGMODEL_LOGICAL: u32 = 0;
+/// Addressing model `Physical32`.
 pub const ADDRESSINGMODEL_PHYSICAL32: u32 = 1;
+/// Addressing model `Physical64`.
 pub const ADDRESSINGMODEL_PHYSICAL64: u32 = 2;
+/// Addressing model `PhysicalStorageBuffer64`.
 pub const ADDRESSINGMODEL_PHYSICALSTORAGEBUFFER64: u32 = 5348;
 /// `AddressingModel` enumerant value for a textual name.
 #[must_use]
@@ -452,9 +460,13 @@ pub const fn addressingmodel_name(value: u32) -> &'static str {
     }
 }
 
+/// Memory model `Simple`.
 pub const MEMORYMODEL_SIMPLE: u32 = 0;
+/// Memory model `GLSL450`.
 pub const MEMORYMODEL_GLSL450: u32 = 1;
+/// Memory model `OpenCL`.
 pub const MEMORYMODEL_OPENCL: u32 = 2;
+/// Memory model `Vulkan`.
 pub const MEMORYMODEL_VULKAN: u32 = 3;
 /// `MemoryModel` enumerant value for a textual name.
 #[must_use]
@@ -481,22 +493,39 @@ pub const fn memorymodel_name(value: u32) -> &'static str {
     }
 }
 
+/// Execution model `Vertex`.
 pub const EXECUTIONMODEL_VERTEX: u32 = 0;
+/// Execution model `TessellationControl`.
 pub const EXECUTIONMODEL_TESSELLATIONCONTROL: u32 = 1;
+/// Execution model `TessellationEvaluation`.
 pub const EXECUTIONMODEL_TESSELLATIONEVALUATION: u32 = 2;
+/// Execution model `Geometry`.
 pub const EXECUTIONMODEL_GEOMETRY: u32 = 3;
+/// Execution model `Fragment`.
 pub const EXECUTIONMODEL_FRAGMENT: u32 = 4;
+/// Execution model `GLCompute`.
 pub const EXECUTIONMODEL_GLCOMPUTE: u32 = 5;
+/// Execution model `Kernel`.
 pub const EXECUTIONMODEL_KERNEL: u32 = 6;
+/// Execution model `TaskNV`.
 pub const EXECUTIONMODEL_TASKNV: u32 = 5267;
+/// Execution model `MeshNV`.
 pub const EXECUTIONMODEL_MESHNV: u32 = 5268;
+/// Execution model `RayGenerationKHR`.
 pub const EXECUTIONMODEL_RAYGENERATIONKHR: u32 = 5313;
+/// Execution model `IntersectionKHR`.
 pub const EXECUTIONMODEL_INTERSECTIONKHR: u32 = 5314;
+/// Execution model `AnyHitKHR`.
 pub const EXECUTIONMODEL_ANYHITKHR: u32 = 5315;
+/// Execution model `ClosestHitKHR`.
 pub const EXECUTIONMODEL_CLOSESTHITKHR: u32 = 5316;
+/// Execution model `MissKHR`.
 pub const EXECUTIONMODEL_MISSKHR: u32 = 5317;
+/// Execution model `CallableKHR`.
 pub const EXECUTIONMODEL_CALLABLEKHR: u32 = 5318;
+/// Execution model `TaskEXT`.
 pub const EXECUTIONMODEL_TASKEXT: u32 = 5364;
+/// Execution model `MeshEXT`.
 pub const EXECUTIONMODEL_MESHEXT: u32 = 5365;
 /// `ExecutionModel` enumerant value for a textual name.
 #[must_use]
@@ -550,34 +579,63 @@ pub const fn executionmodel_name(value: u32) -> &'static str {
 }
 
 // ---- StorageClass ----
+/// Storage class `UniformConstant`.
 pub const STORAGECLASS_UNIFORMCONSTANT: u32 = 0;
+/// Storage class `Input`.
 pub const STORAGECLASS_INPUT: u32 = 1;
+/// Storage class `Uniform`.
 pub const STORAGECLASS_UNIFORM: u32 = 2;
+/// Storage class `Output`.
 pub const STORAGECLASS_OUTPUT: u32 = 3;
+/// Storage class `Workgroup`.
 pub const STORAGECLASS_WORKGROUP: u32 = 4;
+/// Storage class `CrossWorkgroup`.
 pub const STORAGECLASS_CROSSWORKGROUP: u32 = 5;
+/// Storage class `Private`.
 pub const STORAGECLASS_PRIVATE: u32 = 6;
+/// Storage class `Function`.
 pub const STORAGECLASS_FUNCTION: u32 = 7;
+/// Storage class `Generic`.
 pub const STORAGECLASS_GENERIC: u32 = 8;
+/// Storage class `PushConstant`.
 pub const STORAGECLASS_PUSHCONSTANT: u32 = 9;
+/// Storage class `AtomicCounter`.
 pub const STORAGECLASS_ATOMICCOUNTER: u32 = 10;
+/// Storage class `Image`.
 pub const STORAGECLASS_IMAGE: u32 = 11;
+/// Storage class `StorageBuffer`.
 pub const STORAGECLASS_STORAGEBUFFER: u32 = 12;
+/// Storage class `TileImageEXT`.
 pub const STORAGECLASS_TILEIMAGEEXT: u32 = 4172;
+/// Storage class `TileAttachmentQCOM`.
 pub const STORAGECLASS_TILEATTACHMENTQCOM: u32 = 4491;
+/// Storage class `NodePayloadAMDX`.
 pub const STORAGECLASS_NODEPAYLOADAMDX: u32 = 5068;
+/// Storage class `CallableDataKHR`.
 pub const STORAGECLASS_CALLABLEDATAKHR: u32 = 5328;
+/// Storage class `IncomingCallableDataKHR`.
 pub const STORAGECLASS_INCOMINGCALLABLEDATAKHR: u32 = 5329;
+/// Storage class `RayPayloadKHR`.
 pub const STORAGECLASS_RAYPAYLOADKHR: u32 = 5338;
+/// Storage class `HitAttributeKHR`.
 pub const STORAGECLASS_HITATTRIBUTEKHR: u32 = 5339;
+/// Storage class `IncomingRayPayloadKHR`.
 pub const STORAGECLASS_INCOMINGRAYPAYLOADKHR: u32 = 5342;
+/// Storage class `ShaderRecordBufferKHR`.
 pub const STORAGECLASS_SHADERRECORDBUFFERKHR: u32 = 5343;
+/// Storage class `PhysicalStorageBuffer`.
 pub const STORAGECLASS_PHYSICALSTORAGEBUFFER: u32 = 5349;
+/// Storage class `HitObjectAttributeNV`.
 pub const STORAGECLASS_HITOBJECTATTRIBUTENV: u32 = 5385;
+/// Storage class `TaskPayloadWorkgroupEXT`.
 pub const STORAGECLASS_TASKPAYLOADWORKGROUPEXT: u32 = 5402;
+/// Storage class `HitObjectAttributeEXT`.
 pub const STORAGECLASS_HITOBJECTATTRIBUTEEXT: u32 = 5411;
+/// Storage class `CodeSectionINTEL`.
 pub const STORAGECLASS_CODESECTIONINTEL: u32 = 5605;
+/// Storage class `DeviceOnlyALTERA`.
 pub const STORAGECLASS_DEVICEONLYALTERA: u32 = 5936;
+/// Storage class `HostOnlyALTERA`.
 pub const STORAGECLASS_HOSTONLYALTERA: u32 = 5937;
 /// `StorageClass` enumerant value for a textual name.
 #[must_use]
@@ -654,312 +712,619 @@ pub const fn storageclass_name(value: u32) -> &'static str {
     }
 }
 
+/// Capability `Matrix`.
 pub const CAPABILITY_MATRIX: u32 = 0;
+/// Capability `Shader`.
 pub const CAPABILITY_SHADER: u32 = 1;
+/// Capability `Geometry`.
 pub const CAPABILITY_GEOMETRY: u32 = 2;
+/// Capability `Tessellation`.
 pub const CAPABILITY_TESSELLATION: u32 = 3;
+/// Capability `Addresses`.
 pub const CAPABILITY_ADDRESSES: u32 = 4;
+/// Capability `Linkage`.
 pub const CAPABILITY_LINKAGE: u32 = 5;
+/// Capability `Kernel`.
 pub const CAPABILITY_KERNEL: u32 = 6;
+/// Capability `Vector16`.
 pub const CAPABILITY_VECTOR16: u32 = 7;
+/// Capability `Float16Buffer`.
 pub const CAPABILITY_FLOAT16BUFFER: u32 = 8;
+/// Capability `Float16`.
 pub const CAPABILITY_FLOAT16: u32 = 9;
+/// Capability `Float64`.
 pub const CAPABILITY_FLOAT64: u32 = 10;
+/// Capability `Int64`.
 pub const CAPABILITY_INT64: u32 = 11;
+/// Capability `Int64Atomics`.
 pub const CAPABILITY_INT64ATOMICS: u32 = 12;
+/// Capability `ImageBasic`.
 pub const CAPABILITY_IMAGEBASIC: u32 = 13;
+/// Capability `ImageReadWrite`.
 pub const CAPABILITY_IMAGEREADWRITE: u32 = 14;
+/// Capability `ImageMipmap`.
 pub const CAPABILITY_IMAGEMIPMAP: u32 = 15;
+/// Capability `Pipes`.
 pub const CAPABILITY_PIPES: u32 = 17;
+/// Capability `Groups`.
 pub const CAPABILITY_GROUPS: u32 = 18;
+/// Capability `DeviceEnqueue`.
 pub const CAPABILITY_DEVICEENQUEUE: u32 = 19;
+/// Capability `LiteralSampler`.
 pub const CAPABILITY_LITERALSAMPLER: u32 = 20;
+/// Capability `AtomicStorage`.
 pub const CAPABILITY_ATOMICSTORAGE: u32 = 21;
+/// Capability `Int16`.
 pub const CAPABILITY_INT16: u32 = 22;
+/// Capability `TessellationPointSize`.
 pub const CAPABILITY_TESSELLATIONPOINTSIZE: u32 = 23;
+/// Capability `GeometryPointSize`.
 pub const CAPABILITY_GEOMETRYPOINTSIZE: u32 = 24;
+/// Capability `ImageGatherExtended`.
 pub const CAPABILITY_IMAGEGATHEREXTENDED: u32 = 25;
+/// Capability `StorageImageMultisample`.
 pub const CAPABILITY_STORAGEIMAGEMULTISAMPLE: u32 = 27;
+/// Capability `UniformBufferArrayDynamicIndexing`.
 pub const CAPABILITY_UNIFORMBUFFERARRAYDYNAMICINDEXING: u32 = 28;
+/// Capability `SampledImageArrayDynamicIndexing`.
 pub const CAPABILITY_SAMPLEDIMAGEARRAYDYNAMICINDEXING: u32 = 29;
+/// Capability `StorageBufferArrayDynamicIndexing`.
 pub const CAPABILITY_STORAGEBUFFERARRAYDYNAMICINDEXING: u32 = 30;
+/// Capability `StorageImageArrayDynamicIndexing`.
 pub const CAPABILITY_STORAGEIMAGEARRAYDYNAMICINDEXING: u32 = 31;
+/// Capability `ClipDistance`.
 pub const CAPABILITY_CLIPDISTANCE: u32 = 32;
+/// Capability `CullDistance`.
 pub const CAPABILITY_CULLDISTANCE: u32 = 33;
+/// Capability `ImageCubeArray`.
 pub const CAPABILITY_IMAGECUBEARRAY: u32 = 34;
+/// Capability `SampleRateShading`.
 pub const CAPABILITY_SAMPLERATESHADING: u32 = 35;
+/// Capability `ImageRect`.
 pub const CAPABILITY_IMAGERECT: u32 = 36;
+/// Capability `SampledRect`.
 pub const CAPABILITY_SAMPLEDRECT: u32 = 37;
+/// Capability `GenericPointer`.
 pub const CAPABILITY_GENERICPOINTER: u32 = 38;
+/// Capability `Int8`.
 pub const CAPABILITY_INT8: u32 = 39;
+/// Capability `InputAttachment`.
 pub const CAPABILITY_INPUTATTACHMENT: u32 = 40;
+/// Capability `SparseResidency`.
 pub const CAPABILITY_SPARSERESIDENCY: u32 = 41;
+/// Capability `MinLod`.
 pub const CAPABILITY_MINLOD: u32 = 42;
+/// Capability `Sampled1D`.
 pub const CAPABILITY_SAMPLED1D: u32 = 43;
+/// Capability `Image1D`.
 pub const CAPABILITY_IMAGE1D: u32 = 44;
+/// Capability `SampledCubeArray`.
 pub const CAPABILITY_SAMPLEDCUBEARRAY: u32 = 45;
+/// Capability `SampledBuffer`.
 pub const CAPABILITY_SAMPLEDBUFFER: u32 = 46;
+/// Capability `ImageBuffer`.
 pub const CAPABILITY_IMAGEBUFFER: u32 = 47;
+/// Capability `ImageMSArray`.
 pub const CAPABILITY_IMAGEMSARRAY: u32 = 48;
+/// Capability `StorageImageExtendedFormats`.
 pub const CAPABILITY_STORAGEIMAGEEXTENDEDFORMATS: u32 = 49;
+/// Capability `ImageQuery`.
 pub const CAPABILITY_IMAGEQUERY: u32 = 50;
+/// Capability `DerivativeControl`.
 pub const CAPABILITY_DERIVATIVECONTROL: u32 = 51;
+/// Capability `InterpolationFunction`.
 pub const CAPABILITY_INTERPOLATIONFUNCTION: u32 = 52;
+/// Capability `TransformFeedback`.
 pub const CAPABILITY_TRANSFORMFEEDBACK: u32 = 53;
+/// Capability `GeometryStreams`.
 pub const CAPABILITY_GEOMETRYSTREAMS: u32 = 54;
+/// Capability `StorageImageReadWithoutFormat`.
 pub const CAPABILITY_STORAGEIMAGEREADWITHOUTFORMAT: u32 = 55;
+/// Capability `StorageImageWriteWithoutFormat`.
 pub const CAPABILITY_STORAGEIMAGEWRITEWITHOUTFORMAT: u32 = 56;
+/// Capability `MultiViewport`.
 pub const CAPABILITY_MULTIVIEWPORT: u32 = 57;
+/// Capability `SubgroupDispatch`.
 pub const CAPABILITY_SUBGROUPDISPATCH: u32 = 58;
+/// Capability `NamedBarrier`.
 pub const CAPABILITY_NAMEDBARRIER: u32 = 59;
+/// Capability `PipeStorage`.
 pub const CAPABILITY_PIPESTORAGE: u32 = 60;
+/// Capability `GroupNonUniform`.
 pub const CAPABILITY_GROUPNONUNIFORM: u32 = 61;
+/// Capability `GroupNonUniformVote`.
 pub const CAPABILITY_GROUPNONUNIFORMVOTE: u32 = 62;
+/// Capability `GroupNonUniformArithmetic`.
 pub const CAPABILITY_GROUPNONUNIFORMARITHMETIC: u32 = 63;
+/// Capability `GroupNonUniformBallot`.
 pub const CAPABILITY_GROUPNONUNIFORMBALLOT: u32 = 64;
+/// Capability `GroupNonUniformShuffle`.
 pub const CAPABILITY_GROUPNONUNIFORMSHUFFLE: u32 = 65;
+/// Capability `GroupNonUniformShuffleRelative`.
 pub const CAPABILITY_GROUPNONUNIFORMSHUFFLERELATIVE: u32 = 66;
+/// Capability `GroupNonUniformClustered`.
 pub const CAPABILITY_GROUPNONUNIFORMCLUSTERED: u32 = 67;
+/// Capability `GroupNonUniformQuad`.
 pub const CAPABILITY_GROUPNONUNIFORMQUAD: u32 = 68;
+/// Capability `ShaderLayer`.
 pub const CAPABILITY_SHADERLAYER: u32 = 69;
+/// Capability `ShaderViewportIndex`.
 pub const CAPABILITY_SHADERVIEWPORTINDEX: u32 = 70;
+/// Capability `UniformDecoration`.
 pub const CAPABILITY_UNIFORMDECORATION: u32 = 71;
+/// Capability `CoreBuiltinsARM`.
 pub const CAPABILITY_COREBUILTINSARM: u32 = 4165;
+/// Capability `TileImageColorReadAccessEXT`.
 pub const CAPABILITY_TILEIMAGECOLORREADACCESSEXT: u32 = 4166;
+/// Capability `TileImageDepthReadAccessEXT`.
 pub const CAPABILITY_TILEIMAGEDEPTHREADACCESSEXT: u32 = 4167;
+/// Capability `TileImageStencilReadAccessEXT`.
 pub const CAPABILITY_TILEIMAGESTENCILREADACCESSEXT: u32 = 4168;
+/// Capability `TensorsARM`.
 pub const CAPABILITY_TENSORSARM: u32 = 4174;
+/// Capability `StorageTensorArrayDynamicIndexingARM`.
 pub const CAPABILITY_STORAGETENSORARRAYDYNAMICINDEXINGARM: u32 = 4175;
+/// Capability `StorageTensorArrayNonUniformIndexingARM`.
 pub const CAPABILITY_STORAGETENSORARRAYNONUNIFORMINDEXINGARM: u32 = 4176;
+/// Capability `GraphARM`.
 pub const CAPABILITY_GRAPHARM: u32 = 4191;
+/// Capability `CooperativeMatrixLayoutsARM`.
 pub const CAPABILITY_COOPERATIVEMATRIXLAYOUTSARM: u32 = 4201;
+/// Capability `Float8EXT`.
 pub const CAPABILITY_FLOAT8EXT: u32 = 4212;
+/// Capability `Float8CooperativeMatrixEXT`.
 pub const CAPABILITY_FLOAT8COOPERATIVEMATRIXEXT: u32 = 4213;
+/// Capability `Float6EXT`.
 pub const CAPABILITY_FLOAT6EXT: u32 = 4228;
+/// Capability `Float4EXT`.
 pub const CAPABILITY_FLOAT4EXT: u32 = 4229;
+/// Capability `Float8UnsignedE8M0EXT`.
 pub const CAPABILITY_FLOAT8UNSIGNEDE8M0EXT: u32 = 4230;
+/// Capability `MXInt8EXT`.
 pub const CAPABILITY_MXINT8EXT: u32 = 4231;
+/// Capability `BitcastExtractEXT`.
 pub const CAPABILITY_BITCASTEXTRACTEXT: u32 = 4232;
+/// Capability `FragmentShadingRateKHR`.
 pub const CAPABILITY_FRAGMENTSHADINGRATEKHR: u32 = 4422;
+/// Capability `SubgroupBallotKHR`.
 pub const CAPABILITY_SUBGROUPBALLOTKHR: u32 = 4423;
+/// Capability `DrawParameters`.
 pub const CAPABILITY_DRAWPARAMETERS: u32 = 4427;
+/// Capability `WorkgroupMemoryExplicitLayoutKHR`.
 pub const CAPABILITY_WORKGROUPMEMORYEXPLICITLAYOUTKHR: u32 = 4428;
+/// Capability `WorkgroupMemoryExplicitLayout8BitAccessKHR`.
 pub const CAPABILITY_WORKGROUPMEMORYEXPLICITLAYOUT8BITACCESSKHR: u32 = 4429;
+/// Capability `WorkgroupMemoryExplicitLayout16BitAccessKHR`.
 pub const CAPABILITY_WORKGROUPMEMORYEXPLICITLAYOUT16BITACCESSKHR: u32 = 4430;
+/// Capability `SubgroupVoteKHR`.
 pub const CAPABILITY_SUBGROUPVOTEKHR: u32 = 4431;
+/// Capability `StorageBuffer16BitAccess`.
 pub const CAPABILITY_STORAGEBUFFER16BITACCESS: u32 = 4433;
+/// Capability `UniformAndStorageBuffer16BitAccess`.
 pub const CAPABILITY_UNIFORMANDSTORAGEBUFFER16BITACCESS: u32 = 4434;
+/// Capability `StoragePushConstant16`.
 pub const CAPABILITY_STORAGEPUSHCONSTANT16: u32 = 4435;
+/// Capability `StorageInputOutput16`.
 pub const CAPABILITY_STORAGEINPUTOUTPUT16: u32 = 4436;
+/// Capability `DeviceGroup`.
 pub const CAPABILITY_DEVICEGROUP: u32 = 4437;
+/// Capability `MultiView`.
 pub const CAPABILITY_MULTIVIEW: u32 = 4439;
+/// Capability `VariablePointersStorageBuffer`.
 pub const CAPABILITY_VARIABLEPOINTERSSTORAGEBUFFER: u32 = 4441;
+/// Capability `VariablePointers`.
 pub const CAPABILITY_VARIABLEPOINTERS: u32 = 4442;
+/// Capability `AtomicStorageOps`.
 pub const CAPABILITY_ATOMICSTORAGEOPS: u32 = 4445;
+/// Capability `SampleMaskPostDepthCoverage`.
 pub const CAPABILITY_SAMPLEMASKPOSTDEPTHCOVERAGE: u32 = 4447;
+/// Capability `StorageBuffer8BitAccess`.
 pub const CAPABILITY_STORAGEBUFFER8BITACCESS: u32 = 4448;
+/// Capability `UniformAndStorageBuffer8BitAccess`.
 pub const CAPABILITY_UNIFORMANDSTORAGEBUFFER8BITACCESS: u32 = 4449;
+/// Capability `StoragePushConstant8`.
 pub const CAPABILITY_STORAGEPUSHCONSTANT8: u32 = 4450;
+/// Capability `DenormPreserve`.
 pub const CAPABILITY_DENORMPRESERVE: u32 = 4464;
+/// Capability `DenormFlushToZero`.
 pub const CAPABILITY_DENORMFLUSHTOZERO: u32 = 4465;
+/// Capability `SignedZeroInfNanPreserve`.
 pub const CAPABILITY_SIGNEDZEROINFNANPRESERVE: u32 = 4466;
+/// Capability `RoundingModeRTE`.
 pub const CAPABILITY_ROUNDINGMODERTE: u32 = 4467;
+/// Capability `RoundingModeRTZ`.
 pub const CAPABILITY_ROUNDINGMODERTZ: u32 = 4468;
+/// Capability `RayQueryProvisionalKHR`.
 pub const CAPABILITY_RAYQUERYPROVISIONALKHR: u32 = 4471;
+/// Capability `RayQueryKHR`.
 pub const CAPABILITY_RAYQUERYKHR: u32 = 4472;
+/// Capability `UntypedPointersKHR`.
 pub const CAPABILITY_UNTYPEDPOINTERSKHR: u32 = 4473;
+/// Capability `RayTraversalPrimitiveCullingKHR`.
 pub const CAPABILITY_RAYTRAVERSALPRIMITIVECULLINGKHR: u32 = 4478;
+/// Capability `RayTracingKHR`.
 pub const CAPABILITY_RAYTRACINGKHR: u32 = 4479;
+/// Capability `TextureSampleWeightedQCOM`.
 pub const CAPABILITY_TEXTURESAMPLEWEIGHTEDQCOM: u32 = 4484;
+/// Capability `TextureBoxFilterQCOM`.
 pub const CAPABILITY_TEXTUREBOXFILTERQCOM: u32 = 4485;
+/// Capability `TextureBlockMatchQCOM`.
 pub const CAPABILITY_TEXTUREBLOCKMATCHQCOM: u32 = 4486;
+/// Capability `TileShadingQCOM`.
 pub const CAPABILITY_TILESHADINGQCOM: u32 = 4495;
+/// Capability `CooperativeMatrixConversionQCOM`.
 pub const CAPABILITY_COOPERATIVEMATRIXCONVERSIONQCOM: u32 = 4496;
+/// Capability `TextureBlockMatch2QCOM`.
 pub const CAPABILITY_TEXTUREBLOCKMATCH2QCOM: u32 = 4498;
+/// Capability `BFloat16MulAddQCOM`.
 pub const CAPABILITY_BFLOAT16MULADDQCOM: u32 = 4504;
+/// Capability `SubgroupSizeQCOM`.
 pub const CAPABILITY_SUBGROUPSIZEQCOM: u32 = 4506;
+/// Capability `MultipleWaitQueuesQCOM`.
 pub const CAPABILITY_MULTIPLEWAITQUEUESQCOM: u32 = 4539;
+/// Capability `ImageGatherLinearQCOM`.
 pub const CAPABILITY_IMAGEGATHERLINEARQCOM: u32 = 4543;
+/// Capability `ImageGatherExtendedModesQCOM`.
 pub const CAPABILITY_IMAGEGATHEREXTENDEDMODESQCOM: u32 = 4544;
+/// Capability `Float16ImageAMD`.
 pub const CAPABILITY_FLOAT16IMAGEAMD: u32 = 5008;
+/// Capability `ImageGatherBiasLodAMD`.
 pub const CAPABILITY_IMAGEGATHERBIASLODAMD: u32 = 5009;
+/// Capability `FragmentMaskAMD`.
 pub const CAPABILITY_FRAGMENTMASKAMD: u32 = 5010;
+/// Capability `StencilExportEXT`.
 pub const CAPABILITY_STENCILEXPORTEXT: u32 = 5013;
+/// Capability `ImageReadWriteLodAMD`.
 pub const CAPABILITY_IMAGEREADWRITELODAMD: u32 = 5015;
+/// Capability `Int64ImageEXT`.
 pub const CAPABILITY_INT64IMAGEEXT: u32 = 5016;
+/// Capability `ShaderClockKHR`.
 pub const CAPABILITY_SHADERCLOCKKHR: u32 = 5055;
+/// Capability `ShaderEnqueueAMDX`.
 pub const CAPABILITY_SHADERENQUEUEAMDX: u32 = 5067;
+/// Capability `QuadControlKHR`.
 pub const CAPABILITY_QUADCONTROLKHR: u32 = 5087;
+/// Capability `Int4TypeINTEL`.
 pub const CAPABILITY_INT4TYPEINTEL: u32 = 5112;
+/// Capability `Int4CooperativeMatrixINTEL`.
 pub const CAPABILITY_INT4COOPERATIVEMATRIXINTEL: u32 = 5114;
+/// Capability `BFloat16TypeKHR`.
 pub const CAPABILITY_BFLOAT16TYPEKHR: u32 = 5116;
+/// Capability `BFloat16DotProductKHR`.
 pub const CAPABILITY_BFLOAT16DOTPRODUCTKHR: u32 = 5117;
+/// Capability `BFloat16CooperativeMatrixKHR`.
 pub const CAPABILITY_BFLOAT16COOPERATIVEMATRIXKHR: u32 = 5118;
+/// Capability `AbortKHR`.
 pub const CAPABILITY_ABORTKHR: u32 = 5120;
+/// Capability `DescriptorHeapEXT`.
 pub const CAPABILITY_DESCRIPTORHEAPEXT: u32 = 5128;
+/// Capability `ConstantDataKHR`.
 pub const CAPABILITY_CONSTANTDATAKHR: u32 = 5146;
+/// Capability `PoisonFreezeKHR`.
 pub const CAPABILITY_POISONFREEZEKHR: u32 = 5156;
+/// Capability `WeakLinkageAMD`.
 pub const CAPABILITY_WEAKLINKAGEAMD: u32 = 5181;
+/// Capability `SampleMaskOverrideCoverageNV`.
 pub const CAPABILITY_SAMPLEMASKOVERRIDECOVERAGENV: u32 = 5249;
+/// Capability `GeometryShaderPassthroughNV`.
 pub const CAPABILITY_GEOMETRYSHADERPASSTHROUGHNV: u32 = 5251;
+/// Capability `ShaderViewportIndexLayerEXT`.
 pub const CAPABILITY_SHADERVIEWPORTINDEXLAYEREXT: u32 = 5254;
+/// Capability `ShaderViewportMaskNV`.
 pub const CAPABILITY_SHADERVIEWPORTMASKNV: u32 = 5255;
+/// Capability `ShaderStereoViewNV`.
 pub const CAPABILITY_SHADERSTEREOVIEWNV: u32 = 5259;
+/// Capability `PerViewAttributesNV`.
 pub const CAPABILITY_PERVIEWATTRIBUTESNV: u32 = 5260;
+/// Capability `FragmentFullyCoveredEXT`.
 pub const CAPABILITY_FRAGMENTFULLYCOVEREDEXT: u32 = 5265;
+/// Capability `MeshShadingNV`.
 pub const CAPABILITY_MESHSHADINGNV: u32 = 5266;
+/// Capability `ImageFootprintNV`.
 pub const CAPABILITY_IMAGEFOOTPRINTNV: u32 = 5282;
+/// Capability `MeshShadingEXT`.
 pub const CAPABILITY_MESHSHADINGEXT: u32 = 5283;
+/// Capability `FragmentBarycentricKHR`.
 pub const CAPABILITY_FRAGMENTBARYCENTRICKHR: u32 = 5284;
+/// Capability `ComputeDerivativeGroupQuadsKHR`.
 pub const CAPABILITY_COMPUTEDERIVATIVEGROUPQUADSKHR: u32 = 5288;
+/// Capability `FragmentDensityEXT`.
 pub const CAPABILITY_FRAGMENTDENSITYEXT: u32 = 5291;
+/// Capability `GroupNonUniformPartitionedEXT`.
 pub const CAPABILITY_GROUPNONUNIFORMPARTITIONEDEXT: u32 = 5297;
+/// Capability `ShaderNonUniform`.
 pub const CAPABILITY_SHADERNONUNIFORM: u32 = 5301;
+/// Capability `RuntimeDescriptorArray`.
 pub const CAPABILITY_RUNTIMEDESCRIPTORARRAY: u32 = 5302;
+/// Capability `InputAttachmentArrayDynamicIndexing`.
 pub const CAPABILITY_INPUTATTACHMENTARRAYDYNAMICINDEXING: u32 = 5303;
+/// Capability `UniformTexelBufferArrayDynamicIndexing`.
 pub const CAPABILITY_UNIFORMTEXELBUFFERARRAYDYNAMICINDEXING: u32 = 5304;
+/// Capability `StorageTexelBufferArrayDynamicIndexing`.
 pub const CAPABILITY_STORAGETEXELBUFFERARRAYDYNAMICINDEXING: u32 = 5305;
+/// Capability `UniformBufferArrayNonUniformIndexing`.
 pub const CAPABILITY_UNIFORMBUFFERARRAYNONUNIFORMINDEXING: u32 = 5306;
+/// Capability `SampledImageArrayNonUniformIndexing`.
 pub const CAPABILITY_SAMPLEDIMAGEARRAYNONUNIFORMINDEXING: u32 = 5307;
+/// Capability `StorageBufferArrayNonUniformIndexing`.
 pub const CAPABILITY_STORAGEBUFFERARRAYNONUNIFORMINDEXING: u32 = 5308;
+/// Capability `StorageImageArrayNonUniformIndexing`.
 pub const CAPABILITY_STORAGEIMAGEARRAYNONUNIFORMINDEXING: u32 = 5309;
+/// Capability `InputAttachmentArrayNonUniformIndexing`.
 pub const CAPABILITY_INPUTATTACHMENTARRAYNONUNIFORMINDEXING: u32 = 5310;
+/// Capability `UniformTexelBufferArrayNonUniformIndexing`.
 pub const CAPABILITY_UNIFORMTEXELBUFFERARRAYNONUNIFORMINDEXING: u32 = 5311;
+/// Capability `StorageTexelBufferArrayNonUniformIndexing`.
 pub const CAPABILITY_STORAGETEXELBUFFERARRAYNONUNIFORMINDEXING: u32 = 5312;
+/// Capability `RayTracingPositionFetchKHR`.
 pub const CAPABILITY_RAYTRACINGPOSITIONFETCHKHR: u32 = 5336;
+/// Capability `RayTracingNV`.
 pub const CAPABILITY_RAYTRACINGNV: u32 = 5340;
+/// Capability `RayTracingMotionBlurNV`.
 pub const CAPABILITY_RAYTRACINGMOTIONBLURNV: u32 = 5341;
+/// Capability `VulkanMemoryModel`.
 pub const CAPABILITY_VULKANMEMORYMODEL: u32 = 5345;
+/// Capability `VulkanMemoryModelDeviceScope`.
 pub const CAPABILITY_VULKANMEMORYMODELDEVICESCOPE: u32 = 5346;
+/// Capability `PhysicalStorageBufferAddresses`.
 pub const CAPABILITY_PHYSICALSTORAGEBUFFERADDRESSES: u32 = 5347;
+/// Capability `ComputeDerivativeGroupLinearKHR`.
 pub const CAPABILITY_COMPUTEDERIVATIVEGROUPLINEARKHR: u32 = 5350;
+/// Capability `RayTracingProvisionalKHR`.
 pub const CAPABILITY_RAYTRACINGPROVISIONALKHR: u32 = 5353;
+/// Capability `CooperativeMatrixNV`.
 pub const CAPABILITY_COOPERATIVEMATRIXNV: u32 = 5357;
+/// Capability `FragmentShaderSampleInterlockEXT`.
 pub const CAPABILITY_FRAGMENTSHADERSAMPLEINTERLOCKEXT: u32 = 5363;
+/// Capability `FragmentShaderShadingRateInterlockEXT`.
 pub const CAPABILITY_FRAGMENTSHADERSHADINGRATEINTERLOCKEXT: u32 = 5372;
+/// Capability `ShaderSMBuiltinsNV`.
 pub const CAPABILITY_SHADERSMBUILTINSNV: u32 = 5373;
+/// Capability `FragmentShaderPixelInterlockEXT`.
 pub const CAPABILITY_FRAGMENTSHADERPIXELINTERLOCKEXT: u32 = 5378;
+/// Capability `DemoteToHelperInvocation`.
 pub const CAPABILITY_DEMOTETOHELPERINVOCATION: u32 = 5379;
+/// Capability `DisplacementMicromapNV`.
 pub const CAPABILITY_DISPLACEMENTMICROMAPNV: u32 = 5380;
+/// Capability `RayTracingOpacityMicromapKHR`.
 pub const CAPABILITY_RAYTRACINGOPACITYMICROMAPKHR: u32 = 5381;
+/// Capability `ShaderInvocationReorderNV`.
 pub const CAPABILITY_SHADERINVOCATIONREORDERNV: u32 = 5383;
+/// Capability `ShaderInvocationReorderEXT`.
 pub const CAPABILITY_SHADERINVOCATIONREORDEREXT: u32 = 5388;
+/// Capability `BindlessTextureNV`.
 pub const CAPABILITY_BINDLESSTEXTURENV: u32 = 5390;
+/// Capability `RayQueryPositionFetchKHR`.
 pub const CAPABILITY_RAYQUERYPOSITIONFETCHKHR: u32 = 5391;
+/// Capability `CooperativeVectorNV`.
 pub const CAPABILITY_COOPERATIVEVECTORNV: u32 = 5394;
+/// Capability `AtomicFloat16VectorNV`.
 pub const CAPABILITY_ATOMICFLOAT16VECTORNV: u32 = 5404;
+/// Capability `RayTracingDisplacementMicromapNV`.
 pub const CAPABILITY_RAYTRACINGDISPLACEMENTMICROMAPNV: u32 = 5409;
+/// Capability `RawAccessChainsNV`.
 pub const CAPABILITY_RAWACCESSCHAINSNV: u32 = 5414;
+/// Capability `RayTracingSpheresGeometryNV`.
 pub const CAPABILITY_RAYTRACINGSPHERESGEOMETRYNV: u32 = 5418;
+/// Capability `RayTracingLinearSweptSpheresGeometryNV`.
 pub const CAPABILITY_RAYTRACINGLINEARSWEPTSPHERESGEOMETRYNV: u32 = 5419;
+/// Capability `PushConstantBanksNV`.
 pub const CAPABILITY_PUSHCONSTANTBANKSNV: u32 = 5423;
+/// Capability `LongVectorEXT`.
 pub const CAPABILITY_LONGVECTOREXT: u32 = 5425;
+/// Capability `Shader64BitIndexingEXT`.
 pub const CAPABILITY_SHADER64BITINDEXINGEXT: u32 = 5426;
+/// Capability `CooperativeMatrixConversionsEXT`.
 pub const CAPABILITY_COOPERATIVEMATRIXCONVERSIONSEXT: u32 = 5429;
+/// Capability `CooperativeMatrixReductionsEXT`.
 pub const CAPABILITY_COOPERATIVEMATRIXREDUCTIONSEXT: u32 = 5430;
+/// Capability `CooperativeMatrixConversionsNV`.
 pub const CAPABILITY_COOPERATIVEMATRIXCONVERSIONSNV: u32 = 5431;
+/// Capability `CooperativeMatrixPerElementOperationsEXT`.
 pub const CAPABILITY_COOPERATIVEMATRIXPERELEMENTOPERATIONSEXT: u32 = 5432;
+/// Capability `CooperativeMatrixTensorAddressingNV`.
 pub const CAPABILITY_COOPERATIVEMATRIXTENSORADDRESSINGNV: u32 = 5433;
+/// Capability `CooperativeMatrixBlockLoadsNV`.
 pub const CAPABILITY_COOPERATIVEMATRIXBLOCKLOADSNV: u32 = 5434;
+/// Capability `CooperativeVectorTrainingNV`.
 pub const CAPABILITY_COOPERATIVEVECTORTRAININGNV: u32 = 5435;
+/// Capability `RayTracingClusterAccelerationStructureNV`.
 pub const CAPABILITY_RAYTRACINGCLUSTERACCELERATIONSTRUCTURENV: u32 = 5437;
+/// Capability `CooperativeMatrixGetCoordinateEXT`.
 pub const CAPABILITY_COOPERATIVEMATRIXGETCOORDINATEEXT: u32 = 5438;
+/// Capability `TensorAddressingNV`.
 pub const CAPABILITY_TENSORADDRESSINGNV: u32 = 5439;
+/// Capability `CooperativeMatrixDecodeVectorNV`.
 pub const CAPABILITY_COOPERATIVEMATRIXDECODEVECTORNV: u32 = 5447;
+/// Capability `SubgroupShuffleINTEL`.
 pub const CAPABILITY_SUBGROUPSHUFFLEINTEL: u32 = 5568;
+/// Capability `SubgroupBufferBlockIOINTEL`.
 pub const CAPABILITY_SUBGROUPBUFFERBLOCKIOINTEL: u32 = 5569;
+/// Capability `SubgroupImageBlockIOINTEL`.
 pub const CAPABILITY_SUBGROUPIMAGEBLOCKIOINTEL: u32 = 5570;
+/// Capability `SubgroupImageMediaBlockIOINTEL`.
 pub const CAPABILITY_SUBGROUPIMAGEMEDIABLOCKIOINTEL: u32 = 5579;
+/// Capability `RoundToInfinityINTEL`.
 pub const CAPABILITY_ROUNDTOINFINITYINTEL: u32 = 5582;
+/// Capability `FloatingPointModeINTEL`.
 pub const CAPABILITY_FLOATINGPOINTMODEINTEL: u32 = 5583;
+/// Capability `IntegerFunctions2INTEL`.
 pub const CAPABILITY_INTEGERFUNCTIONS2INTEL: u32 = 5584;
+/// Capability `FunctionPointersINTEL`.
 pub const CAPABILITY_FUNCTIONPOINTERSINTEL: u32 = 5603;
+/// Capability `IndirectReferencesINTEL`.
 pub const CAPABILITY_INDIRECTREFERENCESINTEL: u32 = 5604;
+/// Capability `AsmINTEL`.
 pub const CAPABILITY_ASMINTEL: u32 = 5606;
+/// Capability `AtomicFloat32MinMaxEXT`.
 pub const CAPABILITY_ATOMICFLOAT32MINMAXEXT: u32 = 5612;
+/// Capability `AtomicFloat64MinMaxEXT`.
 pub const CAPABILITY_ATOMICFLOAT64MINMAXEXT: u32 = 5613;
+/// Capability `AtomicFloat16MinMaxEXT`.
 pub const CAPABILITY_ATOMICFLOAT16MINMAXEXT: u32 = 5616;
+/// Capability `VectorComputeINTEL`.
 pub const CAPABILITY_VECTORCOMPUTEINTEL: u32 = 5617;
+/// Capability `VectorAnyINTEL`.
 pub const CAPABILITY_VECTORANYINTEL: u32 = 5619;
+/// Capability `ExpectAssumeKHR`.
 pub const CAPABILITY_EXPECTASSUMEKHR: u32 = 5629;
+/// Capability `SubgroupAvcMotionEstimationINTEL`.
 pub const CAPABILITY_SUBGROUPAVCMOTIONESTIMATIONINTEL: u32 = 5696;
+/// Capability `SubgroupAvcMotionEstimationIntraINTEL`.
 pub const CAPABILITY_SUBGROUPAVCMOTIONESTIMATIONINTRAINTEL: u32 = 5697;
+/// Capability `SubgroupAvcMotionEstimationChromaINTEL`.
 pub const CAPABILITY_SUBGROUPAVCMOTIONESTIMATIONCHROMAINTEL: u32 = 5698;
+/// Capability `VariableLengthArrayINTEL`.
 pub const CAPABILITY_VARIABLELENGTHARRAYINTEL: u32 = 5817;
+/// Capability `FunctionFloatControlINTEL`.
 pub const CAPABILITY_FUNCTIONFLOATCONTROLINTEL: u32 = 5821;
+/// Capability `FPGAMemoryAttributesALTERA`.
 pub const CAPABILITY_FPGAMEMORYATTRIBUTESALTERA: u32 = 5824;
+/// Capability `FPFastMathModeINTEL`.
 pub const CAPABILITY_FPFASTMATHMODEINTEL: u32 = 5837;
+/// Capability `ArbitraryPrecisionIntegersALTERA`.
 pub const CAPABILITY_ARBITRARYPRECISIONINTEGERSALTERA: u32 = 5844;
+/// Capability `ArbitraryPrecisionFloatingPointALTERA`.
 pub const CAPABILITY_ARBITRARYPRECISIONFLOATINGPOINTALTERA: u32 = 5845;
+/// Capability `UnstructuredLoopControlsINTEL`.
 pub const CAPABILITY_UNSTRUCTUREDLOOPCONTROLSINTEL: u32 = 5886;
+/// Capability `FPGALoopControlsALTERA`.
 pub const CAPABILITY_FPGALOOPCONTROLSALTERA: u32 = 5888;
+/// Capability `KernelAttributesINTEL`.
 pub const CAPABILITY_KERNELATTRIBUTESINTEL: u32 = 5892;
+/// Capability `FPGAKernelAttributesINTEL`.
 pub const CAPABILITY_FPGAKERNELATTRIBUTESINTEL: u32 = 5897;
+/// Capability `FPGAMemoryAccessesALTERA`.
 pub const CAPABILITY_FPGAMEMORYACCESSESALTERA: u32 = 5898;
+/// Capability `FPGAClusterAttributesALTERA`.
 pub const CAPABILITY_FPGACLUSTERATTRIBUTESALTERA: u32 = 5904;
+/// Capability `LoopFuseALTERA`.
 pub const CAPABILITY_LOOPFUSEALTERA: u32 = 5906;
+/// Capability `FPGADSPControlALTERA`.
 pub const CAPABILITY_FPGADSPCONTROLALTERA: u32 = 5908;
+/// Capability `MemoryAccessAliasingINTEL`.
 pub const CAPABILITY_MEMORYACCESSALIASINGINTEL: u32 = 5910;
+/// Capability `FPGAInvocationPipeliningAttributesALTERA`.
 pub const CAPABILITY_FPGAINVOCATIONPIPELININGATTRIBUTESALTERA: u32 = 5916;
+/// Capability `FPGABufferLocationALTERA`.
 pub const CAPABILITY_FPGABUFFERLOCATIONALTERA: u32 = 5920;
+/// Capability `ArbitraryPrecisionFixedPointALTERA`.
 pub const CAPABILITY_ARBITRARYPRECISIONFIXEDPOINTALTERA: u32 = 5922;
+/// Capability `USMStorageClassesALTERA`.
 pub const CAPABILITY_USMSTORAGECLASSESALTERA: u32 = 5935;
+/// Capability `RuntimeAlignedAttributeALTERA`.
 pub const CAPABILITY_RUNTIMEALIGNEDATTRIBUTEALTERA: u32 = 5939;
+/// Capability `IOPipesALTERA`.
 pub const CAPABILITY_IOPIPESALTERA: u32 = 5943;
+/// Capability `BlockingPipesALTERA`.
 pub const CAPABILITY_BLOCKINGPIPESALTERA: u32 = 5945;
+/// Capability `FPGARegALTERA`.
 pub const CAPABILITY_FPGAREGALTERA: u32 = 5948;
+/// Capability `DotProductInputAll`.
 pub const CAPABILITY_DOTPRODUCTINPUTALL: u32 = 6016;
+/// Capability `DotProductInput4x8Bit`.
 pub const CAPABILITY_DOTPRODUCTINPUT4X8BIT: u32 = 6017;
+/// Capability `DotProductInput4x8BitPacked`.
 pub const CAPABILITY_DOTPRODUCTINPUT4X8BITPACKED: u32 = 6018;
+/// Capability `DotProduct`.
 pub const CAPABILITY_DOTPRODUCT: u32 = 6019;
+/// Capability `RayCullMaskKHR`.
 pub const CAPABILITY_RAYCULLMASKKHR: u32 = 6020;
+/// Capability `CooperativeMatrixKHR`.
 pub const CAPABILITY_COOPERATIVEMATRIXKHR: u32 = 6022;
+/// Capability `ReplicatedCompositesEXT`.
 pub const CAPABILITY_REPLICATEDCOMPOSITESEXT: u32 = 6024;
+/// Capability `BitInstructions`.
 pub const CAPABILITY_BITINSTRUCTIONS: u32 = 6025;
+/// Capability `GroupNonUniformRotateKHR`.
 pub const CAPABILITY_GROUPNONUNIFORMROTATEKHR: u32 = 6026;
+/// Capability `FloatControls2`.
 pub const CAPABILITY_FLOATCONTROLS2: u32 = 6029;
+/// Capability `FMAKHR`.
 pub const CAPABILITY_FMAKHR: u32 = 6030;
+/// Capability `RayTracingOpacityMicromapExecutionModeKHR`.
 pub const CAPABILITY_RAYTRACINGOPACITYMICROMAPEXECUTIONMODEKHR: u32 = 6032;
+/// Capability `AtomicFloat32AddEXT`.
 pub const CAPABILITY_ATOMICFLOAT32ADDEXT: u32 = 6033;
+/// Capability `AtomicFloat64AddEXT`.
 pub const CAPABILITY_ATOMICFLOAT64ADDEXT: u32 = 6034;
+/// Capability `LongCompositesINTEL`.
 pub const CAPABILITY_LONGCOMPOSITESINTEL: u32 = 6089;
+/// Capability `OptNoneEXT`.
 pub const CAPABILITY_OPTNONEEXT: u32 = 6094;
+/// Capability `AtomicFloat16AddEXT`.
 pub const CAPABILITY_ATOMICFLOAT16ADDEXT: u32 = 6095;
+/// Capability `DebugInfoModuleINTEL`.
 pub const CAPABILITY_DEBUGINFOMODULEINTEL: u32 = 6114;
+/// Capability `BFloat16ConversionINTEL`.
 pub const CAPABILITY_BFLOAT16CONVERSIONINTEL: u32 = 6115;
+/// Capability `SplitBarrierEXT`.
 pub const CAPABILITY_SPLITBARRIEREXT: u32 = 6141;
+/// Capability `ArithmeticFenceEXT`.
 pub const CAPABILITY_ARITHMETICFENCEEXT: u32 = 6144;
+/// Capability `FPGAClusterAttributesV2ALTERA`.
 pub const CAPABILITY_FPGACLUSTERATTRIBUTESV2ALTERA: u32 = 6150;
+/// Capability `FPGAKernelAttributesv2INTEL`.
 pub const CAPABILITY_FPGAKERNELATTRIBUTESV2INTEL: u32 = 6161;
+/// Capability `TaskSequenceALTERA`.
 pub const CAPABILITY_TASKSEQUENCEALTERA: u32 = 6162;
+/// Capability `FPMaxErrorINTEL`.
 pub const CAPABILITY_FPMAXERRORINTEL: u32 = 6169;
+/// Capability `FPGALatencyControlALTERA`.
 pub const CAPABILITY_FPGALATENCYCONTROLALTERA: u32 = 6171;
+/// Capability `FPGAArgumentInterfacesALTERA`.
 pub const CAPABILITY_FPGAARGUMENTINTERFACESALTERA: u32 = 6174;
+/// Capability `DeviceBarrierINTEL`.
 pub const CAPABILITY_DEVICEBARRIERINTEL: u32 = 6185;
+/// Capability `GlobalVariableHostAccessINTEL`.
 pub const CAPABILITY_GLOBALVARIABLEHOSTACCESSINTEL: u32 = 6187;
+/// Capability `GlobalVariableFPGADecorationsALTERA`.
 pub const CAPABILITY_GLOBALVARIABLEFPGADECORATIONSALTERA: u32 = 6189;
+/// Capability `SubgroupBitcastShuffleINTEL`.
 pub const CAPABILITY_SUBGROUPBITCASTSHUFFLEINTEL: u32 = 6207;
+/// Capability `SubgroupBufferPrefetchINTEL`.
 pub const CAPABILITY_SUBGROUPBUFFERPREFETCHINTEL: u32 = 6220;
+/// Capability `Subgroup2DBlockIOINTEL`.
 pub const CAPABILITY_SUBGROUP2DBLOCKIOINTEL: u32 = 6228;
+/// Capability `Subgroup2DBlockTransformINTEL`.
 pub const CAPABILITY_SUBGROUP2DBLOCKTRANSFORMINTEL: u32 = 6229;
+/// Capability `Subgroup2DBlockTransposeINTEL`.
 pub const CAPABILITY_SUBGROUP2DBLOCKTRANSPOSEINTEL: u32 = 6230;
+/// Capability `SubgroupMatrixMultiplyAccumulateINTEL`.
 pub const CAPABILITY_SUBGROUPMATRIXMULTIPLYACCUMULATEINTEL: u32 = 6236;
+/// Capability `TernaryBitwiseFunctionINTEL`.
 pub const CAPABILITY_TERNARYBITWISEFUNCTIONINTEL: u32 = 6241;
+/// Capability `UntypedVariableLengthArrayINTEL`.
 pub const CAPABILITY_UNTYPEDVARIABLELENGTHARRAYINTEL: u32 = 6243;
+/// Capability `SpecConditionalINTEL`.
 pub const CAPABILITY_SPECCONDITIONALINTEL: u32 = 6245;
+/// Capability `FunctionVariantsINTEL`.
 pub const CAPABILITY_FUNCTIONVARIANTSINTEL: u32 = 6246;
+/// Capability `PredicatedIOINTEL`.
 pub const CAPABILITY_PREDICATEDIOINTEL: u32 = 6257;
+/// Capability `RoundedDivideSqrtINTEL`.
 pub const CAPABILITY_ROUNDEDDIVIDESQRTINTEL: u32 = 6265;
+/// Capability `GroupUniformArithmeticKHR`.
 pub const CAPABILITY_GROUPUNIFORMARITHMETICKHR: u32 = 6400;
+/// Capability `TensorFloat32RoundingINTEL`.
 pub const CAPABILITY_TENSORFLOAT32ROUNDINGINTEL: u32 = 6425;
+/// Capability `MaskedGatherScatterINTEL`.
 pub const CAPABILITY_MASKEDGATHERSCATTERINTEL: u32 = 6427;
+/// Capability `CacheControlsINTEL`.
 pub const CAPABILITY_CACHECONTROLSINTEL: u32 = 6441;
+/// Capability `RegisterLimitsINTEL`.
 pub const CAPABILITY_REGISTERLIMITSINTEL: u32 = 6460;
+/// Capability `BindlessImagesINTEL`.
 pub const CAPABILITY_BINDLESSIMAGESINTEL: u32 = 6528;
+/// Capability `DotProductFloat16AccFloat32VALVE`.
 pub const CAPABILITY_DOTPRODUCTFLOAT16ACCFLOAT32VALVE: u32 = 6912;
+/// Capability `DotProductFloat16AccFloat16VALVE`.
 pub const CAPABILITY_DOTPRODUCTFLOAT16ACCFLOAT16VALVE: u32 = 6913;
+/// Capability `DotProductBFloat16AccVALVE`.
 pub const CAPABILITY_DOTPRODUCTBFLOAT16ACCVALVE: u32 = 6914;
+/// Capability `DotProductFloat8AccFloat32VALVE`.
 pub const CAPABILITY_DOTPRODUCTFLOAT8ACCFLOAT32VALVE: u32 = 6915;
+/// Capability `IntrinsicSAMSUNG`.
 pub const CAPABILITY_INTRINSICSAMSUNG: u32 = 7041;
 /// `Capability` enumerant value for a textual name.
 #[must_use]
@@ -1593,157 +1958,309 @@ pub const fn capability_name(value: u32) -> &'static str {
 }
 
 // ---- Decoration ----
+/// Decoration `RelaxedPrecision`.
 pub const DECORATION_RELAXEDPRECISION: u32 = 0;
+/// Decoration `SpecId`.
 pub const DECORATION_SPECID: u32 = 1;
+/// Decoration `Block`.
 pub const DECORATION_BLOCK: u32 = 2;
+/// Decoration `BufferBlock`.
 pub const DECORATION_BUFFERBLOCK: u32 = 3;
+/// Decoration `RowMajor`.
 pub const DECORATION_ROWMAJOR: u32 = 4;
+/// Decoration `ColMajor`.
 pub const DECORATION_COLMAJOR: u32 = 5;
+/// Decoration `ArrayStride`.
 pub const DECORATION_ARRAYSTRIDE: u32 = 6;
+/// Decoration `MatrixStride`.
 pub const DECORATION_MATRIXSTRIDE: u32 = 7;
+/// Decoration `GLSLShared`.
 pub const DECORATION_GLSLSHARED: u32 = 8;
+/// Decoration `GLSLPacked`.
 pub const DECORATION_GLSLPACKED: u32 = 9;
+/// Decoration `CPacked`.
 pub const DECORATION_CPACKED: u32 = 10;
+/// Decoration `BuiltIn`.
 pub const DECORATION_BUILTIN: u32 = 11;
+/// Decoration `NoPerspective`.
 pub const DECORATION_NOPERSPECTIVE: u32 = 13;
+/// Decoration `Flat`.
 pub const DECORATION_FLAT: u32 = 14;
+/// Decoration `Patch`.
 pub const DECORATION_PATCH: u32 = 15;
+/// Decoration `Centroid`.
 pub const DECORATION_CENTROID: u32 = 16;
+/// Decoration `Sample`.
 pub const DECORATION_SAMPLE: u32 = 17;
+/// Decoration `Invariant`.
 pub const DECORATION_INVARIANT: u32 = 18;
+/// Decoration `Restrict`.
 pub const DECORATION_RESTRICT: u32 = 19;
+/// Decoration `Aliased`.
 pub const DECORATION_ALIASED: u32 = 20;
+/// Decoration `Volatile`.
 pub const DECORATION_VOLATILE: u32 = 21;
+/// Decoration `Constant`.
 pub const DECORATION_CONSTANT: u32 = 22;
+/// Decoration `Coherent`.
 pub const DECORATION_COHERENT: u32 = 23;
+/// Decoration `NonWritable`.
 pub const DECORATION_NONWRITABLE: u32 = 24;
+/// Decoration `NonReadable`.
 pub const DECORATION_NONREADABLE: u32 = 25;
+/// Decoration `Uniform`.
 pub const DECORATION_UNIFORM: u32 = 26;
+/// Decoration `UniformId`.
 pub const DECORATION_UNIFORMID: u32 = 27;
+/// Decoration `SaturatedConversion`.
 pub const DECORATION_SATURATEDCONVERSION: u32 = 28;
+/// Decoration `Stream`.
 pub const DECORATION_STREAM: u32 = 29;
+/// Decoration `Location`.
 pub const DECORATION_LOCATION: u32 = 30;
+/// Decoration `Component`.
 pub const DECORATION_COMPONENT: u32 = 31;
+/// Decoration `Index`.
 pub const DECORATION_INDEX: u32 = 32;
+/// Decoration `Binding`.
 pub const DECORATION_BINDING: u32 = 33;
+/// Decoration `DescriptorSet`.
 pub const DECORATION_DESCRIPTORSET: u32 = 34;
+/// Decoration `Offset`.
 pub const DECORATION_OFFSET: u32 = 35;
+/// Decoration `XfbBuffer`.
 pub const DECORATION_XFBBUFFER: u32 = 36;
+/// Decoration `XfbStride`.
 pub const DECORATION_XFBSTRIDE: u32 = 37;
+/// Decoration `FuncParamAttr`.
 pub const DECORATION_FUNCPARAMATTR: u32 = 38;
+/// Decoration `FPRoundingMode`.
 pub const DECORATION_FPROUNDINGMODE: u32 = 39;
+/// Decoration `FPFastMathMode`.
 pub const DECORATION_FPFASTMATHMODE: u32 = 40;
+/// Decoration `LinkageAttributes`.
 pub const DECORATION_LINKAGEATTRIBUTES: u32 = 41;
+/// Decoration `NoContraction`.
 pub const DECORATION_NOCONTRACTION: u32 = 42;
+/// Decoration `InputAttachmentIndex`.
 pub const DECORATION_INPUTATTACHMENTINDEX: u32 = 43;
+/// Decoration `Alignment`.
 pub const DECORATION_ALIGNMENT: u32 = 44;
+/// Decoration `MaxByteOffset`.
 pub const DECORATION_MAXBYTEOFFSET: u32 = 45;
+/// Decoration `AlignmentId`.
 pub const DECORATION_ALIGNMENTID: u32 = 46;
+/// Decoration `MaxByteOffsetId`.
 pub const DECORATION_MAXBYTEOFFSETID: u32 = 47;
+/// Decoration `SaturatedToLargestFloat8NormalConversionEXT`.
 pub const DECORATION_SATURATEDTOLARGESTFLOAT8NORMALCONVERSIONEXT: u32 = 4216;
+/// Decoration `NoSignedWrap`.
 pub const DECORATION_NOSIGNEDWRAP: u32 = 4469;
+/// Decoration `NoUnsignedWrap`.
 pub const DECORATION_NOUNSIGNEDWRAP: u32 = 4470;
+/// Decoration `WeightTextureQCOM`.
 pub const DECORATION_WEIGHTTEXTUREQCOM: u32 = 4487;
+/// Decoration `BlockMatchTextureQCOM`.
 pub const DECORATION_BLOCKMATCHTEXTUREQCOM: u32 = 4488;
+/// Decoration `BlockMatchSamplerQCOM`.
 pub const DECORATION_BLOCKMATCHSAMPLERQCOM: u32 = 4499;
+/// Decoration `ExplicitInterpAMD`.
 pub const DECORATION_EXPLICITINTERPAMD: u32 = 4999;
+/// Decoration `NodeSharesPayloadLimitsWithAMDX`.
 pub const DECORATION_NODESHARESPAYLOADLIMITSWITHAMDX: u32 = 5019;
+/// Decoration `NodeMaxPayloadsAMDX`.
 pub const DECORATION_NODEMAXPAYLOADSAMDX: u32 = 5020;
+/// Decoration `TrackFinishWritingAMDX`.
 pub const DECORATION_TRACKFINISHWRITINGAMDX: u32 = 5078;
+/// Decoration `PayloadNodeNameAMDX`.
 pub const DECORATION_PAYLOADNODENAMEAMDX: u32 = 5091;
+/// Decoration `PayloadNodeBaseIndexAMDX`.
 pub const DECORATION_PAYLOADNODEBASEINDEXAMDX: u32 = 5098;
+/// Decoration `PayloadNodeSparseArrayAMDX`.
 pub const DECORATION_PAYLOADNODESPARSEARRAYAMDX: u32 = 5099;
+/// Decoration `PayloadNodeArraySizeAMDX`.
 pub const DECORATION_PAYLOADNODEARRAYSIZEAMDX: u32 = 5100;
+/// Decoration `PayloadDispatchIndirectAMDX`.
 pub const DECORATION_PAYLOADDISPATCHINDIRECTAMDX: u32 = 5105;
+/// Decoration `ArrayStrideIdEXT`.
 pub const DECORATION_ARRAYSTRIDEIDEXT: u32 = 5124;
+/// Decoration `OffsetIdEXT`.
 pub const DECORATION_OFFSETIDEXT: u32 = 5125;
+/// Decoration `UTFEncodedKHR`.
 pub const DECORATION_UTFENCODEDKHR: u32 = 5145;
+/// Decoration `OverrideCoverageNV`.
 pub const DECORATION_OVERRIDECOVERAGENV: u32 = 5248;
+/// Decoration `PassthroughNV`.
 pub const DECORATION_PASSTHROUGHNV: u32 = 5250;
+/// Decoration `ViewportRelativeNV`.
 pub const DECORATION_VIEWPORTRELATIVENV: u32 = 5252;
+/// Decoration `SecondaryViewportRelativeNV`.
 pub const DECORATION_SECONDARYVIEWPORTRELATIVENV: u32 = 5256;
+/// Decoration `PerPrimitiveEXT`.
 pub const DECORATION_PERPRIMITIVEEXT: u32 = 5271;
+/// Decoration `PerViewNV`.
 pub const DECORATION_PERVIEWNV: u32 = 5272;
+/// Decoration `PerTaskNV`.
 pub const DECORATION_PERTASKNV: u32 = 5273;
+/// Decoration `PerVertexKHR`.
 pub const DECORATION_PERVERTEXKHR: u32 = 5285;
+/// Decoration `NonUniform`.
 pub const DECORATION_NONUNIFORM: u32 = 5300;
+/// Decoration `RestrictPointer`.
 pub const DECORATION_RESTRICTPOINTER: u32 = 5355;
+/// Decoration `AliasedPointer`.
 pub const DECORATION_ALIASEDPOINTER: u32 = 5356;
+/// Decoration `MemberOffsetNV`.
 pub const DECORATION_MEMBEROFFSETNV: u32 = 5358;
+/// Decoration `HitObjectShaderRecordBufferNV`.
 pub const DECORATION_HITOBJECTSHADERRECORDBUFFERNV: u32 = 5386;
+/// Decoration `HitObjectShaderRecordBufferEXT`.
 pub const DECORATION_HITOBJECTSHADERRECORDBUFFEREXT: u32 = 5389;
+/// Decoration `BankNV`.
 pub const DECORATION_BANKNV: u32 = 5397;
+/// Decoration `BindlessSamplerNV`.
 pub const DECORATION_BINDLESSSAMPLERNV: u32 = 5398;
+/// Decoration `BindlessImageNV`.
 pub const DECORATION_BINDLESSIMAGENV: u32 = 5399;
+/// Decoration `BoundSamplerNV`.
 pub const DECORATION_BOUNDSAMPLERNV: u32 = 5400;
+/// Decoration `BoundImageNV`.
 pub const DECORATION_BOUNDIMAGENV: u32 = 5401;
+/// Decoration `CooperativeMatrixTransposeEXT`.
 pub const DECORATION_COOPERATIVEMATRIXTRANSPOSEEXT: u32 = 5440;
+/// Decoration `SIMTCallINTEL`.
 pub const DECORATION_SIMTCALLINTEL: u32 = 5599;
+/// Decoration `ReferencedIndirectlyINTEL`.
 pub const DECORATION_REFERENCEDINDIRECTLYINTEL: u32 = 5602;
+/// Decoration `ClobberINTEL`.
 pub const DECORATION_CLOBBERINTEL: u32 = 5607;
+/// Decoration `SideEffectsINTEL`.
 pub const DECORATION_SIDEEFFECTSINTEL: u32 = 5608;
+/// Decoration `VectorComputeVariableINTEL`.
 pub const DECORATION_VECTORCOMPUTEVARIABLEINTEL: u32 = 5624;
+/// Decoration `FuncParamIOKindINTEL`.
 pub const DECORATION_FUNCPARAMIOKINDINTEL: u32 = 5625;
+/// Decoration `VectorComputeFunctionINTEL`.
 pub const DECORATION_VECTORCOMPUTEFUNCTIONINTEL: u32 = 5626;
+/// Decoration `StackCallINTEL`.
 pub const DECORATION_STACKCALLINTEL: u32 = 5627;
+/// Decoration `GlobalVariableOffsetINTEL`.
 pub const DECORATION_GLOBALVARIABLEOFFSETINTEL: u32 = 5628;
+/// Decoration `CounterBuffer`.
 pub const DECORATION_COUNTERBUFFER: u32 = 5634;
+/// Decoration `UserSemantic`.
 pub const DECORATION_USERSEMANTIC: u32 = 5635;
+/// Decoration `UserTypeGOOGLE`.
 pub const DECORATION_USERTYPEGOOGLE: u32 = 5636;
+/// Decoration `FunctionRoundingModeINTEL`.
 pub const DECORATION_FUNCTIONROUNDINGMODEINTEL: u32 = 5822;
+/// Decoration `FunctionDenormModeINTEL`.
 pub const DECORATION_FUNCTIONDENORMMODEINTEL: u32 = 5823;
+/// Decoration `RegisterALTERA`.
 pub const DECORATION_REGISTERALTERA: u32 = 5825;
+/// Decoration `MemoryALTERA`.
 pub const DECORATION_MEMORYALTERA: u32 = 5826;
+/// Decoration `NumbanksALTERA`.
 pub const DECORATION_NUMBANKSALTERA: u32 = 5827;
+/// Decoration `BankwidthALTERA`.
 pub const DECORATION_BANKWIDTHALTERA: u32 = 5828;
+/// Decoration `MaxPrivateCopiesALTERA`.
 pub const DECORATION_MAXPRIVATECOPIESALTERA: u32 = 5829;
+/// Decoration `SinglepumpALTERA`.
 pub const DECORATION_SINGLEPUMPALTERA: u32 = 5830;
+/// Decoration `DoublepumpALTERA`.
 pub const DECORATION_DOUBLEPUMPALTERA: u32 = 5831;
+/// Decoration `MaxReplicatesALTERA`.
 pub const DECORATION_MAXREPLICATESALTERA: u32 = 5832;
+/// Decoration `SimpleDualPortALTERA`.
 pub const DECORATION_SIMPLEDUALPORTALTERA: u32 = 5833;
+/// Decoration `MergeALTERA`.
 pub const DECORATION_MERGEALTERA: u32 = 5834;
+/// Decoration `BankBitsALTERA`.
 pub const DECORATION_BANKBITSALTERA: u32 = 5835;
+/// Decoration `ForcePow2DepthALTERA`.
 pub const DECORATION_FORCEPOW2DEPTHALTERA: u32 = 5836;
+/// Decoration `StridesizeALTERA`.
 pub const DECORATION_STRIDESIZEALTERA: u32 = 5883;
+/// Decoration `WordsizeALTERA`.
 pub const DECORATION_WORDSIZEALTERA: u32 = 5884;
+/// Decoration `TrueDualPortALTERA`.
 pub const DECORATION_TRUEDUALPORTALTERA: u32 = 5885;
+/// Decoration `BurstCoalesceALTERA`.
 pub const DECORATION_BURSTCOALESCEALTERA: u32 = 5899;
+/// Decoration `CacheSizeALTERA`.
 pub const DECORATION_CACHESIZEALTERA: u32 = 5900;
+/// Decoration `DontStaticallyCoalesceALTERA`.
 pub const DECORATION_DONTSTATICALLYCOALESCEALTERA: u32 = 5901;
+/// Decoration `PrefetchALTERA`.
 pub const DECORATION_PREFETCHALTERA: u32 = 5902;
+/// Decoration `StallEnableALTERA`.
 pub const DECORATION_STALLENABLEALTERA: u32 = 5905;
+/// Decoration `FuseLoopsInFunctionALTERA`.
 pub const DECORATION_FUSELOOPSINFUNCTIONALTERA: u32 = 5907;
+/// Decoration `MathOpDSPModeALTERA`.
 pub const DECORATION_MATHOPDSPMODEALTERA: u32 = 5909;
+/// Decoration `AliasScopeINTEL`.
 pub const DECORATION_ALIASSCOPEINTEL: u32 = 5914;
+/// Decoration `NoAliasINTEL`.
 pub const DECORATION_NOALIASINTEL: u32 = 5915;
+/// Decoration `InitiationIntervalALTERA`.
 pub const DECORATION_INITIATIONINTERVALALTERA: u32 = 5917;
+/// Decoration `MaxConcurrencyALTERA`.
 pub const DECORATION_MAXCONCURRENCYALTERA: u32 = 5918;
+/// Decoration `PipelineEnableALTERA`.
 pub const DECORATION_PIPELINEENABLEALTERA: u32 = 5919;
+/// Decoration `BufferLocationALTERA`.
 pub const DECORATION_BUFFERLOCATIONALTERA: u32 = 5921;
+/// Decoration `IOPipeStorageALTERA`.
 pub const DECORATION_IOPIPESTORAGEALTERA: u32 = 5944;
+/// Decoration `FunctionFloatingPointModeINTEL`.
 pub const DECORATION_FUNCTIONFLOATINGPOINTMODEINTEL: u32 = 6080;
+/// Decoration `SingleElementVectorINTEL`.
 pub const DECORATION_SINGLEELEMENTVECTORINTEL: u32 = 6085;
+/// Decoration `VectorComputeCallableFunctionINTEL`.
 pub const DECORATION_VECTORCOMPUTECALLABLEFUNCTIONINTEL: u32 = 6087;
+/// Decoration `MediaBlockIOINTEL`.
 pub const DECORATION_MEDIABLOCKIOINTEL: u32 = 6140;
+/// Decoration `StallFreeALTERA`.
 pub const DECORATION_STALLFREEALTERA: u32 = 6151;
+/// Decoration `FPMaxErrorDecorationINTEL`.
 pub const DECORATION_FPMAXERRORDECORATIONINTEL: u32 = 6170;
+/// Decoration `LatencyControlLabelALTERA`.
 pub const DECORATION_LATENCYCONTROLLABELALTERA: u32 = 6172;
+/// Decoration `LatencyControlConstraintALTERA`.
 pub const DECORATION_LATENCYCONTROLCONSTRAINTALTERA: u32 = 6173;
+/// Decoration `ConduitKernelArgumentALTERA`.
 pub const DECORATION_CONDUITKERNELARGUMENTALTERA: u32 = 6175;
+/// Decoration `RegisterMapKernelArgumentALTERA`.
 pub const DECORATION_REGISTERMAPKERNELARGUMENTALTERA: u32 = 6176;
+/// Decoration `MMHostInterfaceAddressWidthALTERA`.
 pub const DECORATION_MMHOSTINTERFACEADDRESSWIDTHALTERA: u32 = 6177;
+/// Decoration `MMHostInterfaceDataWidthALTERA`.
 pub const DECORATION_MMHOSTINTERFACEDATAWIDTHALTERA: u32 = 6178;
+/// Decoration `MMHostInterfaceLatencyALTERA`.
 pub const DECORATION_MMHOSTINTERFACELATENCYALTERA: u32 = 6179;
+/// Decoration `MMHostInterfaceReadWriteModeALTERA`.
 pub const DECORATION_MMHOSTINTERFACEREADWRITEMODEALTERA: u32 = 6180;
+/// Decoration `MMHostInterfaceMaxBurstALTERA`.
 pub const DECORATION_MMHOSTINTERFACEMAXBURSTALTERA: u32 = 6181;
+/// Decoration `MMHostInterfaceWaitRequestALTERA`.
 pub const DECORATION_MMHOSTINTERFACEWAITREQUESTALTERA: u32 = 6182;
+/// Decoration `StableKernelArgumentALTERA`.
 pub const DECORATION_STABLEKERNELARGUMENTALTERA: u32 = 6183;
+/// Decoration `HostAccessINTEL`.
 pub const DECORATION_HOSTACCESSINTEL: u32 = 6188;
+/// Decoration `InitModeALTERA`.
 pub const DECORATION_INITMODEALTERA: u32 = 6190;
+/// Decoration `ImplementInRegisterMapALTERA`.
 pub const DECORATION_IMPLEMENTINREGISTERMAPALTERA: u32 = 6191;
+/// Decoration `ConditionalINTEL`.
 pub const DECORATION_CONDITIONALINTEL: u32 = 6247;
+/// Decoration `CacheControlLoadINTEL`.
 pub const DECORATION_CACHECONTROLLOADINTEL: u32 = 6442;
+/// Decoration `CacheControlStoreINTEL`.
 pub const DECORATION_CACHECONTROLSTOREINTEL: u32 = 6443;
+/// Decoration `IntrinsicSAMSUNG`.
 pub const DECORATION_INTRINSICSAMSUNG: u32 = 7040;
 /// `Decoration` enumerant value for a textual name.
 #[must_use]
@@ -2066,11 +2583,17 @@ pub const fn decoration_name(value: u32) -> &'static str {
     }
 }
 
+/// Function control `None`.
 pub const FUNCTIONCONTROL_NONE: u32 = 0;
+/// Function control `Inline`.
 pub const FUNCTIONCONTROL_INLINE: u32 = 1;
+/// Function control `DontInline`.
 pub const FUNCTIONCONTROL_DONTINLINE: u32 = 2;
+/// Function control `Pure`.
 pub const FUNCTIONCONTROL_PURE: u32 = 4;
+/// Function control `Const`.
 pub const FUNCTIONCONTROL_CONST: u32 = 8;
+/// Function control `OptNoneEXT`.
 pub const FUNCTIONCONTROL_OPTNONEEXT: u32 = 65536;
 /// `FunctionControl` enumerant value for a textual name.
 #[must_use]
@@ -2101,8 +2624,11 @@ pub const fn functioncontrol_name(value: u32) -> &'static str {
     }
 }
 
+/// Selection control `None`.
 pub const SELECTIONCONTROL_NONE: u32 = 0;
+/// Selection control `Flatten`.
 pub const SELECTIONCONTROL_FLATTEN: u32 = 1;
+/// Selection control `DontFlatten`.
 pub const SELECTIONCONTROL_DONTFLATTEN: u32 = 2;
 /// `SelectionControl` enumerant value for a textual name.
 #[must_use]
@@ -2128,26 +2654,47 @@ pub const fn selectioncontrol_name(value: u32) -> &'static str {
 }
 
 // ---- LoopControl ----
+/// Loop control `None`.
 pub const LOOPCONTROL_NONE: u32 = 0;
+/// Loop control `Unroll`.
 pub const LOOPCONTROL_UNROLL: u32 = 1;
+/// Loop control `DontUnroll`.
 pub const LOOPCONTROL_DONTUNROLL: u32 = 2;
+/// Loop control `DependencyInfinite`.
 pub const LOOPCONTROL_DEPENDENCYINFINITE: u32 = 4;
+/// Loop control `DependencyLength`.
 pub const LOOPCONTROL_DEPENDENCYLENGTH: u32 = 8;
+/// Loop control `MinIterations`.
 pub const LOOPCONTROL_MINITERATIONS: u32 = 16;
+/// Loop control `MaxIterations`.
 pub const LOOPCONTROL_MAXITERATIONS: u32 = 32;
+/// Loop control `IterationMultiple`.
 pub const LOOPCONTROL_ITERATIONMULTIPLE: u32 = 64;
+/// Loop control `PeelCount`.
 pub const LOOPCONTROL_PEELCOUNT: u32 = 128;
+/// Loop control `PartialCount`.
 pub const LOOPCONTROL_PARTIALCOUNT: u32 = 256;
+/// Loop control `InitiationIntervalALTERA`.
 pub const LOOPCONTROL_INITIATIONINTERVALALTERA: u32 = 65536;
+/// Loop control `MaxConcurrencyALTERA`.
 pub const LOOPCONTROL_MAXCONCURRENCYALTERA: u32 = 131072;
+/// Loop control `DependencyArrayALTERA`.
 pub const LOOPCONTROL_DEPENDENCYARRAYALTERA: u32 = 262144;
+/// Loop control `PipelineEnableALTERA`.
 pub const LOOPCONTROL_PIPELINEENABLEALTERA: u32 = 524288;
+/// Loop control `LoopCoalesceALTERA`.
 pub const LOOPCONTROL_LOOPCOALESCEALTERA: u32 = 1048576;
+/// Loop control `MaxInterleavingALTERA`.
 pub const LOOPCONTROL_MAXINTERLEAVINGALTERA: u32 = 2097152;
+/// Loop control `SpeculatedIterationsALTERA`.
 pub const LOOPCONTROL_SPECULATEDITERATIONSALTERA: u32 = 4194304;
+/// Loop control `NoFusionALTERA`.
 pub const LOOPCONTROL_NOFUSIONALTERA: u32 = 8388608;
+/// Loop control `LoopCountALTERA`.
 pub const LOOPCONTROL_LOOPCOUNTALTERA: u32 = 16777216;
+/// Loop control `MaxReinvocationDelayALTERA`.
 pub const LOOPCONTROL_MAXREINVOCATIONDELAYALTERA: u32 = 33554432;
+/// Loop control `MultipleWaitQueuesQCOM`.
 pub const LOOPCONTROL_MULTIPLEWAITQUEUESQCOM: u32 = 268435456;
 /// `LoopControl` enumerant value for a textual name.
 #[must_use]
@@ -2208,12 +2755,19 @@ pub const fn loopcontrol_name(value: u32) -> &'static str {
     }
 }
 
+/// Scope `CrossDevice`.
 pub const SCOPE_CROSSDEVICE: u32 = 0;
+/// Scope `Device`.
 pub const SCOPE_DEVICE: u32 = 1;
+/// Scope `Workgroup`.
 pub const SCOPE_WORKGROUP: u32 = 2;
+/// Scope `Subgroup`.
 pub const SCOPE_SUBGROUP: u32 = 3;
+/// Scope `Invocation`.
 pub const SCOPE_INVOCATION: u32 = 4;
+/// Scope `QueueFamily`.
 pub const SCOPE_QUEUEFAMILY: u32 = 5;
+/// Scope `ShaderCallKHR`.
 pub const SCOPE_SHADERCALLKHR: u32 = 6;
 /// `Scope` enumerant value for a textual name.
 #[must_use]
@@ -2246,20 +2800,35 @@ pub const fn scope_name(value: u32) -> &'static str {
     }
 }
 
+/// Memory semantics `Relaxed`.
 pub const MEMORYSEMANTICS_RELAXED: u32 = 0;
+/// Memory semantics `Acquire`.
 pub const MEMORYSEMANTICS_ACQUIRE: u32 = 2;
+/// Memory semantics `Release`.
 pub const MEMORYSEMANTICS_RELEASE: u32 = 4;
+/// Memory semantics `AcquireRelease`.
 pub const MEMORYSEMANTICS_ACQUIRERELEASE: u32 = 8;
+/// Memory semantics `SequentiallyConsistent`.
 pub const MEMORYSEMANTICS_SEQUENTIALLYCONSISTENT: u32 = 16;
+/// Memory semantics `UniformMemory`.
 pub const MEMORYSEMANTICS_UNIFORMMEMORY: u32 = 64;
+/// Memory semantics `SubgroupMemory`.
 pub const MEMORYSEMANTICS_SUBGROUPMEMORY: u32 = 128;
+/// Memory semantics `WorkgroupMemory`.
 pub const MEMORYSEMANTICS_WORKGROUPMEMORY: u32 = 256;
+/// Memory semantics `CrossWorkgroupMemory`.
 pub const MEMORYSEMANTICS_CROSSWORKGROUPMEMORY: u32 = 512;
+/// Memory semantics `AtomicCounterMemory`.
 pub const MEMORYSEMANTICS_ATOMICCOUNTERMEMORY: u32 = 1024;
+/// Memory semantics `ImageMemory`.
 pub const MEMORYSEMANTICS_IMAGEMEMORY: u32 = 2048;
+/// Memory semantics `OutputMemory`.
 pub const MEMORYSEMANTICS_OUTPUTMEMORY: u32 = 4096;
+/// Memory semantics `MakeAvailable`.
 pub const MEMORYSEMANTICS_MAKEAVAILABLE: u32 = 8192;
+/// Memory semantics `MakeVisible`.
 pub const MEMORYSEMANTICS_MAKEVISIBLE: u32 = 16384;
+/// Memory semantics `Volatile`.
 pub const MEMORYSEMANTICS_VOLATILE: u32 = 32768;
 /// `MemorySemantics` enumerant value for a textual name.
 #[must_use]
@@ -2308,9 +2877,13 @@ pub const fn memorysemantics_name(value: u32) -> &'static str {
     }
 }
 
+/// Linkage type `Export`.
 pub const LINKAGETYPE_EXPORT: u32 = 0;
+/// Linkage type `Import`.
 pub const LINKAGETYPE_IMPORT: u32 = 1;
+/// Linkage type `LinkOnceODR`.
 pub const LINKAGETYPE_LINKONCEODR: u32 = 2;
+/// Linkage type `WeakAMD`.
 pub const LINKAGETYPE_WEAKAMD: u32 = 3;
 /// `LinkageType` enumerant value for a textual name.
 #[must_use]

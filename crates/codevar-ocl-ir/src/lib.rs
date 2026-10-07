@@ -73,4 +73,7 @@
 extern crate alloc;
 
 pub mod ir;
+pub mod parse;
 pub mod print;
+pub mod spirv;
+pub mod verify;
