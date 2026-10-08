@@ -41,8 +41,8 @@
 //! [`Linkage`]: crate::ir::Linkage
 
 use crate::ir::{
-    AddressingModel, ConstValue, ExecutionModel, FunctionControl, Inst, Linkage, MemoryModel, Module, Op,
-    Storage, Type, TypeId, ValueId, ValueKind,
+    AddressingModel, ConstValue, Decor, ExecutionModel, FunctionControl, Inst, Linkage, MemoryModel, Module,
+    Op, Storage, Type, TypeId, ValueId, ValueKind,
 };
 use alloc::collections::BTreeSet;
 use alloc::format;
@@ -202,6 +202,11 @@ fn entry_point_lines(module: &Module, ids: &Ids) -> String {
 
 fn decoration_lines(module: &Module, ids: &Ids) -> String {
     let mut out = String::new();
+    for decor in &module.decorations {
+        if let Decor::BuiltIn { name } = &decor.kind {
+            out.push_str(&format!("OpDecorate {} BuiltIn {name}\n", ids.val(decor.target)));
+        }
+    }
     for id in module
         .globals()
         .iter()

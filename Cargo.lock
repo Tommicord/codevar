@@ -300,6 +300,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-ocl-ker"
+version = "1.0.0"
+dependencies = [
+ "codevar-oclc",
+ "proc-macro2",
+ "quote",
+]
+
+[[package]]
 name = "codevar-ocl-lex"
 version = "1.0.0"
 dependencies = [

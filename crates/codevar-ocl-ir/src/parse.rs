@@ -41,7 +41,7 @@
 //! verifier.
 
 use crate::ir::{
-    AddressingModel, BinOp, BlockId, BuildError, CmpOp, ConstValue, ConvOp, ExecutionModel, ExtSetId,
+    AddressingModel, BinOp, BlockId, BuildError, CmpOp, ConstValue, ConvOp, Decor, ExecutionModel, ExtSetId,
     FunctionControl, Inst, Linkage, MemoryModel, Module, Op, Storage, Target, Type, TypeId, UnOp, ValueId,
 };
 use alloc::collections::{BTreeMap, BTreeSet};
@@ -301,6 +301,17 @@ struct PendingDecor {
     linkage: Linkage,
 }
 
+/// A `BuiltIn` decoration whose target is resolved after the whole
+/// module scope has been read.
+struct PendingBuiltIn {
+    /// Line the decoration appeared on.
+    line: usize,
+    /// Printed identifier of the target.
+    target: String,
+    /// Built-in name to apply to the target.
+    name: String,
+}
+
 /// The span of one function definition in the tokenized source.
 struct FunctionSpan {
     /// The function value.
@@ -354,6 +365,8 @@ struct Parser {
     pending_entry_points: Vec<PendingEntry>,
     /// Decorations awaiting their targets.
     pending_decorations: Vec<PendingDecor>,
+    /// `BuiltIn` decorations awaiting their targets.
+    pending_builtins: Vec<PendingBuiltIn>,
     /// Function bodies awaiting parsing, in text order.
     functions: Vec<FunctionSpan>,
 }
@@ -368,6 +381,7 @@ impl Parser {
             ext_sets: BTreeMap::new(),
             pending_entry_points: Vec::new(),
             pending_decorations: Vec::new(),
+            pending_builtins: Vec::new(),
             functions: Vec::new(),
         }
     }
@@ -686,6 +700,21 @@ impl Parser {
     }
 
     fn parse_decorate(&mut self, line: &Line) -> Result<(), ParseError> {
+        if line
+            .tokens
+            .get(2)
+            .is_some_and(|token| token.is_word("BuiltIn"))
+        {
+            expect_len(line, line.tokens.len(), 4)?;
+            let target = id_token(tok_at(&line.tokens, 1, line)?, line)?.to_string();
+            let name = word_at(&line.tokens, 3, line)?.to_string();
+            self.pending_builtins.push(PendingBuiltIn {
+                line: line.number,
+                target,
+                name,
+            });
+            return Ok(());
+        }
         expect_len(line, line.tokens.len(), 5)?;
         let target = id_token(tok_at(&line.tokens, 1, line)?, line)?.to_string();
         if !line.tokens[2].is_word("LinkageAttributes") {
@@ -751,6 +780,19 @@ impl Parser {
                     kind: ParseErrorKind::NotDecoratable,
                 });
             }
+        }
+        let builtins = core::mem::take(&mut self.pending_builtins);
+        for entry in builtins {
+            let id = self
+                .values
+                .get(&entry.target)
+                .copied()
+                .ok_or(ParseError {
+                    line: entry.line,
+                    kind: ParseErrorKind::UnknownId,
+                })?;
+            self.module
+                .decorate(id, Decor::BuiltIn { name: entry.name });
         }
         Ok(())
     }

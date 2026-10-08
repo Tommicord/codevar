@@ -60,8 +60,8 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::ir::{
-    BasicBlock, BinOp, BlockId, CmpOp, ConstValue, ConvOp, ExtSetId, Inst, Linkage, Module, Op, Storage,
-    Type, TypeId, UnOp, ValueId, ValueKind,
+    BasicBlock, BinOp, BlockId, CmpOp, ConstValue, ConvOp, Decor, ExtSetId, Inst, Linkage, Module, Op,
+    Storage, Type, TypeId, UnOp, ValueId, ValueKind,
 };
 use crate::spirv::ops;
 
@@ -191,6 +191,13 @@ pub enum VerifyError {
     },
     /// A decoration targets a value that cannot carry decorations.
     DecorTargetNotDecoratable {
+        /// Position of the decoration.
+        index: usize,
+    },
+    /// A `BuiltIn` decoration targets something other than an
+    /// `Input`-storage module-scope variable (OpenCL SPIR-V
+    /// Environment §2.9).
+    BuiltInNotInputVariable {
         /// Position of the decoration.
         index: usize,
     },
@@ -388,6 +395,12 @@ impl fmt::Display for VerifyError {
             }
             Self::DecorTargetNotDecoratable { index } => {
                 write!(f, "decoration #{index} targets a value that cannot be decorated")
+            }
+            Self::BuiltInNotInputVariable { index } => {
+                write!(
+                    f,
+                    "decoration #{index}: BuiltIn decorations require an Input-storage variable"
+                )
             }
             Self::EmptyBlockName { block } => write!(f, "{block} has no label"),
             Self::DuplicateBlockName { block } => {
@@ -732,6 +745,15 @@ impl<'a> Checker<'a> {
                 .ok_or(VerifyError::UnknownValue { id: decor.target })?;
             if !matches!(value.kind, ValueKind::Function(_) | ValueKind::Global(_)) {
                 return Err(VerifyError::DecorTargetNotDecoratable { index });
+            }
+            // OpenCL SPIR-V Environment §2.9: every built-in variable
+            // lives in the Input storage class.
+            if matches!(decor.kind, Decor::BuiltIn { .. }) {
+                let input_variable = matches!(value.kind, ValueKind::Global(_))
+                    && matches!(self.module.pointer_parts(value.ty), Some((Storage::Input, _)));
+                if !input_variable {
+                    return Err(VerifyError::BuiltInNotInputVariable { index });
+                }
             }
         }
         Ok(())

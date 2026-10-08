@@ -24,7 +24,7 @@
 //!   appearance: an intrinsic size ([`widget::Widget::measure`]), an
 //!   arranged rectangle ([`widget::Widget::arrange`]) and a stream of
 //!   [`scene::DrawOp`]s ([`widget::Widget::describe`]). Widgets never
-//!   touch Vulkan, buffers or shaders.
+//!   touch Vulkan, buffers or kernel.
 //! * **Tree driver** — [`tree::WidgetTree`] owns the widget tree and
 //!   drives every lifecycle state ([`widget::WidgetPhase`]): `build`,
 //!   `startLifecycle`, `beforePass`, `afterPass`, `resume`, `pause`,

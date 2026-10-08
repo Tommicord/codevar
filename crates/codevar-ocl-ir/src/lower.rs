@@ -67,7 +67,7 @@ use codevar_ocl_sar::{
 
 use crate::ir::{
     BinOp, BlockId, BuildError, CmpOp, ConstValue, ConvOp, Decor, ExecutionModel, ExtSetId, Inst, Linkage,
-    Module, Op, Storage, Target, Type as IrType, TypeId, UnOp, ValueId,
+    Module, Op, Storage, Target, Type as IrType, TypeId, UnOp, ValueId, ValueKind,
 };
 use crate::spirv::ops::ocl_opcode;
 
@@ -313,6 +313,46 @@ fn hex_float_value(text: &str) -> Option<f64> {
         };
     }
     Some(value * magnitude)
+}
+
+/// Shape of a work-item built-in variable (OpenCL SPIR-V Environment
+/// Specification §2.9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkItemShape {
+    /// A `size_t` scalar; no dimension is applied.
+    Scalar,
+    /// A 3-component `size_t` vector, indexed by the dimension argument.
+    Vector3,
+}
+
+/// One row of the work-item query → built-in variable mapping.
+#[derive(Debug, Clone, Copy)]
+struct WorkItemVar {
+    /// The SPIR-V `BuiltIn` name decorating the variable.
+    builtin: &'static str,
+    /// The shape of the variable's pointee.
+    shape: WorkItemShape,
+}
+
+/// Maps a dialect work-item query to its built-in variable, per the
+/// OpenCL SPIR-V Environment Specification §2.9: `get_global_id`
+/// reads `GlobalInvocationId`, `get_num_groups` reads `NumWorkgroups`,
+/// and so on.  Returns `None` for queries outside the work-item family.
+fn work_item_var(name: &str) -> Option<WorkItemVar> {
+    let (builtin, shape) = match name {
+        "get_global_id" => ("GlobalInvocationId", WorkItemShape::Vector3),
+        "get_global_size" => ("GlobalSize", WorkItemShape::Vector3),
+        "get_global_offset" => ("GlobalOffset", WorkItemShape::Vector3),
+        "get_local_id" => ("LocalInvocationId", WorkItemShape::Vector3),
+        "get_local_size" => ("WorkgroupSize", WorkItemShape::Vector3),
+        "get_enqueued_local_size" => ("EnqueuedWorkgroupSize", WorkItemShape::Vector3),
+        "get_num_groups" => ("NumWorkgroups", WorkItemShape::Vector3),
+        "get_group_id" => ("WorkgroupId", WorkItemShape::Vector3),
+        "get_global_linear_id" => ("GlobalLinearId", WorkItemShape::Scalar),
+        "get_local_linear_id" => ("LocalInvocationIndex", WorkItemShape::Scalar),
+        _ => return None,
+    };
+    Some(WorkItemVar { builtin, shape })
 }
 
 /// The constant payload of the float `value` reinterpreted at type
@@ -3513,16 +3553,21 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Lowers a work-item query to a call to its imported declaration.
+    /// Lowers a work-item query to a load of its built-in variable.
     ///
-    /// The OpenCL SPIR-V environment declares these with import
-    /// linkage; the declaration is created once and reused.
+    /// The OpenCL SPIR-V environment §2.9 maps each query to an
+    /// `Input`-storage variable decorated with a SPIR-V `BuiltIn`
+    /// (`get_global_id` → `GlobalInvocationId`, …).  Vector variables
+    /// are indexed by the query's dimension argument: a constant
+    /// dimension extracts the component directly, a computed one
+    /// indexes through an access chain.
     ///
     /// # Errors
     ///
     /// Returns [`LowerError::Unsupported`] when the query has no
-    /// dimension argument, and propagates evaluation and declaration
-    /// failures.
+    /// dimension argument, names no built-in mapping, or passes a
+    /// constant dimension above 2; construction and conversion
+    /// failures propagate.
     fn lower_work_item(
         &mut self,
         whole: &Expr,
@@ -3542,49 +3587,107 @@ impl<'a> Lowerer<'a> {
         if !self.is_open() {
             return Ok(Lowered::Dead);
         }
-        let index_ty = self.module.int_ty(32, true);
-        let dimension = self.convert(dimension, index_ty, arg.span)?;
-        let callee = match self.module.find_function(builtin.name) {
-            Some(declared) => declared,
-            None => self.declare_work_item(builtin.name)?,
+        let mapping = work_item_var(builtin.name).ok_or(LowerError::Unsupported {
+            what: "a work-item query without a built-in mapping",
+            span,
+        })?;
+        let (variable, pointee) = self.work_item_variable(mapping)?;
+        let constant_index = match self.module.value_kind(dimension) {
+            ValueKind::Constant(ConstValue::Int(index)) => Some(*index),
+            _ => None,
         };
         let size_ty = self.module.int_ty(64, false);
-        let result = self.def_op(
-            size_ty,
-            Op::Call {
-                callee,
-                args: vec![dimension],
+        let result = match mapping.shape {
+            WorkItemShape::Scalar => self.def_op(pointee, Op::Load { ptr: variable })?,
+            WorkItemShape::Vector3 => match constant_index {
+                Some(index) => {
+                    if index > 2 {
+                        return Err(LowerError::Unsupported {
+                            what: "a work-item dimension above 2",
+                            span,
+                        });
+                    }
+                    let index = u32::try_from(index).map_err(|_| LowerError::Unsupported {
+                        what: "a work-item dimension above 2",
+                        span,
+                    })?;
+                    let vector = self.def_op(pointee, Op::Load { ptr: variable })?;
+                    self.def_op(
+                        size_ty,
+                        Op::CompositeExtract {
+                            composite: vector,
+                            indices: vec![index],
+                        },
+                    )?
+                }
+                None => {
+                    let index_ty = self.module.int_ty(32, true);
+                    let dimension = self.convert(dimension, index_ty, arg.span)?;
+                    let element_ptr = self.module.ptr_ty(Storage::Input, size_ty);
+                    let pointer = self.def_op(
+                        element_ptr,
+                        Op::AccessChain {
+                            base: variable,
+                            indices: vec![dimension],
+                        },
+                    )?;
+                    self.def_op(size_ty, Op::Load { ptr: pointer })?
+                }
             },
-        )?;
+        };
         self.finish_value(whole, result)
     }
 
-    /// Declares a work-item query as an imported `size_t(int)`
-    /// function with its required linkage decoration.
+    /// Returns the module-scope built-in variable for `mapping`,
+    /// creating and decorating it on first use.
+    ///
+    /// OpenCL SPIR-V Environment §2.9 requires every built-in variable
+    /// to live in the `Input` storage class; the variable carries a
+    /// `BuiltIn` decoration naming it (`GlobalInvocationId`, …) and is
+    /// shared by every query in the module.
     ///
     /// # Errors
     ///
-    /// Returns a construction error when the module rejects the
-    /// declaration.
-    fn declare_work_item(&mut self, name: &str) -> Result<ValueId, LowerError> {
-        let index_ty = self.module.int_ty(32, true);
-        let size_ty = self.module.int_ty(64, false);
-        let signature = self.module.fn_ty(size_ty, vec![index_ty]);
-        let declared = self
+    /// Returns [`LowerError::Build`] when the module rejects the
+    /// variable or the existing variable's type is not a pointer.
+    fn work_item_variable(&mut self, mapping: WorkItemVar) -> Result<(ValueId, TypeId), LowerError> {
+        let existing = self
             .module
-            .add_function(name, signature, Linkage::Import)
+            .globals()
+            .iter()
+            .copied()
+            .find(|&id| self.module.value(id).name == mapping.builtin);
+        if let Some(variable) = existing {
+            let pointee = self
+                .module
+                .pointer_parts(self.module.type_of(variable))
+                .map(|(_, pointee)| pointee)
+                .ok_or(LowerError::Build {
+                    what: "a work-item variable type",
+                    error: BuildError::NotPointerType,
+                })?;
+            return Ok((variable, pointee));
+        }
+        let size_ty = self.module.int_ty(64, false);
+        let pointee = match mapping.shape {
+            WorkItemShape::Scalar => size_ty,
+            WorkItemShape::Vector3 => self.module.vector_ty(size_ty, 3),
+        };
+        let pointer = self.module.ptr_ty(Storage::Input, pointee);
+        let variable = self
+            .module
+            .add_global(mapping.builtin, pointer, Linkage::External, None)
             .map_err(|error| LowerError::Build {
-                what: "a work-item declaration",
+                what: "a work-item variable",
                 error,
             })?;
         self.module.decorate(
-            declared,
-            Decor::LinkageAttributes {
-                name: name.to_string(),
-                import: true,
+            variable,
+            Decor::BuiltIn {
+                name: mapping.builtin.to_string(),
             },
         );
-        Ok(declared)
+        Ok((variable, pointee))
     }
 
     /// Lowers the fence family: `barrier` synchronizes the work-group
@@ -4216,7 +4319,6 @@ impl<'a> Lowerer<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::ValueKind;
     use crate::parse::parse;
     use crate::print::print;
     use crate::verify::verify;
@@ -4313,19 +4415,88 @@ fn vector_add(a: *const float, b: *const float, c: *mut float, n: int) -> void {
     }
 
     #[test]
-    fn vector_add_calls_builtins_and_indexes_pointers() {
+    fn vector_add_loads_builtin_variables_and_indexes_pointers() {
         let module = lower_ok(VECTOR_ADD);
         verify_ok(&module);
         let program = insts(&module);
         assert!(
             program
                 .iter()
-                .any(|inst| matches!(inst.op, Op::Call { .. }))
+                .any(|inst| matches!(inst.op, Op::Load { .. }))
+        );
+        assert!(
+            program
+                .iter()
+                .any(|inst| matches!(inst.op, Op::CompositeExtract { .. }))
         );
         assert!(
             program
                 .iter()
                 .any(|inst| matches!(inst.op, Op::PtrAccessChain { .. }))
+        );
+        assert!(
+            module.decorations.iter().any(|decor| matches!(
+                &decor.kind,
+                Decor::BuiltIn { name } if name == "GlobalInvocationId"
+            )),
+            "expected a GlobalInvocationId BuiltIn decoration"
+        );
+    }
+
+    #[test]
+    fn builtin_decorations_survive_a_print_parse_roundtrip() {
+        let module = lower_ok(VECTOR_ADD);
+        let printed = print(&module);
+        let reparsed = parse(&printed).expect("printed IR must reparse");
+        verify_ok(&reparsed);
+        assert!(
+            reparsed.decorations.iter().any(|decor| matches!(
+                &decor.kind,
+                Decor::BuiltIn { name } if name == "GlobalInvocationId"
+            )),
+            "expected a GlobalInvocationId BuiltIn decoration"
+        );
+    }
+
+    #[test]
+    fn work_item_dimension_may_be_computed() {
+        let source = "#[kernel]\nfn k(n: int) {\n    let x = get_global_id(n);\n}";
+        let module = lower_ok(source);
+        verify_ok(&module);
+        let program = insts(&module);
+        assert!(
+            program
+                .iter()
+                .any(|inst| matches!(inst.op, Op::AccessChain { .. })),
+            "a computed dimension indexes through an access chain"
+        );
+    }
+
+    #[test]
+    fn linear_id_query_loads_a_scalar_builtin_variable() {
+        let module = lower_ok("#[kernel]\nfn k() {\n    let x = get_global_linear_id(0);\n}");
+        verify_ok(&module);
+        assert!(
+            !insts(&module)
+                .iter()
+                .any(|inst| matches!(inst.op, Op::CompositeExtract { .. })),
+            "a scalar built-in has no component to extract"
+        );
+        assert!(
+            module.decorations.iter().any(|decor| matches!(
+                &decor.kind,
+                Decor::BuiltIn { name } if name == "GlobalLinearId"
+            )),
+            "expected a GlobalLinearId BuiltIn decoration"
+        );
+    }
+
+    #[test]
+    fn work_item_dimension_above_two_is_rejected() {
+        let error = lower_err("#[kernel]\nfn k() {\n    let x = get_global_id(3);\n}");
+        assert!(
+            matches!(&error, LowerError::Unsupported { what, .. } if *what == "a work-item dimension above 2"),
+            "unexpected error: {error:?}"
         );
     }
 

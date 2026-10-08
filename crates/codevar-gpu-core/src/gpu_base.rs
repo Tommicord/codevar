@@ -23,7 +23,7 @@
 //! submits each pipe as its own queue submission chained with binary
 //! semaphores, and finally folds every offscreen framebuffer registered
 //! through [`PipeSupplyTraits`] into the presentation target with a
-//! fullscreen `mix()` pass (`shaders/mix.frag`).
+//! fullscreen `mix()` pass (`kernel/mix.frag`).
 //!
 //! # Frame lifecycle
 //!
@@ -337,7 +337,7 @@ fn shader_module(device: &ash::Device, bytes: &[u8]) -> Result<vk::ShaderModule,
 
 /// Push constant payload of the mix pass.
 ///
-/// The layout mirrors `MixPush` in `shaders/mix.frag`: `count` at offset
+/// The layout mirrors `MixPush` in `kernel/mix.frag`: `count` at offset
 /// 0, then dynamic weight array starting at offset 16. The explicit
 /// padding keeps the block identical under the std140, std430 and scalar
 /// layout rules, so the byte range pushed by the compositor matches what

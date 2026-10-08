@@ -877,7 +877,7 @@ mod tests {
         assert_eq!(preferred_modifiers(&table, &[99]), Vec::new());
     }
 
-    /// The shaders embedded in the crate must always decode: this catches
+    /// The kernel embedded in the crate must always decode: this catches
     /// corrupted build artifacts before any window is opened.
     #[test]
     fn embedded_shaders_are_valid_spir_v() {

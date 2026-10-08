@@ -177,7 +177,7 @@ pub enum MemoryModel {
 pub enum ExecutionModel {
     /// OpenCL kernels (`OpEntryPoint Kernel`).
     Kernel,
-    /// Compute shaders (`OpEntryPoint GLCompute`), reserved for the
+    /// Compute kernel (`OpEntryPoint GLCompute`), reserved for the
     /// Vulkan backend.
     GLCompute,
 }
@@ -528,6 +528,14 @@ pub enum Decor {
         name: String,
         /// Whether the linkage is an import.
         import: bool,
+    },
+    /// A built-in variable decoration (OpenCL SPIR-V Environment
+    /// Specification §2.9): the target must be an `Input`-storage
+    /// module-scope variable carrying a SPIR-V built-in name such as
+    /// `GlobalInvocationId`.
+    BuiltIn {
+        /// The built-in name as it appears in SPIR-V assembly.
+        name: String,
     },
 }
 

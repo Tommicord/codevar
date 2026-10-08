@@ -36,6 +36,7 @@ members = [
     "crates/codevar-cli-arg-parse",
     "crates/codevar-oclc",
     "crates/codevar-ocl-parse",
+    "crates/codevar-ocl-ker",
     "crates/codevar-ocl-sar",
     "crates/codevar-ocl-ir",
     "crates/codevar-ocl-cubin",
@@ -137,6 +138,7 @@ codevar-truetype-glyf = { path = "crates/codevar-truetype-glyf" }
 codevar-ocl-lex = { path = "crates/codevar-ocl-lex" }
 codevar-cli-arg-parse = { path = "crates/codevar-cli-arg-parse" }
 codevar-oclc = { path = "crates/codevar-oclc" }
+codevar-ocl-ker = { path = "crates/codevar-ocl-ker" }
 codevar-ocl-parse = { path = "crates/codevar-ocl-parse" }
 codevar-ocl-sar = { path = "crates/codevar-ocl-sar" }
 codevar-ocl-ir = { path = "crates/codevar-ocl-ir" }
@@ -154,7 +156,7 @@ strip = "none"
 opt-level = 2
 
 [profile.release]
-opt-level = 3
+opt-level = "z"
 lto = true
 codegen-units = 1
 panic = "abort"

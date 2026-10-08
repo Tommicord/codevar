@@ -34,8 +34,8 @@ use alloc::format;
 use alloc::vec::Vec;
 
 use codevar_ocl_ir::ir::{
-    AddressingModel, BinOp, BlockId, CmpOp, ConstValue, ConvOp, ExecutionModel, ExtSetId, Inst, Linkage,
-    MemoryModel, Module, Op, Storage, Type, TypeId, UnOp, ValueId, ValueKind,
+    AddressingModel, BinOp, BlockId, CmpOp, ConstValue, ConvOp, Decor, ExecutionModel, ExtSetId, Inst,
+    Linkage, MemoryModel, Module, Op, Storage, Type, TypeId, UnOp, ValueId, ValueKind,
 };
 use codevar_ocl_ir::spirv::ops::{
     self, OP_ACCESSCHAIN, OP_BITCAST, OP_BITWISEAND, OP_BITWISEOR, OP_BITWISEXOR, OP_BRANCH,
@@ -600,10 +600,14 @@ fn emit_names(module: &Module, layout: &Layout, enc: &mut Encoder) -> Result<(),
     Ok(())
 }
 
-/// Emits `OpDecorate … LinkageAttributes` for every function and
-/// global, mirroring `print`: the [`Linkage`] payload field is the
-/// single source of truth, and [`Module::decorations`] is not
-/// consulted (the parser never fills it).
+/// Emits the module's `OpDecorate` annotations, mirroring `print`.
+///
+/// `LinkageAttributes` decorations come from the [`Linkage`] payload
+/// field of every function and global — the single source of truth,
+/// since the parser stores linkage there rather than in
+/// [`Module::decorations`] — while `BuiltIn` decorations come from
+/// [`Module::decorations`], which lowering fills for work-item
+/// variables (OpenCL SPIR-V Environment §2.9).
 ///
 /// SPIR-V has no `Internal` enumerant and treats entities without
 /// linkage attributes as module-local, so [`Linkage::External`] and
@@ -613,9 +617,21 @@ fn emit_names(module: &Module, layout: &Layout, enc: &mut Encoder) -> Result<(),
 ///
 /// # Errors
 ///
-/// [`AssembleError::Unsupported`] on an out-of-range target, or a
-/// string error from [`Encoder::string`].
+/// [`AssembleError::Unsupported`] on an out-of-range target, an
+/// unknown `BuiltIn` name, or a string error from [`Encoder::string`].
 fn emit_decorations(module: &Module, layout: &Layout, enc: &mut Encoder) -> Result<(), AssembleError> {
+    for decor in &module.decorations {
+        if let Decor::BuiltIn { name } = &decor.kind {
+            let target = layout.value(decor.target)?;
+            let builtin = builtin_number(name)?;
+            enc.instruction(OP_DECORATE, |e| {
+                e.word(target);
+                e.word(ops::DECORATION_BUILTIN);
+                e.word(builtin);
+                Ok(())
+            })?;
+        }
+    }
     for id in module
         .globals()
         .iter()
@@ -648,6 +664,43 @@ fn emit_decorations(module: &Module, layout: &Layout, enc: &mut Encoder) -> Resu
         })?;
     }
     Ok(())
+}
+
+/// The SPIR-V enumerant of a `BuiltIn` decoration name.
+///
+/// Numbers come from the `BuiltIn` enumeration of
+/// `spirv.core.grammar.json` (SPIR-V 1.6), the same source as
+/// [`crate`]'s operand tables.
+///
+/// # Errors
+///
+/// [`AssembleError::Unsupported`] when `name` is not a known built-in.
+fn builtin_number(name: &str) -> Result<u32, AssembleError> {
+    let number = match name {
+        "NumWorkgroups" => 24,
+        "WorkgroupSize" => 25,
+        "WorkgroupId" => 26,
+        "LocalInvocationId" => 27,
+        "GlobalInvocationId" => 28,
+        "LocalInvocationIndex" => 29,
+        "WorkDim" => 30,
+        "GlobalSize" => 31,
+        "EnqueuedWorkgroupSize" => 32,
+        "GlobalOffset" => 33,
+        "GlobalLinearId" => 34,
+        "SubgroupSize" => 36,
+        "SubgroupMaxSize" => 37,
+        "NumSubgroups" => 38,
+        "NumEnqueuedSubgroups" => 39,
+        "SubgroupId" => 40,
+        "SubgroupLocalInvocationId" => 41,
+        _ => {
+            return Err(AssembleError::Unsupported {
+                what: "an unknown BuiltIn decoration",
+            });
+        }
+    };
+    Ok(number)
 }
 
 /// A block handle from a block index.
@@ -1594,6 +1647,61 @@ OpFunctionEnd
         let (name, linkage_at) = string_operand(&decorate.operands, 2);
         assert_eq!(name, "get_global_id");
         assert_eq!(decorate.operands[linkage_at], ops::LINKAGETYPE_IMPORT);
+    }
+
+    #[test]
+    fn lowered_work_item_kernel_emits_builtin_annotation() {
+        let source = "\
+#[kernel]
+fn vector_add(a: *const float, b: *const float, c: *mut float, n: int) -> void {
+    let i = get_global_id(0);
+    if i < n {
+        c[i] = a[i] + b[i];
+    }
+}";
+        let module = codevar_ocl_ir::lower::lower_source(source).expect("kernel lowers");
+        let words = assemble(&module).expect("module assembles");
+        let instructions = decode(&words);
+
+        // The work-item variable is an Input variable decorated
+        // `BuiltIn GlobalInvocationId` (OpenCL SPIR-V Environment §2.9,
+        // enumerant 28).
+        let builtin = instructions
+            .iter()
+            .find(|instruction| {
+                instruction.opcode == OP_DECORATE
+                    && instruction.operands.get(1) == Some(&ops::DECORATION_BUILTIN)
+            })
+            .expect("BuiltIn decoration present");
+        assert_eq!(builtin.operands[2], 28, "GlobalInvocationId enumerant");
+        let variable = builtin.operands[0];
+        assert!(
+            instructions.iter().any(|instruction| {
+                // OpVariable operands: result type, result id, storage class.
+                instruction.opcode == OP_VARIABLE && instruction.operands.get(1) == Some(&variable)
+            }),
+            "the decorated id must be an OpVariable"
+        );
+
+        // The variable is listed in the entry point's interface.
+        let entry = instructions
+            .iter()
+            .find(|instruction| instruction.opcode == OP_ENTRYPOINT)
+            .expect("entry point present");
+        let (_, name_at) = string_operand(&entry.operands, 2);
+        assert!(
+            entry.operands[name_at..].contains(&variable),
+            "built-in variable must appear in the entry point interface"
+        );
+
+        // No imported work-item call survives lowering.
+        assert!(
+            !instructions.iter().any(|instruction| {
+                instruction.opcode == OP_DECORATE
+                    && instruction.operands.get(1) == Some(&ops::DECORATION_LINKAGEATTRIBUTES)
+            }),
+            "no import linkage remains"
+        );
     }
 
     #[test]
