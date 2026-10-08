@@ -280,6 +280,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-ocl-asm"
+version = "1.0.0"
+dependencies = [
+ "codevar-ocl-ir",
+]
+
+[[package]]
 name = "codevar-ocl-cubin"
 version = "1.0.0"
 
@@ -324,6 +331,7 @@ dependencies = [
  "codevar-console-util",
  "codevar-io",
  "codevar-logger",
+ "codevar-ocl-asm",
  "codevar-ocl-ir",
  "codevar-ocl-lex",
  "codevar-ocl-parse",

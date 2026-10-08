@@ -105,7 +105,20 @@ pub(crate) fn read_source(path: &str) -> Result<String, FsError> {
 /// Returns [`FsError::Path`] when the path is invalid or the file cannot be
 /// written.
 pub(crate) fn write_file(path: &str, contents: &str) -> Result<(), FsError> {
-    PathBuf::from_str(path)?.write(contents.as_bytes())?;
+    write_file_bytes(path, contents.as_bytes())
+}
+
+/// Writes raw `bytes` to `path`, creating it or truncating it.
+///
+/// Binary outputs such as SPIR-V modules go through this function;
+/// text outputs use [`write_file`].
+///
+/// # Errors
+///
+/// Returns [`FsError::Path`] when the path is invalid or the file cannot be
+/// written.
+pub(crate) fn write_file_bytes(path: &str, bytes: &[u8]) -> Result<(), FsError> {
+    PathBuf::from_str(path)?.write(bytes)?;
     Ok(())
 }
 

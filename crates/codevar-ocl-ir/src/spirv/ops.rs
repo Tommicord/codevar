@@ -68,6 +68,8 @@ pub const OP_CONSTANTTRUE: u16 = 41;
 pub const OP_CONSTANTFALSE: u16 = 42;
 /// `OpConstant`.
 pub const OP_CONSTANT: u16 = 43;
+/// `OpConstantNull`.
+pub const OP_CONSTANTNULL: u16 = 46;
 /// `OpFunction`.
 pub const OP_FUNCTION: u16 = 54;
 /// `OpFunctionParameter`.

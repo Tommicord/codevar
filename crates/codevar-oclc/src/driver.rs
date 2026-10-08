@@ -35,7 +35,7 @@ const ABOUT: &str = "Compile the Codevar OpenCL dialect to SPIR-V, CUDA PTX, or 
 const EMIT_STAGES: &[&str] = &["tokens", "ast", "analysis", "ir", "spirv", "ptx", "msl"];
 
 /// Stages that currently run to completion.
-const IMPLEMENTED_STAGES: &[&str] = &["tokens", "ast", "analysis", "ir"];
+const IMPLEMENTED_STAGES: &[&str] = &["tokens", "ast", "analysis", "ir", "spirv"];
 
 /// Stage used when `--emit` is absent.
 const DEFAULT_EMIT: &str = "tokens";
@@ -134,6 +134,11 @@ impl<'a> Driver<'a> {
             Err(error) => return failure(&format!("cannot read '{input}': {error}")),
         };
         let display_path = if input == "-" { "<stdin>" } else { input };
+        if emit == "spirv" {
+            // The SPIR-V stage produces bytes, not text, so it owns its
+            // output handling instead of joining the shared write step below.
+            return run_spirv(&source, display_path, matches.option("output"));
+        }
         let text = if emit == "analysis" {
             // The semantic analyzer owns its own Unicode, lexical, and
             // syntax gates, so it runs instead of (not after) the token
@@ -204,6 +209,46 @@ impl<'a> Driver<'a> {
             },
             None => write_stdout_text(&text),
         }
+    }
+}
+
+/// Runs the analysis → parse → lower → assemble pipeline for `--emit spirv`.
+///
+/// Mirrors the `ir` branch of [`Driver::run`]'s stage chain up to lowering,
+/// then emits a binary SPIR-V module to the requested output (stdout when
+/// `output` is `None`).
+fn run_spirv(source: &str, display_path: &str, output: Option<&str>) -> Exit {
+    let analyzed = codevar_ocl_sar::analyze(source);
+    codevar_ocl_sar::emit_stderr(
+        &analyzed.diagnostics,
+        display_path,
+        source,
+        codevar_ocl_sar::ColorChoice::Auto,
+    );
+    if analyzed.has_errors() {
+        return Exit::Failure;
+    }
+    let parsed = parse(source);
+    if !parsed.errors.is_empty() {
+        for error in &parsed.errors {
+            report_diagnostic(display_path, source, error.span.offset, &error.message);
+        }
+        return Exit::Failure;
+    }
+    let module = match lower(&parsed.program, &analyzed) {
+        Ok(module) => module,
+        Err(error) => return failure(&format!("lowering failed: {error}")),
+    };
+    let bytes = match codevar_ocl_asm::assemble_bytes(&module) {
+        Ok(bytes) => bytes,
+        Err(error) => return failure(&format!("assembly failed: {error}")),
+    };
+    match output {
+        Some(path) => match fs::write_file_bytes(path, &bytes) {
+            Ok(()) => Exit::Success,
+            Err(error) => failure(&format!("cannot write '{path}': {error}")),
+        },
+        None => write_stdout_bytes(&bytes),
     }
 }
 
@@ -490,6 +535,15 @@ pub(crate) fn report_diagnostic(path: &str, source: &str, offset: u32, message: 
 /// [`Exit::Failure`].
 fn write_stdout_text(text: &str) -> Exit {
     match codevar_consoleutil::write_stdout(text.as_bytes()) {
+        Ok(()) => Exit::Success,
+        Err(_) => failure("failed to write to stdout"),
+    }
+}
+
+/// Writes raw compiler output (a SPIR-V module) to stdout, mapping a write
+/// failure to [`Exit::Failure`].
+fn write_stdout_bytes(bytes: &[u8]) -> Exit {
+    match codevar_consoleutil::write_stdout(bytes) {
         Ok(()) => Exit::Success,
         Err(_) => failure("failed to write to stdout"),
     }

@@ -44,7 +44,6 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use bsize::BSize;
 use codevar_pathbuf::{PathBuf, PathError};
-use core::ffi::{c_char, c_int};
 
 /// Maximum accepted size of the OS command line (2 MiB).
 ///
@@ -112,7 +111,10 @@ impl core::error::Error for ArgvError {}
 ///   copied before returning, so the caller may free them afterward).
 /// - The `argc`/`argv` pair must come from the process entry point or an
 ///   equivalent, still-live source; reading a freed `argv` is undefined.
-pub unsafe fn from_c_args(argc: c_int, argv: *const *const c_char) -> Result<Vec<String>, ArgvError> {
+pub unsafe fn from_c_args(
+    argc: libc::c_int,
+    argv: *const *const libc::c_char,
+) -> Result<Vec<String>, ArgvError> {
     if argc <= 0 || argv.is_null() {
         return Ok(Vec::new());
     }

@@ -39,6 +39,7 @@ members = [
     "crates/codevar-ocl-sar",
     "crates/codevar-ocl-ir",
     "crates/codevar-ocl-cubin",
+    "crates/codevar-ocl-asm",
 ]
 resolver = "2"
 
@@ -139,6 +140,7 @@ codevar-oclc = { path = "crates/codevar-oclc" }
 codevar-ocl-parse = { path = "crates/codevar-ocl-parse" }
 codevar-ocl-sar = { path = "crates/codevar-ocl-sar" }
 codevar-ocl-ir = { path = "crates/codevar-ocl-ir" }
+codevar-ocl-asm = { path = "crates/codevar-ocl-asm" }
 codevar-ocl-cubin = { path = "crates/codevar-ocl-cubin" }
 
 [profile.dev]

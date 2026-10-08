@@ -150,8 +150,49 @@ fn run_fails_on_missing_input_file() {
 
 #[test]
 fn run_fails_on_unimplemented_stage() {
-    let args = args(&["--emit", "spirv", "/nonexistent/codevar-oclc-input.cl"]);
+    let args = args(&["--emit", "ptx", "/nonexistent/codevar-oclc-input.cl"]);
     assert_eq!(run(&args), Exit::Failure);
+}
+
+/// `unwrap` is safe: the path and kernel source are constructed here.
+#[test]
+fn spirv_stage_writes_binary_module() {
+    let input = temp_path("spirv-in.cl");
+    let output = temp_path("spirv-out.spv");
+    let kernel = "\
+#[kernel]
+fn vector_add(a: *const float, b: *const float, c: *mut float, n: int) -> void {
+    let i = get_global_id(0);
+    if i < n {
+        c[i] = a[i] + b[i];
+    }
+}
+";
+    fs::write_file(&input, kernel).unwrap();
+    cleanup(&output);
+
+    let args = args(&["--emit", "spirv", "-o", &output, &input]);
+    let exit = run(&args);
+    let bytes = std::fs::read(&output).unwrap_or_default();
+    cleanup(&input);
+    cleanup(&output);
+
+    assert_eq!(exit, Exit::Success);
+    assert!(bytes.len() >= 20, "byte length: {}", bytes.len());
+    assert_eq!(&bytes[0..4], &[0x03, 0x02, 0x23, 0x07], "SPIR-V magic");
+}
+
+/// `unwrap` is safe: the path and kernel source are constructed here.
+#[test]
+fn spirv_stage_reports_analysis_errors() {
+    let input = temp_path("spirv-bad.cl");
+    fs::write_file(&input, "#[kernel]\nfn broken(n: noway) { }\n").unwrap();
+
+    let args = args(&["--emit", "spirv", &input]);
+    let exit = run(&args);
+    cleanup(&input);
+
+    assert_eq!(exit, Exit::Failure);
 }
 
 /// `unwrap` is safe: every path in this test is constructed here.

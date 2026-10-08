@@ -300,7 +300,7 @@ fn hex_float_value(text: &str) -> Option<f64> {
         scale /= 16.0;
         value += f64::from(digit.to_digit(16)?) * scale;
     }
-    if exponent < -1075 || exponent > 1024 {
+    if !(-1075..=1024).contains(&exponent) {
         let magnitude = if exponent > 1024 { f64::INFINITY } else { 0.0 };
         return Some(if value == 0.0 { 0.0 } else { value * magnitude });
     }
@@ -794,7 +794,7 @@ enum Place {
     Ptr(ValueId),
     /// The expression names something that cannot be written (an
     /// immutable binding, a field, a call result).
-    NotPlace,
+    NotWritable,
     /// Control flow does not reach the write.
     Dead,
 }
@@ -1081,7 +1081,7 @@ impl<'a> Lowerer<'a> {
                 len: None,
             },
             TypeKind::Array { elem, len } => {
-                let length = const_int(len).ok_or_else(|| LowerError::Unsupported {
+                let length = const_int(len).ok_or(LowerError::Unsupported {
                     what: "an array length that is not a constant integer",
                     span: len.span,
                 })?;
@@ -1487,7 +1487,7 @@ impl<'a> Lowerer<'a> {
             .signatures
             .get(name)
             .cloned()
-            .ok_or_else(|| LowerError::Unsupported {
+            .ok_or(LowerError::Unsupported {
                 what: "a function without a declared signature",
                 span: function.span,
             })?;
@@ -1553,7 +1553,7 @@ impl<'a> Lowerer<'a> {
                 .module
                 .function_mut(signature.ir)
                 .and_then(|definition| definition.body.as_mut())
-                .ok_or_else(|| LowerError::Unsupported {
+                .ok_or(LowerError::Unsupported {
                     what: "a function body",
                     span: function.span,
                 })?;
@@ -1582,7 +1582,7 @@ impl<'a> Lowerer<'a> {
             .function(signature.ir)
             .and_then(|definition| definition.args.get(index))
             .copied()
-            .ok_or_else(|| LowerError::Unsupported {
+            .ok_or(LowerError::Unsupported {
                 what: "a parameter without an argument slot",
                 span: param.span,
             })?;
@@ -1600,7 +1600,7 @@ impl<'a> Lowerer<'a> {
                         .params
                         .get(index)
                         .copied()
-                        .ok_or_else(|| LowerError::Unsupported {
+                        .ok_or(LowerError::Unsupported {
                             what: "a parameter without a declared type",
                             span: param.span,
                         })?;
@@ -1855,7 +1855,7 @@ impl<'a> Lowerer<'a> {
             }
             UnaryOp::AddrOf { .. } => match self.place(inner, true)? {
                 Place::Ptr(ptr) => Ok(Lowered::Value(ptr)),
-                Place::NotPlace => Err(LowerError::Unsupported {
+                Place::NotWritable => Err(LowerError::Unsupported {
                     what: "the address of a temporary value",
                     span: whole.span,
                 }),
@@ -1926,7 +1926,7 @@ impl<'a> Lowerer<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`Place::NotPlace`] when `expr` names something that
+    /// Returns [`Place::NotWritable`] when `expr` names something that
     /// cannot be written, or [`LowerError::Unsupported`] for malformed
     /// expressions.
     fn place(&mut self, expr: &Expr, allow_spill: bool) -> Result<Place, LowerError> {
@@ -1964,7 +1964,7 @@ impl<'a> Lowerer<'a> {
                     Some(Binding::Value(value)) if allow_spill => {
                         Ok(Place::Ptr(self.spill_value(value, "temp", expr.span)?))
                     }
-                    Some(Binding::Value(_)) => Ok(Place::NotPlace),
+                    Some(Binding::Value(_)) => Ok(Place::NotWritable),
                     None => Err(LowerError::Unsupported {
                         what: "a binding outside its scope",
                         span: expr.span,
@@ -2007,7 +2007,7 @@ impl<'a> Lowerer<'a> {
                     };
                     Ok(Place::Ptr(self.spill_value(value, "temp", expr.span)?))
                 } else {
-                    Ok(Place::NotPlace)
+                    Ok(Place::NotWritable)
                 }
             }
         }
@@ -2024,7 +2024,7 @@ impl<'a> Lowerer<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`Place::NotPlace`] when `base` cannot be addressed, or
+    /// Returns [`Place::NotWritable`] when `base` cannot be addressed, or
     /// [`LowerError::Unsupported`] when it cannot be indexed.
     fn index_place(
         &mut self,
@@ -2081,7 +2081,7 @@ impl<'a> Lowerer<'a> {
                 };
                 match place {
                     Place::Ptr(ptr) => ptr,
-                    Place::NotPlace => return Ok(Place::NotPlace),
+                    Place::NotWritable => return Ok(Place::NotWritable),
                     Place::Dead => return Ok(Place::Dead),
                 }
             }
@@ -2113,13 +2113,13 @@ impl<'a> Lowerer<'a> {
             return Ok(Place::Ptr(value));
         }
         let ptr_ty = self.module.type_of(address);
-        let (storage, pointee) =
-            self.module
-                .pointer_parts(ptr_ty)
-                .ok_or_else(|| LowerError::Unsupported {
-                    what: "an index into a non-pointer address",
-                    span,
-                })?;
+        let (storage, pointee) = self
+            .module
+            .pointer_parts(ptr_ty)
+            .ok_or(LowerError::Unsupported {
+                what: "an index into a non-pointer address",
+                span,
+            })?;
         let element = match self.module.ty(pointee) {
             IrType::Array { elem, .. } | IrType::Vector { elem, .. } => *elem,
             _ => {
@@ -2149,7 +2149,7 @@ impl<'a> Lowerer<'a> {
     fn lower_index(&mut self, whole: &Expr, base: &Expr, index: &Expr) -> Result<Lowered, LowerError> {
         match self.index_place(base, index, true, whole.span)? {
             Place::Dead => Ok(Lowered::Dead),
-            Place::NotPlace => Err(LowerError::Unsupported {
+            Place::NotWritable => Err(LowerError::Unsupported {
                 what: "an index into a value with no address",
                 span: whole.span,
             }),
@@ -2242,7 +2242,7 @@ impl<'a> Lowerer<'a> {
     fn lower_assign(&mut self, op: Option<&BinaryOp>, lhs: &Expr, rhs: &Expr) -> Result<Lowered, LowerError> {
         let target = match self.place(lhs, false)? {
             Place::Ptr(ptr) => ptr,
-            Place::NotPlace => {
+            Place::NotWritable => {
                 return Err(LowerError::Unsupported {
                     what: "assignment to an immutable binding",
                     span: lhs.span,
@@ -2308,12 +2308,12 @@ impl<'a> Lowerer<'a> {
             } else {
                 left.clone()
             };
-            return normalize_operand_ty(&unified, left, right).ok_or_else(|| LowerError::Unsupported {
+            return normalize_operand_ty(&unified, left, right).ok_or(LowerError::Unsupported {
                 what: "operands that cannot unify",
                 span,
             });
         }
-        unify_operand_types(left, right).ok_or_else(|| LowerError::Unsupported {
+        unify_operand_types(left, right).ok_or(LowerError::Unsupported {
             what: "operands that cannot unify",
             span,
         })
@@ -2421,7 +2421,7 @@ impl<'a> Lowerer<'a> {
                 )
             }
             other => {
-                let op = arith_binop(other, float, signed).ok_or_else(|| LowerError::Unsupported {
+                let op = arith_binop(other, float, signed).ok_or(LowerError::Unsupported {
                     what: "a binary operator without an IR form",
                     span,
                 })?;
@@ -2537,7 +2537,7 @@ impl<'a> Lowerer<'a> {
         let span = whole.span;
         let left_ty = default_literals(&self.expr_ty(lhs));
         let right_ty = default_literals(&self.expr_ty(rhs));
-        let target = unify_operand_types(&left_ty, &right_ty).ok_or_else(|| LowerError::Unsupported {
+        let target = unify_operand_types(&left_ty, &right_ty).ok_or(LowerError::Unsupported {
             what: "a comparison between incompatible types",
             span,
         })?;
@@ -2599,7 +2599,7 @@ impl<'a> Lowerer<'a> {
             }
         } else {
             let float = matches!(element, Scalar::F16 | Scalar::F32 | Scalar::F64);
-            let code = cmp_op(op, float, element.is_signed_int()).ok_or_else(|| LowerError::Unsupported {
+            let code = cmp_op(op, float, element.is_signed_int()).ok_or(LowerError::Unsupported {
                 what: "a comparison this IR cannot express",
                 span,
             })?;
@@ -2713,12 +2713,12 @@ impl<'a> Lowerer<'a> {
         // diverging operand leaves its block terminated, and the merge
         // stays reachable through the short-circuit path alone.
         self.enter(evaluate_block, true)?;
-        if let Some(right) = self.value_of(rhs)? {
-            if self.is_open() {
-                let right = self.convert(right, bool_ty, rhs.span)?;
-                self.store_ptr(slot, right, rhs.span)?;
-                self.term(Op::Branch { target: merge_block })?;
-            }
+        if let Some(right) = self.value_of(rhs)?
+            && self.is_open()
+        {
+            let right = self.convert(right, bool_ty, rhs.span)?;
+            self.store_ptr(slot, right, rhs.span)?;
+            self.term(Op::Branch { target: merge_block })?;
         }
         self.enter(merge_block, true)?;
         Ok(Lowered::Value(self.load_ptr(slot)?))
@@ -3222,7 +3222,7 @@ impl<'a> Lowerer<'a> {
         let element = if layers == 0 {
             match self.place(iter, true)? {
                 Place::Ptr(ptr) => Some(ptr),
-                Place::NotPlace => {
+                Place::NotWritable => {
                     return Err(LowerError::Unsupported {
                         what: "the address of the iterated value",
                         span,
@@ -3970,7 +3970,7 @@ impl<'a> Lowerer<'a> {
                     )?;
                     constituents.push(self.convert(component, to_elem, span)?);
                 }
-                return Ok(self.def_op(to, Op::CompositeConstruct { constituents })?);
+                return self.def_op(to, Op::CompositeConstruct { constituents });
             }
             (Some(_), Some(_)) => {
                 return Err(LowerError::Unsupported {
@@ -3983,7 +3983,7 @@ impl<'a> Lowerer<'a> {
                     what: "a boolean vector with more than 255 lanes",
                     span,
                 })?;
-                return Ok(self.bool_vector_fold(value, lanes, false, span)?);
+                return self.bool_vector_fold(value, lanes, false, span);
             }
             (Some(_), None) => {
                 return Err(LowerError::Unsupported {
@@ -3994,12 +3994,12 @@ impl<'a> Lowerer<'a> {
             (None, Some(lanes)) => {
                 let to_elem = ir_element(&self.module, to);
                 let scalar = self.convert(value, to_elem, span)?;
-                return Ok(self.def_op(
+                return self.def_op(
                     to,
                     Op::CompositeConstruct {
                         constituents: vec![scalar; lanes as usize],
                     },
-                )?);
+                );
             }
             (None, None) => {}
         }
@@ -4021,14 +4021,14 @@ impl<'a> Lowerer<'a> {
                     span,
                 });
             }
-            return Ok(self.def_op(
+            return self.def_op(
                 to,
                 Op::Select {
                     cond: value,
                     a: one,
                     b: zero,
                 },
-            )?);
+            );
         }
         if ir_is_int(&self.module, from) && ir_is_int(&self.module, to) {
             let (from_bits, from_signed) = match self.module.ty(from) {
@@ -4056,7 +4056,7 @@ impl<'a> Lowerer<'a> {
             } else {
                 ConvOp::UConvert
             };
-            return Ok(self.def_op(to, Op::Convert { op, operand: value })?);
+            return self.def_op(to, Op::Convert { op, operand: value });
         }
         if ir_is_int(&self.module, from) && ir_is_float(&self.module, to) {
             let from_signed = match self.module.ty(from) {
@@ -4073,7 +4073,7 @@ impl<'a> Lowerer<'a> {
             } else {
                 ConvOp::ConvertUToF
             };
-            return Ok(self.def_op(to, Op::Convert { op, operand: value })?);
+            return self.def_op(to, Op::Convert { op, operand: value });
         }
         if ir_is_float(&self.module, from) && ir_is_int(&self.module, to) {
             let to_signed = match self.module.ty(to) {
@@ -4090,27 +4090,27 @@ impl<'a> Lowerer<'a> {
             } else {
                 ConvOp::ConvertFToU
             };
-            return Ok(self.def_op(to, Op::Convert { op, operand: value })?);
+            return self.def_op(to, Op::Convert { op, operand: value });
         }
         if ir_is_float(&self.module, from) && ir_is_float(&self.module, to) {
-            return Ok(self.def_op(
+            return self.def_op(
                 to,
                 Op::Convert {
                     op: ConvOp::FConvert,
                     operand: value,
                 },
-            )?);
+            );
         }
         if ir_is_int(&self.module, from) && ir_is_bool(&self.module, to) {
             let zero = self.int_const(0, from, span)?;
-            return Ok(self.def_op(
+            return self.def_op(
                 to,
                 Op::Compare {
                     op: CmpOp::INotEqual,
                     lhs: value,
                     rhs: zero,
                 },
-            )?);
+            );
         }
         if ir_is_float(&self.module, from) && ir_is_bool(&self.module, to) {
             let zero = self.float_const(0.0, from, span)?;
@@ -4123,13 +4123,13 @@ impl<'a> Lowerer<'a> {
                     rhs: zero,
                 },
             )?;
-            return Ok(self.def_op(
+            return self.def_op(
                 to,
                 Op::Unary {
                     op: UnOp::LogicalNot,
                     operand: equals,
                 },
-            )?);
+            );
         }
         if self.module.pointer_parts(from).is_some() || self.module.pointer_parts(to).is_some() {
             return Err(LowerError::Unsupported {
@@ -4197,10 +4197,11 @@ impl<'a> Lowerer<'a> {
                     _ => return Err(unsupported()),
                 }
             }
-            ConstValue::Float32(bits) => float_payload(f64::from(f32::from_bits(bits)), self.module.ty(to))
-                .ok_or_else(|| unsupported())?,
+            ConstValue::Float32(bits) => {
+                float_payload(f64::from(f32::from_bits(bits)), self.module.ty(to)).ok_or_else(unsupported)?
+            }
             ConstValue::Float64(bits) => {
-                float_payload(f64::from_bits(bits), self.module.ty(to)).ok_or_else(|| unsupported())?
+                float_payload(f64::from_bits(bits), self.module.ty(to)).ok_or_else(unsupported)?
             }
         };
         self.module
@@ -4210,6 +4211,568 @@ impl<'a> Lowerer<'a> {
                 error,
             })
     }
+}
 
-    // __NEXT_CHUNK
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::ValueKind;
+    use crate::parse::parse;
+    use crate::print::print;
+    use crate::verify::verify;
+
+    const ZERO_KERNEL: &str = "\
+#[kernel]
+fn zero(out: *mut int) {
+    *out = 0;
+}";
+
+    const VECTOR_ADD: &str = "\
+#[kernel]
+fn vector_add(a: *const float, b: *const float, c: *mut float, n: int) -> void {
+    let i = get_global_id(0);
+    if i < n {
+        c[i] = a[i] + b[i];
+    }
+}";
+
+    /// Lowers `source`, failing the test when lowering rejects it.
+    fn lower_ok(source: &str) -> Module {
+        lower_source(source).expect("test source must lower")
+    }
+
+    /// Lowers `source`, failing the test when lowering accepts it.
+    fn lower_err(source: &str) -> LowerError {
+        lower_source(source).expect_err("test source must be rejected")
+    }
+
+    /// Every instruction of every defined function body, in program order.
+    fn insts(module: &Module) -> Vec<&Inst> {
+        let mut program = Vec::new();
+        for &function in module.functions() {
+            let Some(definition) = module.function(function) else {
+                continue;
+            };
+            let Some(blocks) = &definition.body else {
+                continue;
+            };
+            for block in blocks {
+                program.extend(&block.insts);
+            }
+        }
+        program
+    }
+
+    /// The lowered module must satisfy the verifier.
+    fn verify_ok(module: &Module) {
+        verify(module).expect("lowered IR must verify");
+    }
+
+    /// Whether `module` interns a constant equal to `value`.
+    fn has_constant(module: &Module, value: ConstValue) -> bool {
+        module
+            .values()
+            .iter()
+            .any(|entry| matches!(&entry.kind, ValueKind::Constant(found) if *found == value))
+    }
+
+    /// SPIR-V requires `OpVariable` to precede other instructions in its block.
+    fn assert_variables_first(module: &Module) {
+        for &function in module.functions() {
+            let Some(definition) = module.function(function) else {
+                continue;
+            };
+            let Some(blocks) = &definition.body else {
+                continue;
+            };
+            for block in blocks {
+                let mut body_started = false;
+                for inst in &block.insts {
+                    if matches!(inst.op, Op::Variable { .. }) {
+                        assert!(
+                            !body_started,
+                            "OpVariable after other instructions in `{}`",
+                            block.name
+                        );
+                    } else {
+                        body_started = true;
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn zero_kernel_registers_one_entry_point() {
+        let module = lower_ok(ZERO_KERNEL);
+        verify_ok(&module);
+        assert_eq!(module.entry_points.len(), 1);
+        let entry = &module.entry_points[0];
+        assert_eq!(entry.model, ExecutionModel::Kernel);
+        assert_eq!(entry.name, "zero");
+    }
+
+    #[test]
+    fn vector_add_calls_builtins_and_indexes_pointers() {
+        let module = lower_ok(VECTOR_ADD);
+        verify_ok(&module);
+        let program = insts(&module);
+        assert!(
+            program
+                .iter()
+                .any(|inst| matches!(inst.op, Op::Call { .. }))
+        );
+        assert!(
+            program
+                .iter()
+                .any(|inst| matches!(inst.op, Op::PtrAccessChain { .. }))
+        );
+    }
+
+    #[test]
+    fn if_else_lowers_to_selection_merge() {
+        let source = "fn choose(a: int, b: int) -> int { if a > b { a - b } else { b - a } }";
+        let module = lower_ok(source);
+        verify_ok(&module);
+        assert!(
+            insts(&module)
+                .iter()
+                .any(|inst| matches!(inst.op, Op::SelectionMerge { .. }))
+        );
+    }
+
+    #[test]
+    fn missing_return_names_the_offending_function() {
+        let error = lower_err("fn f(c: bool) -> int {\n    if c { return 1; }\n}");
+        assert!(
+            matches!(&error, LowerError::MissingReturn { name } if name == "f"),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn both_returning_arms_leave_an_unreachable_merge() {
+        let source = "fn f(c: bool) -> int { if c { return 1; } else { return 2; } }";
+        let module = lower_ok(source);
+        verify_ok(&module);
+        assert!(
+            insts(&module)
+                .iter()
+                .any(|inst| matches!(inst.op, Op::Unreachable))
+        );
+    }
+
+    #[test]
+    fn while_with_break_and_continue_lowers_to_loop_merge() {
+        let source = concat!(
+            "fn fib(n: int) -> int {\n",
+            "    let mut a = 0;\n",
+            "    let mut b = 1;\n",
+            "    let mut i = 0;\n",
+            "    while i < n {\n",
+            "        let t = a + b;\n",
+            "        a = b;\n",
+            "        b = t;\n",
+            "        i = i + 1;\n",
+            "        if t > 100 { break; }\n",
+            "        if t < 0 { continue; }\n",
+            "    }\n",
+            "    a\n",
+            "}",
+        );
+        let module = lower_ok(source);
+        verify_ok(&module);
+        assert!(
+            insts(&module)
+                .iter()
+                .any(|inst| matches!(inst.op, Op::LoopMerge { .. }))
+        );
+    }
+
+    #[test]
+    fn range_for_lowers_to_a_counter_add() {
+        let source = concat!(
+            "fn rangeloo(n: int) -> int {\n",
+            "    let mut s = 0;\n",
+            "    for i in 0..n {\n",
+            "        s += i;\n",
+            "    }\n",
+            "    s\n",
+            "}",
+        );
+        let module = lower_ok(source);
+        verify_ok(&module);
+        let program = insts(&module);
+        assert!(
+            program
+                .iter()
+                .any(|inst| matches!(inst.op, Op::LoopMerge { .. }))
+        );
+        assert!(
+            program
+                .iter()
+                .any(|inst| matches!(inst.op, Op::Binary { op: BinOp::IAdd, .. }))
+        );
+    }
+
+    #[test]
+    fn array_for_walks_the_local_with_an_access_chain() {
+        let source = concat!(
+            "fn fa() -> int {\n",
+            "    let arr = [1, 2, 3, 4];\n",
+            "    let mut s = 0;\n",
+            "    for x in arr {\n",
+            "        s += x;\n",
+            "    }\n",
+            "    s\n",
+            "}",
+        );
+        let module = lower_ok(source);
+        verify_ok(&module);
+        assert!(
+            insts(&module)
+                .iter()
+                .any(|inst| matches!(inst.op, Op::AccessChain { .. }))
+        );
+    }
+
+    #[test]
+    fn short_circuit_and_uses_a_selection_not_a_logical_and() {
+        let module = lower_ok("fn f(c: bool, d: bool) -> bool { c && d }");
+        verify_ok(&module);
+        let program = insts(&module);
+        assert!(
+            program
+                .iter()
+                .any(|inst| matches!(inst.op, Op::SelectionMerge { .. }))
+        );
+        assert!(!program.iter().any(|inst| matches!(
+            inst.op,
+            Op::Binary {
+                op: BinOp::LogicalAnd,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn boolean_equality_expands_without_a_compare() {
+        let module = lower_ok("fn bs(a: bool, b: bool) -> bool { a == b }");
+        verify_ok(&module);
+        let program = insts(&module);
+        assert!(program.iter().any(|inst| matches!(
+            inst.op,
+            Op::Unary {
+                op: UnOp::LogicalNot,
+                ..
+            }
+        )));
+        assert!(program.iter().any(|inst| matches!(
+            inst.op,
+            Op::Binary {
+                op: BinOp::LogicalOr,
+                ..
+            }
+        )));
+        assert!(
+            !program
+                .iter()
+                .any(|inst| matches!(inst.op, Op::Compare { .. }))
+        );
+    }
+
+    #[test]
+    fn math_builtins_emit_opencl_ext_insts() {
+        let source = concat!(
+            "fn f(x: float) -> float { sqrt(abs(x)) }\n",
+            "fn g(a: int, b: int) -> int { min(a, b) }",
+        );
+        let module = lower_ok(source);
+        verify_ok(&module);
+        let mut ext = Vec::new();
+        for inst in insts(&module) {
+            if let Op::ExtInst {
+                set, inst: number, ..
+            } = inst.op
+            {
+                ext.push((set, number));
+            }
+        }
+        assert_eq!(ext.len(), 3, "sqrt, abs, and min");
+        for (set, _) in &ext {
+            assert_eq!(module.ext_inst_set(*set).name, "OpenCL.std");
+        }
+        assert!(ext.iter().any(|&(_, number)| number == 158), "min is #158");
+    }
+
+    #[test]
+    fn barrier_and_mem_fence_emit_synchronization() {
+        let module = lower_ok("fn f() {\n    barrier(0);\n    mem_fence(0);\n}");
+        verify_ok(&module);
+        let program = insts(&module);
+        assert!(
+            program
+                .iter()
+                .any(|inst| matches!(inst.op, Op::ControlBarrier { .. }))
+        );
+        assert!(
+            program
+                .iter()
+                .any(|inst| matches!(inst.op, Op::MemoryBarrier { .. }))
+        );
+    }
+
+    #[test]
+    fn all_folds_a_bool_vector_by_hand() {
+        let module = lower_ok("fn f(v: bool4) -> bool { all(v) }");
+        verify_ok(&module);
+        let program = insts(&module);
+        let extracts = program
+            .iter()
+            .filter(|inst| matches!(inst.op, Op::CompositeExtract { .. }))
+            .count();
+        let ands = program
+            .iter()
+            .filter(|inst| {
+                matches!(
+                    inst.op,
+                    Op::Binary {
+                        op: BinOp::LogicalAnd,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(extracts, 4);
+        assert_eq!(ands, 3);
+    }
+
+    #[test]
+    fn vector_comparison_folds_to_a_scalar_bool() {
+        let module = lower_ok("fn vc(a: int4, b: int4) -> bool { a == b }");
+        verify_ok(&module);
+        let program = insts(&module);
+        assert!(
+            program
+                .iter()
+                .any(|inst| matches!(inst.op, Op::Compare { .. }))
+        );
+        assert!(program.iter().any(|inst| matches!(
+            inst.op,
+            Op::Binary {
+                op: BinOp::LogicalAnd,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn pointer_comparison_is_rejected() {
+        let error = lower_err("fn pc(a: *const int, b: *const int) -> bool { a == b }");
+        assert!(
+            matches!(
+                &error,
+                LowerError::Unsupported {
+                    what: "a pointer comparison",
+                    ..
+                }
+            ),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn struct_parameters_have_no_ir_representation() {
+        let error = lower_err("struct S { a: int }\nfn sp(s: S) -> void {}");
+        assert!(
+            matches!(
+                &error,
+                LowerError::UnsupportedType { ty: Ty::Struct { name, .. }, .. } if name == "S"
+            ),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn unsigned_negation_is_rejected() {
+        let error = lower_err("fn neg(x: uint) -> uint { -x }");
+        assert!(
+            matches!(
+                &error,
+                LowerError::Unsupported {
+                    what: "negation of an unsigned integer",
+                    ..
+                }
+            ),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn assignment_to_an_immutable_binding_is_rejected() {
+        let error = lower_err("fn imm() { let x = 1; x += 2; }");
+        assert!(
+            matches!(
+                &error,
+                LowerError::Unsupported {
+                    what: "assignment to an immutable binding",
+                    ..
+                }
+            ),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_names_fail_semantic_analysis() {
+        let error = lower_err("fn f() -> int { unknown_name }");
+        assert!(
+            matches!(&error, LowerError::AnalysisFailed { .. }),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn printed_ir_parses_back_and_verifies() {
+        let module = lower_ok(VECTOR_ADD);
+        let text = print(&module);
+        let reparsed = parse(&text).expect("printed IR must parse");
+        verify(&reparsed).expect("reparsed IR must verify");
+        assert_eq!(print(&reparsed), text);
+    }
+
+    #[test]
+    fn stack_slots_precede_other_instructions() {
+        let module = lower_ok("fn immm() { let mut x = 1; x += 2; }");
+        verify_ok(&module);
+        assert_variables_first(&module);
+    }
+
+    #[test]
+    fn if_without_else_starts_its_slot_from_null() {
+        let module = lower_ok("fn f(c: bool) -> int { if c { 1 } }");
+        verify_ok(&module);
+        let null_init = insts(&module).iter().any(|inst| match &inst.op {
+            Op::Variable { init: Some(id) } => module.constant_value(*id) == Some(ConstValue::Null),
+            _ => false,
+        });
+        assert!(null_init, "expected a null-initialised slot");
+    }
+
+    #[test]
+    fn double_pointer_store_loads_the_inner_pointer() {
+        let module = lower_ok("fn dbl(a: *mut *mut int) -> void { **a = 5; }");
+        verify_ok(&module);
+        let program = insts(&module);
+        assert!(
+            program
+                .iter()
+                .any(|inst| matches!(inst.op, Op::Load { .. }))
+        );
+        assert!(
+            program
+                .iter()
+                .any(|inst| matches!(inst.op, Op::Store { .. }))
+        );
+    }
+
+    #[test]
+    fn int_to_long_cast_lowers_to_sconvert() {
+        let module = lower_ok("fn cas(x: int) -> long { x as long }");
+        verify_ok(&module);
+        let program = insts(&module);
+        assert!(program.iter().any(|inst| matches!(
+            inst.op,
+            Op::Convert {
+                op: ConvOp::SConvert,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn mut_to_const_pointer_return_needs_no_conversion() {
+        let module = lower_ok("fn pcnv(p: *mut int) -> *const int { p }");
+        verify_ok(&module);
+        assert!(
+            !insts(&module)
+                .iter()
+                .any(|inst| matches!(inst.op, Op::Convert { .. }))
+        );
+    }
+
+    #[test]
+    fn generic_function_calls_are_rejected() {
+        let source = concat!(
+            "fn gen<T>(x: T) -> T { x }\n",
+            "fn useg(a: int) -> int { gen(a) }"
+        );
+        let error = lower_err(source);
+        assert!(
+            matches!(
+                &error,
+                LowerError::Unsupported {
+                    what: "a call to a generic function",
+                    ..
+                }
+            ),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn wide_literal_arithmetic_keeps_the_widened_type() {
+        let module = lower_ok("fn big() -> long {\n    let y: long = 3000000000 + 1;\n    y\n}");
+        verify_ok(&module);
+        let program = insts(&module);
+        let wide_add = program.iter().any(|inst| {
+            matches!(inst.op, Op::Binary { op: BinOp::IAdd, .. })
+                && inst
+                    .ty
+                    .is_some_and(|ty| matches!(module.ty(ty), IrType::Int { bits: 64, .. }))
+        });
+        assert!(wide_add, "the sum must compute at 64 bits");
+        assert!(
+            !program
+                .iter()
+                .any(|inst| matches!(inst.op, Op::Convert { .. })),
+            "the literal sum must not be narrowed"
+        );
+    }
+
+    #[test]
+    fn wide_negation_keeps_the_widened_type() {
+        let module = lower_ok("fn negbig() -> long { -3000000000 }");
+        verify_ok(&module);
+        let program = insts(&module);
+        let wide_neg = program.iter().any(|inst| {
+            matches!(
+                inst.op,
+                Op::Unary {
+                    op: UnOp::SNegate,
+                    ..
+                }
+            ) && inst
+                .ty
+                .is_some_and(|ty| matches!(module.ty(ty), IrType::Int { bits: 64, .. }))
+        });
+        assert!(wide_neg, "negation must compute at 64 bits");
+        assert!(
+            !program
+                .iter()
+                .any(|inst| matches!(inst.op, Op::Convert { .. }))
+        );
+    }
+
+    #[test]
+    fn hex_float_literals_intern_their_ieee_value() {
+        let source = "fn hexf() -> float { 0x1.8p3 }\nfn inff() -> float { 0x1p2000 }";
+        let module = lower_ok(source);
+        verify_ok(&module);
+        assert!(has_constant(&module, ConstValue::Float32(12.0f32.to_bits())));
+        assert!(has_constant(
+            &module,
+            ConstValue::Float32(f32::INFINITY.to_bits())
+        ));
+    }
 }
