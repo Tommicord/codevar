@@ -9,8 +9,6 @@ repository.workspace = true
 
 [features]
 default = []
-# Enables the `std::env::args_os` argument backend (`argv::from_env`).
-std = []
 
 [lib]
 name = "codevar_oclc"
@@ -33,6 +31,18 @@ codevar-sig-module-base = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+
+# The build script drives the compiler stage crates directly: Cargo forbids a
+# package's build script from depending on the package itself, and the driver
+# is a thin shell over exactly these stages (`--emit spirv`).
+[build-dependencies]
+codevar-logger = { workspace = true }
+codevar-ocl-sar = { workspace = true }
+codevar-ocl-parse = { workspace = true }
+codevar-ocl-ir = { workspace = true }
+codevar-ocl-asm = { workspace = true }
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
 
 [[bin]]
 name = "codevar-oclc"

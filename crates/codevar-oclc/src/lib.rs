@@ -49,11 +49,6 @@
 
 #![cfg_attr(not(test), no_std)]
 #![warn(missing_docs)]
-
-extern crate alloc;
-#[cfg(feature = "std")]
-extern crate std;
-
 pub mod argv;
 pub mod driver;
 mod fs;
@@ -62,3 +57,41 @@ mod fs;
 mod tests;
 
 pub use driver::{Driver, Exit, run, run_from_env};
+
+/// OpenCL kernels compiled and embedded in the executable at build time.
+///
+/// The build script compiles every `*.cl` file in the crate's `kernels/`
+/// directory (overridable with the `CODEVAR_KERNEL_DIR` environment
+/// variable) to SPIR-V, stages `<name>.spv` and `<name>.cl` in `OUT_DIR`,
+/// and generates one [`kernels::KERNEL_MODULES`] registry entry plus three
+/// statics per file — `<PREFIX>_SPIRV`, `<PREFIX>_SOURCE`, and
+/// `<PREFIX>_ENTRY_POINTS` — exactly like shader embedding. A missing or
+/// empty kernel directory yields an empty registry instead of a build
+/// failure.
+///
+/// # Examples
+///
+/// Every embedded module carries a valid SPIR-V header:
+///
+/// ```
+/// for module in codevar_oclc::kernels::KERNEL_MODULES {
+///     assert!(module.spirv.len() >= 20, "truncated SPIR-V for {}", module.name);
+///     assert_eq!(&module.spirv[0..4], &[0x03, 0x02, 0x23, 0x07]);
+/// }
+/// ```
+pub mod kernels {
+    /// One OpenCL kernel source file compiled and embedded at build time.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct KernelModule {
+        /// File stem identifying the module (`vector_add.cl` → `vector_add`).
+        pub name: &'static str,
+        /// Original OpenCL dialect source text.
+        pub source: &'static str,
+        /// Compiled SPIR-V image of the source.
+        pub spirv: &'static [u8],
+        /// Names of the `#[kernel]` entry points the source declares.
+        pub entry_points: &'static [&'static str],
+    }
+
+    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+}
