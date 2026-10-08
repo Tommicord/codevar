@@ -93,14 +93,6 @@ fn decode_reports_first_invalid_utf8() {
     );
 }
 
-/// `unwrap` is safe: the test process always has its own command line.
-#[cfg(feature = "std")]
-#[test]
-fn from_env_returns_process_args() {
-    let args = argv::from_env().unwrap();
-    assert!(!args.is_empty());
-}
-
 /// `unwrap` is safe: Linux guarantees `/proc/self/cmdline` for a live process.
 #[cfg(target_os = "linux")]
 #[test]

@@ -43,13 +43,13 @@ use core::fmt::{self, Write};
 /// async-signal-safe; callers must ensure it is not invoked from a signal
 /// handler on that platform.
 #[inline]
-pub fn resolve_symbol(addr: usize) -> Option<(&'static str, &'static str)> {
+pub fn resolve_symbol(dl_addr: usize) -> Option<(&'static str, &'static str)> {
     #[cfg(all(unix, not(target_arch = "wasm32")))]
     {
         use core::ffi::c_void;
         unsafe {
             let mut info: libc::Dl_info = core::mem::zeroed();
-            if libc::dladdr(addr as *const c_void, &mut info) != 0 {
+            if libc::dladdr(dl_addr as *const c_void, &mut info) != 0 {
                 let fname = if !info.dli_fname.is_null() {
                     CStr::from_ptr(info.dli_fname).to_str().ok()?
                 } else {
@@ -107,7 +107,7 @@ pub fn resolve_symbol(addr: usize) -> Option<(&'static str, &'static str)> {
             let mut disp = 0;
             if windows_link::SymFromAddr(
                 !0, // process handle (use current process)
-                addr as u64,
+                dl_addr as u64,
                 &mut disp,
                 &mut info as *mut _ as *mut _,
             ) != 0

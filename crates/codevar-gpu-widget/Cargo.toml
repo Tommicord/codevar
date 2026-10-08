@@ -1,5 +1,5 @@
 [package]
-name = "codevar-gpu-core"
+name = "codevar-gpu-widget"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [lib]
-name = "codevar_gpu_core"
+name = "codevar_gpu_widget"
 
 [dependencies]
 ash = { workspace = true }
@@ -16,6 +16,7 @@ libc = { workspace = true }
 spin = { workspace = true }
 libm = { workspace = true }
 codevar-base = { workspace = true }
+codevar-gpu-core = { workspace = true }
 codevar-wl-protocol = { workspace = true }
 codevar-logger = { workspace = true }
 codevar-console-util = { workspace = true }

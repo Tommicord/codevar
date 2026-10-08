@@ -11,5 +11,6 @@ repository.workspace = true
 name = "codevar_ocl_ir"
 
 [dependencies]
+codevar-ocl-lex = { workspace = true }
 codevar-ocl-parse = { workspace = true }
 codevar-ocl-sar = { workspace = true }

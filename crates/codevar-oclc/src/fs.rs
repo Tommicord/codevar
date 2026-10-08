@@ -29,9 +29,6 @@ use codevar_pathbuf::{PathBuf, PathError};
 /// Largest source file (or stdin stream) the driver will read: 64 MiB.
 const MAX_SOURCE_BYTES: usize = BSize::mb(64).bytes();
 
-/// Bytes read per system call while draining standard input.
-const STDIN_CHUNK_BYTES: usize = 8 * 1024;
-
 /// A filesystem or stdio failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FsError {
@@ -119,7 +116,7 @@ pub(crate) fn write_file(path: &str, contents: &str) -> Result<(), FsError> {
 fn read_stdin() -> Result<String, FsError> {
     let mut stdin = Stdin::new();
     let mut bytes: Vec<u8> = Vec::new();
-    let mut buffer = [0u8; STDIN_CHUNK_BYTES];
+    let mut buffer = [0u8; 4096];
     loop {
         let read = match stdin.read(&mut buffer) {
             Ok(read) => read,

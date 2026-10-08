@@ -1603,7 +1603,7 @@ impl<'a> Sema<'a> {
                 }
                 operand
             }
-            UnaryOp::Deref => match strip_indirection(&operand) {
+            UnaryOp::Deref => match &operand {
                 Ty::Ptr { inner: pointee, .. } | Ty::Ref { inner: pointee, .. } => (**pointee).clone(),
                 Ty::Error | Ty::Never => Ty::Error,
                 other => {
@@ -2311,9 +2311,12 @@ impl<'a> Sema<'a> {
     }
 
     /// Checks that a condition expression is a scalar `bool`.
+    ///
+    /// A `boolN` mask passes [`is_bool`] but cannot drive structured
+    /// control flow, so it is rejected here with a reduction hint.
     fn check_condition(&mut self, cond: &Expr) {
         let ty = self.check_expr(cond);
-        if ty.is_error() || ty.is_never() || is_bool(&ty) {
+        if ty.is_error() || ty.is_never() || matches!(ty, Ty::Scalar(Scalar::Bool)) {
             return;
         }
         let help = if matches!(

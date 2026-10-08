@@ -73,6 +73,7 @@
 extern crate alloc;
 
 pub mod ir;
+pub mod lower;
 pub mod parse;
 pub mod print;
 pub mod spirv;

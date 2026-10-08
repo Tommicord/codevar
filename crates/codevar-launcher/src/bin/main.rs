@@ -24,5 +24,4 @@ fn main() {
     } else {
         log_info!("installed signal handler");
     }
-    loop {}
 }

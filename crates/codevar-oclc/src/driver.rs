@@ -19,13 +19,11 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use codevar_cli_arg_parse::{ArgParser, validate_choice};
+use codevar_ocl_ir::lower::lower;
 use codevar_ocl_lex::{Base, LiteralKind, Token, TokenKind, tokenize};
 use codevar_ocl_parse::{optimize, parse};
 
 use crate::fs;
-
-/// Where to report bugs in the compiler itself (used by the ICE hook).
-pub const BUG_REPORT_URL: &str = "https://github.com/Tommicord/codevar/issues";
 
 /// Program name used in help, usage, and diagnostic prefixes.
 const PROGRAM: &str = "codevar-oclc";
@@ -34,10 +32,10 @@ const PROGRAM: &str = "codevar-oclc";
 const ABOUT: &str = "Compile the Codevar OpenCL dialect to SPIR-V, CUDA PTX, or Metal.";
 
 /// Every stage accepted by `--emit` (future stages fail with a clear message).
-const EMIT_STAGES: &[&str] = &["tokens", "ast", "analysis", "spirv", "ptx", "msl"];
+const EMIT_STAGES: &[&str] = &["tokens", "ast", "analysis", "ir", "spirv", "ptx", "msl"];
 
 /// Stages that currently run to completion.
-const IMPLEMENTED_STAGES: &[&str] = &["tokens", "ast", "analysis"];
+const IMPLEMENTED_STAGES: &[&str] = &["tokens", "ast", "analysis", "ir"];
 
 /// Stage used when `--emit` is absent.
 const DEFAULT_EMIT: &str = "tokens";
@@ -151,6 +149,29 @@ impl<'a> Driver<'a> {
                 return Exit::Failure;
             }
             format_declarations(&analyzed.declarations)
+        } else if emit == "ir" {
+            let analyzed = codevar_ocl_sar::analyze(&source);
+            codevar_ocl_sar::emit_stderr(
+                &analyzed.diagnostics,
+                display_path,
+                &source,
+                codevar_ocl_sar::ColorChoice::Auto,
+            );
+            if analyzed.has_errors() {
+                return Exit::Failure;
+            }
+            let parsed = parse(&source);
+            if !parsed.errors.is_empty() {
+                for error in &parsed.errors {
+                    report_diagnostic(display_path, &source, error.span.offset, &error.message);
+                }
+                return Exit::Failure;
+            }
+            let module = match lower(&parsed.program, &analyzed) {
+                Ok(module) => module,
+                Err(error) => return failure(&format!("lowering failed: {error}")),
+            };
+            format!("{module}\n")
         } else {
             let output = lex_source(&source);
             if !output.diagnostics.is_empty() {

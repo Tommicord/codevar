@@ -287,6 +287,7 @@ version = "1.0.0"
 name = "codevar-ocl-ir"
 version = "1.0.0"
 dependencies = [
+ "codevar-ocl-lex",
  "codevar-ocl-parse",
  "codevar-ocl-sar",
 ]
@@ -323,6 +324,7 @@ dependencies = [
  "codevar-console-util",
  "codevar-io",
  "codevar-logger",
+ "codevar-ocl-ir",
  "codevar-ocl-lex",
  "codevar-ocl-parse",
  "codevar-ocl-sar",

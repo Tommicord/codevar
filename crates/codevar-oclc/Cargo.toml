@@ -22,6 +22,7 @@ codevar-cli-arg-parse = { workspace = true }
 codevar-ocl-lex = { workspace = true }
 codevar-ocl-parse = { workspace = true }
 codevar-ocl-sar = { workspace = true }
+codevar-ocl-ir = { workspace = true }
 codevar-logger = { workspace = true }
 codevar-pathbuf = { workspace = true }
 codevar-io = { workspace = true }

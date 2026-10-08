@@ -1023,6 +1023,19 @@ impl Parser {
         if opcode == "OpFunctionParameter" {
             return Err(line.err(ParseErrorKind::MisplacedParameter));
         }
+        if opcode == "OpFunctionCall" && result.is_none() {
+            // A void call prints without a result id or type operand:
+            // `OpFunctionCall %callee %arg…`.
+            if rest.len() < 2 {
+                return Err(line.err(ParseErrorKind::UnexpectedEndOfLine));
+            }
+            let callee = self.resolve_value(ctx.locals, &rest[1], line)?;
+            let mut args = Vec::new();
+            for token in &rest[2..] {
+                args.push(self.resolve_value(ctx.locals, token, line)?);
+            }
+            return Ok(Inst::none(Op::Call { callee, args }));
+        }
         if is_result_op(opcode) {
             let name = result.ok_or_else(|| line.err(ParseErrorKind::ResultMismatch))?;
             let id = ctx

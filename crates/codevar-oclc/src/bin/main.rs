@@ -62,26 +62,7 @@ pub unsafe extern "C" fn main(
         Ok(()) => {}
         Err(error) => codevar_logger::log_warn!("failed to install signal handler: {error}"),
     }
-    install_ice_hook();
     codevar_oclc::run(&args).code()
-}
-
-/// Replaces the panic hook with one that reports an internal compiler error
-/// to stderr and exits with [`Exit::Ice`](codevar_oclc::Exit::Ice)'s code
-/// (101), matching rustc.
-///
-/// The hook never unwinds and never prints to stdout; it runs once, before
-/// any compilation work.
-#[cfg(all(not(test), unix))]
-fn install_ice_hook() {
-    std::panic::set_hook(std::boxed::Box::new(|info| {
-        let message = alloc::format!(
-            "internal compiler error: {info}\nthis is a bug in codevar-oclc: {}\n",
-            codevar_oclc::driver::BUG_REPORT_URL
-        );
-        let _ = codevar_consoleutil::write_stderr(message.as_bytes());
-        std::process::exit(codevar_oclc::Exit::Ice.code());
-    }));
 }
 
 #[cfg(all(not(test), unix))]

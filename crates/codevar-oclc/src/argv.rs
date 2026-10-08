@@ -24,9 +24,6 @@
 //! 1. [`from_c_args`] — copy `argc`/`argv` at the C entry point. This is what
 //!    the freestanding (`no_std`) binary uses; it works on any platform whose
 //!    C runtime calls `main(argc, argv)`.
-//! 2. [`from_env`] *(feature `std`)* — [`std::env::args_os`] with a strict
-//!    Unicode policy: a non-UTF-8 argument is an error, never a panic and
-//!    never a lossy replacement.
 //! 3. [`from_cmdline`] *(Linux)* — read `/proc/self/cmdline`, the canonical
 //!    `no_std` fallback: NUL-separated bytes written by the kernel at `execve`
 //!    time.
@@ -133,26 +130,6 @@ pub unsafe fn from_c_args(argc: c_int, argv: *const *const c_char) -> Result<Vec
     Ok(args)
 }
 
-/// Reads the command line from the process environment (`std` builds).
-///
-/// Unlike [`std::env::args`], invalid Unicode is reported as
-/// [`ArgvError::InvalidUtf8`] instead of panicking.
-///
-/// # Errors
-///
-/// Returns [`ArgvError::InvalidUtf8`] when an argument is not valid UTF-8.
-#[cfg(feature = "std")]
-pub fn from_env() -> Result<Vec<String>, ArgvError> {
-    let mut args = Vec::new();
-    for (index, argument) in std::env::args_os().enumerate() {
-        match argument.into_string() {
-            Ok(text) => args.push(text),
-            Err(_) => return Err(ArgvError::InvalidUtf8 { index }),
-        }
-    }
-    Ok(args)
-}
-
 /// Reads the command line from `/proc/self/cmdline` (Linux, `no_std`-safe).
 ///
 /// The kernel writes each argument's bytes followed by a NUL separator;
@@ -237,22 +214,6 @@ pub(crate) fn decode_fields(fields: Vec<Vec<u8>>) -> Result<Vec<String>, ArgvErr
     Ok(args)
 }
 
-/// Returns the full command line (`argv[0]` first) for the current build.
-///
-/// Resolution order: `std::env::args_os` when the `std` feature is enabled,
-/// otherwise `/proc/self/cmdline` on Linux, otherwise
-/// [`ArgvError::Unsupported`]. Embedders with their own entry point should
-/// prefer [`from_c_args`] or pass arguments directly to
-/// [`Driver::run`](crate::Driver::run).
-///
-/// # Errors
-///
-/// Propagates the underlying source's errors (see [`ArgvError`]).
-#[cfg(feature = "std")]
-pub fn raw_args() -> Result<Vec<String>, ArgvError> {
-    from_env()
-}
-
 /// Returns the full command line (`argv[0]` first) for a `no_std` Linux build.
 ///
 /// See [`raw_args`] for the resolution order.
@@ -260,19 +221,6 @@ pub fn raw_args() -> Result<Vec<String>, ArgvError> {
 /// # Errors
 ///
 /// Propagates [`from_cmdline`]'s errors.
-#[cfg(all(not(feature = "std"), target_os = "linux"))]
 pub fn raw_args() -> Result<Vec<String>, ArgvError> {
     from_cmdline()
-}
-
-/// Returns an error on `no_std` platforms without a command-line source.
-///
-/// See [`raw_args`] for the resolution order.
-///
-/// # Errors
-///
-/// Always returns [`ArgvError::Unsupported`].
-#[cfg(all(not(feature = "std"), not(target_os = "linux")))]
-pub fn raw_args() -> Result<Vec<String>, ArgvError> {
-    Err(ArgvError::Unsupported)
 }

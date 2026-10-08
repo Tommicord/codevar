@@ -871,7 +871,12 @@ impl<'a> Checker<'a> {
         }
         let mut after_non_phi = false;
         for (inst_index, inst) in block_def.insts.iter().enumerate() {
-            if inst.result.is_some() != inst.ty.is_some() || inst.result.is_some() != inst.op.has_result() {
+            // `Op::Call`'s result presence follows the callee's return
+            // type, which `check_inst` validates against the signature;
+            // the static shape check does not apply to it.
+            if inst.result.is_some() != inst.ty.is_some()
+                || (inst.result.is_some() != inst.op.has_result() && !matches!(inst.op, Op::Call { .. }))
+            {
                 return Err(VerifyError::ResultShapeMismatch { block });
             }
             if let Some(ty) = inst.ty {
@@ -1143,8 +1148,8 @@ impl<'a> Checker<'a> {
                     });
                 }
                 let base_ty = self.type_of(*base)?;
-                let mut current = match self.ty(base_ty)? {
-                    Type::Pointer { pointee, .. } => *pointee,
+                let (base_storage, mut current) = match self.ty(base_ty)? {
+                    Type::Pointer { storage, pointee } => (*storage, *pointee),
                     _ => {
                         return Err(VerifyError::WrongKind {
                             what: "access chain base",
@@ -1178,12 +1183,23 @@ impl<'a> Checker<'a> {
                         }
                     };
                 }
-                if result != current {
-                    return Err(VerifyError::TypeMismatch {
-                        what: "OpAccessChain result",
-                        expected: current,
-                        found: result,
-                    });
+                let expected = Type::Pointer {
+                    storage: base_storage,
+                    pointee: current,
+                };
+                if self.ty(result)? != &expected {
+                    return match self.module.find_type(&expected) {
+                        Some(expected_id) => Err(VerifyError::TypeMismatch {
+                            what: "OpAccessChain result",
+                            expected: expected_id,
+                            found: result,
+                        }),
+                        None => Err(VerifyError::WrongKind {
+                            what: "OpAccessChain result",
+                            expected: "a pointer to the indexed type",
+                            found: result,
+                        }),
+                    };
                 }
             }
             Op::PtrAccessChain { base, indices } => {
@@ -1208,8 +1224,8 @@ impl<'a> Checker<'a> {
                     });
                 }
                 let base_ty = self.type_of(*base)?;
-                let mut current = match self.ty(base_ty)? {
-                    Type::Pointer { pointee, .. } => *pointee,
+                let (base_storage, mut current) = match self.ty(base_ty)? {
+                    Type::Pointer { storage, pointee } => (*storage, *pointee),
                     _ => {
                         return Err(VerifyError::WrongKind {
                             what: "pointer access chain base",
@@ -1243,12 +1259,23 @@ impl<'a> Checker<'a> {
                         }
                     };
                 }
-                if result != current {
-                    return Err(VerifyError::TypeMismatch {
-                        what: "OpPtrAccessChain result",
-                        expected: current,
-                        found: result,
-                    });
+                let expected = Type::Pointer {
+                    storage: base_storage,
+                    pointee: current,
+                };
+                if self.ty(result)? != &expected {
+                    return match self.module.find_type(&expected) {
+                        Some(expected_id) => Err(VerifyError::TypeMismatch {
+                            what: "OpPtrAccessChain result",
+                            expected: expected_id,
+                            found: result,
+                        }),
+                        None => Err(VerifyError::WrongKind {
+                            what: "OpPtrAccessChain result",
+                            expected: "a pointer to the indexed type",
+                            found: result,
+                        }),
+                    };
                 }
             }
             Op::CopyObject { operand } => {
@@ -2142,6 +2169,111 @@ OpFunctionEnd
                     expected,
                     found,
                 } if *expected == int && *found == float
+            ),
+            "unexpected error: {error}"
+        );
+    }
+
+    const ACCESS_CHAIN: &str = "\
+target opencl address physical64 memory opencl
+
+%void = OpTypeVoid
+%float = OpTypeFloat 32
+%uint = OpTypeInt 32 0
+%arr4 = OpTypeArray %float 4
+%ptr_fn_float = OpTypePointer Function %float
+%ptr_fn_arr4 = OpTypePointer Function %arr4
+%fn_void = OpTypeFunction %void %ptr_fn_arr4
+
+%idx = OpConstant %uint 1
+
+OpEntryPoint Kernel %main \"main\"
+
+%main = OpFunction %void None %fn_void
+%buf = OpFunctionParameter %ptr_fn_arr4
+%entry = OpLabel
+";
+
+    #[test]
+    fn accepts_access_chains_with_pointer_results() {
+        let module = parse_ok(&format!(
+            "{ACCESS_CHAIN}\n\
+             %elem = OpAccessChain %ptr_fn_float %buf %idx\n\
+             %off = OpPtrAccessChain %ptr_fn_float %buf %idx %idx\n\
+             OpReturn\n\
+             OpFunctionEnd\n"
+        ));
+        verify(&module).expect("access chains with pointer results verify");
+    }
+
+    #[test]
+    fn accepts_a_void_call_without_a_result() {
+        let module = parse_ok(
+            "target opencl address physical64 memory opencl\n\
+             \n\
+             %void = OpTypeVoid\n\
+             %fn_void = OpTypeFunction %void\n\
+             \n\
+             OpEntryPoint Kernel %main \"main\"\n\
+             \n\
+             %main = OpFunction %void None %fn_void\n\
+             %entry = OpLabel\n\
+             OpFunctionCall %helper\n\
+             OpReturn\n\
+             OpFunctionEnd\n\
+             \n\
+             %helper = OpFunction %void None %fn_void\n\
+             %hentry = OpLabel\n\
+             OpReturn\n\
+             OpFunctionEnd\n",
+        );
+        verify(&module).expect("void call without a result verifies");
+    }
+
+    #[test]
+    fn rejects_access_chains_with_non_pointer_results() {
+        let module = parse_ok(&format!(
+            "{ACCESS_CHAIN}\n\
+             %elem = OpAccessChain %float %buf %idx\n\
+             OpReturn\n\
+             OpFunctionEnd\n"
+        ));
+        let float = type_id(&module, Type::Float { bits: 32 });
+        let ptr = type_id(
+            &module,
+            Type::Pointer {
+                storage: Storage::Function,
+                pointee: float,
+            },
+        );
+        let error = verify(&module).expect_err("non-pointer access chain result");
+        assert!(
+            matches!(
+                &error,
+                VerifyError::TypeMismatch {
+                    what: "OpAccessChain result",
+                    expected,
+                    found,
+                } if *expected == ptr && *found == float
+            ),
+            "unexpected error: {error}"
+        );
+
+        let module = parse_ok(&format!(
+            "{ACCESS_CHAIN}\n\
+             %elem = OpPtrAccessChain %float %buf %idx %idx\n\
+             OpReturn\n\
+             OpFunctionEnd\n"
+        ));
+        let error = verify(&module).expect_err("non-pointer ptr access chain result");
+        assert!(
+            matches!(
+                &error,
+                VerifyError::TypeMismatch {
+                    what: "OpPtrAccessChain result",
+                    expected,
+                    found,
+                } if *expected == ptr && *found == float
             ),
             "unexpected error: {error}"
         );

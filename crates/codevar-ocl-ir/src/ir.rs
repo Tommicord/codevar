@@ -542,9 +542,12 @@ pub struct Decoration {
 
 /// One machine instruction with its optional result.
 ///
-/// Invariant: `result.is_some()` if and only if `ty.is_some()` if and
-/// only if `op.has_result()`.  Use [`Inst::def`] and [`Inst::none`],
-/// which maintain the invariant, rather than the struct literal.
+/// Invariant: `result.is_some()` if and only if `ty.is_some()`.  For
+/// every opcode except [`Op::Call`] this coincides with
+/// `op.has_result()`; a call's result presence follows the callee's
+/// return type, so [`Inst::def`] (value-returning) and [`Inst::none`]
+/// (void) both accept it.  Use these constructors rather than the
+/// struct literal.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Inst {
     /// Result value; `None` for stores, branches, returns, barriers.
@@ -560,10 +563,14 @@ impl Inst {
     ///
     /// # Panics
     ///
-    /// Debug builds only: `op` must produce a result.
+    /// Debug builds only: `op` must produce a result, except for
+    /// [`Op::Call`], whose result presence depends on the callee.
     #[must_use]
     pub fn def(result: ValueId, ty: TypeId, op: Op) -> Self {
-        debug_assert!(op.has_result(), "instruction must produce a result");
+        debug_assert!(
+            op.has_result() || matches!(op, Op::Call { .. }),
+            "instruction must produce a result"
+        );
         Self {
             result: Some(result),
             ty: Some(ty),
@@ -575,10 +582,15 @@ impl Inst {
     ///
     /// # Panics
     ///
-    /// Debug builds only: `op` must not produce a result.
+    /// Debug builds only: `op` must not produce a result, except for
+    /// [`Op::Call`] to a void function, whose result presence depends
+    /// on the callee.
     #[must_use]
     pub fn none(op: Op) -> Self {
-        debug_assert!(!op.has_result(), "instruction must not produce a result");
+        debug_assert!(
+            !op.has_result() || matches!(op, Op::Call { .. }),
+            "instruction must not produce a result"
+        );
         Self {
             result: None,
             ty: None,
@@ -967,6 +979,10 @@ pub enum Op {
 
 impl Op {
     /// True when the instruction produces a result value.
+    ///
+    /// [`Op::Call`] is the exception: its answer depends on the callee's
+    /// return type, so it reports `true` and the [`Inst`] constructors
+    /// accept either shape.
     #[must_use]
     pub const fn has_result(&self) -> bool {
         !matches!(
@@ -1503,11 +1519,13 @@ impl Module {
             inst.ty.is_some(),
             "result and result type must appear together"
         );
-        debug_assert_eq!(
-            inst.result.is_some(),
-            inst.op.has_result(),
-            "result presence must match the opcode"
-        );
+        if !matches!(inst.op, Op::Call { .. }) {
+            debug_assert_eq!(
+                inst.result.is_some(),
+                inst.op.has_result(),
+                "result presence must match the opcode"
+            );
+        }
         let function = self
             .function_mut(func)
             .ok_or(BuildError::NotAFunction { id: func })?;

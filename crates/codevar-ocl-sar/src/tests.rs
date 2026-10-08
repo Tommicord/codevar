@@ -227,6 +227,17 @@ fn non_boolean_condition_is_reported() {
 }
 
 #[test]
+fn vector_boolean_conditions_are_reduced_with_all_or_any() {
+    let output = error_in("fn f(mask: bool4) { if mask {} }", codes::INVALID_CONDITION);
+    let help = output
+        .find_code(codes::INVALID_CONDITION)
+        .and_then(|found| found.help.as_deref())
+        .unwrap_or("");
+    assert!(help.contains("all(…)"), "unexpected help: {help}");
+    error_in("fn f(mask: bool2) { while mask {} }", codes::INVALID_CONDITION);
+}
+
+#[test]
 fn bad_binary_operands_are_reported() {
     error_in("fn f() { let x = true + 1; }", codes::INVALID_BINARY_OPERAND);
 }
@@ -1007,6 +1018,24 @@ fn type_table_records_proven_types_per_expression() {
     assert_eq!(output.types.get(ids.exprs[1]), Some(&Ty::Scalar(Scalar::F32)));
     assert_eq!(output.types.get(ids.exprs[2]), Some(&Ty::Scalar(Scalar::I32)));
     assert_eq!(output.types.get(ids.exprs[3]), Some(&Ty::Scalar(Scalar::F32)));
+}
+
+#[test]
+fn dereference_peels_exactly_one_layer_of_indirection() {
+    let source = "fn f(p: *mut *mut int, r: &int) -> int {\n    **p = 2;\n    return **p + *r;\n}";
+    let output = clean(source);
+    let ids = node_ids(source);
+    assert!(
+        ids.exprs
+            .iter()
+            .any(|id| { matches!(output.types.get(*id), Some(Ty::Scalar(Scalar::I32))) }),
+        "the innermost dereference must type as `int`"
+    );
+}
+
+#[test]
+fn dereference_requires_an_indirect_operand() {
+    error_in("fn f() { let x = 1; let y = *x; }", codes::INVALID_UNARY_OPERAND);
 }
 
 #[test]
