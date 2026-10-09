@@ -16,9 +16,7 @@
 use crate::aead::{AeadKey, TlsAead};
 use crate::alert::AlertDescription;
 use crate::error::{TlsError, TlsResult};
-use crate::ids::{
-    AeadAlgorithm, ContentType, MAX_CIPHERTEXT_LENGTH, MAX_FRAGMENT_LENGTH, ProtocolVersion,
-};
+use crate::ids::{AeadAlgorithm, ContentType, MAX_CIPHERTEXT_LENGTH, MAX_FRAGMENT_LENGTH, ProtocolVersion};
 
 /// Five-byte TLS record header: `type (1) || legacy_record_version (2) || length (2)`.
 pub const RECORD_HEADER_LEN: usize = 5;

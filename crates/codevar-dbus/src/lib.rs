@@ -56,9 +56,7 @@ mod names;
 mod signature;
 mod transport;
 
-pub use addr::{
-    DbusAddress, SESSION_BUS_FILE, SYSTEM_BUS_SOCKET, SYSTEM_BUS_SOCKET_LEGACY, percent_decode,
-};
+pub use addr::{DbusAddress, SESSION_BUS_FILE, SYSTEM_BUS_SOCKET, SYSTEM_BUS_SOCKET_LEGACY, percent_decode};
 pub use auth::{AuthPoll, AuthSession};
 pub use conn::{
     Connection, DEFAULT_CALL_TIMEOUT, NAME_FLAG_ALLOW_REPLACEMENT, NAME_FLAG_DO_NOT_QUEUE,

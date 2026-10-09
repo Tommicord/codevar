@@ -252,9 +252,7 @@ pub fn select_version(
             return Ok(*v);
         }
     }
-    Err(TlsError::Alert(
-        crate::alert::AlertDescription::ProtocolVersion,
-    ))
+    Err(TlsError::Alert(crate::alert::AlertDescription::ProtocolVersion))
 }
 
 /// Selects the first mutually supported cipher suite from `preference`.
@@ -273,9 +271,7 @@ pub fn select_cipher_suite(
             return Ok(*suite);
         }
     }
-    Err(TlsError::Alert(
-        crate::alert::AlertDescription::HandshakeFailure,
-    ))
+    Err(TlsError::Alert(crate::alert::AlertDescription::HandshakeFailure))
 }
 
 /// Selects a mutually supported named group.
@@ -285,9 +281,7 @@ pub fn select_group(preference: &[NamedGroup], offered: &[NamedGroup]) -> TlsRes
             return Ok(*g);
         }
     }
-    Err(TlsError::Alert(
-        crate::alert::AlertDescription::HandshakeFailure,
-    ))
+    Err(TlsError::Alert(crate::alert::AlertDescription::HandshakeFailure))
 }
 
 /// Selects ALPN protocol (server preference order).

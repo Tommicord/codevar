@@ -2016,5 +2016,4 @@ mod tests {
             assert_eq!(region[0], 1);
         }
     }
-
 }

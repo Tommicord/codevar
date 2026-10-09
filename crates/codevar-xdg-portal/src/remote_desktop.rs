@@ -26,8 +26,8 @@
 use alloc::string::{String, ToString};
 use core::time::Duration;
 
-use codevar_base::xml::XmlDocument;
 use codevar_base::xml;
+use codevar_base::xml::XmlDocument;
 use codevar_dbus::{BodyWriter, DbusMessage};
 
 use crate::context::{MethodInvocation, PortalContext, PortalFn, PortalInterface};

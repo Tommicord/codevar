@@ -19,9 +19,7 @@ use crate::alert::AlertDescription;
 use crate::codec::{Reader, fill_u24_len, put_u16, put_vec_u8, put_vec_u16, put_vec_u24, start_u24_vec};
 use crate::error::{TlsError, TlsResult};
 use crate::extensions::ParsedExtensions;
-use crate::ids::{
-    CipherSuite, HELLO_RETRY_REQUEST_RANDOM, HandshakeType, ProtocolVersion, SignatureScheme,
-};
+use crate::ids::{CipherSuite, HELLO_RETRY_REQUEST_RANDOM, HandshakeType, ProtocolVersion, SignatureScheme};
 
 /// A framed handshake message.
 #[derive(Debug, Clone)]

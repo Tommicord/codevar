@@ -43,9 +43,7 @@ use std::time::{Duration, Instant};
 
 use ash::vk;
 use codevar_gpu_core::pipeline::{OwnedFd, PipelineContext};
-use codevar_gpu_core::renderer::{
-    FrameContext, RenderLayer, RendererError, RendererSubsystem, load_spir_v,
-};
+use codevar_gpu_core::renderer::{FrameContext, RenderLayer, RendererError, RendererSubsystem, load_spir_v};
 use codevar_wl_protocol::{
     BUFFER_DESTROY, BUFFER_PARAMS_ADD, BUFFER_PARAMS_CREATE_IMMED, BUFFER_PARAMS_DESTROY, BUFFER_RELEASE,
     COMPOSITOR_CREATE_SURFACE, COMPOSITOR_INTERFACE, DMABUF_CREATE_PARAMS, DMABUF_DESTROY,

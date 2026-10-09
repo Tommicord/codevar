@@ -13,8 +13,8 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-use crate::encoding::{DecoderResult, EncoderResult, VariantDecoder};
 use crate::ascii::{ascii_to_basic_latin, basic_latin_to_ascii};
+use crate::encoding::{DecoderResult, EncoderResult, VariantDecoder};
 use crate::handles::{ByteSource, CopyAsciiResult, Space, Utf8Destination};
 
 #[derive(Debug, Clone)]

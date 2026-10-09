@@ -14,9 +14,7 @@
 //! permissions and limitations under the License.
 
 use crate::encoding::{DecoderResult, EncoderResult};
-use crate::handles::{
-    BigEndian, ByteSource, LittleEndian, Space, Utf8Destination, Utf16Destination,
-};
+use crate::handles::{BigEndian, ByteSource, LittleEndian, Space, Utf8Destination, Utf16Destination};
 
 #[derive(Debug, Clone)]
 pub struct Utf16Decoder {

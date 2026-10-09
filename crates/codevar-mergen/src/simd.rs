@@ -283,11 +283,7 @@ mod x86 {
                 }
                 index += 32;
             }
-            let tail = first_mismatch_u8(
-                &a[index..shared],
-                &b[index..shared],
-                shared - index,
-            );
+            let tail = first_mismatch_u8(&a[index..shared], &b[index..shared], shared - index);
             index + tail
         }
     }
@@ -316,11 +312,7 @@ mod x86 {
                 }
                 index += 16;
             }
-            let tail = first_mismatch_u8(
-                &a[index..shared],
-                &b[index..shared],
-                shared - index,
-            );
+            let tail = first_mismatch_u8(&a[index..shared], &b[index..shared], shared - index);
             index + tail
         }
     }
@@ -334,7 +326,7 @@ mod aarch64 {
     //! narrowed to one bit per lane and widened back with `vaddvq_u64`.
 
     use core::arch::aarch64::{
-        uint64x2_t, uint8x16_t, vaddvq_u64, vceqq_u8, vcltq_u64, vdupq_n_u64, vld1q_u8, vshrq_n_u64,
+        uint8x16_t, uint64x2_t, vaddvq_u64, vceqq_u8, vcltq_u64, vdupq_n_u64, vld1q_u8, vshrq_n_u64,
     };
 
     /// NEON rank merge; see [`crate::merge_rank_u64`].
@@ -479,15 +471,10 @@ mod aarch64 {
                 }
                 index += 16;
             }
-            let tail = first_mismatch_u8(
-                &a[index..shared],
-                &b[index..shared],
-                shared - index,
-            );
+            let tail = first_mismatch_u8(&a[index..shared], &b[index..shared], shared - index);
             index + tail
         }
     }
-
 }
 
 /// All-ones mask when `a < b` (unsigned), zero otherwise.

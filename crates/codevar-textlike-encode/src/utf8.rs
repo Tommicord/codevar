@@ -1,6 +1,6 @@
+use crate::ascii::{ascii_to_basic_latin, basic_latin_to_ascii, validate_ascii};
 use crate::encoding::{CoderResult, DecoderResult, EncoderResult, UTF_8, convert_utf16_to_utf8_partial};
 use crate::encoding::{VariantDecoder, VariantEncoder};
-use crate::ascii::{ascii_to_basic_latin, basic_latin_to_ascii, validate_ascii};
 use crate::handles::{ByteSource, Space, Utf8Destination, Utf16Destination};
 use alloc::vec;
 use alloc::vec::Vec;

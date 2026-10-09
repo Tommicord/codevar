@@ -91,9 +91,7 @@ pub fn shared_secret(private: &KeySharePrivate, peer: &KeySharePublic) -> TlsRes
     match (private, peer.group) {
         (KeySharePrivate::X25519(secret), NamedGroup::X25519) => {
             if peer.key_exchange.len() != 32 {
-                return Err(TlsError::Alert(
-                    crate::alert::AlertDescription::IllegalParameter,
-                ));
+                return Err(TlsError::Alert(crate::alert::AlertDescription::IllegalParameter));
             }
             let mut pk_bytes = [0u8; 32];
             pk_bytes.copy_from_slice(&peer.key_exchange);
@@ -113,9 +111,7 @@ pub fn shared_secret(private: &KeySharePrivate, peer: &KeySharePublic) -> TlsRes
             let shared = p384_dh(secret.to_nonzero_scalar(), peer_pk.as_affine());
             Ok(shared.raw_secret_bytes().to_vec())
         }
-        _ => Err(TlsError::Alert(
-            crate::alert::AlertDescription::IllegalParameter,
-        )),
+        _ => Err(TlsError::Alert(crate::alert::AlertDescription::IllegalParameter)),
     }
 }
 

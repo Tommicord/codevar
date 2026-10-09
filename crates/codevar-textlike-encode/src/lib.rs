@@ -17,8 +17,8 @@
 #![allow(dead_code)]
 extern crate alloc;
 
-pub mod encoding;
 pub mod ascii;
+pub mod encoding;
 pub mod handles;
 pub mod single_byte;
 pub mod utf16;

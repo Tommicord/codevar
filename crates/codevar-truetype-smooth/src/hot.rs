@@ -402,8 +402,8 @@ fn blit_coverage(target: &mut Bitmap, coverage: &[u8], width: usize, height: usi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codevar_truetype_core::{BBox, PixelMode, Raster, RasterFlags, RasterParams};
     use crate::grays::GrayRaster;
+    use codevar_truetype_core::{BBox, PixelMode, Raster, RasterFlags, RasterParams};
 
     /// One outline point in 26.6 units (64 = one pixel).
     fn pt(x: i64, y: i64) -> Vector {

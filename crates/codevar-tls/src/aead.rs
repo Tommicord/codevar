@@ -161,8 +161,7 @@ fn seal(
 ) -> TlsResult<Vec<u8>> {
     match alg {
         AeadAlgorithm::Aes128Gcm | AeadAlgorithm::Aes256Gcm => {
-            crypto_aes_gcm::seal(key, nonce, aad, plaintext)
-                .map_err(|()| TlsError::crypto("AES-GCM encrypt"))
+            crypto_aes_gcm::seal(key, nonce, aad, plaintext).map_err(|()| TlsError::crypto("AES-GCM encrypt"))
         }
         AeadAlgorithm::ChaCha20Poly1305 => crypto_chacha20poly1305::seal(key, nonce, aad, plaintext)
             .map_err(|()| TlsError::crypto("ChaCha20-Poly1305 encrypt")),

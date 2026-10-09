@@ -17,9 +17,7 @@
 
 use crate::alert::AlertDescription;
 use crate::connection::{CommonState, ConnectionState, IoState};
-use crate::connection_conf::{
-    ServerConfig, select_alpn, select_cipher_suite, select_group, select_version,
-};
+use crate::connection_conf::{ServerConfig, select_alpn, select_cipher_suite, select_group, select_version};
 use crate::crypto_random::random_array;
 use crate::error::{TlsError, TlsResult};
 use crate::extensions::{

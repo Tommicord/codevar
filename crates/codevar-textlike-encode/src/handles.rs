@@ -13,8 +13,8 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-use crate::encoding::DecoderResult;
 use crate::ascii::{ascii_to_ascii, ascii_to_basic_latin};
+use crate::encoding::DecoderResult;
 use core::cmp::min;
 
 #[derive(PartialEq, Debug)]
@@ -376,8 +376,7 @@ impl<'a> Utf16Destination<'a> {
     pub fn copy_utf8_up_to_invalid_from(&mut self, source: &mut ByteSource) {
         let src_remaining = &source.slice[source.pos..];
         let dst_remaining = &mut self.slice[self.pos..];
-        let (read, written) =
-            crate::utf8::convert_utf8_to_utf16_up_to_invalid(src_remaining, dst_remaining);
+        let (read, written) = crate::utf8::convert_utf8_to_utf16_up_to_invalid(src_remaining, dst_remaining);
         source.pos += read;
         self.pos += written;
     }

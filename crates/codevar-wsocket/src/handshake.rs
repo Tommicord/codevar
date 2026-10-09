@@ -539,12 +539,7 @@ mod tests {
         assert_eq!(hs.path, "/chat");
         assert_eq!(hs.host, "example.com");
         assert_eq!(hs.key_b64.len(), 24);
-        assert_eq!(
-            base64::decode(&hs.key_b64)
-                .expect("key")
-                .len(),
-            16
-        );
+        assert_eq!(base64::decode(&hs.key_b64).expect("key").len(), 16);
         assert_eq!(hs.expected_accept, compute_accept_key(&hs.key_b64));
         assert!(hs.selected_protocol.is_none());
     }

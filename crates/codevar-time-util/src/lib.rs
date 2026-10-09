@@ -17,9 +17,9 @@
 #![allow(dead_code)]
 extern crate alloc;
 
-mod date;
 mod adt_hack;
 mod component_provider;
+mod date;
 mod error;
 mod format_description;
 mod format_description_modifier;
