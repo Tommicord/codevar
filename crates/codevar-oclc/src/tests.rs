@@ -414,3 +414,18 @@ fn fs_roundtrip_preserves_unicode() {
 fn fs_reports_missing_files() {
     assert!(fs::read_file("/nonexistent/codevar-oclc-file").is_err());
 }
+
+/// The font rasterization kernel must be compiled and embedded with its
+/// entry point so GPU rasterizers can rely on the registry.
+#[test]
+fn font_raster_kernel_is_embedded() {
+    let module = crate::kernels::KERNEL_MODULES
+        .iter()
+        .find(|module| module.name == "font_raster");
+    let Some(module) = module else {
+        panic!("font_raster kernel missing from KERNEL_MODULES");
+    };
+    assert_eq!(module.entry_points, &["font_raster"]);
+    assert_eq!(&module.spirv[0..4], &[0x03, 0x02, 0x23, 0x07]);
+    assert!(module.source.contains("fn font_raster"));
+}

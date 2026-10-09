@@ -558,6 +558,16 @@ pub type CreateProgramWithSource = unsafe extern "system" fn(
     errcode_ret: *mut i32,
 ) -> ProgramHandle;
 
+/// Loads an intermediate-language blob such as SPIR-V into a program
+/// (`clCreateProgramWithIL`; OpenCL 2.1 core, `cl_khr_il_program`
+/// extension on earlier implementations).
+pub type CreateProgramWithIL = unsafe extern "system" fn(
+    context: ContextHandle,
+    il: *const c_void,
+    length: usize,
+    errcode_ret: *mut i32,
+) -> ProgramHandle;
+
 /// Decrements a program's reference count (`clReleaseProgram`).
 pub type ReleaseProgram = unsafe extern "system" fn(program: ProgramHandle) -> i32;
 

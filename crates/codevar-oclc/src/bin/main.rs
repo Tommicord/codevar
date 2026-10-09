@@ -31,12 +31,17 @@
 extern crate alloc;
 extern crate std;
 
+#[cfg(not(test))]
 #[global_allocator]
 static HEAP: LockedTlsf = LockedTlsf::new();
+#[cfg(not(test))]
 static HEAP_SMEMORY: spin::Mutex<[u8; 0x4000]> = spin::Mutex::new([0u8; 0x4000]);
 
+#[cfg(not(test))]
 use codevar_logger::LogLevel;
+#[cfg(not(test))]
 use codevar_logger::log_irr;
+#[cfg(not(test))]
 use codevar_tlsf_alloc::LockedTlsf;
 
 /// Freestanding entry: copy `argc`/`argv`, initialize, run, return the exit
@@ -47,6 +52,7 @@ use codevar_tlsf_alloc::LockedTlsf;
 /// The `argc`/`argv` contract of [`codevar_oclc::argv::from_c_args`] is
 /// satisfied by any C runtime that calls `main(argc, argv)`; this function
 /// must not be called with fabricated values.
+#[cfg(not(test))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn main(
     argc: core::ffi::c_int,
@@ -54,9 +60,10 @@ pub unsafe extern "C" fn main(
 ) -> core::ffi::c_int {
     unsafe {
         let mut smemory = HEAP_SMEMORY.lock();
-        if let Err(_) = HEAP
+        if HEAP
             .lock()
             .add_region(smemory.as_mut_ptr(), smemory.len())
+            .is_err()
         {
             log_irr!("failed to init heap");
             return libc::EXIT_FAILURE;

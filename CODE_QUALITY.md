@@ -216,7 +216,7 @@ unsafe fn process_avx2(data: &[i32]) -> Vec<i32> {
 - Use appropriate atomic operations for shared state
 - Consider async/await for I/O-bound operations
 - Be aware of priority inversion and deadlock scenarios
-- Optimize code for memory usage (the Heap is only 16384 KB, So prefer streaming data in chunks)
+- Optimize code for memory usage (the Heap is only 16384 bytes, So prefer streaming data in chunks)
 
 #### Performance Guidelines
 

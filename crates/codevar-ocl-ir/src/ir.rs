@@ -1081,6 +1081,18 @@ impl fmt::Display for BuildError {
 
 impl core::error::Error for BuildError {}
 
+/// Arena checkpoint for streaming truncation.
+///
+/// Produced by [`Module::watermark`] and handed back to
+/// [`Module::truncate_values`].  It records only the length of the value
+/// arena at the checkpoint, which is all truncation needs: everything
+/// created from that point on sits at or after the recorded index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModuleWatermark {
+    /// Value-arena length when the watermark was taken.
+    values: usize,
+}
+
 /// A whole IR module.
 ///
 /// Construction goes through the builder methods on this type
@@ -1602,6 +1614,63 @@ impl Module {
         &self.ext_inst_sets[id.index()]
     }
 
+    /// Records the current value-arena length.
+    ///
+    /// The watermark brackets one streaming item: take it before
+    /// lowering an item's body, then hand it back to
+    /// [`Module::truncate_values`] once that body has been emitted and
+    /// detached with [`Module::take_function_body`], so the memory the
+    /// body allocated is reclaimed before the next item is lowered.
+    #[must_use]
+    pub fn watermark(&self) -> ModuleWatermark {
+        ModuleWatermark {
+            values: self.values.len(),
+        }
+    }
+
+    /// Removes every value created after `mark`: instruction results
+    /// and constants interned in that window, whose `const_intern`
+    /// entries are dropped alongside them.
+    ///
+    /// Types, globals, functions, the taken-name set, entry points,
+    /// decorations, and extended-instruction sets are untouched, as is
+    /// everything at or before the mark.
+    ///
+    /// # Invariant
+    ///
+    /// No surviving value may reference a truncated value.  The caller
+    /// preserves it by detaching the truncated function's body first
+    /// with [`Module::take_function_body`], so every operand that
+    /// survives points at a value at or before the mark.  The one
+    /// exception is module-scope state created inside the window — a
+    /// work-item built-in variable is created lazily by the first body
+    /// that queries it — which truncation keeps by stopping just after
+    /// the last such value: `globals`, `decorations`, and later bodies
+    /// reference it, and arena indices cannot be renumbered.
+    pub fn truncate_values(&mut self, mark: ModuleWatermark) {
+        let mut keep = mark.values;
+        for (index, value) in self.values.iter().enumerate().skip(keep) {
+            if matches!(value.kind, ValueKind::Global(_) | ValueKind::Function(_)) {
+                keep = index + 1;
+            }
+        }
+        self.values.truncate(keep);
+        self.const_intern
+            .retain(|_, id| id.index() < keep);
+    }
+
+    /// Detaches the body of `function`, returning its blocks and
+    /// leaving the function as a declaration (`body: None`).
+    ///
+    /// Returns [`None`] when `function` is not a function or is already
+    /// a declaration.  Dropping the returned blocks frees their memory.
+    /// Call this only after the body's SPIR-V has been emitted, and
+    /// follow it with [`Module::truncate_values`] to reclaim the
+    /// values the body created.
+    pub fn take_function_body(&mut self, function: ValueId) -> Option<Vec<BasicBlock>> {
+        self.function_mut(function)?.body.take()
+    }
+
     fn push_value(&mut self, name: String, ty: TypeId, kind: ValueKind) -> ValueId {
         let id = ValueId(u32::try_from(self.values.len()).unwrap_or(u32::MAX));
         self.values.push(Value { name, ty, kind });
@@ -1788,5 +1857,114 @@ mod tests {
         let body = body.expect("body");
         assert_eq!(body[0].insts.len(), 1);
         assert!(body[0].insts[0].op.is_terminator());
+    }
+
+    #[test]
+    fn take_function_body_detaches_blocks_exactly_once() {
+        let mut module = Module::new(Target::opencl());
+        let ret = module.void_ty();
+        let sig = module.fn_ty(ret, Vec::new());
+        let function = module
+            .add_function("f", sig, Linkage::External)
+            .expect("fresh name");
+        assert_eq!(module.take_function_body(function), None);
+        module.begin_body(function).expect("declaration");
+        let entry = module
+            .push_block(function, "entry")
+            .expect("body");
+        module
+            .emit(function, entry, Inst::none(Op::Return))
+            .expect("block");
+
+        let blocks = module
+            .take_function_body(function)
+            .expect("one body");
+        assert_eq!(blocks.len(), 1);
+        assert!(
+            module
+                .function(function)
+                .expect("function")
+                .is_declaration()
+        );
+        assert_eq!(module.take_function_body(function), None);
+        let int = module.int_ty(32, true);
+        let constant = module
+            .intern_const(int, ConstValue::Int(1))
+            .expect("fits");
+        assert_eq!(module.take_function_body(constant), None);
+    }
+
+    #[test]
+    fn truncate_values_frees_the_window_but_keeps_declarations() {
+        let mut module = Module::new(Target::opencl());
+        let int = module.int_ty(32, true);
+        let ret = module.void_ty();
+        let sig = module.fn_ty(ret, Vec::new());
+        let function = module
+            .add_function("f", sig, Linkage::External)
+            .expect("fresh name");
+        let before = module.watermark();
+
+        let kept = module
+            .intern_const(int, ConstValue::Int(7))
+            .expect("fits");
+        let dropped = module
+            .intern_const(int, ConstValue::Int(8))
+            .expect("fits");
+        let result = module.new_inst_value(int);
+        assert!(module.values().len() > before.values);
+
+        module.truncate_values(before);
+        assert_eq!(module.values().len(), before.values);
+        assert!(
+            kept.index() >= before.values && dropped.index() >= before.values,
+            "window constants were removed from the arena"
+        );
+        assert!(result.index() >= before.values);
+        assert_eq!(module.functions(), &[function]);
+        assert!(
+            module
+                .function(function)
+                .expect("function")
+                .is_declaration()
+        );
+        assert_eq!(module.find_function("f"), Some(function));
+
+        // Re-interning after truncation proves the stale `const_intern`
+        // entry is gone: the old handle would have been handed back.
+        let again = module
+            .intern_const(int, ConstValue::Int(7))
+            .expect("fits");
+        assert_eq!(again.index(), before.values);
+        assert_eq!(module.constant_value(again), Some(ConstValue::Int(7)));
+    }
+
+    #[test]
+    fn truncate_values_keeps_module_scope_values_created_in_the_window() {
+        let mut module = Module::new(Target::opencl());
+        let int = module.int_ty(32, true);
+        let ptr = module.ptr_ty(Storage::Input, int);
+        let mark = module.watermark();
+
+        let global = module
+            .add_global("GlobalInvocationId", ptr, Linkage::External, None)
+            .expect("fresh name");
+        module.decorate(
+            global,
+            Decor::BuiltIn {
+                name: "GlobalInvocationId".to_string(),
+            },
+        );
+        let window_result = module.new_inst_value(int);
+        assert!(window_result.index() > global.index());
+
+        module.truncate_values(mark);
+        // The global is referenced by `globals` and `decorations`,
+        // which truncation does not touch, so it must stay addressable.
+        assert_eq!(module.globals(), &[global]);
+        assert_eq!(module.type_of(global), ptr);
+        assert!(window_result.index() >= module.values().len());
+        assert_eq!(module.decorations.len(), 1);
+        assert_eq!(module.decorations[0].target, global);
     }
 }

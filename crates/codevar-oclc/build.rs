@@ -16,7 +16,7 @@
 //! Kernel binding generation for `codevar-oclc`.
 //!
 //! Every `*.cl` file in the crate's `kernels/` directory (override with the
-//! `CODEVAR_KERNEL_DIR` environment variable) is compiled to SPIR-V with the
+//! `CV_KERNEL_DIR` environment variable) is compiled to SPIR-V with the
 //! same pipeline the `codevar-oclc` driver runs for `--emit spirv`
 //! (analyze → parse → lower → assemble), and the result is embedded in the
 //! executable the way shaders are: the build script writes

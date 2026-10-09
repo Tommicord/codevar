@@ -63,7 +63,7 @@ pub use driver::{Driver, Exit, run, run_from_env};
 /// OpenCL kernels compiled and embedded in the executable at build time.
 ///
 /// The build script compiles every `*.cl` file in the crate's `kernels/`
-/// directory (overridable with the `CODEVAR_KERNEL_DIR` environment
+/// directory (overridable with the `CV_KERNEL_DIR` environment
 /// variable) to SPIR-V, stages `<name>.spv` and `<name>.cl` in `OUT_DIR`,
 /// and generates one [`kernels::KERNEL_MODULES`] registry entry plus three
 /// statics per file — `<PREFIX>_SPIRV`, `<PREFIX>_SOURCE`, and

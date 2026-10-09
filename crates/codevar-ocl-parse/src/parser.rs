@@ -21,15 +21,21 @@
 //! constructs such as nested generics `A<B<C>>` never see a glued `>>`.
 //! Every loop either consumes a token or reports an error, which keeps
 //! recovery live on malformed input.
+//!
+//! Tokens are pulled through a [`Cursor`], a small streaming lookahead
+//! ring that filters trivia and accumulates spans from token lengths, so
+//! neither [`parse_program`] nor [`ItemStream`](crate::ItemStream)
+//! materializes the file's token stream.
 
 use crate::ast::*;
+use crate::stream::ItemOutcome;
 use crate::{ParseError, Span};
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use codevar_ocl_lex::TokenKind;
+use codevar_ocl_lex::{Token, TokenKind};
 
 /// Maximum nesting depth for expressions, types, blocks, and `if` chains
 /// before the parser reports a recursion limit instead of overflowing the
@@ -61,15 +67,6 @@ pub(crate) struct SigToken {
     span: Span,
 }
 
-/// Filters out trivia, computing spans from the full token list.
-pub(crate) fn significant_tokens(tokens: &[(TokenKind, Span)]) -> Vec<SigToken> {
-    tokens
-        .iter()
-        .filter(|(kind, _)| !is_trivia(*kind))
-        .map(|&(kind, span)| SigToken { kind, span })
-        .collect()
-}
-
 /// Whether the token is trivia (dropped by the parser, kept by the trees).
 fn is_trivia(kind: TokenKind) -> bool {
     matches!(
@@ -78,17 +75,114 @@ fn is_trivia(kind: TokenKind) -> bool {
     )
 }
 
-/// Parses a program from its significant-token stream.
-pub(crate) fn parse_program(source: &str, tokens: &[SigToken]) -> (Program, Vec<ParseError>) {
-    let mut parser = Parser {
-        source,
-        tokens,
-        pos: 0,
-        errors: Vec::new(),
-        depth: 0,
-        depth_reported: false,
-        next_node_id: 0,
-    };
+/// Number of significant tokens the lookahead ring holds.
+///
+/// The parser peeks at most three tokens ahead (`kind_at(2)` and the
+/// `at_joint3` chain), so four slots leave one spare.
+const RING_CAPACITY: usize = 4;
+
+/// A streaming cursor over the significant tokens of a source.
+///
+/// Raw [`Token`]s are pulled from the iterator on demand: trivia is
+/// filtered as it arrives, spans are accumulated from token lengths
+/// starting at byte offset 0, and at most [`RING_CAPACITY`] significant
+/// tokens are buffered at once, so parsing never materializes the whole
+/// file's token stream.
+///
+/// Invariant: after [`Cursor::new`] and after every [`Cursor::bump`],
+/// the ring holds `RING_CAPACITY` tokens or the iterator is exhausted —
+/// so an empty ring means end of input.
+pub(crate) struct Cursor<I> {
+    /// Raw token stream, trivia included.
+    tokens: I,
+    /// Lookahead ring; `ring[0]` is the next token to consume.
+    ring: [Option<SigToken>; RING_CAPACITY],
+    /// Number of valid entries in `ring`.
+    len: usize,
+    /// Byte offset of the next raw token (lengths accumulate from 0).
+    offset: u32,
+    /// Whether the iterator has returned `None`.
+    exhausted: bool,
+    /// Most recently consumed token, for previous-token queries.
+    prev: Option<SigToken>,
+    /// Total significant tokens consumed so far (the parse position).
+    consumed: usize,
+}
+
+impl<I: Iterator<Item = Token>> Cursor<I> {
+    /// Wraps `tokens`, buffering the first lookahead tokens.
+    pub(crate) fn new(tokens: I) -> Self {
+        let mut cursor = Self {
+            tokens,
+            ring: [None; RING_CAPACITY],
+            len: 0,
+            offset: 0,
+            exhausted: false,
+            prev: None,
+            consumed: 0,
+        };
+        cursor.fill();
+        cursor
+    }
+
+    /// Refills the ring until it is full or the input is exhausted.
+    fn fill(&mut self) {
+        while self.len < RING_CAPACITY && !self.exhausted {
+            let Some(token) = self.tokens.next() else {
+                self.exhausted = true;
+                break;
+            };
+            let span = Span::new(self.offset, token.len);
+            self.offset = self.offset.saturating_add(token.len);
+            if !is_trivia(token.kind) {
+                self.ring[self.len] = Some(SigToken {
+                    kind: token.kind,
+                    span,
+                });
+                self.len += 1;
+            }
+        }
+    }
+
+    /// The next significant token, without consuming it.
+    pub(crate) fn peek(&self) -> Option<SigToken> {
+        self.ring[0]
+    }
+
+    /// The significant token `n` positions ahead.
+    pub(crate) fn peek_n(&self, n: usize) -> Option<SigToken> {
+        self.ring.get(n).copied().flatten()
+    }
+
+    /// Consumes and returns the next significant token.
+    fn bump(&mut self) -> Option<SigToken> {
+        let token = self.ring[0];
+        token?;
+        let mut index = 0;
+        while index + 1 < self.len {
+            self.ring[index] = self.ring[index + 1];
+            index += 1;
+        }
+        self.len -= 1;
+        self.ring[self.len] = None;
+        self.prev = token;
+        self.consumed = self.consumed.saturating_add(1);
+        self.fill();
+        token
+    }
+
+    /// Whether the input is exhausted (an empty ring implies this).
+    pub(crate) fn at_end(&self) -> bool {
+        self.len == 0
+    }
+}
+
+/// Parses a program from a streaming token source.
+pub(crate) fn parse_program<'a>(
+    source: &'a str,
+    tokens: impl Iterator<Item = Token> + 'a,
+) -> (Program, Vec<ParseError>) {
+    let mut parser = Parser::new(source, tokens);
     let items = parser.parse_items();
     let program = Program {
         items,
@@ -202,13 +296,11 @@ fn is_terminator(kind: TokenKind) -> bool {
 }
 
 /// The recursive-descent parser state.
-struct Parser<'a> {
+pub(crate) struct Parser<'a, I> {
     /// Full source text, for slicing spans.
     source: &'a str,
-    /// Significant tokens being consumed.
-    tokens: &'a [SigToken],
-    /// Index of the next token.
-    pos: usize,
+    /// Streaming cursor over the significant tokens.
+    cursor: Cursor<I>,
     /// Diagnostics collected so far.
     errors: Vec<ParseError>,
     /// Current nesting depth for the recursion limit.
@@ -219,7 +311,44 @@ struct Parser<'a> {
     next_node_id: u32,
 }
 
-impl<'a> Parser<'a> {
+impl<'a, I: Iterator<Item = Token>> Parser<'a, I> {
+    /// Creates a parser whose token stream starts at byte offset 0.
+    pub(crate) fn new(source: &'a str, tokens: I) -> Self {
+        Self {
+            source,
+            cursor: Cursor::new(tokens),
+            errors: Vec::new(),
+            depth: 0,
+            depth_reported: false,
+            next_node_id: 0,
+        }
+    }
+
+    /// Parses the next top-level item, resetting the per-item state.
+    ///
+    /// Returns `None` at end of input. The cursor — and with it the
+    /// source position, previous token, and consumed-token counter —
+    /// persists across calls, while `depth`, `depth_reported`, and
+    /// `next_node_id` restart at zero so every item owns a fresh
+    /// [`NodeId`] space. The stream always advances or reaches EOF: an
+    /// item that consumed nothing is followed by a forced single-token
+    /// step, so malformed input cannot hang the caller.
+    pub(crate) fn parse_next_item(&mut self) -> Option<ItemOutcome> {
+        if self.at_eof() {
+            return None;
+        }
+        self.depth = 0;
+        self.depth_reported = false;
+        self.next_node_id = 0;
+        let start = self.cursor.consumed;
+        let item = self.parse_item();
+        let _ = self.force_progress(start);
+        Some(ItemOutcome {
+            item,
+            errors: core::mem::take(&mut self.errors),
+        })
+    }
+
     /// Mints the identity for the next [`Expr`] or [`Pat`] node.
     fn mint_id(&mut self) -> NodeId {
         let id = NodeId::from_raw(self.next_node_id);
@@ -239,12 +368,34 @@ impl<'a> Parser<'a> {
 
     /// The upcoming token, if any.
     fn peek(&self) -> Option<SigToken> {
-        self.tokens.get(self.pos).copied()
+        self.cursor.peek()
     }
 
     /// The token `n` positions ahead.
     fn peek_n(&self, n: usize) -> Option<SigToken> {
-        self.tokens.get(self.pos + n).copied()
+        self.cursor.peek_n(n)
+    }
+
+    /// The most recently consumed token, if any.
+    fn prev(&self) -> Option<SigToken> {
+        self.cursor.prev
+    }
+
+    /// Span of the most recently consumed token, or end of input.
+    fn prev_span(&self) -> Span {
+        self.cursor
+            .prev
+            .map_or_else(|| self.eof_span(), |token| token.span)
+    }
+
+    /// Kind of the most recently consumed token, if any.
+    fn prev_kind(&self) -> Option<TokenKind> {
+        self.cursor.prev.map(|token| token.kind)
+    }
+
+    /// The number of significant tokens consumed so far.
+    fn consumed(&self) -> usize {
+        self.cursor.consumed
     }
 
     /// The upcoming token kind.
@@ -273,21 +424,21 @@ impl<'a> Parser<'a> {
 
     /// Whether input is exhausted.
     fn at_eof(&self) -> bool {
-        self.pos >= self.tokens.len()
+        self.cursor.at_end()
     }
 
     /// Consumes and returns the upcoming token.
     fn bump(&mut self) -> Option<SigToken> {
-        let token = self.peek();
-        if token.is_some() {
-            self.pos += 1;
-        }
-        token
+        self.cursor.bump()
     }
 
     /// Consumes `n` tokens that a prior check verified are present.
     fn bump_n(&mut self, n: u8) {
-        self.pos = (self.pos + n as usize).min(self.tokens.len());
+        for _ in 0..n {
+            if self.cursor.bump().is_none() {
+                break;
+            }
+        }
     }
 
     /// Records a diagnostic at `span`.
@@ -303,7 +454,7 @@ impl<'a> Parser<'a> {
     /// Consumes the token if it is `kind`.
     fn eat(&mut self, kind: TokenKind) -> bool {
         if self.at(kind) {
-            self.pos += 1;
+            let _ = self.bump();
             true
         } else {
             false
@@ -313,7 +464,7 @@ impl<'a> Parser<'a> {
     /// Consumes `kind`, or records `what` as missing without consuming.
     fn expect(&mut self, kind: TokenKind, what: &str) -> Option<Span> {
         if self.eat(kind) {
-            return Some(self.tokens[self.pos - 1].span);
+            return self.prev().map(|token| token.span);
         }
         let span = self.span();
         self.error(span, format!("expected {what}"));
@@ -328,7 +479,7 @@ impl<'a> Parser<'a> {
     /// Consumes the keyword `kw` if present.
     fn eat_kw(&mut self, kw: &str) -> bool {
         if self.at_kw(kw) {
-            self.pos += 1;
+            let _ = self.bump();
             true
         } else {
             false
@@ -364,9 +515,12 @@ impl<'a> Parser<'a> {
         None
     }
 
-    /// Whether tokens at `offset` and `offset + 1` are adjacent in source.
-    fn joint_at(&self, offset: usize) -> bool {
-        match (self.tokens.get(offset), self.tokens.get(offset + 1)) {
+    /// Whether the tokens `n` and `n + 1` ahead are adjacent in source.
+    ///
+    /// Trivia lengths are included in the accumulated spans, so only
+    /// genuinely glued tokens such as `->` or `..=` report adjacency.
+    fn joint_at(&self, n: usize) -> bool {
+        match (self.peek_n(n), self.peek_n(n + 1)) {
             (Some(a), Some(b)) => a.span.offset.saturating_add(a.span.len) == b.span.offset,
             _ => false,
         }
@@ -374,15 +528,15 @@ impl<'a> Parser<'a> {
 
     /// Whether the next two tokens are the joint pair `a`, `b`.
     fn at_joint(&self, a: TokenKind, b: TokenKind) -> bool {
-        self.at(a) && self.joint_at(self.pos) && self.kind_at(1) == Some(b)
+        self.at(a) && self.joint_at(0) && self.kind_at(1) == Some(b)
     }
 
     /// Whether the next three tokens are the joint chain `a`, `b`, `c`.
     fn at_joint3(&self, a: TokenKind, b: TokenKind, c: TokenKind) -> bool {
         self.at(a)
-            && self.joint_at(self.pos)
+            && self.joint_at(0)
             && self.kind_at(1) == Some(b)
-            && self.joint_at(self.pos + 1)
+            && self.joint_at(1)
             && self.kind_at(2) == Some(c)
     }
 
@@ -412,15 +566,17 @@ impl<'a> Parser<'a> {
 
     /// Consumes one token when a recovery loop made no progress.
     ///
-    /// Returns `false` only at end of input, where loops must stop.
+    /// `start` is the consumed-token counter observed before the loop
+    /// began. Returns `false` only at end of input, where loops must
+    /// stop.
     fn force_progress(&mut self, start: usize) -> bool {
-        if self.pos > start {
+        if self.cursor.consumed > start {
             return true;
         }
         if self.at_eof() {
             return false;
         }
-        self.pos += 1;
+        let _ = self.bump();
         true
     }
 }
@@ -430,12 +586,12 @@ fn join(a: Span, b: Span) -> Span {
     Span::new(a.offset, b.end().saturating_sub(a.offset))
 }
 
-impl Parser<'_> {
+impl<I: Iterator<Item = Token>> Parser<'_, I> {
     /// Parses all top-level items until end of input.
     fn parse_items(&mut self) -> Vec<Item> {
         let mut items = Vec::new();
         while !self.at_eof() {
-            let start = self.pos;
+            let start = self.consumed();
             items.push(self.parse_item());
             if !self.force_progress(start) {
                 break;
@@ -483,11 +639,7 @@ impl Parser<'_> {
                     .bump()
                     .map_or(self.eof_span(), |token| token.span);
                 end = token;
-                match self
-                    .tokens
-                    .get(self.pos - 1)
-                    .map(|token| token.kind)
-                {
+                match self.prev_kind() {
                     Some(TokenKind::OpenBracket) => depth += 1,
                     Some(TokenKind::CloseBracket) => depth -= 1,
                     _ => {}
@@ -629,7 +781,7 @@ impl Parser<'_> {
                 if self.at(TokenKind::CloseBrace) || self.at_eof() {
                     break;
                 }
-                let field_index = self.pos;
+                let field_index = self.consumed();
                 let field_start = self.span();
                 let Some((_, field_name)) = self.expect_ident("field name") else {
                     if !self.force_progress(field_index) {
@@ -652,8 +804,8 @@ impl Parser<'_> {
                 .unwrap_or_else(|| self.span())
         } else if self.at(TokenKind::Semi) {
             unit = true;
-            self.bump();
-            self.tokens[self.pos - 1].span
+            let _ = self.bump();
+            self.prev_span()
         } else {
             let span = self.span();
             self.error(span, String::from("expected `{` or `;`"));
@@ -697,7 +849,7 @@ impl Parser<'_> {
     }
 }
 
-impl Parser<'_> {
+impl<I: Iterator<Item = Token>> Parser<'_, I> {
     /// Parses a binding pattern: `x`, `mut x`, or `_`.
     fn parse_pat(&mut self) -> Pat {
         let start = self.span();
@@ -805,7 +957,7 @@ impl Parser<'_> {
                 if self.eat(TokenKind::CloseParen) {
                     return Type {
                         kind: TypeKind::Tuple(Vec::new()),
-                        span: join(start, self.tokens[self.pos - 1].span),
+                        span: join(start, self.prev_span()),
                     };
                 }
                 let mut types = Vec::new();
@@ -818,13 +970,7 @@ impl Parser<'_> {
                         break;
                     }
                 }
-                let trailing_comma = self.pos > 0
-                    && matches!(
-                        self.tokens
-                            .get(self.pos - 1)
-                            .map(|token| token.kind),
-                        Some(TokenKind::Comma)
-                    );
+                let trailing_comma = matches!(self.prev_kind(), Some(TokenKind::Comma));
                 let end = self
                     .expect(TokenKind::CloseParen, "`)`")
                     .unwrap_or_else(|| self.span());
@@ -970,7 +1116,7 @@ impl Parser<'_> {
             if self.at(TokenKind::CloseBrace) || self.at_eof() {
                 break;
             }
-            let start = self.pos;
+            let start = self.consumed();
             match self.parse_stmt() {
                 StmtOutcome::Stmt(stmt) => stmts.push(stmt),
                 StmtOutcome::Tail(expr) => {
@@ -1036,7 +1182,7 @@ impl Parser<'_> {
         let expr = self.parse_expr(0);
         let expr_span = expr.span;
         if self.eat(TokenKind::Semi) {
-            let end = self.tokens[self.pos - 1].span;
+            let end = self.prev_span();
             return StmtOutcome::Stmt(Stmt {
                 kind: StmtKind::Expr(expr),
                 span: join(expr_span, end),
@@ -1075,7 +1221,7 @@ enum StmtOutcome {
     Stopped,
 }
 
-impl Parser<'_> {
+impl<I: Iterator<Item = Token>> Parser<'_, I> {
     /// Parses an expression whose operators bind at least as tight as
     /// `min_bp`.
     fn parse_expr(&mut self, min_bp: u8) -> Expr {
@@ -1437,7 +1583,7 @@ impl Parser<'_> {
                         self.error(span, String::from("expected field name"));
                         break;
                     };
-                    let span = join(expr.span, self.tokens[self.pos - 1].span);
+                    let span = join(expr.span, self.prev_span());
                     expr = Expr {
                         id: self.mint_id(),
                         kind: ExprKind::Field {
@@ -1449,7 +1595,7 @@ impl Parser<'_> {
                 }
                 Some(TokenKind::Question) => {
                     self.bump();
-                    let span = join(expr.span, self.tokens[self.pos - 1].span);
+                    let span = join(expr.span, self.prev_span());
                     expr = Expr {
                         id: self.mint_id(),
                         kind: ExprKind::Try { expr: Box::new(expr) },
@@ -1833,18 +1979,14 @@ impl Parser<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codevar_ocl_lex::tokenize;
 
     /// Builds a parser positioned at the start of `tokens`.
-    fn parser_at<'a>(source: &'a str, tokens: &'a [SigToken]) -> Parser<'a> {
-        Parser {
-            source,
-            tokens,
-            pos: 0,
-            errors: Vec::new(),
-            depth: 0,
-            depth_reported: false,
-            next_node_id: 0,
-        }
+    fn parser_at<'a>(
+        source: &'a str,
+        tokens: impl Iterator<Item = Token> + 'a,
+    ) -> Parser<'a, impl Iterator<Item = Token> + 'a> {
+        Parser::new(source, tokens)
     }
 
     #[test]
@@ -1924,14 +2066,19 @@ mod tests {
         assert!(!is_trivia(TokenKind::Ident));
         assert!(!is_trivia(TokenKind::Semi));
 
-        let raw = crate::token_tree::collect_tokens("fn f() { }");
-        let significant = significant_tokens(&raw);
+        let source = "fn f() { }";
+        let mut cursor = Cursor::new(tokenize(source));
+        let mut significant = Vec::new();
+        while let Some(token) = cursor.bump() {
+            assert!(!is_trivia(token.kind));
+            significant.push(token);
+        }
         assert_eq!(significant.len(), 6);
-        assert!(
-            significant
-                .iter()
-                .all(|token| !is_trivia(token.kind))
-        );
+        assert!(cursor.at_end());
+        let last_end = significant
+            .last()
+            .map_or(0, |token| token.span.end());
+        assert_eq!(last_end as usize, source.len(), "trivia lengths must count");
     }
 
     #[test]
@@ -1943,53 +2090,23 @@ mod tests {
 
     #[test]
     fn joint_glue_requires_source_adjacency() {
-        let tokens = [
-            SigToken {
-                kind: TokenKind::Lt,
-                span: Span::new(0, 1),
-            },
-            SigToken {
-                kind: TokenKind::Eq,
-                span: Span::new(1, 1),
-            },
-            SigToken {
-                kind: TokenKind::Dot,
-                span: Span::new(5, 1),
-            },
-            SigToken {
-                kind: TokenKind::Dot,
-                span: Span::new(6, 1),
-            },
-            SigToken {
-                kind: TokenKind::Eq,
-                span: Span::new(7, 1),
-            },
-        ];
-        let mut parser = parser_at("<=..=", &tokens);
+        let mut parser = parser_at("<= ..=", tokenize("<= ..="));
         assert!(parser.at_joint(TokenKind::Lt, TokenKind::Eq));
         assert!(!parser.at_joint(TokenKind::Lt, TokenKind::Dot));
-        parser.pos = 2;
+        // Step over `<=` to sit on the `..=` chain across the gap.
+        assert!(parser.bump().is_some());
+        assert!(parser.bump().is_some());
         assert!(parser.at_joint(TokenKind::Dot, TokenKind::Dot));
         assert!(parser.at_joint3(TokenKind::Dot, TokenKind::Dot, TokenKind::Eq));
         assert!(!parser.at_joint3(TokenKind::Lt, TokenKind::Eq, TokenKind::Dot));
 
-        let gap = [
-            SigToken {
-                kind: TokenKind::Lt,
-                span: Span::new(0, 1),
-            },
-            SigToken {
-                kind: TokenKind::Eq,
-                span: Span::new(4, 1),
-            },
-        ];
-        let parser = parser_at("< =", &gap);
-        assert!(!parser.at_joint(TokenKind::Lt, TokenKind::Eq));
+        let spaced = parser_at("< =", tokenize("< ="));
+        assert!(!spaced.at_joint(TokenKind::Lt, TokenKind::Eq));
     }
 
     #[test]
     fn recursion_limit_reports_once_and_stops() {
-        let mut parser = parser_at("", &[]);
+        let mut parser = parser_at("", core::iter::empty::<Token>());
         let mut entered = 0u32;
         while parser.enter() {
             entered += 1;
@@ -2005,48 +2122,25 @@ mod tests {
 
     #[test]
     fn force_progress_advances_or_stops_at_eof() {
-        let tokens = [
-            SigToken {
-                kind: TokenKind::Ident,
-                span: Span::new(0, 1),
-            },
-            SigToken {
-                kind: TokenKind::Semi,
-                span: Span::new(1, 1),
-            },
-        ];
-        let mut parser = parser_at("x;", &tokens);
+        let mut parser = parser_at("x;", tokenize("x;"));
         assert!(parser.force_progress(0));
-        assert_eq!(parser.pos, 1);
+        assert_eq!(parser.consumed(), 1);
         assert!(parser.force_progress(0));
-        assert_eq!(parser.pos, 1);
+        assert_eq!(parser.consumed(), 1);
         assert!(parser.force_progress(1));
-        assert_eq!(parser.pos, 2);
+        assert_eq!(parser.consumed(), 2);
         assert!(!parser.force_progress(2));
     }
 
     #[test]
     fn value_end_and_lifetime_probes_match_the_stream() {
-        let semi = [SigToken {
-            kind: TokenKind::Semi,
-            span: Span::new(0, 1),
-        }];
-        assert!(parser_at(";", &semi).at_value_end());
+        assert!(parser_at(";", tokenize(";")).at_value_end());
 
-        let ident = [SigToken {
-            kind: TokenKind::Ident,
-            span: Span::new(0, 1),
-        }];
-        assert!(!parser_at("x", &ident).at_value_end());
-        assert!(!parser_at("x", &ident).at_lifetime());
-        assert!(parser_at("", &[]).at_value_end());
+        let ident = parser_at("x", tokenize("x"));
+        assert!(!ident.at_value_end());
+        assert!(!ident.at_lifetime());
+        assert!(parser_at("", core::iter::empty::<Token>()).at_value_end());
 
-        let lifetime = [SigToken {
-            kind: TokenKind::Lifetime {
-                starts_with_number: false,
-            },
-            span: Span::new(0, 2),
-        }];
-        assert!(parser_at("'a", &lifetime).at_lifetime());
+        assert!(parser_at("'a", tokenize("'a")).at_lifetime());
     }
 }

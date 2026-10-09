@@ -185,6 +185,7 @@ define_api! {
         get_event_profiling_info: GetEventProfilingInfo => "clGetEventProfilingInfo",
     ],
     optional: [
+        create_program_with_il: CreateProgramWithIL => "clCreateProgramWithIL",
         enqueue_fill_buffer: EnqueueFillBuffer => "clEnqueueFillBuffer",
         get_extension_function_address: GetExtensionFunctionAddress
             => "clGetExtensionFunctionAddress",
@@ -200,7 +201,6 @@ impl Api {
     /// Returns [`Error::Unsupported`] when the driver does not export the
     /// entry point.
     #[inline]
-    #[allow(dead_code)] // callers arrive with the planned fill/extension surface
     pub(crate) fn optional<T: Copy>(value: Option<T>, symbol: &'static str) -> Result<T> {
         value.ok_or(Error::Unsupported { symbol })
     }

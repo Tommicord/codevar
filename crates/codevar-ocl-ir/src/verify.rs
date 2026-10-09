@@ -36,6 +36,10 @@
 //! than indexing arenas, so a malformed module yields a diagnostic
 //! instead of a panic.
 //!
+//! [`verify_function`] checks just one function, skipping the
+//! whole-module assumptions, which is what a streaming pipeline needs
+//! while already-emitted functions sit in the module as declarations.
+//!
 //! # Example
 //!
 //! ```
@@ -516,6 +520,62 @@ pub fn verify(module: &Module) -> Result<(), VerifyError> {
     Checker::new(module).run()
 }
 
+/// Verifies a single function of `module`.
+///
+/// Runs the same per-function checks [`verify`] applies to each
+/// function — signature types, argument types, block structure,
+/// terminators, reachability, instruction typing, and definite
+/// assignment — but skips the whole-module checks that assume every
+/// declared function is either imported or body-complete: a streaming
+/// module keeps already-emitted functions body-less (and their entry
+/// points recorded), which whole-module [`verify`] would reject.
+///
+/// Unlike [`verify`], a body-less `function` is accepted whatever its
+/// linkage: in a streaming module the body was emitted and taken, and
+/// the declaration keeps the linkage it was declared with.  A body
+/// that carries [`Linkage::Import`] is still rejected with
+/// [`VerifyError::ImportedWithBody`].
+///
+/// # Errors
+///
+/// Returns a [`VerifyError`] describing the first problem in
+/// `function`, or [`VerifyError::NotAFunction`] when `function` is not
+/// one of the module's functions; `Ok(())` means the function
+/// satisfies every rule the SPIR-V backend assumes for it.
+///
+/// # Examples
+///
+/// ```
+/// use codevar_ocl_ir::parse::parse;
+/// use codevar_ocl_ir::verify::{verify, verify_function};
+///
+/// let mut module = parse(
+///     "target opencl address physical64 memory opencl\n\
+///      %void = OpTypeVoid\n\
+///      %fn = OpTypeFunction %void\n\
+///      %main = OpFunction %void None %fn\n\
+///      %entry = OpLabel\n\
+///      OpReturn\n\
+///      OpFunctionEnd\n",
+/// )
+/// .expect("parses");
+/// let main = module.find_function("main").expect("declared");
+///
+/// // Streaming protocol: the body was emitted and taken, so the
+/// // function is now a body-less declaration.
+/// assert!(module.take_function_body(main).is_some());
+/// assert!(verify(&module).is_err(), "whole-module verify wants it back");
+/// verify_function(&module, main).expect("a taken body still verifies");
+/// ```
+pub fn verify_function(module: &Module, function: ValueId) -> Result<(), VerifyError> {
+    let index = module
+        .functions()
+        .iter()
+        .position(|&id| id == function)
+        .ok_or(VerifyError::NotAFunction { func: function })?;
+    Checker::new(module).check_function(index, function, false)
+}
+
 /// Function-local facts used while checking instructions.
 struct FnView<'a> {
     /// Index of the function in the module's function list.
@@ -563,7 +623,7 @@ impl<'a> Checker<'a> {
         self.check_globals()?;
         let functions: Vec<ValueId> = self.module.functions().to_vec();
         for (index, &func) in functions.iter().enumerate() {
-            self.check_function(index, func)?;
+            self.check_function(index, func, true)?;
         }
         self.check_no_orphans()?;
         Ok(())
@@ -790,7 +850,20 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    fn check_function(&mut self, func_index: usize, func: ValueId) -> Result<(), VerifyError> {
+    /// Checks one function: signature and linkage, block structure,
+    /// control-flow graph, then every instruction's typing and
+    /// definite assignment.
+    ///
+    /// `require_declaration_import` selects the whole-module rule that
+    /// a body-less function must be an import; [`verify_function`]
+    /// passes `false`, because a streaming module keeps emitted
+    /// functions body-less with the linkage they were declared with.
+    fn check_function(
+        &mut self,
+        func_index: usize,
+        func: ValueId,
+        require_declaration_import: bool,
+    ) -> Result<(), VerifyError> {
         let module = self.module;
         let function = module
             .function(func)
@@ -815,7 +888,7 @@ impl<'a> Checker<'a> {
                 return Err(VerifyError::ArgumentTypeMismatch { arg, expected, found });
             }
         }
-        if function.is_declaration() && function.linkage != Linkage::Import {
+        if require_declaration_import && function.is_declaration() && function.linkage != Linkage::Import {
             return Err(VerifyError::DeclarationNotImported { func });
         }
         if !function.is_declaration() && function.linkage == Linkage::Import {

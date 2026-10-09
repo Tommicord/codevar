@@ -82,10 +82,6 @@ unsafe extern "system" {
     fn GetLastError() -> u32;
 }
 
-/// Maximum buffer size for console I/O
-const MAX_BUFFER_SIZE: usize = 8192;
-const STDIN_BUF_SIZE: usize = MAX_BUFFER_SIZE / 2 * 3; // 12KB for UTF-16 decoding
-
 /// Incomplete UTF-8 state for handling partial sequences
 #[derive(Debug)]
 struct IncompleteUtf8 {

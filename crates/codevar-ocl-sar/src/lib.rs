@@ -60,6 +60,8 @@ mod types;
 mod unicode;
 
 #[cfg(test)]
+mod stream_tests;
+#[cfg(test)]
 mod tests;
 
 use alloc::string::String;
@@ -67,7 +69,7 @@ use alloc::vec::Vec;
 
 use codevar_ocl_parse::parse;
 
-pub use analyzer::{DeclKind, Declaration};
+pub use analyzer::{BodyTables, DeclCollector, DeclEnv, DeclKind, Declaration, analyze_body, file_checks};
 pub use builtins::{Builtin, BuiltinKind, builtins, lookup_builtin_fn};
 pub use codevar_ocl_parse::{NodeId, Span};
 pub use confusable::confusable_skeleton;

@@ -16,6 +16,10 @@ libc = { workspace = true }
 codevar-logger = { workspace = true }
 codevar-env = { workspace = true }
 codevar-pathbuf = { workspace = true }
+codevar-ocl-parse = { workspace = true }
+codevar-ocl-sar = { workspace = true }
+codevar-ocl-ir = { workspace = true }
+codevar-ocl-asm = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-link = { workspace = true }

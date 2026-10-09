@@ -26,11 +26,15 @@ use codevar_ocl::{
     Runtime,
 };
 
+/// The kernel in the Codevar OpenCL dialect: `Program::from_source`
+/// compiles it to SPIR-V in-process before the driver ever sees it.
 const KERNEL: &str = r#"
-__kernel void vector_add(__global const int* a, __global const int* b,
-                         __global int* out, int n) {
-    int i = get_global_id(0);
-    if (i < n) { out[i] = a[i] + b[i]; }
+#[kernel]
+fn vector_add(a: *const int, b: *const int, out: *mut int, n: int) -> void {
+    let i = get_global_id(0);
+    if i < n {
+        out[i] = a[i] + b[i];
+    }
 }
 "#;
 
@@ -64,8 +68,18 @@ fn vector_add_roundtrip_on_real_device() -> Result<(), Error> {
     let b_buffer = Buffer::from_slice(&context, &b)?;
     let out_buffer = Buffer::new(&context, SIZE * size_of::<i32>())?;
 
-    let Ok(program) = Program::from_source(&context, KERNEL) else {
-        return Ok(());
+    // The dialect compiler runs on the host: a rejection there is a
+    // pipeline bug and must fail the test. Driver-side problems (no
+    // `clCreateProgramWithIL`, a driver refusing the SPIR-V) are
+    // environment limitations this smoke test skips over.
+    let program = match Program::from_source(&context, KERNEL) {
+        Ok(program) => program,
+        Err(error) => {
+            if matches!(error, Error::BuildFailed { .. } | Error::InvalidArgument { .. }) {
+                return Err(error);
+            }
+            return Ok(());
+        }
     };
     if program.build("").is_err() {
         return Ok(());
@@ -77,7 +91,7 @@ fn vector_add_roundtrip_on_real_device() -> Result<(), Error> {
     kernel.set_arg(0, Arg::Buffer(&a_buffer))?;
     kernel.set_arg(1, Arg::Buffer(&b_buffer))?;
     kernel.set_arg(2, Arg::Buffer(&out_buffer))?;
-    kernel.set_arg(3, Arg::U32(SIZE as u32))?;
+    kernel.set_arg(3, Arg::I32(SIZE as i32))?;
 
     let event = queue.enqueue_kernel(&kernel, &[SIZE], None)?;
     event.wait()?;

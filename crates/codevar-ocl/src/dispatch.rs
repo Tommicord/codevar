@@ -49,9 +49,9 @@ use core::ffi::c_void;
 use core::mem::{offset_of, size_of};
 
 use crate::sys::{
-    BuildProgram, CreateBuffer, CreateCommandQueue, CreateContext, CreateKernel, CreateProgramWithSource,
-    EnqueueCopyBuffer, EnqueueFillBuffer, EnqueueNdRangeKernel, EnqueueReadBuffer, EnqueueWriteBuffer,
-    Finish, Flush, GetDeviceIds, GetDeviceInfo, GetEventInfo, GetEventProfilingInfo,
+    BuildProgram, CreateBuffer, CreateCommandQueue, CreateContext, CreateKernel, CreateProgramWithIL,
+    CreateProgramWithSource, EnqueueCopyBuffer, EnqueueFillBuffer, EnqueueNdRangeKernel, EnqueueReadBuffer,
+    EnqueueWriteBuffer, Finish, Flush, GetDeviceIds, GetDeviceInfo, GetEventInfo, GetEventProfilingInfo,
     GetExtensionFunctionAddress, GetKernelInfo, GetKernelWorkGroupInfo, GetPlatformIds, GetPlatformInfo,
     GetProgramBuildInfo, GetProgramInfo, PlatformHandle, ReleaseCommandQueue, ReleaseContext, ReleaseEvent,
     ReleaseKernel, ReleaseMemObject, ReleaseProgram, SetKernelArg, WaitForEvents,
@@ -340,8 +340,8 @@ pub(crate) struct IcdDispatch {
     pub(crate) get_kernel_sub_group_info_khr: *mut c_void,
     /// Slot 137: `clCloneKernel` (unused).
     pub(crate) clone_kernel: *mut c_void,
-    /// Slot 138: `clCreateProgramWithIL` (unused).
-    pub(crate) create_program_with_il: *mut c_void,
+    /// Slot 138.
+    pub(crate) create_program_with_il: Option<CreateProgramWithIL>,
     /// Slot 139: `clEnqueueSVMMigrateMem` (unused).
     pub(crate) enqueue_svm_migrate_mem: *mut c_void,
     /// Slot 140: `clGetDeviceAndHostTimer` (unused).
@@ -437,6 +437,7 @@ mod tests {
         assert_eq!(offset_of!(IcdDispatch, enqueue_nd_range_kernel), 59 * SLOT);
         assert_eq!(offset_of!(IcdDispatch, get_extension_function_address), 65 * SLOT);
         assert_eq!(offset_of!(IcdDispatch, enqueue_fill_buffer), 102 * SLOT);
+        assert_eq!(offset_of!(IcdDispatch, create_program_with_il), 138 * SLOT);
         assert_eq!(offset_of!(IcdDispatch, enqueue_marker_with_wait_list), 105 * SLOT);
         assert_eq!(
             offset_of!(IcdDispatch, create_command_queue_with_properties),

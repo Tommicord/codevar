@@ -28,6 +28,10 @@
 //!    algebraic simplification, dead-statement removal — following the
 //!    design of GCC's and Clang's expression folders.
 //!
+//! [`ItemStream`] drives the same parser one top-level item at a time
+//! straight off the lexer iterator, buffering only a handful of tokens,
+//! for pipelines that cannot afford a whole-file token or AST copy.
+//!
 //! ```
 //! let output = codevar_ocl_parse::parse("fn add(a: i32, b: i32) -> i32 { a + b }");
 //! assert!(output.errors.is_empty());
@@ -42,6 +46,7 @@ extern crate alloc;
 mod ast;
 mod optimize;
 mod parser;
+mod stream;
 mod token_tree;
 pub mod visit;
 
@@ -50,11 +55,13 @@ mod tests;
 
 pub use ast::*;
 pub use optimize::{OptReport, optimize};
+pub use stream::{ItemOutcome, ItemStream};
 pub use token_tree::{Delimiter, TokenTree, TokenTreeKind, build_token_trees};
 pub use visit::{Visitor, walk_program};
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use codevar_ocl_lex::Token;
 
 /// A half-open byte range `[offset, offset + len)` in the source file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
@@ -106,8 +113,10 @@ pub fn parse(source: &str) -> ParseOutput {
     let tokens = token_tree::collect_tokens(source);
     let source_len = u32::try_from(source.len()).unwrap_or(u32::MAX);
     let (trees, mut errors) = token_tree::build_from_tokens(&tokens, source_len);
-    let significant = parser::significant_tokens(&tokens);
-    let (program, parse_errors) = parser::parse_program(source, &significant);
+    let lexed = tokens
+        .iter()
+        .map(|&(kind, span)| Token { kind, len: span.len });
+    let (program, parse_errors) = parser::parse_program(source, lexed);
     errors.extend(parse_errors);
     errors.sort_by_key(|error| (error.span.offset, error.span.len));
     ParseOutput {

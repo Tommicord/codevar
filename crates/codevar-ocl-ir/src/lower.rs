@@ -31,6 +31,9 @@
 //!
 //! * [`lower`] — analyzed AST plus semantic tables to [`Module`].
 //! * [`lower_source`] — the whole pipeline: analyze, parse, then lower.
+//! * [`ItemLowerer`] — item-at-a-time lowering over a fixed declaration
+//!   environment, for streaming pipelines that emit one function's
+//!   SPIR-V at a time and reclaim its IR before lowering the next.
 //!
 //! Lowering mirrors the analyzer's typing rules exactly (literal suffix
 //! defaults, unification order, swizzle sets, builtin signatures), so any
@@ -58,11 +61,11 @@ use alloc::vec::Vec;
 use codevar_ocl_lex::{Base, LiteralKind, TokenKind};
 use codevar_ocl_parse::{
     BinaryOp, Block, Expr, ExprKind, FnItem, GenericParam, ItemKind, LetStmt, NodeId, Param, Pat, PatKind,
-    Path, Program, Span, Stmt, StmtKind, Type, TypeKind, UnaryOp,
+    Path, Program, Span, Stmt, StmtKind, Type, TypeAliasItem, TypeKind, UnaryOp,
 };
 use codevar_ocl_sar::{
-    AnalysisOutput, Builtin, BuiltinKind, BuiltinType, DeclKind, Diagnostic, Res, Scalar, Ty, coerce,
-    lookup_builtin, lookup_builtin_fn,
+    AnalysisOutput, Builtin, BuiltinKind, BuiltinType, DeclKind, Declaration, Diagnostic, Res,
+    ResolutionTable, Scalar, Ty, TypeTable, coerce, lookup_builtin, lookup_builtin_fn,
 };
 
 use crate::ir::{
@@ -705,7 +708,7 @@ pub fn lower(program: &Program, analyzed: &AnalysisOutput) -> Result<Module, Low
                 .collect(),
         });
     }
-    let mut lowerer = Lowerer::new(analyzed);
+    let mut lowerer = Lowerer::new(&analyzed.declarations, &analyzed.types, &analyzed.resolutions);
     lowerer.run(program)?;
     Ok(lowerer.module)
 }
@@ -740,6 +743,207 @@ pub fn lower_source(source: &str) -> Result<Module, LowerError> {
         });
     }
     lower(&parsed.program, &analyzed)
+}
+
+/// Item-at-a-time lowerer over a fixed declaration environment.
+///
+/// The streaming counterpart of [`lower`]: declare every item's
+/// signature up front — calls may reference functions declared later —
+/// then lower, emit, and reclaim one function body at a time so the
+/// module never holds more than one body's IR.  The module it owns is
+/// otherwise identical to [`lower`]'s: an OpenCL target plus an eager
+/// `OpenCL.std` extended-instruction import, because the streaming
+/// emitter needs imports before the memory model and first-use
+/// creation inside bodies would be too late.
+///
+/// # Usage protocol
+///
+/// 1. [`ItemLowerer::new`] over the whole file's declarations, then
+///    [`ItemLowerer::declare_alias`] and
+///    [`ItemLowerer::declare_function`] for every item — all
+///    signatures must be declared before any body is lowered;
+/// 2. per function: the caller takes
+///    [`Module::watermark`](crate::ir::Module::watermark), then calls
+///    [`ItemLowerer::lower_function_body`], then emits SPIR-V, then
+///    hands the body off with
+///    [`Module::take_function_body`](crate::ir::Module::take_function_body)
+///    and reclaims it with
+///    [`Module::truncate_values`](crate::ir::Module::truncate_values).
+///
+/// # Examples
+///
+/// ```
+/// use codevar_ocl_ir::lower::ItemLowerer;
+/// use codevar_ocl_ir::verify::verify_function;
+///
+/// let source = "#[kernel]\nfn zero(out: *mut int) {\n    *out = 0;\n}";
+/// let analyzed = codevar_ocl_sar::analyze(source);
+/// let parsed = codevar_ocl_parse::parse(source);
+/// assert!(!analyzed.has_errors());
+/// assert!(parsed.errors.is_empty());
+///
+/// let mut lowerer = ItemLowerer::new(&analyzed.declarations);
+/// let function = parsed
+///     .program
+///     .items
+///     .iter()
+///     .find_map(|item| match &item.kind {
+///         codevar_ocl_parse::ItemKind::Fn(function) => Some(function),
+///         _ => None,
+///     })
+///     .expect("the kernel");
+/// lowerer.declare_function(function, true).expect("declares");
+///
+/// let len = lowerer.module().values().len();
+/// let mark = lowerer.module().watermark();
+/// lowerer
+///     .lower_function_body(function, &analyzed.types, &analyzed.resolutions)
+///     .expect("lowers");
+/// let kernel = lowerer.function("zero").expect("declared");
+/// verify_function(lowerer.module(), kernel).expect("verifies");
+///
+/// // Emitted: detach the body, then reclaim everything it created.
+/// let blocks = lowerer.module_mut().take_function_body(kernel).expect("body");
+/// drop(blocks);
+/// lowerer.module_mut().truncate_values(mark);
+/// assert_eq!(lowerer.module().values().len(), len);
+/// assert!(lowerer.module().function(kernel).expect("sig").is_declaration());
+/// ```
+#[derive(Debug)]
+pub struct ItemLowerer<'a> {
+    /// Whole-file declarations the analyzer resolved.
+    declarations: &'a [Declaration],
+    /// The module being filled one function at a time.
+    module: Module,
+    /// Type-alias names resolved to their targets.
+    aliases: BTreeMap<String, Ty>,
+    /// Declared functions, by name.
+    signatures: BTreeMap<String, FnSig>,
+    /// The eagerly imported `OpenCL.std` extended-instruction set.
+    ext_set: Option<ExtSetId>,
+}
+
+impl<'a> ItemLowerer<'a> {
+    /// Creates a lowerer over whole-file declarations.
+    ///
+    /// The module starts with an eager `OpenCL.std`
+    /// extended-instruction import: the streaming emitter needs
+    /// imports before the memory model, so first-use creation inside
+    /// bodies is too late — the set is registered up front exactly the
+    /// way `Lowerer::ext_set` would create it on first use.
+    #[must_use]
+    pub fn new(declarations: &'a [Declaration]) -> Self {
+        let mut module = Module::new(Target::opencl());
+        let ext_set = module.add_ext_inst_set("OpenCL.std");
+        Self {
+            declarations,
+            module,
+            aliases: BTreeMap::new(),
+            signatures: BTreeMap::new(),
+            ext_set: Some(ext_set),
+        }
+    }
+
+    /// Declares one non-generic type alias; generic aliases are
+    /// skipped, mirroring `Lowerer::declare_aliases`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LowerError::Unsupported`] when the aliased type is
+    /// malformed.
+    pub fn declare_alias(&mut self, alias: &TypeAliasItem) -> Result<(), LowerError> {
+        let types = TypeTable::new();
+        let resolutions = ResolutionTable::new();
+        self.with_lowerer(&types, &resolutions, |lowerer| lowerer.declare_alias(alias))
+    }
+
+    /// Declares one non-generic function and, when `kernel` is true,
+    /// registers its entry point, mirroring one iteration of
+    /// `Lowerer::declare_functions`.  Generic functions are skipped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a declared type has no IR representation
+    /// or the module rejects the function.
+    pub fn declare_function(&mut self, function: &FnItem, kernel: bool) -> Result<(), LowerError> {
+        let types = TypeTable::new();
+        let resolutions = ResolutionTable::new();
+        self.with_lowerer(&types, &resolutions, |lowerer| {
+            lowerer.declare_function(function, kernel)
+        })
+    }
+
+    /// Lowers one function body using per-item analysis tables whose
+    /// [`NodeId`](codevar_ocl_parse::NodeId) space matches `function`'s
+    /// AST, mirroring one iteration of `Lowerer::run`'s body pass
+    /// including the [`LowerError::MissingReturn`] check.
+    ///
+    /// The function must have been declared first; per-function state
+    /// (slots, allocas, loops, the current block) is reset exactly the
+    /// way `Lowerer::lower_function` resets it, so bodies lowered
+    /// through this entry point match [`lower`]'s byte for byte.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LowerError::Unsupported`] when the function was never
+    /// declared (including generic functions, which declaration skips)
+    /// or the body uses an unsupported construct, and
+    /// [`LowerError::MissingReturn`] when a value-returning function
+    /// can fall off the end of its body.
+    pub fn lower_function_body(
+        &mut self,
+        function: &FnItem,
+        types: &TypeTable,
+        resolutions: &ResolutionTable,
+    ) -> Result<(), LowerError> {
+        self.with_lowerer(types, resolutions, |lowerer| lowerer.lower_function(function))
+    }
+
+    /// The declared function value named `name`, if any.
+    #[must_use]
+    pub fn function(&self, name: &str) -> Option<ValueId> {
+        self.signatures
+            .get(name)
+            .map(|signature| signature.ir)
+    }
+
+    /// The module under construction.
+    #[must_use]
+    pub fn module(&self) -> &Module {
+        &self.module
+    }
+
+    /// The module under construction, mutably — for the watermark,
+    /// body-detach, and truncation steps of the streaming protocol.
+    pub fn module_mut(&mut self) -> &mut Module {
+        &mut self.module
+    }
+
+    /// Runs one operation against a temporary [`Lowerer`] assembled
+    /// from this lowerer's owned state.
+    ///
+    /// The module, alias table, signature table, and ext-set cache are
+    /// moved into the lowerer for the duration of `op` and moved back
+    /// afterward, so ownership stays with the `ItemLowerer` while the
+    /// operation sees the same context [`lower`] builds.
+    fn with_lowerer<'x, T>(
+        &'x mut self,
+        types: &'x TypeTable,
+        resolutions: &'x ResolutionTable,
+        op: impl FnOnce(&mut Lowerer<'x>) -> Result<T, LowerError>,
+    ) -> Result<T, LowerError> {
+        let mut lowerer = Lowerer::new(self.declarations, types, resolutions);
+        lowerer.module = core::mem::replace(&mut self.module, Module::new(Target::opencl()));
+        lowerer.aliases = core::mem::take(&mut self.aliases);
+        lowerer.signatures = core::mem::take(&mut self.signatures);
+        lowerer.ext_set = self.ext_set;
+        let outcome = op(&mut lowerer);
+        self.module = lowerer.module;
+        self.aliases = lowerer.aliases;
+        self.signatures = lowerer.signatures;
+        self.ext_set = lowerer.ext_set;
+        outcome
+    }
 }
 
 /// What lowering an expression produced.
@@ -851,8 +1055,12 @@ type LoopSetup = Option<(ValueId, TypeId, TypeId, ValueId, CmpOp, Option<ValueId
 struct Lowerer<'a> {
     /// The IR module being built.
     module: Module,
-    /// Semantic tables from the analyzer.
-    analysis: &'a AnalysisOutput,
+    /// Declarations the analyzer resolved, in source order.
+    declarations: &'a [Declaration],
+    /// Type of every type-checked expression.
+    types: &'a TypeTable,
+    /// Resolution of every resolved name use.
+    resolutions: &'a ResolutionTable,
     /// Type-alias names resolved to their targets.
     aliases: BTreeMap<String, Ty>,
     /// Declared functions, by name.
@@ -878,11 +1086,17 @@ struct Lowerer<'a> {
 }
 
 impl<'a> Lowerer<'a> {
-    /// Creates a lowering context for already-analyzed source.
-    fn new(analysis: &'a AnalysisOutput) -> Self {
+    /// Creates a lowering context over pre-computed analysis tables.
+    ///
+    /// The tables are borrowed separately (rather than as one
+    /// [`AnalysisOutput`]) so that a streaming driver can lend its
+    /// per-item tables to a temporary lowerer while owning the module.
+    fn new(declarations: &'a [Declaration], types: &'a TypeTable, resolutions: &'a ResolutionTable) -> Self {
         Self {
             module: Module::new(Target::opencl()),
-            analysis,
+            declarations,
+            types,
+            resolutions,
             aliases: BTreeMap::new(),
             signatures: BTreeMap::new(),
             ext_set: None,
@@ -1190,8 +1404,7 @@ impl<'a> Lowerer<'a> {
 
     /// The semantic type the analyzer gave `expr`, or [`Ty::Error`].
     fn expr_ty(&self, expr: &Expr) -> Ty {
-        self.analysis
-            .types
+        self.types
             .get(expr.id)
             .cloned()
             .unwrap_or(Ty::Error)
@@ -1387,7 +1600,7 @@ impl<'a> Lowerer<'a> {
                 span: path.span,
             });
         }
-        let Some(resolution) = self.analysis.resolutions.get(expr.id) else {
+        let Some(resolution) = self.resolutions.get(expr.id) else {
             return Err(LowerError::Unsupported {
                 what: "an unresolved name",
                 span: path.span,
@@ -1438,13 +1651,24 @@ impl<'a> Lowerer<'a> {
             let ItemKind::TypeAlias(alias) = &item.kind else {
                 continue;
             };
-            if has_type_parameters(&alias.generics) {
-                continue;
-            }
-            let target = self.resolve_ast_ty(&alias.aliased)?;
-            self.aliases
-                .insert(strip_raw_ident(&alias.name).to_string(), target);
+            self.declare_alias(alias)?;
         }
+        Ok(())
+    }
+
+    /// Records one type alias's target; generic aliases are skipped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LowerError::Unsupported`] when the aliased type is
+    /// malformed.
+    fn declare_alias(&mut self, alias: &TypeAliasItem) -> Result<(), LowerError> {
+        if has_type_parameters(&alias.generics) {
+            return Ok(());
+        }
+        let target = self.resolve_ast_ty(&alias.aliased)?;
+        self.aliases
+            .insert(strip_raw_ident(&alias.name).to_string(), target);
         Ok(())
     }
 
@@ -1460,58 +1684,67 @@ impl<'a> Lowerer<'a> {
             let ItemKind::Fn(function) = &item.kind else {
                 continue;
             };
-            if has_type_parameters(&function.generics) {
-                continue;
-            }
-            let name = strip_raw_ident(&function.name).to_string();
-            let ret = match &function.ret {
-                Some(ty) => self.resolve_ast_ty(ty)?,
-                None => Ty::Void,
-            };
-            let span = function.span;
-            let ir_ret = self.map_ty(&ret, span)?;
-            let mut ir_params = Vec::with_capacity(function.params.len());
-            for param in &function.params {
-                let ty = self.resolve_ast_ty(&param.ty)?;
-                ir_params.push(self.map_ty(&ty, span)?);
-            }
-            let sig = self.module.fn_ty(ir_ret, ir_params.clone());
-            let ir = self
-                .module
-                .add_function(&name, sig, Linkage::External)
+            let kernel = self.is_kernel(strip_raw_ident(&function.name));
+            self.declare_function(function, kernel)?;
+        }
+        Ok(())
+    }
+
+    /// Declares one non-generic function and, when `kernel` is true,
+    /// registers its entry point.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a declared type has no IR representation or
+    /// the module rejects the function.
+    fn declare_function(&mut self, function: &FnItem, kernel: bool) -> Result<(), LowerError> {
+        if has_type_parameters(&function.generics) {
+            return Ok(());
+        }
+        let name = strip_raw_ident(&function.name).to_string();
+        let ret = match &function.ret {
+            Some(ty) => self.resolve_ast_ty(ty)?,
+            None => Ty::Void,
+        };
+        let span = function.span;
+        let ir_ret = self.map_ty(&ret, span)?;
+        let mut ir_params = Vec::with_capacity(function.params.len());
+        for param in &function.params {
+            let ty = self.resolve_ast_ty(&param.ty)?;
+            ir_params.push(self.map_ty(&ty, span)?);
+        }
+        let sig = self.module.fn_ty(ir_ret, ir_params.clone());
+        let ir = self
+            .module
+            .add_function(&name, sig, Linkage::External)
+            .map_err(|error| LowerError::Build {
+                what: "a function declaration",
+                error,
+            })?;
+        self.signatures.insert(
+            name.clone(),
+            FnSig {
+                ir,
+                params: ir_params,
+                ret: ir_ret,
+            },
+        );
+        if kernel {
+            self.module
+                .set_entry_point(ExecutionModel::Kernel, ir, &name)
                 .map_err(|error| LowerError::Build {
-                    what: "a function declaration",
+                    what: "an entry point",
                     error,
                 })?;
-            self.signatures.insert(
-                name.clone(),
-                FnSig {
-                    ir,
-                    params: ir_params,
-                    ret: ir_ret,
-                },
-            );
-            if self.is_kernel(&name) {
-                self.module
-                    .set_entry_point(ExecutionModel::Kernel, ir, &name)
-                    .map_err(|error| LowerError::Build {
-                        what: "an entry point",
-                        error,
-                    })?;
-            }
         }
         Ok(())
     }
 
     /// True when the analyzer marked `name` as a `#[kernel]` function.
     fn is_kernel(&self, name: &str) -> bool {
-        self.analysis
-            .declarations
-            .iter()
-            .any(|declaration| {
-                declaration.name == name
-                    && matches!(&declaration.kind, DeclKind::Function { kernel: true, .. })
-            })
+        self.declarations.iter().any(|declaration| {
+            declaration.name == name && matches!(&declaration.kind, DeclKind::Function { kernel: true, .. })
+        })
     }
 
     /// Lowers one function's body.
@@ -1987,7 +2220,7 @@ impl<'a> Lowerer<'a> {
                         span: path.span,
                     });
                 }
-                let Some(resolution) = self.analysis.resolutions.get(expr.id) else {
+                let Some(resolution) = self.resolutions.get(expr.id) else {
                     return Err(LowerError::Unsupported {
                         what: "an unresolved name",
                         span: path.span,
@@ -3456,7 +3689,7 @@ impl<'a> Lowerer<'a> {
                 span: callee.span,
             });
         }
-        let Some(resolution) = self.analysis.resolutions.get(callee.id).cloned() else {
+        let Some(resolution) = self.resolutions.get(callee.id).cloned() else {
             return Err(LowerError::Unsupported {
                 what: "an unresolved name",
                 span: callee.span,
@@ -4321,7 +4554,7 @@ mod tests {
     use super::*;
     use crate::parse::parse;
     use crate::print::print;
-    use crate::verify::verify;
+    use crate::verify::{verify, verify_function};
 
     const ZERO_KERNEL: &str = "\
 #[kernel]
@@ -4945,5 +5178,218 @@ fn vector_add(a: *const float, b: *const float, c: *mut float, n: int) -> void {
             &module,
             ConstValue::Float32(f32::INFINITY.to_bits())
         ));
+    }
+
+    /// Declares every non-generic item of `program` in `lowerer`,
+    /// returning the declared functions in source order.
+    ///
+    /// Kernel-ness comes from the analyzer's declarations, the same
+    /// way [`Lowerer::is_kernel`] derives it for [`lower`].
+    fn declare_items<'p>(
+        lowerer: &mut ItemLowerer<'_>,
+        analyzed: &codevar_ocl_sar::AnalysisOutput,
+        program: &'p Program,
+    ) -> Vec<&'p FnItem> {
+        let mut declared = Vec::new();
+        for item in &program.items {
+            match &item.kind {
+                ItemKind::TypeAlias(alias) => {
+                    lowerer
+                        .declare_alias(alias)
+                        .expect("alias declares");
+                }
+                ItemKind::Fn(function) => {
+                    let kernel = analyzed.declarations.iter().any(|declaration| {
+                        declaration.name == strip_raw_ident(&function.name)
+                            && matches!(&declaration.kind, DeclKind::Function { kernel: true, .. })
+                    });
+                    lowerer
+                        .declare_function(function, kernel)
+                        .expect("signature declares");
+                    declared.push(function);
+                }
+                _ => {}
+            }
+        }
+        declared
+    }
+
+    /// Analyzes, parses, and asserts the source is clean, for the
+    /// streaming tests below.
+    fn analyze_ok(source: &str) -> (codevar_ocl_sar::AnalysisOutput, codevar_ocl_parse::ParseOutput) {
+        let analyzed = codevar_ocl_sar::analyze(source);
+        assert!(!analyzed.has_errors());
+        let parsed = codevar_ocl_parse::parse(source);
+        assert!(parsed.errors.is_empty());
+        (analyzed, parsed)
+    }
+
+    #[test]
+    fn item_lowerer_imports_opencl_std_eagerly() {
+        let lowerer = ItemLowerer::new(&[]);
+        let sets = &lowerer.module().ext_inst_sets;
+        assert_eq!(sets.len(), 1, "the import exists before any body is lowered");
+        assert_eq!(sets[0].name, "OpenCL.std");
+        assert_eq!(lowerer.module().values().len(), 0, "no values yet");
+    }
+
+    #[test]
+    fn item_lowerer_truncates_between_function_bodies() {
+        const SOURCE: &str = "\
+#[kernel]
+fn first(out: *mut int, v: int) {
+    *out = v + 1;
+}
+#[kernel]
+fn second(out: *mut int, v: int) {
+    *out = v + 2;
+}";
+        let (analyzed, parsed) = analyze_ok(SOURCE);
+        let mut lowerer = ItemLowerer::new(&analyzed.declarations);
+        let declared = declare_items(&mut lowerer, &analyzed, &parsed.program);
+        assert_eq!(declared.len(), 2);
+        let first = lowerer.function("first").expect("first declared");
+        let second = lowerer
+            .function("second")
+            .expect("second declared");
+        assert_eq!(lowerer.module().entry_points.len(), 2);
+
+        // A function whose body has not been lowered yet (or has
+        // already been taken) is a declaration the per-function
+        // verifier accepts; whole-module `verify` would not.
+        verify_function(lowerer.module(), second).expect("declaration verifies");
+
+        let len = lowerer.module().values().len();
+        let mark = lowerer.module().watermark();
+        lowerer
+            .lower_function_body(declared[0], &analyzed.types, &analyzed.resolutions)
+            .expect("first body lowers");
+        verify_function(lowerer.module(), first).expect("first body verifies");
+
+        let blocks = lowerer
+            .module_mut()
+            .take_function_body(first)
+            .expect("first has a body");
+        assert!(!blocks.is_empty());
+        drop(blocks);
+        assert!(
+            lowerer
+                .module()
+                .function(first)
+                .expect("first")
+                .is_declaration(),
+            "the taken body leaves a declaration"
+        );
+        lowerer.module_mut().truncate_values(mark);
+        assert_eq!(
+            lowerer.module().values().len(),
+            len,
+            "the arena returns to the mark"
+        );
+        assert_eq!(lowerer.module().watermark(), mark);
+
+        // Signatures and entry points are untouched by truncation.
+        assert_eq!(lowerer.function("first"), Some(first));
+        assert_eq!(lowerer.function("second"), Some(second));
+        assert_eq!(
+            lowerer
+                .module()
+                .function(first)
+                .expect("first")
+                .args
+                .len(),
+            2
+        );
+        assert_eq!(lowerer.module().entry_points.len(), 2);
+
+        let mark = lowerer.module().watermark();
+        lowerer
+            .lower_function_body(declared[1], &analyzed.types, &analyzed.resolutions)
+            .expect("second body lowers after the first was reclaimed");
+        verify_function(lowerer.module(), second).expect("second body verifies");
+        let blocks = lowerer
+            .module_mut()
+            .take_function_body(second)
+            .expect("second has a body");
+        assert!(!blocks.is_empty());
+        drop(blocks);
+        lowerer.module_mut().truncate_values(mark);
+        assert_eq!(lowerer.module().watermark(), mark);
+        assert_eq!(lowerer.function("second"), Some(second));
+    }
+
+    #[test]
+    fn builtin_variables_survive_truncation_between_bodies() {
+        const SOURCE: &str = "\
+#[kernel]
+fn first() {
+    let a = get_global_id(0);
+}
+#[kernel]
+fn second() {
+    let b = get_global_id(1);
+}";
+        let (analyzed, parsed) = analyze_ok(SOURCE);
+        let mut lowerer = ItemLowerer::new(&analyzed.declarations);
+        let declared = declare_items(&mut lowerer, &analyzed, &parsed.program);
+
+        let mark = lowerer.module().watermark();
+        let before = lowerer.module().values().len();
+        lowerer
+            .lower_function_body(declared[0], &analyzed.types, &analyzed.resolutions)
+            .expect("first body lowers");
+        let first = lowerer.function("first").expect("first declared");
+        verify_function(lowerer.module(), first).expect("first body verifies");
+        assert_eq!(
+            lowerer.module().globals().len(),
+            1,
+            "the query created its built-in variable inside the window"
+        );
+        let builtin = lowerer.module().globals()[0];
+        assert!(builtin.index() >= before);
+        lowerer
+            .module_mut()
+            .take_function_body(first)
+            .expect("first has a body");
+        lowerer.module_mut().truncate_values(mark);
+
+        // The variable was created after the mark, but `globals` and
+        // `decorations` still name it and arena ids cannot be
+        // renumbered, so truncation keeps it addressable.
+        assert_eq!(lowerer.module().globals(), &[builtin]);
+        assert_eq!(lowerer.module().value(builtin).name, "GlobalInvocationId");
+        assert!(
+            lowerer
+                .module()
+                .decorations
+                .iter()
+                .any(|decor| decor.target == builtin)
+        );
+
+        // The next body reuses the kept variable instead of tripping
+        // over a dangling id.
+        let mark = lowerer.module().watermark();
+        lowerer
+            .lower_function_body(declared[1], &analyzed.types, &analyzed.resolutions)
+            .expect("second body lowers after truncation");
+        let second = lowerer
+            .function("second")
+            .expect("second declared");
+        verify_function(lowerer.module(), second).expect("second body verifies");
+        lowerer
+            .module_mut()
+            .take_function_body(second)
+            .expect("second has a body");
+        lowerer.module_mut().truncate_values(mark);
+        assert_eq!(
+            lowerer.module().watermark(),
+            mark,
+            "no new module-scope value: full reclamation"
+        );
+
+        // Printing walks globals and decorations by id; a dangling
+        // handle would panic here.
+        let text = print(lowerer.module());
+        assert!(text.contains("GlobalInvocationId"));
     }
 }

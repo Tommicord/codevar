@@ -26,8 +26,8 @@ use alloc::vec::Vec;
 
 use codevar_ocl_lex::{Base, LiteralKind, TokenKind};
 use codevar_ocl_parse::{
-    Attr, BinaryOp, Block, Expr, ExprKind, FnItem, GenericArg, GenericParam, ItemKind, NodeId, Pat, PatKind,
-    Path, Program, Span, Stmt, StmtKind, StructItem, Type, TypeAliasItem, TypeKind, TypePath, UnaryOp,
+    Attr, BinaryOp, Block, Expr, ExprKind, FnItem, GenericArg, GenericParam, Item, ItemKind, NodeId, Param,
+    Pat, PatKind, Path, Program, Span, Stmt, StmtKind, Type, TypeKind, TypePath, UnaryOp,
 };
 
 use crate::builtins::{Builtin, BuiltinKind, builtins, lookup_builtin_fn};
@@ -106,97 +106,259 @@ pub enum DeclKind {
     },
 }
 
-/// One collected top-level definition, borrowed from the AST.
-#[derive(Debug)]
-struct ItemDef<'a, T> {
-    /// Position of the item in the program.
-    index: usize,
-    /// The AST node itself.
-    item: &'a T,
-    /// Span of the declared name, found inside the item span.
-    name_span: Span,
-    /// Whether the item carries `#[kernel]`.
-    kernel: bool,
+/// An attribute reduced to the facts validation needs.
+#[derive(Debug, Clone)]
+struct AttrSketch {
+    /// The name written inside `#[…]`.
+    name: String,
+    /// Span covering `#` through the matching `]`.
+    span: Span,
 }
 
-impl<T> Copy for ItemDef<'_, T> {}
+/// One function parameter reduced to the facts signature resolution
+/// needs; patterns and bodies are never retained.
+#[derive(Debug, Clone)]
+struct ParamSketch {
+    /// Bound name with the raw-identifier marker stripped; `None` for
+    /// `_` and non-ident patterns.
+    bound: Option<String>,
+    /// Cloned declared type.
+    ty: Type,
+    /// Span of the whole parameter.
+    span: Span,
+}
 
-impl<T> Clone for ItemDef<'_, T> {
-    fn clone(&self) -> Self {
-        *self
+/// One struct field reduced to the facts field resolution needs.
+#[derive(Debug, Clone)]
+struct FieldSketch {
+    /// Field name as written, raw-identifier marker included.
+    raw_name: String,
+    /// Cloned declared type.
+    ty: Type,
+    /// Span of the field declaration.
+    span: Span,
+}
+
+/// An owned sketch of a function item: names, spans, and cloned
+/// signature types — no body and no token state.
+#[derive(Debug, Clone)]
+struct FnSketch {
+    /// Position of the item in the program.
+    index: usize,
+    /// Function name as written, raw-identifier marker included.
+    raw_name: String,
+    /// Function name with the raw-identifier marker stripped.
+    name: String,
+    /// Span of the declared name.
+    name_span: Span,
+    /// Span of `fn` through the body's closing `}`.
+    span: Span,
+    /// Whether the item carries `#[kernel]`.
+    kernel: bool,
+    /// Attributes preceding the item.
+    attrs: Vec<AttrSketch>,
+    /// Declared generic type-parameter names, lifetimes excluded.
+    generics: Vec<String>,
+    /// Parameter sketches, in declaration order.
+    params: Vec<ParamSketch>,
+    /// Cloned return type, if written.
+    ret: Option<Type>,
+}
+
+/// An owned sketch of a struct item.
+#[derive(Debug, Clone)]
+struct StructSketch {
+    /// Position of the item in the program.
+    index: usize,
+    /// Struct name as written, raw-identifier marker included.
+    raw_name: String,
+    /// Struct name with the raw-identifier marker stripped.
+    name: String,
+    /// Span of the declared name.
+    name_span: Span,
+    /// Span of `struct` through `}` or `;`.
+    span: Span,
+    /// Attributes preceding the item.
+    attrs: Vec<AttrSketch>,
+    /// Declared generic type-parameter names, lifetimes excluded.
+    generics: Vec<String>,
+    /// Field sketches, in declaration order.
+    fields: Vec<FieldSketch>,
+}
+
+/// An owned sketch of a type-alias item.
+#[derive(Debug, Clone)]
+struct AliasSketch {
+    /// Position of the item in the program.
+    index: usize,
+    /// Alias name as written, raw-identifier marker included.
+    raw_name: String,
+    /// Alias name with the raw-identifier marker stripped.
+    name: String,
+    /// Span of the declared name.
+    name_span: Span,
+    /// Span of `type` through `;`.
+    span: Span,
+    /// Attributes preceding the item.
+    attrs: Vec<AttrSketch>,
+    /// Declared generic type-parameter names, lifetimes excluded.
+    generics: Vec<String>,
+    /// Cloned aliased type, generics unsubstituted.
+    ty: Type,
+}
+
+/// An owned sketch of one top-level item.
+#[derive(Debug, Clone)]
+enum ItemSketch {
+    /// A function.
+    Fn(FnSketch),
+    /// A struct.
+    Struct(StructSketch),
+    /// A type alias.
+    Alias(AliasSketch),
+    /// A region the parser could not recover as an item.
+    Error,
+}
+
+impl ItemSketch {
+    /// Reduces one parsed item to an owned sketch.
+    ///
+    /// The collector only reads the AST during this call: names, spans,
+    /// attribute names, and `ast::Ty` nodes are cloned, nothing is
+    /// borrowed.
+    fn from_item(source: &str, index: usize, item: &Item) -> Self {
+        match &item.kind {
+            ItemKind::Fn(function) => {
+                let raw_name = function.name.clone();
+                let name = strip_raw_ident(&raw_name).to_string();
+                let name_span = decl_name_span(source, item.span, "fn", &name);
+                let kernel = item
+                    .attrs
+                    .iter()
+                    .any(|attr| attr_name(source, attr) == "kernel");
+                let params = function
+                    .params
+                    .iter()
+                    .map(|param| ParamSketch {
+                        bound: match &param.pat.kind {
+                            PatKind::Ident { name, .. } if strip_raw_ident(name) != "_" => {
+                                Some(strip_raw_ident(name).to_string())
+                            }
+                            _ => None,
+                        },
+                        ty: param.ty.clone(),
+                        span: param.span,
+                    })
+                    .collect();
+                Self::Fn(FnSketch {
+                    index,
+                    raw_name,
+                    name,
+                    name_span,
+                    span: function.span,
+                    kernel,
+                    attrs: attr_sketches(source, &item.attrs),
+                    generics: generic_names(&function.generics),
+                    params,
+                    ret: function.ret.clone(),
+                })
+            }
+            ItemKind::Struct(record) => {
+                let raw_name = record.name.clone();
+                let name = strip_raw_ident(&raw_name).to_string();
+                let name_span = decl_name_span(source, item.span, "struct", &name);
+                let fields = record
+                    .fields
+                    .iter()
+                    .map(|field| FieldSketch {
+                        raw_name: field.name.clone(),
+                        ty: field.ty.clone(),
+                        span: field.span,
+                    })
+                    .collect();
+                Self::Struct(StructSketch {
+                    index,
+                    raw_name,
+                    name,
+                    name_span,
+                    span: record.span,
+                    attrs: attr_sketches(source, &item.attrs),
+                    generics: generic_names(&record.generics),
+                    fields,
+                })
+            }
+            ItemKind::TypeAlias(alias) => {
+                let raw_name = alias.name.clone();
+                let name = strip_raw_ident(&raw_name).to_string();
+                let name_span = decl_name_span(source, item.span, "type", &name);
+                Self::Alias(AliasSketch {
+                    index,
+                    raw_name,
+                    name,
+                    name_span,
+                    span: alias.span,
+                    attrs: attr_sketches(source, &item.attrs),
+                    generics: generic_names(&alias.generics),
+                    ty: alias.aliased.clone(),
+                })
+            }
+            ItemKind::Error => Self::Error,
+        }
     }
 }
 
-/// Every top-level definition in the program, keyed by resolved name.
-struct Defs<'a> {
-    /// Source text, used to locate attribute and name spans.
-    source: &'a str,
-    /// The program, iterated during validation.
-    program: &'a Program,
-    /// Functions by name.
-    fns: BTreeMap<String, ItemDef<'a, FnItem>>,
-    /// Structs by name.
-    structs: BTreeMap<String, ItemDef<'a, StructItem>>,
-    /// Type aliases by name.
-    aliases: BTreeMap<String, ItemDef<'a, TypeAliasItem>>,
+/// Reduces an item's attributes to names and spans.
+fn attr_sketches(source: &str, attrs: &[Attr]) -> Vec<AttrSketch> {
+    attrs
+        .iter()
+        .map(|attr| AttrSketch {
+            name: attr_name(source, attr).to_string(),
+            span: attr.span,
+        })
+        .collect()
 }
 
-impl<'a> Defs<'a> {
-    /// Indexes every item; later duplicates keep the first entry.
-    fn new(source: &'a str, program: &'a Program) -> Self {
+/// Every top-level definition in the program, keyed by resolved name.
+///
+/// The maps own small sketches — names, spans, and cloned signature
+/// types — so the environment never retains an AST, a body, or a token
+/// buffer.
+#[derive(Debug)]
+struct Defs {
+    /// Sketches of every item, in source order (duplicates included).
+    items: Vec<ItemSketch>,
+    /// Functions by name; a later duplicate replaces the earlier entry.
+    fns: BTreeMap<String, FnSketch>,
+    /// Structs by name; a later duplicate replaces the earlier entry.
+    structs: BTreeMap<String, StructSketch>,
+    /// Type aliases by name; a later duplicate replaces the earlier entry.
+    aliases: BTreeMap<String, AliasSketch>,
+}
+
+impl Defs {
+    /// Indexes every sketch; later duplicates replace the earlier entry.
+    fn from_sketches(items: Vec<ItemSketch>) -> Self {
         let mut defs = Self {
-            source,
-            program,
+            items,
             fns: BTreeMap::new(),
             structs: BTreeMap::new(),
             aliases: BTreeMap::new(),
         };
-        for (index, item) in program.items.iter().enumerate() {
-            match &item.kind {
-                ItemKind::Fn(function) => {
-                    let name = strip_raw_ident(&function.name).to_string();
-                    let name_span = decl_name_span(source, item.span, "fn", &name);
-                    let kernel = item
-                        .attrs
-                        .iter()
-                        .any(|attr| attr_name(source, attr) == "kernel");
-                    defs.fns.insert(
-                        name,
-                        ItemDef {
-                            index,
-                            item: function,
-                            name_span,
-                            kernel,
-                        },
-                    );
+        for sketch in &defs.items {
+            match sketch {
+                ItemSketch::Fn(function) => {
+                    defs.fns
+                        .insert(function.name.clone(), function.clone());
                 }
-                ItemKind::Struct(record) => {
-                    let name = strip_raw_ident(&record.name).to_string();
-                    let name_span = decl_name_span(source, item.span, "struct", &name);
-                    defs.structs.insert(
-                        name,
-                        ItemDef {
-                            index,
-                            item: record,
-                            name_span,
-                            kernel: false,
-                        },
-                    );
+                ItemSketch::Struct(record) => {
+                    defs.structs
+                        .insert(record.name.clone(), record.clone());
                 }
-                ItemKind::TypeAlias(alias) => {
-                    let name = strip_raw_ident(&alias.name).to_string();
-                    let name_span = decl_name_span(source, item.span, "type", &name);
-                    defs.aliases.insert(
-                        name,
-                        ItemDef {
-                            index,
-                            item: alias,
-                            name_span,
-                            kernel: false,
-                        },
-                    );
+                ItemSketch::Alias(alias) => {
+                    defs.aliases
+                        .insert(alias.name.clone(), alias.clone());
                 }
-                ItemKind::Error => {}
+                ItemSketch::Error => {}
             }
         }
         defs
@@ -348,10 +510,8 @@ struct FnCtx {
 
 /// The mutable half of the analyzer: diagnostics and resolved state.
 struct Sema<'a> {
-    /// Source text for attribute parsing and name lookup.
-    source: &'a str,
     /// Collected definitions, borrowed for the whole run.
-    defs: &'a Defs<'a>,
+    defs: &'a Defs,
     /// Every diagnostic reported so far.
     diagnostics: Vec<Diagnostic>,
     /// Resolved function signatures.
@@ -374,6 +534,12 @@ struct Sema<'a> {
     types: TypeTable,
     /// Resolutions recorded for every resolved name use.
     resolutions: ResolutionTable,
+    /// Whether a stage outside this run already reported an error.
+    ///
+    /// The streaming path sets it so per-body checks see the same
+    /// error state the whole-file run accumulates in one diagnostics
+    /// queue (unused-variable warnings stay quiet after any error).
+    prior_errors: bool,
 }
 
 /// The analyzer's full result: diagnostics, declarations, and the side
@@ -392,17 +558,48 @@ pub(crate) struct RunOutput {
 /// Runs every semantic pass and returns diagnostics, declarations, and
 /// the side tables.
 pub(crate) fn run(source: &str, program: &Program) -> RunOutput {
-    let defs = Defs::new(source, program);
-    let mut sema = Sema::new(source, &defs);
+    let sketches: Vec<ItemSketch> = program
+        .items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| ItemSketch::from_item(source, index, item))
+        .collect();
+    let defs = Defs::from_sketches(sketches);
+    // Bodies stay borrowed from the program for this call only; the
+    // sketch maps never retain them.
+    let mut bodies: BTreeMap<String, &FnItem> = BTreeMap::new();
+    for item in &program.items {
+        if let ItemKind::Fn(function) = &item.kind {
+            bodies.insert(strip_raw_ident(&function.name).to_string(), function);
+        }
+    }
+    let mut sema = Sema::new(&defs);
     sema.validate_items();
     sema.resolve_structs();
     sema.resolve_aliases();
     sema.resolve_signatures();
-    sema.check_bodies();
-    sema.check_call_cycles();
-    sema.check_struct_cycles();
-    sema.report_unused();
-    let declarations = sema.build_declarations();
+    let names: Vec<String> = defs.fns.keys().cloned().collect();
+    for name in names {
+        let Some(sig) = sema.fn_sigs.get(&name).cloned() else {
+            continue;
+        };
+        let Some(function) = bodies.get(&name).copied() else {
+            continue;
+        };
+        sema.check_body(&name, &sig, &function.params, &function.body);
+    }
+    collect_call_cycles(&sema.calls, &mut sema.diagnostics);
+    collect_struct_cycles(&sema.struct_sigs, &mut sema.diagnostics);
+    let has_errors = sema.diagnostics.iter().any(Diagnostic::is_error);
+    collect_unused(
+        &sema.fn_sigs,
+        &sema.struct_sigs,
+        &sema.alias_sigs,
+        &sema.references,
+        has_errors,
+        &mut sema.diagnostics,
+    );
+    let declarations = build_declarations(&sema.fn_sigs, &sema.struct_sigs, &sema.alias_sigs);
     RunOutput {
         diagnostics: sema.diagnostics,
         declarations,
@@ -411,11 +608,315 @@ pub(crate) fn run(source: &str, program: &Program) -> RunOutput {
     }
 }
 
+/// Which analysis stages have reported at least one error.
+///
+/// The phases fold into a single mask field (the crate avoids structs
+/// holding several `bool`s) because the gates differ per stage:
+/// unused-variable warnings inside a body respect only pre-body
+/// failures, while the whole-file unused lint respects every failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct ErrorPhases {
+    /// Bit set per failed [`ErrorPhase`].
+    failed: u8,
+}
+
+/// One analysis stage whose errors feed [`ErrorPhases`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ErrorPhase {
+    /// Item validation plus struct, alias, and signature resolution —
+    /// the stages that run before any body.
+    Declarations,
+    /// Declaration-level cycle checks (struct cycles).
+    Cycles,
+    /// At least one type-checked function body.
+    Bodies,
+}
+
+impl ErrorPhase {
+    /// This phase's bit in an [`ErrorPhases`] mask.
+    const fn bit(self) -> u8 {
+        match self {
+            Self::Declarations => 1,
+            Self::Cycles => 2,
+            Self::Bodies => 4,
+        }
+    }
+}
+
+impl ErrorPhases {
+    /// True when any stage has reported an error.
+    const fn any(self) -> bool {
+        self.failed != 0
+    }
+
+    /// True when `phase` has reported an error.
+    const fn contains(self, phase: ErrorPhase) -> bool {
+        self.failed & phase.bit() != 0
+    }
+
+    /// Records an error from `phase`.
+    fn record(&mut self, phase: ErrorPhase) {
+        self.failed |= phase.bit();
+    }
+}
+
+/// Whole-file declaration environment: resolved signatures for every
+/// function, struct, and alias, plus the declaration list. Small: it
+/// holds no ASTs and no body state.
+///
+/// A [`DeclCollector`] produces it; [`analyze_body`] then consumes
+/// function items against it, and [`file_checks`](crate::file_checks)
+/// closes the run.
+#[derive(Debug)]
+pub struct DeclEnv {
+    /// Owned signature-level sketches of every item.
+    defs: Defs,
+    /// Resolved function signatures.
+    fn_sigs: BTreeMap<String, FnSig>,
+    /// Resolved struct signatures.
+    struct_sigs: BTreeMap<String, StructSig>,
+    /// Resolved type aliases.
+    alias_sigs: BTreeMap<String, AliasSig>,
+    /// Names referenced as values or types, for the unused lint.
+    references: BTreeSet<String>,
+    /// Call graph edges accumulated by [`analyze_body`].
+    calls: BTreeMap<String, Vec<(String, Span)>>,
+    /// Declarations in source order.
+    declarations: Vec<Declaration>,
+    /// Stages that have reported errors so far.
+    errors: ErrorPhases,
+}
+
+impl DeclEnv {
+    /// Resolved declarations in source order (as [`analyze`](crate::analyze)
+    /// returns them).
+    #[must_use]
+    pub fn declarations(&self) -> &[Declaration] {
+        &self.declarations
+    }
+
+    /// True when a `#[kernel]` function named `name` is declared.
+    #[must_use]
+    pub fn is_kernel(&self, name: &str) -> bool {
+        self.fn_sigs
+            .get(name)
+            .is_some_and(|sig| sig.kernel)
+    }
+}
+
+/// Incremental declaration-phase collector.
+///
+/// Feed every top-level item in source order, then call
+/// [`finish`](Self::finish) once. The collector keeps only owned
+/// sketches — names, generic names, and cloned `ast::Ty` nodes — so a
+/// file's declaration phase never materializes its ASTs.
+///
+/// # Examples
+///
+/// ```
+/// use codevar_ocl_parse::ItemStream;
+/// use codevar_ocl_sar::DeclCollector;
+///
+/// let source = "#[kernel]\nfn zero(out: *mut int) { *out = 0; }";
+/// let mut collector = DeclCollector::new();
+/// let mut stream = ItemStream::new(source);
+/// while let Some(outcome) = stream.next_item() {
+///     collector.feed(source, &outcome.item);
+/// }
+/// let (env, diagnostics) = collector.finish();
+/// assert!(diagnostics.is_empty());
+/// assert!(env.is_kernel("zero"));
+/// ```
+#[derive(Debug, Default)]
+pub struct DeclCollector {
+    /// Sketches of every fed item, in feed order.
+    items: Vec<ItemSketch>,
+}
+
+impl DeclCollector {
+    /// Creates an empty collector.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Consumes one top-level item (already parsed; the collector only
+    /// reads it during the call — it must NOT retain AST borrows; keep
+    /// owned "sketches": names, generic names, cloned `ast::Ty` nodes).
+    ///
+    /// Items must be fed in source order; each call consumes one
+    /// program index, error items included, so declaration
+    /// `item_index` values match a whole-file [`analyze`](crate::analyze)
+    /// run.
+    pub fn feed(&mut self, source: &str, item: &Item) {
+        let index = self.items.len();
+        self.items
+            .push(ItemSketch::from_item(source, index, item));
+    }
+
+    /// Ends the declaration phase: resolves structs, aliases, and
+    /// signatures; runs declaration-level validation and alias/struct
+    /// cycle checks; returns the environment and every diagnostic from
+    /// those stages (sorted by span).
+    #[must_use]
+    pub fn finish(self) -> (DeclEnv, Vec<Diagnostic>) {
+        let defs = Defs::from_sketches(self.items);
+        let mut sema = Sema::new(&defs);
+        sema.validate_items();
+        sema.resolve_structs();
+        sema.resolve_aliases();
+        sema.resolve_signatures();
+        let mut errors = ErrorPhases::default();
+        if sema.has_errors() {
+            errors.record(ErrorPhase::Declarations);
+        }
+        collect_struct_cycles(&sema.struct_sigs, &mut sema.diagnostics);
+        if sema.diagnostics.iter().any(Diagnostic::is_error) {
+            errors.record(ErrorPhase::Cycles);
+        }
+        let Sema {
+            defs: _,
+            diagnostics,
+            fn_sigs,
+            struct_sigs,
+            alias_sigs,
+            references,
+            calls,
+            ..
+        } = sema;
+        let declarations = build_declarations(&fn_sigs, &struct_sigs, &alias_sigs);
+        let mut diagnostics = diagnostics;
+        crate::sort_diagnostics(&mut diagnostics);
+        let env = DeclEnv {
+            defs,
+            fn_sigs,
+            struct_sigs,
+            alias_sigs,
+            references,
+            calls,
+            declarations,
+            errors,
+        };
+        (env, diagnostics)
+    }
+}
+
+/// Per-body analysis tables (NodeId spaces match the single item's AST).
+#[derive(Debug)]
+pub struct BodyTables {
+    /// Type of every type-checked expression in the body.
+    pub types: TypeTable,
+    /// Resolution of every resolved name use in the body.
+    pub resolutions: ResolutionTable,
+}
+
+impl BodyTables {
+    /// Empty tables, returned for items with no body to check.
+    fn empty() -> Self {
+        Self {
+            types: TypeTable::new(),
+            resolutions: ResolutionTable::new(),
+        }
+    }
+}
+
+/// Type-checks the body of one function `item` against `env`.
+///
+/// Also records the body's name references and call edges into `env`
+/// (so [`file_checks`](crate::file_checks) can see them). Returns the
+/// body's diagnostics and its side tables. Non-function items are a
+/// no-op returning empty tables.
+///
+/// The tables are keyed by the item's own [`NodeId`] space, matching
+/// per-item parsing by [`ItemStream`](codevar_ocl_parse::ItemStream).
+/// When a name was declared more than once, only the last declaration's
+/// body is checked, exactly as [`analyze`](crate::analyze) does.
+///
+/// Full diagnostic equivalence with [`analyze`](crate::analyze) holds
+/// when bodies are checked in the order [`analyze`] checks them
+/// (function-name order): unused-variable warnings inside a body are
+/// suppressed by any earlier error, so a different body order can
+/// surface those warnings in a different set.
+pub fn analyze_body(env: &mut DeclEnv, source: &str, item: &Item) -> (Vec<Diagnostic>, BodyTables) {
+    // The signature-level text work (attribute names, declaration name
+    // spans) already happened at feed time; `source` is accepted for
+    // symmetry with the rest of the streaming driver's per-item calls.
+    let _ = source;
+    let ItemKind::Fn(function) = &item.kind else {
+        return (Vec::new(), BodyTables::empty());
+    };
+    let name = strip_raw_ident(&function.name);
+    let retained_last = env
+        .defs
+        .fns
+        .get(name)
+        .is_some_and(|sketch| sketch.span == function.span);
+    if !retained_last {
+        return (Vec::new(), BodyTables::empty());
+    }
+    let Some(sig) = env.fn_sigs.get(name).cloned() else {
+        return (Vec::new(), BodyTables::empty());
+    };
+    let DeclEnv {
+        defs,
+        fn_sigs,
+        struct_sigs,
+        alias_sigs,
+        references,
+        calls,
+        declarations: _,
+        errors,
+    } = env;
+    let mut sema = Sema::new(defs);
+    sema.prior_errors = errors.contains(ErrorPhase::Declarations) || errors.contains(ErrorPhase::Bodies);
+    sema.fn_sigs = core::mem::take(fn_sigs);
+    sema.struct_sigs = core::mem::take(struct_sigs);
+    sema.alias_sigs = core::mem::take(alias_sigs);
+    sema.references = core::mem::take(references);
+    sema.calls = core::mem::take(calls);
+    sema.check_body(name, &sig, &function.params, &function.body);
+    let diagnostics = core::mem::take(&mut sema.diagnostics);
+    let tables = BodyTables {
+        types: core::mem::take(&mut sema.types),
+        resolutions: core::mem::take(&mut sema.resolutions),
+    };
+    if diagnostics.iter().any(Diagnostic::is_error) {
+        errors.record(ErrorPhase::Bodies);
+    }
+    *fn_sigs = core::mem::take(&mut sema.fn_sigs);
+    *struct_sigs = core::mem::take(&mut sema.struct_sigs);
+    *alias_sigs = core::mem::take(&mut sema.alias_sigs);
+    *references = core::mem::take(&mut sema.references);
+    *calls = core::mem::take(&mut sema.calls);
+    (diagnostics, tables)
+}
+
+/// Whole-file checks over the accumulated environment: call cycles,
+/// unused declarations, and any remaining global checks. Returns their
+/// diagnostics (sorted by span).
+///
+/// Call it once, after every function body has been through
+/// [`analyze_body`].
+pub fn file_checks(env: &DeclEnv) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    collect_call_cycles(&env.calls, &mut diagnostics);
+    let has_errors = env.errors.any() || diagnostics.iter().any(Diagnostic::is_error);
+    collect_unused(
+        &env.fn_sigs,
+        &env.struct_sigs,
+        &env.alias_sigs,
+        &env.references,
+        has_errors,
+        &mut diagnostics,
+    );
+    crate::sort_diagnostics(&mut diagnostics);
+    diagnostics
+}
+
 impl<'a> Sema<'a> {
     /// Creates an analyzer over already-collected definitions.
-    fn new(source: &'a str, defs: &'a Defs<'a>) -> Self {
+    fn new(defs: &'a Defs) -> Self {
         Self {
-            source,
             defs,
             diagnostics: Vec::new(),
             fn_sigs: BTreeMap::new(),
@@ -428,12 +929,13 @@ impl<'a> Sema<'a> {
             ctx: None,
             types: TypeTable::new(),
             resolutions: ResolutionTable::new(),
+            prior_errors: false,
         }
     }
 
-    /// True once any pass has reported an error.
+    /// True once any stage has reported an error, this run included.
     fn has_errors(&self) -> bool {
-        self.diagnostics.iter().any(Diagnostic::is_error)
+        self.prior_errors || self.diagnostics.iter().any(Diagnostic::is_error)
     }
 
     /// Pushes a diagnostic onto the queue.
@@ -444,42 +946,36 @@ impl<'a> Sema<'a> {
     /// Validates attributes, names, and duplicate declarations.
     fn validate_items(&mut self) {
         let defs = self.defs;
-        for (index, item) in defs.program.items.iter().enumerate() {
-            match &item.kind {
-                ItemKind::Fn(function) => {
-                    let name = strip_raw_ident(&function.name);
-                    let span = decl_name_span(defs.source, item.span, "fn", name);
-                    self.check_name(&function.name, span);
-                    if let Some(first) = defs.fns.get(name)
+        for (index, sketch) in defs.items.iter().enumerate() {
+            match sketch {
+                ItemSketch::Fn(function) => {
+                    self.check_name(&function.raw_name, function.name_span);
+                    if let Some(first) = defs.fns.get(&function.name)
                         && first.index != index
                     {
-                        self.report_duplicate(name, first.name_span, span);
+                        self.report_duplicate(&function.name, first.name_span, function.name_span);
                     }
-                    self.check_attrs(&item.attrs, true);
+                    self.check_attrs(&function.attrs, true);
                 }
-                ItemKind::Struct(record) => {
-                    let name = strip_raw_ident(&record.name);
-                    let span = decl_name_span(defs.source, item.span, "struct", name);
-                    self.check_name(&record.name, span);
-                    if let Some(first) = defs.structs.get(name)
+                ItemSketch::Struct(record) => {
+                    self.check_name(&record.raw_name, record.name_span);
+                    if let Some(first) = defs.structs.get(&record.name)
                         && first.index != index
                     {
-                        self.report_duplicate(name, first.name_span, span);
+                        self.report_duplicate(&record.name, first.name_span, record.name_span);
                     }
-                    self.check_attrs(&item.attrs, false);
+                    self.check_attrs(&record.attrs, false);
                 }
-                ItemKind::TypeAlias(alias) => {
-                    let name = strip_raw_ident(&alias.name);
-                    let span = decl_name_span(defs.source, item.span, "type", name);
-                    self.check_name(&alias.name, span);
-                    if let Some(first) = defs.aliases.get(name)
+                ItemSketch::Alias(alias) => {
+                    self.check_name(&alias.raw_name, alias.name_span);
+                    if let Some(first) = defs.aliases.get(&alias.name)
                         && first.index != index
                     {
-                        self.report_duplicate(name, first.name_span, span);
+                        self.report_duplicate(&alias.name, first.name_span, alias.name_span);
                     }
-                    self.check_attrs(&item.attrs, false);
+                    self.check_attrs(&alias.attrs, false);
                 }
-                ItemKind::Error => {}
+                ItemSketch::Error => {}
             }
         }
     }
@@ -513,10 +1009,10 @@ impl<'a> Sema<'a> {
     }
 
     /// Validates one item's `#[…]` attributes.
-    fn check_attrs(&mut self, attrs: &[Attr], is_fn: bool) {
+    fn check_attrs(&mut self, attrs: &[AttrSketch], is_fn: bool) {
         let mut seen: BTreeSet<String> = BTreeSet::new();
         for attr in attrs {
-            let name = attr_name(self.source, attr);
+            let name = attr.name.as_str();
             if !is_fn {
                 self.report(
                     Diagnostic::error(attr.span, "attribute not allowed on this item")
@@ -554,17 +1050,18 @@ impl<'a> Sema<'a> {
 
     /// Resolves every struct's fields.
     fn resolve_structs(&mut self) {
-        let names: Vec<String> = self.defs.structs.keys().cloned().collect();
+        let defs = self.defs;
+        let names: Vec<String> = defs.structs.keys().cloned().collect();
         for name in names {
-            let Some(def) = self.defs.structs.get(&name) else {
+            let Some(def) = defs.structs.get(&name) else {
                 continue;
             };
-            let generics = generic_names(&def.item.generics);
+            let generics = def.generics.clone();
             let mut fields = Vec::new();
             let mut seen: BTreeMap<String, Span> = BTreeMap::new();
-            for field in &def.item.fields {
-                let field_name = strip_raw_ident(&field.name).to_string();
-                self.check_name(&field.name, field.span);
+            for field in &def.fields {
+                let field_name = strip_raw_ident(&field.raw_name).to_string();
+                self.check_name(&field.raw_name, field.span);
                 let ty = self.resolve_type(&field.ty, &generics);
                 if matches!(ty, Ty::Void) {
                     self.report(
@@ -590,7 +1087,7 @@ impl<'a> Sema<'a> {
                     index: def.index,
                     generics,
                     fields,
-                    span: def.item.span,
+                    span: def.span,
                     name_span: def.name_span,
                 },
             );
@@ -599,19 +1096,20 @@ impl<'a> Sema<'a> {
 
     /// Resolves every type alias, reporting alias cycles.
     fn resolve_aliases(&mut self) {
-        let names: Vec<String> = self.defs.aliases.keys().cloned().collect();
+        let defs = self.defs;
+        let names: Vec<String> = defs.aliases.keys().cloned().collect();
         for name in names {
-            let Some(def) = self.defs.aliases.get(&name) else {
+            let Some(def) = defs.aliases.get(&name) else {
                 continue;
             };
-            let generics = generic_names(&def.item.generics);
-            let ty = self.resolve_type(&def.item.aliased, &generics);
+            let generics = def.generics.clone();
+            let ty = self.resolve_type(&def.ty, &generics);
             self.alias_sigs.insert(
                 name,
                 AliasSig {
                     index: def.index,
                     ty,
-                    span: def.item.span,
+                    span: def.span,
                     name_span: def.name_span,
                 },
             );
@@ -620,16 +1118,16 @@ impl<'a> Sema<'a> {
 
     /// Resolves every function signature and applies kernel restrictions.
     fn resolve_signatures(&mut self) {
-        let names: Vec<String> = self.defs.fns.keys().cloned().collect();
+        let defs = self.defs;
+        let names: Vec<String> = defs.fns.keys().cloned().collect();
         for name in names {
-            let Some(def) = self.defs.fns.get(&name) else {
+            let Some(def) = defs.fns.get(&name) else {
                 continue;
             };
-            let item = def.item;
-            let generics = generic_names(&item.generics);
+            let generics = def.generics.clone();
             let mut params = Vec::new();
             let mut seen: BTreeMap<String, Span> = BTreeMap::new();
-            for param in &item.params {
+            for param in &def.params {
                 let ty = self.resolve_type(&param.ty, &generics);
                 if def.kernel {
                     self.check_kernel_param(&ty, param.span);
@@ -641,27 +1139,24 @@ impl<'a> Sema<'a> {
                             .with_help("remove the parameter or give it a value type"),
                     );
                 }
-                let bound = match &param.pat.kind {
-                    PatKind::Ident { name, .. } if strip_raw_ident(name) != "_" => {
-                        Some(strip_raw_ident(name).to_string())
-                    }
-                    _ => None,
-                };
-                if let Some(bound) = &bound {
+                if let Some(bound) = &param.bound {
                     if let Some(&first) = seen.get(bound) {
                         self.report_duplicate(bound, first, param.span);
                     } else {
                         seen.insert(bound.clone(), param.span);
                     }
                 }
-                params.push(ParamSig { name: bound, ty });
+                params.push(ParamSig {
+                    name: param.bound.clone(),
+                    ty,
+                });
             }
-            let ret = item
+            let ret = def
                 .ret
                 .as_ref()
                 .map_or(Ty::Void, |ty| self.resolve_type(ty, &generics));
             if def.kernel && !matches!(ret, Ty::Void) {
-                let span = item.ret.as_ref().map_or(item.span, |ty| ty.span);
+                let span = def.ret.as_ref().map_or(def.span, |ty| ty.span);
                 self.report(
                     Diagnostic::error(span, format!("kernel function `{name}` must return `void`"))
                         .with_code(codes::KERNEL_RETURN)
@@ -676,7 +1171,7 @@ impl<'a> Sema<'a> {
                     params,
                     ret,
                     kernel: def.kernel,
-                    span: item.span,
+                    span: def.span,
                     name_span: def.name_span,
                 },
             );
@@ -991,10 +1486,16 @@ impl<'a> Sema<'a> {
             None => {}
         }
 
-        if let Some(def) = self.defs.structs.get(name).copied() {
-            let declared = generic_names(&def.item.generics);
-            if !path.args.is_empty() && path.args.len() != declared.len() {
-                self.report_generic_arity(name, declared.len(), args.len(), path.span, Some(def.name_span));
+        let defs = self.defs;
+        if let Some(def) = defs.structs.get(name) {
+            if !path.args.is_empty() && path.args.len() != def.generics.len() {
+                self.report_generic_arity(
+                    name,
+                    def.generics.len(),
+                    args.len(),
+                    path.span,
+                    Some(def.name_span),
+                );
                 return Ty::Error;
             }
             self.references.insert(name.to_string());
@@ -1004,13 +1505,19 @@ impl<'a> Sema<'a> {
             };
         }
 
-        if let Some(def) = self.defs.aliases.get(name).copied() {
-            let declared = generic_names(&def.item.generics);
-            if !path.args.is_empty() && path.args.len() != declared.len() {
-                self.report_generic_arity(name, declared.len(), args.len(), path.span, Some(def.name_span));
+        if let Some(def) = defs.aliases.get(name) {
+            if !path.args.is_empty() && path.args.len() != def.generics.len() {
+                self.report_generic_arity(
+                    name,
+                    def.generics.len(),
+                    args.len(),
+                    path.span,
+                    Some(def.name_span),
+                );
                 return Ty::Error;
             }
             self.references.insert(name.to_string());
+            let declared = def.generics.clone();
             return self.expand_alias(name, def, &declared, &args, segment.span);
         }
 
@@ -1047,7 +1554,7 @@ impl<'a> Sema<'a> {
     fn expand_alias(
         &mut self,
         name: &str,
-        def: ItemDef<'a, TypeAliasItem>,
+        def: &'a AliasSketch,
         declared: &[String],
         args: &[Ty],
         span: Span,
@@ -1070,7 +1577,7 @@ impl<'a> Sema<'a> {
             return Ty::Error;
         }
         self.resolving_aliases.push(name.to_string());
-        let target = self.resolve_type(&def.item.aliased, declared);
+        let target = self.resolve_type(&def.ty, declared);
         self.resolving_aliases.pop();
         if args.is_empty() {
             target
@@ -1120,39 +1627,31 @@ impl<'a> Sema<'a> {
         candidates
     }
 
-    /// Type-checks every function body against its signature.
-    fn check_bodies(&mut self) {
-        let names: Vec<String> = self.defs.fns.keys().cloned().collect();
-        for name in names {
-            let Some(def) = self.defs.fns.get(&name).copied() else {
-                continue;
-            };
-            let Some(sig) = self.fn_sigs.get(&name).cloned() else {
-                continue;
-            };
-            self.ctx = Some(FnCtx {
-                name: name.clone(),
-                ret: sig.ret.clone(),
-                loop_depth: 0,
-                generics: sig.generics.clone(),
-            });
-            self.scopes.clear();
-            self.scopes.push(Scope::default());
-            for (param, param_sig) in def.item.params.iter().zip(sig.params.iter()) {
-                let ty = param_sig.ty.clone();
-                self.bind_pattern(&param.pat, ty, BindingOrigin::Parameter);
-            }
-            let body_ty = self.check_block(&def.item.body);
-            let mismatch_span = def
-                .item
-                .body
-                .tail
-                .as_ref()
-                .map_or(def.item.body.span, |tail| tail.span);
-            self.expect_coerce(mismatch_span, &body_ty, &sig.ret);
-            self.pop_scope();
-            self.ctx = None;
+    /// Type-checks one function body against its resolved signature.
+    ///
+    /// This is the single-body core shared by the whole-file run and
+    /// the streaming [`analyze_body`](crate::analyze_body) entry point.
+    fn check_body(&mut self, name: &str, sig: &FnSig, params: &[Param], body: &Block) {
+        self.ctx = Some(FnCtx {
+            name: name.to_string(),
+            ret: sig.ret.clone(),
+            loop_depth: 0,
+            generics: sig.generics.clone(),
+        });
+        self.scopes.clear();
+        self.scopes.push(Scope::default());
+        for (param, param_sig) in params.iter().zip(sig.params.iter()) {
+            let ty = param_sig.ty.clone();
+            self.bind_pattern(&param.pat, ty, BindingOrigin::Parameter);
         }
+        let body_ty = self.check_block(body);
+        let mismatch_span = body
+            .tail
+            .as_ref()
+            .map_or(body.span, |tail| tail.span);
+        self.expect_coerce(mismatch_span, &body_ty, &sig.ret);
+        self.pop_scope();
+        self.ctx = None;
     }
 
     /// Introduces a pattern's bindings into the innermost scope.
@@ -2713,232 +3212,243 @@ impl<'a> Sema<'a> {
         }
         candidates
     }
+}
 
-    /// Reports call cycles; the OpenCL dialect forbids recursion.
-    ///
-    /// The walk is an explicit-stack depth-first search so a deep call
-    /// chain cannot overflow the native stack.
-    fn check_call_cycles(&mut self) {
-        let mut state: BTreeMap<String, u8> = BTreeMap::new();
-        let mut reported: BTreeSet<String> = BTreeSet::new();
-        let roots: Vec<String> = self.calls.keys().cloned().collect();
-        for root in roots {
-            if state.get(&root).copied().unwrap_or(0) != 0 {
+/// Reports call cycles; the OpenCL dialect forbids recursion.
+///
+/// The walk is an explicit-stack depth-first search so a deep call
+/// chain cannot overflow the native stack.
+fn collect_call_cycles(calls: &BTreeMap<String, Vec<(String, Span)>>, out: &mut Vec<Diagnostic>) {
+    let mut state: BTreeMap<String, u8> = BTreeMap::new();
+    let mut reported: BTreeSet<String> = BTreeSet::new();
+    let roots: Vec<String> = calls.keys().cloned().collect();
+    for root in roots {
+        if state.get(&root).copied().unwrap_or(0) != 0 {
+            continue;
+        }
+        let mut stack: Vec<(String, usize)> = Vec::new();
+        state.insert(root.clone(), 1);
+        stack.push((root, 0));
+        while let Some(top) = stack.last() {
+            let current = top.0.clone();
+            let edge_index = top.1;
+            let edges = calls.get(&current).cloned().unwrap_or_default();
+            if edge_index >= edges.len() {
+                state.insert(current, 2);
+                stack.pop();
                 continue;
             }
-            let mut stack: Vec<(String, usize)> = Vec::new();
-            state.insert(root.clone(), 1);
-            stack.push((root, 0));
-            while let Some(top) = stack.last() {
-                let current = top.0.clone();
-                let edge_index = top.1;
-                let edges = self
-                    .calls
-                    .get(&current)
-                    .cloned()
-                    .unwrap_or_default();
-                if edge_index >= edges.len() {
-                    state.insert(current, 2);
-                    stack.pop();
-                    continue;
+            if let Some(top) = stack.last_mut() {
+                top.1 += 1;
+            }
+            let Some((callee, span)) = edges.get(edge_index) else {
+                continue;
+            };
+            let callee = callee.clone();
+            let span = *span;
+            match state.get(&callee).copied().unwrap_or(0) {
+                1 => {
+                    let start = stack
+                        .iter()
+                        .position(|(name, _)| *name == callee)
+                        .unwrap_or(0);
+                    let mut chain: Vec<&str> = stack[start..]
+                        .iter()
+                        .map(|(name, _)| name.as_str())
+                        .collect();
+                    chain.push(callee.as_str());
+                    if reported.insert(chain.join("->")) {
+                        let cycle = chain.join(" -> ");
+                        out.push(
+                            primary(
+                                Diagnostic::error(span, "recursive call cycle detected")
+                                    .with_code(codes::RECURSION),
+                                format!("cycle: {cycle}"),
+                            )
+                            .with_note("the OpenCL dialect does not support recursion"),
+                        );
+                    }
                 }
-                if let Some(top) = stack.last_mut() {
-                    top.1 += 1;
+                0 => {
+                    state.insert(callee.clone(), 1);
+                    stack.push((callee, 0));
                 }
-                let Some((callee, span)) = edges.get(edge_index) else {
-                    continue;
-                };
-                let callee = callee.clone();
-                let span = *span;
-                match state.get(&callee).copied().unwrap_or(0) {
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Reports struct definitions that depend on themselves.
+///
+/// Pointer indirection breaks the cycle, so `*mut T` edges are not
+/// followed: a linked list is legal, an inline cycle is not.
+fn collect_struct_cycles(struct_sigs: &BTreeMap<String, StructSig>, out: &mut Vec<Diagnostic>) {
+    let mut edges: BTreeMap<String, Vec<(Span, String)>> = BTreeMap::new();
+    for (name, sig) in struct_sigs {
+        for field in &sig.fields {
+            let mut targets = Vec::new();
+            collect_struct_refs(&field.ty, &mut targets);
+            for target in targets {
+                edges
+                    .entry(name.clone())
+                    .or_default()
+                    .push((field.span, target));
+            }
+        }
+    }
+    let mut state: BTreeMap<String, u8> = BTreeMap::new();
+    let mut reported: BTreeSet<String> = BTreeSet::new();
+    let roots: Vec<String> = edges.keys().cloned().collect();
+    for root in roots {
+        if state.get(&root).copied().unwrap_or(0) != 0 {
+            continue;
+        }
+        let mut stack: Vec<String> = Vec::new();
+        state.insert(root.clone(), 1);
+        stack.push(root);
+        while let Some(current) = stack.last().cloned() {
+            let targets = edges.get(&current).cloned().unwrap_or_default();
+            let mut pushed = None;
+            for (span, target) in targets {
+                match state.get(&target).copied().unwrap_or(0) {
                     1 => {
                         let start = stack
                             .iter()
-                            .position(|(name, _)| *name == callee)
+                            .position(|name| *name == target)
                             .unwrap_or(0);
                         let mut chain: Vec<&str> = stack[start..]
                             .iter()
-                            .map(|(name, _)| name.as_str())
+                            .map(String::as_str)
                             .collect();
-                        chain.push(callee.as_str());
+                        chain.push(target.as_str());
                         if reported.insert(chain.join("->")) {
                             let cycle = chain.join(" -> ");
-                            self.report(
+                            out.push(
                                 primary(
-                                    Diagnostic::error(span, "recursive call cycle detected")
-                                        .with_code(codes::RECURSION),
+                                    Diagnostic::error(span, "recursive struct definition")
+                                        .with_code(codes::RECURSIVE_TYPE),
                                     format!("cycle: {cycle}"),
                                 )
-                                .with_note("the OpenCL dialect does not support recursion"),
+                                .with_note("use a `*mut` pointer to break the cycle"),
                             );
                         }
                     }
                     0 => {
-                        state.insert(callee.clone(), 1);
-                        stack.push((callee, 0));
+                        state.insert(target.clone(), 1);
+                        pushed = Some(target);
+                        break;
                     }
                     _ => {}
                 }
             }
+            if let Some(child) = pushed {
+                stack.push(child);
+            } else {
+                state.insert(current, 2);
+                stack.pop();
+            }
         }
     }
+}
 
-    /// Reports struct definitions that depend on themselves.
-    ///
-    /// Pointer indirection breaks the cycle, so `*mut T` edges are not
-    /// followed: a linked list is legal, an inline cycle is not.
-    fn check_struct_cycles(&mut self) {
-        let mut edges: BTreeMap<String, Vec<(Span, String)>> = BTreeMap::new();
-        for (name, sig) in &self.struct_sigs {
-            for field in &sig.fields {
-                let mut targets = Vec::new();
-                collect_struct_refs(&field.ty, &mut targets);
-                for target in targets {
-                    edges
-                        .entry(name.clone())
-                        .or_default()
-                        .push((field.span, target));
-                }
-            }
-        }
-        let mut state: BTreeMap<String, u8> = BTreeMap::new();
-        let mut reported: BTreeSet<String> = BTreeSet::new();
-        let roots: Vec<String> = edges.keys().cloned().collect();
-        for root in roots {
-            if state.get(&root).copied().unwrap_or(0) != 0 {
-                continue;
-            }
-            let mut stack: Vec<String> = Vec::new();
-            state.insert(root.clone(), 1);
-            stack.push(root);
-            while let Some(current) = stack.last().cloned() {
-                let targets = edges.get(&current).cloned().unwrap_or_default();
-                let mut pushed = None;
-                for (span, target) in targets {
-                    match state.get(&target).copied().unwrap_or(0) {
-                        1 => {
-                            let start = stack
-                                .iter()
-                                .position(|name| *name == target)
-                                .unwrap_or(0);
-                            let mut chain: Vec<&str> = stack[start..]
-                                .iter()
-                                .map(String::as_str)
-                                .collect();
-                            chain.push(target.as_str());
-                            if reported.insert(chain.join("->")) {
-                                let cycle = chain.join(" -> ");
-                                self.report(
-                                    primary(
-                                        Diagnostic::error(span, "recursive struct definition")
-                                            .with_code(codes::RECURSIVE_TYPE),
-                                        format!("cycle: {cycle}"),
-                                    )
-                                    .with_note("use a `*mut` pointer to break the cycle"),
-                                );
-                            }
-                        }
-                        0 => {
-                            state.insert(target.clone(), 1);
-                            pushed = Some(target);
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-                if let Some(child) = pushed {
-                    stack.push(child);
-                } else {
-                    state.insert(current, 2);
-                    stack.pop();
-                }
-            }
+/// Reports declarations nothing references, quiet after any error.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the three signature tables plus references read better as arguments"
+)]
+fn collect_unused(
+    fn_sigs: &BTreeMap<String, FnSig>,
+    struct_sigs: &BTreeMap<String, StructSig>,
+    alias_sigs: &BTreeMap<String, AliasSig>,
+    references: &BTreeSet<String>,
+    has_errors: bool,
+    out: &mut Vec<Diagnostic>,
+) {
+    if has_errors {
+        return;
+    }
+    let mut entries: Vec<(Span, String)> = Vec::new();
+    for (name, sig) in fn_sigs {
+        if !sig.kernel && !references.contains(name) {
+            entries.push((sig.name_span, format!("function `{name}` is never used")));
         }
     }
+    for (name, sig) in struct_sigs {
+        if !references.contains(name) {
+            entries.push((sig.name_span, format!("struct `{name}` is never used")));
+        }
+    }
+    for (name, sig) in alias_sigs {
+        if !references.contains(name) {
+            entries.push((sig.name_span, format!("type alias `{name}` is never used")));
+        }
+    }
+    entries.sort_by_key(|(span, _)| span.offset);
+    for (span, message) in entries {
+        out.push(
+            Diagnostic::warning(span, message)
+                .with_code(codes::UNUSED_ITEM)
+                .with_help("consider removing it if is not needed"),
+        );
+    }
+}
 
-    /// Reports declarations nothing references, quiet after any error.
-    fn report_unused(&mut self) {
-        if self.has_errors() {
-            return;
-        }
-        let mut entries: Vec<(Span, String)> = Vec::new();
-        for (name, sig) in &self.fn_sigs {
-            if !sig.kernel && !self.references.contains(name) {
-                entries.push((sig.name_span, format!("function `{name}` is never used")));
-            }
-        }
-        for (name, sig) in &self.struct_sigs {
-            if !self.references.contains(name) {
-                entries.push((sig.name_span, format!("struct `{name}` is never used")));
-            }
-        }
-        for (name, sig) in &self.alias_sigs {
-            if !self.references.contains(name) {
-                entries.push((sig.name_span, format!("type alias `{name}` is never used")));
-            }
-        }
-        entries.sort_by_key(|(span, _)| span.offset);
-        for (span, message) in entries {
-            self.report(
-                Diagnostic::warning(span, message)
-                    .with_code(codes::UNUSED_ITEM)
-                    .with_help("consider removing it if is not needed"),
-            );
-        }
+/// Builds the public declaration list, in source order.
+fn build_declarations(
+    fn_sigs: &BTreeMap<String, FnSig>,
+    struct_sigs: &BTreeMap<String, StructSig>,
+    alias_sigs: &BTreeMap<String, AliasSig>,
+) -> Vec<Declaration> {
+    let mut declarations = Vec::new();
+    for (name, sig) in fn_sigs {
+        let params = sig
+            .params
+            .iter()
+            .map(|param| {
+                let name = param
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| String::from("_"));
+                (name, param.ty.clone())
+            })
+            .collect();
+        declarations.push(Declaration {
+            name: name.clone(),
+            span: sig.span,
+            item_index: sig.index,
+            kind: DeclKind::Function {
+                params,
+                ret: sig.ret.clone(),
+                kernel: sig.kernel,
+            },
+        });
     }
-
-    /// Builds the public declaration list, in source order.
-    fn build_declarations(&self) -> Vec<Declaration> {
-        let mut declarations = Vec::new();
-        for (name, sig) in &self.fn_sigs {
-            let params = sig
-                .params
-                .iter()
-                .map(|param| {
-                    let name = param
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| String::from("_"));
-                    (name, param.ty.clone())
-                })
-                .collect();
-            declarations.push(Declaration {
-                name: name.clone(),
-                span: sig.span,
-                item_index: sig.index,
-                kind: DeclKind::Function {
-                    params,
-                    ret: sig.ret.clone(),
-                    kernel: sig.kernel,
-                },
-            });
-        }
-        for (name, sig) in &self.struct_sigs {
-            let fields = sig
-                .fields
-                .iter()
-                .map(|field| (field.name.clone(), field.ty.clone()))
-                .collect();
-            declarations.push(Declaration {
-                name: name.clone(),
-                span: sig.span,
-                item_index: sig.index,
-                kind: DeclKind::Struct { fields },
-            });
-        }
-        for (name, sig) in &self.alias_sigs {
-            declarations.push(Declaration {
-                name: name.clone(),
-                span: sig.span,
-                item_index: sig.index,
-                kind: DeclKind::Alias {
-                    target: sig.ty.clone(),
-                },
-            });
-        }
-        declarations.sort_by_key(|declaration| declaration.item_index);
-        declarations
+    for (name, sig) in struct_sigs {
+        let fields = sig
+            .fields
+            .iter()
+            .map(|field| (field.name.clone(), field.ty.clone()))
+            .collect();
+        declarations.push(Declaration {
+            name: name.clone(),
+            span: sig.span,
+            item_index: sig.index,
+            kind: DeclKind::Struct { fields },
+        });
     }
+    for (name, sig) in alias_sigs {
+        declarations.push(Declaration {
+            name: name.clone(),
+            span: sig.span,
+            item_index: sig.index,
+            kind: DeclKind::Alias {
+                target: sig.ty.clone(),
+            },
+        });
+    }
+    declarations.sort_by_key(|declaration| declaration.item_index);
+    declarations
 }
 
 /// Swizzle alphabets the dialect accepts.

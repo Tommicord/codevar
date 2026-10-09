@@ -852,7 +852,7 @@ impl Tlsf {
     /// `prev_free` the value of its own `FLAG_PREV_FREE` bit. The span
     /// must not overlap any other free block.
     unsafe fn insert_block(&mut self, addr: usize, size: usize, prev_free: usize) {
-        debug_assert!(size >= MINSIZE && size % ALIGNMENT == 0);
+        debug_assert!(size >= MINSIZE && size.is_multiple_of(ALIGNMENT));
         debug_assert!(prev_free == 0 || prev_free == FLAG_PREV_FREE);
         // SAFETY: `addr` is a free block start; write the header, then
         // link it. The next block's tag is updated last.
