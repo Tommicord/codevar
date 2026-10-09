@@ -20,3 +20,6 @@ codevar-pathbuf = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = ["Win32_Foundation"] }
+
+[lints]
+workspace = true

@@ -14,3 +14,6 @@ name = "codevar_ocl_sar"
 codevar-ocl-lex = { workspace = true }
 codevar-ocl-parse = { workspace = true }
 codevar-console-util = { workspace = true }
+
+[lints]
+workspace = true

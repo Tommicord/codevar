@@ -24,9 +24,11 @@ codevar-time-util = { workspace = true }
 codevar-console-util = { workspace = true }
 codevar-io = { workspace = true }
 rustc-demangle = { workspace = true }
-backtrace-sys = { workspace = true }
 web-sys = { version = "0.3", features = ["console"], optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Console"] }
+
+[lints]
+workspace = true

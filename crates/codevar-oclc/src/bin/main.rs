@@ -31,8 +31,13 @@
 extern crate alloc;
 extern crate std;
 
-#[cfg(all(not(test), unix))]
+#[global_allocator]
+static HEAP: LockedTlsf = LockedTlsf::new();
+static HEAP_SMEMORY: spin::Mutex<[u8; 0x4000]> = spin::Mutex::new([0u8; 0x4000]);
+
 use codevar_logger::LogLevel;
+use codevar_logger::log_irr;
+use codevar_tlsf_alloc::LockedTlsf;
 
 /// Freestanding entry: copy `argc`/`argv`, initialize, run, return the exit
 /// code to the C runtime.
@@ -42,12 +47,21 @@ use codevar_logger::LogLevel;
 /// The `argc`/`argv` contract of [`codevar_oclc::argv::from_c_args`] is
 /// satisfied by any C runtime that calls `main(argc, argv)`; this function
 /// must not be called with fabricated values.
-#[cfg(all(not(test), unix))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn main(
     argc: core::ffi::c_int,
     argv: *const *const core::ffi::c_char,
 ) -> core::ffi::c_int {
+    unsafe {
+        let mut smemory = HEAP_SMEMORY.lock();
+        if let Err(_) = HEAP
+            .lock()
+            .add_region(smemory.as_mut_ptr(), smemory.len())
+        {
+            log_irr!("failed to init heap");
+            return libc::EXIT_FAILURE;
+        }
+    }
     let args = match unsafe { codevar_oclc::argv::from_c_args(argc, argv) } {
         Ok(args) => args,
         Err(error) => {
@@ -69,39 +83,3 @@ pub unsafe extern "C" fn main(
 #[link(name = "c")]
 #[link(name = "gcc_s")]
 unsafe extern "C" {}
-
-/// `malloc`-backed global allocator for the freestanding binary.
-#[cfg(all(not(test), unix))]
-#[global_allocator]
-static GLOBAL: SystemAllocator = SystemAllocator;
-
-/// A global allocator delegating to the C runtime's `malloc`/`free`/`realloc`.
-#[cfg(all(not(test), unix))]
-struct SystemAllocator;
-
-#[cfg(all(not(test), unix))]
-unsafe impl core::alloc::GlobalAlloc for SystemAllocator {
-    /// # Safety
-    ///
-    /// `layout.size()` may be zero; `malloc(0)` satisfies the allocator
-    /// contract by returning either null or a unique free-able pointer.
-    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-        unsafe { libc::malloc(layout.size()).cast() }
-    }
-
-    /// # Safety
-    ///
-    /// `ptr` must originate from this allocator and must not be used after
-    /// this call.
-    unsafe fn dealloc(&self, ptr: *mut u8, _layout: core::alloc::Layout) {
-        unsafe { libc::free(ptr.cast()) };
-    }
-
-    /// # Safety
-    ///
-    /// `ptr` must originate from this allocator; on failure the original
-    /// block remains valid (the `realloc` contract).
-    unsafe fn realloc(&self, ptr: *mut u8, _layout: core::alloc::Layout, new_size: usize) -> *mut u8 {
-        unsafe { libc::realloc(ptr.cast(), new_size).cast() }
-    }
-}

@@ -167,7 +167,11 @@ impl fmt::Display for BuildFailure {
                 write!(f, "cannot write '{}': {source}", path.display())
             }
             Self::NotUtf8 { path } => {
-                write!(f, "'{}' is not valid UTF-8; kernel sources must be UTF-8", path.display())
+                write!(
+                    f,
+                    "'{}' is not valid UTF-8; kernel sources must be UTF-8",
+                    path.display()
+                )
             }
             Self::Analysis { path } => {
                 write!(f, "'{}' failed semantic analysis", path.display())
@@ -179,7 +183,11 @@ impl fmt::Display for BuildFailure {
             Self::Assemble { path, message } => {
                 write!(f, "assembling '{}': {message}", path.display())
             }
-            Self::DuplicatePrefix { prefix, first, second } => write!(
+            Self::DuplicatePrefix {
+                prefix,
+                first,
+                second,
+            } => write!(
                 f,
                 "kernel sources '{}' and '{}' both map to the static prefix `{prefix}`; \
                  rename one of them",
@@ -194,7 +202,9 @@ fn main() -> ExitCode {
     match generate() {
         Ok(()) => ExitCode::SUCCESS,
         Err(failure) => {
-            cargo_warning(&format!("codevar-oclc: kernel binding generation failed: {failure}"));
+            cargo_warning(&format!(
+                "codevar-oclc: kernel binding generation failed: {failure}"
+            ));
             codevar_logger::log_error!("kernel binding generation failed: {failure}");
             ExitCode::FAILURE
         }
@@ -344,8 +354,9 @@ fn compile(source: KernelSource, out_dir: &Path) -> Result<CompiledKernel, Build
         path: source.path.clone(),
         source: error,
     })?;
-    let text = String::from_utf8(bytes)
-        .map_err(|_| BuildFailure::NotUtf8 { path: source.path.clone() })?;
+    let text = String::from_utf8(bytes).map_err(|_| BuildFailure::NotUtf8 {
+        path: source.path.clone(),
+    })?;
 
     let analyzed = analyze(&text);
     emit_stderr(&analyzed.diagnostics, &display, &text, ColorChoice::Auto);
@@ -358,10 +369,7 @@ fn compile(source: KernelSource, out_dir: &Path) -> Result<CompiledKernel, Build
     if !parsed.errors.is_empty() {
         for error in &parsed.errors {
             let (line, column) = line_column(&text, error.span.offset);
-            cargo_warning(&format!(
-                "{display}:{line}:{column}: error: {}",
-                error.message
-            ));
+            cargo_warning(&format!("{display}:{line}:{column}: error: {}", error.message));
         }
         return Err(BuildFailure::Parse {
             path: source.path.clone(),
@@ -369,12 +377,11 @@ fn compile(source: KernelSource, out_dir: &Path) -> Result<CompiledKernel, Build
         });
     }
 
-    let module = codevar_ocl_ir::lower::lower(&parsed.program, &analyzed).map_err(|error| {
-        BuildFailure::Lower {
+    let module =
+        codevar_ocl_ir::lower::lower(&parsed.program, &analyzed).map_err(|error| BuildFailure::Lower {
             path: source.path.clone(),
             message: error.to_string(),
-        }
-    })?;
+        })?;
     let spirv = codevar_ocl_asm::assemble_bytes(&module).map_err(|error| BuildFailure::Assemble {
         path: source.path.clone(),
         message: error.to_string(),
@@ -405,10 +412,7 @@ fn compile(source: KernelSource, out_dir: &Path) -> Result<CompiledKernel, Build
         source: error,
     })?;
 
-    Ok(CompiledKernel {
-        source,
-        entry_points,
-    })
+    Ok(CompiledKernel { source, entry_points })
 }
 
 /// `vector_add.cl` → `vector_add.spv`, the artifact name staged in `OUT_DIR`.
@@ -422,15 +426,16 @@ fn spirv_file_name(file_name: &str) -> PathBuf {
 /// by hand here; `writeln!` only lays the already-tokenized items out.
 fn write_bindings(out_dir: &Path, kernels: &[CompiledKernel]) -> Result<(), BuildFailure> {
     let path = out_dir.join("bindings.rs");
-    let file =
-        std::fs::File::create(&path).map_err(|source| BuildFailure::WriteFile {
+    let file = std::fs::File::create(&path).map_err(|source| BuildFailure::WriteFile {
+        path: path.clone(),
+        source,
+    })?;
+    let mut writer = io::BufWriter::new(file);
+    for item in generated_items(kernels) {
+        writeln!(writer, "{item}").map_err(|source| BuildFailure::WriteFile {
             path: path.clone(),
             source,
         })?;
-    let mut writer = io::BufWriter::new(file);
-    for item in generated_items(kernels) {
-        writeln!(writer, "{item}")
-            .map_err(|source| BuildFailure::WriteFile { path: path.clone(), source })?;
     }
     writer
         .flush()
@@ -453,7 +458,9 @@ fn generated_items(kernels: &[CompiledKernel]) -> Vec<TokenStream> {
 /// `<PREFIX>_SPIRV`: the embedded SPIR-V image of one kernel file.
 fn spirv_item(kernel: &CompiledKernel) -> TokenStream {
     let ident = static_ident(&kernel.source.static_prefix, "SPIRV");
-    let path = spirv_file_name(&kernel.source.file_name).to_string_lossy().into_owned();
+    let path = spirv_file_name(&kernel.source.file_name)
+        .to_string_lossy()
+        .into_owned();
     let doc = format!("Compiled SPIR-V image of `{}`.", kernel.source.file_name);
     quote! {
         #[doc = #doc]
@@ -529,7 +536,11 @@ fn line_column(source: &str, offset: u32) -> (u32, u32) {
         offset -= 1;
     }
     let prefix = &source[..offset];
-    let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
+    let line = prefix
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+        + 1;
     let column = match prefix.rfind('\n') {
         Some(position) => prefix[position + 1..].chars().count() + 1,
         None => prefix.chars().count() + 1,

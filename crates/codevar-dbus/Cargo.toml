@@ -12,3 +12,6 @@ name = "codevar_dbus"
 
 [target.'cfg(all(unix, not(target_arch = "wasm32")))'.dependencies]
 libc = { workspace = true }
+
+[lints]
+workspace = true

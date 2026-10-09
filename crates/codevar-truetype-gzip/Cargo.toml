@@ -17,3 +17,6 @@ default = []
 spin = { workspace = true }
 codevar-logger = { workspace = true }
 codevar-truetype-core = { workspace = true }
+
+[lints]
+workspace = true

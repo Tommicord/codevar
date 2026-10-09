@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/codevar-base",
+    "crates/codevar-tlsf-alloc",
     "crates/codevar-mergen",
     "crates/codevar-mergen-shake",
     "crates/codevar-mergen-simd",
@@ -40,6 +41,7 @@ members = [
     "crates/codevar-ocl-ir",
     "crates/codevar-ocl-cubin",
     "crates/codevar-ocl-asm",
+    "crates/codevar-ocl",
 ]
 resolver = "2"
 
@@ -50,6 +52,10 @@ rust-version = "1.93.0"
 authors = ["Tommicord"]
 license = "Apache-2.0"
 repository = "https://github.com/Tommicord/codevar"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
 
 [workspace.dependencies]
 cc = "1.2"
@@ -73,7 +79,6 @@ hkdf = "0.12"
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Console", "Win32_Storage_FileSystem"] }
 hmac = "0.12"
 bytes = { version = "1.12.1", default-features = false }
-backtrace-sys = "0.1"
 const_format = { version = "0.2.36", features = ["fmt"] }
 rustc-demangle = "0.1"
 p256 = { version = "0.13", features = ["ecdsa", "ecdh", "pkcs8", "pem"] }
@@ -106,6 +111,7 @@ codevar-mergen = { path = "crates/codevar-mergen" }
 codevar-mergen-shake = { path = "crates/codevar-mergen-shake" }
 codevar-mergen-simd = { path = "crates/codevar-mergen-simd" }
 codevar-base = { path = "crates/codevar-base" }
+codevar-tlsf-alloc = { path = "crates/codevar-tlsf-alloc" }
 codevar-textlike-encode = { path = "crates/codevar-textlike-encode" }
 codevar-tls = { path = "crates/codevar-tls" }
 codevar-wl-protocol = { path = "crates/codevar-wl-protocol" }
@@ -142,11 +148,13 @@ codevar-ocl-sar = { path = "crates/codevar-ocl-sar" }
 codevar-ocl-ir = { path = "crates/codevar-ocl-ir" }
 codevar-ocl-asm = { path = "crates/codevar-ocl-asm" }
 codevar-ocl-cubin = { path = "crates/codevar-ocl-cubin" }
+codevar-ocl = { path = "crates/codevar-ocl" }
 
 [profile.dev]
 opt-level = 0
 lto = false
 debug = true
+codegen-units = 8
 panic = "abort"
 strip = "none"
 

@@ -14,3 +14,6 @@ name = "codevar_ocl_ir"
 codevar-ocl-lex = { workspace = true }
 codevar-ocl-parse = { workspace = true }
 codevar-ocl-sar = { workspace = true }
+
+[lints]
+workspace = true

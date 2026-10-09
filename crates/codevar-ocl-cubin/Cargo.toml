@@ -11,3 +11,6 @@ repository.workspace = true
 name = "codevar_ocl_cubin"
 
 [dependencies]
+
+[lints]
+workspace = true

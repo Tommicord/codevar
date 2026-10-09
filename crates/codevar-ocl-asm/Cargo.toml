@@ -12,3 +12,6 @@ name = "codevar_ocl_asm"
 
 [dependencies]
 codevar-ocl-ir = { workspace = true }
+
+[lints]
+workspace = true

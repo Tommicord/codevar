@@ -12,3 +12,6 @@ name = "codevar_ocl_parse"
 
 [dependencies]
 codevar-ocl-lex = { workspace = true }
+
+[lints]
+workspace = true

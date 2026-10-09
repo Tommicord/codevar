@@ -17,3 +17,6 @@ codevar-truetype-sfnt = { workspace = true }
 codevar-truetype-glyf = { workspace = true }
 codevar-truetype-smooth = { workspace = true }
 codevar-truetype-gzip = { workspace = true }
+
+[lints]
+workspace = true

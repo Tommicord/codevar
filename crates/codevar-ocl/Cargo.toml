@@ -1,0 +1,24 @@
+[package]
+name = "codevar-ocl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "codevar_ocl"
+
+[dependencies]
+bsize = { workspace = true }
+libc = { workspace = true }
+codevar-logger = { workspace = true }
+codevar-env = { workspace = true }
+codevar-pathbuf = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-link = { workspace = true }
+
+[lints]
+workspace = true

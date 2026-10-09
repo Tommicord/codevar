@@ -20,3 +20,6 @@ codevar-io = { workspace = true }
 codevar-logger = { workspace = true }
 libm = { workspace = true }
 spin = { workspace = true }
+
+[lints]
+workspace = true

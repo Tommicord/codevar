@@ -9,3 +9,6 @@ repository.workspace = true
 
 [lib]
 name = "codevar_mergen_shake"
+
+[lints]
+workspace = true

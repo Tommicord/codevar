@@ -1,0 +1,27 @@
+[package]
+name = "codevar-tlsf-alloc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "codevar_tlsf_alloc"
+
+[dependencies]
+cfg-if = { workspace = true }
+spin = { workspace = true }
+
+# `codevar-base` supplies the pinned CPU feature probe (`basic_cpuid`) used to
+# dispatch the SIMD kernels at run time. Its transitive dependency
+# `codevar-time-core` does not build for `wasm32-unknown-unknown`, so the same
+# target gating used by `codevar-mergen-simd` applies here: on wasm the crate
+# answers tier support from `cfg(target_feature)` only and the allocator uses
+# its scalar backends.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+codevar-base = { workspace = true }
+
+[lints]
+workspace = true

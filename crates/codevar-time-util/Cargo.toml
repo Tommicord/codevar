@@ -23,3 +23,6 @@ num-conv = { workspace = true }
 powerfmt = { workspace = true }
 count-digits = { workspace = true }
 js-sys = "0.3.106"
+
+[lints]
+workspace = true

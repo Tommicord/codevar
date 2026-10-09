@@ -13,3 +13,6 @@ name = "codevar_truetype_autofit"
 [dependencies]
 codevar-logger = { workspace = true }
 codevar-truetype-core = { workspace = true }
+
+[lints]
+workspace = true

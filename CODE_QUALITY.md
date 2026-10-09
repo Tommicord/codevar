@@ -75,7 +75,7 @@ debug_assert!(condition, "Debug invariant check");
 #### Strict Requirements
 
 - **NEVER use `println!` or `eprintln!` for production logging**
-- **Use the `codevar_logger` crate macros for logging: `log_with_error!`, `log_with_warn!`, `log_with_info!`, `log_with_debug!`, `log_with_irr!`**
+- **Use the `codevar_logger` crate macros for logging: `log_error!`, `log_warn!`, `log_info!`, `log_debug!`, `log_irr!`**
 - Configure appropriate log levels for different environments
 - Structure log messages with context and relevant data
 - Avoid excessive logging in hot paths
@@ -88,13 +88,13 @@ println!("Processing data: {}", data);
 eprintln!("Error occurred: {}", error);
 
 // ✅ CORRECT logging
-use codevar_logger::{log_with_error, log_with_warn, log_with_info, log_with_debug, log_with_irr};
+use codevar_logger::{log_error, log_warn, log_info, log_debug, log_irr};
 
-log_with_error!("Failed to process request: {}", error);
-log_with_warn!("Cache miss for key: {}", key);
-log_with_info!("User logged in: user_id={}", user_id);
-log_with_debug!("Processing block: block_id={}, size={}", block_id, size);
-log_with_irr!("CRITICAL error happened: Out of memory");
+log_error!("Failed to process request: {}", error);
+log_warn!("Cache miss for key: {}", key);
+log_info!("User logged in: user_id={}", user_id);
+log_debug!("Processing block: block_id={}, size={}", block_id, size);
+log_irr!("CRITICAL error happened: Out of memory");
 ```
 
 ### Memory Management
@@ -216,24 +216,7 @@ unsafe fn process_avx2(data: &[i32]) -> Vec<i32> {
 - Use appropriate atomic operations for shared state
 - Consider async/await for I/O-bound operations
 - Be aware of priority inversion and deadlock scenarios
-
-#### Examples
-
-```rust
-// ✅ CORRECT concurrent design
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-struct ConcurrentCounter {
-    value: Arc<AtomicUsize>,
-}
-
-impl ConcurrentCounter {
-    fn increment(&self) -> usize {
-        self.value.fetch_add(1, Ordering::SeqCst)
-    }
-}
-```
+- Optimize code for memory usage (the Heap is only 16384 KB, So prefer streaming data in chunks)
 
 #### Performance Guidelines
 
@@ -254,36 +237,6 @@ impl ConcurrentCounter {
 - Design algorithms that work efficiently on both CPU and GPU
 - Provide consistent behavior across different backends
 - Implement comprehensive error handling for GPU initialization
-
-#### Examples
-
-```rust
-// ✅ CORRECT cross-platform compute design
-pub trait ComputeBackend {
-    fn process_blocks(&self, input_a: &[u8], input_b: &[u8]) -> Result<Vec<u8>, ComputeError>;
-    fn is_available(&self) -> bool;
-    fn device_info(&self) -> DeviceInfo;
-}
-
-pub struct ComputeManager {
-    backend: Box<dyn ComputeBackend>,
-}
-
-impl ComputeManager {
-    pub fn new() -> Result<Self, ComputeError> {
-        // Try GPU backends first, fall back to CPU
-        let backend = if VulkanBackend::is_available() {
-            Box::new(VulkanBackend::new()?) as Box<dyn ComputeBackend>
-        } else if CudaBackend::is_available() {
-            Box::new(CudaBackend::new()?) as Box<dyn ComputeBackend>
-        } else {
-            Box::new(CpuBackend::new()) as Box<dyn ComputeBackend>
-        };
-
-        Ok(Self { backend })
-    }
-}
-```
 
 ## Parallel Algorithm Design
 
@@ -333,32 +286,6 @@ impl ComputeManager {
 - Test error propagation across module boundaries
 - Include performance regression tests
 - Test on different platforms when applicable
-
-#### Examples
-
-```rust
-// ✅ CORRECT testing approach
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use proptest::prelude::*;
-
-    #[test]
-    fn test_merge_deterministic() {
-        let result1 = merge_blocks(b"hello", b"world");
-        let result2 = merge_blocks(b"hello", b"world");
-        assert_eq!(result1, result2);
-    }
-
-    proptest! {
-        #[test]
-        fn test_merge_properties(a in any::<Vec<u8>>(), b in any::<Vec<u8>>()) {
-            let result = merge_blocks(&a, &b);
-            assert_eq!(result.len(), a.len() + b.len());
-        }
-    }
-}
-```
 
 ## Code Review Standards
 

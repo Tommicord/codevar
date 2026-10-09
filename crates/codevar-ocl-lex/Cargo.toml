@@ -12,3 +12,6 @@ name = "codevar_ocl_lex"
 
 [dependencies]
 unicode-ident = { workspace = true }
+
+[lints]
+workspace = true

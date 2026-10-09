@@ -16,3 +16,6 @@ codevar-mergen-simd = { workspace = true }
 
 [target.'cfg(all(unix, not(target_arch = "wasm32")))'.dependencies]
 libc = { workspace = true }
+
+[lints]
+workspace = true

@@ -17,3 +17,6 @@ codevar-logger = { workspace = true }
 codevar-truetype-core = { workspace = true }
 codevar-truetype-gzip = { workspace = true }
 codevar-truetype-psnames = { workspace = true }
+
+[lints]
+workspace = true

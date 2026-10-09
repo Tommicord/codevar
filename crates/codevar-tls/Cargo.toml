@@ -35,3 +35,6 @@ arc-swap = { workspace = true }
 
 [dev-dependencies]
 webpki-roots = { workspace = true }
+
+[lints]
+workspace = true

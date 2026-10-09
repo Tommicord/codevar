@@ -21,3 +21,6 @@ bsize = "0.3.0"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 webpki-roots = { workspace = true }
 arc-swap = { workspace = true }
+
+[lints]
+workspace = true

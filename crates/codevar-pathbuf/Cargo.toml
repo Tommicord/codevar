@@ -26,3 +26,6 @@ wasm-bindgen = { version = "0.2", optional = true }
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true }
 windows-link = { workspace = true }
+
+[lints]
+workspace = true

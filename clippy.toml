@@ -1,3 +1,18 @@
-#![deny(clippy::unwrap_used)]
-#![deny(clippy::expect_used)]
-#![deny(clippy::panic_used)]
+# Clippy configuration for Codevar.
+#
+# NOTE: lint *levels* (allow/warn/deny) cannot be set in this file. Workspace
+# levels live in [workspace.lints.clippy] (root Cargo.toml) and are inherited
+# by every crate via `[lints] workspace = true`.
+#
+# Only documented keys are accepted; an unknown key is a hard error.
+# See: https://doc.rust-lang.org/clippy/lint_configuration.html
+
+# Keep MSRV-sensitive suggestions in sync with rust-toolchain.toml /
+# workspace.package.rust-version.
+msrv = "1.93.0"
+
+# AGENTS.md: .unwrap()/.expect()/panic! are forbidden in production code but
+# permitted in unit tests, #[cfg(test)] modules and integration tests.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

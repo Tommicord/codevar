@@ -1,5 +1,6 @@
 [build]
 target-dir = "target"
+rustflags = ["-C", "force-unwind-tables=no"]
 
 [term]
 verbose = true

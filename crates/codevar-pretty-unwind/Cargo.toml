@@ -23,7 +23,6 @@ windows-link = { workspace = true }
 codevar-textlike-encode = { workspace = true, optional = true }
 codevar-unwinding = { workspace = true }
 rustc-demangle = { workspace = true }
-backtrace-sys = { workspace = true }
 web-sys = { version = "0.3", features = ["console"], optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 defmt = { workspace = true, optional = true }
@@ -31,3 +30,6 @@ spin = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true }
+
+[lints]
+workspace = true

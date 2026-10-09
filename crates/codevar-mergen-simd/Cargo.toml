@@ -23,3 +23,6 @@ cfg-if = { workspace = true }
 # only compile-time features are reported).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 codevar-base = { workspace = true }
+
+[lints]
+workspace = true

@@ -16,6 +16,7 @@ name = "codevar_oclc"
 [dependencies]
 bsize = { workspace = true }
 spin = { workspace = true }
+libc = { workspace = true }
 codevar-cli-arg-parse = { workspace = true }
 codevar-ocl-lex = { workspace = true }
 codevar-ocl-parse = { workspace = true }
@@ -23,14 +24,12 @@ codevar-ocl-sar = { workspace = true }
 codevar-ocl-ir = { workspace = true }
 codevar-ocl-asm = { workspace = true }
 codevar-logger = { workspace = true }
+codevar-tlsf-alloc = { workspace = true }
 codevar-pathbuf = { workspace = true }
 codevar-io = { workspace = true }
 codevar-console-util = { workspace = true }
 codevar-sig-handler = { workspace = true }
 codevar-sig-module-base = { workspace = true }
-
-[target.'cfg(unix)'.dependencies]
-libc = { workspace = true }
 
 # The build script drives the compiler stage crates directly: Cargo forbids a
 # package's build script from depending on the package itself, and the driver
@@ -47,3 +46,6 @@ quote = { workspace = true }
 [[bin]]
 name = "codevar-oclc"
 path = "src/bin/main.rs"
+
+[lints]
+workspace = true
