@@ -20,9 +20,10 @@
 //! the process hooks (logger level, signal handlers, and the ICE panic hook),
 //! and hands the command line to [`codevar_oclc::run`].
 //!
-//! The binary provides its own `#[global_allocator]` (`malloc`/`free`), so
-//! every allocation goes through the C runtime, and links `libc` explicitly
-//! (for `memcpy` and friends, which `core` references, plus `malloc`) and
+//! The binary provides its own `#[global_allocator]` — a growable
+//! [`codevar_tlsf_alloc::LockedGrowableTlsf`] heap that maps virtual pages
+//! on demand via `mmap` (no manual region setup, no `malloc`) — and links
+//! `libc` explicitly (for `mmap` and friends, which `core` references) and
 //! `libgcc_s` (for `_Unwind_Resume`, referenced by the precompiled `alloc`
 //! EH landing pads).
 
@@ -33,16 +34,12 @@ extern crate std;
 
 #[cfg(not(test))]
 #[global_allocator]
-static HEAP: LockedTlsf = LockedTlsf::new();
-#[cfg(not(test))]
-static HEAP_SMEMORY: spin::Mutex<[u8; 0x4000]> = spin::Mutex::new([0u8; 0x4000]);
+static HEAP: LockedGrowableTlsf = LockedGrowableTlsf::new();
 
 #[cfg(not(test))]
 use codevar_logger::LogLevel;
 #[cfg(not(test))]
-use codevar_logger::log_irr;
-#[cfg(not(test))]
-use codevar_tlsf_alloc::LockedTlsf;
+use codevar_tlsf_alloc::LockedGrowableTlsf;
 
 /// Freestanding entry: copy `argc`/`argv`, initialize, run, return the exit
 /// code to the C runtime.
@@ -58,17 +55,6 @@ pub unsafe extern "C" fn main(
     argc: core::ffi::c_int,
     argv: *const *const core::ffi::c_char,
 ) -> core::ffi::c_int {
-    unsafe {
-        let mut smemory = HEAP_SMEMORY.lock();
-        if HEAP
-            .lock()
-            .add_region(smemory.as_mut_ptr(), smemory.len())
-            .is_err()
-        {
-            log_irr!("failed to init heap");
-            return libc::EXIT_FAILURE;
-        }
-    }
     let args = match unsafe { codevar_oclc::argv::from_c_args(argc, argv) } {
         Ok(args) => args,
         Err(error) => {

@@ -33,6 +33,11 @@
 //!   `alloc_zeroed` overrides) behind a `spin::Mutex`, and **aborts the
 //!   process on OOM** via
 //!   [`handle_alloc_error`](alloc::alloc::handle_alloc_error).
+//! - **Self-growing (Unix)**: [`LockedGrowableTlsf`] is a drop-in
+//!   [`LockedTlsf`] replacement that needs no manual region setup — when
+//!   the free lists cannot satisfy a request it maps a fresh chunk of
+//!   virtual pages (`mmap`, never `malloc`, so it is safe to use as the
+//!   global allocator itself) and grows geometrically.
 //! - **Hardware-derived alignment**: the minimum block alignment
 //!   ([`ALIGNMENT`]) is derived from `size_of::<usize>()`, and every
 //!   allocation honours the exact `Layout::align()` of the request —
@@ -43,7 +48,7 @@
 //!
 //! ## Usage as the global allocator
 //!
-//! ```
+//! ```no_run
 //! use codevar_tlsf_alloc::LockedTlsf;
 //! use core::alloc::GlobalAlloc;
 //!
@@ -308,6 +313,21 @@ fn mapping_search(size: usize) -> (usize, usize) {
         mapping(size.saturating_add(round))
     } else {
         mapping(size)
+    }
+}
+
+/// Computes the lower bound, in bytes, of size class `(fl, sl)`.
+///
+/// The bound is the smallest block size that maps to the class, and is
+/// always a multiple of [`ALIGNMENT`]. Returns `None` on overflow (only
+/// reachable for classes near the top of the size space).
+#[inline]
+fn class_lower_bound(fl: usize, sl: usize) -> Option<usize> {
+    debug_assert!(fl < FL_COUNT && sl < SL_COUNT);
+    if fl == 0 {
+        Some(sl * ALIGNMENT)
+    } else {
+        (SL_COUNT + sl).checked_mul(1usize << (fl - 1))
     }
 }
 
@@ -826,16 +846,17 @@ impl Tlsf {
         // SAFETY: the block is on a free list, so its links are valid.
         let (fd, bk) = unsafe { read_links(addr) };
         if bk != NULL {
-            // SAFETY: `bk` is a free block on the same list.
-            let bk_fd = unsafe { read_links(bk).0 };
-            unsafe { write_links(bk, fd, bk_fd) };
+            // SAFETY: `bk` is a free block on the same list; preserve    // its own back pointer while rerouting its forward pointer.
+            let bk_bk = unsafe { read_links(bk).1 };
+            unsafe { write_links(bk, fd, bk_bk) };
         } else {
             self.lists[list_index(fl, sl)] = fd;
         }
         if fd != NULL {
-            // SAFETY: `fd` is a free block on the same list.
-            let fd_bk = unsafe { read_links(fd).1 };
-            unsafe { write_links(fd, fd_bk, bk) };
+            // SAFETY: `fd` is a free block on the same list; preserve
+            // its own forward pointer while rerouting its back pointer.
+            let fd_fd = unsafe { read_links(fd).0 };
+            unsafe { write_links(fd, fd_fd, bk) };
         }
         if self.lists[list_index(fl, sl)] == NULL {
             self.clear_class_bits(fl, sl);
@@ -895,7 +916,7 @@ impl fmt::Debug for Tlsf {
 ///
 /// Declare it as the process heap:
 ///
-/// ```
+/// ```no_run
 /// use codevar_tlsf_alloc::LockedTlsf;
 ///
 /// #[global_allocator]
@@ -995,6 +1016,450 @@ unsafe impl GlobalAlloc for LockedTlsf {
             return ptr;
         }
         // Fallback: allocate-copy-dealloc, still under the same lock.
+        let new_layout = match Layout::from_size_align(new_size, layout.align()) {
+            Ok(layout) => layout,
+            Err(_) => handle_alloc_error(layout),
+        };
+        let new_ptr = match heap.allocate(new_layout.size(), new_layout.align()) {
+            Some(ptr) => ptr.as_ptr(),
+            None => handle_alloc_error(new_layout),
+        };
+        let old_usable = old_block - HEADER_SIZE;
+        let copy = if old_usable < new_size {
+            old_usable
+        } else {
+            new_size
+        };
+        // SAFETY: both blocks are valid and distinct allocations of this
+        // heap, so the regions cannot overlap.
+        unsafe { ptr::copy_nonoverlapping(ptr, new_ptr, copy) };
+        // SAFETY: `ptr` is the live allocation we just copied from.
+        unsafe { heap.deallocate(NonNull::new_unchecked(ptr)) };
+        new_ptr
+    }
+}
+
+/// Anonymous mapping layer for the growable heap (Unix only).
+#[cfg(unix)]
+mod os {
+    use core::ptr;
+    use core::ptr::NonNull;
+
+    /// Queries the system page size, falling back to 4 KiB on error.
+    pub(crate) fn page_size() -> usize {
+        // SAFETY: `sysconf` with `_SC_PAGESIZE` only reads kernel state and
+        // never touches memory through our allocator.
+        let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        if size > 0 { size as usize } else { 4096 }
+    }
+
+    /// Maps `len` anonymous, writable bytes of virtual memory.
+    ///
+    /// The pointer is page-aligned (so it always satisfies [`super::ALIGNMENT`]).
+    /// `len` must be a non-zero multiple of the system page size.
+    pub(crate) fn map_pages(len: usize) -> Option<NonNull<u8>> {
+        debug_assert!(len != 0 && len.is_multiple_of(page_size()));
+        // SAFETY: a null address lets the kernel choose where to map; the
+        // anonymous private mapping needs no fd or offset, and the region
+        // is never inherited by `exec` children.
+        let ptr = unsafe {
+            libc::mmap(
+                ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        if ptr == libc::MAP_FAILED {
+            None
+        } else {
+            NonNull::new(ptr.cast::<u8>())
+        }
+    }
+
+    /// Unmaps the `len` bytes previously obtained with [`map_pages`].
+    ///
+    /// # Safety
+    ///
+    /// `[ptr, ptr + len)` must be an anonymous mapping of exactly `len`
+    /// bytes obtained from [`map_pages`], and no access to it may happen
+    /// after this call.
+    pub(crate) unsafe fn unmap_pages(ptr: *mut u8, len: usize) {
+        // SAFETY: the caller guarantees the range is a live mapping owned
+        // by the growable heap; failures only leak, never corrupt.
+        let _ = unsafe { libc::munmap(ptr.cast(), len) };
+    }
+}
+
+/// Number of OS-backed regions a [`GrowableTlsf`] can track for unmapping.
+#[cfg(unix)]
+const MAX_MAPPED_REGIONS: usize = 0x100;
+
+/// Size (in bytes) of the first chunk mapped on demand.
+#[cfg(unix)]
+const INITIAL_CHUNK: usize = 0x2000;
+
+/// Upper bound (in bytes) on the geometric growth of a single chunk.
+#[cfg(unix)]
+const MAX_CHUNK: usize = 0x8000;
+
+/// A chunk of virtual memory owned (and later unmapped) by a [`GrowableTlsf`].
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+struct MappedRegion {
+    /// Base address returned by the OS mapping layer.
+    ptr: *mut u8,
+    /// Exact length, in bytes, of the mapping.
+    len: usize,
+}
+
+/// A [`Tlsf`] heap that grows itself by mapping virtual pages (Unix only).
+///
+/// Unlike [`Tlsf`], which only manages memory explicitly contributed with
+/// [`Tlsf::add_region`], a `GrowableTlsf` obtains its backing memory from
+/// the operating system on demand: when no free block can satisfy a
+/// request, it maps a fresh anonymous chunk of virtual pages and hands it
+/// to the inner [`Tlsf`]. The mapping layer uses `mmap`/`munmap` directly
+/// — never `malloc` — so the heap is safe to install as Rust's global
+/// allocator without recursion.
+///
+/// Growth is geometric: the first chunk is [`INITIAL_CHUNK`] bytes, each
+/// subsequent chunk doubles up to [`MAX_CHUNK`], and a chunk is always at
+/// least large enough for the request that triggered it. Regions
+/// contributed manually with [`GrowableTlsf::add_region`] are *not*
+/// unmapped when the heap is dropped; only OS-backed chunks are.
+///
+/// Dropping the heap unmaps every OS-backed chunk, invalidating all live
+/// allocations — drop only when nothing allocated from it is still in use
+/// (a `static` heap is never dropped, so this only matters in tests).
+#[cfg(unix)]
+pub struct GrowableTlsf {
+    /// Inner two-level segregated fit heap over all contributed regions.
+    tlsf: Tlsf,
+    /// OS-backed chunks, tracked so [`Drop`] can unmap them.
+    regions: [MappedRegion; MAX_MAPPED_REGIONS],
+    /// Number of valid entries in `regions`.
+    region_count: usize,
+    /// Size (in bytes) of the next chunk to map; doubles each growth.
+    next_chunk: usize,
+    /// Cached system page size (`0` until first queried).
+    page_size: usize,
+}
+
+#[cfg(unix)]
+impl GrowableTlsf {
+    /// Creates an empty growable heap in constant time.
+    ///
+    /// No memory is mapped until the first allocation that cannot be
+    /// served from the (initially empty) free lists.
+    pub const fn new() -> Self {
+        Self {
+            tlsf: Tlsf::new(),
+            regions: [MappedRegion {
+                ptr: ptr::null_mut(),
+                len: 0,
+            }; MAX_MAPPED_REGIONS],
+            region_count: 0,
+            next_chunk: INITIAL_CHUNK,
+            page_size: 0,
+        }
+    }
+
+    /// Returns a snapshot of the heap usage (all regions, OS-backed or not).
+    #[inline]
+    pub fn stats(&self) -> Stats {
+        self.tlsf.stats()
+    }
+
+    /// Returns the total number of bytes currently mapped by the OS
+    /// (excluding regions added manually with [`GrowableTlsf::add_region`]).
+    pub fn mapped_bytes(&self) -> usize {
+        self.regions[..self.region_count]
+            .iter()
+            .map(|region| region.len)
+            .sum()
+    }
+
+    /// Returns the number of OS-backed chunks currently mapped.
+    #[inline]
+    pub fn region_count(&self) -> usize {
+        self.region_count
+    }
+
+    /// Adds caller-provided memory to the heap, exactly like
+    /// [`Tlsf::add_region`].
+    ///
+    /// Such regions are never unmapped when the heap is dropped — only
+    /// chunks the heap mapped itself are.
+    ///
+    /// # Safety
+    ///
+    /// Same contract as [`Tlsf::add_region`].
+    pub unsafe fn add_region(&mut self, start: *mut u8, size: usize) -> Result<(), AddRegionError> {
+        // SAFETY: the caller upholds `Tlsf::add_region`'s contract, which
+        // is exactly what this delegation requires.
+        unsafe { self.tlsf.add_region(start, size) }
+    }
+
+    /// Allocates a block for `size` bytes with alignment `align`,
+    /// mapping a fresh chunk of virtual pages when the free lists cannot
+    /// satisfy the request.
+    ///
+    /// Returns `None` only on an invalid `align`, on arithmetic overflow,
+    /// on OS mapping failure, or when [`MAX_MAPPED_REGIONS`] chunks are
+    /// already tracked (the region table is exhausted).
+    #[must_use]
+    pub fn allocate(&mut self, size: usize, align: usize) -> Option<NonNull<u8>> {
+        if align == 0 || !align.is_power_of_two() {
+            return None;
+        }
+        if let Some(ptr) = self.tlsf.allocate(size, align) {
+            return Some(ptr);
+        }
+        // No free block fits: size a new OS chunk that can, then retry.
+        let min_free = Self::min_free_block(size, align)?;
+        self.grow(min_free)?;
+        self.tlsf.allocate(size, align)
+    }
+
+    /// Frees the block previously returned by [`GrowableTlsf::allocate`].
+    ///
+    /// # Safety
+    ///
+    /// Same contract as [`Tlsf::deallocate`].
+    pub unsafe fn deallocate(&mut self, ptr: NonNull<u8>) {
+        // SAFETY: the caller upholds `Tlsf::deallocate`'s contract.
+        unsafe { self.tlsf.deallocate(ptr) }
+    }
+
+    /// Minimum free-block size that can satisfy a request of `size` bytes
+    /// with alignment `align` (mirrors the sizing rules of
+    /// [`Tlsf::allocate`], including the large-alignment carve path).
+    fn min_free_block(size: usize, align: usize) -> Option<usize> {
+        let inner = Tlsf::block_size_for(size)?;
+        if align <= ALIGNMENT {
+            Some(inner)
+        } else {
+            // `Tlsf::carve_aligned` pops a block of at least
+            // `inner + align + MINSIZE` bytes.
+            inner.checked_add(align)?.checked_add(MINSIZE)
+        }
+    }
+
+    /// Maps a fresh chunk of virtual memory large enough to hold a free
+    /// block of `min_free` bytes and hands it to the inner [`Tlsf`].
+    fn grow(&mut self, min_free: usize) -> Option<()> {
+        if self.region_count >= MAX_MAPPED_REGIONS {
+            return None;
+        }
+        let page = {
+            if self.page_size == 0 {
+                let size = os::page_size();
+                self.page_size = size;
+                size
+            } else {
+                self.page_size
+            }
+        };
+        // The free block a fresh chunk contributes must not merely hold
+        // `min_free` bytes: TLSF's first-fit search rounds the request up
+        // to a size class, so a block smaller than that class's lower
+        // bound is skipped even though it could hold the allocation. Size
+        // the chunk to the class lower bound instead, plus the sentinel
+        // header and a minimum block of slack, at least `next_chunk`
+        // (geometric growth), and page-aligned.
+        let (fl, sl) = mapping_search(min_free);
+        let fit = class_lower_bound(fl, sl)
+            .unwrap_or(usize::MAX)
+            .max(min_free);
+        let want = fit
+            .saturating_add(HEADER_SIZE)
+            .saturating_add(MINSIZE)
+            .max(self.next_chunk);
+        let want = want.checked_add(page - 1)? & !(page - 1);
+        let base = os::map_pages(want)?;
+        // SAFETY: the mapping is valid, writable, exclusively ours, and
+        // `want` bytes long — exactly `Tlsf::add_region`'s contract.
+        unsafe {
+            if self.tlsf.add_region(base.as_ptr(), want).is_err() {
+                os::unmap_pages(base.as_ptr(), want);
+                return None;
+            }
+        }
+        self.regions[self.region_count] = MappedRegion {
+            ptr: base.as_ptr(),
+            len: want,
+        };
+        self.region_count += 1;
+        // Double the next chunk, capped at `MAX_CHUNK` but never below a
+        // page (in case the page size exceeds the cap).
+        let doubled = self
+            .next_chunk
+            .saturating_mul(2)
+            .max(self.next_chunk);
+        self.next_chunk = doubled.min(MAX_CHUNK.max(page));
+        Some(())
+    }
+}
+
+#[cfg(unix)]
+impl Default for GrowableTlsf {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// SAFETY: the raw pointers in `regions` refer to anonymous mappings owned
+// exclusively by this heap; moving the heap moves only the bookkeeping,
+// never the mappings themselves. All access to the mappings is mediated
+// by `&mut self` (or, in [`LockedGrowableTlsf`], by its mutex), so the
+// usual aliasing rules are upheld across threads.
+#[cfg(unix)]
+unsafe impl Send for GrowableTlsf {}
+
+#[cfg(unix)]
+impl fmt::Debug for GrowableTlsf {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GrowableTlsf")
+            .field("stats", &self.stats())
+            .field("mapped_bytes", &self.mapped_bytes())
+            .finish()
+    }
+}
+
+#[cfg(unix)]
+impl Drop for GrowableTlsf {
+    fn drop(&mut self) {
+        for region in &self.regions[..self.region_count] {
+            // SAFETY: every tracked region was mapped by `os::map_pages`,
+            // is page-aligned and of exactly `len` bytes, and `Drop` runs
+            // only when the heap itself is destroyed (a `static` heap is
+            // never dropped), so no allocation can outlive the mapping.
+            unsafe { os::unmap_pages(region.ptr, region.len) };
+        }
+    }
+}
+
+/// A [`GrowableTlsf`] heap guarded by a `spin::Mutex`, implementing
+/// [`GlobalAlloc`](core::alloc::GlobalAlloc).
+///
+/// A drop-in replacement for [`LockedTlsf`] that needs no manual region
+/// setup: declare it as the process heap and allocations are served
+/// immediately, growing the heap by mapping virtual pages on demand
+/// (Unix only — the mapping layer needs `mmap` from libc):
+///
+/// ```no_run
+/// use codevar_tlsf_alloc::LockedGrowableTlsf;
+///
+/// #[global_allocator]
+/// static HEAP: LockedGrowableTlsf = LockedGrowableTlsf::new();
+///
+/// # fn boot() {
+/// // Grows past any fixed size: the heap maps fresh pages as needed.
+/// let v = vec![1u8; 1 << 20];
+/// assert_eq!(v.len(), 1 << 20);
+/// # }
+/// ```
+///
+/// # OOM behaviour
+///
+/// Same as [`LockedTlsf`]: `alloc`, `alloc_zeroed` and `realloc`
+/// **abort the process** (through
+/// [`handle_alloc_error`](alloc::alloc::handle_alloc_error)) when the heap
+/// cannot satisfy a request — an OS mapping failure or an exhausted
+/// [`MAX_MAPPED_REGIONS`] table included — and never return null.
+#[cfg(unix)]
+pub struct LockedGrowableTlsf(Mutex<GrowableTlsf>);
+
+#[cfg(unix)]
+impl LockedGrowableTlsf {
+    /// Creates an empty locked growable heap in constant time.
+    pub const fn new() -> Self {
+        Self(Mutex::new(GrowableTlsf::new()))
+    }
+}
+
+#[cfg(unix)]
+impl Default for LockedGrowableTlsf {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(unix)]
+impl Deref for LockedGrowableTlsf {
+    type Target = Mutex<GrowableTlsf>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[cfg(unix)]
+impl fmt::Debug for LockedGrowableTlsf {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LockedGrowableTlsf")
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(unix)]
+unsafe impl GlobalAlloc for LockedGrowableTlsf {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        match self
+            .0
+            .lock()
+            .allocate(layout.size(), layout.align())
+        {
+            Some(ptr) => ptr.as_ptr(),
+            // Aborts: the OOM policy of this heap.
+            None => handle_alloc_error(layout),
+        }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
+        match NonNull::new(ptr) {
+            // SAFETY: the `GlobalAlloc` contract guarantees `ptr` is a
+            // live allocation of this heap.
+            Some(ptr) => unsafe { self.0.lock().deallocate(ptr) },
+            // The contract forbids null; stay panic-free in release.
+            None => debug_assert!(!ptr.is_null(), "dealloc called with null pointer"),
+        }
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        let ptr = match self
+            .0
+            .lock()
+            .allocate(layout.size(), layout.align())
+        {
+            Some(ptr) => ptr,
+            None => handle_alloc_error(layout),
+        };
+        // SAFETY: the block is exclusively ours and `layout.size()` bytes
+        // of it are allocated and writable; the SIMD fill honours that.
+        unsafe { simd::fill_bytes(ptr.as_ptr(), layout.size(), 0) };
+        ptr.as_ptr()
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let mut heap = self.0.lock();
+        let addr = ptr as usize - HEADER_SIZE;
+        // SAFETY: `ptr` is a live allocation of this heap (GlobalAlloc
+        // contract), so `addr` is one of its block starts.
+        let old_block = unsafe { read_size_flags(addr) } & SIZE_MASK;
+        // SAFETY: same as above.
+        if let Some(new_block) = unsafe {
+            heap.tlsf
+                .resize_in_place(addr, new_size, layout.align())
+        } {
+            heap.tlsf.used_bytes = heap.tlsf.used_bytes - old_block + new_block;
+            return ptr;
+        }
+        // Fallback: allocate-copy-dealloc, still under the same lock.
+        // `heap.allocate` grows the heap by mapping pages if needed.
         let new_layout = match Layout::from_size_align(new_size, layout.align()) {
             Ok(layout) => layout,
             Err(_) => handle_alloc_error(layout),

@@ -35,6 +35,8 @@ use codevar_ocl_ir::verify::{VerifyError, verify};
 /// The SPIR-V binary backend.
 pub mod spirv;
 
+pub use spirv::SpirvStream;
+
 /// Why a module could not be assembled.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssembleError {

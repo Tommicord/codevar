@@ -19,9 +19,12 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use codevar_cli_arg_parse::{ArgParser, validate_choice};
-use codevar_ocl_ir::lower::lower;
+use codevar_ocl_asm::SpirvStream;
+use codevar_ocl_ir::lower::{ItemLowerer, lower};
+use codevar_ocl_ir::verify::verify_function;
 use codevar_ocl_lex::{Base, LiteralKind, Token, TokenKind, tokenize};
-use codevar_ocl_parse::{optimize, parse};
+use codevar_ocl_parse::{GenericParam, ItemKind, ItemStream, optimize, parse};
+use codevar_ocl_sar::{DeclCollector, analyze_body, file_checks};
 
 use crate::fs;
 
@@ -135,8 +138,6 @@ impl<'a> Driver<'a> {
         };
         let display_path = if input == "-" { "<stdin>" } else { input };
         if emit == "spirv" {
-            // The SPIR-V stage produces bytes, not text, so it owns its
-            // output handling instead of joining the shared write step below.
             return run_spirv(&source, display_path, matches.option("output"));
         }
         let text = if emit == "analysis" {
@@ -212,37 +213,128 @@ impl<'a> Driver<'a> {
     }
 }
 
-/// Runs the analysis → parse → lower → assemble pipeline for `--emit spirv`.
+/// Runs the streaming analysis → parse → lower → assemble pipeline for `--emit spirv`.
 ///
-/// Mirrors the `ir` branch of [`Driver::run`]'s stage chain up to lowering,
-/// then emits a binary SPIR-V module to the requested output (stdout when
-/// `output` is `None`).
+/// The source is walked one top-level item at a time instead of building
+/// the whole-file AST, IR, and SPIR-V image at once: declarations are
+/// collected in a first pass, then each function body is analyzed,
+/// lowered, verified, emitted into the [`SpirvStream`], and reclaimed
+/// before the next body starts, so peak memory tracks a single item.
+///
+/// Produces a binary SPIR-V module at the requested output (stdout when
+/// `output` is `None`), with diagnostics rendered the same way as the
+/// other emission stages.
 fn run_spirv(source: &str, display_path: &str, output: Option<&str>) -> Exit {
-    let analyzed = codevar_ocl_sar::analyze(source);
+    let mut collector = DeclCollector::new();
+    let mut items = ItemStream::new(source);
+    let mut parse_failed = false;
+    while let Some(outcome) = items.next_item() {
+        for error in &outcome.errors {
+            report_diagnostic(display_path, source, error.span.offset, &error.message);
+            parse_failed = true;
+        }
+        collector.feed(source, &outcome.item);
+    }
+    if parse_failed {
+        return Exit::Failure;
+    }
+    let (mut env, diagnostics) = collector.finish();
     codevar_ocl_sar::emit_stderr(
-        &analyzed.diagnostics,
+        &diagnostics,
         display_path,
         source,
         codevar_ocl_sar::ColorChoice::Auto,
     );
-    if analyzed.has_errors() {
+    if diagnostics
+        .iter()
+        .any(codevar_ocl_sar::Diagnostic::is_error)
+    {
         return Exit::Failure;
     }
-    let parsed = parse(source);
-    if !parsed.errors.is_empty() {
-        for error in &parsed.errors {
-            report_diagnostic(display_path, source, error.span.offset, &error.message);
+    // The lowerer borrows the declaration slice for its whole life while
+    // `analyze_body` needs `&mut env`, so the slice is copied out first.
+    let declarations = env.declarations().to_vec();
+    let mut lowerer = ItemLowerer::new(&declarations);
+    for aliases in [true, false] {
+        let mut items = ItemStream::new(source);
+        while let Some(outcome) = items.next_item() {
+            match (&outcome.item.kind, aliases) {
+                (ItemKind::TypeAlias(alias), true) => {
+                    if let Err(error) = lowerer.declare_alias(alias) {
+                        return failure(&format!("lowering failed: {error}"));
+                    }
+                }
+                (ItemKind::Fn(function), false) => {
+                    let kernel = env.is_kernel(&function.name);
+                    if let Err(error) = lowerer.declare_function(function, kernel) {
+                        return failure(&format!("lowering failed: {error}"));
+                    }
+                }
+                _ => {}
+            }
         }
-        return Exit::Failure;
     }
-    let module = match lower(&parsed.program, &analyzed) {
-        Ok(module) => module,
-        Err(error) => return failure(&format!("lowering failed: {error}")),
-    };
-    let bytes = match codevar_ocl_asm::assemble_bytes(&module) {
-        Ok(bytes) => bytes,
+    let mut stream = match SpirvStream::prelude(lowerer.module()) {
+        Ok(stream) => stream,
         Err(error) => return failure(&format!("assembly failed: {error}")),
     };
+    let mut items = ItemStream::new(source);
+    while let Some(outcome) = items.next_item() {
+        let ItemKind::Fn(function) = &outcome.item.kind else {
+            continue;
+        };
+        if function
+            .generics
+            .iter()
+            .any(|param| matches!(param, GenericParam::Type { .. }))
+        {
+            continue;
+        }
+        let mark = lowerer.module().watermark();
+        let (diagnostics, tables) = analyze_body(&mut env, source, &outcome.item);
+        codevar_ocl_sar::emit_stderr(
+            &diagnostics,
+            display_path,
+            source,
+            codevar_ocl_sar::ColorChoice::Auto,
+        );
+        if diagnostics
+            .iter()
+            .any(codevar_ocl_sar::Diagnostic::is_error)
+        {
+            return Exit::Failure;
+        }
+        if let Err(error) = lowerer.lower_function_body(function, &tables.types, &tables.resolutions) {
+            return failure(&format!("lowering failed: {error}"));
+        }
+        let Some(kernel) = lowerer.function(&function.name) else {
+            return failure(&format!(
+                "lowering failed: function '{}' was never declared",
+                function.name
+            ));
+        };
+        if let Err(error) = verify_function(lowerer.module(), kernel) {
+            return failure(&format!("verification failed: {error}"));
+        }
+        if let Err(error) = stream.emit_function_body(lowerer.module(), kernel) {
+            return failure(&format!("assembly failed: {error}"));
+        }
+        drop(lowerer.module_mut().take_function_body(kernel));
+        lowerer.module_mut().truncate_values(mark);
+    }
+    let checks = file_checks(&env);
+    codevar_ocl_sar::emit_stderr(&checks, display_path, source, codevar_ocl_sar::ColorChoice::Auto);
+    if checks
+        .iter()
+        .any(codevar_ocl_sar::Diagnostic::is_error)
+    {
+        return Exit::Failure;
+    }
+    let words = match stream.finish(lowerer.module()) {
+        Ok(words) => words,
+        Err(error) => return failure(&format!("assembly failed: {error}")),
+    };
+    let bytes = codevar_ocl_asm::spirv::to_bytes(&words);
     match output {
         Some(path) => match fs::write_file_bytes(path, &bytes) {
             Ok(()) => Exit::Success,

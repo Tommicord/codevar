@@ -56,6 +56,11 @@ use codevar_ocl_ir::spirv::ops::{
 
 use crate::AssembleError;
 
+/// The streaming counterpart of [`assemble`] for bounded-memory use.
+mod stream;
+
+pub use stream::SpirvStream;
+
 /// The SPIR-V magic number that starts every module.
 const MAGIC: u32 = 0x0723_0203;
 
@@ -1390,15 +1395,17 @@ mod tests {
     use codevar_ocl_ir::parse::parse;
 
     /// One decoded instruction: opcode plus operand words.
-    struct Instr {
-        opcode: u16,
-        operands: Vec<u32>,
+    pub(super) struct Instr {
+        /// The instruction's opcode.
+        pub(super) opcode: u16,
+        /// The operand words after the first.
+        pub(super) operands: Vec<u32>,
     }
 
     /// Splits a finished module into instructions after the 5-word
     /// header; panics on a word count of zero (the encoder never
     /// emits one).
-    fn decode(words: &[u32]) -> Vec<Instr> {
+    pub(super) fn decode(words: &[u32]) -> Vec<Instr> {
         let mut instructions = Vec::new();
         let mut index = 5;
         while index < words.len() {
@@ -1419,7 +1426,7 @@ mod tests {
 
     /// Decodes the NUL-terminated string starting at operand `start`
     /// and returns it with the index just past its padded words.
-    fn string_operand(words: &[u32], start: usize) -> (String, usize) {
+    pub(super) fn string_operand(words: &[u32], start: usize) -> (String, usize) {
         let mut text = String::new();
         let mut index = start;
         loop {
@@ -1436,7 +1443,7 @@ mod tests {
 
     /// The logical-layout section rank of an opcode: instructions may
     /// only move to a higher-or-equal rank as the module progresses.
-    fn section(opcode: u16) -> u8 {
+    pub(super) fn section(opcode: u16) -> u8 {
         match opcode {
             OP_CAPABILITY => 0,
             OP_EXTINSTIMPORT => 1,
@@ -1507,7 +1514,7 @@ OpFunctionEnd
 ";
 
     /// Parses [`KERNEL`].
-    fn kernel_module() -> Module {
+    pub(super) fn kernel_module() -> Module {
         parse(KERNEL).expect("kernel parses")
     }
 

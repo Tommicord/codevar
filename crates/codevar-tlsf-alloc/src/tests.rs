@@ -140,8 +140,10 @@ fn tiny_region_is_rejected() {
     // SAFETY: the buffer is live and writable.
     let result = unsafe { heap.add_region(buf.as_mut_ptr(), buf.len()) };
     assert_eq!(result, Err(AddRegionError::TooSmall));
-    let ptr = core::ptr::null_mut();
-    // SAFETY: null with zero size never dereferences; overflow check only.
+    // A non-null dangling base plus `usize::MAX` overflows the address
+    // space, so `add_region` rejects it before touching any memory.
+    let ptr = core::ptr::dangling::<u8>() as *mut u8;
+    // SAFETY: the overflow check fails before the region is accessed.
     let result = unsafe { heap.add_region(ptr, usize::MAX) };
     assert_eq!(result, Err(AddRegionError::Overflow));
 }
@@ -363,4 +365,175 @@ fn stats_and_debug_reflect_state() {
     assert!(text.contains("Tlsf"), "debug output: {text}");
     // SAFETY: `ptr` is live.
     unsafe { heap.deallocate(ptr) };
+}
+
+/// [`Tlsf::remove_from_list`] must preserve each neighbor's *own* link
+/// while rerouting it around the removed block.
+///
+/// Preserving the wrong field (the neighbor's opposite link) re-links
+/// the list to the removed block itself, and a later pop resurrects it
+/// as a "free" block over live user data — heap corruption that showed
+/// up as a SIGSEGV in `codevar-oclc`.
+#[test]
+fn remove_from_list_preserves_neighbor_links() {
+    let (mut heap, _keep) = heap_with(64 * 1024);
+    let mut blocks = Vec::new();
+    for _ in 0..7 {
+        blocks.push(
+            heap.allocate(16, ALIGNMENT)
+                .expect("32-byte block"),
+        );
+    }
+    // Free every other block so live neighbours hold the three free
+    // blocks apart (no coalescing) and they all land in one class.
+    // SAFETY: all seven are live allocations of this heap.
+    unsafe {
+        heap.deallocate(blocks[1]);
+        heap.deallocate(blocks[3]);
+        heap.deallocate(blocks[5]);
+    }
+    let head = blocks[5].as_ptr() as usize - HEADER_SIZE;
+    let middle = blocks[3].as_ptr() as usize - HEADER_SIZE;
+    let tail = blocks[1].as_ptr() as usize - HEADER_SIZE;
+    let index = list_index(0, 2);
+    assert_eq!(heap.lists[index], head, "last freed block is the head");
+
+    // Removing the middle block must reroute head/tail around it
+    // without clobbering either neighbor's own back/forward link.
+    // SAFETY: `middle` is a free block of this heap on that list.
+    unsafe { heap.remove_from_list(middle, 32) };
+    // SAFETY: `head` and `tail` are free blocks of this heap on that
+    // list, so their link words are valid.
+    assert_eq!(
+        unsafe { read_links(head) },
+        (tail, NULL),
+        "head links after middle removal"
+    );
+    assert_eq!(
+        unsafe { read_links(tail) },
+        (NULL, head),
+        "tail links after middle removal"
+    );
+    assert_eq!(heap.lists[index], head, "head unchanged by middle removal");
+
+    // Removing the tail leaves the head as a singleton.
+    // SAFETY: `tail` is a free block of this heap on that list.
+    unsafe { heap.remove_from_list(tail, 32) };
+    // SAFETY: `head` is a free block of this heap on that list, so its
+    // link words are valid.
+    assert_eq!(
+        unsafe { read_links(head) },
+        (NULL, NULL),
+        "head links after tail removal"
+    );
+    assert_eq!(heap.lists[index], head);
+
+    // Removing the last block empties the class.
+    // SAFETY: `head` is a free block of this heap on that list.
+    unsafe { heap.remove_from_list(head, 32) };
+    assert_eq!(heap.lists[index], NULL, "class empty after last removal");
+}
+
+#[cfg(unix)]
+mod growable {
+    use super::*;
+
+    #[test]
+    fn starts_empty_and_grows_on_demand() {
+        let mut heap = GrowableTlsf::new();
+        assert_eq!(heap.stats().total_bytes, 0, "nothing mapped at start");
+        let ptr = heap.allocate(4096, ALIGNMENT).expect("first allocation grows");
+        assert!(heap.region_count() >= 1, "a chunk was mapped");
+        assert!(heap.mapped_bytes() >= heap.stats().total_bytes);
+        // SAFETY: 4096 fresh bytes are writable.
+        unsafe { ptr.as_ptr().write_bytes(0xAB, 4096) };
+        // SAFETY: live allocation of this heap.
+        unsafe { heap.deallocate(ptr) };
+    }
+
+    #[test]
+    fn allocation_larger_than_small_static_region_succeeds() {
+        // 1 MiB far exceeds any fixed-size boot region the bins used to
+        // install; the growable heap must satisfy it via mapping.
+        let mut heap = GrowableTlsf::new();
+        let ptr = heap.allocate(1 << 20, 16).expect("grow to fit");
+        // SAFETY: the block is live and exclusively ours.
+        unsafe { ptr.as_ptr().write_bytes(0xCD, 1 << 20) };
+        // SAFETY: live allocation of this heap.
+        unsafe { heap.deallocate(ptr) };
+    }
+
+    #[test]
+    fn reuse_after_free_does_not_map_again() {
+        let mut heap = GrowableTlsf::new();
+        let first = heap.allocate(32 * 1024, ALIGNMENT).expect("alloc");
+        let mapped = heap.mapped_bytes();
+        // SAFETY: live allocation of this heap.
+        unsafe { heap.deallocate(first) };
+        let second = heap.allocate(32 * 1024, ALIGNMENT).expect("reuse");
+        assert_eq!(
+            heap.mapped_bytes(),
+            mapped,
+            "reuse of freed memory must not map a new chunk"
+        );
+        // SAFETY: live allocation of this heap.
+        unsafe { heap.deallocate(second) };
+    }
+
+    #[test]
+    fn live_set_spans_multiple_chunks() {
+        let mut heap = GrowableTlsf::new();
+        let mut blocks = Vec::new();
+        for _ in 0..8 {
+            // SAFETY: each allocation is live until the cleanup below.
+            blocks.push(heap.allocate(128 * 1024, ALIGNMENT).expect("grow"));
+        }
+        assert!(
+            heap.region_count() >= 2,
+            "1 MiB live set must span several chunks"
+        );
+        let stats = heap.stats();
+        assert!(stats.used_bytes >= 8 * 128 * 1024);
+        assert!(heap.mapped_bytes() >= stats.total_bytes);
+        for block in blocks {
+            // SAFETY: every block is a live allocation of this heap.
+            unsafe { heap.deallocate(block) };
+        }
+    }
+
+    #[test]
+    fn large_alignment_grows_enough_to_carve() {
+        let mut heap = GrowableTlsf::new();
+        let ptr = heap.allocate(64, 4096).expect("carve-aligned allocation");
+        assert_eq!(ptr.as_ptr() as usize % 4096, 0);
+        // SAFETY: live allocation of this heap.
+        unsafe { heap.deallocate(ptr) };
+    }
+
+    #[test]
+    fn invalid_align_never_maps() {
+        let mut heap = GrowableTlsf::new();
+        assert!(heap.allocate(64, 0).is_none());
+        assert!(heap.allocate(64, 3).is_none(), "non-power-of-two align");
+        assert_eq!(heap.region_count(), 0, "no chunk mapped for bad align");
+    }
+
+    #[test]
+    fn manual_regions_are_not_unmapped_on_drop() {
+        let mut region = vec![0u8; 16 * 1024];
+        {
+            let mut heap = GrowableTlsf::new();
+            // SAFETY: `region` outlives the heap block below.
+            unsafe { heap.add_region(region.as_mut_ptr(), region.len()) }
+                .expect("region fits");
+            let ptr = heap.allocate(128, ALIGNMENT).expect("alloc");
+            // SAFETY: live allocation of this heap.
+            unsafe { heap.deallocate(ptr) };
+            assert_eq!(heap.mapped_bytes(), 0, "manual region is not OS-backed");
+        }
+        // The manual region must still be valid memory after the heap's
+        // Drop ran (drop only unmaps OS-backed chunks).
+        region[0] = 1;
+        assert_eq!(region[0], 1);
+    }
 }

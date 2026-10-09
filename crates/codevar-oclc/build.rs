@@ -415,7 +415,7 @@ fn compile(source: KernelSource, out_dir: &Path) -> Result<CompiledKernel, Build
     Ok(CompiledKernel { source, entry_points })
 }
 
-/// `vector_add.cl` → `vector_add.spv`, the artifact name staged in `OUT_DIR`.
+/// The artifact name staged in `OUT_DIR`.
 fn spirv_file_name(file_name: &str) -> PathBuf {
     Path::new(file_name).with_extension("spv")
 }

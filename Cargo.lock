@@ -281,6 +281,8 @@ name = "codevar-ocl-asm"
 version = "1.0.0"
 dependencies = [
  "codevar-ocl-ir",
+ "codevar-ocl-parse",
+ "codevar-ocl-sar",
 ]
 
 [[package]]
@@ -468,6 +470,7 @@ version = "1.0.0"
 dependencies = [
  "cfg-if",
  "codevar-base",
+ "libc",
  "spin 0.12.3",
 ]
 

@@ -23,5 +23,11 @@ spin = { workspace = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 codevar-base = { workspace = true }
 
+# The growable heap (Unix only) maps its backing memory with
+# `mmap`/`munmap` from libc — never `malloc`, so it can serve as the
+# global allocator itself without recursion.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 [lints]
 workspace = true

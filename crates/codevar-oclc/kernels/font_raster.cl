@@ -56,7 +56,6 @@ fn font_raster(
             let sample_y = (py as float) + 0.25 + (sy as float) * 0.5;
             for sx in 0..2 {
                 let sample_x = (px as float) + 0.25 + (sx as float) * 0.5;
-
                 // Signed winding number (non-zero rule) and crossing
                 // parity (even-odd rule) accumulated together.
                 let mut wn = 0;
@@ -97,7 +96,6 @@ fn font_raster(
                 hits += hit;
             }
         }
-
         // Round hits * (255 / 4) to the nearest level: 0, 64, 128,
         // 191, 255.
         coverage[py * width + px] = ((hits * 255 + 2) / 4) as uchar;
