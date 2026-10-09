@@ -29,3 +29,5 @@
 extern crate alloc;
 
 pub mod grays;
+pub mod decompose;
+pub mod hot;

@@ -26,7 +26,6 @@ members = [
     "crates/codevar-truetype-core",
     "crates/codevar-truetype-emoji-color",
     "crates/codevar-truetype-gzip",
-    "crates/codevar-truetype-raster",
     "crates/codevar-truetype-smooth",
     "crates/codevar-truetype-sfnt",
     "crates/codevar-truetype-psnames",
@@ -133,7 +132,6 @@ codevar-pathbuf = { path = "crates/codevar-pathbuf" }
 codevar-truetype-core = { path = "crates/codevar-truetype-core" }
 codevar-truetype-emoji-color = { path = "crates/codevar-truetype-emoji-color" }
 codevar-truetype-gzip = { path = "crates/codevar-truetype-gzip" }
-codevar-truetype-raster = { path = "crates/codevar-truetype-raster" }
 codevar-truetype-smooth = { path = "crates/codevar-truetype-smooth" }
 codevar-truetype-sfnt = { path = "crates/codevar-truetype-sfnt" }
 codevar-truetype-psnames = { path = "crates/codevar-truetype-psnames" }

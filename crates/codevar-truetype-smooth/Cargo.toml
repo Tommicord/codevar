@@ -11,8 +11,11 @@ repository.workspace = true
 name = "codevar_truetype_smooth"
 
 [dependencies]
-log = { workspace = true }
+spin = { workspace = true }
 codevar-truetype-core = { workspace = true }
+codevar-logger = { workspace = true }
+codevar-ocl = { workspace = true }
+codevar-oclc = { workspace = true }
 
 [lints]
 workspace = true

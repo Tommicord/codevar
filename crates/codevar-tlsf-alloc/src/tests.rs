@@ -442,7 +442,9 @@ mod growable {
     fn starts_empty_and_grows_on_demand() {
         let mut heap = GrowableTlsf::new();
         assert_eq!(heap.stats().total_bytes, 0, "nothing mapped at start");
-        let ptr = heap.allocate(4096, ALIGNMENT).expect("first allocation grows");
+        let ptr = heap
+            .allocate(4096, ALIGNMENT)
+            .expect("first allocation grows");
         assert!(heap.region_count() >= 1, "a chunk was mapped");
         assert!(heap.mapped_bytes() >= heap.stats().total_bytes);
         // SAFETY: 4096 fresh bytes are writable.
@@ -466,11 +468,15 @@ mod growable {
     #[test]
     fn reuse_after_free_does_not_map_again() {
         let mut heap = GrowableTlsf::new();
-        let first = heap.allocate(32 * 1024, ALIGNMENT).expect("alloc");
+        let first = heap
+            .allocate(32 * 1024, ALIGNMENT)
+            .expect("alloc");
         let mapped = heap.mapped_bytes();
         // SAFETY: live allocation of this heap.
         unsafe { heap.deallocate(first) };
-        let second = heap.allocate(32 * 1024, ALIGNMENT).expect("reuse");
+        let second = heap
+            .allocate(32 * 1024, ALIGNMENT)
+            .expect("reuse");
         assert_eq!(
             heap.mapped_bytes(),
             mapped,
@@ -486,7 +492,10 @@ mod growable {
         let mut blocks = Vec::new();
         for _ in 0..8 {
             // SAFETY: each allocation is live until the cleanup below.
-            blocks.push(heap.allocate(128 * 1024, ALIGNMENT).expect("grow"));
+            blocks.push(
+                heap.allocate(128 * 1024, ALIGNMENT)
+                    .expect("grow"),
+            );
         }
         assert!(
             heap.region_count() >= 2,
@@ -504,7 +513,9 @@ mod growable {
     #[test]
     fn large_alignment_grows_enough_to_carve() {
         let mut heap = GrowableTlsf::new();
-        let ptr = heap.allocate(64, 4096).expect("carve-aligned allocation");
+        let ptr = heap
+            .allocate(64, 4096)
+            .expect("carve-aligned allocation");
         assert_eq!(ptr.as_ptr() as usize % 4096, 0);
         // SAFETY: live allocation of this heap.
         unsafe { heap.deallocate(ptr) };
@@ -524,8 +535,7 @@ mod growable {
         {
             let mut heap = GrowableTlsf::new();
             // SAFETY: `region` outlives the heap block below.
-            unsafe { heap.add_region(region.as_mut_ptr(), region.len()) }
-                .expect("region fits");
+            unsafe { heap.add_region(region.as_mut_ptr(), region.len()) }.expect("region fits");
             let ptr = heap.allocate(128, ALIGNMENT).expect("alloc");
             // SAFETY: live allocation of this heap.
             unsafe { heap.deallocate(ptr) };

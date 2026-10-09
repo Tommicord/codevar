@@ -1617,6 +1617,10 @@ impl Raster for GrayRaster {
         } else {
             BBox::from_edges(-32768, -32768, 32767, 32767)
         };
+        if flags.contains(RasterFlags::HOT) && !direct && crate::hot::try_render(outline, &mut *params.target)
+        {
+            return Ok(());
+        }
         let sink = if direct {
             Sink::Direct {
                 func: params.gray_spans,

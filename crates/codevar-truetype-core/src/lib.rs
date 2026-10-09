@@ -1523,6 +1523,15 @@ impl RasterFlags {
     pub const DIRECT: Self = Self(0x2);
     /// `FT_RASTER_FLAG_CLIP`: clip spans to `clip_box`.
     pub const CLIP: Self = Self(0x4);
+    /// Codevar extension (not a FreeType flag): request the hardware
+    /// (HOT) GPU rasterization path.
+    ///
+    /// When set together with [`RasterFlags::AA`], the rasterizer
+    /// attempts an OpenCL-accelerated render and silently falls back to
+    /// the CPU scan converter whenever no suitable GPU device, driver,
+    /// or SPIR-V capable implementation is available. Indirect (bitmap)
+    /// mode only; direct-span rendering always uses the CPU path.
+    pub const HOT: Self = Self(0x8);
 
     /// The raw flag bits.
     #[inline]
