@@ -13,30 +13,30 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-pub mod ws_client;
-pub mod ws_connection;
-pub mod ws_error;
-pub mod ws_frame;
-pub mod ws_handshake;
-pub mod ws_ids;
-pub mod ws_message;
-pub mod ws_server;
-pub mod ws_stream;
-pub mod ws_utf8;
+pub mod client;
+pub mod connection;
+pub mod error;
+pub mod frame;
+pub mod handshake;
+pub mod ids;
+pub mod message;
+pub mod server;
+pub mod stream;
+pub mod utf8;
 
-pub use crate::ws_client::ClientConnection as WsClientConnection;
-pub use crate::ws_connection::{
+pub use crate::client::ClientConnection as WsClientConnection;
+pub use crate::connection::{
     ConnectionConfig as WsConnectionConfig, ConnectionState as WsConnectionState, IoState as WsIoState,
 };
-pub use crate::ws_error::{WsError, WsResult};
-pub use crate::ws_frame::{WsFrame, WsFrameHeader};
-pub use crate::ws_handshake::{
+pub use crate::error::{WsError, WsResult};
+pub use crate::frame::{WsFrame, WsFrameHeader};
+pub use crate::handshake::{
     HandshakeRequest, WsClientHandshake, WsHandshakeResponse, WsServerHandshake, accept_key_from_nonce,
     compute_accept_key, generate_key_nonce,
 };
-pub use crate::ws_ids::{
+pub use crate::ids::{
     DEFAULT_MAX_FRAME_SIZE, DEFAULT_MAX_MESSAGE_SIZE, GUID, Role, VERSION, WsCloseCode, WsOpcode,
 };
-pub use crate::ws_message::WsMessage;
-pub use crate::ws_server::ServerConnection as WsServerConnection;
-pub use crate::ws_stream::WebSocketStream as WsWebSocketStream;
+pub use crate::message::WsMessage;
+pub use crate::server::ServerConnection as WsServerConnection;
+pub use crate::stream::WebSocketStream as WsWebSocketStream;

@@ -16,7 +16,7 @@
 //! SIMD kernels backing the TLSF allocator.
 //!
 //! Two primitives are provided, both with an AVX2 backend (x86/x86_64, run
-//! time dispatched through [`codevar_base::basic_cpuid`]), a NEON backend
+//! time dispatched through [`codevar_base::cpuid`]), a NEON backend
 //! (aarch64) and a portable scalar fallback:
 //!
 //! - [`find_first_set`] / [`find_first_set_from`] — index of the first set

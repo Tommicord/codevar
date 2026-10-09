@@ -25,46 +25,46 @@
 #![cfg_attr(not(test), no_std)]
 extern crate alloc;
 
-mod io_cursor;
-mod io_error;
-mod io_impls;
-mod io_terminal;
-mod io_traits;
+mod cursor;
+mod error;
+mod impls;
+mod terminal;
+mod traits;
 
 #[cfg(feature = "async")]
-mod io_async_traits;
+mod async_traits;
 
 #[cfg(all(target_family = "unix", not(target_os = "wasi")))]
-mod io_unix;
+mod unix;
 
 #[cfg(target_os = "windows")]
-mod io_windows;
+mod windows;
 
 #[cfg(target_os = "wasi")]
-mod io_wasi;
+mod wasi;
 
 #[cfg(not(any(target_family = "unix", target_os = "windows", target_os = "wasi")))]
-mod io_fallback;
+mod fallback;
 
-pub use io_cursor::Cursor;
-pub use io_error::{
+pub use cursor::Cursor;
+pub use error::{
     ErrorKind, ErrorType, IoError, IoResult, ReadExactError, SeekFrom, SliceWriteError, WriteFmtError,
 };
-pub use io_terminal::{IsTerminal, is_terminal};
-pub use io_traits::{BufRead, Read, ReadReady, Seek, Write, WriteReady};
+pub use terminal::{IsTerminal, is_terminal};
+pub use traits::{BufRead, Read, ReadReady, Seek, Write, WriteReady};
 
 #[cfg(feature = "async")]
-pub use io_async_traits::{AsyncBufRead, AsyncRead, AsyncReadReady, AsyncSeek, AsyncWrite, AsyncWriteReady};
+pub use async_traits::{AsyncBufRead, AsyncRead, AsyncReadReady, AsyncSeek, AsyncWrite, AsyncWriteReady};
 
 // Re-export standard I/O types
 #[cfg(all(target_family = "unix", not(target_os = "wasi")))]
-pub use io_unix::{Stderr, StderrLock, Stdin, StdinLock, Stdout, StdoutLock};
+pub use unix::{Stderr, StderrLock, Stdin, StdinLock, Stdout, StdoutLock};
 
 #[cfg(target_os = "windows")]
-pub use io_windows::{Stderr, StderrLock, Stdin, StdinLock, Stdout, StdoutLock};
+pub use windows::{Stderr, StderrLock, Stdin, StdinLock, Stdout, StdoutLock};
 
 #[cfg(target_os = "wasi")]
-pub use io_wasi::{Stderr, StderrLock, Stdin, StdinLock, Stdout, StdoutLock};
+pub use wasi::{Stderr, StderrLock, Stdin, StdinLock, Stdout, StdoutLock};
 
 #[cfg(not(any(target_family = "unix", target_os = "windows", target_os = "wasi")))]
-pub use io_fallback::{Stderr, StderrLock, Stdin, StdinLock, Stdout, StdoutLock};
+pub use fallback::{Stderr, StderrLock, Stdin, StdinLock, Stdout, StdoutLock};

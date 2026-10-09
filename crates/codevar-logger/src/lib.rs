@@ -361,7 +361,7 @@ pub mod logger {
     pub extern crate alloc;
     use crate::{LogError, LogLevel, log_with_timestamp};
     use alloc::string::ToString;
-    use codevar_consoleutil::console_style::presets;
+    use codevar_consoleutil::style::presets;
 
     /// Log with error style
     pub fn log_error(message: &str) -> Result<(), LogError> {

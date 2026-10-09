@@ -15,8 +15,8 @@
 
 //! Wayland protocol implementation
 //!
-//! The crate mirrors the API of libwayland ([`wl_client`] and
-//! [`wl_server`]) over pluggable transports and pollers so it can run
+//! The crate mirrors the API of libwayland ([`client`] and
+//! [`server`]) over pluggable transports and pollers so it can run
 //! without an operating system socket layer.
 //!
 //! # Example
@@ -34,31 +34,31 @@
 
 extern crate alloc;
 
-mod wl_client;
-mod wl_conn;
-mod wl_core;
-mod wl_dmabuf;
-mod wl_drm_syncobj;
-mod wl_error;
-mod wl_evloop;
-mod wl_handle;
-mod wl_server;
+mod client;
+mod conn;
+mod core;
+mod dmabuf;
+mod drm_syncobj;
+mod error;
+mod evloop;
+mod handle;
+mod server;
 #[cfg(unix)]
-mod wl_unix;
-mod wl_xdg_shell;
+mod unix;
+mod xdg_shell;
 
-pub use wl_client::{WlClientDisplay, WlProxyId, WlRegistryEvent};
-pub use wl_conn::{WlClosure, WlConnection, WlTransport, reserve_new_ids};
-pub use wl_core::*;
-pub use wl_dmabuf::*;
-pub use wl_drm_syncobj::*;
-pub use wl_error::{WlError, WlProtocolError, WlResult};
-pub use wl_evloop::{WlClock, WlEventLoop, WlEventSourceId, WlPollEntry, WlPollEvents, WlPoller};
-pub use wl_handle::{
+pub use client::{WlClientDisplay, WlProxyId, WlRegistryEvent};
+pub use conn::{WlClosure, WlConnection, WlTransport, reserve_new_ids};
+pub use core::*;
+pub use dmabuf::*;
+pub use drm_syncobj::*;
+pub use error::{WlError, WlProtocolError, WlResult};
+pub use evloop::{WlClock, WlEventLoop, WlEventSourceId, WlPollEntry, WlPollEvents, WlPoller};
+pub use handle::{
     CALLBACK_DONE, CALLBACK_INTERFACE, MAX_CLOSURE_ARGS, MAX_MESSAGE_WORDS, WlArgument, WlArray,
     WlDisplayError, WlFixed, WlInterface, WlList, WlMap, WlMessage, WlObject, WlSignal,
 };
-pub use wl_server::{WlClient, WlClientId, WlResource, WlServerDisplay, WlTaskQueue};
+pub use server::{WlClient, WlClientId, WlResource, WlServerDisplay, WlTaskQueue};
 #[cfg(unix)]
-pub use wl_unix::{WlUnixPoller, WlUnixTransport};
-pub use wl_xdg_shell::*;
+pub use unix::{WlUnixPoller, WlUnixTransport};
+pub use xdg_shell::*;

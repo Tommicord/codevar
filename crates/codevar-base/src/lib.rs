@@ -16,10 +16,10 @@
 #![cfg_attr(not(test), no_std)]
 extern crate alloc;
 
-pub mod basic_base64;
-pub mod basic_cpuid;
-pub mod basic_daemon;
-pub mod basic_html;
-pub mod basic_time;
-pub mod basic_url;
-pub mod basic_xml;
+pub mod base64;
+pub mod cpuid;
+pub mod daemon;
+pub mod html;
+pub mod time;
+pub mod url;
+pub mod xml;

@@ -26,16 +26,16 @@ use deranged::{ri32, ru8, ru32};
 use num_conv::prelude::*;
 use powerfmt::smart_display::{FormatterOptions, Metadata, SmartDisplay};
 
-use crate::date_error::ComponentRange;
-use crate::date_internal_macro::{const_try, const_try_opt, div_floor, ensure_ranged};
-use crate::date_month::Month;
-use crate::date_num_fmt::{four_to_six_digits, str_from_raw_parts, two_digits_zero_padded};
-use crate::date_plain::PlainDateTime;
-use crate::date_signed_duration::SignedDuration;
-use crate::date_time::Time;
-use crate::date_unit::{Day, Second};
-use crate::date_util::{days_in_month_leap, days_in_year, is_leap_year, weeks_in_year};
-use crate::date_weekday::Weekday;
+use crate::error::ComponentRange;
+use crate::internal_macro::{const_try, const_try_opt, div_floor, ensure_ranged};
+use crate::month::Month;
+use crate::num_fmt::{four_to_six_digits, str_from_raw_parts, two_digits_zero_padded};
+use crate::plain::PlainDateTime;
+use crate::signed_duration::SignedDuration;
+use crate::time::Time;
+use crate::unit::{Day, Second};
+use crate::util::{days_in_month_leap, days_in_year, is_leap_year, weeks_in_year};
+use crate::weekday::Weekday;
 
 type Year = ri32<MIN_YEAR, MAX_YEAR>;
 
@@ -1220,7 +1220,7 @@ impl Sub for Date {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::date_util::days_in_month_leap;
+    use crate::util::days_in_month_leap;
 
     /// Cumulative days before each month (1-based index) in a common year.
     const CUMULATIVE: [u16; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];

@@ -18,8 +18,8 @@
 extern crate alloc;
 
 pub mod encoding;
-pub mod encoding_ascii;
-pub mod encoding_handles;
-pub mod encoding_single_byte;
-pub mod encoding_utf16;
-pub mod encoding_utf8;
+pub mod ascii;
+pub mod handles;
+pub mod single_byte;
+pub mod utf16;
+pub mod utf8;

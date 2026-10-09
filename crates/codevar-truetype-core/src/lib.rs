@@ -7064,7 +7064,7 @@ pub fn transform_points(points: &mut [Vector], matrix: &Matrix) -> usize {
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 fn simd_translate_points(points: &mut [Vector], dx: Pos, dy: Pos) -> usize {
-    if codevar_base::basic_cpuid::has(codevar_base::basic_cpuid::Feature::Sse2) {
+    if codevar_base::cpuid::has(codevar_base::cpuid::Feature::Sse2) {
         // SAFETY: `has` confirmed SSE2 for this CPU (or it is compiled
         // in); the kernel bounds-checks every access against `points`.
         unsafe { sse2::translate_blocks(points, dx, dy) }
@@ -7075,9 +7075,9 @@ fn simd_translate_points(points: &mut [Vector], dx: Pos, dy: Pos) -> usize {
 
 #[cfg(target_arch = "aarch64")]
 fn simd_translate_points(points: &mut [Vector], dx: Pos, dy: Pos) -> usize {
-    if codevar_base::basic_cpuid::has(codevar_base::basic_cpuid::Feature::Neon) {
+    if codevar_base::cpuid::has(codevar_base::cpuid::Feature::Neon) {
         // SAFETY: `has` confirmed NEON; the kernel bounds-checks `points`.
-        unsafe { neon::translate_blocks(points, dx, dy) }
+        unsafe { aarch64::translate_blocks(points, dx, dy) }
     } else {
         0
     }
@@ -7102,7 +7102,7 @@ fn simd_translate_points(_points: &mut [Vector], _dx: Pos, _dy: Pos) -> usize {
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 fn simd_transform_points(points: &mut [Vector], matrix: &Matrix) -> usize {
-    if codevar_base::basic_cpuid::has(codevar_base::basic_cpuid::Feature::Sse2) {
+    if codevar_base::cpuid::has(codevar_base::cpuid::Feature::Sse2) {
         // SAFETY: `has` confirmed SSE2; the kernel bounds-checks `points`.
         unsafe { sse2::transform_blocks(points, matrix) }
     } else {
@@ -7112,9 +7112,9 @@ fn simd_transform_points(points: &mut [Vector], matrix: &Matrix) -> usize {
 
 #[cfg(target_arch = "aarch64")]
 fn simd_transform_points(points: &mut [Vector], matrix: &Matrix) -> usize {
-    if codevar_base::basic_cpuid::has(codevar_base::basic_cpuid::Feature::Neon) {
+    if codevar_base::cpuid::has(codevar_base::cpuid::Feature::Neon) {
         // SAFETY: `has` confirmed NEON; the kernel bounds-checks `points`.
-        unsafe { neon::transform_blocks(points, matrix) }
+        unsafe { aarch64::transform_blocks(points, matrix) }
     } else {
         0
     }
@@ -7280,12 +7280,12 @@ mod sse2 {
     }
 }
 
-/// NEON kernels mirroring the SSE2 design: one 128-bit register per
+/// aarch64 NEON kernels mirroring the SSE2 design: one 128-bit register per
 /// point, the vector's even 32-bit lanes feeding `vmull_s32` (the
 /// truncating 32x32 -> 64 multiply shared with `_mm_mul_epi32`), and
 /// 64-bit lane exchanges via `vextq_s64` broadcasting each row sum.
 #[cfg(target_arch = "aarch64")]
-mod neon {
+mod aarch64 {
     use super::{Matrix, Vector};
     use core::arch::aarch64::{
         int32x2_t, int64x2_t, vaddq_s64, vcombine_s64, vdupq_n_s64, vextq_s64, vget_low_s32, vget_low_s64,

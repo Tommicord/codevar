@@ -52,17 +52,17 @@ use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use windows::Win32::System::Console::{
     ENABLE_VIRTUAL_TERMINAL_PROCESSING, GetConsoleMode, GetStdHandle, STD_OUTPUT_HANDLE, SetConsoleMode,
 };
-pub mod console_ansi;
-pub mod console_clear;
-pub mod console_cursor;
-pub mod console_style;
-pub mod console_terminal;
+pub mod ansi;
+pub mod clear;
+pub mod cursor;
+pub mod style;
+pub mod terminal;
 
-pub use console_ansi::{AnsiBuilder, AnsiCode, AnsiSequence};
-pub use console_clear::Clear;
-pub use console_cursor::Cursor;
-pub use console_style::{AnsiColor, AnsiStyle, Style, StyleAttr, StyledText};
-pub use console_terminal::{Terminal, TerminalCaps, TerminalInfo};
+pub use ansi::{AnsiBuilder, AnsiCode, AnsiSequence};
+pub use clear::Clear;
+pub use cursor::Cursor;
+pub use style::{AnsiColor, AnsiStyle, Style, StyleAttr, StyledText};
+pub use terminal::{Terminal, TerminalCaps, TerminalInfo};
 
 /// Initialize ANSI support on Windows (enables virtual terminal processing)
 /// This is a no-op on non-Windows platforms.

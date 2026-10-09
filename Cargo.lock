@@ -243,21 +243,9 @@ dependencies = [
 name = "codevar-mergen"
 version = "1.0.0"
 dependencies = [
- "codevar-mergen-shake",
- "codevar-mergen-simd",
- "libc",
-]
-
-[[package]]
-name = "codevar-mergen-shake"
-version = "1.0.0"
-
-[[package]]
-name = "codevar-mergen-simd"
-version = "1.0.0"
-dependencies = [
- "cfg-if",
  "codevar-base",
+ "codevar-shake",
+ "libc",
 ]
 
 [[package]]
@@ -375,6 +363,14 @@ dependencies = [
  "web-sys",
  "windows",
  "windows-link 0.100.0",
+]
+
+[[package]]
+name = "codevar-shake"
+version = "1.0.0"
+dependencies = [
+ "cfg-if",
+ "codevar-base",
 ]
 
 [[package]]

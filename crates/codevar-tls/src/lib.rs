@@ -13,44 +13,44 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-pub mod tls_aead;
-pub mod tls_alert;
-pub mod tls_cert;
-pub mod tls_client;
-pub mod tls_codec;
-pub mod tls_connection;
-pub mod tls_connection_conf;
-pub mod tls_crypto_aes_gcm;
-pub mod tls_crypto_chacha20poly1305;
-pub mod tls_crypto_ct;
-pub mod tls_crypto_device;
-pub mod tls_crypto_hash;
-pub mod tls_crypto_random;
-pub mod tls_error;
-pub mod tls_extensions;
-pub mod tls_handshake;
-pub mod tls_hkdf;
-pub mod tls_ids;
-pub mod tls_key_schedule;
-pub mod tls_kx;
-pub mod tls_prf;
-pub mod tls_record;
-pub mod tls_server;
-pub mod tls_sign;
-pub mod tls_stream;
-pub mod tls_transcript;
+pub mod aead;
+pub mod alert;
+pub mod cert;
+pub mod client;
+pub mod codec;
+pub mod connection;
+pub mod connection_conf;
+pub mod crypto_aes_gcm;
+pub mod crypto_chacha20poly1305;
+pub mod crypto_ct;
+pub mod crypto_device;
+pub mod crypto_hash;
+pub mod crypto_random;
+pub mod error;
+pub mod extensions;
+pub mod handshake;
+pub mod hkdf;
+pub mod ids;
+pub mod key_schedule;
+pub mod kx;
+pub mod prf;
+pub mod record;
+pub mod server;
+pub mod sign;
+pub mod stream;
+pub mod transcript;
 
-pub use tls_alert::{Alert, AlertDescription, AlertLevel};
-pub use tls_cert::{CertVerifier, LeafKeyKind, ParsedCert, RootCertStore, ServerName, parse_pem_certs};
-pub use tls_client::TlsClientConnection;
-pub use tls_connection::{ConnectionState, IoState};
-pub use tls_connection_conf::{
+pub use alert::{Alert, AlertDescription, AlertLevel};
+pub use cert::{CertVerifier, LeafKeyKind, ParsedCert, RootCertStore, ServerName, parse_pem_certs};
+pub use client::TlsClientConnection;
+pub use connection::{ConnectionState, IoState};
+pub use connection_conf::{
     CertifiedKey, ClientConfig, ClientConfigBuilder, ServerConfig, ServerConfigBuilder,
 };
-pub use tls_error::{TlsError, TlsResult};
-pub use tls_ids::{
+pub use error::{TlsError, TlsResult};
+pub use ids::{
     AeadAlgorithm, CipherSuite, ContentType, ExtensionType, HandshakeType, HashAlgorithm, KeyUpdateRequest,
     NamedGroup, ProtocolVersion, PskKeyExchangeMode, SignatureScheme,
 };
-pub use tls_server::TlsServerConnection;
-pub use tls_stream::{TlsSession, TlsStream};
+pub use server::TlsServerConnection;
+pub use stream::{TlsSession, TlsStream};

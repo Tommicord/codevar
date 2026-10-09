@@ -11,8 +11,8 @@ repository.workspace = true
 name = "codevar_mergen"
 
 [dependencies]
-codevar-mergen-shake = { workspace = true }
-codevar-mergen-simd = { workspace = true }
+codevar-shake = { workspace = true }
+codevar-base = { workspace = true }
 
 [target.'cfg(all(unix, not(target_arch = "wasm32")))'.dependencies]
 libc = { workspace = true }

@@ -42,8 +42,8 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use ash::vk;
-use codevar_gpu_core::gpu_pipeline::{OwnedFd, PipelineContext};
-use codevar_gpu_core::gpu_ui_renderer::{
+use codevar_gpu_core::pipeline::{OwnedFd, PipelineContext};
+use codevar_gpu_core::renderer::{
     FrameContext, RenderLayer, RendererError, RendererSubsystem, load_spir_v,
 };
 use codevar_wl_protocol::{

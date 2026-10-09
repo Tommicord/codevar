@@ -46,44 +46,44 @@
 
 extern crate alloc;
 
-mod dbus_addr;
-mod dbus_auth;
-mod dbus_conn;
-mod dbus_error;
-mod dbus_marshal;
-mod dbus_message;
-mod dbus_names;
-mod dbus_signature;
-mod dbus_transport;
+mod addr;
+mod auth;
+mod conn;
+mod error;
+mod marshal;
+mod message;
+mod names;
+mod signature;
+mod transport;
 
-pub use dbus_addr::{
+pub use addr::{
     DbusAddress, SESSION_BUS_FILE, SYSTEM_BUS_SOCKET, SYSTEM_BUS_SOCKET_LEGACY, percent_decode,
 };
-pub use dbus_auth::{AuthPoll, AuthSession};
-pub use dbus_conn::{
+pub use auth::{AuthPoll, AuthSession};
+pub use conn::{
     Connection, DEFAULT_CALL_TIMEOUT, NAME_FLAG_ALLOW_REPLACEMENT, NAME_FLAG_DO_NOT_QUEUE,
     NAME_FLAG_REPLACE_EXISTING, NAME_REPLY_ALREADY_OWNER, NAME_REPLY_EXISTS, NAME_REPLY_IN_QUEUE,
     NAME_REPLY_PRIMARY_OWNER,
 };
-pub use dbus_error::{DbusError, DbusResult};
-pub use dbus_marshal::{ByteOrder, DbusReader, DbusWriter, MAX_ARRAY_LEN};
-pub use dbus_message::{
+pub use error::{DbusError, DbusResult};
+pub use marshal::{ByteOrder, DbusReader, DbusWriter, MAX_ARRAY_LEN};
+pub use message::{
     BodyWriter, DbusMessage, DbusMessageStream, FIELD_DESTINATION, FIELD_ERROR_NAME, FIELD_INTERFACE,
     FIELD_MEMBER, FIELD_PATH, FIELD_REPLY_SERIAL, FIELD_SENDER, FIELD_SIGNATURE, FIELD_UNIX_FDS,
     FIXED_HEADER_LEN, FLAG_ALLOW_INTERACTIVE_AUTHORIZATION, FLAG_NO_AUTO_START, FLAG_NO_REPLY_EXPECTED,
     MAX_MESSAGE_LEN, MessageKind, PROTOCOL_VERSION,
 };
-pub use dbus_names::{
+pub use names::{
     MAX_NAME_LEN, is_valid_bus_name, is_valid_error_name, is_valid_interface_name, is_valid_member,
     is_valid_object_path, is_valid_unique_name, validate_bus_name, validate_interface_name, validate_member,
     validate_object_path,
 };
-pub use dbus_signature::{
+pub use signature::{
     MAX_ARRAY_DEPTH, MAX_SIGNATURE_LEN, MAX_STRUCT_DEPTH, SignatureIter, is_basic_type, is_container_type,
     single_complete_type_len, type_alignment, type_fixed_size, validate_array_element_type,
     validate_signature, validate_single_type,
 };
-pub use dbus_transport::{DbusPollEvents, DbusTransport};
+pub use transport::{DbusPollEvents, DbusTransport};
 
 #[cfg(all(unix, not(target_arch = "wasm32")))]
-pub mod dbus_unix;
+pub mod unix;

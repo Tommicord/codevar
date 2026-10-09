@@ -78,7 +78,7 @@ use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::vec::Vec;
 use codevar_textlike_encode::encoding::utf16_valid_up_to;
-use codevar_textlike_encode::encoding_utf8::utf8_valid_up_to;
+use codevar_textlike_encode::utf8::utf8_valid_up_to;
 use core::fmt;
 
 /// Initial read buffer size for file I/O.

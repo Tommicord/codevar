@@ -13,13 +13,13 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-use crate::encoding_ascii::{ascii_to_ascii, ascii_to_basic_latin, ascii_valid_up_to, validate_ascii};
-use crate::encoding_single_byte::{SingleByteDecoder, SingleByteEncoder};
-use crate::encoding_utf8::{
+use crate::ascii::{ascii_to_ascii, ascii_to_basic_latin, ascii_valid_up_to, validate_ascii};
+use crate::single_byte::{SingleByteDecoder, SingleByteEncoder};
+use crate::utf8::{
     Utf8Decoder, Utf8Encoder, convert_utf16_to_utf8_partial_inner, convert_utf16_to_utf8_partial_tail,
     utf8_valid_up_to,
 };
-use crate::encoding_utf16::{Utf16Decoder, Utf16Encoder};
+use crate::utf16::{Utf16Decoder, Utf16Encoder};
 use alloc::borrow::Cow;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;

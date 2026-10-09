@@ -3,8 +3,7 @@ members = [
     "crates/codevar-base",
     "crates/codevar-tlsf-alloc",
     "crates/codevar-mergen",
-    "crates/codevar-mergen-shake",
-    "crates/codevar-mergen-simd",
+    "crates/codevar-shake",
     "crates/codevar-textlike-encode",
     "crates/codevar-tls",
     "crates/codevar-pretty-unwind",
@@ -107,8 +106,7 @@ pem = "3"
 
 codevar-dbus = { path = "crates/codevar-dbus" }
 codevar-mergen = { path = "crates/codevar-mergen" }
-codevar-mergen-shake = { path = "crates/codevar-mergen-shake" }
-codevar-mergen-simd = { path = "crates/codevar-mergen-simd" }
+codevar-shake = { path = "crates/codevar-shake" }
 codevar-base = { path = "crates/codevar-base" }
 codevar-tlsf-alloc = { path = "crates/codevar-tlsf-alloc" }
 codevar-textlike-encode = { path = "crates/codevar-textlike-encode" }
