@@ -17,6 +17,11 @@
 //! [`test_util::default_font`], covering simple outlines, composites
 //! and the metrics both feed into.
 
+// Integration test crate: AGENTS.md permits unwrap() in tests, but
+// clippy.toml's allow-unwrap-in-tests only exempts `#[test]` bodies,
+// not the helpers shared by them.
+#![allow(clippy::unwrap_used)]
+
 extern crate alloc;
 
 #[allow(dead_code)]

@@ -43,7 +43,7 @@ use core::ffi::CStr;
 use core::fmt;
 
 use ash::vk;
-use codevar_wl_protocol::DRM_FORMAT_XRGB8888;
+use codevar_wayland::DRM_FORMAT_XRGB8888;
 
 /// Vulkan format of the render target: memory-layout counterpart of
 /// `DRM_FORMAT_XRGB8888` (bytes `B, G, R, X` per pixel in memory).

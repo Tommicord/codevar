@@ -1,5 +1,5 @@
 [package]
-name = "codevar-wl-protocol"
+name = "codevar-wayland"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,11 +8,12 @@ license.workspace = true
 repository.workspace = true
 
 [lib]
-name = "codevar_wl_protocol"
+name = "codevar_wayland"
 
 [dependencies]
 libc = { workspace = true }
 num-traits = { workspace = true }
+codevar-time-core = { workspace = true }
 
 [lints]
 workspace = true

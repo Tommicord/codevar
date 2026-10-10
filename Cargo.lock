@@ -136,7 +136,7 @@ dependencies = [
  "codevar-console-util",
  "codevar-io",
  "codevar-textlike-encode",
- "codevar-time-util",
+ "codevar-time-core",
  "libc",
  "rustc-demangle",
  "spin 0.12.3",
@@ -149,6 +149,10 @@ dependencies = [
 [[package]]
 name = "codevar-cli-arg-parse"
 version = "1.0.0"
+dependencies = [
+ "bsize",
+ "libc",
+]
 
 [[package]]
 name = "codevar-console-util"
@@ -188,7 +192,7 @@ dependencies = [
  "codevar-env",
  "codevar-logger",
  "codevar-time-core",
- "codevar-wl-protocol",
+ "codevar-wayland",
  "libc",
  "libm",
  "spin 0.12.3",
@@ -214,13 +218,15 @@ version = "1.0.0"
 dependencies = [
  "ash",
  "codevar-base",
+ "codevar-cli-arg-parse",
  "codevar-env",
  "codevar-gpu-core",
  "codevar-logger",
  "codevar-sig-handler",
  "codevar-sig-module-base",
+ "codevar-time-core",
  "codevar-tlsf-alloc",
- "codevar-wl-protocol",
+ "codevar-wayland",
  "libc",
  "spin 0.12.3",
 ]
@@ -243,6 +249,7 @@ dependencies = [
 name = "codevar-mergen"
 version = "1.0.0"
 dependencies = [
+ "cfg-if",
  "codevar-base",
  "codevar-shake",
  "libc",
@@ -574,9 +581,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "codevar-wl-protocol"
+name = "codevar-wayland"
 version = "1.0.0"
 dependencies = [
+ "codevar-time-core",
  "libc",
  "num-traits",
 ]

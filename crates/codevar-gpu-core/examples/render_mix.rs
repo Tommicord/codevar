@@ -53,10 +53,11 @@ use std::time::{Duration, Instant};
 use ash::vk;
 use codevar_gpu_core::base::{
     Compositor, CompositorError, OffscreenFramebuffer, OffscreenTarget, PipeCtx, PipeFuture, PipeOutcome,
-    PipeSource, PipeSupplyTraits, block_on,
+    PipeSource, PipeOffscreen, block_on,
 };
 use codevar_gpu_core::pipeline::{OwnedFd, PipelineContext};
-use codevar_wl_protocol::{
+use codevar_time_core::TimeDuration;
+use codevar_wayland::{
     BUFFER_DESTROY, BUFFER_PARAMS_ADD, BUFFER_PARAMS_CREATE_IMMED, BUFFER_PARAMS_DESTROY, BUFFER_RELEASE,
     COMPOSITOR_CREATE_SURFACE, COMPOSITOR_INTERFACE, DMABUF_CREATE_PARAMS, DMABUF_DESTROY,
     DMABUF_GET_DEFAULT_FEEDBACK, DMABUF_INTERFACE, DMABUF_MODIFIER, DRM_FORMAT_XRGB8888, FEEDBACK_DESTROY,
@@ -79,7 +80,7 @@ const FRAME_BUDGET: u32 = 900;
 /// Hard stop so a silent compositor cannot hang the example.
 const DEADLINE: Duration = Duration::from_secs(30);
 /// How long a single `dispatch` waits for Wayland events.
-const DISPATCH_TIMEOUT: Duration = Duration::from_millis(50);
+const DISPATCH_TIMEOUT: TimeDuration = TimeDuration::from_millis(50);
 /// How long to wait for `wl_buffer.release` before re-rendering anyway
 /// (a compositor that never releases single-buffered clients would
 /// otherwise stall the demo; the fallback costs at most one torn frame).
@@ -702,7 +703,7 @@ impl PipeSource for SolidPipe<'_> {
     }
 }
 
-impl PipeSupplyTraits for SolidPipe<'_> {
+impl PipeOffscreen for SolidPipe<'_> {
     fn offscreen_framebuffer_count(&self) -> usize {
         1
     }
@@ -830,7 +831,7 @@ impl PipeSource for SplitPipe<'_> {
     }
 }
 
-impl PipeSupplyTraits for SplitPipe<'_> {
+impl PipeOffscreen for SplitPipe<'_> {
     fn offscreen_framebuffer_count(&self) -> usize {
         1
     }

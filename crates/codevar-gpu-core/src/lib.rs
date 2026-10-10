@@ -18,5 +18,14 @@
 extern crate alloc;
 
 pub mod base;
+pub mod comm;
+pub mod compositor;
+pub mod frame;
+pub mod mix;
+pub mod offscreen;
+pub mod pipe;
+pub mod pipe_ctx;
 pub mod pipeline;
 pub mod renderer;
+pub mod resources;
+pub mod types;

@@ -28,7 +28,7 @@
 //! # Example
 //!
 //! ```
-//! use codevar_wl_protocol::{WlClientDisplay, WlTransport, WlResult};
+//! use codevar_wayland::{WlClientDisplay, WlTransport, WlResult};
 //! # fn demo<T: WlTransport>(transport: T) -> WlResult<()> {
 //! let mut display = WlClientDisplay::connect(transport)?;
 //! let _registry = display.get_registry()?;
@@ -38,15 +38,6 @@
 //! ```
 
 use core::cell::Cell;
-use core::time::Duration;
-
-use alloc::boxed::Box;
-use alloc::collections::VecDeque;
-use alloc::format;
-use alloc::rc::Rc;
-use alloc::string::String;
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::conn::{WlClosure, WlConnection, WlTransport, lookup_objects};
 use crate::error::{WlError, WlProtocolError, WlResult};
@@ -56,6 +47,14 @@ use crate::handle::{
     REGISTRY_GLOBAL_REMOVE, REGISTRY_INTERFACE, SERVER_ID_START, WlArgType, WlArgument, WlInterface, WlMap,
     WlMapSide, WlMessage, WlObject, WlPollEvents,
 };
+use alloc::boxed::Box;
+use alloc::collections::VecDeque;
+use alloc::format;
+use alloc::rc::Rc;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+use codevar_time_core::TimeDuration;
 
 /// Id of the display proxy, which is always `1`.
 pub const DISPLAY_PROXY_ID: u32 = 1;
@@ -513,7 +512,7 @@ impl<T: WlTransport> WlClientDisplay<T> {
     /// protocol error, [`WlError::Disconnected`] when the peer closed the
     /// connection and [`WlError::InvalidMethod`] when an event does not
     /// exist on the receiving interface.
-    pub fn dispatch(&mut self, timeout: Option<Duration>) -> WlResult<usize> {
+    pub fn dispatch(&mut self, timeout: Option<TimeDuration>) -> WlResult<usize> {
         if let Some(error) = &self.protocol_error {
             return Err(WlError::Protocol(error.clone()));
         }
@@ -963,7 +962,11 @@ mod tests {
             Ok(data.len())
         }
 
-        fn wait(&mut self, _timeout: Option<Duration>, mask: WlPollEvents) -> WlResult<WlPollEvents> {
+        fn wait(
+            &mut self,
+            _timeout: Option<codevar_time_core::TimeDuration>,
+            mask: WlPollEvents,
+        ) -> WlResult<WlPollEvents> {
             let mut events = WlPollEvents::EMPTY;
             if self.input_pos < self.input.len() {
                 events.insert(WlPollEvents::READABLE);
@@ -1090,7 +1093,9 @@ mod tests {
             })
             .unwrap();
 
-        let dispatched = display.dispatch(Some(Duration::ZERO)).unwrap();
+        let dispatched = display
+            .dispatch(Some(TimeDuration::ZERO))
+            .unwrap();
         assert_eq!(dispatched, 1);
         assert_eq!(
             seen.take(),
@@ -1115,7 +1120,9 @@ mod tests {
         let second = display.get_registry().unwrap();
         assert_eq!(second.id(), 3);
 
-        display.dispatch(Some(Duration::ZERO)).unwrap();
+        display
+            .dispatch(Some(TimeDuration::ZERO))
+            .unwrap();
         let third = display.get_registry().unwrap();
         assert_eq!(third.id(), 2);
     }
@@ -1129,7 +1136,7 @@ mod tests {
         let mut display = WlClientDisplay::connect(transport).unwrap();
 
         let error = display
-            .dispatch(Some(Duration::ZERO))
+            .dispatch(Some(TimeDuration::ZERO))
             .unwrap_err();
         let WlError::Protocol(protocol) = &error else {
             panic!("expected a protocol error, got {error:?}");

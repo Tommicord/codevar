@@ -35,10 +35,10 @@
 //!
 //! // min/max without branching on the values.
 //! let (a, b) = (7u64, 11u64);
-//! let less = ct::lt_mask_u64(a, b);
-//! assert_eq!(ct::min_u64(a, b), 7);
-//! assert_eq!(ct::max_u64(a, b), 11);
-//! assert_eq!(ct::select_u64(less, a, b), a);
+//! let less = ct::lt_mask(a, b);
+//! assert_eq!(ct::min(a, b), 7);
+//! assert_eq!(ct::max(a, b), 11);
+//! assert_eq!(ct::select(less, a, b), a);
 //! ```
 
 /// All-ones mask (`u64::MAX`) when `bit` is 1, zero when `bit` is 0.
@@ -57,24 +57,24 @@ pub fn mask_from_bit(bit: u64) -> u64 {
 /// from a predicate function in this module.
 #[inline]
 #[must_use]
-pub fn select_u64(mask: u64, a: u64, b: u64) -> u64 {
+pub fn select(mask: u64, a: u64, b: u64) -> u64 {
     (a & mask) | (b & !mask)
 }
 
 /// Chooses `a` when the mask is all-ones, `b` when it is zero.
 ///
-/// See [`select_u64`] for the mask contract.
+/// See [`select`] for the mask contract.
 #[inline]
 #[must_use]
 pub fn select_u8(mask: u64, a: u8, b: u8) -> u8 {
-    select_u64(mask, u64::from(a), u64::from(b)) as u8
+    select(mask, u64::from(a), u64::from(b)) as u8
 }
 
 /// Swaps `a` and `b` when the mask is all-ones, leaves them when it
-/// is zero. Branchless XOR swap; see [`select_u64`] for the mask
+/// is zero. Branchless XOR swap; see [`select`] for the mask
 /// contract.
 #[inline]
-pub fn swap_u64(mask: u64, a: &mut u64, b: &mut u64) {
+pub fn swap(mask: u64, a: &mut u64, b: &mut u64) {
     let delta = (*a ^ *b) & mask;
     *a ^= delta;
     *b ^= delta;
@@ -88,22 +88,22 @@ pub fn swap_u64(mask: u64, a: &mut u64, b: &mut u64) {
 /// when `x == 0`.
 #[inline]
 #[must_use]
-pub fn is_zero_mask_u64(x: u64) -> u64 {
+pub fn is_zero_mask(x: u64) -> u64 {
     ((((x | x.wrapping_neg()) >> 63) & 1) ^ 1).wrapping_neg()
 }
 
 /// All-ones mask when `a == b`, zero otherwise.
 #[inline]
 #[must_use]
-pub fn eq_mask_u64(a: u64, b: u64) -> u64 {
-    is_zero_mask_u64(a ^ b)
+pub fn eq_mask(a: u64, b: u64) -> u64 {
+    is_zero_mask(a ^ b)
 }
 
 /// All-ones mask when `a != b`, zero otherwise.
 #[inline]
 #[must_use]
-pub fn ne_mask_u64(a: u64, b: u64) -> u64 {
-    !eq_mask_u64(a, b)
+pub fn ne_mask(a: u64, b: u64) -> u64 {
+    !eq_mask(a, b)
 }
 
 /// All-ones mask when `a < b` (unsigned), zero otherwise.
@@ -115,7 +115,7 @@ pub fn ne_mask_u64(a: u64, b: u64) -> u64 {
 /// exactly when `x <s y`.
 #[inline]
 #[must_use]
-pub fn lt_mask_u64(a: u64, b: u64) -> u64 {
+pub fn lt_mask(a: u64, b: u64) -> u64 {
     const TOP: u64 = 1 << 63;
     let x = a ^ TOP;
     let y = b ^ TOP;
@@ -127,36 +127,36 @@ pub fn lt_mask_u64(a: u64, b: u64) -> u64 {
 /// All-ones mask when `a > b` (unsigned), zero otherwise.
 #[inline]
 #[must_use]
-pub fn gt_mask_u64(a: u64, b: u64) -> u64 {
-    lt_mask_u64(b, a)
+pub fn gt_mask(a: u64, b: u64) -> u64 {
+    lt_mask(b, a)
 }
 
 /// All-ones mask when `a <= b` (unsigned), zero otherwise.
 #[inline]
 #[must_use]
-pub fn le_mask_u64(a: u64, b: u64) -> u64 {
-    !gt_mask_u64(a, b)
+pub fn le_mask(a: u64, b: u64) -> u64 {
+    !gt_mask(a, b)
 }
 
 /// All-ones mask when `a >= b` (unsigned), zero otherwise.
 #[inline]
 #[must_use]
-pub fn ge_mask_u64(a: u64, b: u64) -> u64 {
-    !lt_mask_u64(a, b)
+pub fn ge_mask(a: u64, b: u64) -> u64 {
+    !lt_mask(a, b)
 }
 
 /// The smaller of `a` and `b` (unsigned), selected branchlessly.
 #[inline]
 #[must_use]
-pub fn min_u64(a: u64, b: u64) -> u64 {
-    select_u64(lt_mask_u64(a, b), a, b)
+pub fn min(a: u64, b: u64) -> u64 {
+    select(lt_mask(a, b), a, b)
 }
 
 /// The larger of `a` and `b` (unsigned), selected branchlessly.
 #[inline]
 #[must_use]
-pub fn max_u64(a: u64, b: u64) -> u64 {
-    select_u64(lt_mask_u64(a, b), b, a)
+pub fn max(a: u64, b: u64) -> u64 {
+    select(lt_mask(a, b), b, a)
 }
 
 /// All-ones mask when the first `out.len()` bytes of `a` and `b` are
@@ -176,7 +176,7 @@ pub fn eq_bytes_mask(a: &[u8], b: &[u8]) -> u64 {
     if a.len() != b.len() {
         return 0;
     }
-    is_zero_mask_u64(acc)
+    is_zero_mask(acc)
 }
 
 #[cfg(test)]
@@ -185,7 +185,7 @@ mod tests {
 
     /// Deterministic xorshift-style PRNG so the tests need no
     /// dependency and stay reproducible.
-    fn next_u64(state: &mut u64) -> u64 {
+    fn next(state: &mut u64) -> u64 {
         let mut x = *state;
         x ^= x << 13;
         x ^= x >> 7;
@@ -203,9 +203,9 @@ mod tests {
     }
 
     #[test]
-    fn select_u64_picks_per_mask() {
-        assert_eq!(select_u64(u64::MAX, 1, 2), 1);
-        assert_eq!(select_u64(0, 1, 2), 2);
+    fn select_picks_per_mask() {
+        assert_eq!(select(u64::MAX, 1, 2), 1);
+        assert_eq!(select(0, 1, 2), 2);
     }
 
     #[test]
@@ -215,12 +215,12 @@ mod tests {
     }
 
     #[test]
-    fn swap_u64_swaps_only_under_all_ones() {
+    fn swap_swaps_only_under_all_ones() {
         let mut a = 5u64;
         let mut b = 9u64;
-        swap_u64(u64::MAX, &mut a, &mut b);
+        swap(u64::MAX, &mut a, &mut b);
         assert_eq!((a, b), (9, 5));
-        swap_u64(0, &mut a, &mut b);
+        swap(0, &mut a, &mut b);
         assert_eq!((a, b), (9, 5));
     }
 
@@ -245,19 +245,19 @@ mod tests {
         }
         let mut state = 0x243F_6A88_85A3_08D3u64;
         for _ in 0..512 {
-            pairs.push((next_u64(&mut state), next_u64(&mut state)));
+            pairs.push((next(&mut state), next(&mut state)));
         }
         for (a, b) in pairs {
-            assert_eq!(is_zero_mask_u64(a) != 0, a == 0, "is_zero({a})");
-            assert_eq!(eq_mask_u64(a, b) != 0, a == b, "eq({a}, {b})");
-            assert_eq!(ne_mask_u64(a, b) != 0, a != b, "ne({a}, {b})");
-            assert_eq!(lt_mask_u64(a, b) != 0, a < b, "lt({a}, {b})");
-            assert_eq!(gt_mask_u64(a, b) != 0, a > b, "gt({a}, {b})");
-            assert_eq!(le_mask_u64(a, b) != 0, a <= b, "le({a}, {b})");
-            assert_eq!(ge_mask_u64(a, b) != 0, a >= b, "ge({a}, {b})");
-            assert_eq!(min_u64(a, b), a.min(b), "min({a}, {b})");
-            assert_eq!(max_u64(a, b), a.max(b), "max({a}, {b})");
-            assert_eq!(select_u64(lt_mask_u64(a, b), a, b), a.min(b));
+            assert_eq!(is_zero_mask(a) != 0, a == 0, "is_zero({a})");
+            assert_eq!(eq_mask(a, b) != 0, a == b, "eq({a}, {b})");
+            assert_eq!(ne_mask(a, b) != 0, a != b, "ne({a}, {b})");
+            assert_eq!(lt_mask(a, b) != 0, a < b, "lt({a}, {b})");
+            assert_eq!(gt_mask(a, b) != 0, a > b, "gt({a}, {b})");
+            assert_eq!(le_mask(a, b) != 0, a <= b, "le({a}, {b})");
+            assert_eq!(ge_mask(a, b) != 0, a >= b, "ge({a}, {b})");
+            assert_eq!(min(a, b), a.min(b), "min({a}, {b})");
+            assert_eq!(max(a, b), a.max(b), "max({a}, {b})");
+            assert_eq!(select(lt_mask(a, b), a, b), a.min(b));
         }
     }
 

@@ -11,6 +11,8 @@ repository.workspace = true
 name = "codevar_cli_arg_parse"
 
 [dependencies]
+libc = { workspace = true }
+bsize = { workspace = true }
 
 [lints]
 workspace = true

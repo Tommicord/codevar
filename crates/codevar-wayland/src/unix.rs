@@ -27,9 +27,9 @@
 //! # Example
 //!
 //! ```no_run
-//! use codevar_wl_protocol::{WlClientDisplay, WlUnixTransport};
+//! use codevar_wayland::{WlClientDisplay, WlUnixTransport};
 //!
-//! # fn demo() -> codevar_wl_protocol::WlResult<()> {
+//! # fn demo() -> codevar_wayland::WlResult<()> {
 //! let transport = WlUnixTransport::connect_session()?;
 //! let mut display = WlClientDisplay::connect(transport)?;
 //! let _registry = display.get_registry()?;
@@ -37,15 +37,14 @@
 //! # }
 //! ```
 
-use alloc::format;
-use alloc::string::String;
-use alloc::vec::Vec;
-use core::time::Duration;
-
 use crate::conn::{WlHandle, WlTransport};
 use crate::error::{WlError, WlResult};
 use crate::evloop::{WlPollEntry, WlPoller};
 use crate::handle::{WlFd, WlPollEvents};
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+use codevar_time_core::TimeDuration;
 
 /// Maximum number of file descriptors moved with a single message in
 /// either direction.
@@ -238,7 +237,7 @@ unsafe fn collect_rights(message: &libc::msghdr) -> Vec<WlFd> {
 /// `None` maps to an infinite wait and zero-length durations to a
 /// non-blocking poll.
 #[inline]
-fn poll_timeout(timeout: Option<Duration>) -> libc::c_int {
+fn poll_timeout(timeout: Option<TimeDuration>) -> libc::c_int {
     match timeout {
         None => -1,
         Some(limit) => {
@@ -583,7 +582,7 @@ impl WlTransport for WlUnixTransport {
         }
     }
 
-    fn wait(&mut self, timeout: Option<Duration>, mask: WlPollEvents) -> WlResult<WlPollEvents> {
+    fn wait(&mut self, timeout: Option<TimeDuration>, mask: WlPollEvents) -> WlResult<WlPollEvents> {
         let mut events: libc::c_short = 0;
         if mask.contains(WlPollEvents::READABLE) {
             events |= libc::POLLIN;
@@ -641,7 +640,7 @@ impl Drop for WlUnixTransport {
 pub struct WlUnixPoller;
 
 impl WlPoller for WlUnixPoller {
-    fn poll(&mut self, entries: &mut [WlPollEntry], timeout: Option<Duration>) -> WlResult<usize> {
+    fn poll(&mut self, entries: &mut [WlPollEntry], timeout: Option<TimeDuration>) -> WlResult<usize> {
         let mut pollfds = Vec::with_capacity(entries.len());
         for entry in entries.iter() {
             let mut events: libc::c_short = 0;

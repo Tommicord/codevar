@@ -30,7 +30,6 @@
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
 extern crate alloc;
-extern crate std;
 
 #[cfg(not(test))]
 #[global_allocator]
@@ -38,6 +37,7 @@ static HEAP: LockedGrowableTlsf = LockedGrowableTlsf::new();
 
 #[cfg(not(test))]
 use codevar_logger::LogLevel;
+use codevar_oclc::driver;
 #[cfg(not(test))]
 use codevar_tlsf_alloc::LockedGrowableTlsf;
 
@@ -55,12 +55,12 @@ pub unsafe extern "C" fn main(
     argc: core::ffi::c_int,
     argv: *const *const core::ffi::c_char,
 ) -> core::ffi::c_int {
-    let args = match unsafe { codevar_oclc::argv::from_c_args(argc, argv) } {
+    let args = match unsafe { codevar_cli_arg_parse::from_c_args(argc, argv) } {
         Ok(args) => args,
         Err(error) => {
-            let message = alloc::format!("codevar-oclc: error: invalid command line: {error}\n");
+            let message = alloc::format!("error: invalid command line: {error}\n");
             let _ = codevar_consoleutil::write_stderr(message.as_bytes());
-            return codevar_oclc::Exit::Usage.code();
+            return driver::Exit::Usage.code();
         }
     };
     codevar_logger::set_min_log_level(LogLevel::Error);
@@ -69,7 +69,7 @@ pub unsafe extern "C" fn main(
         Ok(()) => {}
         Err(error) => codevar_logger::log_warn!("failed to install signal handler: {error}"),
     }
-    codevar_oclc::run(&args).code()
+    driver::run(&args).code()
 }
 
 #[cfg(all(not(test), unix))]

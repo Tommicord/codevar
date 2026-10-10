@@ -13,7 +13,7 @@ members = [
     "crates/codevar-wredit",
     "crates/codevar-wsocket",
     "crates/codevar-launcher",
-    "crates/codevar-wl-protocol",
+    "crates/codevar-wayland",
     "crates/codevar-xdg-portal",
     "crates/codevar-gpu-core",
     "crates/codevar-logger",
@@ -111,7 +111,7 @@ codevar-base = { path = "crates/codevar-base" }
 codevar-tlsf-alloc = { path = "crates/codevar-tlsf-alloc" }
 codevar-textlike-encode = { path = "crates/codevar-textlike-encode" }
 codevar-tls = { path = "crates/codevar-tls" }
-codevar-wl-protocol = { path = "crates/codevar-wl-protocol" }
+codevar-wayland = { path = "crates/codevar-wayland" }
 codevar-time-util = { path = "crates/codevar-time-util" }
 codevar-time-core = { path = "crates/codevar-time-core" }
 codevar-wredit = { path = "crates/codevar-wredit" }

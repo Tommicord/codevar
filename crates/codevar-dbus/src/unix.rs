@@ -74,16 +74,13 @@ impl UnixTransport {
     /// [`DbusError::Io`] when the socket cannot be opened or
     /// connected.
     pub fn connect_to(address: &DbusAddress) -> DbusResult<Self> {
-        let kind = match address.get("path") {
-            Some(_) => "path",
-            None => match address.get("abstract") {
-                Some(_) => "abstract",
-                None => {
-                    return Err(DbusError::invalid_address("unix address has no path or abstract"));
-                }
-            },
+        let (kind, raw) = if let Some(path) = address.get("path") {
+            ("path", path)
+        } else if let Some(name) = address.get("abstract") {
+            ("abstract", name)
+        } else {
+            return Err(DbusError::invalid_address("unix address has no path or abstract"));
         };
-        let raw = address.get(kind).unwrap();
         if raw.is_empty() {
             return Err(DbusError::invalid_address("empty unix socket name"));
         }

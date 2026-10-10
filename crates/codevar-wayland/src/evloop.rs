@@ -30,15 +30,13 @@
 //! marked with [`WlEventLoop::check`] is dispatched until all of its
 //! callbacks return zero.
 
-use core::time::Duration;
-
+use crate::conn::WlHandle;
+use crate::error::{WlError, WlResult};
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec::Vec;
-
-use crate::conn::WlHandle;
-use crate::error::{WlError, WlResult};
+use codevar_time_core::TimeDuration;
 
 /// Set of event bits as returned by pollers and transports.
 pub use crate::handle::WlPollEvents;
@@ -66,7 +64,7 @@ pub struct WlPollEntry {
 /// transports or any other readiness mechanism. The call receives every
 /// file descriptor source of the loop and must fill in `revents` for the
 /// entries that are ready. `timeout` bounds the wait: `None` blocks until
-/// an entry is ready, `Some(Duration::ZERO)` polls without blocking.
+/// an entry is ready, `Some(TimeDuration::ZERO)` polls without blocking.
 pub trait WlPoller {
     /// Waits until one of `entries` is ready or `timeout` elapses.
     ///
@@ -76,7 +74,7 @@ pub trait WlPoller {
     ///
     /// Returns [`WlError::Io`] when the underlying wait fails and
     /// [`WlError::Disconnected`] when the poller is gone.
-    fn poll(&mut self, entries: &mut [WlPollEntry], timeout: Option<Duration>) -> WlResult<usize>;
+    fn poll(&mut self, entries: &mut [WlPollEntry], timeout: Option<TimeDuration>) -> WlResult<usize>;
 }
 
 /// Monotonic time source for timers.
@@ -364,16 +362,16 @@ impl<P: WlPoller, C: WlClock> WlEventLoop<P, C> {
     /// # Errors
     ///
     /// Returns [`WlError::Io`] when the poller fails.
-    pub fn dispatch(&mut self, timeout: Option<Duration>) -> WlResult<()> {
+    pub fn dispatch(&mut self, timeout: Option<TimeDuration>) -> WlResult<()> {
         self.dispatch_idle();
 
         let now = self.clock.now_ms();
         let wait = match (timeout, self.next_deadline()) {
             (Some(limit), Some(deadline)) => {
-                Some(limit.min(Duration::from_millis(deadline.saturating_sub(now))))
+                Some(limit.min(TimeDuration::from_millis(deadline.saturating_sub(now))))
             }
             (Some(limit), None) => Some(limit),
-            (None, Some(deadline)) => Some(Duration::from_millis(deadline.saturating_sub(now))),
+            (None, Some(deadline)) => Some(TimeDuration::from_millis(deadline.saturating_sub(now))),
             (None, None) => None,
         };
 
@@ -610,12 +608,12 @@ mod tests {
     struct FakePoller {
         ready: Vec<(WlHandle, WlPollEvents)>,
         polls: usize,
-        last_timeout: Option<Duration>,
+        last_timeout: Option<TimeDuration>,
         last_interests: Vec<(WlHandle, WlPollEvents)>,
     }
 
     impl WlPoller for FakePoller {
-        fn poll(&mut self, entries: &mut [WlPollEntry], timeout: Option<Duration>) -> WlResult<usize> {
+        fn poll(&mut self, entries: &mut [WlPollEntry], timeout: Option<TimeDuration>) -> WlResult<usize> {
             self.polls += 1;
             self.last_timeout = timeout;
             self.last_interests = entries
@@ -652,7 +650,9 @@ mod tests {
             0
         });
 
-        event_loop.dispatch(Some(Duration::ZERO)).unwrap();
+        event_loop
+            .dispatch(Some(TimeDuration::ZERO))
+            .unwrap();
         assert_eq!(*seen.borrow(), [WlPollEvents::READABLE]);
         assert_eq!(event_loop.poller().polls, 1);
 
@@ -660,7 +660,9 @@ mod tests {
             .fd_update(source, WlPollEvents::WRITABLE)
             .unwrap();
         seen.borrow_mut().clear();
-        event_loop.dispatch(Some(Duration::ZERO)).unwrap();
+        event_loop
+            .dispatch(Some(TimeDuration::ZERO))
+            .unwrap();
         assert!(seen.borrow().is_empty());
         assert_eq!(event_loop.poller().last_interests, [(7, WlPollEvents::WRITABLE)]);
     }
@@ -677,22 +679,32 @@ mod tests {
         event_loop.timer_update(timer, 100).unwrap();
 
         event_loop
-            .dispatch(Some(Duration::from_millis(50)))
+            .dispatch(Some(TimeDuration::from_millis(50)))
             .unwrap();
         assert_eq!(fired.get(), 0);
-        assert_eq!(event_loop.poller().last_timeout, Some(Duration::from_millis(50)));
+        assert_eq!(
+            event_loop.poller().last_timeout,
+            Some(TimeDuration::from_millis(50))
+        );
 
         event_loop
-            .dispatch(Some(Duration::from_millis(1000)))
+            .dispatch(Some(TimeDuration::from_millis(1000)))
             .unwrap();
-        assert_eq!(event_loop.poller().last_timeout, Some(Duration::from_millis(100)));
+        assert_eq!(
+            event_loop.poller().last_timeout,
+            Some(TimeDuration::from_millis(100))
+        );
 
         event_loop.clock_mut().now = 100;
-        event_loop.dispatch(Some(Duration::ZERO)).unwrap();
+        event_loop
+            .dispatch(Some(TimeDuration::ZERO))
+            .unwrap();
         assert_eq!(fired.get(), 1);
 
         event_loop.clock_mut().now = 10_000;
-        event_loop.dispatch(Some(Duration::ZERO)).unwrap();
+        event_loop
+            .dispatch(Some(TimeDuration::ZERO))
+            .unwrap();
         assert_eq!(fired.get(), 1);
     }
 
@@ -708,11 +720,15 @@ mod tests {
             counter.set(counter.get() + 1);
         });
 
-        event_loop.dispatch(Some(Duration::ZERO)).unwrap();
+        event_loop
+            .dispatch(Some(TimeDuration::ZERO))
+            .unwrap();
         assert_eq!(fired.get(), 1);
         assert_eq!(polls_when_run.get(), 0);
 
-        event_loop.dispatch(Some(Duration::ZERO)).unwrap();
+        event_loop
+            .dispatch(Some(TimeDuration::ZERO))
+            .unwrap();
         assert_eq!(fired.get(), 1);
         assert_eq!(event_loop.poller().polls, 2);
     }
@@ -731,11 +747,15 @@ mod tests {
         });
         event_loop.check(source).unwrap();
 
-        event_loop.dispatch(Some(Duration::ZERO)).unwrap();
+        event_loop
+            .dispatch(Some(TimeDuration::ZERO))
+            .unwrap();
         assert_eq!(calls.get(), 2);
         assert_eq!(*events_seen.borrow(), [WlPollEvents::EMPTY, WlPollEvents::EMPTY]);
 
-        event_loop.dispatch(Some(Duration::ZERO)).unwrap();
+        event_loop
+            .dispatch(Some(TimeDuration::ZERO))
+            .unwrap();
         assert_eq!(calls.get(), 3);
     }
 
@@ -754,12 +774,16 @@ mod tests {
             0
         });
 
-        event_loop.dispatch(Some(Duration::ZERO)).unwrap();
+        event_loop
+            .dispatch(Some(TimeDuration::ZERO))
+            .unwrap();
         assert_eq!(fired.get(), 1);
         assert!(!event_loop.is_active(source));
         assert!(event_loop.remove_source(source).is_err());
 
-        event_loop.dispatch(Some(Duration::ZERO)).unwrap();
+        event_loop
+            .dispatch(Some(TimeDuration::ZERO))
+            .unwrap();
         assert_eq!(fired.get(), 1);
     }
 }

@@ -19,18 +19,16 @@
 //! and file descriptors, a [`WlConnection`] buffers them and a [`WlClosure`]
 //! encodes or decodes a single protocol message.
 
-use core::time::Duration;
-
-use alloc::collections::VecDeque;
-use alloc::format;
-use alloc::string::String;
-use alloc::vec::Vec;
-
 use crate::error::{WlError, WlResult};
 use crate::handle::{
     MAX_MESSAGE_SIZE, WlArgType, WlArgument, WlArray, WlFd, WlFixed, WlMap, WlMessage, WlObject,
     WlPollEvents, arg_count, get_next_argument,
 };
+use alloc::collections::VecDeque;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+use codevar_time_core::TimeDuration;
 
 /// Opaque handle used to poll a transport from an event loop.
 pub type WlHandle = u64;
@@ -58,9 +56,9 @@ pub trait WlTransport {
 
     /// Waits until one of `mask` events is ready or `timeout` elapses.
     ///
-    /// A `timeout` of `None` blocks indefinitely, `Some(Duration::ZERO)`
+    /// A `timeout` of `None` blocks indefinitely, `Some(TimeDuration::ZERO)`
     /// polls without blocking.
-    fn wait(&mut self, timeout: Option<Duration>, mask: WlPollEvents) -> WlResult<WlPollEvents>;
+    fn wait(&mut self, timeout: Option<TimeDuration>, mask: WlPollEvents) -> WlResult<WlPollEvents>;
 
     /// Opaque handle used to poll this transport from an event loop.
     fn handle(&self) -> WlHandle;
@@ -651,7 +649,7 @@ impl<T: WlTransport> WlConnection<T> {
     /// # Errors
     ///
     /// Returns [`WlError::Disconnected`] when the connection is gone.
-    pub fn wait(&mut self, timeout: Option<Duration>, mask: WlPollEvents) -> WlResult<WlPollEvents> {
+    pub fn wait(&mut self, timeout: Option<TimeDuration>, mask: WlPollEvents) -> WlResult<WlPollEvents> {
         if self.disconnected {
             return Err(WlError::Disconnected);
         }
@@ -721,7 +719,7 @@ mod tests {
             Ok(data.len())
         }
 
-        fn wait(&mut self, _timeout: Option<Duration>, _mask: WlPollEvents) -> WlResult<WlPollEvents> {
+        fn wait(&mut self, _timeout: Option<TimeDuration>, _mask: WlPollEvents) -> WlResult<WlPollEvents> {
             Ok(WlPollEvents::READABLE)
         }
 

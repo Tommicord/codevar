@@ -21,11 +21,16 @@
 //! resulting events. A blocking `roundtrip` would deadlock on a single
 //! thread, so no test uses it.
 
+// Integration test crate: AGENTS.md permits unwrap() in tests, but
+// clippy.toml's allow-unwrap-in-tests only exempts `#[test]` bodies,
+// not the fixtures shared by them.
+#![allow(clippy::unwrap_used)]
+
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::time::Duration;
 
-use codevar_wl_protocol::{
+use codevar_time_core::TimeDuration;
+use codevar_wayland::{
     WlClientDisplay, WlClock, WlError, WlInterface, WlPollEntry, WlPollEvents, WlPoller, WlRegistryEvent,
     WlResult, WlServerDisplay, WlTransport,
 };
@@ -72,7 +77,7 @@ impl WlTransport for ServerEnd {
         Ok(data.len())
     }
 
-    fn wait(&mut self, _timeout: Option<Duration>, mask: WlPollEvents) -> WlResult<WlPollEvents> {
+    fn wait(&mut self, _timeout: Option<TimeDuration>, mask: WlPollEvents) -> WlResult<WlPollEvents> {
         let wire = self.wire.borrow();
         let mut events = WlPollEvents::EMPTY;
         if wire.client_closed {
@@ -125,7 +130,7 @@ impl WlTransport for ClientEnd {
         Ok(data.len())
     }
 
-    fn wait(&mut self, _timeout: Option<Duration>, mask: WlPollEvents) -> WlResult<WlPollEvents> {
+    fn wait(&mut self, _timeout: Option<TimeDuration>, mask: WlPollEvents) -> WlResult<WlPollEvents> {
         let wire = self.wire.borrow();
         let mut events = WlPollEvents::EMPTY;
         if wire.to_client_pos < wire.to_client.len() {
@@ -148,7 +153,7 @@ struct WirePoller {
 }
 
 impl WlPoller for WirePoller {
-    fn poll(&mut self, entries: &mut [WlPollEntry], _timeout: Option<Duration>) -> WlResult<usize> {
+    fn poll(&mut self, entries: &mut [WlPollEntry], _timeout: Option<TimeDuration>) -> WlResult<usize> {
         let wire = self.wire.borrow();
         let mut ready = 0;
         for entry in entries.iter_mut() {
@@ -225,14 +230,14 @@ impl Fixture {
     /// Lets the server read requests and flush its events.
     fn dispatch_server(&mut self) {
         self.server
-            .dispatch(Some(Duration::ZERO))
+            .dispatch(Some(TimeDuration::ZERO))
             .unwrap();
     }
 
     /// Lets the client read and dispatch pending events.
     fn dispatch_client(&mut self) {
         self.client
-            .dispatch(Some(Duration::ZERO))
+            .dispatch(Some(TimeDuration::ZERO))
             .unwrap();
     }
 }
@@ -367,7 +372,7 @@ fn protocol_error_from_a_bogus_request_reaches_the_client() {
 
     let error = fixture
         .client
-        .dispatch(Some(Duration::ZERO))
+        .dispatch(Some(TimeDuration::ZERO))
         .unwrap_err();
     let WlError::Protocol(info) = error else {
         panic!("expected a protocol error, got {error:?}");
@@ -400,6 +405,6 @@ fn dropping_the_client_removes_it_from_the_server() {
     assert_eq!(server.client_count(), 1);
 
     drop(client);
-    server.dispatch(Some(Duration::ZERO)).unwrap();
+    server.dispatch(Some(TimeDuration::ZERO)).unwrap();
     assert_eq!(server.client_count(), 0);
 }

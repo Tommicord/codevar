@@ -23,14 +23,19 @@
 //! requests above the negotiated proxy version are rejected before they
 //! reach the wire.
 
+// Integration test crate: AGENTS.md permits unwrap() in tests, but
+// clippy.toml's allow-unwrap-in-tests only exempts `#[test]` bodies,
+// not the fixtures shared by them.
+#![allow(clippy::unwrap_used)]
+
 use std::cell::{Cell, RefCell};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::rc::Rc;
-use std::time::Duration;
 
-use codevar_wl_protocol::{
+use codevar_time_core::TimeDuration;
+use codevar_wayland::{
     BUFFER_INTERFACE, BUFFER_RELEASE, CALLBACK_DONE, CALLBACK_INTERFACE, COMPOSITOR_CREATE_REGION,
     COMPOSITOR_CREATE_SURFACE, COMPOSITOR_INTERFACE, COMPOSITOR_RELEASE, REGION_INTERFACE, SHM_CREATE_POOL,
     SHM_FORMAT, SHM_FORMAT_ARGB8888, SHM_FORMAT_XRGB8888, SHM_INTERFACE, SHM_POOL_CREATE_BUFFER,
@@ -74,14 +79,14 @@ impl Fixture {
     /// Lets the server read requests and flush its events.
     fn dispatch_server(&mut self) {
         self.server
-            .dispatch(Some(Duration::ZERO))
+            .dispatch(Some(TimeDuration::ZERO))
             .unwrap();
     }
 
     /// Lets the client read and dispatch pending events.
     fn dispatch_client(&mut self) {
         self.client
-            .dispatch(Some(Duration::ZERO))
+            .dispatch(Some(TimeDuration::ZERO))
             .unwrap();
     }
 }

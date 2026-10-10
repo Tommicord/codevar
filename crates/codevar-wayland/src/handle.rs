@@ -1435,9 +1435,6 @@ impl WlList {
         if other.is_empty() {
             return;
         }
-        if self.prev.is_null() || self.next.is_null() {
-            self.init();
-        }
         // Safety: `other` is non-empty, so its first and last nodes are valid
         // nodes of the same list; `self` and `other` are distinct lists.
         unsafe {
@@ -1527,12 +1524,12 @@ impl Iterator for WlListIter {
 /// # Examples
 ///
 /// ```
-/// use codevar_wl_protocol::wl_container_of;
+/// use codevar_wayland::wl_container_of;
 ///
-/// struct Node { link: codevar_wl_protocol::WlList, value: u32 }
-/// let mut node = Node { link: codevar_wl_protocol::WlList::new(), value: 7 };
+/// struct Node { link: codevar_wayland::WlList, value: u32 }
+/// let mut node = Node { link: codevar_wayland::WlList::new(), value: 7 };
 /// node.link.init();
-/// let link: *mut codevar_wl_protocol::WlList = &mut node.link;
+/// let link: *mut codevar_wayland::WlList = &mut node.link;
 /// let node_ptr = wl_container_of!(link, Node, link);
 /// assert_eq!(unsafe { (*node_ptr).value }, 7);
 /// ```
@@ -1645,7 +1642,7 @@ impl<C, T> Default for WlSignal<C, T> {
 /// # Examples
 ///
 /// ```
-/// use codevar_wl_protocol::{WlSignal, wl_signal_emit};
+/// use codevar_wayland::{WlSignal, wl_signal_emit};
 ///
 /// struct Display { destroy: WlSignal<Display, ()> }
 /// let mut display = Display { destroy: WlSignal::new() };

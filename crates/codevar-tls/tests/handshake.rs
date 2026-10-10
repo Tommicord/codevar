@@ -16,6 +16,11 @@
 //! End-to-end TLS handshakes driven entirely in memory (no sockets):
 //! client and server bytes are shuttled between the two connections.
 
+// Integration test crate: AGENTS.md permits expect() in tests, but
+// clippy.toml's allow-expect-in-tests only exempts `#[test]` bodies,
+// not the helpers shared by them.
+#![allow(clippy::expect_used)]
+
 use codevar_tls::{
     CertifiedKey, ClientConfig, ProtocolVersion, ServerConfig, ServerName, TlsClientConnection, TlsError,
     TlsServerConnection, parse_pem_certs,

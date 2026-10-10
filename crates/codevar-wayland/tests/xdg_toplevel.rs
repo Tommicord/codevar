@@ -22,11 +22,16 @@
 //! commit. The client answers the ping, records the configure serial
 //! and closes the loop by acking it.
 
+// Integration test crate: AGENTS.md permits unwrap() in tests, but
+// clippy.toml's allow-unwrap-in-tests only exempts `#[test]` bodies,
+// not the fixtures shared by them.
+#![allow(clippy::unwrap_used)]
+
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::time::Duration;
 
-use codevar_wl_protocol::{
+use codevar_time_core::TimeDuration;
+use codevar_wayland::{
     COMPOSITOR_CREATE_SURFACE, COMPOSITOR_INTERFACE, SURFACE_COMMIT, SURFACE_DESTROY, SURFACE_INTERFACE,
     WlArgument, WlClientDisplay, WlClock, WlDisplayError, WlProxyId, WlRegistryEvent, WlResult,
     WlServerDisplay, WlUnixPoller, WlUnixTransport, XDG_SURFACE_ACK_CONFIGURE, XDG_SURFACE_CONFIGURE,
@@ -70,14 +75,14 @@ impl Fixture {
     /// Lets the server read requests and flush its events.
     fn dispatch_server(&mut self) {
         self.server
-            .dispatch(Some(Duration::ZERO))
+            .dispatch(Some(TimeDuration::ZERO))
             .unwrap();
     }
 
     /// Lets the client read and dispatch pending events.
     fn dispatch_client(&mut self) {
         self.client
-            .dispatch(Some(Duration::ZERO))
+            .dispatch(Some(TimeDuration::ZERO))
             .unwrap();
     }
 }
@@ -215,7 +220,7 @@ fn install_wm_base_handler(server: &mut TestServer, record: &Rc<RefCell<Record>>
                 };
                 let new_id = *new_id;
                 if let Err(error) =
-                    client.create_resource(new_id, &codevar_wl_protocol::XDG_POSITIONER_INTERFACE, version)
+                    client.create_resource(new_id, &codevar_wayland::XDG_POSITIONER_INTERFACE, version)
                 {
                     client.post_error(
                         sender,

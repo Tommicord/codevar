@@ -609,6 +609,75 @@ fn describe_choices(choices: &[&'static str]) -> &'static str {
     &*Box::leak(format!("one of: {joined}").into_boxed_str())
 }
 
+/// A failure to obtain the process command line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArgvError {
+    /// The current platform/build provides no argument source
+    Unsupported,
+    /// The argument at `index` (0-based, counting `argv[0]`) is not valid
+    /// Unicode. The driver requires UTF-8 arguments so diagnostics and paths
+    /// stay deterministic across platforms.
+    InvalidUtf8 {
+        /// 0-based index of the offending argument.
+        index: usize,
+    },
+}
+
+impl core::fmt::Display for ArgvError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Unsupported => {
+                write!(
+                    f,
+                    "no command-line argument source is available on this platform \
+                     (enable the `std` feature)"
+                )
+            }
+            Self::InvalidUtf8 { index } => write!(f, "argument {index} is not valid Unicode"),
+        }
+    }
+}
+
+/// Copies process arguments out of a C `argc`/`argv` pair.
+///
+/// The returned vector always includes `argv[0]` (the program name) as its
+/// first element when `argc > 0`. A `null` `argv` or non-positive `argc` yields an empty
+/// vector instead of trapping, so callers can pass raw entry-point values unconditionally.
+///
+/// # Errors
+///
+/// Returns [`ArgvError::InvalidUtf8`] with the 0-based argument index when an
+/// argument is not valid UTF-8.
+///
+/// # Safety
+///
+/// - `argv` must be null, or must point to at least `argc` readable pointers.
+/// - Every non-null entry below `argc` must point to a NUL-terminated byte
+///   string that outlives this call (the C runtime contract; the strings are
+///   copied before returning, so the caller may free them afterward).
+/// - The `argc`/`argv` pair must come from the process entry point or an
+///   equivalent, still-live source; reading a freed `argv` is undefined.
+pub unsafe fn from_c_args(
+    argc: libc::c_int,
+    argv: *const *const libc::c_char,
+) -> Result<Vec<String>, ArgvError> {
+    if argc <= 0 || argv.is_null() {
+        return Ok(Vec::new());
+    }
+    let count = argc as usize;
+    let mut args = Vec::with_capacity(count);
+    for index in 0..count {
+        let pointer = unsafe { *argv.add(index) };
+        if pointer.is_null() {
+            break;
+        }
+        let bytes = unsafe { core::ffi::CStr::from_ptr(pointer) }.to_bytes();
+        let text = core::str::from_utf8(bytes).map_err(|_| ArgvError::InvalidUtf8 { index })?;
+        args.push(String::from(text));
+    }
+    Ok(args)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

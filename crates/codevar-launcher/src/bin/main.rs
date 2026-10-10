@@ -19,7 +19,11 @@
 extern crate alloc;
 
 #[cfg(not(test))]
-use codevar_logger::log_info;
+use codevar_launcher::driver;
+#[cfg(not(test))]
+use codevar_launcher::driver::Exit;
+#[cfg(not(test))]
+use codevar_logger::log_error;
 #[cfg(not(test))]
 use codevar_tlsf_alloc::LockedGrowableTlsf;
 
@@ -27,8 +31,8 @@ use codevar_tlsf_alloc::LockedGrowableTlsf;
 #[global_allocator]
 static HEAP: LockedGrowableTlsf = LockedGrowableTlsf::new();
 
-/// Freestanding entry: initialize the process hooks, then return the exit
-/// code to the C runtime.
+/// Freestanding entry: initialize the process hooks, run the window
+/// event loop, then return the exit code to the C runtime.
 ///
 /// # Safety
 ///
@@ -38,16 +42,17 @@ static HEAP: LockedGrowableTlsf = LockedGrowableTlsf::new();
 #[cfg(not(test))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn main(
-    _argc: core::ffi::c_int,
-    _argv: *const *const core::ffi::c_char,
+    argc: core::ffi::c_int,
+    argv: *const *const core::ffi::c_char,
 ) -> core::ffi::c_int {
-    codevar_sig_module_base::init();
-    if let Err(e) = codevar_sig_handler::install() {
-        log_info!("error installing signal handler: {}", e);
-    } else {
-        log_info!("installed signal handler");
-    }
-    libc::EXIT_SUCCESS
+    let args = match unsafe { codevar_cli_arg_parse::from_c_args(argc, argv) } {
+        Ok(args) => args,
+        Err(error) => {
+            log_error!("invalid command line: {}", error);
+            return Exit::Usage.code();
+        }
+    };
+    driver::run(&args).code()
 }
 
 #[cfg(all(not(test), unix))]

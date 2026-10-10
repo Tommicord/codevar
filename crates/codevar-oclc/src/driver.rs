@@ -52,8 +52,6 @@ pub enum Exit {
     Failure,
     /// The command line was invalid (bad flags, missing `INPUT`).
     Usage,
-    /// An internal compiler error (panic) was reported; mirrors rustc's 101.
-    Ice,
 }
 
 impl Exit {
@@ -65,16 +63,14 @@ impl Exit {
             Self::Success => 0,
             Self::Failure => 1,
             Self::Usage => 2,
-            Self::Ice => 101,
         }
     }
 }
 
 /// The compiler driver: a full command line plus the pipeline that consumes it.
 ///
-/// Modeled on rustc's `RunCompiler`: constructed once from borrowed
-/// arguments, consumed by [`Driver::run`], which returns the process exit
-/// status instead of exiting itself so embedders and tests can drive it.
+/// Constructed once from borrowed arguments, consumed by [`Driver::run`], which returns
+/// the process exit status instead of exiting itself so embedders and tests can drive it.
 ///
 /// # Examples
 ///
@@ -419,20 +415,6 @@ fn push_typed_list(out: &mut String, items: &[(String, codevar_ocl_sar::Ty)]) {
 #[must_use]
 pub fn run(args: &[String]) -> Exit {
     Driver::new(args).run()
-}
-
-/// Reads the OS command line (see [`crate::argv::raw_args`]) and runs it.
-///
-/// # Errors that produce [`Exit::Failure`]
-///
-/// A missing or undecodable command line is reported to stderr and returns
-/// [`Exit::Failure`].
-#[must_use]
-pub fn run_from_env() -> Exit {
-    match crate::argv::raw_args() {
-        Ok(args) => Driver::new(&args).run(),
-        Err(error) => failure(&format!("failed to read the command line: {error}")),
-    }
 }
 
 /// Builds the compiler's flag definition (help text comes from the same

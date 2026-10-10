@@ -20,6 +20,7 @@ pub mod base64;
 pub mod cpuid;
 pub mod daemon;
 pub mod html;
+pub mod sleep;
 pub mod time;
 pub mod url;
 pub mod xml;

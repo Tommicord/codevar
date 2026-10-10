@@ -25,14 +25,11 @@
 //! Run it inside a Wayland session:
 //!
 //! ```text
-//! cargo run -p codevar-wl-protocol --example xdg_window
+//! cargo run -p codevar-wayland --example xdg_window
 //! ```
 
-use std::cell::{Cell, RefCell};
-use std::rc::Rc;
-use std::time::{Duration, Instant};
-
-use codevar_wl_protocol::{
+use codevar_time_core::TimeDuration;
+use codevar_wayland::{
     BUFFER_DESTROY, COMPOSITOR_CREATE_SURFACE, COMPOSITOR_INTERFACE, SHM_CREATE_POOL, SHM_FORMAT_XRGB8888,
     SHM_INTERFACE, SHM_POOL_CREATE_BUFFER, SHM_POOL_DESTROY, SURFACE_ATTACH, SURFACE_COMMIT, SURFACE_DAMAGE,
     SURFACE_DESTROY, SURFACE_FRAME, WlArgument, WlClientDisplay, WlError, WlProxyId, WlRegistryEvent,
@@ -41,6 +38,9 @@ use codevar_wl_protocol::{
     XDG_TOPLEVEL_SET_APP_ID, XDG_TOPLEVEL_SET_TITLE, XDG_WM_BASE_GET_XDG_SURFACE, XDG_WM_BASE_INTERFACE,
     XDG_WM_BASE_PING, XDG_WM_BASE_PONG,
 };
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 /// Width of the demo window in surface local pixels.
 const WIDTH: i32 = 640;
@@ -164,7 +164,7 @@ fn run() -> WlResult<String> {
                 "timed out waiting for xdg_surface.configure",
             )));
         }
-        display.dispatch(Some(Duration::from_millis(50)))?;
+        display.dispatch(Some(TimeDuration::from_millis(50)))?;
     }
     let Some(serial) = configure_serial.get() else {
         return Err(WlError::InvalidState(String::from(
@@ -220,7 +220,7 @@ fn run() -> WlResult<String> {
         }
         display.flush()?;
         while !frame_done.get() && !closed.get() && Instant::now() < deadline {
-            display.dispatch(Some(Duration::from_millis(50)))?;
+            display.dispatch(Some(TimeDuration::from_millis(50)))?;
         }
         if !frame_done.get() {
             break;
@@ -254,7 +254,7 @@ fn bind(
     display: &mut WlClientDisplay<WlUnixTransport>,
     registry: WlProxyId,
     globals: &Globals,
-    interface: &'static codevar_wl_protocol::WlInterface,
+    interface: &'static codevar_wayland::WlInterface,
 ) -> WlResult<WlProxyId> {
     let (name, version) = globals
         .borrow()

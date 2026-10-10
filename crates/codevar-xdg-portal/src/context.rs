@@ -136,6 +136,7 @@ pub struct PortalContext<T: DbusTransport + 'static> {
     sessions: BTreeMap<String, SessionHandle>,
     interfaces: Vec<PortalInterface<T>>,
     quit_status: Option<i32>,
+    match_rules_registered: bool,
 }
 
 impl<T: DbusTransport + 'static> PortalContext<T> {
@@ -158,6 +159,7 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
             sessions: BTreeMap::new(),
             interfaces: Vec::new(),
             quit_status: None,
+            match_rules_registered: false,
         })
     }
 
@@ -314,35 +316,59 @@ impl<T: DbusTransport + 'static> PortalContext<T> {
     /// and dispatches method calls. Returns the quit status when
     /// `quit()` is called.
     pub fn run(&mut self) -> XdpResult<i32> {
-        // Register match rules for the interfaces we serve
-        self.register_match_rules()?;
-
         loop {
-            if let Some(status) = self.quit_status.take() {
+            if let Some(status) = self.poll_once(Duration::from_millis(100))? {
                 return Ok(status);
             }
+        }
+    }
 
-            match self.conn.recv_timeout(Duration::from_millis(100)) {
-                Ok(message) => {
-                    if let Err(e) = self.handle_message(message) {
-                        log_error!("Error handling message: {}", e);
-                    }
-                }
-                Err(DbusError::Timeout) => {
-                    // Normal timeout, continue loop
-                }
-                Err(DbusError::Disconnected) => {
-                    return Err(PortalError::Failed(String::from("disconnected from bus")));
-                }
-                Err(e) => {
-                    log_error!("Error receiving message: {}", e);
+    /// Processes at most one portal event, waiting up to `timeout` for one.
+    ///
+    /// Match rules are registered on the first call. The context receives
+    /// and dispatches a single message, flushes pending writes and returns
+    /// `Ok(None)`. Once [`Self::quit`] has been called, the queued status is
+    /// returned as `Ok(Some(status))` without touching the bus again.
+    ///
+    /// This is the non-blocking building block of [`Self::run`], meant for
+    /// callers that interleave portal traffic with another event source
+    /// such as a window system.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PortalError::Failed`] when the bus connection dropped and
+    /// propagates any failure of the match-rule registration.
+    pub fn poll_once(&mut self, timeout: Duration) -> XdpResult<Option<i32>> {
+        if !self.match_rules_registered {
+            self.register_match_rules()?;
+            self.match_rules_registered = true;
+        }
+
+        if let Some(status) = self.quit_status.take() {
+            return Ok(Some(status));
+        }
+
+        match self.conn.recv_timeout(timeout) {
+            Ok(message) => {
+                if let Err(e) = self.handle_message(message) {
+                    log_error!("Error handling message: {}", e);
                 }
             }
-
-            if let Err(e) = self.conn.flush() {
-                log_error!("Error flushing connection: {}", e);
+            Err(DbusError::Timeout) => {
+                // Normal timeout, nothing to dispatch
+            }
+            Err(DbusError::Disconnected) => {
+                return Err(PortalError::Failed(String::from("disconnected from bus")));
+            }
+            Err(e) => {
+                log_error!("Error receiving message: {}", e);
             }
         }
+
+        if let Err(e) = self.conn.flush() {
+            log_error!("Error flushing connection: {}", e);
+        }
+        Ok(None)
     }
 
     /// Requests the run loop to exit with the given status.

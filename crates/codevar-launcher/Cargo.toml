@@ -12,9 +12,11 @@ ash = { workspace = true }
 spin = { workspace = true }
 libc = { workspace = true }
 codevar-tlsf-alloc = { workspace = true }
+codevar-cli-arg-parse = { workspace = true }
+codevar-time-core = { workspace = true }
 codevar-base = { workspace = true }
 codevar-gpu-core = { workspace = true }
-codevar-wl-protocol = { workspace = true }
+codevar-wayland = { workspace = true }
 codevar-sig-module-base = { workspace = true }
 codevar-sig-handler = { workspace = true }
 codevar-env = { workspace = true }

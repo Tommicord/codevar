@@ -26,14 +26,19 @@
 //! `get_surface_feedback` naming an unknown object and observes the
 //! compositor's `wl_display.error`.
 
+// Integration test crate: AGENTS.md permits unwrap() in tests, but
+// clippy.toml's allow-unwrap-in-tests only exempts `#[test]` bodies,
+// not the fixtures shared by them.
+#![allow(clippy::unwrap_used)]
+
 use std::cell::RefCell;
 use std::fs::File;
 use std::io::{Read, Seek, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::rc::Rc;
-use std::time::Duration;
 
-use codevar_wl_protocol::{
+use codevar_time_core::TimeDuration;
+use codevar_wayland::{
     BUFFER_INTERFACE, BUFFER_PARAMS_ADD, BUFFER_PARAMS_CREATE, BUFFER_PARAMS_CREATE_IMMED,
     BUFFER_PARAMS_CREATED, BUFFER_PARAMS_DESTROY, BUFFER_PARAMS_FAILED, BUFFER_PARAMS_INTERFACE,
     COMPOSITOR_CREATE_SURFACE, COMPOSITOR_INTERFACE, DMABUF_CREATE_PARAMS, DMABUF_DESTROY,
@@ -80,14 +85,14 @@ impl Fixture {
     /// Lets the server read requests and flush its events.
     fn dispatch_server(&mut self) {
         self.server
-            .dispatch(Some(Duration::ZERO))
+            .dispatch(Some(TimeDuration::ZERO))
             .unwrap();
     }
 
     /// Lets the client read and dispatch pending events.
     fn dispatch_client(&mut self) {
         self.client
-            .dispatch(Some(Duration::ZERO))
+            .dispatch(Some(TimeDuration::ZERO))
             .unwrap();
     }
 }
@@ -862,7 +867,7 @@ fn bogus_surface_feedback_reports_a_protocol_error() {
 
     let dispatch_error = fixture
         .client
-        .dispatch(Some(Duration::ZERO))
+        .dispatch(Some(TimeDuration::ZERO))
         .expect_err("the compositor must reject the unknown surface");
     let WlError::Protocol(error) = dispatch_error else {
         panic!("dispatch failed with {dispatch_error}");

@@ -19,7 +19,6 @@
 //! `unwrap` appears only on inputs this file itself constructs (known-good
 //! strings and files), which is the sanctioned unit-test exception.
 
-use crate::argv::{self, ArgvError};
 use crate::driver::{expand_response_files, lex_source, line_column, run};
 use crate::{Exit, fs};
 use alloc::string::String;
@@ -52,72 +51,6 @@ fn exit_codes_are_stable() {
     assert_eq!(Exit::Success.code(), 0);
     assert_eq!(Exit::Failure.code(), 1);
     assert_eq!(Exit::Usage.code(), 2);
-    assert_eq!(Exit::Ice.code(), 101);
-}
-
-#[test]
-fn cmdline_split_basic() {
-    let fields = argv::parse_cmdline_bytes(b"cc\0--emit\0tokens\0").unwrap();
-    assert_eq!(
-        fields,
-        vec![b"cc".to_vec(), b"--emit".to_vec(), b"tokens".to_vec()]
-    );
-}
-
-#[test]
-fn cmdline_split_keeps_empty_arguments() {
-    let fields = argv::parse_cmdline_bytes(b"prog\0\0-a\0b c\0").unwrap();
-    assert_eq!(fields.len(), 4);
-    assert_eq!(fields[1], b"");
-    assert_eq!(fields[3], b"b c");
-}
-
-#[test]
-fn cmdline_split_empty_input_is_empty_process() {
-    assert_eq!(argv::parse_cmdline_bytes(b"").unwrap(), Vec::<Vec<u8>>::new());
-    assert_eq!(argv::parse_cmdline_bytes(b"\0").unwrap(), vec![Vec::<u8>::new()]);
-}
-
-#[test]
-fn cmdline_split_without_trailing_nul() {
-    let fields = argv::parse_cmdline_bytes(b"a\0b").unwrap();
-    assert_eq!(fields, vec![b"a".to_vec(), b"b".to_vec()]);
-}
-
-#[test]
-fn decode_reports_first_invalid_utf8() {
-    let fields = vec![b"ok".to_vec(), vec![0xff, 0xfe]];
-    assert_eq!(
-        argv::decode_fields(fields).unwrap_err(),
-        ArgvError::InvalidUtf8 { index: 1 }
-    );
-}
-
-/// `unwrap` is safe: Linux guarantees `/proc/self/cmdline` for a live process.
-#[cfg(target_os = "linux")]
-#[test]
-fn from_cmdline_returns_process_args() {
-    let args = argv::from_cmdline().unwrap();
-    assert!(!args.is_empty());
-}
-
-/// `unwrap` is safe: the pointers reference literals owned by this test.
-#[test]
-fn from_c_args_copies_process_strings() {
-    let first = b"codevar-oclc\0";
-    let second = b"--emit\0";
-    let pointers = [
-        first.as_ptr() as *const core::ffi::c_char,
-        second.as_ptr() as *const core::ffi::c_char,
-    ];
-    let args = unsafe { argv::from_c_args(2, pointers.as_ptr()) }.unwrap();
-    assert_eq!(args, ["codevar-oclc", "--emit"]);
-}
-
-#[test]
-fn from_c_args_tolerates_empty_entry_point() {
-    let args = unsafe { argv::from_c_args(0, core::ptr::null()) }.unwrap();
-    assert!(args.is_empty());
 }
 
 #[test]

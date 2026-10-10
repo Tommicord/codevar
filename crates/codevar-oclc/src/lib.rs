@@ -50,15 +50,13 @@
 #![cfg_attr(not(test), no_std)]
 #![warn(missing_docs)]
 extern crate alloc;
-
-pub mod argv;
 pub mod driver;
 mod fs;
 
 #[cfg(test)]
 mod tests;
 
-pub use driver::{Driver, Exit, run, run_from_env};
+pub use driver::{Driver, Exit, run};
 
 /// OpenCL kernels compiled and embedded in the executable at build time.
 ///
@@ -94,6 +92,5 @@ pub mod kernels {
         /// Names of the `#[kernel]` entry points the source declares.
         pub entry_points: &'static [&'static str],
     }
-
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }

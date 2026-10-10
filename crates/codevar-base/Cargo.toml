@@ -20,7 +20,7 @@ libc = { workspace = true }
 windows-link = { workspace = true }
 spin = { workspace = true }
 codevar-textlike-encode = { workspace = true }
-codevar-time-util = { workspace = true }
+codevar-time-core = { workspace = true }
 codevar-console-util = { workspace = true }
 codevar-io = { workspace = true }
 rustc-demangle = { workspace = true }

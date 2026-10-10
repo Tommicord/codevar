@@ -33,9 +33,9 @@
 //! # Example
 //!
 //! ```
-//! use core::time::Duration;
+//! use codevar_time_core::TimeDuration;
 //!
-//! use codevar_wl_protocol::{
+//! use codevar_wayland::{
 //!     WlClock, WlInterface, WlPollEntry, WlPoller, WlResult, WlServerDisplay, WlTransport,
 //! };
 //!
@@ -45,7 +45,7 @@
 //!     fn poll(
 //!         &mut self,
 //!         _entries: &mut [WlPollEntry],
-//!         _timeout: Option<Duration>,
+//!         _timeout: Option<TimeDuration>,
 //!     ) -> WlResult<usize> {
 //!         Ok(0)
 //!     }
@@ -72,17 +72,6 @@
 //! # }
 //! ```
 
-use core::cell::RefCell;
-use core::time::Duration;
-
-use alloc::boxed::Box;
-use alloc::collections::VecDeque;
-use alloc::format;
-use alloc::rc::Rc;
-use alloc::string::String;
-use alloc::vec;
-use alloc::vec::Vec;
-
 use crate::conn::{WlClosure, WlConnection, WlTransport, lookup_objects};
 use crate::error::{WlError, WlResult};
 use crate::evloop::{WlClock, WlEventLoop, WlEventSourceId, WlPoller};
@@ -92,6 +81,15 @@ use crate::handle::{
     REGISTRY_GLOBAL_REMOVE, REGISTRY_INTERFACE, SERVER_ID_START, WlArgument, WlDisplayError, WlInterface,
     WlMap, WlMapIter, WlMapSide, WlObject, WlPollEvents,
 };
+use alloc::boxed::Box;
+use alloc::collections::VecDeque;
+use alloc::format;
+use alloc::rc::Rc;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+use codevar_time_core::TimeDuration;
+use core::cell::RefCell;
 
 /// Id of the display resource, which is always `1`.
 pub const DISPLAY_RESOURCE_ID: u32 = 1;
@@ -786,7 +784,7 @@ where
     /// # Errors
     ///
     /// Returns [`WlError::Io`] when the poller fails.
-    pub fn dispatch(&mut self, timeout: Option<Duration>) -> WlResult<()> {
+    pub fn dispatch(&mut self, timeout: Option<TimeDuration>) -> WlResult<()> {
         self.drain_tasks();
         self.event_loop.dispatch(timeout)?;
         self.drain_tasks();
@@ -1286,7 +1284,7 @@ mod tests {
             Ok(data.len())
         }
 
-        fn wait(&mut self, _timeout: Option<Duration>, mask: WlPollEvents) -> WlResult<WlPollEvents> {
+        fn wait(&mut self, _timeout: Option<TimeDuration>, mask: WlPollEvents) -> WlResult<WlPollEvents> {
             let state = self.state.borrow();
             let mut events = WlPollEvents::EMPTY;
             if state.peer_closed {
@@ -1312,7 +1310,7 @@ mod tests {
     }
 
     impl WlPoller for PipePoller {
-        fn poll(&mut self, entries: &mut [WlPollEntry], _timeout: Option<Duration>) -> WlResult<usize> {
+        fn poll(&mut self, entries: &mut [WlPollEntry], _timeout: Option<TimeDuration>) -> WlResult<usize> {
             let mut state = self.state.borrow_mut();
             if state.task_ran {
                 state.polls_after_task += 1;
@@ -1393,7 +1391,7 @@ mod tests {
         /// Runs one non-blocking dispatch of the display.
         fn dispatch(&mut self) {
             self.display
-                .dispatch(Some(Duration::ZERO))
+                .dispatch(Some(TimeDuration::ZERO))
                 .unwrap();
         }
 

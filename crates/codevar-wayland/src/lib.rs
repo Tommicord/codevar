@@ -22,7 +22,7 @@
 //! # Example
 //!
 //! ```
-//! use codevar_wl_protocol::{WlClientDisplay, WlTransport, WlResult};
+//! use codevar_wayland::{WlClientDisplay, WlTransport, WlResult};
 //! # fn demo<T: WlTransport>(transport: T) -> WlResult<()> {
 //! let mut display = WlClientDisplay::connect(transport)?;
 //! let _registry = display.get_registry()?;
@@ -48,7 +48,7 @@ mod unix;
 mod xdg_shell;
 
 pub use client::{WlClientDisplay, WlProxyId, WlRegistryEvent};
-pub use conn::{WlClosure, WlConnection, WlTransport, reserve_new_ids};
+pub use conn::{WlClosure, WlConnection, WlHandle, WlTransport, reserve_new_ids};
 pub use core::*;
 pub use dmabuf::*;
 pub use drm_syncobj::*;
@@ -56,7 +56,7 @@ pub use error::{WlError, WlProtocolError, WlResult};
 pub use evloop::{WlClock, WlEventLoop, WlEventSourceId, WlPollEntry, WlPollEvents, WlPoller};
 pub use handle::{
     CALLBACK_DONE, CALLBACK_INTERFACE, MAX_CLOSURE_ARGS, MAX_MESSAGE_WORDS, WlArgument, WlArray,
-    WlDisplayError, WlFixed, WlInterface, WlList, WlMap, WlMessage, WlObject, WlSignal,
+    WlDisplayError, WlFd, WlFixed, WlInterface, WlList, WlMap, WlMessage, WlObject, WlSignal,
 };
 pub use server::{WlClient, WlClientId, WlResource, WlServerDisplay, WlTaskQueue};
 #[cfg(unix)]

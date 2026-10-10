@@ -21,14 +21,19 @@
 //! and full [`WlClientDisplay`] to [`WlServerDisplay`] protocol
 //! exchanges driven by the `poll(2)` poller.
 
+// Integration test crate: AGENTS.md permits unwrap() in tests, but
+// clippy.toml's allow-unwrap-in-tests only exempts `#[test]` bodies,
+// not the fixtures shared by them.
+#![allow(clippy::unwrap_used)]
+
 use std::cell::{Cell, RefCell};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
 use std::rc::Rc;
-use std::time::Duration;
 
-use codevar_wl_protocol::{
+use codevar_time_core::TimeDuration;
+use codevar_wayland::{
     WlClientDisplay, WlClock, WlError, WlInterface, WlPollEntry, WlPollEvents, WlPoller, WlRegistryEvent,
     WlServerDisplay, WlTransport, WlUnixPoller, WlUnixTransport,
 };
@@ -68,14 +73,14 @@ impl Fixture {
     /// Lets the server read requests and flush its events.
     fn dispatch_server(&mut self) {
         self.server
-            .dispatch(Some(Duration::ZERO))
+            .dispatch(Some(TimeDuration::ZERO))
             .unwrap();
     }
 
     /// Lets the client read and dispatch pending events.
     fn dispatch_client(&mut self) {
         self.client
-            .dispatch(Some(Duration::ZERO))
+            .dispatch(Some(TimeDuration::ZERO))
             .unwrap();
     }
 }
@@ -101,12 +106,12 @@ fn bytes_round_trip_and_would_block() {
     ));
 
     let events = first
-        .wait(Some(Duration::ZERO), WlPollEvents::READABLE)
+        .wait(Some(TimeDuration::ZERO), WlPollEvents::READABLE)
         .unwrap();
     assert!(events.is_empty());
     second.send(b"x", &[]).unwrap();
     let events = first
-        .wait(Some(Duration::ZERO), WlPollEvents::READABLE)
+        .wait(Some(TimeDuration::ZERO), WlPollEvents::READABLE)
         .unwrap();
     assert!(events.contains(WlPollEvents::READABLE));
 }
@@ -115,7 +120,7 @@ fn bytes_round_trip_and_would_block() {
 fn wait_expires_without_data() {
     let (mut transport, _peer) = WlUnixTransport::pair().unwrap();
     let events = transport
-        .wait(Some(Duration::from_millis(5)), WlPollEvents::READABLE)
+        .wait(Some(TimeDuration::from_millis(5)), WlPollEvents::READABLE)
         .unwrap();
     assert!(events.is_empty());
 }
@@ -179,7 +184,7 @@ fn peer_close_reports_hangup_and_end_of_stream() {
     let (mut transport, peer) = WlUnixTransport::pair().unwrap();
     drop(peer);
     let events = transport
-        .wait(Some(Duration::from_secs(2)), WlPollEvents::READABLE)
+        .wait(Some(TimeDuration::from_secs(2)), WlPollEvents::READABLE)
         .unwrap();
     assert!(events.contains(WlPollEvents::HANGUP));
     let mut buf = [0u8; 8];
@@ -231,13 +236,13 @@ fn poller_reports_readiness_and_hangup() {
 
     assert_eq!(
         poller
-            .poll(&mut [], Some(Duration::ZERO))
+            .poll(&mut [], Some(TimeDuration::ZERO))
             .unwrap(),
         0
     );
     assert_eq!(
         poller
-            .poll(&mut entries, Some(Duration::ZERO))
+            .poll(&mut entries, Some(TimeDuration::ZERO))
             .unwrap(),
         0
     );
@@ -246,7 +251,7 @@ fn poller_reports_readiness_and_hangup() {
     peer.send(b"ping", &[]).unwrap();
     assert_eq!(
         poller
-            .poll(&mut entries, Some(Duration::ZERO))
+            .poll(&mut entries, Some(TimeDuration::ZERO))
             .unwrap(),
         1
     );
@@ -260,7 +265,7 @@ fn poller_reports_readiness_and_hangup() {
     drop(peer);
     assert_eq!(
         poller
-            .poll(&mut entries, Some(Duration::ZERO))
+            .poll(&mut entries, Some(TimeDuration::ZERO))
             .unwrap(),
         1
     );
@@ -369,7 +374,7 @@ fn protocol_error_from_a_bogus_request_reaches_the_client() {
 
     let error = fixture
         .client
-        .dispatch(Some(Duration::ZERO))
+        .dispatch(Some(TimeDuration::ZERO))
         .unwrap_err();
     let WlError::Protocol(info) = error else {
         panic!("expected a protocol error, got {error:?}");
@@ -390,6 +395,6 @@ fn dropping_the_client_removes_it_from_the_server() {
     assert_eq!(server.client_count(), 1);
 
     drop(client);
-    server.dispatch(Some(Duration::ZERO)).unwrap();
+    server.dispatch(Some(TimeDuration::ZERO)).unwrap();
     assert_eq!(server.client_count(), 0);
 }
