@@ -25,14 +25,13 @@
 #![cfg_attr(not(test), no_std)]
 extern crate alloc;
 
+#[cfg(feature = "async")]
+mod async_traits;
 mod cursor;
 mod error;
 mod impls;
 mod terminal;
 mod traits;
-
-#[cfg(feature = "async")]
-mod async_traits;
 
 #[cfg(all(target_family = "unix", not(target_os = "wasi")))]
 mod unix;
@@ -48,7 +47,7 @@ mod fallback;
 
 pub use cursor::Cursor;
 pub use error::{
-    ErrorKind, ErrorType, IoError, IoResult, ReadExactError, SeekFrom, SliceWriteError, WriteFmtError,
+    Error, ErrorKind, ErrorType, ReadExactError, Result, SeekFrom, SliceWriteError, WriteFmtError,
 };
 pub use terminal::{IsTerminal, is_terminal};
 pub use traits::{BufRead, Read, ReadReady, Seek, Write, WriteReady};

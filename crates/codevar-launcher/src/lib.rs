@@ -18,4 +18,5 @@
 extern crate alloc;
 pub mod driver;
 pub mod wnd;
+#[cfg(unix)]
 mod wnd_linux;

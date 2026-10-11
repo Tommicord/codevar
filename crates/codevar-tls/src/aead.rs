@@ -20,6 +20,8 @@ use crate::crypto_aes_gcm;
 use crate::crypto_chacha20poly1305;
 use crate::error::{TlsError, TlsResult};
 use crate::ids::AeadAlgorithm;
+use alloc::format;
+use alloc::vec::Vec;
 use zeroize::Zeroize;
 
 /// Directional AEAD key + IV.

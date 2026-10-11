@@ -25,6 +25,9 @@ use crate::frame::WsFrame;
 use crate::handshake::{WsServerHandshake, try_parse_request};
 use crate::ids::{Role, WsCloseCode};
 use crate::message::WsMessage;
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 
 /// WebSocket server connection.
 ///

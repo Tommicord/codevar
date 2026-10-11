@@ -12,6 +12,7 @@ name = "codevar_truetype_smooth"
 
 [dependencies]
 spin = { workspace = true }
+libm = { workspace = true }
 codevar-truetype-core = { workspace = true }
 codevar-logger = { workspace = true }
 codevar-ocl = { workspace = true }

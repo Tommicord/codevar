@@ -38,7 +38,8 @@ use crate::key_schedule::{Tls12Keys, Tls13KeySchedule, finished_label};
 use crate::kx::{KeySharePrivate, KeySharePublic, generate_key_share, shared_secret};
 use crate::prf::ct_eq;
 use crate::sign::tls13_cert_verify_content;
-use std::sync::Arc;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ServerHs {

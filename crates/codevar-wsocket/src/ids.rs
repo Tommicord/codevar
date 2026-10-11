@@ -19,8 +19,9 @@
 //! (handshake header semantics).
 
 use crate::error::{WsError, WsResult};
+use alloc::format;
 use bsize::BSize;
-use std::fmt;
+use core::fmt;
 
 /// WebSocket protocol version advertised in `Sec-WebSocket-Version` (RFC 6455).
 pub const VERSION: u8 = 13;

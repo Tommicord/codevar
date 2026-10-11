@@ -16,6 +16,7 @@
 //! Transcript hash helpers.
 
 use crate::ids::HashAlgorithm;
+use alloc::vec::Vec;
 use sha2::{Digest, Sha256, Sha384};
 
 /// Computes the hash of an empty input (used by TLS 1.3 `Derive-Secret(..., "")`).

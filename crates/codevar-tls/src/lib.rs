@@ -13,6 +13,9 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
+#![cfg_attr(not(test), no_std)]
+extern crate alloc;
+
 pub mod aead;
 pub mod alert;
 pub mod cert;

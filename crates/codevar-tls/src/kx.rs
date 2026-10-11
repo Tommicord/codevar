@@ -18,6 +18,7 @@
 use crate::crypto_random::{SysRng, fill_random};
 use crate::error::{TlsError, TlsResult};
 use crate::ids::NamedGroup;
+use alloc::vec::Vec;
 use elliptic_curve::sec1::ToEncodedPoint;
 use p256::ecdh::diffie_hellman as p256_dh;
 use p384::ecdh::diffie_hellman as p384_dh;

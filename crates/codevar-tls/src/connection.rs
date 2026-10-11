@@ -21,7 +21,8 @@ use crate::handshake::HandshakeReassembly;
 use crate::ids::{CipherSuite, ContentType, ProtocolVersion};
 use crate::record::{RecordLayer, RecordProtection};
 use crate::transcript::Transcript;
-use std::collections::VecDeque;
+use alloc::collections::VecDeque;
+use alloc::vec::Vec;
 
 /// High-level connection lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

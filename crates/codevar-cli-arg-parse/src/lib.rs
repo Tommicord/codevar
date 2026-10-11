@@ -658,8 +658,8 @@ impl core::fmt::Display for ArgvError {
 /// - The `argc`/`argv` pair must come from the process entry point or an
 ///   equivalent, still-live source; reading a freed `argv` is undefined.
 pub unsafe fn from_c_args(
-    argc: libc::c_int,
-    argv: *const *const libc::c_char,
+    argc: core::ffi::c_int,
+    argv: *const *const core::ffi::c_char,
 ) -> Result<Vec<String>, ArgvError> {
     if argc <= 0 || argv.is_null() {
         return Ok(Vec::new());

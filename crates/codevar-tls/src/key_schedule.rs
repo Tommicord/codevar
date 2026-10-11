@@ -19,6 +19,8 @@ use crate::hkdf::{derive_secret, hkdf_expand_label, hkdf_extract};
 use crate::ids::{AeadAlgorithm, CipherSuite, HashAlgorithm};
 use crate::prf::{hmac_hash, tls12_prf};
 use crate::record::TrafficKeys;
+use alloc::vec;
+use alloc::vec::Vec;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Directional traffic secrets derived from a TLS 1.3 secret.

@@ -7,3 +7,10 @@ verbose = true
 
 [target.wasm32-unknown-unknown]
 runner = "wasm-server-runner"
+rustflags = [
+    "-C", "opt-level=z",
+    "-C", "lto=fat",
+    "-C", "codegen-units=1",
+]
+[target.thumbv7m-none-eabi]
+runner = "qemu-system-arm -cpu cortex-m3 -machine lm3s6965evb -nographic -d in_asm -semihosting-config enable=on,target=native -kernel"

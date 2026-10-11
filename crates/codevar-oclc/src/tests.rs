@@ -348,17 +348,46 @@ fn fs_reports_missing_files() {
     assert!(fs::read_file("/nonexistent/codevar-oclc-file").is_err());
 }
 
-/// The font rasterization kernel must be compiled and embedded with its
-/// entry point so GPU rasterizers can rely on the registry.
+/// The embedded kernels must be compiled, registered under their
+/// module-qualified paths, and reachable through the generated
+/// submodule statics the HOT paths rely on.
 #[test]
-fn font_raster_kernel_is_embedded() {
-    let module = crate::kernels::KERNEL_MODULES
+fn embedded_kernels_are_registered_and_reachable() {
+    let names: Vec<&str> = crate::kernels::KERNEL_MODULES
         .iter()
-        .find(|module| module.name == "font_raster");
-    let Some(module) = module else {
-        panic!("font_raster kernel missing from KERNEL_MODULES");
-    };
-    assert_eq!(module.entry_points, &["font_raster"]);
-    assert_eq!(&module.spirv[0..4], &[0x03, 0x02, 0x23, 0x07]);
-    assert!(module.source.contains("fn font_raster"));
+        .map(|module| module.name)
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "truetype/raster",
+            "wredit/block",
+            "wredit/gap",
+            "wredit/history",
+            "wredit/levenshtein",
+            "wredit/text"
+        ],
+    );
+    for module in crate::kernels::KERNEL_MODULES {
+        assert_eq!(
+            &module.spirv[0..4],
+            &[0x03, 0x02, 0x23, 0x07],
+            "bad SPIR-V header for {}",
+            module.name
+        );
+    }
+    assert_eq!(crate::kernels::truetype::RASTER_ENTRY_POINTS, &["font_raster"]);
+    assert_eq!(
+        crate::kernels::wredit::BLOCK_ENTRY_POINTS,
+        &["char_count", "block_checksum"]
+    );
+    assert_eq!(crate::kernels::wredit::GAP_ENTRY_POINTS, &["gap_compact"]);
+    assert_eq!(crate::kernels::wredit::TEXT_ENTRY_POINTS, &["count_newlines"]);
+    assert_eq!(
+        crate::kernels::wredit::HISTORY_ENTRY_POINTS,
+        &["history_checksum"]
+    );
+    assert_eq!(crate::kernels::wredit::LEVENSHTEIN_ENTRY_POINTS, &["levenshtein"]);
+    assert!(crate::kernels::wredit::BLOCK_SOURCE.contains("fn char_count"));
+    assert!(crate::kernels::wredit::LEVENSHTEIN_SOURCE.contains("fn levenshtein"));
 }

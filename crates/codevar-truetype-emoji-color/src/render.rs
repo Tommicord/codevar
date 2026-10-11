@@ -71,7 +71,7 @@ const MAX_DIMENSION: i64 = 0x7FFF;
 pub struct RenderedGlyph {
     /// The pixel buffer with its geometry.
     pub bitmap: Bitmap,
-    /// Left side bearing of the bitmap, in pixels (may be negative).
+    /// Left side bearing of the bitmap, in pixels (maybe negative).
     pub bitmap_left: i32,
     /// Distance from the baseline to the bitmap's top row, in pixels.
     pub bitmap_top: i32,

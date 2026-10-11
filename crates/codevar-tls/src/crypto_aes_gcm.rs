@@ -44,6 +44,8 @@
 
 use crate::crypto_ct::{ct_eq, lookup256, mask_u8, mask_u128};
 use crate::crypto_device::capabilities;
+use alloc::vec;
+use alloc::vec::Vec;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 #[cfg(target_arch = "x86")]

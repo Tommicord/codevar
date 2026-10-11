@@ -25,8 +25,9 @@
 //!
 //! This module relies on raw syscalls (`clock_gettime`) and is compatible
 //! with `no_std` environments, including embedded targets. On bare-metal
-//! targets where `libc` is unavailable, the syscall interface falls back
-//! to a stub returning [`TimeError::NotAvailable`].
+//! targets (`target_os = "none"`) there is no operating system to ask for
+//! the time, so a clock query aborts the application through
+//! [`codevar_target::abort_unsupported`] instead of inventing a timestamp.
 
 #![cfg_attr(not(test), no_std)]
 extern crate alloc;
@@ -36,20 +37,10 @@ use core::iter::Sum;
 use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 use core::{fmt, mem};
 
-/// Resolve the `clock_gettime` syscall via `libc`.
-/// On `target_os = "none"` this works when `libc` is compiled with
-/// `target-feature = +crt-static` or when a syscall abstraction layer
-/// is available. For bare-metal targets without `libc`, implement
-/// a platform-specific `call_clock_gettime` in your crate.
-#[inline]
-unsafe fn call_clock_gettime(clock_id: c_int, ts: *mut libc::timespec) -> c_int {
-    unsafe { libc::clock_gettime(clock_id, ts) }
-}
-
 /// The `timespec` structure holding seconds and nanoseconds.
 ///
 /// This is our platform-agnostic representation, converted to/from
-/// `libc::timespec` at syscall boundaries.
+/// the platform `timespec` at syscall boundaries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]
 pub struct Timespec {
@@ -59,22 +50,58 @@ pub struct Timespec {
     pub tv_nsec: u64,
 }
 
-impl Timespec {
-    /// Converts our [`Timespec`] to `libc::timespec` for syscall use.
-    #[inline]
-    fn into_libc(self) -> libc::timespec {
-        libc::timespec {
-            tv_sec: self.tv_sec as libc::time_t,
-            tv_nsec: self.tv_nsec as libc::c_long,
-        }
-    }
+/// Platform side of the clock interface.
+///
+/// Hosted targets call the C library's `clock_gettime`; targets without an
+/// operating system abort, because a missing clock is not a recoverable
+/// condition for a program that schedules itself against time. Other
+/// exotic targets (WebAssembly and friends) report
+/// [`TimeError::NotAvailable`] so a caller can degrade instead of dying.
+mod sys {
+    use super::{TimeError, Timespec};
+    use core::ffi::c_int;
 
-    /// Converts `libc::timespec` to our [`Timespec`].
+    /// Reads `clock_id` through the platform clock syscall.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeError::SyscallError`] with the raw return code when
+    /// the platform rejects `clock_id`.
+    #[cfg(unix)]
     #[inline]
-    fn from_libc(ts: libc::timespec) -> Self {
-        Timespec {
+    pub(super) fn clock_gettime(clock_id: c_int) -> Result<Timespec, TimeError> {
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: `ts` is a live, correctly aligned `timespec` for the
+        // duration of the call, and `clock_id` is passed through unchanged.
+        let rc = unsafe { libc::clock_gettime(clock_id, &mut ts) };
+        if rc != 0 {
+            return Err(TimeError::SyscallError(rc));
+        }
+        Ok(Timespec {
             tv_sec: ts.tv_sec as u64,
             tv_nsec: ts.tv_nsec as u64,
+        })
+    }
+
+    /// Reads `clock_id` on targets without a POSIX clock.
+    ///
+    /// Bare metal has no clock at all, so the application aborts; other
+    /// targets (WebAssembly, …) report [`TimeError::NotAvailable`] because
+    /// they still have a usable runtime to keep going in.
+    #[cfg(not(unix))]
+    #[inline]
+    pub(super) fn clock_gettime(clock_id: c_int) -> Result<Timespec, TimeError> {
+        let _ = clock_id;
+        #[cfg(target_os = "none")]
+        {
+            codevar_target::abort_unsupported("clock_gettime")
+        }
+        #[cfg(not(target_os = "none"))]
+        {
+            Err(TimeError::NotAvailable)
         }
     }
 }
@@ -95,7 +122,11 @@ pub enum TimeError {
     SyscallError(c_int),
     /// The clock ID is not supported on this platform.
     UnsupportedClock,
-    /// The clock is not available (e.g., no OS timer on bare-metal).
+    /// The caller asked for a clock the platform does not implement.
+    ///
+    /// Bare-metal targets never produce this value: a clock query there
+    /// aborts the application (see [`codevar_target::abort_unsupported`])
+    /// rather than returning a placeholder.
     NotAvailable,
 }
 
@@ -146,22 +177,13 @@ impl SystemTime {
     ///
     /// Use [`now()`](Self::now()) for the default monotonic clock.
     ///
-    /// # Safety
+    /// # Errors
     ///
-    /// Invokes the `clock_gettime` syscall. Safe on all targets where
-    /// the syscall is available.
+    /// Returns [`TimeError::SyscallError`] with the platform return code
+    /// when the clock syscall fails (for example, an unknown clock id).
     #[inline]
     pub fn now_with_clock(clock_id: c_int) -> Result<TimeVal, TimeError> {
-        let mut ts = Timespec {
-            tv_sec: 0,
-            tv_nsec: 0,
-        };
-        let mut ts_libc = ts.into_libc();
-        let rc = unsafe { call_clock_gettime(clock_id, &mut ts_libc) };
-        ts = Timespec::from_libc(ts_libc);
-        if rc != 0 {
-            return Err(TimeError::SyscallError(rc));
-        }
+        let ts = sys::clock_gettime(clock_id)?;
         Ok(TimeVal {
             secs: ts.tv_sec,
             nsecs: ts.tv_nsec,
@@ -1449,14 +1471,14 @@ mod tests {
         assert_eq!(SystemTime::compare(a, a), 0);
     }
 
+    #[cfg(unix)]
     #[test]
-    fn timespec_roundtrip() {
-        let original = Timespec {
-            tv_sec: 42,
-            tv_nsec: 1_234_567_890,
-        };
-        let libc_ts = original.into_libc();
-        let restored = Timespec::from_libc(libc_ts);
-        assert_eq!(original, restored);
+    fn timespec_syscall_normalizes_nanos() {
+        // The platform conversion must yield a `Timespec` whose nanosecond
+        // field stays inside one second, which is what the C library
+        // guarantees for any successful `clock_gettime` call.
+        let served =
+            sys::clock_gettime(SystemTime::CLOCK_REALTIME).expect("realtime clock should be available");
+        assert!(served.tv_nsec < 1_000_000_000);
     }
 }

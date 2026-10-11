@@ -29,7 +29,10 @@
 //!
 //! The compiled-in backends live in the platform modules
 //! (`wnd_linux` on Unix); this file only owns the abstraction.
+//! Targets without a windowing system compile no backend at all, so
+//! [`backends`] is empty and [`open`] reports [`WndError::Unsupported`].
 
+#[cfg(unix)]
 use crate::wnd_linux;
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -312,9 +315,24 @@ pub trait WndBackend {
 
 /// Returns the windowing backends compiled into the launcher, in
 /// probe order.
+///
+/// Empty on targets that compile no backend (bare metal, wasm); [`open`]
+/// then reports [`WndError::Unsupported`] for every configuration.
 #[must_use]
+#[cfg(unix)]
 pub fn backends() -> &'static [&'static dyn WndBackend] {
     wnd_linux::BACKENDS
+}
+
+/// Returns the windowing backends compiled into the launcher, in
+/// probe order.
+///
+/// Empty on targets that compile no backend (bare metal, wasm); [`open`]
+/// then reports [`WndError::Unsupported`] for every configuration.
+#[must_use]
+#[cfg(not(unix))]
+pub fn backends() -> &'static [&'static dyn WndBackend] {
+    &[]
 }
 
 /// Opens a window on the first available backend of [`backends`].
@@ -355,6 +373,7 @@ mod tests {
         assert_eq!(config.geom, WndSize::new(1024, 768));
     }
 
+    #[cfg(unix)]
     #[test]
     fn wayland_backend_is_registered_and_named_like_sdl_drivers() {
         let backends = backends();

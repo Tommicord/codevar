@@ -23,6 +23,7 @@ codevar-textlike-encode = { workspace = true }
 codevar-time-core = { workspace = true }
 codevar-console-util = { workspace = true }
 codevar-io = { workspace = true }
+codevar-target = { workspace = true }
 rustc-demangle = { workspace = true }
 web-sys = { version = "0.3", features = ["console"], optional = true }
 wasm-bindgen = { version = "0.2", optional = true }

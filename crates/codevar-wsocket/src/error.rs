@@ -21,7 +21,9 @@
 //! so the connection layer can emit a Close frame before tearing down.
 
 use crate::ids::WsCloseCode;
-use std::fmt;
+use alloc::string::String;
+use alloc::string::ToString;
+use core::fmt;
 
 /// Result alias for WebSocket operations.
 pub type WsResult<T> = Result<T, WsError>;
@@ -148,7 +150,7 @@ impl fmt::Display for WsError {
     }
 }
 
-impl std::error::Error for WsError {}
+impl core::error::Error for WsError {}
 
 impl From<getrandom::Error> for WsError {
     fn from(_: getrandom::Error) -> Self {
@@ -156,8 +158,8 @@ impl From<getrandom::Error> for WsError {
     }
 }
 
-impl From<std::io::Error> for WsError {
-    fn from(e: std::io::Error) -> Self {
+impl From<codevar_io::Error> for WsError {
+    fn from(e: codevar_io::Error) -> Self {
         Self::Io(e.to_string())
     }
 }
@@ -340,7 +342,7 @@ mod tests {
             WsError::Io("io".into()),
         ];
         for err in errors {
-            let boxed: Box<dyn std::error::Error> = Box::new(err.clone());
+            let boxed: Box<dyn core::error::Error> = Box::new(err.clone());
             assert!(boxed.source().is_none(), "source for {err:?}");
             assert_eq!(boxed.to_string(), err.to_string());
         }
@@ -348,7 +350,7 @@ mod tests {
 
     #[test]
     fn from_io_error_wraps_message() {
-        let io_err = std::io::Error::other("disk on fire");
+        let io_err = codevar_io::Error::other("disk on fire");
         let ws_err = WsError::from(io_err);
         assert!(matches!(ws_err, WsError::Io(_)));
         if let WsError::Io(msg) = &ws_err {
@@ -356,7 +358,7 @@ mod tests {
         }
         assert_eq!(ws_err.close_code(), None);
 
-        let kind_only = WsError::from(std::io::Error::from(std::io::ErrorKind::ConnectionReset));
+        let kind_only = WsError::from(codevar_io::Error::from(codevar_io::ErrorKind::ConnectionReset));
         assert!(matches!(kind_only, WsError::Io(_)));
     }
 

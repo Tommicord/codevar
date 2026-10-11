@@ -19,7 +19,9 @@ use crate::cert::{CertVerifier, RootCertStore, parse_pem_certs};
 use crate::error::{TlsError, TlsResult};
 use crate::ids::{CipherSuite, NamedGroup, ProtocolVersion, SignatureScheme};
 use crate::sign::PrivateKey;
-use std::sync::Arc;
+use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
 
 /// Shared client configuration.
 #[derive(Clone)]

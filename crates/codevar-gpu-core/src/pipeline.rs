@@ -82,7 +82,7 @@ fn target_usage() -> vk::ImageUsageFlags {
 /// this type).
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct OwnedFd {
-    raw: libc::c_int,
+    raw: core::ffi::c_int,
 }
 
 impl OwnedFd {
@@ -95,14 +95,14 @@ impl OwnedFd {
     /// descriptor is closed by [`OwnedFd`]'s `Drop`.
     #[inline]
     #[must_use]
-    pub const unsafe fn from_raw(raw: libc::c_int) -> Self {
+    pub const unsafe fn from_raw(raw: core::ffi::c_int) -> Self {
         Self { raw }
     }
 
     /// Returns the raw descriptor without giving up ownership.
     #[inline]
     #[must_use]
-    pub const fn as_raw(&self) -> libc::c_int {
+    pub const fn as_raw(&self) -> core::ffi::c_int {
         self.raw
     }
 
@@ -110,7 +110,7 @@ impl OwnedFd {
     /// close it.
     #[inline]
     #[must_use]
-    pub const fn into_raw(self) -> libc::c_int {
+    pub const fn into_raw(self) -> core::ffi::c_int {
         let raw = self.raw;
         core::mem::forget(self);
         raw

@@ -13,12 +13,14 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-//! [`std::io`] adapters over [`TlsClientConnection`] / [`TlsServerConnection`].
+//! [`codevar_io`] adapters over [`TlsClientConnection`] / [`TlsServerConnection`].
 
 use crate::client::TlsClientConnection;
 use crate::error::{TlsError, TlsResult};
 use crate::server::TlsServerConnection;
-use std::io::{self, Read, Write};
+use alloc::string::ToString;
+use alloc::vec::Vec;
+use codevar_io::{ErrorType, Read, Write};
 
 /// Trait shared by client and server connections for the stream adapter.
 pub trait TlsSession {
@@ -104,7 +106,7 @@ pub struct TlsStream<S, C> {
 
 impl<S, C> TlsStream<S, C>
 where
-    S: Read + Write,
+    S: Read<Error = codevar_io::Error> + Write<Error = codevar_io::Error>,
     C: TlsSession,
 {
     /// Wraps a transport and TLS session.
@@ -131,7 +133,7 @@ where
     }
 
     /// Drives the handshake to completion.
-    pub fn complete_handshake(&mut self) -> io::Result<()> {
+    pub fn complete_handshake(&mut self) -> codevar_io::Result<()> {
         while self.conn.is_handshaking() {
             self.flush_tls()?;
             if self.conn.is_handshaking() {
@@ -145,7 +147,7 @@ where
         Ok(())
     }
 
-    fn flush_tls(&mut self) -> io::Result<()> {
+    fn flush_tls(&mut self) -> codevar_io::Result<()> {
         while self.conn.wants_write() {
             let buf = self.conn.write_tls();
             if buf.is_empty() {
@@ -157,12 +159,12 @@ where
         Ok(())
     }
 
-    fn absorb_tls(&mut self) -> io::Result<()> {
+    fn absorb_tls(&mut self) -> codevar_io::Result<()> {
         let mut buf = [0u8; 16_384];
         let n = self.transport.read(&mut buf)?;
         if n == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
+            return Err(codevar_io::Error::new(
+                codevar_io::ErrorKind::UnexpectedEof,
                 "TLS transport closed during handshake",
             ));
         }
@@ -171,12 +173,20 @@ where
     }
 }
 
-impl<S, C> Read for TlsStream<S, C>
+impl<S, C> ErrorType for TlsStream<S, C>
 where
-    S: Read + Write,
+    S: Read<Error = codevar_io::Error> + Write<Error = codevar_io::Error>,
     C: TlsSession,
 {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    type Error = codevar_io::Error;
+}
+
+impl<S, C> Read for TlsStream<S, C>
+where
+    S: Read<Error = codevar_io::Error> + Write<Error = codevar_io::Error>,
+    C: TlsSession,
+{
+    fn read(&mut self, buf: &mut [u8]) -> codevar_io::Result<usize> {
         self.complete_handshake()?;
         loop {
             match self.conn.read_app(buf) {
@@ -206,29 +216,29 @@ where
 
 impl<S, C> Write for TlsStream<S, C>
 where
-    S: Read + Write,
+    S: Read<Error = codevar_io::Error> + Write<Error = codevar_io::Error>,
     C: TlsSession,
 {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+    fn write(&mut self, buf: &[u8]) -> codevar_io::Result<usize> {
         self.complete_handshake()?;
         self.conn.write_app(buf).map_err(tls_to_io)?;
         self.flush_tls()?;
         Ok(buf.len())
     }
 
-    fn flush(&mut self) -> io::Result<()> {
+    fn flush(&mut self) -> codevar_io::Result<()> {
         self.flush_tls()
     }
 }
 
-fn tls_to_io(err: TlsError) -> io::Error {
+fn tls_to_io(err: TlsError) -> codevar_io::Error {
     let kind = match &err {
-        TlsError::WouldBlock => io::ErrorKind::WouldBlock,
-        TlsError::Closed => io::ErrorKind::ConnectionAborted,
-        TlsError::HandshakeNotComplete => io::ErrorKind::WouldBlock,
-        _ => io::ErrorKind::Other,
+        TlsError::WouldBlock => codevar_io::ErrorKind::WouldBlock,
+        TlsError::Closed => codevar_io::ErrorKind::ConnectionAborted,
+        TlsError::HandshakeNotComplete => codevar_io::ErrorKind::WouldBlock,
+        _ => codevar_io::ErrorKind::Other,
     };
-    io::Error::new(kind, err.to_string())
+    codevar_io::Error::new(kind, err.to_string())
 }
 
 #[cfg(test)]
@@ -242,7 +252,7 @@ mod tests {
         pos: usize,
         tx: Vec<u8>,
         /// When set, the next read fails once with this kind.
-        fail_read: Option<io::ErrorKind>,
+        fail_read: Option<codevar_io::ErrorKind>,
     }
 
     impl MemTransport {
@@ -257,9 +267,9 @@ mod tests {
     }
 
     impl Read for MemTransport {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        fn read(&mut self, buf: &mut [u8]) -> codevar_io::Result<usize> {
             if let Some(kind) = self.fail_read.take() {
-                return Err(io::Error::new(kind, "transport read failure"));
+                return Err(codevar_io::Error::new(kind, "transport read failure"));
             }
             let avail = &self.rx[self.pos..];
             let n = avail.len().min(buf.len());
@@ -270,11 +280,11 @@ mod tests {
     }
 
     impl Write for MemTransport {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        fn write(&mut self, buf: &[u8]) -> codevar_io::Result<usize> {
             self.tx.extend_from_slice(buf);
             Ok(buf.len())
         }
-        fn flush(&mut self) -> io::Result<()> {
+        fn flush(&mut self) -> codevar_io::Result<()> {
             Ok(())
         }
     }
@@ -410,7 +420,7 @@ mod tests {
         };
         let mut stream = TlsStream::new(transport, session);
         let err = stream.complete_handshake().unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(err.kind(), codevar_io::ErrorKind::UnexpectedEof);
     }
 
     #[test]
@@ -423,7 +433,7 @@ mod tests {
         };
         let mut stream = TlsStream::new(transport, session);
         let err = stream.complete_handshake().unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::Other);
+        assert_eq!(err.kind(), codevar_io::ErrorKind::Other);
         assert!(err.to_string().contains("bad cert"));
     }
 
@@ -452,7 +462,7 @@ mod tests {
 
         let mut buf = [0u8; 64];
         let err = stream.read(&mut buf).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(err.kind(), codevar_io::ErrorKind::UnexpectedEof);
         let (t, c) = stream.into_inner();
         assert_eq!(t.pos, c.tls_in.len());
         assert_eq!(c.tls_in, b"cipher record");
@@ -499,7 +509,7 @@ mod tests {
 
         let mut buf = [0u8; 16];
         let err = stream.read(&mut buf).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::Other);
+        assert_eq!(err.kind(), codevar_io::ErrorKind::Other);
         assert!(err.to_string().contains("decrypt failed"));
     }
 
@@ -523,7 +533,7 @@ mod tests {
 
         let mut buf = [0u8; 16];
         let err = stream.read(&mut buf).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
+        assert_eq!(err.kind(), codevar_io::ErrorKind::WouldBlock);
     }
 
     #[test]
@@ -535,7 +545,7 @@ mod tests {
         let mut stream = TlsStream::new(transport, session);
         let mut buf = [0u8; 16];
         let err = stream.read(&mut buf).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(err.kind(), codevar_io::ErrorKind::UnexpectedEof);
     }
 
     #[test]
@@ -560,7 +570,7 @@ mod tests {
         let mut stream = TlsStream::new(transport, session);
 
         let err = stream.write(b"data").unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::ConnectionAborted);
+        assert_eq!(err.kind(), codevar_io::ErrorKind::ConnectionAborted);
         assert!(err.to_string().contains("closed"));
     }
 
@@ -617,23 +627,32 @@ mod tests {
 
     #[test]
     fn tls_to_io_maps_error_kinds() {
-        assert_eq!(tls_to_io(TlsError::WouldBlock).kind(), io::ErrorKind::WouldBlock);
+        assert_eq!(
+            tls_to_io(TlsError::WouldBlock).kind(),
+            codevar_io::ErrorKind::WouldBlock
+        );
         assert_eq!(
             tls_to_io(TlsError::Closed).kind(),
-            io::ErrorKind::ConnectionAborted
+            codevar_io::ErrorKind::ConnectionAborted
         );
         assert_eq!(
             tls_to_io(TlsError::HandshakeNotComplete).kind(),
-            io::ErrorKind::WouldBlock
+            codevar_io::ErrorKind::WouldBlock
         );
-        assert_eq!(tls_to_io(TlsError::certificate("x")).kind(), io::ErrorKind::Other);
-        assert_eq!(tls_to_io(TlsError::RandomFailed).kind(), io::ErrorKind::Other);
+        assert_eq!(
+            tls_to_io(TlsError::certificate("x")).kind(),
+            codevar_io::ErrorKind::Other
+        );
+        assert_eq!(
+            tls_to_io(TlsError::RandomFailed).kind(),
+            codevar_io::ErrorKind::Other
+        );
     }
 
     #[test]
     fn read_propagates_transport_read_errors() {
         let mut transport = MemTransport::new(Vec::new());
-        transport.fail_read = Some(io::ErrorKind::ConnectionReset);
+        transport.fail_read = Some(codevar_io::ErrorKind::ConnectionReset);
         let mut session = MockSession::idle();
         session.app_rx.push_back(b'x');
         let mut stream = TlsStream::new(transport, session);
@@ -642,6 +661,6 @@ mod tests {
         assert_eq!(stream.read(&mut buf).unwrap(), 1);
         // Second read needs the transport, which now fails.
         let err = stream.read(&mut buf).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::ConnectionReset);
+        assert_eq!(err.kind(), codevar_io::ErrorKind::ConnectionReset);
     }
 }

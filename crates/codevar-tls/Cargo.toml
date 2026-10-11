@@ -28,6 +28,10 @@ getrandom = { workspace = true }
 rand_core = { workspace = true }
 subtle = { workspace = true }
 zeroize = { workspace = true }
+codevar-io = { workspace = true }
+codevar-time-core = { workspace = true }
+codevar-base = { workspace = true }
+spin = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 webpki-roots = { workspace = true }

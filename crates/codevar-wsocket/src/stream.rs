@@ -13,7 +13,7 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-//! [`std::io`] adapter over a WebSocket connection.
+//! [`codevar_io`] adapter over a WebSocket connection.
 //!
 //! [`WebSocketStream`] wraps any [`Read`] + [`Write`] transport together with
 //! a [`ClientConnection`] or [`ServerConnection`] and presents a byte-stream
@@ -25,7 +25,14 @@ use crate::error::{WsError, WsResult};
 use crate::ids::WsCloseCode;
 use crate::message::WsMessage;
 use crate::server::ServerConnection;
-use std::io::{self, Read, Write};
+use alloc::string::ToString;
+use alloc::vec::Vec;
+use codevar_io::{ErrorKind, ErrorType, Read, Write};
+
+/// Maps a WebSocket error onto an I/O error for the [`Read`] / [`Write`] impls.
+fn ws_to_io(err: WsError) -> codevar_io::Error {
+    codevar_io::Error::new(ErrorKind::Other, err.to_string())
+}
 
 /// Trait shared by client and server connections for the stream adapter.
 pub trait WsSession {
@@ -125,7 +132,7 @@ pub struct WebSocketStream<S, C> {
 
 impl<S, C> WebSocketStream<S, C>
 where
-    S: Read + Write,
+    S: Read<Error = codevar_io::Error> + Write<Error = codevar_io::Error>,
     C: WsSession,
 {
     /// Wraps a transport and WebSocket session.
@@ -222,17 +229,24 @@ where
     }
 }
 
-impl<S, C> Read for WebSocketStream<S, C>
+impl<S, C> ErrorType for WebSocketStream<S, C>
 where
-    S: Read + Write,
+    S: Read<Error = codevar_io::Error> + Write<Error = codevar_io::Error>,
     C: WsSession,
 {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    type Error = codevar_io::Error;
+}
+
+impl<S, C> Read for WebSocketStream<S, C>
+where
+    S: Read<Error = codevar_io::Error> + Write<Error = codevar_io::Error>,
+    C: WsSession,
+{
+    fn read(&mut self, buf: &mut [u8]) -> codevar_io::Result<usize> {
         if self.conn.is_handshaking() {
-            self.complete_handshake()
-                .map_err(io::Error::other)?;
+            self.complete_handshake().map_err(ws_to_io)?;
         }
-        self.fill_app_rx().map_err(io::Error::other)?;
+        self.fill_app_rx().map_err(ws_to_io)?;
         let available = &self.app_rx[self.app_rx_pos..];
         let n = available.len().min(buf.len());
         buf[..n].copy_from_slice(&available[..n]);
@@ -243,23 +257,20 @@ where
 
 impl<S, C> Write for WebSocketStream<S, C>
 where
-    S: Read + Write,
+    S: Read<Error = codevar_io::Error> + Write<Error = codevar_io::Error>,
     C: WsSession,
 {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+    fn write(&mut self, buf: &[u8]) -> codevar_io::Result<usize> {
         if self.conn.is_handshaking() {
-            self.complete_handshake()
-                .map_err(io::Error::other)?;
+            self.complete_handshake().map_err(ws_to_io)?;
         }
-        self.conn
-            .send_binary(buf)
-            .map_err(io::Error::other)?;
-        self.flush_ws().map_err(io::Error::other)?;
+        self.conn.send_binary(buf).map_err(ws_to_io)?;
+        self.flush_ws().map_err(ws_to_io)?;
         Ok(buf.len())
     }
 
-    fn flush(&mut self) -> io::Result<()> {
-        self.flush_ws().map_err(io::Error::other)?;
+    fn flush(&mut self) -> codevar_io::Result<()> {
+        self.flush_ws().map_err(ws_to_io)?;
         self.transport.flush()
     }
 }
@@ -294,8 +305,12 @@ mod tests {
         }
     }
 
+    impl ErrorType for MemTransport {
+        type Error = codevar_io::Error;
+    }
+
     impl Read for MemTransport {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        fn read(&mut self, buf: &mut [u8]) -> codevar_io::Result<usize> {
             if buf.is_empty() {
                 return Ok(0);
             }
@@ -317,12 +332,12 @@ mod tests {
     }
 
     impl Write for MemTransport {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        fn write(&mut self, buf: &[u8]) -> codevar_io::Result<usize> {
             self.output.extend_from_slice(buf);
             Ok(buf.len())
         }
 
-        fn flush(&mut self) -> io::Result<()> {
+        fn flush(&mut self) -> codevar_io::Result<()> {
             Ok(())
         }
     }
@@ -392,7 +407,7 @@ mod tests {
         let mut stream = WebSocketStream::new(MemTransport::new(vec![], None), client);
         let mut buf = [0u8; 8];
         let err = stream.read(&mut buf).expect_err("eof");
-        assert_eq!(err.kind(), io::ErrorKind::Other);
+        assert_eq!(err.kind(), ErrorKind::Other);
         assert!(err.to_string().contains("transport closed"));
     }
 
@@ -475,7 +490,7 @@ mod tests {
         // Transport input exhausted; no message buffered.
         let mut buf = [0u8; 8];
         let err = stream.read(&mut buf).expect_err("eof");
-        assert_eq!(err.kind(), io::ErrorKind::Other);
+        assert_eq!(err.kind(), ErrorKind::Other);
         assert!(err.to_string().contains("closed"));
     }
 
@@ -487,7 +502,7 @@ mod tests {
         stream.transport.push_input(&unmasked(&close));
         let mut buf = [0u8; 8];
         let err = stream.read(&mut buf).expect_err("peer close");
-        assert_eq!(err.kind(), io::ErrorKind::Other);
+        assert_eq!(err.kind(), ErrorKind::Other);
         assert!(err.to_string().contains("closed"));
     }
 

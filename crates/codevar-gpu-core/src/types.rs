@@ -16,7 +16,7 @@
 //! Lifecycle state, frame phase, error and message types shared by
 //! every part of the compositor.
 
-use crate::base::{Compositor, CompositorComm};
+use crate::base::CompositorComm;
 use alloc::boxed::Box;
 use alloc::string::String;
 use ash::vk;

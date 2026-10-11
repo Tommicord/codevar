@@ -19,6 +19,9 @@ use crate::alert::AlertDescription;
 use crate::crypto_random::SysRng;
 use crate::error::{TlsError, TlsResult};
 use crate::ids::SignatureScheme;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
 use ecdsa::signature::Verifier as EcdsaVerifier;
 use ed25519_dalek::{Signature as Ed25519Signature, Signer as Ed25519Signer, VerifyingKey};
 use p256::ecdsa::{
@@ -65,7 +68,7 @@ pub enum SignatureKind {
 impl PrivateKey {
     /// Loads a private key from PEM (`PRIVATE KEY`, `RSA PRIVATE KEY`, or `EC PRIVATE KEY`).
     pub fn from_pem(pem_bytes: &[u8]) -> TlsResult<Self> {
-        let pem_str = std::str::from_utf8(pem_bytes)
+        let pem_str = core::str::from_utf8(pem_bytes)
             .map_err(|_| TlsError::certificate("private key PEM is not UTF-8"))?;
         let parsed = pem::parse(pem_str).map_err(|e| TlsError::certificate(format!("PEM parse: {e}")))?;
         match parsed.tag() {
@@ -199,7 +202,7 @@ pub trait Signable {}
 #[must_use]
 pub fn tls13_cert_verify_content(is_server: bool, transcript_hash: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(64 + 33 + 1 + transcript_hash.len());
-    out.extend(std::iter::repeat_n(0x20u8, 64));
+    out.extend(core::iter::repeat_n(0x20u8, 64));
     if is_server {
         out.extend_from_slice(b"TLS 1.3, server CertificateVerify");
     } else {

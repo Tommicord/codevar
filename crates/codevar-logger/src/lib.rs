@@ -356,6 +356,53 @@ pub fn log_raw(bytes: &[u8]) -> Result<(), LogError> {
     writer.write_stdout(bytes)
 }
 
+/// `core::fmt::Write` adapter that collects a formatted panic report into a
+/// caller-provided stack buffer.
+///
+/// Bytes that would overflow the buffer are dropped, so the sink never fails
+/// and never allocates. A truncation can split a multi-byte UTF-8 scalar,
+/// which [`report_panic`] handles by falling back to a static message.
+struct PanicSink<'a> {
+    /// Destination buffer, borrowed for the duration of the format call.
+    buf: &'a mut [u8],
+    /// Number of bytes written so far, always `<= buf.len()`.
+    len: usize,
+}
+
+impl core::fmt::Write for PanicSink<'_> {
+    #[inline]
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        let bytes = text.as_bytes();
+        let available = self.buf.len().saturating_sub(self.len);
+        let written = bytes.len().min(available);
+        self.buf[self.len..self.len + written].copy_from_slice(&bytes[..written]);
+        self.len += written;
+        Ok(())
+    }
+}
+
+/// Reports a panic to stderr without allocating.
+///
+/// The report is emitted at the [`LogLevel::Irr`] level, which always routes
+/// to stderr, and is formatted into a fixed stack buffer so the caller (a
+/// `#[panic_handler]`) stays safe even when the heap is unavailable or
+/// corrupted. Truncation is preferred over a nested failure while panicking.
+pub fn report_panic(info: &core::panic::PanicInfo<'_>) {
+    let mut buffer = [0u8; LOG_LINE_BUFFER_SIZE];
+    let len = {
+        let mut sink = PanicSink {
+            buf: &mut buffer,
+            len: 0,
+        };
+        if fmt::write(&mut sink, format_args!("{info}")).is_err() {
+            sink.len = 0;
+        }
+        sink.len
+    };
+    let message = core::str::from_utf8(&buffer[..len]).unwrap_or("unformattable panic report");
+    let _ = log_with_timestamp(LogLevel::Irr, message);
+}
+
 #[doc(hidden)]
 pub mod logger {
     pub extern crate alloc;

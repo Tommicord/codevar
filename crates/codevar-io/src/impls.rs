@@ -13,14 +13,27 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-use crate::error::IoResult;
+use crate::error::Result;
 use crate::{
-    BufRead, ErrorKind, IoError, Read, ReadExactError, ReadReady, Seek, SeekFrom, Write, WriteFmtError,
+    BufRead, Error, ErrorKind, Read, ReadExactError, ReadReady, Seek, SeekFrom, Write, WriteFmtError,
     WriteReady,
 };
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
+
+/// Index of the first `delim` byte in `haystack`, if it occurs.
+///
+/// The scan stays in `core` on purpose: a `memchr` dependency would let any
+/// other crate in the same build turn on that crate's `std` feature (Cargo
+/// unifies features across a build), which would drag `std` into this
+/// crate's `no_std` consumers and collide with their `#[panic_handler]`.
+/// The windows scanned here are one buffered read at a time, so a byte
+/// scan costs a few dozen cycles per call.
+#[inline]
+fn position_of(haystack: &[u8], delim: u8) -> Option<usize> {
+    haystack.iter().position(|&byte| byte == delim)
+}
 
 #[deny(
     clippy::missing_trait_methods,
@@ -44,7 +57,7 @@ impl<T: ?Sized + Read> Read for &mut T {
 )]
 impl<T: ?Sized + BufRead> BufRead for &mut T {
     #[inline]
-    fn fill_buf(&mut self) -> Result<&[u8], IoError> {
+    fn fill_buf(&mut self) -> Result<&[u8], Error> {
         T::fill_buf(self)
     }
 
@@ -54,22 +67,22 @@ impl<T: ?Sized + BufRead> BufRead for &mut T {
     }
 
     #[inline]
-    fn has_data_left(&mut self) -> IoResult<bool> {
+    fn has_data_left(&mut self) -> Result<bool> {
         T::has_data_left(self)
     }
 
     #[inline]
-    fn read_until(&mut self, byte: u8, buf: &mut Vec<u8>) -> IoResult<usize> {
+    fn read_until(&mut self, byte: u8, buf: &mut Vec<u8>) -> Result<usize> {
         T::read_until(self, byte, buf)
     }
 
     #[inline]
-    fn skip_until(&mut self, byte: u8) -> IoResult<usize> {
+    fn skip_until(&mut self, byte: u8) -> Result<usize> {
         T::skip_until(self, byte)
     }
 
     #[inline]
-    fn read_line(&mut self, buf: &mut String) -> IoResult<usize> {
+    fn read_line(&mut self, buf: &mut String) -> Result<usize> {
         T::read_line(self, buf)
     }
 
@@ -158,9 +171,9 @@ impl Drop for Guard<'_> {
     }
 }
 
-pub(crate) unsafe fn append_to_string<F>(buf: &mut String, f: F) -> IoResult<usize>
+pub(crate) unsafe fn append_to_string<F>(buf: &mut String, f: F) -> Result<usize>
 where
-    F: FnOnce(&mut Vec<u8>) -> IoResult<usize>,
+    F: FnOnce(&mut Vec<u8>) -> Result<usize>,
 {
     let mut g = Guard {
         len: buf.len(),
@@ -171,7 +184,7 @@ where
     // SAFETY: the caller promises to only append data to `buf`
     let appended = unsafe { g.buf.get_unchecked(g.len..) };
     if str::from_utf8(appended).is_err() {
-        ret.and_then(|_| Err(IoError::from(ErrorKind::InvalidData)))
+        ret.and_then(|_| Err(Error::from(ErrorKind::InvalidData)))
     } else {
         g.len = g.buf.len();
         ret
@@ -185,7 +198,7 @@ pub struct Split<B> {
 }
 
 impl<B: BufRead> Iterator for Split<B> {
-    type Item = IoResult<Vec<u8>>;
+    type Item = Result<Vec<u8>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut buf = Vec::new();
@@ -207,7 +220,7 @@ pub struct Lines<B> {
 }
 
 impl<B: BufRead> Iterator for Lines<B> {
-    type Item = IoResult<String>;
+    type Item = Result<String>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut buf = String::new();
@@ -227,12 +240,12 @@ impl<B: BufRead> Iterator for Lines<B> {
     }
 }
 
-pub(crate) fn read_until<R: BufRead + ?Sized>(r: &mut R, delim: u8, buf: &mut Vec<u8>) -> IoResult<usize> {
+pub(crate) fn read_until<R: BufRead + ?Sized>(r: &mut R, delim: u8, buf: &mut Vec<u8>) -> Result<usize> {
     let mut read = 0;
     loop {
         let (done, used) = {
             let available = r.fill_buf()?;
-            match memchr::memchr(delim, available) {
+            match position_of(available, delim) {
                 Some(i) => {
                     buf.extend_from_slice(&available[..=i]);
                     (true, i + 1)
@@ -251,7 +264,7 @@ pub(crate) fn read_until<R: BufRead + ?Sized>(r: &mut R, delim: u8, buf: &mut Ve
     }
 }
 
-pub(crate) fn skip_until<R: BufRead + ?Sized>(r: &mut R, delim: u8) -> IoResult<usize> {
+pub(crate) fn skip_until<R: BufRead + ?Sized>(r: &mut R, delim: u8) -> Result<usize> {
     let mut read = 0;
     loop {
         let (done, used) = {
@@ -260,7 +273,7 @@ pub(crate) fn skip_until<R: BufRead + ?Sized>(r: &mut R, delim: u8) -> IoResult<
                 Err(ref e) if e.kind() == ErrorKind::Interrupted => continue,
                 Err(e) => return Err(e),
             };
-            match memchr::memchr(delim, available) {
+            match position_of(available, delim) {
                 Some(i) => (true, i + 1),
                 None => (false, available.len()),
             }

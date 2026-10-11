@@ -20,6 +20,8 @@ use crate::codec::{Reader, fill_u24_len, put_u16, put_vec_u8, put_vec_u16, put_v
 use crate::error::{TlsError, TlsResult};
 use crate::extensions::ParsedExtensions;
 use crate::ids::{CipherSuite, HELLO_RETRY_REQUEST_RANDOM, HandshakeType, ProtocolVersion, SignatureScheme};
+use alloc::vec;
+use alloc::vec::Vec;
 
 /// A framed handshake message.
 #[derive(Debug, Clone)]

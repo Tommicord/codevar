@@ -534,6 +534,10 @@ impl PathBuf {
         {
             windows::write(self.inner.as_str(), bytes)
         }
+        #[cfg(not(any(target_family = "unix", target_os = "windows")))]
+        {
+            unsupported::write(self.inner.as_str(), bytes)
+        }
     }
 
     /// Reads to the current file PathBuf points to.
@@ -545,6 +549,10 @@ impl PathBuf {
         #[cfg(target_os = "windows")]
         {
             windows::read(self.inner.as_str())
+        }
+        #[cfg(not(any(target_family = "unix", target_os = "windows")))]
+        {
+            unsupported::read(self.inner.as_str())
         }
     }
 

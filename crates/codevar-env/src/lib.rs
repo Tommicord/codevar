@@ -672,6 +672,15 @@ pub static ENV_PLUGINS_DIR: &(dyn NamedEnvDir + Sync) = &LazyEnvDir(move || {
 #[cfg(all(target_os = "linux", not(target_os = "wasi")))]
 pub static ENV_APP_ID: &str = "codevar.launcher";
 
+/// The application id on every other target.
+///
+/// The desktop id only means something to a Wayland compositor, so it is
+/// host-defined on Linux; elsewhere the same identifier is still needed to
+/// build a window configuration, so it is published unconditionally and
+/// simply has no consumer outside a desktop session.
+#[cfg(not(all(target_os = "linux", not(target_os = "wasi"))))]
+pub static ENV_APP_ID: &str = "codevar.launcher";
+
 /// The application assets directory.
 ///
 /// This is the directory where is stored bundled assets such as

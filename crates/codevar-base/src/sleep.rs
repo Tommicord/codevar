@@ -20,9 +20,9 @@
 //! therefore talks to the OS on OS targets and degrades to a documented
 //! no-op everywhere else.
 
-use codevar_time_core::TimeDuration;
 #[cfg(unix)]
 use crate::time::{SystemTime, TimeVal};
+use codevar_time_core::TimeDuration;
 
 /// Reason a [`sleep`] call could not complete.
 ///
@@ -156,10 +156,17 @@ cfg_if::cfg_if! {
         fn sleep_platform(duration: TimeDuration) -> Result<(), SleepError> {
             windows::sleep(duration)
         }
+    } else if #[cfg(target_os = "none")] {
+        /// Bare metal: there is no scheduler to suspend a thread on and no
+        /// timer to program, so a wait cannot be honoured. Abort instead of
+        /// returning success for a sleep that never happened.
+        #[inline]
+        fn sleep_platform(_duration: TimeDuration) -> Result<(), SleepError> {
+            codevar_target::abort_unsupported("sleep")
+        }
     } else {
-        /// Bare metal (`target_os = "none"`), wasm, and unknown targets:
-        /// there is no scheduler to suspend the thread on, so the wait is a
-        /// documented no-op.
+        /// WebAssembly and other exotic targets: the host drives the event
+        /// loop, so the wait is a documented no-op.
         #[inline]
         fn sleep_platform(_duration: TimeDuration) -> Result<(), SleepError> {
             Ok(())
@@ -170,9 +177,9 @@ cfg_if::cfg_if! {
 /// Unix sleep implementation.
 #[cfg(unix)]
 mod unix {
-    use codevar_time_core::TimeDuration;
-    use crate::sleep::{to_timespec, SleepError, remaining_after_interrupt};
+    use crate::sleep::{SleepError, remaining_after_interrupt, to_timespec};
     use crate::time::SystemTime;
+    use codevar_time_core::TimeDuration;
 
     /// Sleeps via `clock_nanosleep(CLOCK_MONOTONIC, …)`, resuming after signals.
     ///
@@ -257,8 +264,8 @@ fn remaining_after_interrupt(
 /// Windows sleep implementation.
 #[cfg(windows)]
 mod windows {
-    use codevar_time_core::TimeDuration;
     use crate::sleep::SleepError;
+    use codevar_time_core::TimeDuration;
 
     /// Sleeps via `kernel32!Sleep`, rounding up to whole milliseconds.
     ///
@@ -267,9 +274,9 @@ mod windows {
     /// Always `Ok(())`: `Sleep` has no failure mode.
     pub fn sleep(duration: TimeDuration) -> Result<(), SleepError> {
         windows_link::link!(
-        "kernel32.dll" "system"
-        fn Sleep(dw_milliseconds: u32)
-    );
+            "kernel32.dll" "system"
+            fn Sleep(dw_milliseconds: u32)
+        );
 
         let mut millis = crate::sleep::millis_ceil(duration);
         while millis > u128::from(u32::MAX) {
@@ -409,7 +416,10 @@ mod tests {
     #[test]
     fn nanos_to_duration_round_trips() {
         assert_eq!(nanos_to_duration(0), TimeDuration::ZERO);
-        assert_eq!(nanos_to_duration(1_500_000_123), TimeDuration::new(1, 500_000_123));
+        assert_eq!(
+            nanos_to_duration(1_500_000_123),
+            TimeDuration::new(1, 500_000_123)
+        );
         let max = nanos_to_duration(u128::MAX);
         assert_eq!(max, TimeDuration::new(u64::MAX, 768_211_455));
     }

@@ -90,7 +90,7 @@ impl rand_core::RngCore for SysRng {
     }
 
     fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
-        getrandom::getrandom(dest).map_err(rand_core::Error::from)
+        getrandom::getrandom(dest).map_err(|e| rand_core::Error::from(e.code()))
     }
 }
 

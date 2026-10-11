@@ -25,8 +25,10 @@ use crate::frame::{WsFrame, decode_close_payload, random_mask_key, try_parse_fra
 use crate::ids::{DEFAULT_MAX_FRAME_SIZE, DEFAULT_MAX_MESSAGE_SIZE, Role, WsCloseCode, WsOpcode};
 use crate::message::WsMessage;
 use crate::utf8::Utf8Validator;
+use alloc::collections::VecDeque;
+use alloc::string::String;
+use alloc::vec::Vec;
 use codevar_textlike_encode::utf8::{encode_text, utf8_valid_up_to};
-use std::collections::VecDeque;
 
 /// High-level WebSocket connection lifecycle (RFC 6455 §7.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,7 +188,7 @@ impl CommonState {
 
     /// Drains all buffered outbound transport bytes.
     pub fn take_write(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.tx_buf)
+        core::mem::take(&mut self.tx_buf)
     }
 
     /// Appends raw bytes to the outbound buffer (used for the HTTP handshake).
@@ -434,7 +436,7 @@ impl CommonState {
                 .fragment
                 .opcode
                 .ok_or_else(|| WsError::Internal("fragment opcode missing".into()))?;
-            let data = std::mem::take(&mut self.fragment.data);
+            let data = core::mem::take(&mut self.fragment.data);
             if opcode == WsOpcode::Text {
                 self.fragment.utf8.finish()?;
             }

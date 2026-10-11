@@ -152,7 +152,7 @@ fn f64_10_pow_x(x: NonZero<u8>) -> f64 {
         7 => 10_000_000.,
         8 => 100_000_000.,
         9 => 1_000_000_000.,
-        x => 10_f64.powi(x.cast_signed().widen()),
+        x => libm::pow(10.0, x.cast_signed().widen::<i64>() as f64),
     }
 }
 
@@ -202,10 +202,11 @@ pub(crate) fn format_float(
             // without being overly complex.
             if digits_after_decimal.get() < 9 {
                 let trunc_num = f64_10_pow_x(digits_after_decimal);
-                value = f64::trunc(value * trunc_num) / trunc_num;
+                value = libm::trunc(value * trunc_num) / trunc_num;
 
-                let int_part = value.trunc() as u64;
-                let frac_part = f64::round(value.fract() * f64_10_pow_x(digits_after_decimal)) as u64;
+                let int_part = libm::trunc(value) as u64;
+                let frac_part =
+                    libm::round((value - libm::floor(value)) * f64_10_pow_x(digits_after_decimal)) as u64;
 
                 let width =
                     digits_before_decimal.widen::<usize>() + 1 + digits_after_decimal.get().widen::<usize>();
@@ -224,7 +225,7 @@ pub(crate) fn format_float(
                 Ok(width)
             }
         }
-        None => format_int_padded(output, value.trunc() as u64, digits_before_decimal),
+        None => format_int_padded(output, libm::trunc(value) as u64, digits_before_decimal),
     }
 }
 

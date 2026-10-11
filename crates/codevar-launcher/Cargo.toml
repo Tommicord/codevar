@@ -21,6 +21,13 @@ codevar-sig-module-base = { workspace = true }
 codevar-sig-handler = { workspace = true }
 codevar-env = { workspace = true }
 codevar-logger = { workspace = true }
+codevar-target = { workspace = true }
+codevar-rt = { workspace = true }
+
+# Only for the linker-script helpers in `codevar-rt`; resolver 2 keeps the
+# feature out of the binary's own dependency graph.
+[build-dependencies]
+codevar-rt = { workspace = true, features = ["std"] }
 
 [[bin]]
 name = "codevar"

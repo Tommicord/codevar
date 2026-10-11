@@ -20,7 +20,10 @@ use crate::codec::{
 use crate::error::{TlsError, TlsResult};
 use crate::ids::{ExtensionType, NamedGroup, ProtocolVersion, SignatureScheme};
 use crate::kx::KeySharePublic;
-use std::collections::HashSet;
+use alloc::collections::BTreeSet;
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
 
 /// A raw extension as it appears on the wire.
 #[derive(Debug, Clone)]
@@ -67,7 +70,7 @@ impl ParsedExtensions {
     pub fn parse(data: &[u8]) -> TlsResult<Self> {
         let mut r = Reader::new(data);
         let mut out = Self::default();
-        let mut seen = HashSet::new();
+        let mut seen = BTreeSet::new();
         while !r.is_empty() {
             let ext_type = r.u16()?;
             let ext_data = r.vec_u16()?.to_vec();
@@ -139,7 +142,7 @@ fn parse_server_name(data: &[u8]) -> TlsResult<Option<String>> {
         let name_type = lr.u8()?;
         let host = lr.vec_u16()?;
         if name_type == 0 {
-            let s = std::str::from_utf8(host)
+            let s = core::str::from_utf8(host)
                 .map_err(|_| TlsError::Alert(AlertDescription::IllegalParameter))?
                 .to_string();
             if name.is_some() {

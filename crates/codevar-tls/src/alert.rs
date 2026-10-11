@@ -16,6 +16,7 @@
 //! TLS alert protocol (RFC 8446 §6, RFC 5246 §7.2).
 
 use crate::error::{TlsError, TlsResult};
+use alloc::format;
 
 /// Alert severity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

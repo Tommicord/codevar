@@ -60,14 +60,17 @@ pub use driver::{Driver, Exit, run};
 
 /// OpenCL kernels compiled and embedded in the executable at build time.
 ///
-/// The build script compiles every `*.cl` file in the crate's `kernels/`
-/// directory (overridable with the `CV_KERNEL_DIR` environment
-/// variable) to SPIR-V, stages `<name>.spv` and `<name>.cl` in `OUT_DIR`,
-/// and generates one [`kernels::KERNEL_MODULES`] registry entry plus three
-/// statics per file — `<PREFIX>_SPIRV`, `<PREFIX>_SOURCE`, and
-/// `<PREFIX>_ENTRY_POINTS` — exactly like shader embedding. A missing or
-/// empty kernel directory yields an empty registry instead of a build
-/// failure.
+/// The build script compiles every `*.cl` file under the crate's
+/// `kernels/` directory (overridable with the `CV_KERNEL_DIR`
+/// environment variable) to SPIR-V, stages it in `OUT_DIR` under a
+/// module-qualified artifact name, and generates one
+/// [`kernels::KERNEL_MODULES`] registry entry plus three statics per
+/// file — `<STEM>_SPIRV`, `<STEM>_SOURCE`, and `<STEM>_ENTRY_POINTS` —
+/// exactly like shader embedding. The directory tree below `kernels/`
+/// becomes this module tree, so `kernels/wredit/block.cl` surfaces as
+/// [`kernels::wredit::BLOCK_SPIRV`] and a file directly in `kernels/`
+/// as a static on this module. A missing or empty kernel directory
+/// yields an empty registry instead of a build failure.
 ///
 /// # Examples
 ///
@@ -83,7 +86,7 @@ pub mod kernels {
     /// One OpenCL kernel source file compiled and embedded at build time.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct KernelModule {
-        /// File stem identifying the module (`vector_add.cl` → `vector_add`).
+        /// Module-qualified source path (`wredit/block.cl` → `wredit/block`).
         pub name: &'static str,
         /// Original OpenCL dialect source text.
         pub source: &'static str,

@@ -841,14 +841,12 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
         match future.as_mut().poll(&mut cx) {
             Poll::Ready(output) => return output,
             Poll::Pending => {
-                let delay = libc::timespec {
-                    tv_sec: 0,
-                    tv_nsec: 1_000_000,
-                };
-                // SAFETY: `delay` is a valid timespec, the remaining
-                // time output is null (unused), and an `EINTR` just
-                // retries on the next loop iteration.
-                unsafe { libc::nanosleep(&delay, core::ptr::null_mut()) };
+                // Back off for a millisecond before re-polling. This goes
+                // through the workspace sleep so the platform policy stays in
+                // one place: a real scheduler suspends the thread, and a
+                // bare-metal target (no timer to program) aborts instead of
+                // burning the core in a busy loop.
+                let _ = codevar_base::sleep::sleep_nanos(1_000_000);
             }
         }
     }

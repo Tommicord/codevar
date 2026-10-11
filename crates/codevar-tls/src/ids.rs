@@ -16,6 +16,7 @@
 //! Numeric identifiers for versions, cipher suites, groups, and signatures.
 
 use crate::error::{TlsError, TlsResult};
+use alloc::format;
 
 /// TLS protocol version wire values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

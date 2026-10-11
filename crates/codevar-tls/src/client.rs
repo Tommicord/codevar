@@ -43,7 +43,8 @@ use crate::key_schedule::{Tls12Keys, Tls13KeySchedule, finished_label};
 use crate::kx::{KeySharePrivate, KeySharePublic, generate_key_share, shared_secret};
 use crate::prf::ct_eq;
 use crate::sign::{tls13_cert_verify_content, verify_handshake_signature, verify_raw_signature};
-use std::sync::Arc;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 /// Client handshake progress.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

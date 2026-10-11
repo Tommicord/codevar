@@ -12,7 +12,6 @@ name = "codevar_truetype_core"
 
 [features]
 default = []
-std = []
 
 [dependencies]
 codevar-base = { workspace = true }

@@ -129,7 +129,7 @@ fn build_pipeline() -> Result<GpuPipeline, PipelineError> {
     let device = selected.ok_or(PipelineError::NoGpuDevice)?;
     let context = Context::new(&device)?;
     let queue = CommandQueue::new(&context, &device)?;
-    let program = Program::from_il(&context, kernels::FONT_RASTER_SPIRV)?;
+    let program = Program::from_il(&context, kernels::truetype::RASTER_SPIRV)?;
     program.build("")?;
     let kernel = program.kernel("font_raster")?;
     Ok(GpuPipeline { queue, kernel })
@@ -278,12 +278,12 @@ fn point_segment_distance(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
     if len2 <= f32::EPSILON {
         let dx = p[0] - a[0];
         let dy = p[1] - a[1];
-        return (dx * dx + dy * dy).sqrt();
+        return libm::sqrtf(dx * dx + dy * dy);
     }
     let t = (((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / len2).clamp(0.0, 1.0);
     let dx = p[0] - (a[0] + t * vx);
     let dy = p[1] - (a[1] + t * vy);
-    (dx * dx + dy * dy).sqrt()
+    libm::sqrtf(dx * dx + dy * dy)
 }
 
 /// Renders `source` into `target` on the GPU.

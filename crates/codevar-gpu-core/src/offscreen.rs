@@ -19,7 +19,7 @@
 
 use ash::vk;
 
-use crate::base::{Compositor, CompositorError, PipeCtx};
+use crate::base::CompositorError;
 use crate::pipeline::PipelineContext;
 
 /// View of one offscreen color target exposed to the mix pass.

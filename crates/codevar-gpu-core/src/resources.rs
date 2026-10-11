@@ -21,7 +21,7 @@
 use alloc::vec::Vec;
 use ash::vk;
 
-use crate::base::{Compositor, CompositorError};
+use crate::base::CompositorError;
 use crate::mix::MixResources;
 use crate::pipeline::{OwnedFd, PipelineContext};
 

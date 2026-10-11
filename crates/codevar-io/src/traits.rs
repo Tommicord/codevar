@@ -13,7 +13,7 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-use crate::error::IoResult;
+use crate::error::Result;
 use crate::impls::{Lines, Split, append_to_string};
 use crate::{ErrorKind, ErrorType, ReadExactError, SeekFrom, WriteFmtError};
 use alloc::string::String;
@@ -112,9 +112,9 @@ pub trait BufRead: Read {
     /// // mark the bytes we worked with as read
     /// let length = buffer.len();
     /// cursor.consume(length);
-    /// # codevar_io::IoResult::Ok(())
+    /// # Ok::<(), codevar_io::Error>(())
     /// ```
-    fn fill_buf(&mut self) -> IoResult<&[u8]>;
+    fn fill_buf(&mut self) -> Result<&[u8]>;
 
     /// Marks the given `amount` of additional bytes from the internal buffer as having been read.
     /// Subsequent calls to `read` only return bytes that have not been marked as read.
@@ -158,9 +158,9 @@ pub trait BufRead: Read {
     ///     // work with line
     ///     println!("{line:?}");
     /// }
-    /// # codevar_io::IoResult::Ok(())
+    /// # Ok::<(), codevar_io::Error>(())
     /// ```
-    fn has_data_left(&mut self) -> IoResult<bool> {
+    fn has_data_left(&mut self) -> Result<bool> {
         self.fill_buf().map(|b| !b.is_empty())
     }
 
@@ -218,7 +218,7 @@ pub trait BufRead: Read {
     /// assert_eq!(num_bytes, 0);
     /// assert_eq!(buf, b"");
     /// ```
-    fn read_until(&mut self, byte: u8, buf: &mut Vec<u8>) -> IoResult<usize> {
+    fn read_until(&mut self, byte: u8, buf: &mut Vec<u8>) -> Result<usize> {
         crate::impls::read_until(self, byte, buf)
     }
 
@@ -282,7 +282,7 @@ pub trait BufRead: Read {
     ///     .expect("reading from cursor won't fail");
     /// assert_eq!(num_bytes, 1);
     /// ```
-    fn skip_until(&mut self, byte: u8) -> IoResult<usize> {
+    fn skip_until(&mut self, byte: u8) -> Result<usize> {
         crate::impls::skip_until(self, byte)
     }
 
@@ -349,7 +349,7 @@ pub trait BufRead: Read {
     /// assert_eq!(num_bytes, 0);
     /// assert_eq!(buf, "");
     /// ```
-    fn read_line(&mut self, buf: &mut String) -> IoResult<usize> {
+    fn read_line(&mut self, buf: &mut String) -> Result<usize> {
         unsafe { append_to_string(buf, |b| crate::impls::read_until(self, b'\n', b)) }
     }
 

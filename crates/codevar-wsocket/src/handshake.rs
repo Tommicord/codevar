@@ -37,8 +37,11 @@
 
 use crate::error::{WsError, WsResult};
 use crate::ids::{GUID, VERSION};
+use alloc::collections::BTreeMap as HashMap;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 use sha1::{Digest, Sha1};
-use std::collections::HashMap;
 
 /// Generates 16 cryptographically random bytes for `Sec-WebSocket-Key`.
 pub fn generate_key_nonce() -> WsResult<[u8; 16]> {
@@ -332,7 +335,7 @@ pub fn try_parse_request(buf: &[u8]) -> WsResult<Option<(HandshakeRequest, usize
     let Some(header_end) = find_header_end(buf) else {
         return Ok(None);
     };
-    let header_block = std::str::from_utf8(&buf[..header_end])
+    let header_block = core::str::from_utf8(&buf[..header_end])
         .map_err(|_| WsError::handshake("request headers are not valid UTF-8"))?;
     let mut lines = header_block.split("\r\n");
     let request_line = lines
@@ -393,7 +396,7 @@ pub fn try_parse_response(buf: &[u8]) -> WsResult<Option<(WsHandshakeResponse, u
     let Some(header_end) = find_header_end(buf) else {
         return Ok(None);
     };
-    let header_block = std::str::from_utf8(&buf[..header_end])
+    let header_block = core::str::from_utf8(&buf[..header_end])
         .map_err(|_| WsError::handshake("response headers are not valid UTF-8"))?;
     let mut lines = header_block.split("\r\n");
     let status_line = lines
@@ -554,7 +557,7 @@ mod tests {
         )
         .expect("valid handshake");
         let req = hs.encode_request();
-        let text = std::str::from_utf8(&req).expect("utf8");
+        let text = core::str::from_utf8(&req).expect("utf8");
         assert!(text.starts_with("GET /chat HTTP/1.1\r\n"));
         assert!(text.contains("Host: example.com\r\n"));
         assert!(text.contains("Upgrade: websocket\r\n"));
@@ -954,7 +957,7 @@ mod tests {
     fn oversize_header_value_is_handled_without_failure() {
         let mut raw = Vec::new();
         raw.extend_from_slice(b"GET / HTTP/1.1\r\nHost: h\r\nX-Big: ");
-        raw.extend(std::iter::repeat_n(b'A', 1024 * 1024));
+        raw.extend(core::iter::repeat_n(b'A', 1024 * 1024));
         raw.extend_from_slice(b"\r\n\r\n");
         let (req, consumed) = try_parse_request(&raw)
             .expect("parse")

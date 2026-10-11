@@ -424,10 +424,7 @@ impl<'p> Compositor<'p> {
     ///
     /// * [`CompositorError::FramePhase`] — a frame is in progress; the
     ///   queue may only grow between frames so slot indices stay stable.
-    pub fn add_pipe<T: PipeSource + PipeOffscreen>(
-        &mut self,
-        renderer: T,
-    ) -> Result<usize, CompositorError> {
+    pub fn add_pipe<T: PipeSource + PipeOffscreen>(&mut self, renderer: T) -> Result<usize, CompositorError> {
         self.add_handoff(PipeHandoff::from_renderer(renderer))
     }
 

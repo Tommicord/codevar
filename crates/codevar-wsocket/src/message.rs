@@ -21,6 +21,8 @@
 //! observe keepalives and peer-initiated shutdowns.
 
 use crate::ids::WsCloseCode;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 /// A complete WebSocket message after reassembly (RFC 6455 §6).
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -16,6 +16,8 @@
 //! TLS presentation language codec (RFC 8446 §3 / RFC 5246 §4).
 
 use crate::error::{TlsError, TlsResult};
+use alloc::format;
+use alloc::vec::Vec;
 
 /// Sequential reader over a TLS-encoded byte slice.
 #[derive(Debug, Clone)]

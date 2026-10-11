@@ -24,7 +24,7 @@ use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 use spin::Mutex;
 
-use crate::base::{Compositor, PipeHandoff};
+use crate::base::PipeHandoff;
 use crate::types::{CommError, CompositorMessage};
 
 /// Depth of each [`CompositorComm`] channel before a non-blocking send

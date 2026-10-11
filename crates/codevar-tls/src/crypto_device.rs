@@ -14,7 +14,7 @@
 //! permissions and limitations under the License.
 
 use crate::ids::{AeadAlgorithm, CipherSuite};
-use std::sync::OnceLock;
+use spin::once::Once;
 
 /// Coarse device class used for cipher-suite preference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,12 +58,12 @@ impl CryptoCapabilities {
     }
 }
 
-static CAPS: OnceLock<CryptoCapabilities> = OnceLock::new();
+static CAPS: Once<CryptoCapabilities> = Once::new();
 
 /// Returns the process-wide crypto capability snapshot.
 #[must_use]
 pub fn capabilities() -> CryptoCapabilities {
-    *CAPS.get_or_init(detect_capabilities)
+    *CAPS.call_once(detect_capabilities)
 }
 
 /// Detects device class and AES / CLMUL hardware support.
@@ -101,34 +101,13 @@ fn detect_device_class(aes_gcm_hw: bool) -> DeviceClass {
 }
 
 fn detect_aes_hw() -> bool {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    {
-        std::is_x86_feature_detected!("aes")
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        std::arch::is_aarch64_feature_detected!("aes")
-    }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86", target_arch = "aarch64")))]
-    {
-        false
-    }
+    codevar_base::cpu_feature!(aes)
 }
 
 fn detect_clmul_hw() -> bool {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    {
-        std::is_x86_feature_detected!("pclmulqdq")
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        // PMULL ships with the ARM crypto extension set used for AES.
-        std::arch::is_aarch64_feature_detected!("aes")
-    }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86", target_arch = "aarch64")))]
-    {
-        false
-    }
+    // PMULL (the AArch64 carry-less multiply extension) is reported as the
+    // AArch64 equivalent of `pclmulqdq` by the shared CPU feature probe.
+    codevar_base::cpu_feature!(pclmulqdq)
 }
 
 /// Cipher suites ordered for the current device (TLS 1.3 first, then TLS 1.2).

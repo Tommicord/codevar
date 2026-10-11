@@ -30,11 +30,22 @@
 use crate::alert::AlertDescription;
 use crate::error::{TlsError, TlsResult};
 use crate::sign::verify_cert_signature;
-use std::time::{SystemTime, UNIX_EPOCH};
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use codevar_time_core::SystemTime;
 use x509_parser::certificate::X509Certificate;
 use x509_parser::extensions::{GeneralName, ParsedExtension};
 use x509_parser::prelude::FromDer;
 use x509_parser::public_key::PublicKey;
+
+/// Wall-clock seconds since the Unix epoch.
+///
+/// Reads [`SystemTime`] directly so the crate stays `no_std`; returns 0 when
+/// the realtime clock is unavailable.
+fn unix_seconds() -> i64 {
+    (SystemTime::realtime_nanos() / 1_000_000_000) as i64
+}
 
 /// A parsed end-entity or CA certificate retained as DER plus extracted fields.
 #[derive(Debug, Clone)]
@@ -222,7 +233,7 @@ fn dns_name_matches(pattern: &str, host: &str) -> bool {
 
 /// Parses one or more PEM-encoded certificates into DER list (leaf first).
 pub fn parse_pem_certs(pem_bytes: &[u8]) -> TlsResult<Vec<Vec<u8>>> {
-    let text = std::str::from_utf8(pem_bytes)
+    let text = core::str::from_utf8(pem_bytes)
         .map_err(|_| TlsError::certificate(String::from("PEM is not UTF-8")))?;
     let mut certs = Vec::new();
     for block in pem::parse_many(text).map_err(|e| TlsError::certificate(format!("PEM: {e}")))? {
@@ -357,16 +368,12 @@ impl CertVerifier {
             return Ok(leaf);
         }
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
+        let now = unix_seconds();
         for cert in &parsed {
             if !cert.valid_at(now) {
                 return Err(TlsError::Alert(AlertDescription::CertificateExpired));
             }
         }
-
         if !self.skip_hostname {
             let host = hostname.ok_or_else(|| {
                 TlsError::certificate(String::from("server name required for certificate check"))
@@ -404,12 +411,7 @@ impl CertVerifier {
                     .iter()
                     .find(|r| r.subject == subject.issuer)
                     .ok_or(TlsError::Alert(AlertDescription::UnknownCa))?;
-                if !root.valid_at(
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map(|d| d.as_secs() as i64)
-                        .unwrap_or(0),
-                ) {
+                if !root.valid_at(unix_seconds()) {
                     return Err(TlsError::Alert(AlertDescription::CertificateExpired));
                 }
                 &root.spki_der
@@ -452,8 +454,8 @@ impl ServerName {
     }
 }
 
-impl std::fmt::Display for ServerName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for ServerName {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(&self.name)
     }
 }

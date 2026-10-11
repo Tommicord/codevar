@@ -40,6 +40,9 @@
 
 use crate::error::{WsError, WsResult};
 use crate::ids::{MAX_CONTROL_PAYLOAD, Role, WsCloseCode, WsOpcode};
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 /// Parsed frame header (without payload bytes).
 #[derive(Debug, Clone, PartialEq, Eq)]

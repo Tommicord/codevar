@@ -19,6 +19,8 @@ use crate::codec::put_u16;
 use crate::crypto_hash::hash_empty;
 use crate::error::{TlsError, TlsResult};
 use crate::ids::HashAlgorithm;
+use alloc::vec;
+use alloc::vec::Vec;
 use hkdf::Hkdf;
 use sha2::{Sha256, Sha384};
 

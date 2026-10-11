@@ -13,8 +13,9 @@ name = "codevar_time_core"
 [dependencies]
 cfg-if = { workspace = true }
 libc = { workspace = true }
-windows-link = { workspace = true }
 spin = { workspace = true }
+windows-link = { workspace = true }
+codevar-target = { workspace = true }
 
 [lints]
 workspace = true

@@ -17,6 +17,7 @@
 
 use crate::error::{TlsError, TlsResult};
 use crate::ids::HashAlgorithm;
+use alloc::vec::Vec;
 use hmac::{Hmac, Mac};
 use sha2::{Sha256, Sha384};
 

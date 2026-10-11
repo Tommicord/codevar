@@ -16,7 +16,8 @@
 //! TLS error types.
 
 use crate::alert::AlertDescription;
-use std::fmt;
+use alloc::string::String;
+use core::fmt;
 
 /// Result alias for TLS operations.
 pub type TlsResult<T> = Result<T, TlsError>;
@@ -117,7 +118,7 @@ impl fmt::Display for TlsError {
     }
 }
 
-impl std::error::Error for TlsError {}
+impl core::error::Error for TlsError {}
 
 impl From<getrandom::Error> for TlsError {
     fn from(_: getrandom::Error) -> Self {

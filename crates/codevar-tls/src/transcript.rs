@@ -17,6 +17,7 @@
 
 use crate::crypto_hash::{HashCtx, hash_message};
 use crate::ids::{HandshakeType, HashAlgorithm};
+use alloc::vec::Vec;
 
 /// Running transcript of handshake messages.
 #[derive(Clone)]

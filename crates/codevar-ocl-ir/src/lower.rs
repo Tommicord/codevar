@@ -58,6 +58,8 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
+use libm;
+
 use codevar_ocl_lex::{Base, LiteralKind, TokenKind};
 use codevar_ocl_parse::{
     BinaryOp, Block, Expr, ExprKind, FnItem, GenericParam, ItemKind, LetStmt, NodeId, Param, Pat, PatKind,
@@ -370,7 +372,7 @@ fn float_payload(value: f64, ty: &IrType) -> Option<ConstValue> {
         IrType::Float { bits: 32 } => Some(ConstValue::from_f32_bits((value as f32).to_bits())),
         IrType::Float { bits: 64 } => Some(ConstValue::from_f64_bits(value.to_bits())),
         IrType::Int { bits, .. } => {
-            let truncated = value.trunc() as i128;
+            let truncated = libm::trunc(value) as i128;
             Some(ConstValue::Int(mask_bits(truncated as u64, *bits)))
         }
         IrType::Bool => Some(ConstValue::Bool(value != 0.0)),
