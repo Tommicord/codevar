@@ -7,8 +7,8 @@ extern crate alloc;
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{LazyLock, Mutex};
 
 use codevar_ocl_asm::SpirvStream;
 use codevar_ocl_ir::lower::ItemLowerer;
@@ -105,9 +105,19 @@ unsafe impl GlobalAlloc for Probe {
                 drop(heap);
                 if let Some(key) = site() {
                     let scaled = layout.size() * SAMPLE_RATE;
-                    *PROFILE.lock().unwrap_or_else(|e| e.into_inner()).entry(key.clone()).or_insert(0) += scaled;
-                    *LIVE_PROFILE.lock().unwrap_or_else(|e| e.into_inner()).entry(key.clone()).or_insert(0) += scaled;
-                    SIZES.lock().unwrap_or_else(|e| e.into_inner())
+                    *PROFILE
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .entry(key.clone())
+                        .or_insert(0) += scaled;
+                    *LIVE_PROFILE
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .entry(key.clone())
+                        .or_insert(0) += scaled;
+                    SIZES
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
                         .insert(block.as_ptr() as usize, (scaled, key));
                 }
                 block.as_ptr()
@@ -135,8 +145,14 @@ unsafe impl GlobalAlloc for Probe {
         let used = heap.stats().used_bytes;
         PEAK.fetch_max(used, Ordering::Relaxed);
         drop(heap);
-        if let Some((size, key)) = SIZES.lock().unwrap_or_else(|e| e.into_inner()).remove(&(ptr as usize)) {
-            LIVE_PROFILE.lock().unwrap_or_else(|e| e.into_inner())
+        if let Some((size, key)) = SIZES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&(ptr as usize))
+        {
+            LIVE_PROFILE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
                 .entry(key)
                 .and_modify(|value| *value = value.saturating_sub(size));
         }
@@ -151,8 +167,7 @@ unsafe impl GlobalAlloc for Probe {
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        let new_ptr =
-            unsafe { self.alloc(Layout::from_size_align_unchecked(new_size, layout.align())) };
+        let new_ptr = unsafe { self.alloc(Layout::from_size_align_unchecked(new_size, layout.align())) };
         if !ptr.is_null() && !new_ptr.is_null() {
             let copy = if layout.size() < new_size {
                 layout.size()
@@ -175,7 +190,9 @@ fn mark(label: &str) {
     let used = HEAP.lock().stats().used_bytes;
     let peak = PEAK.load(Ordering::Relaxed);
     println!("--- {label}: used={used} peak={peak}");
-    let live = LIVE_PROFILE.lock().unwrap_or_else(|e| e.into_inner());
+    let live = LIVE_PROFILE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let mut entries: Vec<(&String, &usize)> = live.iter().filter(|(_, v)| **v > 0).collect();
     entries.sort_by(|left, right| right.1.cmp(left.1));
     for (key, bytes) in entries.into_iter().take(12) {
