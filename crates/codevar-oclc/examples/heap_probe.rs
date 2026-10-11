@@ -47,7 +47,7 @@ fn main() {
 
 fn site() -> Option<String> {
     let tick = SAMPLE.fetch_add(1, Ordering::Relaxed);
-    if tick % SAMPLE_RATE != 0 {
+    if !tick.is_multiple_of(SAMPLE_RATE) {
         return None;
     }
     let backtrace = std::backtrace::Backtrace::force_capture();
@@ -85,7 +85,7 @@ static INIT: std::sync::Once = std::sync::Once::new();
 
 fn ensure_heap() {
     INIT.call_once(|| {
-        let start = unsafe { ptr::addr_of_mut!(REGION).cast::<u8>() };
+        let start = ptr::addr_of_mut!(REGION).cast::<u8>();
         // SAFETY: REGION backs only this heap and outlives the process.
         if unsafe { HEAP.lock().add_region(start, REGION_BYTES) }.is_err() {
             eprintln!("region rejected");
