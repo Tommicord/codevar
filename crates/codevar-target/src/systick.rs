@@ -24,7 +24,7 @@
 //!   read-as-zero/write-ignored, so the presence check is a read-back),
 //! - calibrates the core clock against the semihosting wall clock when an
 //!   agent is present, and otherwise uses `CODEVAR_CPU_HZ`,
-//! - runs it as a periodic tick, counting whole ticks in [`SysTick`] (the
+//! - runs it as a periodic tick, counting whole ticks in the `SysTick` (the
 //!   vector entry `codevar-rt` installs) plus the fraction of the current
 //!   tick from the counter itself, and
 //! - answers [`uptime_nanos`], the "time since reset" every embedded clock
@@ -34,9 +34,10 @@
 //! register the concept does not exist, and a caller that needs real dates
 //! must supply an epoch of its own (see `codevar-time-core`).
 
-use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
 use crate::semihosting;
+use crate::tick::{FALLBACK_HZ, MAX_PLAUSIBLE_HZ, MIN_PLAUSIBLE_HZ, RELOAD_MAX, tick_reload};
 
 /// SysTick control and status, `0xE000_E010`.
 const SYST_CSR: *mut u32 = 0xE000_E010 as *mut u32;
@@ -53,23 +54,7 @@ const CSR_TICKINT: u32 = 1 << 1;
 const CSR_CLKSOURCE: u32 = 1 << 2;
 /// `CSR.COUNTFLAG`: set when the counter reached zero since the last read.
 const CSR_COUNTFLAG: u32 = 1 << 16;
-/// The three writable control bits, for presence probing and read-backs.
-const CSR_CONTROL: u32 = CSR_ENABLE | CSR_TICKINT | CSR_CLKSOURCE;
 
-/// Largest 24-bit reload value (used while calibrating).
-const RELOAD_MAX: u32 = 0x00FF_FFFF;
-/// Nominal tick period: one millisecond.
-const TARGET_TICK_HZ: u32 = 1_000;
-/// A core clock below this cannot be divided into a millisecond, so the
-/// maximum period is used instead of an interrupt storm.
-const MIN_TICK_HZ: u32 = 10_000;
-/// Core clock assumed when there is no agent to calibrate against: the
-/// 12 MHz system clock of QEMU's `lm3s6965evb`, and a common board default.
-const DEFAULT_HZ: u32 = 12_000_000;
-/// Sanity bounds for a calibrated core clock; outside them the measurement
-/// is discarded rather than believed.
-const MIN_PLAUSIBLE_HZ: u32 = 1_000;
-const MAX_PLAUSIBLE_HZ: u32 = 400_000_000;
 /// Upper bound on wall-clock probe iterations during calibration, so a
 /// broken agent cannot hang the first clock read.
 const MAX_CALIBRATION_PROBES: u32 = 8_000_000;
@@ -167,7 +152,10 @@ fn start() -> u32 {
         core::ptr::write_volatile(SYST_RVR, RELOAD_MAX);
         core::ptr::write_volatile(SYST_CVR, 0);
         core::ptr::write_volatile(SYST_CSR, CSR_CLKSOURCE | CSR_TICKINT);
-        let readback = core::ptr::read_volatile(SYST_CSR) & (CSR_CONTROL & !CSR_ENABLE);
+        // `COUNTFLAG` is a sticky status bit: it can be set by a wrap
+        // between the write above and this read without meaning anything, so
+        // only the two control bits decide presence.
+        let readback = core::ptr::read_volatile(SYST_CSR) & !CSR_COUNTFLAG;
         if readback != (CSR_CLKSOURCE | CSR_TICKINT) {
             STATE.store(STATE_ABSENT, Ordering::Release);
             return 0;
@@ -193,15 +181,6 @@ fn start() -> u32 {
     }
     STATE.store(STATE_RUNNING, Ordering::Release);
     hz
-}
-
-/// Reload value for a `1 / TARGET_TICK_HZ` second tick at `hz`.
-fn tick_reload(hz: u32) -> u32 {
-    if hz < MIN_TICK_HZ {
-        RELOAD_MAX
-    } else {
-        (hz / TARGET_TICK_HZ) - 1
-    }
 }
 
 /// Measures the core clock against the agent's wall clock.
@@ -249,8 +228,8 @@ fn calibrate() -> Option<u32> {
     stop_counter();
 
     let seconds = end.checked_sub(start)?;
-    let cycles = (ticks as u128) * u128::from(RELOAD_MAX + 1)
-        + u128::from(RELOAD_MAX.saturating_sub(counter));
+    let cycles =
+        (ticks as u128) * u128::from(RELOAD_MAX + 1) + u128::from(RELOAD_MAX.saturating_sub(counter));
     let hz = u32::try_from(cycles / u128::from(seconds)).ok()?;
     if (MIN_PLAUSIBLE_HZ..=MAX_PLAUSIBLE_HZ).contains(&hz) {
         Some(hz)
@@ -298,69 +277,4 @@ fn read_counts() -> (u64, u32) {
         );
     }
     (ticks, counter)
-}
-
-/// The core clock used when no agent is available to calibrate against.
-///
-/// Overridable per build with the `CODEVAR_CPU_HZ` environment variable
-/// (read by this crate's `build.rs`), because a board without a debug probe
-/// is exactly the case where nobody can measure it at run time.
-const FALLBACK_HZ: u32 = match parse_hz(option_env!("CODEVAR_CPU_HZ")) {
-    hz if hz >= MIN_PLAUSIBLE_HZ && hz <= MAX_PLAUSIBLE_HZ => hz,
-    _ => DEFAULT_HZ,
-};
-
-/// Parses a decimal `u32`, yielding `0` for anything that is not a plain
-/// positive number — a malformed `CODEVAR_CPU_HZ` silently falls back to the
-/// default rather than failing the build.
-const fn parse_hz(text: Option<&str>) -> u32 {
-    let Some(text) = text else {
-        return 0;
-    };
-    let bytes = text.as_bytes();
-    let mut value: u32 = 0;
-    let mut index = 0;
-    while index < bytes.len() {
-        let byte = bytes[index];
-        if !byte.is_ascii_digit() || value > u32::MAX / 10 {
-            return 0;
-        }
-        value = value * 10 + (byte - b'0') as u32;
-        index += 1;
-    }
-    value
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reload_divides_the_tick() {
-        assert_eq!(tick_reload(12_000_000), 11_999);
-        assert_eq!(tick_reload(1_000_000), 999);
-    }
-
-    #[test]
-    fn very_slow_cores_keep_the_full_period() {
-        assert_eq!(tick_reload(9_000), RELOAD_MAX);
-    }
-
-    #[test]
-    fn hz_parsing_rejects_junk() {
-        assert_eq!(parse_hz(None), 0);
-        assert_eq!(parse_hz(Some("")), 0);
-        assert_eq!(parse_hz(Some("48000000")), 48_000_000);
-        assert_eq!(parse_hz(Some("12MHz")), 0);
-        assert_eq!(parse_hz(Some("-1")), 0);
-    }
-
-    #[test]
-    fn fallback_clock_is_always_a_clock() {
-        // Whatever `CODEVAR_CPU_HZ` was at compile time, the fallback must
-        // land inside the plausible band or the const `match` above would
-        // have selected the documented default instead.
-        assert!((MIN_PLAUSIBLE_HZ..=MAX_PLAUSIBLE_HZ).contains(&FALLBACK_HZ));
-        assert_eq!(parse_hz(None), 0);
-    }
 }

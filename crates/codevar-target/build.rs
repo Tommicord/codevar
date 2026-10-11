@@ -40,8 +40,6 @@ fn main() {
         // correct while the mistake stays visible. Newlines are flattened so
         // the message stays a single cargo directive.
         let value = value.replace(['\n', '\r'], " ");
-        println!(
-            "cargo:warning=CODEVAR_CPU_HZ must be a positive integer, ignoring: {value}"
-        );
+        println!("cargo:warning=CODEVAR_CPU_HZ must be a positive integer, ignoring: {value}");
     }
 }

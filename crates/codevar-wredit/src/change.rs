@@ -34,7 +34,7 @@
 //! [`ChangeFlags::HOT`], by the GPU kernel behind
 //! [`crate::hot::try_levenshtein`]; both paths are required to agree
 //! on every input. [`ChangeFlags`] picks that backend and the
-//! behaviour properties the way `RasterFlags` configures the
+//! behavior properties the way `RasterFlags` configures the
 //! rasterizer: named constants combined with `|`.
 
 use alloc::vec;
@@ -181,14 +181,14 @@ pub fn levenshtein_capped(a: &[u32], b: &[u32], max_dist: u32) -> u32 {
     prev[b_len]
 }
 
-/// Backend selection and behaviour properties for the change
+/// Backend selection and behavior properties for the change
 /// distance operations.
 ///
 /// A transparent bit set in the shape of `RasterFlags`: named
 /// constants that callers combine with [`core::ops::BitOr`] and test
 /// with [`ChangeFlags::contains`]. [`ChangeFlags::DEFAULT`] (all
 /// bits clear) selects the portable CPU reference on raw code
-/// points, so a caller that wants no special behaviour passes it.
+/// points, so a caller that wants no special behavior passes it.
 ///
 /// # Examples
 ///
@@ -216,7 +216,7 @@ impl ChangeFlags {
     /// Fold runs of whitespace to a single space
     /// ([`fold_whitespace`]) before comparing, so changes that differ
     /// only in indentation, spacing, tabs versus spaces, or line
-    /// breaks collapse to the same shape. Honoured by
+    /// breaks collapse to the same shape. Honored by
     /// [`changes_are_similar`]; [`change_distance`] treats its input
     /// as already prepared.
     pub const FOLD_WHITESPACE: Self = Self(0x2);
@@ -361,7 +361,7 @@ mod tests {
         if full > 3 {
             assert_eq!(levenshtein_capped(&a, &b, 3), 4);
         }
-        assert!(levenshtein_capped(&a, &b, full) == full);
+        assert_eq!(levenshtein_capped(&a, &b, full), full);
     }
 
     #[test]

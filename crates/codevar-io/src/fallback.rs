@@ -15,10 +15,18 @@
 
 //! Fallback standard I/O implementation for bare-metal/no_std environments.
 //!
-//! This module provides minimal implementations of stdin, stdout, and stderr
-//! for platforms that don't have standard OS support (bare-metal, embedded, etc.).
-//! These implementations return appropriate errors indicating the operations
-//! are not supported.
+//! This module provides the three standard streams for platforms that have
+//! no operating system behind them. On bare metal (`target_os = "none"`)
+//! stdout and stderr are the platform console from `codevar-target` — the
+//! debug agent's semihosting channel on ARM — while stdin, which has no
+//! hardware equivalent, always reports [`ErrorKind::Unsupported`]. On other
+//! exotic targets (WebAssembly and friends) every stream reports
+//! [`ErrorKind::Unsupported`], because there is nothing to write to.
+//!
+//! A console that is missing on bare metal stops the application rather
+//! than returning an error: a logger whose output is silently dropped is
+//! indistinguishable from a hung program, and the project's policy for a
+//! missing required component is a loud, diagnosable stop.
 
 use crate::{ErrorKind, ErrorType, Read, ReadExactError, Write};
 
@@ -37,9 +45,8 @@ pub struct StdinLock<'a> {
 
 /// A handle to the global standard output stream of the current process.
 ///
-/// On bare-metal platforms, standard output may be connected to a serial port,
-/// display, or other output device. Write operations will return
-/// `ErrorKind::Unsupported` unless a custom implementation is provided.
+/// On bare metal this is the platform console (see the module docs); on
+/// other exotic targets writes return `ErrorKind::Unsupported`.
 #[derive(Debug)]
 pub struct Stdout;
 
@@ -51,9 +58,8 @@ pub struct StdoutLock<'a> {
 
 /// A handle to the standard error stream of a process.
 ///
-/// On bare-metal platforms, standard error is typically the same as stdout.
-/// Write operations will return `ErrorKind::Unsupported` unless a custom
-/// implementation is provided.
+/// On bare metal this is the platform console on the error stream; on other
+/// exotic targets writes return `ErrorKind::Unsupported`.
 #[derive(Debug)]
 pub struct Stderr;
 
@@ -102,6 +108,42 @@ impl Stderr {
         StderrLock {
             _phantom: core::marker::PhantomData,
         }
+    }
+}
+
+/// Writes `buf` to the standard output stream of this target.
+///
+/// Returns the number of bytes accepted, which is all of them or none: the
+/// bare-metal console writes the whole buffer or stops the application, and
+/// the exotic targets without a console accept nothing.
+#[inline]
+fn write_stdout(buf: &[u8]) -> Result<usize, ErrorKind> {
+    #[cfg(target_os = "none")]
+    {
+        codevar_target::console_write(codevar_target::Stream::Stdout, buf);
+        Ok(buf.len())
+    }
+    #[cfg(not(target_os = "none"))]
+    {
+        let _ = buf;
+        Err(ErrorKind::Unsupported)
+    }
+}
+
+/// Writes `buf` to the standard error stream of this target.
+///
+/// See [`write_stdout`] for the acceptance rules.
+#[inline]
+fn write_stderr(buf: &[u8]) -> Result<usize, ErrorKind> {
+    #[cfg(target_os = "none")]
+    {
+        codevar_target::console_write(codevar_target::Stream::Stderr, buf);
+        Ok(buf.len())
+    }
+    #[cfg(not(target_os = "none"))]
+    {
+        let _ = buf;
+        Err(ErrorKind::Unsupported)
     }
 }
 
@@ -154,10 +196,8 @@ impl Read for StdinLock<'_> {
 }
 
 impl Write for Stdout {
-    fn write(&mut self, _buf: &[u8]) -> Result<usize, Self::Error> {
-        // Standard output is not available on bare-metal platforms
-        // Users should provide their own implementation via the StdIo trait
-        Err(ErrorKind::Unsupported)
+    fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        write_stdout(buf)
     }
 
     fn flush(&mut self) -> Result<(), Self::Error> {
@@ -171,8 +211,8 @@ impl Write for Stdout {
 }
 
 impl Write for StdoutLock<'_> {
-    fn write(&mut self, _buf: &[u8]) -> Result<usize, Self::Error> {
-        Err(ErrorKind::Unsupported)
+    fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        write_stdout(buf)
     }
 
     fn flush(&mut self) -> Result<(), Self::Error> {
@@ -186,9 +226,8 @@ impl Write for StdoutLock<'_> {
 }
 
 impl Write for Stderr {
-    fn write(&mut self, _buf: &[u8]) -> Result<usize, Self::Error> {
-        // Standard error is not available on bare-metal platforms
-        Err(ErrorKind::Unsupported)
+    fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        write_stderr(buf)
     }
 
     fn flush(&mut self) -> Result<(), Self::Error> {
@@ -202,8 +241,8 @@ impl Write for Stderr {
 }
 
 impl Write for StderrLock<'_> {
-    fn write(&mut self, _buf: &[u8]) -> Result<usize, Self::Error> {
-        Err(ErrorKind::Unsupported)
+    fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        write_stderr(buf)
     }
 
     fn flush(&mut self) -> Result<(), Self::Error> {

@@ -70,10 +70,10 @@ use codevar_oclc::driver;
 #[cfg(all(not(test), unix))]
 use codevar_tlsf_alloc::LockedGrowableTlsf;
 
-/// The vector table and `Reset` stub of the bare-metal image.
-///
-/// On any other target this expands to nothing, so the hosted build keeps its
-/// C runtime as the entry point.
+// The vector table and `Reset` stub of the bare-metal image.
+//
+// On any other target this expands to nothing, so the hosted build keeps its
+// C runtime as the entry point.
 #[cfg(all(not(test), target_arch = "arm", target_os = "none"))]
 codevar_rt::vector_table!();
 

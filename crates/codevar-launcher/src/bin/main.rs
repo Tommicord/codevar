@@ -25,10 +25,10 @@ use codevar_launcher::driver::Exit;
 #[cfg(not(test))]
 use codevar_logger::log_error;
 
-/// The vector table and `Reset` stub of the bare-metal image.
-///
-/// On any other target this expands to nothing, so the hosted build keeps its
-/// C runtime as the entry point.
+// The vector table and `Reset` stub of the bare-metal image.
+//
+// On any other target this expands to nothing, so the hosted build keeps its
+// C runtime as the entry point.
 #[cfg(all(not(test), target_arch = "arm", target_os = "none"))]
 codevar_rt::vector_table!();
 

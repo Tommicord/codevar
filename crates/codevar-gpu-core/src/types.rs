@@ -16,7 +16,6 @@
 //! Lifecycle state, frame phase, error and message types shared by
 //! every part of the compositor.
 
-use crate::base::CompositorComm;
 use alloc::boxed::Box;
 use alloc::string::String;
 use ash::vk;
@@ -203,7 +202,7 @@ impl fmt::Display for CompositorError {
 
 impl core::error::Error for CompositorError {}
 
-/// Error reported by the non-blocking [`CompositorComm`](CompositorComm) senders.
+/// Error reported by the non-blocking [`CompositorComm`](crate::base::CompositorComm) senders.
 ///
 /// The rejected value is handed back so the caller can retry it later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

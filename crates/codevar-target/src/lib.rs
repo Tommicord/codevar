@@ -29,8 +29,40 @@
 //! On hosted targets the same calls exist (so portable code can use them
 //! unconditionally) but are unreachable in practice, because every service
 //! has a real implementation there.
+//!
+//! # Bare-metal backends
+//!
+//! On `target_os = "none"` every service still exists — so portable code
+//! needs no target-specific `cfg` — but each one is backed by hardware:
+//!
+//! | Service  | ARM backend                       | Everyone else        |
+//! |----------|-----------------------------------|----------------------|
+//! | clock    | [`systick`] (SysTick)             | stop the application |
+//! | console  | [`semihosting`] (BKPT, debug agent) | stop the application |
+//!
+//! ARM is where the two mechanisms live that a Rust bare-metal image can
+//! assume without a board support package: SysTick, which ARMv7-M makes
+//! mandatory, and semihosting, which every debug agent implements (through
+//! `bkpt #0xAB`, the M-profile encoding). Both are
+//! *probed* at run time ([`systick`] by register read-back,
+//! [`semihosting`] by one trial call), so a part or session without them is
+//! a clean "unsupported" stop rather than a fault. A new architecture needs
+//! one `cfg` branch per service here; the callers never change.
 
 #![cfg_attr(not(test), no_std)]
+
+/// Which of the two standard streams a console write goes to.
+///
+/// The values are the file handles POSIX fixes for them (1 and 2), which is
+/// also what semihosting expects.
+#[cfg(target_os = "none")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stream {
+    /// Standard output.
+    Stdout,
+    /// Standard error.
+    Stderr,
+}
 
 /// Semihosting: the console and wall clock a debug agent provides to a
 /// bare-metal image, with detection so an absent agent is a clean
@@ -42,10 +74,42 @@ pub mod semihosting;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod systick;
 
-#[cfg(all(target_arch = "arm", target_os = "none"))]
-pub use semihosting::Stream;
+/// The clock arithmetic, compiled wherever it can be tested: on the host it
+/// exists only under `test`, on bare-metal ARM it exists for real.
+#[cfg(any(test, all(target_arch = "arm", target_os = "none")))]
+mod tick;
+
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub use systick::uptime_nanos;
+
+/// Nanoseconds since reset on targets with no timer backend.
+///
+/// A clock is not something to approximate, so rather than returning zero —
+/// a plausible-looking answer that would make every timestamp a lie — the
+/// application stops here. Adding a backend for another architecture means
+/// providing its `uptime_nanos` in a branch of this `cfg`.
+///
+/// # Never returns
+///
+/// Diverges through [`abort_unsupported`].
+#[cfg(all(target_os = "none", not(target_arch = "arm")))]
+pub fn uptime_nanos() -> u64 {
+    abort_unsupported("clock (no timer backend for this architecture)")
+}
+
+/// Writes to the console on targets with no console backend.
+///
+/// As with [`uptime_nanos`], a silent success would be worse than a stop:
+/// the diagnostic path is the one place where losing output must be
+/// visible.
+///
+/// # Never returns
+///
+/// Diverges through [`abort_unsupported`].
+#[cfg(all(target_os = "none", not(target_arch = "arm")))]
+pub fn console_write(_stream: Stream, _bytes: &[u8]) {
+    abort_unsupported("console write (no console backend for this architecture)");
+}
 
 /// Stops the processor forever.
 ///

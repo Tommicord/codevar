@@ -38,11 +38,12 @@
 //! trapping it and stopping is the diagnosable answer; jumping through an
 //! unset vector would lock the core up with no way to tell why.
 //!
-//! Two exceptions are wired up because they carry services, not faults:
-//! `SVCall` interprets the `SVC` instruction the target uses to reach a
-//! debug agent (semihosting), and `SysTick` is the periodic tick
+//! Two entries are wired up because they carry services, not faults:
+//! `HardFault`/`DebugMonitor` recognize the `bkpt #0xAB` the target uses to
+//! reach a debug agent (semihosting) and turn an agentless probe into a
+//! clean `-1` instead of a lockup, and `SysTick` is the periodic tick
 //! `codevar-target` builds its clock on. Both fail closed — an unrecognized
-//! call or a tick nobody started ends in the same halt.
+//! breakpoint, a real fault, or a tick nobody started ends in the same halt.
 //!
 //! # Portability
 //!
@@ -164,9 +165,9 @@ pub mod build {
 /// - `__vector_table`, a `.vector_table` section holding the initial stack
 ///   pointer (`_stack_top`, provided by `link.x`), the reset address, the
 ///   system exceptions and 48 external interrupt slots. Reset has its own
-///   handler, `SVCall` dispatches semihosting and `SysTick` counts ticks
-///   (both defined by this crate and `codevar-target`); everything else
-///   points at `DefaultHandler`.
+///   handler, `HardFault`/`DebugMonitor` dispatch the semihosting breakpoint
+///   and `SysTick` counts ticks (all defined by this crate and
+///   `codevar-target`); everything else points at `DefaultHandler`.
 /// - `Reset`, the reset handler: it masks interrupts, installs `_stack_top`
 ///   as the main stack pointer — independent of what the board firmware left
 ///   there — and calls `codevar_rt_reset`.
@@ -189,7 +190,7 @@ macro_rules! vector_table {
                 .word   _stack_top
                 .word   Reset
                 .word   DefaultHandler
-                .word   DefaultHandler
+                .word   DebugEvent
                 .word   DefaultHandler
                 .word   DefaultHandler
                 .word   DefaultHandler
@@ -197,8 +198,8 @@ macro_rules! vector_table {
                 .word   0
                 .word   0
                 .word   0
-                .word   SVCall
                 .word   DefaultHandler
+                .word   DebugEvent
                 .word   0
                 .word   DefaultHandler
                 .word   SysTick
@@ -312,55 +313,76 @@ extern "C" fn DefaultHandler() -> ! {
     codevar_target::halt()
 }
 
-/// The `SVCall` handler: semihosting, or stop.
-///
-/// A `SVC` instruction is how code running on the target asks the *debug
-/// agent* for an operating-system service — writing to the console,
-/// reading the wall clock — and it is the only request channel a bare-metal
-/// image has. The ARMv7-M architecture specifies that a `SVC` is taken with
-/// the instruction's own bits in the exception frame, so this handler
-///
-/// - recognizes Codevar's call (`SVC #0xAB`), reports the call to
-///   `codevar-target` (which records that no agent is listening, so later
-///   probes fail fast instead of faulting again), and returns `-1` in the
-///   stacked `r0` — "the agent refused", which the caller turns into an
-///   ordinary unsupported-service stop, and
-/// - treats *any other* `SVC` as the unknown-service case it is: a branch
-///   to [`DefaultHandler`], which halts with the fault observable.
-///
-/// Written as one `global_asm!` block because the handler must address the
-/// hardware exception frame through `sp` *at entry*: a prologue would move
-/// `sp` and hide it. It never pushes anything it does not pop, keeps `sp`
-/// 8-byte aligned across the call (AAPCS), and returns with `bx lr`, where
-/// `lr` is the hardware-provided `EXC_RETURN` value.
+// The `HardFault`/`DebugEvent` handler: unserviced semihosting, or stop.
+//
+// `bkpt #0xAB` is how code running on the target asks the *debug agent* for
+// an operating-system service — writing to the console, reading the wall
+// clock — and it is the only request channel a bare-metal image has. With an
+// agent (QEMU, a JTAG probe) the instruction is intercepted and this handler
+// never runs. With none, the breakpoint debug event has nowhere to go and
+// the core takes `HardFault` — or `DebugMonitor` on a part that has it
+// enabled, which is why both vector slots name the same handler here.
+//
+// The handler recognizes Codevar's own call by reading the two halfwords
+// around the stacked PC for `bkpt #0xAB`, tells `codevar-target` that no
+// agent is listening (so later probes fail fast instead of faulting again),
+// and returns `-1` in the stacked `r0` — "the agent refused", which the
+// caller turns into an ordinary unsupported-service stop. Any *other*
+// breakpoint, and every real fault, branches to `DefaultHandler`, which
+// halts with the fault observable.
+//
+// Two things make the instruction reads safe inside a fault handler, where a
+// second fault would lock the core up:
+//
+// - the PC must land inside the flash image (`__vector_table .. __flash_end`,
+//   both from `link.x`), which is readable by construction — a fault at any
+//   address outside it stops here without loading anything;
+// - the stacked PC is stripped of its bit 0 first, so the halfword reads are
+//   aligned whatever the faulting branch looked like.
+//
+// One `global_asm!` block because the handler must address the hardware
+// exception frame through `sp` *at entry*: a prologue would move `sp` and
+// hide it. It never pushes anything it does not pop, keeps `sp` 8-byte
+// aligned across the call (AAPCS), and returns with `bx lr`, where `lr` is
+// the hardware-provided `EXC_RETURN` value. Braces are doubled because
+// `global_asm!` templates process them like `asm!` does.
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 core::arch::global_asm!(
     r#"
-        .section .text.SVCall, "ax"
-        .global SVCall
-        .type SVCall, %function
+        .section .text.DebugEvent, "ax"
+        .global DebugEvent
+        .type DebugEvent, %function
         .thumb_func
-    SVCall:
-        ldr     r0, [sp, #24]
-        ldrh    r1, [r0, #-2]
-        movw    r2, #0xDFAB
+    DebugEvent:
+        ldr     r3, [sp, #24]
+        bic     r3, r3, #1
+        ldr     r1, =__vector_table
+        cmp     r3, r1
+        bls     2f
+        ldr     r1, =__flash_end
+        subs    r1, #2
+        cmp     r3, r1
+        bhi     2f
+        movw    r2, #0xBEAB
+        ldrh    r1, [r3, #-2]
         cmp     r1, r2
         beq     3f
-        ldrh    r1, [r0]
+        ldrh    r1, [r3]
         cmp     r1, r2
         bne     2f
-        adds    r0, #2
-        str     r0, [sp, #24]
+        adds    r3, #2
+        str     r3, [sp, #24]
     3:
-        push    {r4, lr}
+        push    {{r4, lr}}
         bl      codevar_semihosting_unavailable
-        pop     {r4, lr}
+        pop     {{r4, lr}}
         movs    r0, #0
         subs    r0, r0, #1
         str     r0, [sp]
         bx      lr
     2:
         b       DefaultHandler
-        .size   SVCall, . - SVCall
+        .size   DebugEvent, . - DebugEvent
+        .ltorg
     "#
 );

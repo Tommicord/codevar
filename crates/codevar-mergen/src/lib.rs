@@ -21,8 +21,8 @@
 //! does not leak the content being merged.
 //!
 //! The crate currently provides the SIMD rank-merge kernels the
-//! algorithm is built on ([`merge_rank`], [`count_less`],
-//! [`count_le`], [`first_mismatch_u8`]); the merge pipeline
+//! algorithm is built on ([`merge_rank_u64`], [`count_less_u64`],
+//! [`count_le_u64`], [`first_mismatch_u8`]); the merge pipeline
 //! itself is under construction.
 //!
 //! ## Determinism
@@ -37,9 +37,13 @@
 //! let b = [2u64, 3, 4];
 //! let mut ranks_a = [0u32; 3];
 //! let mut ranks_b = [0u32; 3];
-//! codevar_mergen::merge_rank(&a, &b, &mut ranks_a, &mut ranks_b);
+//! codevar_mergen::merge_rank_u64(&a, &b, &mut ranks_a, &mut ranks_b);
 //! assert_eq!(ranks_a, [0, 2, 5]);
 //! assert_eq!(ranks_b, [1, 3, 4]);
 //! ```
 
 //! TODO: Implement mergen algorithm
+
+mod simd;
+
+pub use simd::{count_le_u64, count_less_u64, first_mismatch_u8, merge_rank_u64};

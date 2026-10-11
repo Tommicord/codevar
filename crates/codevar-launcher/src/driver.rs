@@ -161,6 +161,13 @@ impl<'a> Driver<'a> {
         Self { args }
     }
 
+    /// The complete command line this driver was created with,
+    /// `argv[0]` included.
+    #[must_use]
+    pub const fn args(&self) -> &'a [String] {
+        self.args
+    }
+
     /// Runs the compile pipeline and returns the exit status.
     ///
     /// Never panics on malformed input: every failure path reports a

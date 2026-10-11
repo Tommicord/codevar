@@ -23,7 +23,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use ash::vk;
 
-use crate::base::{Compositor, CompositorError};
+use crate::base::CompositorError;
 use crate::pipeline::PipelineContext;
 
 /// Embedded vertex shader of the mix pass.
@@ -119,8 +119,8 @@ impl MixPush {
     }
 }
 
-/// GPU resources of the mix pass, created by [`Compositor::start`](Compositor::start) and
-/// released when dropped (which [`Compositor::stop`](Compositor::stop) triggers).
+/// GPU resources of the mix pass, created by [`Compositor::start`](crate::base::Compositor::start) and
+/// released when dropped (which [`Compositor::stop`](crate::base::Compositor::stop) triggers).
 ///
 /// The descriptor set covers a dynamic number of slots based on the
 /// actual number of framebuffers needed.

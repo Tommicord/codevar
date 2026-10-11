@@ -1,6 +1,5 @@
 [build]
 target-dir = "target"
-rustflags = ["-C", "force-unwind-tables=no"]
 
 [term]
 verbose = true
@@ -12,5 +11,34 @@ rustflags = [
     "-C", "lto=fat",
     "-C", "codegen-units=1",
 ]
-[target.thumbv7m-none-eabi]
-runner = "qemu-system-arm -cpu cortex-m3 -machine lm3s6965evb -nographic -d in_asm -semihosting-config enable=on,target=native -kernel"
+
+# Bare-metal size build: `opt-level=z`, `lto=fat`, `codegen-units=1`,
+# `panic=abort` and `strip` come from `[profile.release]`; the flags below
+# are the link-time half. They must be passed to `rust-lld` directly (no
+# `-Wl,` prefix — that is a gcc-driver convention rustc forwards verbatim).
+# Scoped to this target only: `--icf=all` is an lld extension that GNU `ld`
+# (the hosted linker) rejects.
+#
+# `mps2-an385` runs the image from address 0 like `lm3s6965evb` does, but
+# its code region is 4 MiB, which `codevar-oclc` needs; both boards keep
+# RAM at `0x20000000`. Semihosting (`enable=on,target=native`) is what
+# carries the console and the wall clock.
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+runner = "qemu-system-arm -cpu cortex-m3 -machine mps2-an385 -nographic -semihosting-config enable=on,target=native -kernel"
+rustflags = [
+    "-C", "force-unwind-tables=no",
+    # Fold identical functions/constant pools (LLD extension).
+    "-C", "link-arg=--icf=all",
+    # Drop unreferenced sections (rustc also passes this; kept explicit).
+    "-C", "link-arg=--gc-sections",
+    # No build-id note: the ELF carries no host metadata.
+    "-C", "link-arg=--build-id=none",
+    # Keep FLASH sections in one segment and stop 64 KiB page padding:
+    # `noseparate-code` merges RO/RX segments, `max-page-size` bounds the
+    # alignment gaps QEMU would otherwise read past the image. Flash usage
+    # is unchanged; the file shrinks from ~131 KiB to the image itself.
+    "-C", "link-arg=-z",
+    "-C", "link-arg=noseparate-code",
+    "-C", "link-arg=-z",
+    "-C", "link-arg=max-page-size=4096",
+]

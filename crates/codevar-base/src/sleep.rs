@@ -17,8 +17,9 @@
 //!
 //! None of them fit here directly: the first three need a hardware timer or
 //! an async runtime, and the wasm ones cannot block the caller. This module
-//! therefore talks to the OS on OS targets and degrades to a documented
-//! no-op everywhere else.
+//! therefore talks to the OS on OS targets, spins against the platform
+//! clock on bare metal (where there is no scheduler to be yielded to), and
+//! degrades to a documented no-op on wasm and other exotic targets.
 
 #[cfg(unix)]
 use crate::time::{SystemTime, TimeVal};
@@ -28,7 +29,8 @@ use codevar_time_core::TimeDuration;
 ///
 /// The fallible variants can only be produced on Unix; Windows, wasm, and
 /// bare-metal targets always return `Ok(())` because their sleep paths are
-/// either infallible (`Sleep`) or a no-op.
+/// either infallible (`Sleep`), a spin against the platform clock, or a
+/// no-op.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SleepError {
     /// The platform sleep primitive rejected the request.
@@ -68,8 +70,10 @@ impl core::error::Error for SleepError {}
 ///
 /// Returns [`SleepError::Syscall`] when the platform sleep primitive
 /// rejects the request, or [`SleepError::Interrupted`] when a sleep keeps
-/// being interrupted and no remaining time can be proven. The no-op targets
-/// (bare metal, wasm, unknown) never return an error.
+/// being interrupted and no remaining time can be proven. The targets that
+/// wait outside a kernel (bare metal) or not at all (wasm, unknown) never
+/// return an error; bare metal stops the application instead when the
+/// platform has no clock to wait against.
 ///
 /// # Examples
 ///
@@ -157,12 +161,22 @@ cfg_if::cfg_if! {
             windows::sleep(duration)
         }
     } else if #[cfg(target_os = "none")] {
-        /// Bare metal: there is no scheduler to suspend a thread on and no
-        /// timer to program, so a wait cannot be honoured. Abort instead of
-        /// returning success for a sleep that never happened.
+        /// Bare metal: no scheduler to suspend a thread on, but there is a
+        /// clock, so the wait is a spin against `uptime_nanos`'s
+        /// deadline. Spinning — rather than `wfi` — is deliberate: `wfi`
+        /// with interrupts masked never wakes, and this function has no way
+        /// to know the caller's interrupt state.
+        ///
+        /// On a target with no timer backend `uptime_nanos` stops the
+        /// application, which is the missing-component policy: a sleep that
+        /// silently did nothing would look like a success to the caller.
         #[inline]
-        fn sleep_platform(_duration: TimeDuration) -> Result<(), SleepError> {
-            codevar_target::abort_unsupported("sleep")
+        fn sleep_platform(duration: TimeDuration) -> Result<(), SleepError> {
+            let deadline = u128::from(codevar_target::uptime_nanos()) + duration.as_nanos();
+            while u128::from(codevar_target::uptime_nanos()) < deadline {
+                core::hint::spin_loop();
+            }
+            Ok(())
         }
     } else {
         /// WebAssembly and other exotic targets: the host drives the event

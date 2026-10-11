@@ -213,6 +213,7 @@ dependencies = [
 name = "codevar-io"
 version = "1.0.0"
 dependencies = [
+ "codevar-target",
  "codevar-textlike-encode",
  "defmt 0.3.100",
  "heapless",

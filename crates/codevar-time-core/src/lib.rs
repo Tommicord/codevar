@@ -26,8 +26,10 @@
 //! This module relies on raw syscalls (`clock_gettime`) and is compatible
 //! with `no_std` environments, including embedded targets. On bare-metal
 //! targets (`target_os = "none"`) there is no operating system to ask for
-//! the time, so a clock query aborts the application through
-//! [`codevar_target::abort_unsupported`] instead of inventing a timestamp.
+//! the time, so every clock reports the platform's time-since-reset from
+//! [`codevar_target::uptime_nanos`]; if the target has no timer either, the
+//! query stops the application through
+//! [`codevar_target::abort_unsupported`] rather than inventing a timestamp.
 
 #![cfg_attr(not(test), no_std)]
 extern crate alloc;
@@ -52,14 +54,27 @@ pub struct Timespec {
 
 /// Platform side of the clock interface.
 ///
-/// Hosted targets call the C library's `clock_gettime`; targets without an
-/// operating system abort, because a missing clock is not a recoverable
-/// condition for a program that schedules itself against time. Other
-/// exotic targets (WebAssembly and friends) report
-/// [`TimeError::NotAvailable`] so a caller can degrade instead of dying.
+/// Hosted targets call the C library's `clock_gettime`. Targets without an
+/// operating system answer from the platform clock in `codevar-target`,
+/// which counts from reset — an image with no OS and no battery-backed
+/// counter has no date to know — and stops the application when even that
+/// clock is missing, because a clock is not a recoverable condition for a
+/// program that schedules itself against time. Other exotic targets
+/// (WebAssembly and friends) report [`TimeError::NotAvailable`] so a caller
+/// can degrade instead of dying.
 mod sys {
     use super::{TimeError, Timespec};
     use core::ffi::c_int;
+
+    /// The clock identifiers and the epoch divisor are only touched by the
+    /// bare-metal clock below; on hosted and WebAssembly targets that
+    /// function does not exist, so the items are gated with it.
+    #[cfg(all(not(unix), target_os = "none"))]
+    use super::SystemTime;
+
+    /// Nanoseconds in one second, the divisor of every [`Timespec`].
+    #[cfg(all(not(unix), target_os = "none"))]
+    const NANOS_PER_SECOND: u64 = 1_000_000_000;
 
     /// Reads `clock_id` through the platform clock syscall.
     ///
@@ -86,23 +101,48 @@ mod sys {
         })
     }
 
-    /// Reads `clock_id` on targets without a POSIX clock.
+    /// Reads `clock_id` on a bare-metal target, where time is what the
+    /// hardware can count.
     ///
-    /// Bare metal has no clock at all, so the application aborts; other
-    /// targets (WebAssembly, …) report [`TimeError::NotAvailable`] because
-    /// they still have a usable runtime to keep going in.
-    #[cfg(not(unix))]
+    /// Every clock reports [`codevar_target::uptime_nanos`]: nanoseconds
+    /// since reset. That is a real monotonic clock and a deliberately
+    /// honest realtime one — with no operating system, no network and no
+    /// battery-backed counter there is no date to discover, so stamping
+    /// timestamps with an invented 1970 or 2000 epoch would be a lie in
+    /// the other direction. Callers that need real dates supply an epoch
+    /// of their own on top.
+    ///
+    /// # Errors
+    ///
+    /// [`TimeError::UnsupportedClock`] for a clock id this module does not
+    /// know. An unknown *platform* is not an error: if the target has no
+    /// timer at all, `uptime_nanos` stops the application instead, per the
+    /// project's missing-component policy.
+    #[cfg(all(not(unix), target_os = "none"))]
+    #[inline]
+    pub(super) fn clock_gettime(clock_id: c_int) -> Result<Timespec, TimeError> {
+        match clock_id {
+            SystemTime::CLOCK_MONOTONIC | SystemTime::CLOCK_MONOTONIC_RAW | SystemTime::CLOCK_REALTIME => {
+                let nanos = codevar_target::uptime_nanos();
+                Ok(Timespec {
+                    tv_sec: nanos / NANOS_PER_SECOND,
+                    tv_nsec: nanos % NANOS_PER_SECOND,
+                })
+            }
+            _ => Err(TimeError::UnsupportedClock),
+        }
+    }
+
+    /// Reads `clock_id` on targets that are neither Unix nor bare metal.
+    ///
+    /// WebAssembly and friends still have a usable runtime, so they report
+    /// [`TimeError::NotAvailable`] and let the caller degrade instead of
+    /// dying.
+    #[cfg(not(any(unix, target_os = "none")))]
     #[inline]
     pub(super) fn clock_gettime(clock_id: c_int) -> Result<Timespec, TimeError> {
         let _ = clock_id;
-        #[cfg(target_os = "none")]
-        {
-            codevar_target::abort_unsupported("clock_gettime")
-        }
-        #[cfg(not(target_os = "none"))]
-        {
-            Err(TimeError::NotAvailable)
-        }
+        Err(TimeError::NotAvailable)
     }
 }
 
@@ -125,8 +165,9 @@ pub enum TimeError {
     /// The caller asked for a clock the platform does not implement.
     ///
     /// Bare-metal targets never produce this value: a clock query there
-    /// aborts the application (see [`codevar_target::abort_unsupported`])
-    /// rather than returning a placeholder.
+    /// answers from the platform timer or stops the application (see
+    /// [`codevar_target::abort_unsupported`]) rather than returning a
+    /// placeholder.
     NotAvailable,
 }
 

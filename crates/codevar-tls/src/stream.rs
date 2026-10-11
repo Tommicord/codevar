@@ -266,6 +266,10 @@ mod tests {
         }
     }
 
+    impl ErrorType for MemTransport {
+        type Error = codevar_io::Error;
+    }
+
     impl Read for MemTransport {
         fn read(&mut self, buf: &mut [u8]) -> codevar_io::Result<usize> {
             if let Some(kind) = self.fail_read.take() {

@@ -23,6 +23,9 @@ codevar-textlike-encode = { workspace = true, optional = true }
 defmt = { workspace = true, optional = true }
 spin = { workspace = true }
 
+[target.'cfg(target_os = "none")'.dependencies]
+codevar-target = { workspace = true }
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Console", "Win32_Storage_FileSystem"] }
 

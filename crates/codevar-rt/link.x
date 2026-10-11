@@ -72,6 +72,12 @@ SECTIONS
         _edata = .;
     } > RAM AT > FLASH
 
+    /* One past the last byte the image stores in FLASH. The debug-event
+       handler in `codevar-rt` refuses to read an instruction unless the
+       stacked PC lies between `__vector_table` and here — flash is readable
+       by construction, any other address might fault a second time. */
+    __flash_end = _sidata + SIZEOF(.data);
+
     .bss (NOLOAD) :
     {
         . = ALIGN(4);

@@ -59,6 +59,7 @@
 //! proof restated in the `SAFETY` comment at each call site. See
 //! [`active_tier`] for how the probe is memoized.
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use crate::simd::x86::{
     checksum_avx2, checksum_avx512, checksum_ssse3, count_avx2, count_avx512, count_sse2,
 };
