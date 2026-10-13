@@ -1,0 +1,40 @@
+[package]
+name = "codevar-ocl-bare"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bare-metal OpenCL embedded-profile driver: statically linked cl* entry points, SMP/AMP multicore and FPGA-accelerator devices, no dlopen or ICD"
+
+[lib]
+name = "codevar_ocl_bare"
+
+[features]
+default = []
+# The library is always `no_std`; this feature exists so hosted integration
+# tests can spawn worker threads that emulate secondary cores of the SMP
+# device. It has no effect on `*-none-eabi` targets.
+std = []
+
+[dependencies]
+spin = { workspace = true }
+codevar-logger = { workspace = true }
+codevar-target = { workspace = true }
+libm = { workspace = true }
+
+[dev-dependencies]
+codevar-rt = { workspace = true }
+codevar-tlsf-alloc = { workspace = true }
+codevar-ocl-ir = { workspace = true }
+codevar-ocl-asm = { workspace = true }
+
+# The build script needs `codevar-rt`'s linker-script helpers, which are `std`
+# only (build scripts are `std` programs); resolver 2 keeps the feature out of
+# the target dependency graph.
+[build-dependencies]
+codevar-rt = { workspace = true, features = ["std"] }
+
+[lints]
+workspace = true

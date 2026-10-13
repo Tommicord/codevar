@@ -79,6 +79,7 @@ pub mod systick;
 #[cfg(any(test, all(target_arch = "arm", target_os = "none")))]
 mod tick;
 
+use core::sync::atomic::Ordering;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub use systick::uptime_nanos;
 
@@ -131,6 +132,68 @@ pub fn halt() -> ! {
     loop {
         core::hint::spin_loop();
     }
+}
+
+/// Data memory barrier: every explicit memory access before this point is
+/// globally visible before any access after it.
+///
+/// Used after writing a descriptor and before ringing a doorbell so the
+/// device on the other side can never observe the bell first.
+#[inline]
+pub fn dmb() {
+    #[cfg(all(target_arch = "arm", target_os = "none"))]
+    // SAFETY: `dmb sy` takes no operands and cannot fault.
+    unsafe {
+        core::arch::asm!("dmb sy", options(nostack, preserves_flags));
+    }
+    #[cfg(not(all(target_arch = "arm", target_os = "none")))]
+    core::sync::atomic::compiler_fence(Ordering::SeqCst);
+}
+
+/// Data synchronization barrier: like [`dmb`] but also waits for outstanding
+/// transactions (buffers, bus writes) to drain — the stronger form needed
+/// before a device doorbell write is issued.
+#[inline]
+pub fn dsb() {
+    #[cfg(all(target_arch = "arm", target_os = "none"))]
+    // SAFETY: `dsb sy` takes no operands and cannot fault.
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+    #[cfg(not(all(target_arch = "arm", target_os = "none")))]
+    core::sync::atomic::compiler_fence(Ordering::SeqCst);
+}
+
+/// Send event: sets the event register of every core in the multiprocessor.
+///
+/// A core that reaches `wfe` after this call does not sleep — the event
+/// register is already set — which is what makes the doorbell
+/// "store descriptor, then `sev`" free of lost wakeups.
+#[inline]
+pub fn sev() {
+    #[cfg(all(target_arch = "arm", target_os = "none"))]
+    // SAFETY: `sev` takes no operands and cannot fault.
+    unsafe {
+        core::arch::asm!("sev", options(nostack, preserves_flags));
+    }
+    #[cfg(not(all(target_arch = "arm", target_os = "none")))]
+    core::hint::spin_loop();
+}
+
+/// Wait for event: sleep until an `sev` (or an interrupt) arrives.
+///
+/// On targets without the event register this is a spin hint — hosted tests
+/// poll the epoch counter instead of sleeping, which is correct because the
+/// polling loop re-checks the condition on every iteration.
+#[inline]
+pub fn wfe() {
+    #[cfg(all(target_arch = "arm", target_os = "none"))]
+    // SAFETY: `wfe` takes no operands and cannot fault.
+    unsafe {
+        core::arch::asm!("wfe", options(nostack, preserves_flags));
+    }
+    #[cfg(not(all(target_arch = "arm", target_os = "none")))]
+    core::hint::spin_loop();
 }
 
 /// Terminates the application because `operation` has no implementation on
@@ -221,6 +284,29 @@ fn report(operation: &str) {
 #[inline]
 const fn report(_operation: &str) {}
 
+/// `true` where the CPU has the ARMv7-M event instructions.
+#[cfg(all(target_arch = "arm", target_os = "none"))]
+const ARCH_EVENTS: bool = true;
+/// `false` everywhere else (hosted tests, wasm, other architectures).
+#[cfg(not(all(target_arch = "arm", target_os = "none")))]
+const ARCH_EVENTS: bool = false;
+
+/// Spins until `ready` reports completion, sleeping in between.
+///
+/// The wait primitive of the driver: every protocol point that blocks on
+/// another core (work-group claim counters, descriptor-ring status words,
+/// worker registration) funnels through this one loop so the architecture
+/// specific event instruction stays in a single place.
+///
+/// The predicate runs with acquire semantics on its loads; callers pair it
+/// with a release store on the producing side.
+#[inline]
+pub fn wait_until(mut ready: impl FnMut() -> bool) {
+    while !ready() {
+        wfe();
+    }
+}
+
 /// Standard error file descriptor, as fixed by POSIX.
 #[cfg(all(unix, not(target_arch = "wasm32")))]
 const STDERR_FILENO: i32 = 2;
@@ -253,5 +339,14 @@ mod tests {
     #[test]
     fn abort_is_diverging() {
         let _: fn(&str) -> ! = abort_unsupported;
+    }
+
+    #[test]
+    fn barrier_and_event_do_not_trap() {
+        super::dmb();
+        super::dsb();
+        super::sev();
+        super::wfe();
+        super::wait_until(|| true);
     }
 }

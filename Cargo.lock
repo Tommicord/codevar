@@ -293,6 +293,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-ocl-bare"
+version = "1.0.0"
+dependencies = [
+ "codevar-logger",
+ "codevar-ocl-asm",
+ "codevar-ocl-ir",
+ "codevar-rt",
+ "codevar-target",
+ "codevar-tlsf-alloc",
+ "libm",
+ "spin 0.12.3",
+]
+
+[[package]]
 name = "codevar-ocl-cubin"
 version = "1.0.0"
 
