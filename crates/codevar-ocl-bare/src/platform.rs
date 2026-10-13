@@ -184,25 +184,17 @@ pub fn platform() -> Result<&'static Platform> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::device::{DeviceInfo, Device};
+    use crate::device::{Device, DeviceInfo};
     use crate::error::Result as DriverResult;
     use crate::exec::Launch;
-    use crate::objects::{release_ref, Event};
+    use crate::objects::{Event, release_ref};
     use crate::sys;
 
     struct Idle;
     impl Device for Idle {
         fn info(&self) -> &DeviceInfo {
-            static INFO: DeviceInfo = DeviceInfo::new(
-                "idle",
-                "codevar",
-                sys::DEVICE_TYPE_CPU,
-                1,
-                64,
-                1 << 20,
-                4096,
-                256,
-            );
+            static INFO: DeviceInfo =
+                DeviceInfo::new("idle", "codevar", sys::DEVICE_TYPE_CPU, 1, 64, 1 << 20, 4096, 256);
             &INFO
         }
         fn submit(&self, _launch: &Launch<'_>, event: &'static Event) -> DriverResult<()> {

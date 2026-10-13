@@ -84,6 +84,11 @@ pub enum Error {
     /// A SPIR-V program binary is malformed or uses a construct outside
     /// this driver's embedded subset.
     InvalidBinary,
+    /// A command-queue property is unsupported (out-of-order execution or
+    /// profiling — the embedded profile is in-order and unprofiled).
+    InvalidQueueProperties,
+    /// A property in a property list is unknown.
+    InvalidProperty,
 }
 
 impl fmt::Display for Error {
@@ -117,6 +122,8 @@ impl fmt::Display for Error {
             Self::InvalidEvent => "an event handle or wait list was invalid",
             Self::InvalidWaitList => "event wait list is invalid",
             Self::InvalidBinary => "SPIR-V program binary is invalid",
+            Self::InvalidQueueProperties => "command-queue property is unsupported",
+            Self::InvalidProperty => "unknown property in a property list",
         };
         f.write_str(text)
     }
@@ -158,6 +165,8 @@ impl Error {
             Self::InvalidEvent => crate::sys::INVALID_EVENT,
             Self::InvalidWaitList => crate::sys::INVALID_EVENT_WAIT_LIST,
             Self::InvalidBinary => crate::sys::INVALID_BINARY,
+            Self::InvalidQueueProperties => crate::sys::INVALID_QUEUE_PROPERTIES,
+            Self::InvalidProperty => crate::sys::INVALID_PROPERTY,
         }
     }
 }

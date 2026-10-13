@@ -426,11 +426,7 @@ pub unsafe fn write_info(
     // SAFETY: the size check above plus the caller's contract that
     // `param_value` points at `param_value_size` writable bytes.
     unsafe {
-        core::ptr::copy_nonoverlapping(
-            bytes.as_ptr(),
-            param_value.cast::<u8>(),
-            bytes.len(),
-        );
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), param_value.cast::<u8>(), bytes.len());
     }
     SUCCESS
 }
@@ -482,7 +478,14 @@ pub unsafe fn write_info_u32(
 ) -> i32 {
     // SAFETY: forwarded unchanged to `write_info`, whose contract this
     // function inherits.
-    unsafe { write_info(&value.to_ne_bytes(), param_value_size, param_value, param_value_size_ret) }
+    unsafe {
+        write_info(
+            &value.to_ne_bytes(),
+            param_value_size,
+            param_value,
+            param_value_size_ret,
+        )
+    }
 }
 
 /// [`write_info`] for `u64` scalars.
@@ -498,7 +501,14 @@ pub unsafe fn write_info_u64(
 ) -> i32 {
     // SAFETY: forwarded unchanged to `write_info`, whose contract this
     // function inherits.
-    unsafe { write_info(&value.to_ne_bytes(), param_value_size, param_value, param_value_size_ret) }
+    unsafe {
+        write_info(
+            &value.to_ne_bytes(),
+            param_value_size,
+            param_value,
+            param_value_size_ret,
+        )
+    }
 }
 
 /// [`write_info`] for `usize` scalars (handle-sized quantities).
@@ -514,7 +524,14 @@ pub unsafe fn write_info_usize(
 ) -> i32 {
     // SAFETY: forwarded unchanged to `write_info`, whose contract this
     // function inherits.
-    unsafe { write_info(&value.to_ne_bytes(), param_value_size, param_value, param_value_size_ret) }
+    unsafe {
+        write_info(
+            &value.to_ne_bytes(),
+            param_value_size,
+            param_value,
+            param_value_size_ret,
+        )
+    }
 }
 
 /// [`write_info`] for a NUL-terminated `c_char` C string.

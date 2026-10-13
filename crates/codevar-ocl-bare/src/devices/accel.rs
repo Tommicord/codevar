@@ -60,8 +60,8 @@ use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
 use crate::device::{Device, DeviceInfo, ServiceMode};
 use crate::error::{Error, Result};
-use crate::exec::{run_all, ArgBlock, KernelFn, Launch, SpirvBinding};
-use crate::objects::{release_ref, Event};
+use crate::exec::{ArgBlock, KernelFn, Launch, SpirvBinding, run_all};
+use crate::objects::{Event, release_ref};
 use crate::sys;
 
 /// Number of descriptors in an [`AccelRing`] — the engine's in-flight depth.
@@ -172,13 +172,15 @@ impl AccelRegs {
     /// Raises the completion interrupt (engine → host).
     #[inline]
     fn raise_irq(&self) {
-        self.irq_status.fetch_or(IRQ_DONE, Ordering::Release);
+        self.irq_status
+            .fetch_or(IRQ_DONE, Ordering::Release);
     }
 
     /// Clears the completion interrupt (host, when it reaps).
     #[inline]
     fn clear_irq(&self) {
-        self.irq_status.fetch_and(!IRQ_DONE, Ordering::Release);
+        self.irq_status
+            .fetch_and(!IRQ_DONE, Ordering::Release);
     }
 }
 
@@ -463,8 +465,7 @@ impl AccelDevice {
                     self.regs.set_status(STATUS_DONE);
                 }
                 Err(error) => {
-                    slot
-                        .result
+                    slot.result
                         .store(error.to_cl(), Ordering::Release);
                     slot.status.store(ERROR, Ordering::Release);
                     self.regs.set_status(STATUS_ERROR);
@@ -481,7 +482,10 @@ impl AccelDevice {
 
     /// Dispatches the handler of `opcode` (`0` is the dormant no-op).
     fn invoke(&self, opcode: u32, launch: &Launch<'_>) -> Result<()> {
-        match opcode.checked_sub(1).and_then(|index| self.handlers.get(index as usize)) {
+        match opcode
+            .checked_sub(1)
+            .and_then(|index| self.handlers.get(index as usize))
+        {
             Some((_, handler)) => handler(launch),
             None => Ok(()),
         }
@@ -490,7 +494,9 @@ impl AccelDevice {
     /// Publishes one launch; the slot index joins the in-flight list.
     fn dispatch(&'static self, launch: &Launch<'_>, event: &'static Event) -> Result<()> {
         event.set_status(sys::SUBMITTED);
-        let opcode = self.opcode_of(launch.name).ok_or(Error::UnsupportedOnDevice);
+        let opcode = self
+            .opcode_of(launch.name)
+            .ok_or(Error::UnsupportedOnDevice);
         let opcode = match opcode {
             Ok(opcode) => opcode,
             Err(error) => {
@@ -526,17 +532,16 @@ impl AccelDevice {
     }
 
     /// Writes the descriptor, rings the doorbell and returns the slot.
-    fn publish(
-        &self,
-        opcode: u32,
-        launch: &Launch<'_>,
-        _event: &'static Event,
-    ) -> Result<u32> {
+    fn publish(&self, opcode: u32, launch: &Launch<'_>, _event: &'static Event) -> Result<u32> {
         let mut attempts = 0u32;
         loop {
             let tail = self.ring.tail.load(Ordering::Acquire);
             let slot_index = tail % ACCEL_SLOTS as u32;
-            if self.ring.slots[slot_index as usize].status.load(Ordering::Acquire) == EMPTY {
+            if self.ring.slots[slot_index as usize]
+                .status
+                .load(Ordering::Acquire)
+                == EMPTY
+            {
                 // SAFETY: `EMPTY` means the host has exclusive use of the
                 // slot (see `AccelSlot`'s Sync contract).
                 let desc = unsafe { &mut *self.ring.slots[slot_index as usize].desc.get() };
@@ -551,7 +556,9 @@ impl AccelDevice {
                 self.ring.slots[slot_index as usize]
                     .status
                     .store(PENDING, Ordering::Release);
-                self.ring.tail.store(tail.wrapping_add(1), Ordering::Release);
+                self.ring
+                    .tail
+                    .store(tail.wrapping_add(1), Ordering::Release);
                 codevar_target::dsb();
                 // The doorbell write *is* the engine's interrupt on a real
                 // board; `sev` wakes a peer core running the service loop.
@@ -581,8 +588,12 @@ impl Device for AccelDevice {
         // leaked devices, so recover the static lifetime from the address.
         // SAFETY: every `AccelDevice` reachable through the platform was
         // leaked by its constructor and therefore lives for `'static`.
-        let this = unsafe { core::ptr::from_ref(self).cast::<AccelDevice>().as_ref() }
-            .ok_or(Error::InvalidDevice)?;
+        let this = unsafe {
+            core::ptr::from_ref(self)
+                .cast::<AccelDevice>()
+                .as_ref()
+        }
+        .ok_or(Error::InvalidDevice)?;
         this.dispatch(launch, event)
     }
 

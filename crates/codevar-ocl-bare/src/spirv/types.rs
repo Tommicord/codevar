@@ -149,24 +149,17 @@ const MAX_LAYOUT_DEPTH: u32 = 64;
 /// [`Error::InvalidBinary`] for an unknown id, an unsupported type kind,
 /// a zero-sized structure or element, a non-power-of-two alignment from
 /// a hostile decoration, or nesting deeper than [`MAX_LAYOUT_DEPTH`].
-pub(crate) fn layout(
-    types: &[Type],
-    ty: u32,
-    decorations: &LayoutDecorations,
-) -> Result<Layout> {
+pub(crate) fn layout(types: &[Type], ty: u32, decorations: &LayoutDecorations) -> Result<Layout> {
     layout_at(types, ty, decorations, 0)
 }
 
-fn layout_at(
-    types: &[Type],
-    ty: u32,
-    decorations: &LayoutDecorations,
-    depth: u32,
-) -> Result<Layout> {
+fn layout_at(types: &[Type], ty: u32, decorations: &LayoutDecorations, depth: u32) -> Result<Layout> {
     if depth >= MAX_LAYOUT_DEPTH {
         return Err(Error::InvalidBinary);
     }
-    let entry = types.get(ty as usize).ok_or(Error::InvalidBinary)?;
+    let entry = types
+        .get(ty as usize)
+        .ok_or(Error::InvalidBinary)?;
     let result = match entry {
         Type::Void | Type::Function { .. } | Type::Unsupported => return Err(Error::InvalidBinary),
         Type::Bool => Layout { size: 1, align: 1 },
@@ -187,7 +180,10 @@ fn layout_at(
             // power-of-two multiple so `vec3` aligns like `vec4` (the C
             // rule for three-component vectors in every OpenCL ABI).
             Layout {
-                size: inner.size.checked_mul(count).ok_or(Error::InvalidBinary)?,
+                size: inner
+                    .size
+                    .checked_mul(count)
+                    .ok_or(Error::InvalidBinary)?,
                 align: count
                     .next_power_of_two()
                     .checked_mul(inner.align)
@@ -205,11 +201,7 @@ fn layout_at(
                 size: stride
                     .checked_mul(*len)
                     .ok_or(Error::InvalidBinary)?,
-                align: if inner.align == 0 {
-                    1
-                } else {
-                    inner.align
-                },
+                align: if inner.align == 0 { 1 } else { inner.align },
             }
         }
         Type::Struct { fields } => {
@@ -247,11 +239,7 @@ fn layout_at(
 /// # Errors
 ///
 /// [`Error::InvalidBinary`] as for [`layout`].
-pub(crate) fn size_of(
-    types: &[Type],
-    ty: u32,
-    decorations: &LayoutDecorations,
-) -> Result<u32> {
+pub(crate) fn size_of(types: &[Type], ty: u32, decorations: &LayoutDecorations) -> Result<u32> {
     Ok(layout(types, ty, decorations)?.size)
 }
 
@@ -270,7 +258,10 @@ pub(crate) fn member_offsets(
     ty: u32,
     decorations: &LayoutDecorations,
 ) -> Result<Vec<(u32, u32)>> {
-    let fields = match types.get(ty as usize).ok_or(Error::InvalidBinary)? {
+    let fields = match types
+        .get(ty as usize)
+        .ok_or(Error::InvalidBinary)?
+    {
         Type::Struct { fields } => fields,
         _ => return Err(Error::InvalidBinary),
     };
@@ -316,11 +307,7 @@ pub(crate) const MAX_VALUE_LANES: u32 = 64;
 /// [`Error::InvalidBinary`] for an unknown id, a void/unsupported kind
 /// with a value, nesting deeper than [`MAX_LAYOUT_DEPTH`], or a leaf
 /// count above [`MAX_VALUE_LANES`].
-pub(crate) fn lanes(
-    types: &[Type],
-    ty: u32,
-    decorations: &LayoutDecorations,
-) -> Result<u32> {
+pub(crate) fn lanes(types: &[Type], ty: u32, decorations: &LayoutDecorations) -> Result<u32> {
     let count = lanes_at(types, ty, decorations, 0)?;
     if count > MAX_VALUE_LANES {
         return Err(Error::InvalidBinary);
@@ -334,37 +321,26 @@ pub(crate) fn lanes(
 /// pool or as whole static objects (big composites, nulls, arena
 /// initializers). Slot values used by the interpreter must go through
 /// [`lanes`] instead, which enforces the 64-lane register invariant.
-pub(crate) fn lanes_any(
-    types: &[Type],
-    ty: u32,
-    decorations: &LayoutDecorations,
-) -> Result<u32> {
+pub(crate) fn lanes_any(types: &[Type], ty: u32, decorations: &LayoutDecorations) -> Result<u32> {
     lanes_at(types, ty, decorations, 0)
 }
 
-fn lanes_at(
-    types: &[Type],
-    ty: u32,
-    decorations: &LayoutDecorations,
-    depth: u32,
-) -> Result<u32> {
+fn lanes_at(types: &[Type], ty: u32, decorations: &LayoutDecorations, depth: u32) -> Result<u32> {
     if depth >= MAX_LAYOUT_DEPTH {
         return Err(Error::InvalidBinary);
     }
-    let entry = types.get(ty as usize).ok_or(Error::InvalidBinary)?;
+    let entry = types
+        .get(ty as usize)
+        .ok_or(Error::InvalidBinary)?;
     let count = match entry {
         Type::Void | Type::Function { .. } | Type::Unsupported => return Err(Error::InvalidBinary),
         Type::Bool | Type::Int { .. } | Type::Float { .. } | Type::Pointer { .. } => 1,
-        Type::Vector { elem, len } => {
-            lanes_at(types, *elem, decorations, depth + 1)?
-                .checked_mul(u32::from(*len))
-                .ok_or(Error::InvalidBinary)?
-        }
-        Type::Array { elem, len } => {
-            lanes_at(types, *elem, decorations, depth + 1)?
-                .checked_mul(*len)
-                .ok_or(Error::InvalidBinary)?
-        }
+        Type::Vector { elem, len } => lanes_at(types, *elem, decorations, depth + 1)?
+            .checked_mul(u32::from(*len))
+            .ok_or(Error::InvalidBinary)?,
+        Type::Array { elem, len } => lanes_at(types, *elem, decorations, depth + 1)?
+            .checked_mul(*len)
+            .ok_or(Error::InvalidBinary)?,
         Type::Struct { fields } => {
             let mut total = 0u32;
             for field in fields {
@@ -414,7 +390,9 @@ fn load_lanes_at(
     if depth >= MAX_LAYOUT_DEPTH {
         return Err(Error::InvalidBinary);
     }
-    let entry = types.get(ty as usize).ok_or(Error::InvalidBinary)?;
+    let entry = types
+        .get(ty as usize)
+        .ok_or(Error::InvalidBinary)?;
     let mut used = 0u32;
     match entry {
         Type::Void | Type::Function { .. } | Type::Unsupported => return Err(Error::InvalidBinary),
@@ -523,7 +501,9 @@ fn store_lanes_at(
     if depth >= MAX_LAYOUT_DEPTH {
         return Err(Error::InvalidBinary);
     }
-    let entry = types.get(ty as usize).ok_or(Error::InvalidBinary)?;
+    let entry = types
+        .get(ty as usize)
+        .ok_or(Error::InvalidBinary)?;
     let mut used = 0u32;
     match entry {
         Type::Void | Type::Function { .. } | Type::Unsupported => return Err(Error::InvalidBinary),
@@ -675,13 +655,22 @@ mod tests {
         let mut types = vec![Type::Unsupported; 8];
         // 1: i32, 2: f32, 3: vec3<f32>, 4: i64,
         // 5: [4 x i32], 6: struct {i32, f32}, 7: ptr
-        types[1] = Type::Int { width: 32, signed: true };
+        types[1] = Type::Int {
+            width: 32,
+            signed: true,
+        };
         types[2] = Type::Float { width: 32 };
         types[3] = Type::Vector { elem: 2, len: 3 };
-        types[4] = Type::Int { width: 64, signed: false };
+        types[4] = Type::Int {
+            width: 64,
+            signed: false,
+        };
         types[5] = Type::Array { elem: 1, len: 4 };
         types[6] = Type::Struct { fields: vec![1, 2] };
-        types[7] = Type::Pointer { storage: 5, pointee: 2 };
+        types[7] = Type::Pointer {
+            storage: 5,
+            pointee: 2,
+        };
         types
     }
 
@@ -757,10 +746,7 @@ mod tests {
             member_offsets: vec![],
             array_strides: vec![(5, 8)],
         };
-        assert_eq!(
-            layout(&vec_arrays, 5, &overlapping),
-            Err(Error::InvalidBinary)
-        );
+        assert_eq!(layout(&vec_arrays, 5, &overlapping), Err(Error::InvalidBinary));
     }
 
     #[test]
@@ -804,9 +790,14 @@ mod tests {
         // Too deep.
         let mut deep = vec![Type::Unsupported; 80];
         for i in 1..79 {
-            deep[i] = Type::Struct { fields: vec![i as u32 + 1] };
+            deep[i] = Type::Struct {
+                fields: vec![i as u32 + 1],
+            };
         }
-        deep[79] = Type::Int { width: 32, signed: true };
+        deep[79] = Type::Int {
+            width: 32,
+            signed: true,
+        };
         assert_eq!(layout(&deep, 1, &none), Err(Error::InvalidBinary));
     }
 }

@@ -250,23 +250,34 @@ impl SpirvModule {
             ..
         } = self;
         let mut defs: Vec<KernelDef> = Vec::new();
-        defs.try_reserve(entries.len()).map_err(|_| Error::OutOfMemory)?;
+        defs.try_reserve(entries.len())
+            .map_err(|_| Error::OutOfMemory)?;
         for entry in entries.iter_mut() {
             let name = entry.name.clone();
-            let raw = func_index.get(entry.func as usize).copied().unwrap_or(0);
+            let raw = func_index
+                .get(entry.func as usize)
+                .copied()
+                .unwrap_or(0);
             if raw == 0 {
                 return Err(Error::InvalidBinary);
             }
-            let func = funcs.get((raw - 1) as usize).ok_or(Error::InvalidBinary)?;
+            let func = funcs
+                .get((raw - 1) as usize)
+                .ok_or(Error::InvalidBinary)?;
             let mut kinds: Vec<ArgKind> = Vec::new();
-            kinds.try_reserve(func.params.len()).map_err(|_| Error::OutOfMemory)?;
+            kinds
+                .try_reserve(func.params.len())
+                .map_err(|_| Error::OutOfMemory)?;
             for param in &func.params {
                 let ty = values
                     .get(*param as usize)
                     .map(|slot| slot.ty)
                     .filter(|&ty| ty != 0)
                     .ok_or(Error::InvalidBinary)?;
-                let kind = match types.get(ty as usize).ok_or(Error::InvalidBinary)? {
+                let kind = match types
+                    .get(ty as usize)
+                    .ok_or(Error::InvalidBinary)?
+                {
                     Type::Pointer { storage, .. }
                         if *storage == ops::STORAGE_CROSS_WORKGROUP
                             || *storage == ops::STORAGE_UNIFORM_CONSTANT =>
@@ -330,7 +341,9 @@ pub(crate) fn load(bytes: &[u8]) -> Result<Box<SpirvModule>> {
         return Err(Error::InvalidBinary);
     }
     let mut words: Vec<u32> = Vec::new();
-    words.try_reserve_exact(count).map_err(|_| Error::OutOfMemory)?;
+    words
+        .try_reserve_exact(count)
+        .map_err(|_| Error::OutOfMemory)?;
     for chunk in bytes.chunks_exact(4) {
         words.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
     }
@@ -363,7 +376,9 @@ fn table<T: Clone>(len: usize, fill: T) -> Result<Vec<T>> {
 /// placement would exceed `cap`.
 fn place(cursor: &mut u32, size: u32, align: u32, cap: u32) -> Result<u32> {
     let off = Layout::align_up(*cursor, align);
-    let end = off.checked_add(size).ok_or(Error::InvalidBinary)?;
+    let end = off
+        .checked_add(size)
+        .ok_or(Error::InvalidBinary)?;
     if end > cap {
         return Err(Error::InvalidBinary);
     }
@@ -470,9 +485,13 @@ impl Loader {
         let len = bound as usize;
         let cap = instrs.len();
         let mut linkages: Vec<(u32, u32, String)> = Vec::new();
-        linkages.try_reserve_exact(cap).map_err(|_| Error::OutOfMemory)?;
+        linkages
+            .try_reserve_exact(cap)
+            .map_err(|_| Error::OutOfMemory)?;
         let mut entry_raw: Vec<(String, u32)> = Vec::new();
-        entry_raw.try_reserve_exact(cap).map_err(|_| Error::OutOfMemory)?;
+        entry_raw
+            .try_reserve_exact(cap)
+            .map_err(|_| Error::OutOfMemory)?;
         let mut builtin_decos: Vec<(u32, u32)> = Vec::new();
         builtin_decos
             .try_reserve_exact(cap)
@@ -482,7 +501,9 @@ impl Loader {
             .try_reserve_exact(cap)
             .map_err(|_| Error::OutOfMemory)?;
         let mut funcs: Vec<Func> = Vec::new();
-        funcs.try_reserve_exact(cap).map_err(|_| Error::OutOfMemory)?;
+        funcs
+            .try_reserve_exact(cap)
+            .map_err(|_| Error::OutOfMemory)?;
         let mut input_vars: Vec<InputVar> = Vec::new();
         input_vars
             .try_reserve_exact(cap)
@@ -558,13 +579,19 @@ impl Loader {
 
     /// Bounds-checks operand `index` as an `<id>`.
     fn ref_at(&self, ops: &[u32], index: usize) -> Result<u32> {
-        let raw = ops.get(index).copied().ok_or(Error::InvalidBinary)?;
+        let raw = ops
+            .get(index)
+            .copied()
+            .ok_or(Error::InvalidBinary)?;
         self.ref_word(raw)
     }
 
     /// Claims an id for a definition, rejecting duplicates.
     fn check_id(&mut self, id: u32) -> Result<()> {
-        let slot = self.seen.get_mut(id as usize).ok_or(Error::InvalidBinary)?;
+        let slot = self
+            .seen
+            .get_mut(id as usize)
+            .ok_or(Error::InvalidBinary)?;
         if *slot {
             return Err(Error::InvalidBinary);
         }
@@ -574,7 +601,10 @@ impl Loader {
 
     /// The declared type of a value id (`ty != 0` = defined).
     fn val_ty(&self, id: u32) -> Result<u32> {
-        let slot = self.values.get(id as usize).ok_or(Error::InvalidBinary)?;
+        let slot = self
+            .values
+            .get(id as usize)
+            .ok_or(Error::InvalidBinary)?;
         if slot.ty == 0 {
             return Err(Error::InvalidBinary);
         }
@@ -591,7 +621,10 @@ impl Loader {
 
     /// The declared type table entry of `ty`.
     fn declared(&self, ty: u32) -> Result<&Type> {
-        let entry = self.types.get(ty as usize).ok_or(Error::InvalidBinary)?;
+        let entry = self
+            .types
+            .get(ty as usize)
+            .ok_or(Error::InvalidBinary)?;
         if matches!(entry, Type::Unsupported) {
             return Err(Error::InvalidBinary);
         }
@@ -601,7 +634,10 @@ impl Loader {
     /// The lane value of a constant id, or an error when `id` is not a
     /// constant.
     fn const_lane(&self, id: u32) -> Result<u64> {
-        let slot = self.consts.get(id as usize).ok_or(Error::InvalidBinary)?;
+        let slot = self
+            .consts
+            .get(id as usize)
+            .ok_or(Error::InvalidBinary)?;
         if slot.count == 0 {
             return Err(Error::InvalidBinary);
         }
@@ -678,11 +714,7 @@ impl Loader {
         if !matches!(self.types.get(ty as usize), Some(Type::Void)) {
             return Err(Error::InvalidBinary);
         }
-        self.values[id as usize] = ValueSlot {
-            ty,
-            off: 0,
-            lanes: 0,
-        };
+        self.values[id as usize] = ValueSlot { ty, off: 0, lanes: 0 };
         Ok(())
     }
 
@@ -707,11 +739,7 @@ impl Loader {
             .ok_or(Error::InvalidBinary)?;
         self.const_pool.resize(end, 0);
         let lanes = count as u32;
-        self.values[id as usize] = ValueSlot {
-            ty,
-            off: 0,
-            lanes,
-        };
+        self.values[id as usize] = ValueSlot { ty, off: 0, lanes };
         self.consts[id as usize] = ConstSlot { off, count: lanes };
         Ok(off)
     }
@@ -804,9 +832,7 @@ impl Loader {
             ops::ADDRESSING_MODEL_PHYSICAL64 => 8,
             _ => return Err(Error::InvalidBinary),
         };
-        if ops[1] != ops::MEMORY_MODEL_OPENCL
-            || width != core::mem::size_of::<usize>()
-        {
+        if ops[1] != ops::MEMORY_MODEL_OPENCL || width != core::mem::size_of::<usize>() {
             return Err(Error::InvalidBinary);
         }
         self.has_memory_model = true;
@@ -846,7 +872,11 @@ impl Loader {
                 if ops.len() != 3 {
                     return Err(Error::InvalidBinary);
                 }
-                if self.builtin_decos.iter().any(|&(t, _)| t == target) {
+                if self
+                    .builtin_decos
+                    .iter()
+                    .any(|&(t, _)| t == target)
+                {
                     return Err(Error::InvalidBinary);
                 }
                 self.builtin_decos.push((target, ops[2]));
@@ -937,9 +967,7 @@ impl Loader {
         }
         let id = self.ref_at(ops, 0)?;
         self.check_id(id)?;
-        self.types[id as usize] = Type::Float {
-            width: ops[1] as u16,
-        };
+        self.types[id as usize] = Type::Float { width: ops[1] as u16 };
         Ok(())
     }
 
@@ -1143,7 +1171,9 @@ impl Loader {
             // sit strictly before the freshly appended target range —
             // `copy_within` never has to shift live data.
             let len = end - start;
-            let stop = cursor.checked_add(len).ok_or(Error::InvalidBinary)?;
+            let stop = cursor
+                .checked_add(len)
+                .ok_or(Error::InvalidBinary)?;
             if end > cursor || stop > self.const_pool.len() {
                 return Err(Error::InvalidBinary);
             }
@@ -1189,10 +1219,7 @@ impl Loader {
         let ty = self.ref_at(ops, 0)?;
         let id = self.ref_at(ops, 1)?;
         let (storage, pointee) = match self.declared(ty)? {
-            Type::Pointer {
-                storage,
-                pointee,
-            } => (*storage, *pointee),
+            Type::Pointer { storage, pointee } => (*storage, *pointee),
             _ => return Err(Error::InvalidBinary),
         };
         self.def_value(ty, id)?;
@@ -1267,21 +1294,20 @@ impl Loader {
         });
         Ok(())
     }
-    
+
     /// Pass A handler for instructions inside a function.
     fn body(&mut self, words: &[u32], instr: Instr, index: usize) -> Result<()> {
         let ops = instr.words(words);
         let opcode = instr.opcode;
         {
-            let cur = self.current.as_ref().ok_or(Error::InvalidBinary)?;
+            let cur = self
+                .current
+                .as_ref()
+                .ok_or(Error::InvalidBinary)?;
             if cur.expect_label
                 && !matches!(
                     opcode,
-                    ops::OP_LABEL
-                        | ops::OP_NOP
-                        | ops::OP_LINE
-                        | ops::OP_NO_LINE
-                        | ops::OP_FUNCTION_END
+                    ops::OP_LABEL | ops::OP_NOP | ops::OP_LINE | ops::OP_NO_LINE | ops::OP_FUNCTION_END
                 )
             {
                 return Err(Error::InvalidBinary);
@@ -1316,9 +1342,7 @@ impl Loader {
             ops::OP_UNDEF => Err(Error::InvalidBinary),
             ops::OP_LOAD => self.load(ops),
             ops::OP_STORE => self.store(ops),
-            ops::OP_ACCESS_CHAIN | ops::OP_IN_BOUNDS_ACCESS_CHAIN => {
-                self.access_chain(ops, false)
-            }
+            ops::OP_ACCESS_CHAIN | ops::OP_IN_BOUNDS_ACCESS_CHAIN => self.access_chain(ops, false),
             ops::OP_PTR_ACCESS_CHAIN => self.access_chain(ops, true),
             ops::OP_VARIABLE => self.body_variable(ops),
             ops::OP_COPY_OBJECT => self.copy_object(ops),
@@ -1351,10 +1375,9 @@ impl Loader {
             | ops::OP_S_CONVERT
             | ops::OP_F_CONVERT
             | ops::OP_BITCAST => self.convert(opcode, ops),
-            ops::OP_S_NEGATE
-            | ops::OP_F_NEGATE
-            | ops::OP_LOGICAL_NOT
-            | ops::OP_NOT => self.unary(opcode, ops),
+            ops::OP_S_NEGATE | ops::OP_F_NEGATE | ops::OP_LOGICAL_NOT | ops::OP_NOT => {
+                self.unary(opcode, ops)
+            }
             ops::OP_I_ADD..=ops::OP_F_REM
             | ops::OP_LOGICAL_OR
             | ops::OP_LOGICAL_AND
@@ -1400,7 +1423,10 @@ impl Loader {
         let id = self.ref_at(ops, 0)?;
         self.check_id(id)?;
         self.label_ip[id as usize] = index as u32 + 1;
-        let cur = self.current.as_mut().ok_or(Error::InvalidBinary)?;
+        let cur = self
+            .current
+            .as_mut()
+            .ok_or(Error::InvalidBinary)?;
         if cur.phase_header {
             cur.phase_header = false;
             self.funcs[cur.index as usize].entry = index as u32;
@@ -1417,7 +1443,10 @@ impl Loader {
         }
         let ty = self.ref_at(ops, 0)?;
         let id = self.ref_at(ops, 1)?;
-        let cur = self.current.as_ref().ok_or(Error::InvalidBinary)?;
+        let cur = self
+            .current
+            .as_ref()
+            .ok_or(Error::InvalidBinary)?;
         if !cur.phase_header {
             return Err(Error::InvalidBinary);
         }
@@ -1461,7 +1490,10 @@ impl Loader {
         }
         for (values, parents) in &cur.phi_sites {
             for &value in values {
-                let slot = self.values.get(value as usize).ok_or(Error::InvalidBinary)?;
+                let slot = self
+                    .values
+                    .get(value as usize)
+                    .ok_or(Error::InvalidBinary)?;
                 if slot.ty == 0 {
                     return Err(Error::InvalidBinary);
                 }
@@ -1484,10 +1516,16 @@ impl Loader {
         let target = self.ref_at(ops, 0)?;
         if words == 3 {
             let continue_target = self.ref_at(ops, 1)?;
-            let cur = self.current.as_mut().ok_or(Error::InvalidBinary)?;
+            let cur = self
+                .current
+                .as_mut()
+                .ok_or(Error::InvalidBinary)?;
             cur.pending.push(continue_target);
         }
-        let cur = self.current.as_mut().ok_or(Error::InvalidBinary)?;
+        let cur = self
+            .current
+            .as_mut()
+            .ok_or(Error::InvalidBinary)?;
         cur.pending.push(target);
         cur.expect_label = false;
         Ok(())
@@ -1499,7 +1537,10 @@ impl Loader {
             return Err(Error::InvalidBinary);
         }
         let target = self.ref_at(ops, 0)?;
-        let cur = self.current.as_mut().ok_or(Error::InvalidBinary)?;
+        let cur = self
+            .current
+            .as_mut()
+            .ok_or(Error::InvalidBinary)?;
         cur.pending.push(target);
         cur.expect_label = true;
         Ok(())
@@ -1516,7 +1557,10 @@ impl Loader {
         }
         let then_target = self.ref_at(ops, 1)?;
         let else_target = self.ref_at(ops, 2)?;
-        let cur = self.current.as_mut().ok_or(Error::InvalidBinary)?;
+        let cur = self
+            .current
+            .as_mut()
+            .ok_or(Error::InvalidBinary)?;
         cur.pending.push(then_target);
         cur.pending.push(else_target);
         cur.expect_label = true;
@@ -1541,8 +1585,13 @@ impl Loader {
         for pair in ops[2..].chunks(2) {
             targets.push(self.ref_word(pair[1])?);
         }
-        let cur = self.current.as_mut().ok_or(Error::InvalidBinary)?;
-        cur.pending.try_reserve(targets.len()).map_err(|_| Error::OutOfMemory)?;
+        let cur = self
+            .current
+            .as_mut()
+            .ok_or(Error::InvalidBinary)?;
+        cur.pending
+            .try_reserve(targets.len())
+            .map_err(|_| Error::OutOfMemory)?;
         cur.pending.extend(targets);
         cur.expect_label = true;
         Ok(())
@@ -1555,7 +1604,10 @@ impl Loader {
         if !matches!(self.declared(ret)?, Type::Void) {
             return Err(Error::InvalidBinary);
         }
-        let cur = self.current.as_mut().ok_or(Error::InvalidBinary)?;
+        let cur = self
+            .current
+            .as_mut()
+            .ok_or(Error::InvalidBinary)?;
         cur.expect_label = true;
         Ok(())
     }
@@ -1571,7 +1623,10 @@ impl Loader {
         if matches!(self.declared(ret)?, Type::Void) || self.val_ty(value)? != ret {
             return Err(Error::InvalidBinary);
         }
-        let cur = self.current.as_mut().ok_or(Error::InvalidBinary)?;
+        let cur = self
+            .current
+            .as_mut()
+            .ok_or(Error::InvalidBinary)?;
         cur.expect_label = true;
         Ok(())
     }
@@ -1581,7 +1636,10 @@ impl Loader {
         if self.current.is_none() {
             return Err(Error::InvalidBinary);
         }
-        let cur = self.current.as_mut().ok_or(Error::InvalidBinary)?;
+        let cur = self
+            .current
+            .as_mut()
+            .ok_or(Error::InvalidBinary)?;
         cur.expect_label = true;
         Ok(())
     }
@@ -1608,7 +1666,10 @@ impl Loader {
             parents.push(self.ref_word(pair[1])?);
         }
         self.def_value(ty, id)?;
-        let cur = self.current.as_mut().ok_or(Error::InvalidBinary)?;
+        let cur = self
+            .current
+            .as_mut()
+            .ok_or(Error::InvalidBinary)?;
         cur.phi_sites.push((values, parents));
         Ok(())
     }
@@ -1682,18 +1743,12 @@ impl Loader {
         let id = self.ref_at(ops, 1)?;
         let base = self.ref_at(ops, 2)?;
         let (result_storage, result_pointee) = match self.declared(ty)? {
-            Type::Pointer {
-                storage,
-                pointee,
-            } => (*storage, *pointee),
+            Type::Pointer { storage, pointee } => (*storage, *pointee),
             _ => return Err(Error::InvalidBinary),
         };
         let base_ty = self.val_ty(base)?;
         let (base_storage, mut current) = match self.declared(base_ty)? {
-            Type::Pointer {
-                storage,
-                pointee,
-            } => (*storage, *pointee),
+            Type::Pointer { storage, pointee } => (*storage, *pointee),
             _ => return Err(Error::InvalidBinary),
         };
         if base_storage != result_storage {
@@ -1707,7 +1762,9 @@ impl Loader {
             // The element offset only has to be an integer: it scales
             // the base without stepping into a different type. The
             // remaining indices walk into the pointee.
-            let element = self.ref_word(ops[3]).and_then(|id| self.val_ty(id))?;
+            let element = self
+                .ref_word(ops[3])
+                .and_then(|id| self.val_ty(id))?;
             if !matches!(self.declared(element)?, Type::Int { .. }) {
                 return Err(Error::InvalidBinary);
             }
@@ -1734,10 +1791,7 @@ impl Loader {
         let ty = self.ref_at(ops, 0)?;
         let id = self.ref_at(ops, 1)?;
         let (storage, pointee) = match self.declared(ty)? {
-            Type::Pointer {
-                storage,
-                pointee,
-            } => (*storage, *pointee),
+            Type::Pointer { storage, pointee } => (*storage, *pointee),
             _ => return Err(Error::InvalidBinary),
         };
         if !matches!(
@@ -1764,7 +1818,9 @@ impl Loader {
             None
         };
         self.def_value(ty, id)?;
-        self.arena_vars.try_reserve(1).map_err(|_| Error::OutOfMemory)?;
+        self.arena_vars
+            .try_reserve(1)
+            .map_err(|_| Error::OutOfMemory)?;
         self.arena_vars.push(ArenaVar {
             ptr: id,
             pointee,
@@ -1941,17 +1997,11 @@ impl Loader {
             return Err(Error::InvalidBinary);
         }
         let lanes_first = match self.declared(self.val_ty(first)?)? {
-            Type::Vector {
-                elem: other,
-                len,
-            } if *other == elem => u32::from(*len),
+            Type::Vector { elem: other, len } if *other == elem => u32::from(*len),
             _ => return Err(Error::InvalidBinary),
         };
         let lanes_second = match self.declared(self.val_ty(second)?)? {
-            Type::Vector {
-                elem: other,
-                len,
-            } if *other == elem => u32::from(*len),
+            Type::Vector { elem: other, len } if *other == elem => u32::from(*len),
             _ => return Err(Error::InvalidBinary),
         };
         for &mask in &ops[4..] {
@@ -2108,9 +2158,7 @@ impl Loader {
         let id = self.ref_at(ops, 1)?;
         let value = self.ref_at(ops, 3)?;
         let local = self.ref_at(ops, 4)?;
-        if self.val_ty(value)? != ty
-            || !matches!(self.declared(self.val_ty(local)?)?, Type::Int { .. })
-        {
+        if self.val_ty(value)? != ty || !matches!(self.declared(self.val_ty(local)?)?, Type::Int { .. }) {
             return Err(Error::InvalidBinary);
         }
         self.def_value(ty, id)?;
@@ -2134,7 +2182,10 @@ impl Loader {
         if operation > ops::GROUP_OP_EXCLUSIVE_SCAN || self.val_ty(value)? != ty {
             return Err(Error::InvalidBinary);
         }
-        let float = matches!(opcode, ops::OP_GROUP_F_ADD | ops::OP_GROUP_F_MIN | ops::OP_GROUP_F_MAX);
+        let float = matches!(
+            opcode,
+            ops::OP_GROUP_F_ADD | ops::OP_GROUP_F_MIN | ops::OP_GROUP_F_MAX
+        );
         let want = if float { Kind::Float } else { Kind::Int };
         if self.kind_of(ty)? != want {
             return Err(Error::InvalidBinary);
@@ -2155,12 +2206,8 @@ impl Loader {
         let from = self.kind_of(self.val_ty(operand)?)?;
         let to = self.kind_of(ty)?;
         let ok = match opcode {
-            ops::OP_CONVERT_F_TO_U | ops::OP_CONVERT_F_TO_S => {
-                from == Kind::Float && to == Kind::Int
-            }
-            ops::OP_CONVERT_S_TO_F | ops::OP_CONVERT_U_TO_F => {
-                from == Kind::Int && to == Kind::Float
-            }
+            ops::OP_CONVERT_F_TO_U | ops::OP_CONVERT_F_TO_S => from == Kind::Float && to == Kind::Int,
+            ops::OP_CONVERT_S_TO_F | ops::OP_CONVERT_U_TO_F => from == Kind::Int && to == Kind::Float,
             ops::OP_U_CONVERT | ops::OP_S_CONVERT => from == Kind::Int && to == Kind::Int,
             ops::OP_F_CONVERT => from == Kind::Float && to == Kind::Float,
             ops::OP_BITCAST => {
@@ -2211,12 +2258,9 @@ impl Loader {
             return Err(Error::InvalidBinary);
         }
         let want = match opcode {
-            ops::OP_F_ADD
-            | ops::OP_F_SUB
-            | ops::OP_F_MUL
-            | ops::OP_F_DIV
-            | ops::OP_F_MOD
-            | ops::OP_F_REM => Kind::Float,
+            ops::OP_F_ADD | ops::OP_F_SUB | ops::OP_F_MUL | ops::OP_F_DIV | ops::OP_F_MOD | ops::OP_F_REM => {
+                Kind::Float
+            }
             ops::OP_LOGICAL_OR | ops::OP_LOGICAL_AND => Kind::Bool,
             _ => Kind::Int,
         };
@@ -2338,7 +2382,11 @@ impl Loader {
             .try_reserve_exact(raw_entries.len())
             .map_err(|_| Error::OutOfMemory)?;
         for (name, func_id) in raw_entries {
-            let raw = self.func_index.get(func_id as usize).copied().unwrap_or(0);
+            let raw = self
+                .func_index
+                .get(func_id as usize)
+                .copied()
+                .unwrap_or(0);
             if raw == 0 {
                 return Err(Error::InvalidBinary);
             }
@@ -2377,7 +2425,11 @@ impl Loader {
     /// arguments do not match its signature.
     fn finish_calls(&mut self) -> Result<()> {
         for (_, callee, arguments) in core::mem::take(&mut self.call_sites) {
-            let raw = self.func_index.get(callee as usize).copied().unwrap_or(0);
+            let raw = self
+                .func_index
+                .get(callee as usize)
+                .copied()
+                .unwrap_or(0);
             if raw == 0 {
                 return Err(Error::InvalidBinary);
             }
@@ -2415,16 +2467,25 @@ impl Loader {
             if kind != ops::LINKAGE_IMPORT {
                 continue;
             }
-            let raw = self.func_index.get(target as usize).copied().unwrap_or(0);
+            let raw = self
+                .func_index
+                .get(target as usize)
+                .copied()
+                .unwrap_or(0);
             if raw == 0 {
                 return Err(Error::InvalidBinary);
             }
             let index = (raw - 1) as usize;
-            let func = self.funcs.get(index).ok_or(Error::InvalidBinary)?;
+            let func = self
+                .funcs
+                .get(index)
+                .ok_or(Error::InvalidBinary)?;
             if func.has_body {
                 return Err(Error::InvalidBinary);
             }
-            let argc = builtin::import_fn(&name).ok_or(Error::InvalidBinary)?.argc();
+            let argc = builtin::import_fn(&name)
+                .ok_or(Error::InvalidBinary)?
+                .argc();
             if argc as usize != func.params.len() {
                 return Err(Error::InvalidBinary);
             }
@@ -2552,7 +2613,10 @@ impl Loader {
         let mut ty_stride = table(self.bound as usize, 0u32)?;
         let mut struct_off: Vec<(u64, u32)> = Vec::new();
         for id in 1..self.bound {
-            let entry = self.types.get(id as usize).ok_or(Error::InvalidBinary)?;
+            let entry = self
+                .types
+                .get(id as usize)
+                .ok_or(Error::InvalidBinary)?;
             if matches!(entry, Type::Unsupported) {
                 continue;
             }
@@ -2685,10 +2749,7 @@ OpFunctionEnd
     fn capability_and_model(addressing: u32) -> Vec<Vec<u32>> {
         vec![
             instruction(ops::OP_CAPABILITY, &[ops::CAPABILITY_KERNEL]),
-            instruction(
-                ops::OP_MEMORY_MODEL,
-                &[addressing, ops::MEMORY_MODEL_OPENCL],
-            ),
+            instruction(ops::OP_MEMORY_MODEL, &[addressing, ops::MEMORY_MODEL_OPENCL]),
         ]
     }
 
@@ -2705,7 +2766,12 @@ OpFunctionEnd
         assert!(module.bound > 16);
 
         // Type, value, constant and label tables.
-        assert!(module.types.iter().any(|ty| matches!(ty, Type::Void)));
+        assert!(
+            module
+                .types
+                .iter()
+                .any(|ty| matches!(ty, Type::Void))
+        );
         assert!(module.values.iter().any(|slot| slot.ty != 0));
         assert!(module.consts.iter().any(|slot| slot.count != 0));
         assert!(!module.const_pool.is_empty());
@@ -2719,9 +2785,7 @@ OpFunctionEnd
             .iter()
             .find(|func| func.has_body)
             .expect("kernel has a body");
-        assert!(
-            matches!(module.types[kernel_func.ret_ty as usize], Type::Void),
-        );
+        assert!(matches!(module.types[kernel_func.ret_ty as usize], Type::Void),);
         assert_eq!(kernel_func.params.len(), 2);
         assert_ne!(kernel_func.entry, 0);
         assert!(!kernel_func.calls.is_empty());
@@ -2774,10 +2838,7 @@ OpFunctionEnd
     fn rejects_a_barrier_outside_the_supported_scopes() {
         let source = codevar_ocl_ir::parse::parse(SCOPE_ONE).expect("kernel parses");
         let words = codevar_ocl_asm::assemble(&source).expect("kernel assembles");
-        assert!(matches!(
-            load(&bytes_of(&words)),
-            Err(Error::InvalidBinary)
-        ));
+        assert!(matches!(load(&bytes_of(&words)), Err(Error::InvalidBinary)));
     }
 
     #[test]

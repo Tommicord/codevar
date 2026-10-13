@@ -315,10 +315,7 @@ mod tests {
     #[test]
     fn import_names_resolve_plain_and_mangled() {
         assert_eq!(import_fn("get_global_id"), Some(ImportFn::GlobalId));
-        assert_eq!(
-            import_fn("_Z13get_global_idj"),
-            Some(ImportFn::GlobalId)
-        );
+        assert_eq!(import_fn("_Z13get_global_idj"), Some(ImportFn::GlobalId));
         assert_eq!(import_fn("get_work_dim"), Some(ImportFn::WorkDim));
         assert_eq!(import_fn("printf"), None);
         assert_eq!(import_fn("_Zbad"), None);

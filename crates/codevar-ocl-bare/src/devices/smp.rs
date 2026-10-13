@@ -50,8 +50,8 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::device::{Device, DeviceInfo};
 use crate::error::{Error, Result};
-use crate::exec::{run_claimed, ArgBlock, KernelFn, Launch, SpirvBinding};
-use crate::objects::{release_ref, Event};
+use crate::exec::{ArgBlock, KernelFn, Launch, SpirvBinding, run_claimed};
+use crate::objects::{Event, release_ref};
 use crate::sys;
 
 /// The published launch shared by all cores of an [`SmpDevice`].
@@ -178,8 +178,7 @@ impl SmpDevice {
             .map_err(|_| Error::OutOfMemory)?;
         started.resize_with(workers, || AtomicBool::new(false));
         let mut acks = Vec::new();
-        acks
-            .try_reserve_exact(workers)
+        acks.try_reserve_exact(workers)
             .map_err(|_| Error::OutOfMemory)?;
         acks.resize_with(workers, || AtomicU32::new(0));
         Ok(Box::leak(Box::new(Self {
@@ -201,7 +200,11 @@ impl SmpDevice {
     /// Blocks until every secondary core has registered — called after
     /// starting the workers so the first enqueue cannot race their boot.
     pub fn wait_workers(&'static self) {
-        codevar_target::wait_until(|| self.started.iter().all(|flag| flag.load(Ordering::Acquire)));
+        codevar_target::wait_until(|| {
+            self.started
+                .iter()
+                .all(|flag| flag.load(Ordering::Acquire))
+        });
     }
 
     /// The per-core worker body: register, then loop forever claiming
@@ -305,7 +308,9 @@ impl SmpDevice {
             self.started
                 .iter()
                 .zip(self.acks.iter())
-                .all(|(started, ack)| !started.load(Ordering::Acquire) || ack.load(Ordering::Acquire) >= epoch)
+                .all(|(started, ack)| {
+                    !started.load(Ordering::Acquire) || ack.load(Ordering::Acquire) >= epoch
+                })
         });
         if let Some(error) = self.slot.take_error() {
             release_ref(event);
@@ -327,8 +332,12 @@ impl Device for SmpDevice {
         // leaked devices, so recover the static lifetime from the address.
         // SAFETY: every `SmpDevice` reachable through the platform was
         // leaked by `SmpDevice::new` and therefore lives for `'static`.
-        let this = unsafe { core::ptr::from_ref(self).cast::<SmpDevice>().as_ref() }
-            .ok_or(Error::InvalidDevice)?;
+        let this = unsafe {
+            core::ptr::from_ref(self)
+                .cast::<SmpDevice>()
+                .as_ref()
+        }
+        .ok_or(Error::InvalidDevice)?;
         this.execute(launch, event)
     }
 

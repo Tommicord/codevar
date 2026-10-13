@@ -43,8 +43,8 @@ use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
 use crate::device::{Device, DeviceInfo};
 use crate::error::{Error, Result};
-use crate::exec::{run_all, ArgBlock, KernelFn, Launch, SpirvBinding, MAX_PARAMS};
-use crate::objects::{release_ref, Event};
+use crate::exec::{ArgBlock, KernelFn, Launch, MAX_PARAMS, SpirvBinding, run_all};
+use crate::objects::{Event, release_ref};
 use crate::sys;
 
 /// Number of descriptors in an [`AmpRing`] — the queue's in-flight depth.
@@ -189,10 +189,7 @@ impl AmpDevice {
     /// # Errors
     ///
     /// See [`AmpDevice::with_ring`].
-    pub fn simulated(
-        info: DeviceInfo,
-        mode: crate::device::ServiceMode,
-    ) -> Result<&'static Self> {
+    pub fn simulated(info: DeviceInfo, mode: crate::device::ServiceMode) -> Result<&'static Self> {
         let ring: &'static AmpRing = Box::leak(Box::new(AmpRing::new()));
         Self::with_ring(info, ring, mode)
     }
@@ -245,7 +242,8 @@ impl AmpDevice {
                     slot.status.store(DONE, Ordering::Release);
                 }
                 Err(error) => {
-                    slot.result.store(error.to_cl(), Ordering::Release);
+                    slot.result
+                        .store(error.to_cl(), Ordering::Release);
                     slot.status.store(ERROR, Ordering::Release);
                 }
             }
@@ -277,7 +275,11 @@ impl AmpDevice {
         let index: u32 = loop {
             let tail = self.ring.tail.load(Ordering::Acquire);
             let slot_index = tail % AMP_SLOTS as u32;
-            if self.ring.slots[slot_index as usize].status.load(Ordering::Acquire) == EMPTY {
+            if self.ring.slots[slot_index as usize]
+                .status
+                .load(Ordering::Acquire)
+                == EMPTY
+            {
                 // SAFETY: `EMPTY` means the host has exclusive use of the
                 // slot (see `AmpSlot`'s Sync contract).
                 let payload = unsafe { &mut *self.ring.slots[slot_index as usize].payload.get() };
@@ -292,7 +294,9 @@ impl AmpDevice {
                 self.ring.slots[slot_index as usize]
                     .status
                     .store(PENDING, Ordering::Release);
-                self.ring.tail.store(tail.wrapping_add(1), Ordering::Release);
+                self.ring
+                    .tail
+                    .store(tail.wrapping_add(1), Ordering::Release);
                 codevar_target::dsb();
                 codevar_target::sev();
                 break slot_index;
@@ -326,8 +330,12 @@ impl Device for AmpDevice {
 
     fn submit(&self, launch: &Launch<'_>, event: &'static Event) -> Result<()> {
         // SAFETY: platform devices are leaked by their constructors.
-        let this = unsafe { core::ptr::from_ref(self).cast::<AmpDevice>().as_ref() }
-            .ok_or(Error::InvalidDevice)?;
+        let this = unsafe {
+            core::ptr::from_ref(self)
+                .cast::<AmpDevice>()
+                .as_ref()
+        }
+        .ok_or(Error::InvalidDevice)?;
         this.dispatch(launch, event)
     }
 

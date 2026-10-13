@@ -67,7 +67,6 @@
 extern crate alloc;
 
 pub mod api;
-pub mod sys;
 mod device;
 mod devices;
 mod error;
@@ -76,13 +75,14 @@ mod objects;
 mod platform;
 mod registry;
 mod spirv;
+pub mod sys;
 
 pub use device::{Device, DeviceInfo, ServiceMode};
 pub use devices::{
     AccelDesc, AccelDevice, AccelHandler, AccelRegs, AccelRing, AmpDevice, AmpRing, SmpDevice,
 };
 pub use error::{Error, Result};
-pub use exec::{KernelFn, WorkItem, MAX_ARGS, MAX_PARAMS};
+pub use exec::{KernelFn, MAX_ARGS, MAX_PARAMS, WorkItem};
 pub use objects::{Context, Event, Kernel, Mem, Program, Queue};
-pub use platform::{init, platform, Platform, PlatformConfig};
+pub use platform::{Platform, PlatformConfig, init, platform};
 pub use registry::{ArgKind, KernelDef, KernelModule, Registry};

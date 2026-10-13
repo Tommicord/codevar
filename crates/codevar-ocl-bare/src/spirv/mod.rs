@@ -25,14 +25,15 @@
 //! * [`builtin`] — `OpenCL.std` arities and linkage-import dispatch.
 //! * [`module`] — the two-pass loader that rejects anything outside the
 //!   subset and materializes [`module::SpirvModule`].
-//!
-//! Execution itself lives with the work-group scheduler; nothing in the
-//! loader runs twice per launch.
+//! * [`exec`] — the work-group interpreter that walks one module's
+//!   instruction tables for one work-group of work-items.
 
 mod builtin;
 mod decode;
+mod exec;
 mod module;
 mod ops;
 mod types;
 
-pub(crate) use module::{load, SpirvEntry, SpirvModule};
+pub(crate) use exec::execute_group;
+pub(crate) use module::{SpirvModule, load};

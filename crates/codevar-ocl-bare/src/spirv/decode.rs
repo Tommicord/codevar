@@ -137,10 +137,15 @@ pub(crate) fn read_string(words: &[u32], start: usize) -> Result<(String, usize)
     loop {
         let word = *words.get(offset).ok_or(Error::InvalidBinary)?;
         let raw = word.to_le_bytes();
-        bytes.try_reserve(4).map_err(|_| Error::OutOfMemory)?;
+        bytes
+            .try_reserve(4)
+            .map_err(|_| Error::OutOfMemory)?;
         bytes.extend_from_slice(&raw);
         if raw.contains(&0) {
-            let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+            let end = bytes
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(bytes.len());
             bytes.truncate(end);
             let text = String::from_utf8(bytes).map_err(|_| Error::InvalidBinary)?;
             return Ok((text, offset - start + 1));

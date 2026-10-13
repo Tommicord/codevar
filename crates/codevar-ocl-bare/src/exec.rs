@@ -168,11 +168,7 @@ impl WorkItem {
         // written as native `usize` in the first word of the slot.
         let mut bytes = [0u8; core::mem::size_of::<usize>()];
         unsafe {
-            core::ptr::copy_nonoverlapping(
-                slot,
-                bytes.as_mut_ptr(),
-                core::mem::size_of::<usize>(),
-            );
+            core::ptr::copy_nonoverlapping(slot, bytes.as_mut_ptr(), core::mem::size_of::<usize>());
         }
         usize::from_ne_bytes(bytes) as *mut u8
     }
@@ -449,6 +445,9 @@ unsafe fn run_group(launch: &Launch<'_>, index: u32) -> Result<()> {
     let x = index % groups[0];
     let y = (index / groups[0]) % groups[1];
     let z = index / (groups[0] * groups[1]);
+    if launch.binding.is_some() {
+        return crate::spirv::execute_group(launch, [x, y, z]);
+    }
     let mut item = WorkItem {
         global_id: [0; 3],
         local_id: [0; 3],
@@ -686,7 +685,9 @@ mod tests {
     fn scalar_and_pointer_slots_round_trip() {
         let mut block = ArgBlock::new();
         block.set_ptr(3, 0x1234 as *mut c_void);
-        block.set_scalar(4, &[1, 2, 3, 4]).expect("scalar fits");
+        block
+            .set_scalar(4, &[1, 2, 3, 4])
+            .expect("scalar fits");
         assert!(block.set_scalar(5, &[0; ARG_SLOT + 1]).is_err());
         let item = WorkItem {
             global_id: [0; 3],
@@ -700,10 +701,7 @@ mod tests {
         // SAFETY: slots hold the values written above.
         unsafe {
             assert_eq!(item.arg_ptr(3) as usize, 0x1234);
-            assert_eq!(
-                core::slice::from_raw_parts(item.slot(4), 4),
-                &[1, 2, 3, 4]
-            );
+            assert_eq!(core::slice::from_raw_parts(item.slot(4), 4), &[1, 2, 3, 4]);
             assert!(item.arg_ptr(15).is_null());
             assert!(item.slot(MAX_ARGS).is_null());
         }

@@ -36,12 +36,12 @@
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::ffi::{c_char, c_void};
+use core::ffi::c_void;
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
 use crate::device::Device;
 use crate::error::{Error, Result};
-use crate::exec::{ArgBlock, ARG_SLOT, MAX_ARGS};
+use crate::exec::{ARG_SLOT, ArgBlock, MAX_ARGS};
 use crate::registry::{ArgKind, KernelDef};
 use crate::sys::{self, MemHandle};
 
@@ -144,7 +144,13 @@ macro_rules! accessor {
     };
 }
 
-accessor!(context, ContextHandle, Context, MAGIC_CONTEXT, Error::InvalidContext);
+accessor!(
+    context,
+    ContextHandle,
+    Context,
+    MAGIC_CONTEXT,
+    Error::InvalidContext
+);
 accessor!(queue, CommandQueueHandle, Queue, MAGIC_QUEUE, Error::InvalidQueue);
 accessor!(mem, MemHandle, Mem, MAGIC_MEM, Error::InvalidMemObject);
 accessor!(
@@ -222,7 +228,9 @@ impl Context {
     /// Validates that `device` belongs to this context — `clCreateQueue`
     /// and friends require it.
     pub(crate) fn has_device(&self, device: &DeviceObject) -> bool {
-        self.devices.iter().any(|entry| core::ptr::eq(*entry, device))
+        self.devices
+            .iter()
+            .any(|entry| core::ptr::eq(*entry, device))
     }
 
     /// Number of devices (`CL_CONTEXT_NUM_DEVICES`).
@@ -239,7 +247,8 @@ impl Context {
 pub struct Queue {
     header: ObjectHeader,
     context: *mut Context,
-    device: &'static dyn Device,
+    device: &'static DeviceObject,
+    properties: u64,
 }
 
 impl RefCounted for Queue {
@@ -250,12 +259,17 @@ impl RefCounted for Queue {
 
 impl Queue {
     /// Creates a queue, retaining `context` for the queue's lifetime.
-    pub(crate) fn new(context: &'static Context, device: &'static dyn Device) -> Box<Self> {
+    pub(crate) fn new(
+        context: &'static Context,
+        device: &'static DeviceObject,
+        properties: u64,
+    ) -> Box<Self> {
         context.header.retain();
         Box::new(Self {
             header: ObjectHeader::new(MAGIC_QUEUE),
             context: core::ptr::from_ref(context).cast_mut(),
             device,
+            properties,
         })
     }
 
@@ -266,9 +280,20 @@ impl Queue {
         unsafe { &*self.context }
     }
 
-    /// The device this queue dispatches to (`CL_QUEUE_DEVICE`).
-    pub fn device(&self) -> &'static dyn Device {
+    /// The device handle of this queue (`CL_QUEUE_DEVICE`).
+    pub(crate) fn device_object(&self) -> &'static DeviceObject {
         self.device
+    }
+
+    /// The back end this queue dispatches to (`CL_QUEUE_DEVICE`).
+    pub fn device(&self) -> &'static dyn Device {
+        self.device.device()
+    }
+
+    /// The creation properties (`CL_QUEUE_PROPERTIES`).
+    #[must_use]
+    pub fn properties(&self) -> u64 {
+        self.properties
     }
 }
 
@@ -337,8 +362,11 @@ impl Mem {
             return Err(Error::InvalidBufferSize);
         }
         const ACCESS: u64 = sys::MEM_READ_ONLY | sys::MEM_WRITE_ONLY;
-        const KNOWN: u64 =
-            sys::MEM_READ_WRITE | ACCESS | sys::MEM_USE_HOST_PTR | sys::MEM_ALLOC_HOST_PTR | sys::MEM_COPY_HOST_PTR;
+        const KNOWN: u64 = sys::MEM_READ_WRITE
+            | ACCESS
+            | sys::MEM_USE_HOST_PTR
+            | sys::MEM_ALLOC_HOST_PTR
+            | sys::MEM_COPY_HOST_PTR;
         if flags & !KNOWN != 0 {
             return Err(Error::InvalidArgument);
         }
@@ -366,11 +394,7 @@ impl Mem {
                 // SAFETY: the caller supplied a non-null pointer per the
                 // flag contract, readable for `size` bytes.
                 unsafe {
-                    core::ptr::copy_nonoverlapping(
-                        host_ptr.cast::<u8>(),
-                        storage.as_mut_ptr(),
-                        size,
-                    );
+                    core::ptr::copy_nonoverlapping(host_ptr.cast::<u8>(), storage.as_mut_ptr(), size);
                 }
             }
             MemData::Owned(storage)
@@ -433,6 +457,10 @@ pub struct Program {
     context: *mut Context,
     defs: Vec<KernelDef>,
     options: spin::Mutex<String>,
+    /// Keeps the SPIR-V module alive: `KernelDef::binding` points at
+    /// entries owned by this box, so the box must outlive every kernel
+    /// made from the program.
+    module: Option<Box<crate::spirv::SpirvModule>>,
 }
 
 impl RefCounted for Program {
@@ -451,7 +479,32 @@ impl Program {
             context: core::ptr::from_ref(context).cast_mut(),
             defs,
             options: spin::Mutex::new(String::new()),
+            module: None,
         })
+    }
+
+    /// Creates a program whose definitions are the entry points of a
+    /// validated SPIR-V `module`, retaining `context`. The module is kept
+    /// alive inside the program for as long as the program (and thus every
+    /// kernel derived from its definitions) lives.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`Error::InvalidBinary`] when the module declares no
+    /// entry points.
+    pub(crate) fn from_spirv(
+        context: &'static Context,
+        mut module: Box<crate::spirv::SpirvModule>,
+    ) -> Result<Box<Self>> {
+        let defs = module.build_defs()?;
+        context.header.retain();
+        Ok(Box::new(Self {
+            header: ObjectHeader::new(MAGIC_PROGRAM),
+            context: core::ptr::from_ref(context).cast_mut(),
+            defs,
+            options: spin::Mutex::new(String::new()),
+            module: Some(module),
+        }))
     }
 
     /// Resolves a kernel name within this program (`clCreateKernel`).
@@ -505,11 +558,17 @@ pub(crate) enum ArgValue {
 /// A kernel instance: its program's definition (cloned, so a SPIR-V
 /// entry's owned name/kinds survive independently of the definition list)
 /// plus its bound arguments.
+///
+/// The argument slots use [`UnsafeCell`] so `clSetKernelArg` can bind
+/// through the `&Kernel` the handle layer hands out. This is sound under
+/// the OpenCL host contract: one host thread drives a given kernel object
+/// at a time, and launches copy the slots into an owned [`ArgBlock`] before
+/// anything crosses a thread boundary.
 pub struct Kernel {
     header: ObjectHeader,
     program: *mut Program,
     def: KernelDef,
-    args: [ArgValue; MAX_ARGS],
+    args: core::cell::UnsafeCell<[ArgValue; MAX_ARGS]>,
 }
 
 impl RefCounted for Kernel {
@@ -526,7 +585,7 @@ impl Kernel {
             header: ObjectHeader::new(MAGIC_KERNEL),
             program: core::ptr::from_ref(program).cast_mut(),
             def: def.clone(),
-            args: core::array::from_fn(|_| ArgValue::Unset),
+            args: core::cell::UnsafeCell::new(core::array::from_fn(|_| ArgValue::Unset)),
         })
     }
 
@@ -550,13 +609,11 @@ impl Kernel {
     /// * [`Error::InvalidArgValue`] — null value (local-memory arguments
     ///   are not supported).
     /// * [`Error::InvalidMemObject`] — buffer value is not a live object.
-    pub(crate) fn set_arg(
-        &mut self,
-        index: usize,
-        size: usize,
-        value: *const c_void,
-    ) -> Result<()> {
-        let expected = self.def.arg_size(index).ok_or(Error::InvalidArgIndex)?;
+    pub(crate) fn set_arg(&self, index: usize, size: usize, value: *const c_void) -> Result<()> {
+        let expected = self
+            .def
+            .arg_size(index)
+            .ok_or(Error::InvalidArgIndex)?;
         if size != expected {
             return Err(Error::InvalidArgSize);
         }
@@ -576,7 +633,11 @@ impl Kernel {
                 let handle = unsafe { *value.cast::<MemHandle>() };
                 let buffer = crate::objects::mem(handle)?;
                 buffer.header.retain();
-                self.replace_arg(index, ArgValue::Buffer(core::ptr::from_ref(buffer).cast_mut()));
+                // SAFETY: `set_arg`'s callers honour the single-host
+                // contract documented on [`Kernel`].
+                unsafe {
+                    self.replace_arg(index, ArgValue::Buffer(core::ptr::from_ref(buffer).cast_mut()));
+                }
             }
             ArgKind::Scalar(_) => {
                 let mut bytes = [0u8; ARG_SLOT];
@@ -585,15 +646,26 @@ impl Kernel {
                 unsafe {
                     core::ptr::copy_nonoverlapping(value.cast::<u8>(), bytes.as_mut_ptr(), size);
                 }
-                self.replace_arg(index, ArgValue::Scalar { bytes, len: size });
+                // SAFETY: as above — exclusive logical access to the slots.
+                unsafe {
+                    self.replace_arg(index, ArgValue::Scalar { bytes, len: size });
+                }
             }
         }
         Ok(())
     }
 
     /// Swaps in a new argument value, releasing what the slot held.
-    fn replace_arg(&mut self, index: usize, value: ArgValue) {
-        let old = core::mem::replace(&mut self.args[index], value);
+    ///
+    /// # Safety
+    ///
+    /// The OpenCL single-host contract on `self`: no concurrent `set_arg`,
+    /// `marshal` or `Drop` for the same kernel object.
+    unsafe fn replace_arg(&self, index: usize, value: ArgValue) {
+        // SAFETY: caller guarantees exclusive logical access to the slots;
+        // `UnsafeCell::get` is the legal path to the mutable view.
+        let args = unsafe { &mut *self.args.get() };
+        let old = core::mem::replace(&mut args[index], value);
         if let ArgValue::Buffer(buffer) = old {
             // SAFETY: the buffer pointer was retained when it entered the
             // slot; this is that reference leaving.
@@ -608,8 +680,11 @@ impl Kernel {
     /// [`Error::MissingKernelArg`] when any declared argument is unset.
     pub(crate) fn marshal(&self) -> Result<ArgBlock> {
         let mut block = ArgBlock::new();
+        // SAFETY: the OpenCL single-host contract — no concurrent
+        // `set_arg` while a marshal is in flight.
+        let args = unsafe { &*self.args.get() };
         for index in 0..self.def.kinds.len() {
-            match &self.args[index] {
+            match &args[index] {
                 ArgValue::Unset => return Err(Error::MissingKernelArg),
                 ArgValue::Buffer(buffer) => {
                     // SAFETY: retained while bound (see `set_arg`), so the
@@ -628,7 +703,9 @@ impl Kernel {
 
 impl Drop for Kernel {
     fn drop(&mut self) {
-        for slot in &mut self.args {
+        // SAFETY: `&mut self` — exclusive access to the slots.
+        let args = self.args.get_mut();
+        for slot in args.iter_mut() {
             if let ArgValue::Buffer(buffer) = slot {
                 // SAFETY: each buffer slot owns one retained reference.
                 release_ref(unsafe { &**buffer });
@@ -758,7 +835,7 @@ impl Drop for Event {
 mod tests {
     use super::*;
     use crate::device::DeviceInfo;
-    use crate::exec::{vector_add, SpirvBinding};
+    use crate::exec::{SpirvBinding, vector_add};
     use crate::registry::{KernelModule, Registry};
 
     use alloc::borrow::Cow;
@@ -766,16 +843,8 @@ mod tests {
     struct TestDevice;
     impl Device for TestDevice {
         fn info(&self) -> &DeviceInfo {
-            static INFO: DeviceInfo = DeviceInfo::new(
-                "test",
-                "codevar",
-                sys::DEVICE_TYPE_CPU,
-                1,
-                64,
-                1 << 20,
-                4096,
-                256,
-            );
+            static INFO: DeviceInfo =
+                DeviceInfo::new("test", "codevar", sys::DEVICE_TYPE_CPU, 1, 64, 1 << 20, 4096, 256);
             &INFO
         }
         fn submit(&self, _launch: &crate::exec::Launch<'_>, event: &'static Event) -> Result<()> {
@@ -836,24 +905,19 @@ mod tests {
         let context: &'static Context = Box::leak(Context::new(vec![device]));
         assert!(Mem::create(context, sys::MEM_READ_WRITE, 0, core::ptr::null_mut()).is_err());
         let buffer: &'static Mem =
-            Box::leak(Mem::create(context, sys::MEM_READ_WRITE, 64, core::ptr::null_mut())
-                .expect("alloc"));
+            Box::leak(Mem::create(context, sys::MEM_READ_WRITE, 64, core::ptr::null_mut()).expect("alloc"));
         assert_eq!(buffer.size(), 64);
         assert!(!buffer.as_ptr().is_null());
-        assert!(Mem::create(
-            context,
-            sys::MEM_USE_HOST_PTR,
-            64,
-            core::ptr::null_mut()
-        )
-        .is_err());
-        assert!(Mem::create(
-            context,
-            sys::MEM_USE_HOST_PTR | sys::MEM_COPY_HOST_PTR,
-            64,
-            buffer.as_ptr().cast()
-        )
-        .is_err());
+        assert!(Mem::create(context, sys::MEM_USE_HOST_PTR, 64, core::ptr::null_mut()).is_err());
+        assert!(
+            Mem::create(
+                context,
+                sys::MEM_USE_HOST_PTR | sys::MEM_COPY_HOST_PTR,
+                64,
+                buffer.as_ptr().cast()
+            )
+            .is_err()
+        );
         release_ref(buffer);
         release_ref(context);
     }
@@ -875,27 +939,39 @@ mod tests {
         let context: &'static Context = Box::leak(Context::new(vec![device]));
         let program: &'static Program = Box::leak(Program::new(
             context,
-            vec![Registry::new(MODULES).find("one").expect("reg").clone()],
+            vec![
+                Registry::new(MODULES)
+                    .find("one")
+                    .expect("reg")
+                    .clone(),
+            ],
         ));
-        let mut kernel_box = Kernel::new(program, program.find("one").expect("def"));
-        let kernel: &mut Kernel = &mut kernel_box;
+        let kernel_box = Kernel::new(program, program.find("one").expect("def"));
+        let kernel: &Kernel = &kernel_box;
 
         let four = 7u32;
-        assert!(kernel
-            .set_arg(1, core::mem::size_of::<MemHandle>(), core::ptr::null())
-            .is_err());
-        assert!(kernel.set_arg(2, 4, (&four as *const u32).cast()).is_err());
-        assert!(kernel
-            .set_arg(0, 8, (&four as *const u32).cast())
-            .is_err());
+        assert!(
+            kernel
+                .set_arg(1, core::mem::size_of::<MemHandle>(), core::ptr::null())
+                .is_err()
+        );
+        assert!(
+            kernel
+                .set_arg(2, 4, (&four as *const u32).cast())
+                .is_err()
+        );
+        assert!(
+            kernel
+                .set_arg(0, 8, (&four as *const u32).cast())
+                .is_err()
+        );
         kernel
             .set_arg(0, 4, (&four as *const u32).cast())
             .expect("scalar fits");
         assert!(kernel.marshal().is_err()); // buffer arg still unset
 
         let buffer: &'static Mem =
-            Box::leak(Mem::create(context, sys::MEM_READ_WRITE, 32, core::ptr::null_mut())
-                .expect("alloc"));
+            Box::leak(Mem::create(context, sys::MEM_READ_WRITE, 32, core::ptr::null_mut()).expect("alloc"));
         let buffer_raw = buffer.as_ptr() as usize;
         let handle = MemHandle::from_raw(core::ptr::from_ref(buffer).cast_mut().cast());
         kernel
