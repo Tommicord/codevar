@@ -80,9 +80,10 @@ pub mod sys;
 pub use device::{Device, DeviceInfo, ServiceMode};
 pub use devices::{
     AccelDesc, AccelDevice, AccelHandler, AccelRegs, AccelRing, AmpDevice, AmpRing, SmpDevice,
+    default_accel_handler,
 };
 pub use error::{Error, Result};
-pub use exec::{KernelFn, MAX_ARGS, MAX_PARAMS, WorkItem};
+pub use exec::{KernelFn, MAX_ARGS, MAX_PARAMS, SpirvBinding, WorkItem};
 pub use objects::{Context, Event, Kernel, Mem, Program, Queue};
 pub use platform::{Platform, PlatformConfig, init, platform};
 pub use registry::{ArgKind, KernelDef, KernelModule, Registry};

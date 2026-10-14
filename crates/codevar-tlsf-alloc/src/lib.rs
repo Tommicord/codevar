@@ -46,7 +46,7 @@
 //!   tags with per-block free/prev-free flags, a sentinel header at each
 //!   region end, and no panicking paths in production code.
 //!
-//! ## Usage as the global allocator
+//! ## Example
 //!
 //! ```no_run
 //! use codevar_tlsf_alloc::LockedTlsf;
@@ -75,7 +75,7 @@
 //! |----------------------------------|----------------------------------|
 //! | `allocate` / `deallocate`        | O(1), bounded list hops          |
 //! | in-place `realloc` (grow/shrink) | O(1)                             |
-//! | neighbour coalescing             | O(1) (boundary tags)             |
+//! | neighbor coalescing              | O(1) (boundary tags)             |
 //! | first-level bitmap scan          | 1–2 SIMD words (AVX2/NEON)       |
 //! | control structure                | ~8 KiB, static, no allocations   |
 //!

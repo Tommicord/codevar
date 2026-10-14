@@ -212,7 +212,7 @@ pub struct AccelDesc {
     pub global: [u32; 3],
     /// Local work size per axis.
     pub local: [u32; 3],
-    /// Marshalled argument block of the launch.
+    /// Marshaled argument block of the launch.
     pub args: ArgBlock,
 }
 
@@ -313,7 +313,7 @@ impl Default for AccelRing {
 /// The execution entry of one opcode: what the service side runs for a
 /// descriptor.
 ///
-/// Handlers receive a fully formed [`Launch`] (arguments marshalled,
+/// Handlers receive a fully formed [`Launch`] (arguments marshaled,
 /// sizes validated by the enqueue path) and must complete it before
 /// returning. [`default_accel_handler`] is the generic whole-NDRange
 /// executor; board-specific opcodes may instead program DMA engines or
@@ -505,7 +505,7 @@ impl AccelDevice {
             }
         };
         let _serial = self.submit.lock();
-        // Reserve before publishing — past the publish point no failure is
+        // Reserve before publishing, past the publish point no failure is
         // survivable (the descriptor is already visible to the engine), and
         // the submit lock keeps the reservation from being consumed by a
         // concurrent dispatch.

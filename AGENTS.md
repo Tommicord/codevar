@@ -52,7 +52,6 @@ CI (`.github/workflows/rust.yml`) runs build, test, `cargo fmt --check`, and cli
 ### Style
 
 - Follow `rustfmt` settings in `.rustfmt.toml` (edition 2024).
-- Clippy is enabled with `clippy::all` and `clippy::pedantic` at the crate level.
 - Use `` on hot-path small functions, matching existing code.
 - `unsafe` is allowed at the crate level; document invariants when adding unsafe blocks.
 

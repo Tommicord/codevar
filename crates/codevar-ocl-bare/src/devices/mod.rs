@@ -19,6 +19,6 @@ mod accel;
 mod amp;
 mod smp;
 
-pub use accel::{AccelDesc, AccelDevice, AccelHandler, AccelRegs, AccelRing};
+pub use accel::{AccelDesc, AccelDevice, AccelHandler, AccelRegs, AccelRing, default_accel_handler};
 pub use amp::{AmpDevice, AmpRing};
 pub use smp::SmpDevice;
