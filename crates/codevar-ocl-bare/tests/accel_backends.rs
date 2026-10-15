@@ -31,11 +31,10 @@ use std::borrow::Cow;
 use std::sync::{Once, OnceLock};
 
 use codevar_ocl_bare::api::{
-    clCreateBuffer, clCreateCommandQueue, clCreateContext, clCreateKernel,
-    clCreateProgramWithBuiltInKernels, clEnqueueNDRangeKernel, clEnqueueReadBuffer,
-    clEnqueueWriteBuffer, clFinish, clFlush, clGetDeviceIDs, clGetEventInfo, clGetPlatformIDs,
-    clReleaseCommandQueue, clReleaseContext, clReleaseEvent, clReleaseKernel, clReleaseMemObject,
-    clReleaseProgram, clSetKernelArg,
+    clCreateBuffer, clCreateCommandQueue, clCreateContext, clCreateKernel, clCreateProgramWithBuiltInKernels,
+    clEnqueueNDRangeKernel, clEnqueueReadBuffer, clEnqueueWriteBuffer, clFinish, clFlush, clGetDeviceIDs,
+    clGetEventInfo, clGetPlatformIDs, clReleaseCommandQueue, clReleaseContext, clReleaseEvent,
+    clReleaseKernel, clReleaseMemObject, clReleaseProgram, clSetKernelArg,
 };
 use codevar_ocl_bare::sys::{
     self, CommandQueueHandle, ContextHandle, DeviceHandle, EventHandle, KernelHandle, MemHandle,
@@ -554,10 +553,7 @@ fn both_backends_run_concurrently_without_interference() {
                 sys::SUCCESS
             );
             let mut words = [0u32; 64];
-            assert_eq!(
-                read_buffer(queue, buffer, bytes_mut(&mut words)),
-                sys::SUCCESS
-            );
+            assert_eq!(read_buffer(queue, buffer, bytes_mut(&mut words)), sys::SUCCESS);
             for (index, value) in words.iter().enumerate() {
                 let expected = if index < global { index as u32 } else { 0 };
                 assert_eq!(*value, expected, "amp round {round} index {index}");
@@ -585,10 +581,7 @@ fn both_backends_run_concurrently_without_interference() {
         for round in 0..24usize {
             let global = 8 + round % 48;
             let mut event = EventHandle::from_raw(core::ptr::null_mut());
-            assert_eq!(
-                enqueue_1d(queue, kernel, global, &mut event),
-                sys::SUCCESS
-            );
+            assert_eq!(enqueue_1d(queue, kernel, global, &mut event), sys::SUCCESS);
             // Remote mode: the event stays in flight until the engine
             // (this thread) services the ring and the host reaps.
             assert_eq!(event_status(event), sys::RUNNING);
@@ -599,10 +592,7 @@ fn both_backends_run_concurrently_without_interference() {
             assert_eq!(accel.inflight(), 0);
             assert_eq!(accel.regs().irq_status(), 0);
             let mut words = [0u32; 64];
-            assert_eq!(
-                read_buffer(queue, buffer, bytes_mut(&mut words)),
-                sys::SUCCESS
-            );
+            assert_eq!(read_buffer(queue, buffer, bytes_mut(&mut words)), sys::SUCCESS);
             for (index, value) in words.iter().enumerate() {
                 let expected = if index < global { index as u32 } else { 0 };
                 assert_eq!(*value, expected, "accel round {round} index {index}");

@@ -22,7 +22,13 @@
 use core::ffi::c_void;
 use std::sync::{Once, OnceLock};
 
-use codevar_ocl_bare::api::{clCreateBuffer, clCreateCommandQueue, clCreateContext, clCreateKernel, clCreateProgramWithBinary, clCreateProgramWithBuiltInKernels, clEnqueueNDRangeKernel, clEnqueueReadBuffer, clEnqueueWriteBuffer, clFinish, clGetDeviceIDs, clGetEventInfo, clGetPlatformIDs, clGetProgramInfo, clGetKernelInfo, clGetKernelWorkGroupInfo, clReleaseCommandQueue, clReleaseContext, clReleaseEvent, clReleaseKernel, clReleaseMemObject, clReleaseProgram, clSetKernelArg, clWaitForEvents};
+use codevar_ocl_bare::api::{
+    clCreateBuffer, clCreateCommandQueue, clCreateContext, clCreateKernel, clCreateProgramWithBinary,
+    clCreateProgramWithBuiltInKernels, clEnqueueNDRangeKernel, clEnqueueReadBuffer, clEnqueueWriteBuffer,
+    clFinish, clGetDeviceIDs, clGetEventInfo, clGetKernelInfo, clGetKernelWorkGroupInfo, clGetPlatformIDs,
+    clGetProgramInfo, clReleaseCommandQueue, clReleaseContext, clReleaseEvent, clReleaseKernel,
+    clReleaseMemObject, clReleaseProgram, clSetKernelArg, clWaitForEvents,
+};
 use codevar_ocl_bare::sys::{
     self, CommandQueueHandle, ContextHandle, DeviceHandle, EventHandle, KernelHandle, MemHandle,
     ProgramHandle,
@@ -65,8 +71,7 @@ fn ensure_init() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         // Keep the registry empty: this file only tests the binary path.
-        let smp = codevar_ocl_bare::SmpDevice::new(SMP_INFO.clone(), 1)
-            .expect("smp device");
+        let smp = codevar_ocl_bare::SmpDevice::new(SMP_INFO.clone(), 1).expect("smp device");
         let amp = codevar_ocl_bare::AmpDevice::simulated(AMP_INFO.clone(), ServiceMode::Cooperative)
             .expect("amp device");
         let devices: &'static [&'static dyn Device] =
@@ -101,7 +106,13 @@ fn device_handles() -> [DeviceHandle; 2] {
     );
     let mut devices = [DeviceHandle::from_raw(core::ptr::null_mut()); 2];
     let code = unsafe {
-        clGetDeviceIDs(platform, sys::DEVICE_TYPE_ALL, 2, devices.as_mut_ptr(), &mut count)
+        clGetDeviceIDs(
+            platform,
+            sys::DEVICE_TYPE_ALL,
+            2,
+            devices.as_mut_ptr(),
+            &mut count,
+        )
     };
     assert_eq!(code, sys::SUCCESS);
     assert_eq!(count, 2);
@@ -141,11 +152,7 @@ fn make_buffer(context: ContextHandle, size: usize) -> MemHandle {
     buffer
 }
 
-fn make_program_from_binary(
-    context: ContextHandle,
-    device: DeviceHandle,
-    bytes: &[u8],
-) -> ProgramHandle {
+fn make_program_from_binary(context: ContextHandle, device: DeviceHandle, bytes: &[u8]) -> ProgramHandle {
     let length = bytes.len();
     let pointer = bytes.as_ptr();
     let mut binary_status = sys::SUCCESS;
@@ -190,9 +197,7 @@ fn set_buffer_arg(kernel: KernelHandle, index: u32, buffer: MemHandle) {
 }
 
 fn set_scalar_arg(kernel: KernelHandle, index: u32, value: u32) {
-    let code = unsafe {
-        clSetKernelArg(kernel, index, 4, (&value as *const u32).cast::<c_void>())
-    };
+    let code = unsafe { clSetKernelArg(kernel, index, 4, (&value as *const u32).cast::<c_void>()) };
     assert_eq!(code, sys::SUCCESS);
 }
 
@@ -282,9 +287,7 @@ fn event_status(event: EventHandle) -> i32 {
     i32::from_ne_bytes(word)
 }
 
-fn query_usize(
-    query: impl Fn(usize, *mut c_void, *mut usize) -> i32,
-) -> usize {
+fn query_usize(query: impl Fn(usize, *mut c_void, *mut usize) -> i32) -> usize {
     let mut size = 0usize;
     let code = query(0, core::ptr::null_mut(), &mut size);
     assert_eq!(code, sys::SUCCESS);
@@ -292,12 +295,14 @@ fn query_usize(
     let mut buf = vec![0u8; size];
     let code = query(size, buf.as_mut_ptr().cast(), core::ptr::null_mut());
     assert_eq!(code, sys::SUCCESS);
-    usize::from_ne_bytes(buf[..core::mem::size_of::<usize>()].try_into().expect("one usize"))
+    usize::from_ne_bytes(
+        buf[..core::mem::size_of::<usize>()]
+            .try_into()
+            .expect("one usize"),
+    )
 }
 
-fn query_string(
-    query: impl Fn(usize, *mut c_void, *mut usize) -> i32,
-) -> String {
+fn query_string(query: impl Fn(usize, *mut c_void, *mut usize) -> i32) -> String {
     let mut size = 0usize;
     let code = query(0, core::ptr::null_mut(), &mut size);
     assert_eq!(code, sys::SUCCESS);
@@ -309,9 +314,7 @@ fn query_string(
     text.trim_end_matches('\0').to_string()
 }
 
-fn query_u32(
-    query: impl Fn(usize, *mut c_void, *mut usize) -> i32,
-) -> u32 {
+fn query_u32(query: impl Fn(usize, *mut c_void, *mut usize) -> i32) -> u32 {
     let mut size = 0usize;
     let code = query(0, core::ptr::null_mut(), &mut size);
     assert_eq!(code, sys::SUCCESS);
@@ -376,9 +379,7 @@ fn dialect_binary_produces_a_program_that_executes_end_to_end() {
 
     let kernel = make_kernel(program, "vector_add");
     assert_eq!(
-        query_u32(|size, ptr, ret| unsafe {
-            clGetKernelInfo(kernel, sys::KERNEL_NUM_ARGS, size, ptr, ret)
-        }),
+        query_u32(|size, ptr, ret| unsafe { clGetKernelInfo(kernel, sys::KERNEL_NUM_ARGS, size, ptr, ret) }),
         4
     );
     assert_eq!(
@@ -389,14 +390,7 @@ fn dialect_binary_produces_a_program_that_executes_end_to_end() {
     );
     assert_eq!(
         query_u32(|size, ptr, ret| unsafe {
-            clGetKernelWorkGroupInfo(
-                kernel,
-                devices[0],
-                sys::KERNEL_WORK_GROUP_SIZE,
-                size,
-                ptr,
-                ret,
-            )
+            clGetKernelWorkGroupInfo(kernel, devices[0], sys::KERNEL_WORK_GROUP_SIZE, size, ptr, ret)
         }),
         64
     );
@@ -457,12 +451,7 @@ fn dialect_binary_produces_a_program_that_executes_end_to_end() {
     let mut out2 = vec![0u8; count * 4];
     assert_eq!(read_buffer(queue, buffer_out2, &mut out2), sys::SUCCESS);
     for i in 0..(count / 2) {
-        let word = i32::from_le_bytes([
-            out2[i * 4],
-            out2[i * 4 + 1],
-            out2[i * 4 + 2],
-            out2[i * 4 + 3],
-        ]);
+        let word = i32::from_le_bytes([out2[i * 4], out2[i * 4 + 1], out2[i * 4 + 2], out2[i * 4 + 3]]);
         assert_eq!(word, 3 * (i + 1) as i32, "guarded index {i}");
     }
     for index in (count / 2)..count {
@@ -587,26 +576,14 @@ fn binary_creation_errors_report_exact_codes() {
 
     let mut errcode = sys::SUCCESS;
     let program = unsafe {
-        clCreateProgramWithBuiltInKernels(
-            context,
-            1,
-            &devices[0],
-            b"fill\0".as_ptr().cast(),
-            &mut errcode,
-        )
+        clCreateProgramWithBuiltInKernels(context, 1, &devices[0], b"fill\0".as_ptr().cast(), &mut errcode)
     };
     assert!(program.is_null());
     assert_eq!(errcode, sys::INVALID_KERNEL_NAME);
 
     let mut errcode = sys::SUCCESS;
     let bad_program = unsafe {
-        clCreateProgramWithBuiltInKernels(
-            context,
-            1,
-            &devices[0],
-            b"\0".as_ptr().cast(),
-            &mut errcode,
-        )
+        clCreateProgramWithBuiltInKernels(context, 1, &devices[0], b"\0".as_ptr().cast(), &mut errcode)
     };
     assert!(bad_program.is_null());
     assert_eq!(errcode, sys::INVALID_VALUE);

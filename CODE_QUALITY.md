@@ -173,6 +173,34 @@ unsafe fn read_array<T>(ptr: *const T, size: usize) -> Vec<T> {
 - Ensure proper memory alignment for SIMD operations
 - Profile SIMD code to ensure performance benefits
 
+#### SIMD Code Organization Rules
+
+When adding SIMD-accelerated kernels, follow the dispatch pattern rather than a tier enum:
+
+- **No tier enums or runtime tier ladders.** Do not define a
+  `SimdTier`-style enum, `active_tier()` accessor, or
+  `tier_available()` helper. Capability is queried directly where it
+  is needed.
+- **Detection via `codevar_base::cpuid`.** Runtime capability checks
+  must call `codevar_base::cpuid::has(codevar_base::cpuid::Feature::...)`.
+  Combine the relevant feature bits explicitly at each dispatch site.
+- **Separate implementations per architecture/feature.** Place each
+  kernel in a target-gated submodule named after its architecture or
+  feature (`x86`, `aarch64`, `wasm`, `ssse3`, ...), with functions
+  carrying `#[target_feature(enable = "...")]`. Gate the submodule
+  with `#[cfg(target_arch = "...")]` (and `target_feature` for Wasm).
+- **Dispatch at the API boundary.** Each public entry point
+  (`simd_encode`, `count_utf8_units`, ...) contains a small
+  `#[cfg]`-gated block that probes `cpuid` and calls the chosen
+  kernel, then falls back to the scalar reference when no vector path
+  applies.
+- **Unsafe kernels behind `unsafe`.** Every `#[target_feature]`
+  function is `unsafe` and documents its safety invariants; callers
+  restate the CPUID proof in a `SAFETY` comment.
+- **Scalar reference is mandatory.** Always keep a scalar
+  implementation that is the oracle for tests, and test every vector
+  path against it.
+
 #### Examples
 
 ```rust
@@ -237,55 +265,6 @@ unsafe fn process_avx2(data: &[i32]) -> Vec<i32> {
 - Design algorithms that work efficiently on both CPU and GPU
 - Provide consistent behavior across different backends
 - Implement comprehensive error handling for GPU initialization
-
-## Parallel Algorithm Design
-
-### Mergen Algorithm Guidelines
-
-#### Block-Based Processing
-
-- Process data in fixed-size blocks (8×8 or 16×16 for optimal GPU scheduling)
-- Ensure memory alignment for optimal performance
-- Minimize data dependencies between blocks
-- Use efficient data structures for parallel access
-
-### Conflict Resolution for Parallel Execution
-
-#### Deterministic Results
-
-- Ensure deterministic ordering of operations
-- Use hash-based ordering for consistent results
-- Design conflict resolution strategies that work in parallel
-- Avoid race conditions in shared data structures
-- Implement proper synchronization when needed
-
-## Documentation Standards
-
-### Code Documentation
-
-- **Public APIs must have documentation** (`#![warn(missing_docs)]` is enabled)
-- **Document all unsafe blocks** with safety invariants
-- **Provide examples** for complex algorithms
-- **Document performance characteristics** for public APIs
-- **Include panics/safety sections** where relevant
-
-## Testing Standards
-
-### Unit Testing
-
-- Write focused unit tests for individual functions
-- Test edge cases and error conditions
-- Use property-based testing for data processing algorithms
-- Maintain high test coverage for critical paths
-- Tests should be fast and deterministic
-
-### Integration Testing
-
-- Test interactions between modules
-- Test concurrent execution scenarios
-- Test error propagation across module boundaries
-- Include performance regression tests
-- Test on different platforms when applicable
 
 ## Code Review Standards
 

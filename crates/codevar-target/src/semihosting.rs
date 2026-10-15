@@ -13,7 +13,8 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-//! ARM semihosting: the host console and wall clock of a bare-metal image.
+//! ARM semihosting: the host console, wall clock and exit status of a
+//! bare-metal image.
 //!
 //! Semihosting lets a Cortex-M core use facilities of the machine it is
 //! *running on* — a console, a wall clock, a file system — through a debug
@@ -42,6 +43,13 @@
 //! Availability is cached: at most one probe call is issued over the
 //! program's lifetime.
 //!
+//! # Termination
+//!
+//! [`exit`] hands the image's verdict to the agent as a process status:
+//! `SYS_EXIT` reporting `ADP_Stopped_ApplicationExit` becomes the runner's
+//! status `0` and every other reason its `1`, so a test running on the
+//! target can pass or fail the `cargo run` that launched QEMU.
+//!
 //! # Console handles
 //!
 //! `SYS_WRITE` needs a *handle*, not a file number: the semihosting fd
@@ -60,6 +68,9 @@ mod op {
     pub const SYS_WRITE: u32 = 0x05;
     /// Seconds since 1970-01-01T00:00:00Z, as counted by the host.
     pub const SYS_TIME: u32 = 0x11;
+    /// Report an exception, or that execution has finished
+    /// (`angel_SWIreason_ReportException` in earlier revisions of the spec).
+    pub const SYS_EXIT: u32 = 0x18;
 }
 
 /// `":tt"`, the pseudo-file the spec fixes for the standard streams.
@@ -74,6 +85,15 @@ const MODE_LEN: usize = 1;
 
 /// The `bkpt` immediate that selects semihosting in Thumb state (`0xAB`).
 const BKPT: u32 = 0xAB;
+
+/// `ADP_Stopped_ApplicationExit` — "the application finished normally"
+/// (ARM DUI0471, software reason codes of `SYS_EXIT`).
+const REASON_APPLICATION_EXIT: usize = 0x0020_0026;
+/// `ADP_Stopped_InternalError` — "the image stopped for an unexpected
+/// reason". Every reason other than `ADP_Stopped_ApplicationExit` reaches
+/// an agent as an abnormal stop, which is how a failing test reports the
+/// failure on the 32-bit API.
+const REASON_INTERNAL_ERROR: usize = 0x0020_0024;
 
 /// The channel has not been probed yet.
 const STATE_UNKNOWN: u8 = 0;
@@ -157,6 +177,48 @@ pub fn wall_seconds() -> Option<u64> {
     } else {
         Some(seconds as u64)
     }
+}
+
+/// Terminates the image, reporting `code` as the process status.
+///
+/// `SYS_EXIT` (`angel_SWIreason_ReportException` in earlier revisions of the
+/// spec) is how a target tells the debug agent that execution has finished.
+/// On the 32-bit M-profile API the *parameter register is the reason code
+/// itself* — there is no argument block — and the spec gives a 32-bit caller
+/// no room for an exit status: an agent maps `ADP_Stopped_ApplicationExit`
+/// to status `0` and every other reason to status `1`, which is exactly what
+/// QEMU does. So `code == 0` reports a normal application exit and any other
+/// `code` an abnormal one; carrying the full status would need the v2.0
+/// `SYS_EXIT_EXTENDED` operation, gated on its `SH_EXT_EXIT_EXTENDED`
+/// feature bit.
+///
+/// The status a runner observes is therefore the pass/fail verdict of a test
+/// built on this channel — `cargo run` under QEMU exits `0` for `exit(0)` and
+/// non-zero for anything else.
+///
+/// # Never returns
+///
+/// The agent is expected to stop the emulation or the image. When no agent
+/// is listening (`available()` is `false`), or the agent lets execution
+/// continue instead of terminating, this falls through to [`crate::halt`],
+/// so the core stops in every case; the return register of `SYS_EXIT` is
+/// "corrupted" by the spec, so a returned value carries no information and
+/// is ignored.
+pub fn exit(code: i32) -> ! {
+    if available() {
+        let reason = if code == 0 {
+            REASON_APPLICATION_EXIT
+        } else {
+            REASON_INTERNAL_ERROR
+        };
+        // SAFETY: on this (32-bit) API `SYS_EXIT` takes the reason code as
+        // the whole parameter, not a pointer, so no memory is read or
+        // written; the agent either terminates the image — in which case
+        // nothing below runs — or returns with the registers as it found
+        // them, which the caller treats as a refusal.
+        let _ = unsafe { call(op::SYS_EXIT, reason) };
+    }
+    crate::halt()
 }
 
 /// Writes `bytes` to the agent's console for `stream`.

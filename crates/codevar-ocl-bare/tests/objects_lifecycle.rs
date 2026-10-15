@@ -28,11 +28,11 @@ use std::borrow::Cow;
 use codevar_ocl_bare::api::{
     clBuildProgram, clCreateBuffer, clCreateCommandQueue, clCreateContext, clCreateKernel,
     clCreateProgramWithBuiltInKernels, clCreateProgramWithSource, clEnqueueCopyBuffer, clEnqueueReadBuffer,
-    clEnqueueWriteBuffer, clFinish, clFlush, clGetCommandQueueInfo, clGetContextInfo, clGetDeviceIDs, clGetEventInfo, clGetKernelInfo, clGetKernelWorkGroupInfo, clGetMemObjectInfo,
-    clGetPlatformIDs, clGetProgramBuildInfo, clGetProgramInfo, clReleaseCommandQueue, clReleaseContext,
-    clReleaseEvent, clReleaseKernel, clReleaseMemObject, clReleaseProgram, clRetainCommandQueue,
-    clRetainContext, clRetainEvent, clRetainKernel, clRetainMemObject, clRetainProgram,
-    clWaitForEvents,
+    clEnqueueWriteBuffer, clFinish, clFlush, clGetCommandQueueInfo, clGetContextInfo, clGetDeviceIDs,
+    clGetEventInfo, clGetKernelInfo, clGetKernelWorkGroupInfo, clGetMemObjectInfo, clGetPlatformIDs,
+    clGetProgramBuildInfo, clGetProgramInfo, clReleaseCommandQueue, clReleaseContext, clReleaseEvent,
+    clReleaseKernel, clReleaseMemObject, clReleaseProgram, clRetainCommandQueue, clRetainContext,
+    clRetainEvent, clRetainKernel, clRetainMemObject, clRetainProgram, clWaitForEvents,
 };
 use codevar_ocl_bare::sys::{
     self, CommandQueueHandle, ContextHandle, DeviceHandle, EventHandle, KernelHandle, MemHandle,

@@ -17,54 +17,21 @@
 //!
 //! The engine's hot loops — counting code units, mapping indices to
 //! byte offsets, and the position-weighted integrity checksum — are
-//! written once per instruction-set tier and selected at run time
-//! through [`codevar_base::cpuid`]. Every tier produces bit-identical
-//! results; the tier only changes how fast the answer appears.
-//!
-//! # Tier ladder
-//!
-//! [`SimdTier`] lists the rungs a machine can reach,
-//! [`active_tier`] reports the widest one available here, and each
-//! kernel picks the widest tier *its own instructions* allow:
-//!
-//! | Kernel | Scalar | SSE2 | SSSE3 | SSE4.1 | AVX2 | AVX-512 | AVX-512-IFMA |
-//! |--------|--------|------|-------|--------|------|---------|--------------|
-//! | [`count_utf8_units`] | yes | yes | — | — | yes | yes | — |
-//! | [`linear_checksum`] | yes | — | yes | — | yes | yes | reported |
-//! | index lookups | yes | via count | — | — | via count | via count | — |
-//!
-//! Two rungs are reported but never selected by a kernel, and the
-//! reason is deliberate rather than an omission:
-//!
-//! - **SSE4.1** adds `_mm_mullo_epi32` / `_mm_cvtepu8_epi32`, which
-//!   compute the checksum's `byte × weight` product *slower* than the
-//!   SSSE3 `_mm_maddubs_epi16` pair the SSE tier already uses.
-//! - **AVX-512-IFMA**'s 52-bit multiply-add is the mathematically
-//!   natural fit for the checksum (both operands are far below the
-//!   26-bit limit, and the 52-bit accumulator reduces modulo 2^30
-//!   exactly), but widening eight bytes into each 64-bit lane costs
-//!   about ten times the instructions of the `vpmaddubsw` path that
-//!   every IFMA-capable CPU also has. It stays available as
-//!   [`SimdTier`] metadata so callers can see what the machine
-//!   offers.
+//! implemented once per architecture in dedicated submodules and
+//! selected at run time through [`codevar_base::cpuid`]. Every path
+//! produces bit-identical results; only the speed differs.
 //!
 //! Non-x86 targets (and x86 machines with no vector extensions) run
-//! the scalar kernels, which are the reference every SIMD tier is
+//! the scalar kernels, which are the reference every SIMD path is
 //! tested against.
 //!
 //! # Safety
 //!
 //! Every `#[target_feature]` kernel below is `unsafe` and is only
 //! reached after a run-time CPUID probe proved the feature, with the
-//! proof restated in the `SAFETY` comment at each call site. See
-//! [`active_tier`] for how the probe is memoized.
+//! proof restated in the `SAFETY` comment at each call site.
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use crate::simd::x86::{
-    checksum_avx2, checksum_avx512, checksum_ssse3, count_avx2, count_avx512, count_sse2,
-};
 use alloc::vec::Vec;
-use core::fmt;
 
 /// Number of bytes one SIMD chunk of the UTF-8 scanners owns.
 const UTF8_CHUNK: usize = 64;
@@ -101,95 +68,6 @@ const WEIGHT_ROWS: [[i8; UTF8_CHUNK]; WEIGHT_PERIOD] = {
     rows
 };
 
-/// The instruction-set tier a Wredit build can dispatch to.
-///
-/// Rungs are ordered by capability: [`Scalar`](Self::Scalar) is the
-/// portable baseline and each later variant requires everything the
-/// previous ones do plus more. See the [module documentation][self]
-/// for which rung each kernel actually selects.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(u8)]
-pub enum SimdTier {
-    /// Portable scalar loops; always available.
-    Scalar = 0,
-    /// SSE2: 16-byte byte-mask scans.
-    Sse2 = 1,
-    /// SSSE3: `pmaddubsw` byte×weight products for the checksum.
-    Ssse3 = 2,
-    /// SSE4.1: capability rung, no dedicated kernel (see module docs).
-    Sse41 = 3,
-    /// AVX2: 32-byte scans and 256-bit checksum products.
-    Avx2 = 4,
-    /// AVX-512 (F/BW): 64-byte scans and 512-bit checksum products.
-    Avx512 = 5,
-    /// AVX-512-IFMA: 52-bit multiply-add capability rung.
-    Avx512Ifma = 6,
-}
-
-impl SimdTier {
-    /// Every rung of the ladder, in ascending capability order.
-    pub const ALL: &'static [SimdTier] = &[
-        Self::Scalar,
-        Self::Sse2,
-        Self::Ssse3,
-        Self::Sse41,
-        Self::Avx2,
-        Self::Avx512,
-        Self::Avx512Ifma,
-    ];
-
-    /// Canonical spelling of the tier, matching the `target_feature`
-    /// name where one exists.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Scalar => "scalar",
-            Self::Sse2 => "sse2",
-            Self::Ssse3 => "ssse3",
-            Self::Sse41 => "sse4.1",
-            Self::Avx2 => "avx2",
-            Self::Avx512 => "avx512",
-            Self::Avx512Ifma => "avx512-ifma",
-        }
-    }
-}
-
-impl fmt::Display for SimdTier {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.name())
-    }
-}
-
-/// The widest tier this CPU reports as available.
-///
-/// Combines the compile-time answer (`cfg(target_feature)`) with a
-/// memoized run-time probe: the first call pays for CPUID, later
-/// calls are a single atomic load. The AVX-512-IFMA rung needs the
-/// supplementary leaf-7 bit and is only reported when AVX-512F (and
-/// therefore the OS-enabled ZMM state) is present too.
-///
-/// # Examples
-///
-/// ```
-/// use codevar_wredit::simd::{SimdTier, active_tier};
-///
-/// let tier = active_tier();
-/// assert!(tier >= SimdTier::Scalar);
-/// assert_eq!(SimdTier::ALL.last().copied(), Some(SimdTier::Avx512Ifma));
-/// ```
-#[must_use]
-pub fn active_tier() -> SimdTier {
-    let mut tier = SimdTier::Scalar;
-    for rung in SimdTier::ALL.iter().skip(1) {
-        if tier_available(*rung) {
-            tier = *rung;
-        } else {
-            break;
-        }
-    }
-    tier
-}
-
 /// Counts the UTF-8 code units in `bytes`.
 ///
 /// A code unit starts at every byte that is not a continuation byte
@@ -213,23 +91,25 @@ pub fn active_tier() -> SimdTier {
 pub fn count_utf8_units(bytes: &[u8]) -> u64 {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if tier_available(SimdTier::Avx512) {
-            // SAFETY: `tier_available(Avx512)` proves AVX-512F/BW and
-            // the OS-enabled ZMM state; `count_avx512` only reads
-            // `bytes` in full 64-byte chunks plus one scalar tail.
-            return unsafe { count_avx512(bytes) };
+        use codevar_base::cpuid::{Feature, has};
+
+        if has(Feature::Avx512F) && has(Feature::Avx512Bw) && has(Feature::Avx2) {
+            // SAFETY: the CPUID probes above confirmed AVX-512F/BW (and
+            // the OS-enabled ZMM state) plus AVX2; `x86::count_avx512`
+            // only reads `bytes` in full 64-byte chunks plus one scalar
+            // tail.
+            return unsafe { x86::count_avx512(bytes) };
         }
-        if tier_available(SimdTier::Avx2) {
-            // SAFETY: `tier_available(Avx2)` proves AVX2 (and its
-            // AVX/SSE state enablement); chunking keeps every load
-            // inside `bytes`.
-            return unsafe { count_avx2(bytes) };
+        if has(Feature::Avx2) && has(Feature::Sse41) {
+            // SAFETY: the probes above confirmed AVX2 (and AVX/SSE state
+            // enablement); chunking keeps every load inside `bytes`.
+            return unsafe { x86::count_avx2(bytes) };
         }
-        if tier_available(SimdTier::Sse2) {
-            // SAFETY: `tier_available(Sse2)` proves SSE2, which every
+        if has(Feature::Sse2) {
+            // SAFETY: the probe above confirmed SSE2, which every
             // 64-bit x86 and nearly every 32-bit x86 provides; loads
             // stay inside `bytes`.
-            return unsafe { count_sse2(bytes) };
+            return unsafe { x86::count_sse2(bytes) };
         }
     }
     count_scalar(bytes)
@@ -456,21 +336,23 @@ pub fn utf16_unit_index_to_byte(unit_index: u64) -> Option<usize> {
 pub fn linear_checksum(bytes: &[u8]) -> u32 {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
-        if tier_available(SimdTier::Avx512) {
-            // SAFETY: `tier_available(Avx512)` proves AVX-512F/BW and
+        use codevar_base::cpuid::{Feature, has};
+
+        if has(Feature::Avx512F) && has(Feature::Avx512Bw) && has(Feature::Avx2) {
+            // SAFETY: the probes above confirmed AVX-512F/BW and the
             // ZMM state; the kernel only reads `bytes` and writes to
             // stack-allocated vectors.
-            return unsafe { checksum_avx512(bytes) };
+            return unsafe { x86::checksum_avx512(bytes) };
         }
-        if tier_available(SimdTier::Avx2) {
-            // SAFETY: `tier_available(Avx2)` proves AVX2; loads stay
+        if has(Feature::Avx2) && has(Feature::Sse41) {
+            // SAFETY: the probe above confirmed AVX2; loads stay
             // inside `bytes`.
-            return unsafe { checksum_avx2(bytes) };
+            return unsafe { x86::checksum_avx2(bytes) };
         }
-        if tier_available(SimdTier::Ssse3) {
-            // SAFETY: `tier_available(Ssse3)` proves SSSE3 (and with
-            // it SSE3's `phaddd`); loads stay inside `bytes`.
-            return unsafe { checksum_ssse3(bytes) };
+        if has(Feature::Ssse3) && has(Feature::Sse2) {
+            // SAFETY: the probes above confirmed SSSE3 (and with it
+            // SSE3's `phaddd`); loads stay inside `bytes`.
+            return unsafe { x86::checksum_ssse3(bytes) };
         }
     }
     checksum_scalar(bytes)
@@ -526,68 +408,6 @@ fn count_scalar(bytes: &[u8]) -> u64 {
         }
     }
     count
-}
-
-/// `true` when every rung up to and including `tier` is available.
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn tier_available(tier: SimdTier) -> bool {
-    use codevar_base::cpuid::{Feature, has};
-
-    match tier {
-        SimdTier::Scalar => true,
-        SimdTier::Sse2 => has(Feature::Sse2),
-        SimdTier::Ssse3 => has(Feature::Ssse3) && has(Feature::Sse2),
-        SimdTier::Sse41 => has(Feature::Sse41) && has(Feature::Ssse3),
-        SimdTier::Avx2 => has(Feature::Avx2) && has(Feature::Sse41),
-        SimdTier::Avx512 => has(Feature::Avx512F) && has(Feature::Avx512Bw) && has(Feature::Avx2),
-        // The leaf-7 feature bit only means anything once AVX-512F
-        // (and therefore XGETBV's ZMM enablement) is confirmed, so
-        // the umbrella check comes first.
-        SimdTier::Avx512Ifma => has(Feature::Avx512F) && has(Feature::Avx512Bw) && ifma_bit_set(),
-    }
-}
-
-/// Reads CPUID leaf 7, sub-leaf 0, EBX bit 21 (AVX512-IFMA).
-///
-/// Memoized in a [`spin::Once`] so the leaf is executed at most once
-/// per process; gated on AVX-512F by the caller.
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn ifma_bit_set() -> bool {
-    #[cfg(target_arch = "x86")]
-    use core::arch::x86::__cpuid_count;
-    #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::__cpuid_count;
-    use core::sync::atomic::{AtomicBool, Ordering};
-
-    static DONE: AtomicBool = AtomicBool::new(false);
-    static mut IFMA: bool = false;
-
-    // RelAcquire pairs with the Release in the initializing thread:
-    // once `DONE` reads `true`, `IFMA` has been written.
-    if DONE.load(Ordering::Acquire) {
-        // SAFETY: `IFMA` is only written before `DONE` is set to
-        // `true`, and the atomic load above synchronizes with that
-        // store, so the read below observes a fully initialized
-        // value. The statics are never written again.
-        return unsafe { IFMA };
-    }
-    #[cfg(target_arch = "x86")]
-    let bit = unsafe { __cpuid_count(7, 0) }.ebx & (1 << 21) != 0;
-    #[cfg(target_arch = "x86_64")]
-    let bit = unsafe { __cpuid_count(7, 0) }.ebx & (1 << 21) != 0;
-    // SAFETY: single-writer pattern guarded by `DONE` above; the
-    // value is a plain `bool`.
-    unsafe { IFMA = bit };
-    DONE.store(true, Ordering::Release);
-    bit
-}
-
-/// `true` when `tier` is available on non-x86 targets (only
-/// [`SimdTier::Scalar`]).
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-#[inline]
-const fn tier_available(tier: SimdTier) -> bool {
-    matches!(tier, SimdTier::Scalar)
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -830,32 +650,6 @@ mod tests {
     }
 
     #[test]
-    fn tier_ladder_is_ordered_and_named() {
-        assert_eq!(SimdTier::ALL.first().copied(), Some(SimdTier::Scalar));
-        assert_eq!(SimdTier::Scalar.name(), "scalar");
-        assert_eq!(SimdTier::Avx512Ifma.name(), "avx512-ifma");
-        let tier = active_tier();
-        assert!(SimdTier::ALL.contains(&tier), "unknown active tier");
-        assert_eq!(tier.to_string(), tier.name());
-    }
-
-    #[test]
-    fn active_tier_is_monotonic_with_availability() {
-        // Repeated calls must agree (the probe is memoized).
-        assert_eq!(active_tier(), active_tier());
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        {
-            assert!(tier_available(SimdTier::Scalar));
-            if active_tier() >= SimdTier::Sse2 {
-                assert!(tier_available(SimdTier::Sse2));
-            }
-            if active_tier() >= SimdTier::Avx2 {
-                assert!(tier_available(SimdTier::Avx2));
-            }
-        }
-    }
-
-    #[test]
     fn count_matches_reference_on_random_bytes() {
         for seed in 1..40u32 {
             let bytes = pseudo_random(1 + (seed as usize * 37) % 500, seed);
@@ -954,35 +748,37 @@ mod tests {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     #[test]
     fn simd_tiers_agree_with_scalar() {
+        use codevar_base::cpuid::{Feature, has};
+
         for seed in 1..25u32 {
             let bytes = pseudo_random(1 + (seed as usize * 61) % 800, seed);
-            if tier_available(SimdTier::Sse2) {
-                // SAFETY: `tier_available` proved SSE2.
+            if has(Feature::Sse2) {
+                // SAFETY: `has` proved SSE2.
                 let got = unsafe { x86::count_sse2(&bytes) };
                 assert_eq!(got, count_scalar(&bytes), "sse2 seed {seed}");
             }
-            if tier_available(SimdTier::Avx2) {
-                // SAFETY: `tier_available` proved AVX2.
+            if has(Feature::Avx2) && has(Feature::Sse41) {
+                // SAFETY: `has` proved AVX2.
                 let got = unsafe { x86::count_avx2(&bytes) };
                 assert_eq!(got, count_scalar(&bytes), "avx2 seed {seed}");
             }
-            if tier_available(SimdTier::Avx512) {
-                // SAFETY: `tier_available` proved AVX-512F/BW.
+            if has(Feature::Avx512F) && has(Feature::Avx512Bw) && has(Feature::Avx2) {
+                // SAFETY: `has` proved AVX-512F/BW.
                 let got = unsafe { x86::count_avx512(&bytes) };
                 assert_eq!(got, count_scalar(&bytes), "avx512 seed {seed}");
             }
-            if tier_available(SimdTier::Ssse3) {
-                // SAFETY: `tier_available` proved SSSE3.
+            if has(Feature::Ssse3) && has(Feature::Sse2) {
+                // SAFETY: `has` proved SSSE3.
                 let got = unsafe { x86::checksum_ssse3(&bytes) };
                 assert_eq!(got, checksum_scalar(&bytes), "ssse3 seed {seed}");
             }
-            if tier_available(SimdTier::Avx2) {
-                // SAFETY: `tier_available` proved AVX2.
+            if has(Feature::Avx2) && has(Feature::Sse41) {
+                // SAFETY: `has` proved AVX2.
                 let got = unsafe { x86::checksum_avx2(&bytes) };
                 assert_eq!(got, checksum_scalar(&bytes), "avx2 seed {seed}");
             }
-            if tier_available(SimdTier::Avx512) {
-                // SAFETY: `tier_available` proved AVX-512F/BW.
+            if has(Feature::Avx512F) && has(Feature::Avx512Bw) && has(Feature::Avx2) {
+                // SAFETY: `has` proved AVX-512F/BW.
                 let got = unsafe { x86::checksum_avx512(&bytes) };
                 assert_eq!(got, checksum_scalar(&bytes), "avx512 seed {seed}");
             }
