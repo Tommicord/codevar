@@ -38,9 +38,6 @@ cargo fmt --all
 
 # Lint (must pass in CI; warnings are errors)
 cargo clippy --workspace --all-targets -- -D warnings
-
-# Benchmarks (UTF-8/16/32 encoding)
-cargo bench -p codevar-core
 ```
 
 CI (`.github/workflows/rust.yml`) runs build, test, `cargo fmt --check`, and clippy on every push/PR to `main`.

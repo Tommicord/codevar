@@ -11,6 +11,12 @@ possible integration with AI agents like Claude code in a future
 
 Work in progress, currently in early development stage, not yet available for public use.
 
+## Contributing
+
+Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md)
+and [Code of Conduct](CODE_OF_CONDUCT.md) before getting started. To report a
+security vulnerability, please see our [Security Policy](SECURITY.md).
+
 ## License
 
 This project is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full license text.

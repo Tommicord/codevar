@@ -284,13 +284,6 @@ fn report(operation: &str) {
 #[inline]
 const fn report(_operation: &str) {}
 
-/// `true` where the CPU has the ARMv7-M event instructions.
-#[cfg(all(target_arch = "arm", target_os = "none"))]
-const ARCH_EVENTS: bool = true;
-/// `false` everywhere else (hosted tests, wasm, other architectures).
-#[cfg(not(all(target_arch = "arm", target_os = "none")))]
-const ARCH_EVENTS: bool = false;
-
 /// Spins until `ready` reports completion, sleeping in between.
 ///
 /// The wait primitive of the driver: every protocol point that blocks on

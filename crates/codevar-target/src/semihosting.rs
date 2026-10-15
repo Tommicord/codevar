@@ -88,12 +88,12 @@ const BKPT: u32 = 0xAB;
 
 /// `ADP_Stopped_ApplicationExit` — "the application finished normally"
 /// (ARM DUI0471, software reason codes of `SYS_EXIT`).
-const REASON_APPLICATION_EXIT: usize = 0x0020_0026;
+const REASON_APPLICATION_EXIT: usize = 0x0002_0026;
 /// `ADP_Stopped_InternalError` — "the image stopped for an unexpected
 /// reason". Every reason other than `ADP_Stopped_ApplicationExit` reaches
 /// an agent as an abnormal stop, which is how a failing test reports the
 /// failure on the 32-bit API.
-const REASON_INTERNAL_ERROR: usize = 0x0020_0024;
+const REASON_INTERNAL_ERROR: usize = 0x0002_0024;
 
 /// The channel has not been probed yet.
 const STATE_UNKNOWN: u8 = 0;

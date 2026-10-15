@@ -51,9 +51,9 @@
 extern crate alloc;
 
 use alloc::borrow::Cow;
+use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ffi::c_void;
 
@@ -273,19 +273,14 @@ fn event_status(event: EventHandle) -> Result<i32, String> {
 fn as_bytes(words: &[u32]) -> &[u8] {
     // SAFETY: `u32` has no padding, so the reinterpreted slice addresses
     // the same initialized bytes — `words.len() * 4` of them.
-    unsafe { core::slice::from_raw_parts(words.as_ptr().cast(), words.len() * core::mem::size_of::<u32>()) }
+    unsafe { core::slice::from_raw_parts(words.as_ptr().cast(), core::mem::size_of_val(words)) }
 }
 
 /// The mutable counterpart of [`as_bytes`].
 fn as_bytes_mut(words: &mut [u32]) -> &mut [u8] {
     // SAFETY: as `as_bytes`; the exclusive borrow of `words` lasts exactly
     // as long as the returned window, so no aliasing can arise.
-    unsafe {
-        core::slice::from_raw_parts_mut(
-            words.as_mut_ptr().cast(),
-            words.len() * core::mem::size_of::<u32>(),
-        )
-    }
+    unsafe { core::slice::from_raw_parts_mut(words.as_mut_ptr().cast(), core::mem::size_of_val(words)) }
 }
 
 /// Copies `data` into `buffer` with a blocking write command.
@@ -469,7 +464,7 @@ fn run() -> Result<(), String> {
     // The registry-backed program the image was built with.
     code = sys::SUCCESS;
     let program = unsafe {
-        clCreateProgramWithBuiltInKernels(context, 1, &device, b"fill;scale\0".as_ptr().cast(), &mut code)
+        clCreateProgramWithBuiltInKernels(context, 1, &device, c"fill;scale".as_ptr().cast(), &mut code)
     };
     let program = created!("clCreateProgramWithBuiltInKernels", code, program);
 
@@ -497,7 +492,7 @@ fn run() -> Result<(), String> {
     // inline on this device, so the event must already read CL_COMPLETE
     // once clWaitForEvents returns.
     code = sys::SUCCESS;
-    let fill_kernel = unsafe { clCreateKernel(program, b"fill\0".as_ptr().cast(), &mut code) };
+    let fill_kernel = unsafe { clCreateKernel(program, c"fill".as_ptr().cast(), &mut code) };
     let fill_kernel = created!("clCreateKernel(fill)", code, fill_kernel);
     let declared = query_u32(
         "clGetKernelInfo(KERNEL_NUM_ARGS)",
@@ -523,7 +518,7 @@ fn run() -> Result<(), String> {
     // The buffer-plus-scalar kernel over the same buffer, then the queue's
     // barrier before the last read.
     code = sys::SUCCESS;
-    let scale_kernel = unsafe { clCreateKernel(program, b"scale\0".as_ptr().cast(), &mut code) };
+    let scale_kernel = unsafe { clCreateKernel(program, c"scale".as_ptr().cast(), &mut code) };
     let scale_kernel = created!("clCreateKernel(scale)", code, scale_kernel);
     set_buffer_arg(scale_kernel, 0, buffer)?;
     set_scalar_arg(scale_kernel, 1, FACTOR)?;
@@ -643,6 +638,9 @@ fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
 ///
 /// With `-C panic=abort` no unwinding ever reaches it, so an empty body is
 /// safe; it exists only to satisfy the linker (`DW.ref.rust_eh_personality`
-/// is emitted by the code generation unit that owns the panic path).
+/// is emitted by the code generation unit that owns the panic path). A
+/// hosted build gets the same symbol from `std`, so this is bare metal
+/// only — defining it twice would be a duplicate-symbol link error.
+#[cfg(target_os = "none")]
 #[unsafe(no_mangle)]
 extern "C" fn rust_eh_personality() {}
