@@ -82,7 +82,6 @@ fn font_raster(
                     }
                     e += 1;
                 }
-
                 let mut hit = 0;
                 if even_odd != 0 {
                     if parity != 0 {

@@ -1,0 +1,19 @@
+# Keep the build context small and reproducible: only the Rust sources,
+# manifests, and assets are needed by the Dockerfiles in this repository.
+.git
+.github
+.idea
+.gradle
+build
+dist
+target
+android
+gradle
+gradlew
+gradlew.bat
+build.gradle
+settings.gradle
+gradle.properties
+Dockerfile
+docker-compose.yml
+docker

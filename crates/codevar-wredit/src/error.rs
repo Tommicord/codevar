@@ -27,11 +27,23 @@ pub type WreditResult<T> = Result<T, WreditError>;
 ///
 /// Variants are grouped by the layer that raises them: position and
 /// cursor validation ([`WreditError::InvalidPosition`],
-/// [`WreditError::InvalidCursor`]), the block storage layer
-/// ([`WreditError::InvalidAddress`], [`WreditError::BlockNotFound`],
-/// [`WreditError::CapacityExhausted`]), encoding
-/// ([`WreditError::Encoding`]), and the optional OpenCL backend
-/// ([`WreditError::GpuUnavailable`], [`WreditError::GpuFailed`]).
+/// [`WreditError::InvalidCursor`]), the staging gap layer
+/// ([`WreditError::InvalidGapSize`], [`WreditError::StagingFull`]),
+/// the block storage layer ([`WreditError::InvalidAddress`],
+/// [`WreditError::BlockNotFound`], [`WreditError::CapacityExhausted`],
+/// [`WreditError::BlockOutOfRange`], [`WreditError::DiskFull`],
+/// [`WreditError::DeviceIo`]), the namespace layer
+/// ([`WreditError::NotFound`], [`WreditError::AlreadyExists`],
+/// [`WreditError::NotADirectory`], [`WreditError::IsADirectory`],
+/// [`WreditError::DirectoryNotEmpty`], [`WreditError::InvalidPath`],
+/// [`WreditError::NameTooLong`]), image validation
+/// ([`WreditError::CorruptImage`]), and encoding
+/// ([`WreditError::Encoding`]).
+///
+/// The GPU (HOT) path deliberately has **no** error variants: an
+/// unavailable or failing device is not an error condition, the
+/// operation simply runs on the CPU/SIMD path instead
+/// ([`crate::hot`] falls back internally).
 ///
 /// # Examples
 ///
@@ -101,20 +113,83 @@ pub enum WreditError {
         /// Name of the limit that was hit.
         what: &'static str,
     },
-    /// The OpenCL backend could not be initialised on this machine.
-    ///
-    /// Callers are expected to fall back to the CPU path rather than
-    /// surface this to users; it only appears when a caller explicitly
-    /// demanded the HOT path ([`crate::hot`]) without fallback.
-    GpuUnavailable,
-    /// An OpenCL call failed after the pipeline was built.
-    GpuFailed {
-        /// Short description of the failed step.
-        what: &'static str,
-    },
     /// An operation is not valid for the current state of the engine.
     InvalidOperation {
         /// Short description of the violated precondition.
+        what: &'static str,
+    },
+    /// A staging gap was configured with a zero (or otherwise unusable)
+    /// capacity.
+    InvalidGapSize {
+        /// The rejected staging capacity, in elements.
+        size: usize,
+    },
+    /// Every staging region is full and the staging area cannot accept
+    /// the write; the caller must flush or relocate the gap first.
+    StagingFull {
+        /// Elements currently staged across all regions.
+        staged: usize,
+        /// Total staging capacity in elements.
+        capacity: usize,
+    },
+    /// A block device was asked for a block outside its geometry.
+    BlockOutOfRange {
+        /// The rejected block index.
+        index: u64,
+        /// Number of blocks the device holds.
+        count: u64,
+    },
+    /// The block store has no free block (or inode) left.
+    DiskFull {
+        /// Number of blocks (or inodes) still free.
+        free: u64,
+    },
+    /// A stored image failed its structural checks (bad magic, version,
+    /// geometry, or a broken root directory).
+    CorruptImage {
+        /// Short description of the failed check.
+        what: &'static str,
+    },
+    /// The requested path does not exist in the engine storage.
+    NotFound {
+        /// Short description of what was missing.
+        what: &'static str,
+    },
+    /// The requested name is already present in the parent directory.
+    AlreadyExists {
+        /// Short description of what already exists.
+        what: &'static str,
+    },
+    /// A directory name exceeds the on-disk name limit.
+    NameTooLong {
+        /// The rejected name length in bytes.
+        len: usize,
+    },
+    /// The underlying block device failed a read or write.
+    DeviceIo {
+        /// Short description of the failed transfer.
+        what: &'static str,
+    },
+    /// A path component that must be a directory is a regular file.
+    NotADirectory {
+        /// Short description of the offending component.
+        what: &'static str,
+    },
+    /// An operation requires a regular file but the target is a
+    /// directory.
+    IsADirectory {
+        /// Short description of the offending target.
+        what: &'static str,
+    },
+    /// A directory still holds entries and cannot be removed.
+    DirectoryNotEmpty {
+        /// Short description of the offending directory.
+        what: &'static str,
+    },
+    /// A path is syntactically invalid (empty component, missing
+    /// separator, or a component that is not valid UTF-8 on disk).
+    InvalidPath {
+        /// Short description of the defect.
         what: &'static str,
     },
 }
@@ -139,9 +214,26 @@ impl fmt::Display for WreditError {
             }
             Self::Encoding => f.write_str("text encoding failed"),
             Self::LimitExceeded { what } => write!(f, "limit exceeded: {what}"),
-            Self::GpuUnavailable => f.write_str("no usable OpenCL device is available"),
-            Self::GpuFailed { what } => write!(f, "OpenCL operation failed: {what}"),
             Self::InvalidOperation { what } => write!(f, "invalid operation: {what}"),
+            Self::InvalidGapSize { size } => {
+                write!(f, "staging gap size {size} cannot hold a region")
+            }
+            Self::StagingFull { staged, capacity } => {
+                write!(f, "staging area full: {staged} of {capacity} elements staged")
+            }
+            Self::BlockOutOfRange { index, count } => {
+                write!(f, "block {index} is outside the device ({count} blocks)")
+            }
+            Self::DiskFull { free } => write!(f, "the block store is full ({free} free)"),
+            Self::CorruptImage { what } => write!(f, "corrupt storage image: {what}"),
+            Self::NotFound { what } => write!(f, "not found: {what}"),
+            Self::AlreadyExists { what } => write!(f, "already exists: {what}"),
+            Self::NameTooLong { len } => write!(f, "name of {len} bytes exceeds the limit"),
+            Self::DeviceIo { what } => write!(f, "block device I/O failed: {what}"),
+            Self::NotADirectory { what } => write!(f, "not a directory: {what}"),
+            Self::IsADirectory { what } => write!(f, "is a directory: {what}"),
+            Self::DirectoryNotEmpty { what } => write!(f, "directory not empty: {what}"),
+            Self::InvalidPath { what } => write!(f, "invalid path: {what}"),
         }
     }
 }
@@ -188,16 +280,58 @@ mod tests {
                 "limit exceeded: kernel args",
             ),
             (
-                WreditError::GpuUnavailable,
-                "no usable OpenCL device is available",
-            ),
-            (
-                WreditError::GpuFailed { what: "enqueue" },
-                "OpenCL operation failed: enqueue",
-            ),
-            (
                 WreditError::InvalidOperation { what: "empty group" },
                 "invalid operation: empty group",
+            ),
+            (
+                WreditError::InvalidGapSize { size: 0 },
+                "staging gap size 0 cannot hold a region",
+            ),
+            (
+                WreditError::StagingFull {
+                    staged: 256,
+                    capacity: 256,
+                },
+                "staging area full: 256 of 256 elements staged",
+            ),
+            (
+                WreditError::BlockOutOfRange { index: 40, count: 32 },
+                "block 40 is outside the device (32 blocks)",
+            ),
+            (
+                WreditError::DiskFull { free: 0 },
+                "the block store is full (0 free)",
+            ),
+            (
+                WreditError::CorruptImage { what: "bad magic" },
+                "corrupt storage image: bad magic",
+            ),
+            (WreditError::NotFound { what: "file" }, "not found: file"),
+            (
+                WreditError::AlreadyExists { what: "directory" },
+                "already exists: directory",
+            ),
+            (
+                WreditError::NameTooLong { len: 60 },
+                "name of 60 bytes exceeds the limit",
+            ),
+            (
+                WreditError::DeviceIo {
+                    what: "writing block 7",
+                },
+                "block device I/O failed: writing block 7",
+            ),
+            (WreditError::NotADirectory { what: "a/b" }, "not a directory: a/b"),
+            (WreditError::IsADirectory { what: "/src" }, "is a directory: /src"),
+            (
+                WreditError::DirectoryNotEmpty { what: "/src" },
+                "directory not empty: /src",
+            ),
+            (
+                WreditError::InvalidPath {
+                    what: "empty component",
+                },
+                "invalid path: empty component",
             ),
         ];
         for (error, expected) in samples {

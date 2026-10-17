@@ -17,6 +17,9 @@
 extern crate alloc;
 
 pub mod change;
+pub mod cursor_allocator;
 pub mod error;
-pub mod hot;
 pub mod simd;
+pub mod staging_gap;
+pub mod edit;
+pub mod storage;
