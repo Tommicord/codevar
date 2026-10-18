@@ -23,7 +23,7 @@
 use crate::error::{DbusError, DbusResult};
 
 /// Maximum length of bus names, interfaces and members.
-pub const MAX_NAME_LEN: usize = 255;
+pub const MAX_NAME_LEN: usize = 0x100;
 
 fn is_name_char(byte: u8, allow_hyphen: bool) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || (allow_hyphen && byte == b'-')

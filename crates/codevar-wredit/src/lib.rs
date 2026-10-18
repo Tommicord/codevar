@@ -16,10 +16,15 @@
 #![cfg_attr(not(test), no_std)]
 extern crate alloc;
 
+pub mod arch;
 pub mod change;
+mod codebook;
+pub mod compress;
 pub mod cursor_allocator;
+pub mod edit;
 pub mod error;
+pub mod gpu;
+pub mod hot;
 pub mod simd;
 pub mod staging_gap;
-pub mod edit;
 pub mod storage;

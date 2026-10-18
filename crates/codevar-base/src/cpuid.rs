@@ -398,6 +398,10 @@ define_features! {
         "AVX-512 IFMA — 52-bit fused multiply-add (x86)",
         aliases ["avx512ifma", "avx512_ifma"];
 
+    avx512vbmi2 => Avx512Vbmi2 = 1 << 47, cfg!(target_feature = "avx512vbmi2"),
+        "AVX-512 VBMI2 — byte/word compress and expand (x86)",
+        aliases ["avx512vbmi2", "avx512_vbmi2", "vbmi2"];
+
     // Umbrella feature: requires F + BW + DQ + VL (the usual AVX-512
     // baseline for portable kernels).
     avx512 => Avx512 = Feature::Avx512F.mask() | Feature::Avx512Bw.mask()
@@ -767,6 +771,9 @@ mod x86 {
                 if r.bit_ebx(21) && os_zmm {
                     features.insert(Feature::Avx512Ifma);
                 }
+                if r.bit_ecx(6) && os_zmm {
+                    features.insert(Feature::Avx512Vbmi2);
+                }
                 if r.bit_ebx(18) {
                     features.insert(Feature::Rdseed);
                 }
@@ -1109,10 +1116,7 @@ mod tests {
     fn avx512ifma_is_recognized_and_has_a_unique_bit() {
         assert_eq!(Feature::from_name("avx512ifma"), Some(Feature::Avx512Ifma));
         assert_eq!(Feature::from_name("avx512_ifma"), Some(Feature::Avx512Ifma));
-        assert_eq!(
-            cpu_feature!("avx512ifma"),
-            has(Feature::Avx512Ifma)
-        );
+        assert_eq!(cpu_feature!("avx512ifma"), has(Feature::Avx512Ifma));
         // Its bit must not collide with any other feature's bit (the
         // `Avx512` umbrella is a union of constituent bits, so skip it).
         let mine = Feature::Avx512Ifma.mask();
@@ -1120,11 +1124,7 @@ mod tests {
             if *other == Feature::Avx512Ifma || *other == Feature::Avx512 {
                 continue;
             }
-            assert_eq!(
-                mine & other.mask(),
-                0,
-                "avx512ifma bit collides with {other:?}"
-            );
+            assert_eq!(mine & other.mask(), 0, "avx512ifma bit collides with {other:?}");
         }
     }
 

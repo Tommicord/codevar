@@ -43,6 +43,7 @@ members = [
     "crates/codevar-ocl-asm",
     "crates/codevar-ocl",
     "crates/codevar-ocl-bare",
+    "crates/codevar-inssched",
 ]
 resolver = "2"
 
@@ -161,6 +162,7 @@ codevar-ocl-asm = { path = "crates/codevar-ocl-asm" }
 codevar-ocl-cubin = { path = "crates/codevar-ocl-cubin" }
 codevar-ocl-bare = { path = "crates/codevar-ocl-bare" }
 codevar-ocl = { path = "crates/codevar-ocl" }
+codevar-inssched = { path = "crates/codevar-inssched" }
 
 [profile.dev]
 opt-level = 0

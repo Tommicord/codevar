@@ -145,8 +145,7 @@ impl<'a, D: BlockDevice, const STAGING: usize> WritableFile<'a, D, STAGING> {
         while written < buf.len() {
             let space = STAGING - self.stage_len;
             let take = (buf.len() - written).min(space);
-            self.stage[self.stage_len..self.stage_len + take]
-                .copy_from_slice(&buf[written..written + take]);
+            self.stage[self.stage_len..self.stage_len + take].copy_from_slice(&buf[written..written + take]);
             self.stage_len += take;
             self.position = self.position.saturating_add(take as u64);
             written += take;
@@ -175,7 +174,8 @@ impl<'a, D: BlockDevice, const STAGING: usize> WritableFile<'a, D, STAGING> {
         let size = u64::from(self.fs.read_inode(self.inode)?.size);
         let available = size.saturating_sub(self.position) as usize;
         let want = buf.len().min(available);
-        self.fs.read_at(self.inode, self.position, &mut buf[..want])?;
+        self.fs
+            .read_at(self.inode, self.position, &mut buf[..want])?;
         self.position = self.position.saturating_add(want as u64);
         Ok(want)
     }
@@ -209,7 +209,8 @@ impl<'a, D: BlockDevice, const STAGING: usize> WritableFile<'a, D, STAGING> {
             return Ok(());
         }
         let start = self.position.saturating_sub(len as u64);
-        self.fs.write_at(self.inode, start, &self.stage[..len])?;
+        self.fs
+            .write_at(self.inode, start, &self.stage[..len])?;
         self.stage[..len].fill(0);
         self.stage_len = 0;
         Ok(())

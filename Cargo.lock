@@ -210,6 +210,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-inssched"
+version = "1.0.0"
+
+[[package]]
 name = "codevar-io"
 version = "1.0.0"
 dependencies = [
@@ -642,6 +646,7 @@ dependencies = [
 name = "codevar-wredit"
 version = "1.0.0"
 dependencies = [
+ "cc",
  "codevar-base",
  "codevar-logger",
  "codevar-ocl",

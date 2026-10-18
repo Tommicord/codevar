@@ -46,6 +46,8 @@
 //! this module allocates on the heap. Path resolution uses a fixed
 //! stack buffer for the parent-directory stack.
 
+use alloc::vec::Vec;
+
 use crate::error::{WreditError, WreditResult};
 
 use super::bitmap::Bitmap;
@@ -58,13 +60,31 @@ const SUPER_MAGIC: u32 = 0xEF53;
 const INODE_SIZE: usize = 0x80;
 
 /// Direct block pointers per inode.
-const DIRECT_COUNT: usize = 0x1B;
-
-/// Max name length in a directory entry (bytes).
-const NAME_MAX: usize = 0x100;
+///
+/// The serialized pointers sit between [`DIRECT_OFFSET`] and
+/// [`INDIRECT_OFFSET`], so the count is fixed by the layout: a larger
+/// value would overlap the indirect pointer, the timestamps, and the
+/// name-pool fields.
+const DIRECT_COUNT: usize = (INDIRECT_OFFSET - DIRECT_OFFSET) / 4;
 
 /// Directory entry fixed size, in bytes.
 const DIRENT_SIZE: usize = 0x20;
+
+/// Offset of the 32-bit name hash inside a directory entry.
+const DIRENT_HASH_OFFSET: usize = 0x08;
+
+/// Size of the name hash inside a directory entry, in bytes.
+const DIRENT_HASH_SIZE: usize = 0x04;
+
+/// Offset of the name bytes inside a directory entry.
+const DIRENT_NAME_OFFSET: usize = DIRENT_HASH_OFFSET + DIRENT_HASH_SIZE;
+
+/// Max name length in a directory entry (bytes).
+///
+/// The name shares the fixed [`DIRENT_SIZE`] record with the metadata
+/// and the [`DIRENT_HASH_SIZE`]-byte name hash, so the longest storable
+/// name is everything after [`DIRENT_NAME_OFFSET`].
+const NAME_MAX: usize = DIRENT_SIZE - DIRENT_NAME_OFFSET;
 
 /// Inodes per block.
 const INODES_PER_BLOCK: usize = BLOCK_SIZE / INODE_SIZE; // 32
@@ -76,7 +96,36 @@ const DIRENTS_PER_BLOCK: usize = BLOCK_SIZE / DIRENT_SIZE; // 128
 const INDIRECT_PTRS: usize = BLOCK_SIZE / 4; // 1024
 
 /// Maximum directory nesting tracked for `..` resolution.
-const DEPTH_MAX: usize = 64;
+const DEPTH_MAX: usize = 0x40;
+
+/// Longest directory name the volume accepts, in bytes.
+///
+/// Longer than [`NAME_MAX`]: an over-long name is not stored in the
+/// directory entry but interned in the name pool, and the entry keeps
+/// only its hash.
+const MAX_NAME_LEN: usize = 0xFF;
+
+/// Bytes at the start of a name-pool block: the `next` pointer plus the
+/// field where the next record is appended.
+const POOL_BLOCK_HEADER: usize = 6;
+
+/// `next` block in the pool chain, at the start of each pool block.
+const POOL_NEXT_OFFSET: usize = 0;
+
+/// Append cursor (byte offset of the next record) in a pool block.
+const POOL_USED_OFFSET: usize = 4;
+
+/// Header size of one pooled-name record, in bytes.
+const POOL_RECORD_HEADER: usize = 9;
+
+/// Field offsets of a pooled-name record.
+const POOL_ORIG_LEN_OFFSET: usize = 0;
+const POOL_STORED_LEN_OFFSET: usize = 2;
+const POOL_HASH_OFFSET: usize = 4;
+const POOL_FLAGS_OFFSET: usize = 8;
+
+/// The record's bytes are codec-compressed rather than verbatim.
+const POOL_FLAG_COMPRESSED: u8 = 0x01;
 
 /// File type encoded in a directory entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,6 +152,10 @@ pub struct SuperBlock {
     pub first_free_block: u32,
     pub first_free_inode: u32,
     pub state: u32,
+    /// First block of the name pool, or 0 when it is empty.
+    pub name_head: u32,
+    /// Last block of the name pool, where new records are appended.
+    pub name_tail: u32,
 }
 
 impl SuperBlock {
@@ -117,6 +170,8 @@ impl SuperBlock {
     const FFB_OFFSET: usize = 0x20;
     const FFI_OFFSET: usize = 0x24;
     const STATE_OFFSET: usize = 0x28;
+    const NAME_HEAD_OFFSET: usize = 0x2C;
+    const NAME_TAIL_OFFSET: usize = 0x30;
 
     /// Serializes the superblock to one block of bytes.
     #[must_use]
@@ -133,6 +188,8 @@ impl SuperBlock {
         out[Self::FFB_OFFSET..][..4].copy_from_slice(&self.first_free_block.to_le_bytes());
         out[Self::FFI_OFFSET..][..4].copy_from_slice(&self.first_free_inode.to_le_bytes());
         out[Self::STATE_OFFSET..][..4].copy_from_slice(&self.state.to_le_bytes());
+        out[Self::NAME_HEAD_OFFSET..][..4].copy_from_slice(&self.name_head.to_le_bytes());
+        out[Self::NAME_TAIL_OFFSET..][..4].copy_from_slice(&self.name_tail.to_le_bytes());
         out
     }
 
@@ -164,6 +221,8 @@ impl SuperBlock {
             first_free_block: read_u32(bytes, Self::FFB_OFFSET),
             first_free_inode: read_u32(bytes, Self::FFI_OFFSET),
             state: read_u32(bytes, Self::STATE_OFFSET),
+            name_head: read_u32(bytes, Self::NAME_HEAD_OFFSET),
+            name_tail: read_u32(bytes, Self::NAME_TAIL_OFFSET),
         })
     }
 }
@@ -175,6 +234,12 @@ fn read_u32(bytes: &[u8], offset: usize) -> u32 {
 
 /// An inode: file metadata plus block pointers, stored in the inode
 /// table. Serialized little-endian to [`INODE_SIZE`] bytes.
+///
+/// A directory entry whose name does not fit the fixed dirent field
+/// keeps only a hash; the full name lives in the volume's **name
+/// pool** and this inode holds its location ([`Self::name_block`],
+/// [`Self::name_off`]) and length ([`Self::name_len`]). Inline names
+/// leave all three zero.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Inode {
     pub mode: u16,
@@ -185,6 +250,12 @@ pub struct Inode {
     pub atime: u32,
     pub mtime: u32,
     pub ctime: u32,
+    /// Name-pool block holding this inode's (pooled) name, or 0.
+    pub name_block: u32,
+    /// Byte offset of the record inside [`Self::name_block`].
+    pub name_off: u16,
+    /// Original byte length of the pooled name, or 0.
+    pub name_len: u16,
 }
 
 const MODE_OFFSET: usize = 0x00;
@@ -195,6 +266,9 @@ const INDIRECT_OFFSET: usize = 0x36;
 const ATIME_OFFSET: usize = 0x3A;
 const MTIME_OFFSET: usize = 0x3E;
 const CTIME_OFFSET: usize = 0x42;
+const NAME_BLOCK_OFFSET: usize = 0x46;
+const NAME_OFF_OFFSET: usize = 0x4A;
+const NAME_LEN_OFFSET: usize = 0x4C;
 
 impl Inode {
     /// `true` when this inode represents a directory.
@@ -229,6 +303,9 @@ impl Inode {
             atime: 0,
             mtime: 0,
             ctime: 0,
+            name_block: 0,
+            name_off: 0,
+            name_len: 0,
         }
     }
 
@@ -247,6 +324,9 @@ impl Inode {
         out[ATIME_OFFSET..][..4].copy_from_slice(&self.atime.to_le_bytes());
         out[MTIME_OFFSET..][..4].copy_from_slice(&self.mtime.to_le_bytes());
         out[CTIME_OFFSET..][..4].copy_from_slice(&self.ctime.to_le_bytes());
+        out[NAME_BLOCK_OFFSET..][..4].copy_from_slice(&self.name_block.to_le_bytes());
+        out[NAME_OFF_OFFSET..][..2].copy_from_slice(&self.name_off.to_le_bytes());
+        out[NAME_LEN_OFFSET..][..2].copy_from_slice(&self.name_len.to_le_bytes());
         out
     }
 
@@ -267,6 +347,9 @@ impl Inode {
             atime: read_u32(bytes, ATIME_OFFSET),
             mtime: read_u32(bytes, MTIME_OFFSET),
             ctime: read_u32(bytes, CTIME_OFFSET),
+            name_block: read_u32(bytes, NAME_BLOCK_OFFSET),
+            name_off: read_u16(bytes, NAME_OFF_OFFSET),
+            name_len: read_u16(bytes, NAME_LEN_OFFSET),
         }
     }
 }
@@ -276,13 +359,97 @@ fn read_u16(bytes: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes(bytes[offset..][..2].try_into().unwrap_or([0; 2]))
 }
 
+/// Validates the pooled-name record at `offset` and returns its fields.
+///
+/// Yields `(original length, flags, stored bytes)`; every field is
+/// bounds-checked so a corrupt pool block is reported as
+/// [`WreditError::CorruptImage`] instead of panicking.
+fn pool_record(block: &[u8], offset: usize) -> WreditResult<(usize, u8, &[u8])> {
+    let header_end = offset
+        .checked_add(POOL_RECORD_HEADER)
+        .ok_or(WreditError::CorruptImage {
+            what: "name pool record",
+        })?;
+    if header_end > block.len() {
+        return Err(WreditError::CorruptImage {
+            what: "name pool record header",
+        });
+    }
+    let orig_len = usize::from(read_u16(block, offset + POOL_ORIG_LEN_OFFSET));
+    let stored_len = usize::from(read_u16(block, offset + POOL_STORED_LEN_OFFSET));
+    let flags = block[offset + POOL_FLAGS_OFFSET];
+    let end = header_end
+        .checked_add(stored_len)
+        .ok_or(WreditError::CorruptImage {
+            what: "name pool record",
+        })?;
+    let stored = block
+        .get(header_end..end)
+        .ok_or(WreditError::CorruptImage {
+            what: "name pool record bytes",
+        })?;
+    Ok((orig_len, flags, stored))
+}
+
+/// Whether the pooled record at `offset` decodes to exactly `name`.
+fn pool_record_eq(block: &[u8], offset: usize, name: &[u8]) -> WreditResult<bool> {
+    let (orig_len, flags, stored) = pool_record(block, offset)?;
+    if orig_len != name.len() {
+        return Ok(false);
+    }
+    if flags & POOL_FLAG_COMPRESSED != 0 {
+        Ok(crate::compress::decompress(stored).as_deref() == Some(name))
+    } else {
+        Ok(stored == name)
+    }
+}
+
+/// Writes a pooled-name record for `name` at `offset`, storing `stored`
+/// (the codec's output when `compressed`, otherwise the name verbatim).
+fn write_pool_record(
+    block: &mut [u8],
+    offset: usize,
+    name: &[u8],
+    stored: &[u8],
+    compressed: bool,
+) -> WreditResult<()> {
+    let total = POOL_RECORD_HEADER
+        .checked_add(stored.len())
+        .ok_or(WreditError::LimitExceeded {
+            what: "name pool record",
+        })?;
+    if offset
+        .checked_add(total)
+        .is_none_or(|end| end > block.len())
+    {
+        return Err(WreditError::LimitExceeded {
+            what: "name pool record",
+        });
+    }
+    block[offset + POOL_ORIG_LEN_OFFSET..][..2].copy_from_slice(&(name.len() as u16).to_le_bytes());
+    block[offset + POOL_STORED_LEN_OFFSET..][..2].copy_from_slice(&(stored.len() as u16).to_le_bytes());
+    block[offset + POOL_HASH_OFFSET..][..4].copy_from_slice(&crate::simd::hash_bytes(name).to_le_bytes());
+    block[offset + POOL_FLAGS_OFFSET] = if compressed { POOL_FLAG_COMPRESSED } else { 0 };
+    block[offset + POOL_RECORD_HEADER..][..stored.len()].copy_from_slice(stored);
+    Ok(())
+}
+
 /// One directory entry: fixed [`DIRENT_SIZE`] bytes.
+///
+/// The record layout is
+/// `inode(4) | rec_len(2) | name_len(1) | file_type(1) | name_hash(4) | name(20)`,
+/// so the 32-bit [`hash_bytes`](crate::simd::hash_bytes) fingerprint of
+/// the name sits right beside it. A lookup compares the stored hash
+/// first, which rejects a non-matching entry without touching the name
+/// bytes; the full byte comparison still runs on a hash hit so a
+/// collision can never return the wrong inode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DirEntry {
     pub inode: u32,
     pub rec_len: u16,
     pub name_len: u8,
     pub file_type: u8,
+    pub name_hash: u32,
     pub name: [u8; NAME_MAX],
 }
 
@@ -295,8 +462,27 @@ impl DirEntry {
             rec_len: DIRENT_SIZE as u16,
             name_len: 0,
             file_type: FileType::Unknown as u8,
+            name_hash: 0,
             name: [0; NAME_MAX],
         }
+    }
+
+    /// Stores `name` and its hash in this entry.
+    ///
+    /// The name bytes are copied into the fixed field and the 32-bit
+    /// fingerprint is cached in [`Self::name_hash`], so
+    /// [`DiskFs::find_dirent`] can reject most entries with one
+    /// comparison. Returns `false` when `name` is longer than
+    /// [`NAME_MAX`], leaving the entry untouched.
+    pub fn set_name(&mut self, name: &[u8]) -> bool {
+        if name.len() > NAME_MAX {
+            return false;
+        }
+        self.name = [0; NAME_MAX];
+        self.name[..name.len()].copy_from_slice(name);
+        self.name_len = name.len() as u8;
+        self.name_hash = crate::simd::hash_bytes(name);
+        true
     }
 
     /// Serializes this entry to [`DIRENT_SIZE`] bytes.
@@ -307,7 +493,8 @@ impl DirEntry {
         out[4..][..2].copy_from_slice(&self.rec_len.to_le_bytes());
         out[6] = self.name_len;
         out[7] = self.file_type;
-        out[8..][..NAME_MAX].copy_from_slice(&self.name);
+        out[DIRENT_HASH_OFFSET..][..DIRENT_HASH_SIZE].copy_from_slice(&self.name_hash.to_le_bytes());
+        out[DIRENT_NAME_OFFSET..][..NAME_MAX].copy_from_slice(&self.name);
         out
     }
 
@@ -319,16 +506,50 @@ impl DirEntry {
             rec_len: read_u16(bytes, 4),
             name_len: bytes[6],
             file_type: bytes[7],
-            name: bytes[8..][..NAME_MAX]
+            name_hash: read_u32(bytes, DIRENT_HASH_OFFSET),
+            name: bytes[DIRENT_NAME_OFFSET..][..NAME_MAX]
                 .try_into()
                 .unwrap_or([0; NAME_MAX]),
         }
     }
 
-    /// The name as a `&str`, if it is valid UTF-8.
+    /// `true` when the name lives in the volume name pool rather than
+    /// in this entry.
+    ///
+    /// A live entry always names a non-empty file, so `name_len == 0`
+    /// with a real inode unambiguously marks a pooled name; the length
+    /// check also rejects an unused record.
+    #[must_use]
+    pub const fn is_pooled(&self) -> bool {
+        self.inode != 0 && self.name_len == 0
+    }
+
+    /// The inline name as a `&str`, if it is valid UTF-8.
+    ///
+    /// Returns [`None`] for a pooled entry (its name is not inline) and
+    /// when the stored bytes are not UTF-8.
     #[must_use]
     pub fn name_str(&self) -> Option<&str> {
-        core::str::from_utf8(&self.name[..self.name_len as usize]).ok()
+        let len = self.name_len as usize;
+        if len == 0 || len > NAME_MAX {
+            return None;
+        }
+        core::str::from_utf8(&self.name[..len]).ok()
+    }
+
+    /// Whether this entry holds exactly `name` *inline*.
+    ///
+    /// The cached [`Self::name_hash`] is compared first; the byte
+    /// comparison that follows is what makes the answer exact. Pooled
+    /// entries always report `false` — the storage layer resolves those
+    /// through the name pool.
+    #[must_use]
+    pub fn matches(&self, name: &[u8]) -> bool {
+        !name.is_empty()
+            && name.len() <= NAME_MAX
+            && self.name_len as usize == name.len()
+            && self.name_hash == crate::simd::hash_bytes(name)
+            && self.name[..name.len()] == *name
     }
 }
 
@@ -429,6 +650,8 @@ impl<D: BlockDevice> DiskFs<D> {
             first_free_block: (root_block as u32) + 1,
             first_free_inode: 3, // inode 2 is root
             state: 1,            // clean
+            name_head: 0,
+            name_tail: 0,
         };
 
         // Root directory inode.
@@ -455,16 +678,14 @@ impl<D: BlockDevice> DiskFs<D> {
         let mut dot = DirEntry::unused();
         dot.inode = 2;
         dot.rec_len = DIRENT_SIZE as u16;
-        dot.name_len = 1;
         dot.file_type = FileType::Directory as u8;
-        dot.name[0] = b'.';
+        // "." and ".." are one and two bytes, always inside `NAME_MAX`.
+        dot.set_name(b".");
         let mut dotdot = DirEntry::unused();
         dotdot.inode = 2;
         dotdot.rec_len = DIRENT_SIZE as u16;
-        dotdot.name_len = 2;
         dotdot.file_type = FileType::Directory as u8;
-        dotdot.name[0] = b'.';
-        dotdot.name[1] = b'.';
+        dotdot.set_name(b"..");
         dir_block[0..DIRENT_SIZE].copy_from_slice(&dot.to_bytes());
         dir_block[DIRENT_SIZE..2 * DIRENT_SIZE].copy_from_slice(&dotdot.to_bytes());
         fs.device.write_block(root_block, &dir_block)?;
@@ -799,11 +1020,17 @@ impl<D: BlockDevice> DiskFs<D> {
             });
         }
         let name_bytes = name.as_bytes();
-        if name_bytes.len() > NAME_MAX {
+        if name_bytes.len() > MAX_NAME_LEN {
             return Err(WreditError::NameTooLong {
                 len: name_bytes.len(),
             });
         }
+        if name_bytes.is_empty() {
+            return Err(WreditError::NotFound {
+                what: "directory entry",
+            });
+        }
+        let wanted_hash = crate::simd::hash_bytes(name_bytes);
         let mut block_buf = [0u8; BLOCK_SIZE];
         let blocks = (ino.size as usize).div_ceil(BLOCK_SIZE);
         for b in 0..blocks {
@@ -816,12 +1043,10 @@ impl<D: BlockDevice> DiskFs<D> {
                 .read_block(block.into(), &mut block_buf)?;
             for e in 0..DIRENTS_PER_BLOCK {
                 let entry = DirEntry::from_bytes(&block_buf[e * DIRENT_SIZE..][..DIRENT_SIZE]);
-                if entry.inode == 0 {
+                if entry.inode == 0 || entry.name_hash != wanted_hash {
                     continue;
                 }
-                if entry.name_len as usize == name_bytes.len()
-                    && entry.name[..name_bytes.len()] == name_bytes[..]
-                {
+                if self.entry_name_matches(&entry, name_bytes)? {
                     return Ok(entry.inode);
                 }
             }
@@ -875,6 +1100,130 @@ impl<D: BlockDevice> DiskFs<D> {
         Ok(())
     }
 
+    /// Searches the name pool for a record already holding `name`.
+    fn find_pool_record(&self, name: &[u8], wanted_hash: u32) -> WreditResult<Option<(u32, u16)>> {
+        let mut block = self.sb.name_head;
+        let mut block_buf = [0u8; BLOCK_SIZE];
+        while block != 0 {
+            self.device
+                .read_block(u64::from(block), &mut block_buf)?;
+            let used = usize::from(read_u16(&block_buf, POOL_USED_OFFSET)).min(BLOCK_SIZE);
+            let mut offset = POOL_BLOCK_HEADER;
+            while offset + POOL_RECORD_HEADER <= used {
+                let orig_len = usize::from(read_u16(&block_buf, offset + POOL_ORIG_LEN_OFFSET));
+                if orig_len == 0 {
+                    break;
+                }
+                let stored_len = usize::from(read_u16(&block_buf, offset + POOL_STORED_LEN_OFFSET));
+                if orig_len == name.len()
+                    && read_u32(&block_buf, offset + POOL_HASH_OFFSET) == wanted_hash
+                    && pool_record_eq(&block_buf, offset, name)?
+                {
+                    return Ok(Some((block, offset as u16)));
+                }
+                offset += POOL_RECORD_HEADER + stored_len;
+            }
+            block = read_u32(&block_buf, POOL_NEXT_OFFSET);
+        }
+        Ok(None)
+    }
+
+    /// Reconstructs the pooled name recorded at `(block, off)`.
+    fn read_pool_name(&self, block: u32, off: u16) -> WreditResult<Vec<u8>> {
+        let mut block_buf = [0u8; BLOCK_SIZE];
+        self.device
+            .read_block(u64::from(block), &mut block_buf)?;
+        let offset = usize::from(off);
+        let (orig_len, flags, stored) = pool_record(&block_buf, offset)?;
+        let name = if flags & POOL_FLAG_COMPRESSED != 0 {
+            crate::compress::decompress(stored).ok_or(WreditError::CorruptImage {
+                what: "compressed name",
+            })?
+        } else {
+            stored.to_vec()
+        };
+        if name.len() != orig_len {
+            return Err(WreditError::CorruptImage {
+                what: "name length mismatch",
+            });
+        }
+        Ok(name)
+    }
+
+    /// Interns `name` in the volume name pool and returns its location.
+    ///
+    /// The name is stored codec-compressed when that is smaller than the
+    /// raw bytes, and an equal name already present is reused, so the
+    /// pool holds one record per distinct long name.
+    fn intern_name(&mut self, name: &[u8]) -> WreditResult<(u32, u16)> {
+        let packed = crate::compress::compress(name);
+        let compressed = packed.len() < name.len();
+        let stored: Vec<u8> = if compressed { packed } else { name.to_vec() };
+        let wanted_hash = crate::simd::hash_bytes(name);
+        let total = POOL_RECORD_HEADER + stored.len();
+
+        if let Some(location) = self.find_pool_record(name, wanted_hash)? {
+            return Ok(location);
+        }
+
+        let mut block_buf = [0u8; BLOCK_SIZE];
+        let tail = self.sb.name_tail;
+        if tail != 0 {
+            self.device
+                .read_block(u64::from(tail), &mut block_buf)?;
+            let used = usize::from(read_u16(&block_buf, POOL_USED_OFFSET));
+            if used
+                .checked_add(total)
+                .is_some_and(|end| end <= BLOCK_SIZE)
+            {
+                write_pool_record(&mut block_buf, used, name, &stored, compressed)?;
+                let new_used = used + total;
+                block_buf[POOL_USED_OFFSET..][..2].copy_from_slice(&(new_used as u16).to_le_bytes());
+                self.device
+                    .write_block(u64::from(tail), &block_buf)?;
+                return Ok((tail, used as u16));
+            }
+        }
+
+        // The current tail block is full (or there is none): start a new
+        // one and link it into the chain.
+        let block = self.alloc_block()?;
+        if tail != 0 {
+            block_buf[POOL_NEXT_OFFSET..][..4].copy_from_slice(&block.to_le_bytes());
+            self.device
+                .write_block(u64::from(tail), &block_buf)?;
+        }
+        block_buf = [0u8; BLOCK_SIZE];
+        write_pool_record(&mut block_buf, POOL_BLOCK_HEADER, name, &stored, compressed)?;
+        block_buf[POOL_USED_OFFSET..][..2]
+            .copy_from_slice(&((POOL_BLOCK_HEADER + total) as u16).to_le_bytes());
+        self.device
+            .write_block(u64::from(block), &block_buf)?;
+        self.sb.name_tail = block;
+        if self.sb.name_head == 0 {
+            self.sb.name_head = block;
+        }
+        self.sb_dirty = true;
+        Ok((block, POOL_BLOCK_HEADER as u16))
+    }
+
+    /// Whether `entry` names exactly `name`, resolving pooled names.
+    fn entry_name_matches(&self, entry: &DirEntry, name: &[u8]) -> WreditResult<bool> {
+        if !entry.is_pooled() {
+            return Ok(name.len() <= NAME_MAX
+                && entry.name_len as usize == name.len()
+                && entry.name[..name.len()] == *name);
+        }
+        let ino = self.read_inode(entry.inode)?;
+        if ino.name_block == 0 {
+            return Ok(false);
+        }
+        Ok(self
+            .read_pool_name(ino.name_block, ino.name_off)?
+            .as_slice()
+            == name)
+    }
+
     /// Appends a directory entry `name -> inode` to `parent`.
     fn add_dirent(&mut self, parent: u32, name: &str, inode: u32, file_type: FileType) -> WreditResult<()> {
         let mut ino = self.read_inode(parent)?;
@@ -884,7 +1233,10 @@ impl<D: BlockDevice> DiskFs<D> {
             });
         }
         let name_bytes = name.as_bytes();
-        if name_bytes.len() > NAME_MAX {
+        if name_bytes.is_empty() {
+            return Err(WreditError::InvalidOperation { what: "empty name" });
+        }
+        if name_bytes.len() > MAX_NAME_LEN {
             return Err(WreditError::NameTooLong {
                 len: name_bytes.len(),
             });
@@ -932,9 +1284,26 @@ impl<D: BlockDevice> DiskFs<D> {
         let mut entry = DirEntry::unused();
         entry.inode = inode;
         entry.rec_len = DIRENT_SIZE as u16;
-        entry.name_len = name_bytes.len() as u8;
         entry.file_type = file_type as u8;
-        entry.name[..name_bytes.len()].copy_from_slice(name_bytes);
+        if name_bytes.len() <= NAME_MAX {
+            // Short enough to live inside the entry.
+            if !entry.set_name(name_bytes) {
+                return Err(WreditError::NameTooLong {
+                    len: name_bytes.len(),
+                });
+            }
+        } else {
+            // Too long for the fixed field: intern the full name in the
+            // volume name pool and record its location on the inode. The
+            // entry keeps only the hash, and `name_len == 0` marks it.
+            let (pool_block, pool_off) = self.intern_name(name_bytes)?;
+            entry.name_hash = crate::simd::hash_bytes(name_bytes);
+            let mut target = self.read_inode(inode)?;
+            target.name_block = pool_block;
+            target.name_off = pool_off;
+            target.name_len = name_bytes.len() as u16;
+            self.write_inode(inode, &target)?;
+        }
         block_buf[entry_index * DIRENT_SIZE..][..DIRENT_SIZE].copy_from_slice(&entry.to_bytes());
         self.device
             .write_block(block.into(), &block_buf)?;
@@ -1000,6 +1369,9 @@ impl<D: BlockDevice> DiskFs<D> {
     /// Creates `name` inside `parent` with `mode`, returning its new
     /// inode.
     pub fn create(&mut self, parent: u32, name: &str, mode: u16) -> WreditResult<u32> {
+        if name.is_empty() {
+            return Err(WreditError::InvalidOperation { what: "empty name" });
+        }
         // Reject names that already exist.
         if self.find_dirent(parent, name).is_ok() {
             return Err(WreditError::AlreadyExists { what: "name" });
@@ -1031,6 +1403,7 @@ impl<D: BlockDevice> DiskFs<D> {
         let target = self.find_dirent(parent, name)?;
         let ino = self.read_inode(parent)?;
         let name_bytes = name.as_bytes();
+        let wanted_hash = crate::simd::hash_bytes(name_bytes);
         let mut block_buf = [0u8; BLOCK_SIZE];
         let blocks = (ino.size as usize).div_ceil(BLOCK_SIZE);
         for b in 0..blocks {
@@ -1045,8 +1418,8 @@ impl<D: BlockDevice> DiskFs<D> {
                 let off = e * DIRENT_SIZE;
                 let entry = DirEntry::from_bytes(&block_buf[off..][..DIRENT_SIZE]);
                 if entry.inode == target
-                    && entry.name_len as usize == name_bytes.len()
-                    && entry.name[..name_bytes.len()] == name_bytes[..]
+                    && entry.name_hash == wanted_hash
+                    && self.entry_name_matches(&entry, name_bytes)?
                 {
                     let mut blank = DirEntry::unused();
                     blank.rec_len = DIRENT_SIZE as u16;
@@ -1085,12 +1458,11 @@ impl<D: BlockDevice> Drop for DiskFs<D> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BLOCK_SIZE, DiskFs, NAME_MAX};
+    use super::{
+        BLOCK_SIZE, DiskFs, MAX_NAME_LEN, NAME_MAX, POOL_BLOCK_HEADER, POOL_RECORD_HEADER, POOL_USED_OFFSET,
+    };
     use crate::error::WreditError;
-    use crate::storage::block::MemoryDisk;
-
-    /// Justification: `unwrap` in tests is permitted by the project
-    /// lint configuration (`allow-unwrap-in-tests`).
+    use crate::storage::block::{BlockDevice, MemoryDisk};
 
     #[test]
     fn format_and_round_trip_a_file() {
@@ -1149,6 +1521,31 @@ mod tests {
     }
 
     #[test]
+    fn writing_across_the_direct_boundary_round_trips() {
+        let disk = MemoryDisk::new(512).unwrap();
+        let mut fs = DiskFs::format(disk, 512, 128).unwrap();
+        let inode = fs.create(2, "many.bin", 0x8000).unwrap();
+        // More blocks than there are direct pointers, so the tail needs
+        // the indirect block and every direct pointer must survive the
+        // inode serialization.
+        let data_len = 40 * BLOCK_SIZE;
+        let mut data = alloc::vec![0u8; data_len];
+        for (index, byte) in data.iter_mut().enumerate() {
+            *byte = (index % 251) as u8;
+        }
+        assert_eq!(fs.write_at(inode, 0, &data).unwrap(), data_len);
+        let mut read_back = alloc::vec![0u8; data_len];
+        assert_eq!(fs.read_at(inode, 0, &mut read_back).unwrap(), data_len);
+        assert_eq!(read_back, data);
+        // Block writes must not alias the inode's metadata fields.
+        let stored = fs.read_inode(inode).unwrap();
+        assert!(stored.is_regular());
+        assert_eq!(stored.name_block, 0);
+        assert_eq!(stored.name_off, 0);
+        assert_eq!(stored.name_len, 0);
+    }
+
+    #[test]
     fn reopening_an_image_preserves_data() {
         let disk = MemoryDisk::new(256).unwrap();
         let mut fs = DiskFs::format(disk, 256, 128).unwrap();
@@ -1175,14 +1572,146 @@ mod tests {
         ));
     }
 
+    /// Reads the name-pool head block and returns its append cursor:
+    /// how many bytes of records it holds.
+    fn pool_head_used(fs: &DiskFs<MemoryDisk>) -> usize {
+        let mut buf = [0u8; BLOCK_SIZE];
+        fs.device
+            .read_block(u64::from(fs.sb.name_head), &mut buf)
+            .unwrap();
+        usize::from(u16::from_le_bytes(
+            buf[POOL_USED_OFFSET..][..2]
+                .try_into()
+                .unwrap_or([0; 2]),
+        ))
+    }
+
     #[test]
-    fn name_too_long_is_rejected() {
+    fn names_up_to_max_len_are_held_in_the_pool() {
         let disk = MemoryDisk::new(256).unwrap();
         let mut fs = DiskFs::format(disk, 256, 128).unwrap();
-        let long = "a".repeat(NAME_MAX + 1);
+        let dir = fs.mkdir(2, "long").unwrap();
+        for len in [NAME_MAX + 1, 64, MAX_NAME_LEN] {
+            let name = "abcdefghij".repeat(len / 10 + 1);
+            let name = &name[..len];
+            // Over-long names never fit the entry, so they must be
+            // interned and marked on the inode.
+            assert!(name.len() > NAME_MAX);
+            let inode = fs.create(dir, name, 0x8000).unwrap();
+            assert!(fs.read_inode(inode).unwrap().name_block != 0);
+            assert_eq!(fs.lookup(name, dir).unwrap(), inode, "len {len}");
+            fs.unlink(dir, name).unwrap();
+            assert!(matches!(fs.lookup(name, dir), Err(WreditError::NotFound { .. })));
+        }
+    }
+
+    #[test]
+    fn names_beyond_max_len_are_rejected() {
+        let disk = MemoryDisk::new(256).unwrap();
+        let mut fs = DiskFs::format(disk, 256, 128).unwrap();
+        let too_long = "a".repeat(MAX_NAME_LEN + 1);
         assert!(matches!(
-            fs.create(2, &long, 0x8000),
+            fs.create(2, &too_long, 0x8000),
             Err(WreditError::NameTooLong { .. })
         ));
+        assert!(matches!(
+            fs.lookup(&too_long, 2),
+            Err(WreditError::NameTooLong { .. })
+        ));
+        assert!(matches!(
+            fs.create(2, "", 0x8000),
+            Err(WreditError::InvalidOperation { .. })
+        ));
+    }
+
+    #[test]
+    fn interned_long_names_share_one_pool_record() {
+        let disk = MemoryDisk::new(256).unwrap();
+        let mut fs = DiskFs::format(disk, 256, 128).unwrap();
+        let a = fs.mkdir(2, "a").unwrap();
+        let b = fs.mkdir(2, "b").unwrap();
+        let name = "x".repeat(NAME_MAX + 20);
+        let ino_a = fs.create(a, &name, 0x8000).unwrap();
+        let ino_b = fs.create(b, &name, 0x8000).unwrap();
+        assert_ne!(ino_a, ino_b);
+        // Interning points both entries at the same record.
+        let rec_a = fs.read_inode(ino_a).unwrap();
+        let rec_b = fs.read_inode(ino_b).unwrap();
+        assert_eq!(rec_a.name_block, rec_b.name_block);
+        assert_eq!(rec_a.name_off, rec_b.name_off);
+        // ...and the pool holds exactly one record, not two.
+        let used = pool_head_used(&fs);
+        assert!(used <= POOL_BLOCK_HEADER + POOL_RECORD_HEADER + name.len());
+        assert_eq!(fs.lookup(&name, a).unwrap(), ino_a);
+        assert_eq!(fs.lookup(&name, b).unwrap(), ino_b);
+    }
+
+    #[test]
+    fn reopening_preserves_pooled_names() {
+        let disk = MemoryDisk::new(256).unwrap();
+        let mut fs = DiskFs::format(disk, 256, 128).unwrap();
+        let dir = fs.mkdir(2, "deep").unwrap();
+        let name = "segment_".repeat(20);
+        assert!(name.len() > NAME_MAX);
+        let inode = fs.create(dir, &name, 0x8000).unwrap();
+        assert_eq!(fs.write_at(inode, 0, b"payload").unwrap(), 7);
+        let disk = fs.into_device();
+        let mut fs2 = DiskFs::open(disk).unwrap();
+        assert_eq!(fs2.lookup(&name, dir).unwrap(), inode);
+        let mut buf = [0u8; 7];
+        assert_eq!(fs2.read_at(inode, 0, &mut buf).unwrap(), 7);
+        assert_eq!(&buf, b"payload");
+    }
+
+    #[test]
+    fn pooled_and_inline_names_coexist() {
+        let disk = MemoryDisk::new(256).unwrap();
+        let mut fs = DiskFs::format(disk, 256, 128).unwrap();
+        fs.create(2, "short.rs", 0x8000).unwrap();
+        let long = "l".repeat(NAME_MAX + 5);
+        fs.create(2, &long, 0x8000).unwrap();
+        assert!(fs.lookup("short.rs", 2).is_ok());
+        assert!(fs.lookup(&long, 2).is_ok());
+        fs.unlink(2, &long).unwrap();
+        // Removing the pooled entry leaves its inline sibling alone.
+        assert!(fs.lookup("short.rs", 2).is_ok());
+        assert!(matches!(fs.lookup(&long, 2), Err(WreditError::NotFound { .. })));
+    }
+
+    #[test]
+    fn dirent_stores_the_name_hash_and_round_trips() {
+        use super::{DIRENT_HASH_OFFSET, DIRENT_NAME_OFFSET, DIRENT_SIZE, DirEntry, FileType};
+
+        let mut entry = DirEntry::unused();
+        entry.inode = 7;
+        entry.file_type = FileType::Regular as u8;
+        assert!(entry.set_name(b"main.rs"));
+
+        let bytes = entry.to_bytes();
+        assert_eq!(bytes.len(), DIRENT_SIZE);
+        // The layout puts the 32-bit hash before the name bytes so a
+        // lookup can reject a non-match without reading the name.
+        let stored = u32::from_le_bytes(
+            bytes[DIRENT_HASH_OFFSET..][..4]
+                .try_into()
+                .unwrap_or([0; 4]),
+        );
+        assert_eq!(stored, crate::simd::hash_bytes(b"main.rs"));
+        assert_eq!(&bytes[DIRENT_NAME_OFFSET..DIRENT_NAME_OFFSET + 7], b"main.rs");
+        let restored = DirEntry::from_bytes(&bytes);
+        assert_eq!(restored, entry);
+        assert_eq!(restored.name_str(), Some("main.rs"));
+        assert!(restored.matches(b"main.rs"));
+        // Same length, different bytes: the hash check must reject it.
+        assert!(!restored.matches(b"main.k"));
+        // Different length: rejected without hashing.
+        assert!(!restored.matches(b"main.rss"));
+
+        // A name one byte past `NAME_MAX` is refused and changes nothing.
+        let long = [b'a'; NAME_MAX + 1];
+        let before = restored;
+        let mut edited = restored;
+        assert!(!edited.set_name(&long));
+        assert_eq!(edited, before);
     }
 }

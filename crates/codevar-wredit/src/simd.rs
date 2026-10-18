@@ -358,6 +358,297 @@ pub fn linear_checksum(bytes: &[u8]) -> u32 {
     checksum_scalar(bytes)
 }
 
+/// Counts how many times the byte `needle` appears in `bytes`.
+///
+/// The engine uses this for the cheap, byte-oriented statistics of the
+/// hot paths: line feeds and tabs while resolving line/column, and the
+/// separator scans of the directory-name hashing. Every vector tier is
+/// required to agree with [`count_byte_scalar`] bit for bit.
+///
+/// # Examples
+///
+/// ```
+/// use codevar_wredit::simd::count_byte;
+///
+/// assert_eq!(count_byte(b"a\nb\nc", b'\n'), 2);
+/// assert_eq!(count_byte(b"", b'\n'), 0);
+/// ```
+#[must_use]
+pub fn count_byte(bytes: &[u8], needle: u8) -> u64 {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        use codevar_base::cpuid::{Feature, has};
+
+        if has(Feature::Avx512F) && has(Feature::Avx512Bw) && has(Feature::Avx2) {
+            // SAFETY: AVX-512F/BW and the OS-enabled ZMM state were
+            // confirmed; the kernel reads only `bytes`.
+            return unsafe { x86::count_byte_avx512(bytes, needle) };
+        }
+        if has(Feature::Avx2) && has(Feature::Sse41) {
+            // SAFETY: AVX2 was confirmed; loads stay inside `bytes`.
+            return unsafe { x86::count_byte_avx2(bytes, needle) };
+        }
+        if has(Feature::Sse2) {
+            // SAFETY: SSE2 was confirmed; loads stay inside `bytes`.
+            return unsafe { x86::count_byte_sse2(bytes, needle) };
+        }
+    }
+    count_byte_scalar(bytes, needle)
+}
+
+/// Reference implementation of [`count_byte`].
+///
+/// # Examples
+///
+/// ```
+/// use codevar_wredit::simd::count_byte_scalar;
+///
+/// assert_eq!(count_byte_scalar(b"aaba", b'a'), 3);
+/// ```
+#[must_use]
+pub fn count_byte_scalar(bytes: &[u8], needle: u8) -> u64 {
+    bytes
+        .iter()
+        .filter(|&&byte| byte == needle)
+        .count() as u64
+}
+
+/// Index of the first occurrence of `needle` in `bytes`.
+///
+/// # Examples
+///
+/// ```
+/// use codevar_wredit::simd::find_byte;
+///
+/// assert_eq!(find_byte(b"hello", b'l'), Some(2));
+/// assert_eq!(find_byte(b"hello", b'z'), None);
+/// ```
+#[must_use]
+pub fn find_byte(bytes: &[u8], needle: u8) -> Option<usize> {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        use codevar_base::cpuid::{Feature, has};
+
+        if has(Feature::Avx512F) && has(Feature::Avx512Bw) && has(Feature::Avx2) {
+            // SAFETY: AVX-512F/BW were confirmed; the kernel reads
+            // only `bytes`.
+            return unsafe { x86::find_byte_avx512(bytes, needle) };
+        }
+        if has(Feature::Avx2) && has(Feature::Sse41) {
+            // SAFETY: AVX2 was confirmed; loads stay inside `bytes`.
+            return unsafe { x86::find_byte_avx2(bytes, needle) };
+        }
+        if has(Feature::Sse41) {
+            // SAFETY: SSE4.1 was confirmed (its `ptest` skips blocks
+            // that cannot hold the needle).
+            return unsafe { x86::find_byte_sse41(bytes, needle) };
+        }
+    }
+    find_byte_scalar(bytes, needle)
+}
+
+/// Reference implementation of [`find_byte`].
+///
+/// # Examples
+///
+/// ```
+/// use codevar_wredit::simd::find_byte_scalar;
+///
+/// assert_eq!(find_byte_scalar(b"ab", b'b'), Some(1));
+/// ```
+#[must_use]
+pub fn find_byte_scalar(bytes: &[u8], needle: u8) -> Option<usize> {
+    bytes.iter().position(|&byte| byte == needle)
+}
+
+/// Returns `bytes` with every occurrence of `value` removed.
+///
+/// This is the engine's byte-compaction primitive: dropping the gap
+/// bytes of a serialized buffer, stripping padding before hashing, and
+/// squeezing the separators out of a directory name. The AVX-512
+/// VBMI2 tier uses the hardware `vpcompressb` instructions (the
+/// `_mm512_maskz_compress_epi8` / `_mm256_maskz_compress_epi8`
+/// family); the SSSE3 tier emulates the same compaction with a
+/// 256-entry shuffle LUT, and the scalar tier is the reference.
+///
+/// # Examples
+///
+/// ```
+/// use codevar_wredit::simd::filter_byte;
+///
+/// assert_eq!(filter_byte(b"a_b_c", b'_'), b"abc");
+/// assert_eq!(filter_byte(b"____", b'_'), b"");
+/// ```
+#[must_use]
+pub fn filter_byte(bytes: &[u8], value: u8) -> Vec<u8> {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        use codevar_base::cpuid::{Feature, has};
+
+        if has(Feature::Avx512F) && has(Feature::Avx512Bw) && has(Feature::Avx512Vbmi2) {
+            // SAFETY: AVX-512F/BW/VBMI2 were confirmed; the kernel
+            // reads only `bytes` and appends to a fresh `Vec`.
+            return unsafe { x86::filter_byte_avx512(bytes, value) };
+        }
+        if has(Feature::Avx512Vl) && has(Feature::Avx512Vbmi2) {
+            // SAFETY: AVX-512VL and VBMI2 were confirmed, enabling the
+            // 256-bit `vpcompressb` form.
+            return unsafe { x86::filter_byte_avx512vl(bytes, value) };
+        }
+        if has(Feature::Ssse3) {
+            // SAFETY: SSSE3 was confirmed; the kernel only shuffles
+            // registers and appends to a fresh `Vec`.
+            return unsafe { x86::filter_byte_ssse3(bytes, value) };
+        }
+    }
+    filter_byte_scalar(bytes, value)
+}
+
+/// Reference implementation of [`filter_byte`].
+///
+/// # Examples
+///
+/// ```
+/// use codevar_wredit::simd::filter_byte_scalar;
+///
+/// assert_eq!(filter_byte_scalar(b"a-a-a", b'-'), b"aaa");
+/// ```
+#[must_use]
+pub fn filter_byte_scalar(bytes: &[u8], value: u8) -> Vec<u8> {
+    bytes
+        .iter()
+        .copied()
+        .filter(|&byte| byte != value)
+        .collect()
+}
+
+/// Modulus of the polynomial name hash: `2^52`, the width of an
+/// AVX-512 IFMA multiply-add.
+const HASH_MASK: u64 = (1u64 << 52) - 1;
+
+/// Multiplier of the polynomial name hash (the FNV-1a 64-bit prime,
+/// reduced mod `2^52` at use).
+const HASH_PRIME: u64 = 0x1_0000_01B3;
+
+/// Polynomial hash of `bytes`, folded to 32 bits.
+///
+/// The byte stream is read as little-endian 64-bit words (the final
+/// word zero-padded) and folded with `h = (h * P + word) mod 2^52`.
+/// `2^52` is exactly the width of one AVX-512 IFMA multiply-add, so the
+/// acceleration ([`x86::hash_bytes_ifma`]) computes the same value with
+/// `_mm512_madd52lo_epu64` while the scalar path is the reference.
+///
+/// The result is what the directory-name layer stores in each entry:
+/// comparing the 32-bit hash first rejects a non-match without touching
+/// the name bytes.
+///
+/// # Examples
+///
+/// ```
+/// use codevar_wredit::simd::{hash_bytes, hash_bytes_scalar};
+///
+/// assert_eq!(hash_bytes(b""), hash_bytes(b""));
+/// assert_ne!(hash_bytes(b"src"), hash_bytes(b"lib"));
+/// assert_eq!(hash_bytes(b"main.rs"), hash_bytes_scalar(b"main.rs"));
+/// ```
+#[must_use]
+pub fn hash_bytes(bytes: &[u8]) -> u32 {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        use codevar_base::cpuid::{Feature, has};
+
+        if has(Feature::Avx512F) && has(Feature::Avx512Ifma) {
+            // SAFETY: AVX-512F and IFMA were confirmed; the kernel
+            // reads only `bytes`.
+            return unsafe { x86::hash_bytes_ifma(bytes) };
+        }
+    }
+    hash_bytes_scalar(bytes)
+}
+
+/// The full 52-bit state behind [`hash_bytes`], as a `u64` fingerprint.
+///
+/// [`hash_bytes`] folds this state down to 32 bits; this wider form
+/// keeps all of it, so the directory-name layer can reject non-matches
+/// with four more bytes of discrimination when it can afford them. Both
+/// widths come from the same recurrence, so a 32-bit match is implied
+/// by a 64-bit match (they can never disagree about equality).
+///
+/// # Examples
+///
+/// ```
+/// use codevar_wredit::simd::hash_bytes_wide;
+///
+/// assert_eq!(hash_bytes_wide(b"src"), hash_bytes_wide(b"src"));
+/// assert_ne!(hash_bytes_wide(b"src"), hash_bytes_wide(b"lib"));
+/// ```
+#[must_use]
+pub fn hash_bytes_wide(bytes: &[u8]) -> u64 {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        use codevar_base::cpuid::{Feature, has};
+
+        if has(Feature::Avx512F) && has(Feature::Avx512Ifma) {
+            // SAFETY: AVX-512F and IFMA were confirmed; the kernel
+            // reads only `bytes`.
+            return unsafe { x86::hash_state_ifma(bytes) };
+        }
+    }
+    hash_state(0, bytes)
+}
+
+/// Reference implementation of [`hash_bytes`].
+///
+/// # Examples
+///
+/// ```
+/// use codevar_wredit::simd::hash_bytes_scalar;
+///
+/// assert_eq!(hash_bytes_scalar(b"abc"), hash_bytes_scalar(b"abc"));
+/// ```
+#[must_use]
+pub fn hash_bytes_scalar(bytes: &[u8]) -> u32 {
+    let hash = hash_state(0, bytes);
+    let folded = hash ^ (hash >> 32);
+    folded as u32
+}
+
+/// Continues the [`hash_bytes`] recurrence from a running `hash`.
+///
+/// `bytes` is consumed as little-endian 64-bit words (the final word
+/// zero-padded); the returned state is still reduced modulo `2^52`.
+/// The SIMD tiers call this for their trailing bytes after folding
+/// whole blocks, and [`hash_bytes_scalar`] starts it from zero.
+#[inline]
+fn hash_state(mut hash: u64, bytes: &[u8]) -> u64 {
+    let mut chunks = bytes.chunks_exact(8);
+    for chunk in &mut chunks {
+        hash = hash_step(hash, word_of(chunk));
+    }
+    let tail = chunks.remainder();
+    if !tail.is_empty() {
+        hash = hash_step(hash, word_of(tail));
+    }
+    hash
+}
+
+/// One Horner step of the name hash, reduced mod `2^52`.
+#[inline]
+fn hash_step(hash: u64, word: u64) -> u64 {
+    let product = (u128::from(hash) * u128::from(HASH_PRIME)) & u128::from(HASH_MASK);
+    ((product as u64) + word) & HASH_MASK
+}
+
+/// Reads up to eight bytes of `chunk` as a little-endian, zero-padded
+/// word, reduced mod `2^52`.
+#[inline]
+fn word_of(chunk: &[u8]) -> u64 {
+    let mut buffer = [0u8; 8];
+    let take = chunk.len().min(8);
+    buffer[..take].copy_from_slice(&chunk[..take]);
+    u64::from_le_bytes(buffer) & HASH_MASK
+}
+
 /// Reference implementation of [`linear_checksum`].
 ///
 /// Every SIMD tier is tested against this loop; it also runs on
@@ -412,11 +703,83 @@ fn count_scalar(bytes: &[u8]) -> u64 {
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 mod x86 {
-    use super::{CHECKSUM_MASK, UTF8_CHUNK, WEIGHT_PERIOD, WEIGHT_ROWS, checksum_scalar_at, count_scalar};
+    use alloc::vec::Vec;
+
+    use super::{
+        CHECKSUM_MASK, HASH_MASK, UTF8_CHUNK, WEIGHT_PERIOD, WEIGHT_ROWS, checksum_scalar_at,
+        count_byte_scalar, count_scalar, find_byte_scalar, hash_state,
+    };
     #[cfg(target_arch = "x86")]
     use core::arch::x86::*;
     #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64::*;
+
+    /// Powers of [`super::HASH_PRIME`] used to fold eight words at once.
+    ///
+    /// Lane `j` holds `P^(7 - j) mod 2^52`, so a single `vpmadd52luq`
+    /// multiplies word `v_j` by the weight the scalar Horner recurrence
+    /// would give it after eight steps (`h' = h*P^8 + Σ v_j*P^(7-j)`).
+    pub(super) const LANE_POWERS: [u64; 8] = {
+        // lane_powers[j] = P^(7-j) mod 2^52
+        let mut lane_powers = [0u64; 8];
+        let mut index = 0;
+        while index < 8 {
+            lane_powers[index] = pow_mod(super::HASH_PRIME, (7 - index) as u32);
+            index += 1;
+        }
+        lane_powers
+    };
+
+    /// `P^8 mod 2^52`, the factor that carries the running hash across
+    /// one eight-word block.
+    pub(super) const HASH_PRIME_POW8: u64 = pow_mod(super::HASH_PRIME, 8);
+
+    /// `base^exp mod 2^52`, evaluated with square-and-multiply in `u128`
+    /// so no intermediate step can overflow.
+    const fn pow_mod(base: u64, exp: u32) -> u64 {
+        let mut result = 1u64;
+        let mut factor = base & HASH_MASK;
+        let mut power = exp;
+        while power > 0 {
+            if power & 1 == 1 {
+                result = ((result as u128 * factor as u128) & HASH_MASK as u128) as u64;
+            }
+            factor = ((factor as u128 * factor as u128) & HASH_MASK as u128) as u64;
+            power >>= 1;
+        }
+        result
+    }
+
+    /// Builds one byte-compaction shuffle table.
+    ///
+    /// `table[mask][k]` is the source index of the `k`-th byte to keep
+    /// when `mask`'s set bits name the kept lanes of an eight-byte half;
+    /// the unused slots are `0x80`, which `pshufb` turns into a zero.
+    /// `offset` is 0 for the low half of a register and 8 for the high
+    /// half, so the same table drives both lanes of a 128-bit shuffle.
+    const fn compact_table(offset: u8) -> [[u8; 8]; 256] {
+        let mut table = [[0x80u8; 8]; 256];
+        let mut mask = 0usize;
+        while mask < 256 {
+            let mut slot = 0usize;
+            let mut bit = 0usize;
+            while bit < 8 {
+                if mask & (1 << bit) != 0 {
+                    table[mask][slot] = bit as u8 + offset;
+                    slot += 1;
+                }
+                bit += 1;
+            }
+            mask += 1;
+        }
+        table
+    }
+
+    /// Shuffle table for the low eight bytes of a register.
+    pub(super) const COMPACT_LOW: [[u8; 8]; 256] = compact_table(0);
+
+    /// Shuffle table for the high eight bytes of a register.
+    pub(super) const COMPACT_HIGH: [[u8; 8]; 256] = compact_table(8);
 
     /// Counts UTF-8 unit starts over 16-byte blocks.
     ///
@@ -604,6 +967,312 @@ mod x86 {
             let mut total = (_mm512_reduce_add_epi32(accum) as u32) & CHECKSUM_MASK;
             total = (total + (checksum_scalar_at(chunks.remainder(), base) & CHECKSUM_MASK)) & CHECKSUM_MASK;
             total
+        }
+    }
+
+    /// Counts occurrences of `needle` over 16-byte blocks.
+    ///
+    /// # Safety
+    ///
+    /// Requires SSE2.
+    #[target_feature(enable = "sse2")]
+    pub(super) unsafe fn count_byte_sse2(bytes: &[u8], needle: u8) -> u64 {
+        // SAFETY: the caller proved SSE2; `chunks_exact(16)` keeps every
+        // load inside `bytes`.
+        unsafe {
+            let target = _mm_set1_epi8(needle as i8);
+            let mut total = 0u64;
+            let mut chunks = bytes.chunks_exact(16);
+            for chunk in &mut chunks {
+                let data = _mm_loadu_si128(chunk.as_ptr().cast());
+                let equal = _mm_cmpeq_epi8(data, target);
+                total += u64::from((_mm_movemask_epi8(equal) as u32).count_ones());
+            }
+            total + count_byte_scalar(chunks.remainder(), needle)
+        }
+    }
+
+    /// Counts occurrences of `needle` over 32-byte blocks.
+    ///
+    /// # Safety
+    ///
+    /// Requires AVX2.
+    #[target_feature(enable = "avx2")]
+    pub(super) unsafe fn count_byte_avx2(bytes: &[u8], needle: u8) -> u64 {
+        // SAFETY: the caller proved AVX2; `chunks_exact(32)` keeps every
+        // load inside `bytes`.
+        unsafe {
+            let target = _mm256_set1_epi8(needle as i8);
+            let mut total = 0u64;
+            let mut chunks = bytes.chunks_exact(32);
+            for chunk in &mut chunks {
+                let data = _mm256_loadu_si256(chunk.as_ptr().cast());
+                let equal = _mm256_cmpeq_epi8(data, target);
+                total += u64::from((_mm256_movemask_epi8(equal) as u32).count_ones());
+            }
+            total + count_byte_scalar(chunks.remainder(), needle)
+        }
+    }
+
+    /// Counts occurrences of `needle` over 64-byte blocks.
+    ///
+    /// # Safety
+    ///
+    /// Requires AVX-512F and AVX-512BW.
+    #[target_feature(enable = "avx512f", enable = "avx512bw")]
+    pub(super) unsafe fn count_byte_avx512(bytes: &[u8], needle: u8) -> u64 {
+        // SAFETY: the caller proved AVX-512F/BW; `chunks_exact(64)` keeps
+        // every load inside `bytes`.
+        unsafe {
+            let target = _mm512_set1_epi8(needle as i8);
+            let mut total = 0u64;
+            let mut chunks = bytes.chunks_exact(64);
+            for chunk in &mut chunks {
+                let data = _mm512_loadu_si512(chunk.as_ptr().cast());
+                let equal = _mm512_cmpeq_epi8_mask(data, target);
+                total += u64::from(equal.count_ones());
+            }
+            total + count_byte_scalar(chunks.remainder(), needle)
+        }
+    }
+
+    /// Finds the first `needle` over 16-byte blocks.
+    ///
+    /// # Safety
+    ///
+    /// Requires SSE4.1.
+    #[target_feature(enable = "sse4.1")]
+    pub(super) unsafe fn find_byte_sse41(bytes: &[u8], needle: u8) -> Option<usize> {
+        // SAFETY: the caller proved SSE4.1; `chunks_exact(16)` keeps every
+        // load inside `bytes`. `ptest` answers "is any lane set?" without a
+        // `movemask`, and the `movemask` runs only for the matching block.
+        unsafe {
+            let target = _mm_set1_epi8(needle as i8);
+            let mut base = 0usize;
+            let mut chunks = bytes.chunks_exact(16);
+            for chunk in &mut chunks {
+                let data = _mm_loadu_si128(chunk.as_ptr().cast());
+                let equal = _mm_cmpeq_epi8(data, target);
+                if _mm_testz_si128(equal, equal) == 0 {
+                    let bits = _mm_movemask_epi8(equal) as u32;
+                    return Some(base + bits.trailing_zeros() as usize);
+                }
+                base += 16;
+            }
+            find_byte_scalar(chunks.remainder(), needle).map(|index| base + index)
+        }
+    }
+
+    /// Finds the first `needle` over 32-byte blocks.
+    ///
+    /// # Safety
+    ///
+    /// Requires AVX2.
+    #[target_feature(enable = "avx2")]
+    pub(super) unsafe fn find_byte_avx2(bytes: &[u8], needle: u8) -> Option<usize> {
+        // SAFETY: the caller proved AVX2; `chunks_exact(32)` keeps every
+        // load inside `bytes`.
+        unsafe {
+            let target = _mm256_set1_epi8(needle as i8);
+            let mut base = 0usize;
+            let mut chunks = bytes.chunks_exact(32);
+            for chunk in &mut chunks {
+                let data = _mm256_loadu_si256(chunk.as_ptr().cast());
+                let equal = _mm256_cmpeq_epi8(data, target);
+                let bits = _mm256_movemask_epi8(equal) as u32;
+                if bits != 0 {
+                    return Some(base + bits.trailing_zeros() as usize);
+                }
+                base += 32;
+            }
+            find_byte_scalar(chunks.remainder(), needle).map(|index| base + index)
+        }
+    }
+
+    /// Finds the first `needle` over 64-byte blocks.
+    ///
+    /// # Safety
+    ///
+    /// Requires AVX-512F and AVX-512BW.
+    #[target_feature(enable = "avx512f", enable = "avx512bw")]
+    pub(super) unsafe fn find_byte_avx512(bytes: &[u8], needle: u8) -> Option<usize> {
+        // SAFETY: the caller proved AVX-512F/BW; `chunks_exact(64)` keeps
+        // every load inside `bytes`.
+        unsafe {
+            let target = _mm512_set1_epi8(needle as i8);
+            let mut base = 0usize;
+            let mut chunks = bytes.chunks_exact(64);
+            for chunk in &mut chunks {
+                let data = _mm512_loadu_si512(chunk.as_ptr().cast());
+                let mask = _mm512_cmpeq_epi8_mask(data, target);
+                if mask != 0 {
+                    return Some(base + mask.trailing_zeros() as usize);
+                }
+                base += 64;
+            }
+            find_byte_scalar(chunks.remainder(), needle).map(|index| base + index)
+        }
+    }
+
+    /// Removes every `value` from `bytes` with the SSSE3 shuffle tables.
+    ///
+    /// Each 16-byte register is split into two eight-byte halves; the
+    /// comparison mask selects a shuffle index vector from
+    /// [`COMPACT_LOW`]/[`COMPACT_HIGH`], and one `pshufb` squeezes the
+    /// kept bytes to the front of each half.
+    ///
+    /// # Safety
+    ///
+    /// Requires SSSE3.
+    #[target_feature(enable = "ssse3")]
+    pub(super) unsafe fn filter_byte_ssse3(bytes: &[u8], value: u8) -> Vec<u8> {
+        // SAFETY: the caller proved SSSE3; `chunks_exact(16)` keeps every
+        // load inside `bytes`, and the shuffle indices are all within one
+        // 128-bit lane.
+        unsafe {
+            let target = _mm_set1_epi8(value as i8);
+            let mut out = Vec::with_capacity(bytes.len());
+            let mut scratch = [0u8; 16];
+            let mut chunks = bytes.chunks_exact(16);
+            for chunk in &mut chunks {
+                let data = _mm_loadu_si128(chunk.as_ptr().cast());
+                let equal = _mm_cmpeq_epi8(data, target);
+                let keep = !(_mm_movemask_epi8(equal) as u32) & 0xFFFF;
+                let low = (keep & 0xFF) as usize;
+                let high = (keep >> 8) as usize;
+                let low_index = _mm_loadl_epi64(COMPACT_LOW[low].as_ptr().cast());
+                let high_index = _mm_loadl_epi64(COMPACT_HIGH[high].as_ptr().cast());
+                let index = _mm_unpacklo_epi64(low_index, high_index);
+                let compacted = _mm_shuffle_epi8(data, index);
+                _mm_storeu_si128(scratch.as_mut_ptr().cast(), compacted);
+                let low_count = low.count_ones() as usize;
+                let high_count = high.count_ones() as usize;
+                out.extend_from_slice(&scratch[..low_count]);
+                out.extend_from_slice(&scratch[8..8 + high_count]);
+            }
+            for &byte in chunks.remainder() {
+                if byte != value {
+                    out.push(byte);
+                }
+            }
+            out
+        }
+    }
+
+    /// Removes every `value` from `bytes` with 256-bit `vpcompressb`.
+    ///
+    /// # Safety
+    ///
+    /// Requires AVX-512VL, AVX-512BW and AVX-512 VBMI2.
+    #[target_feature(
+        enable = "avx512f",
+        enable = "avx512bw",
+        enable = "avx512vl",
+        enable = "avx512vbmi2"
+    )]
+    pub(super) unsafe fn filter_byte_avx512vl(bytes: &[u8], value: u8) -> Vec<u8> {
+        // SAFETY: the caller proved AVX-512VL/BW/VBMI2; `chunks_exact(32)`
+        // keeps every load inside `bytes`, and `keep` names exactly the
+        // lanes the store copies back.
+        unsafe {
+            let target = _mm256_set1_epi8(value as i8);
+            let mut out = Vec::with_capacity(bytes.len());
+            let mut scratch = [0u8; 32];
+            let mut chunks = bytes.chunks_exact(32);
+            for chunk in &mut chunks {
+                let data = _mm256_loadu_si256(chunk.as_ptr().cast());
+                let keep = !_mm256_cmpeq_epi8_mask(data, target);
+                let compacted = _mm256_maskz_compress_epi8(keep, data);
+                _mm256_storeu_si256(scratch.as_mut_ptr().cast(), compacted);
+                out.extend_from_slice(&scratch[..keep.count_ones() as usize]);
+            }
+            for &byte in chunks.remainder() {
+                if byte != value {
+                    out.push(byte);
+                }
+            }
+            out
+        }
+    }
+
+    /// Removes every `value` from `bytes` with 512-bit `vpcompressb`.
+    ///
+    /// # Safety
+    ///
+    /// Requires AVX-512F, AVX-512BW and AVX-512 VBMI2.
+    #[target_feature(enable = "avx512f", enable = "avx512bw", enable = "avx512vbmi2")]
+    pub(super) unsafe fn filter_byte_avx512(bytes: &[u8], value: u8) -> Vec<u8> {
+        // SAFETY: the caller proved AVX-512F/BW/VBMI2; `chunks_exact(64)`
+        // keeps every load inside `bytes`, and `keep` names exactly the
+        // lanes the store copies back.
+        unsafe {
+            let target = _mm512_set1_epi8(value as i8);
+            let mut out = Vec::with_capacity(bytes.len());
+            let mut scratch = [0u8; 64];
+            let mut chunks = bytes.chunks_exact(64);
+            for chunk in &mut chunks {
+                let data = _mm512_loadu_si512(chunk.as_ptr().cast());
+                let keep = !_mm512_cmpeq_epi8_mask(data, target);
+                let compacted = _mm512_maskz_compress_epi8(keep, data);
+                _mm512_storeu_si512(scratch.as_mut_ptr().cast(), compacted);
+                out.extend_from_slice(&scratch[..keep.count_ones() as usize]);
+            }
+            for &byte in chunks.remainder() {
+                if byte != value {
+                    out.push(byte);
+                }
+            }
+            out
+        }
+    }
+
+    /// Polynomial name hash accelerated with AVX-512 IFMA.
+    ///
+    /// Eight little-endian words are folded in one `vpmadd52luq`:
+    /// `h' = (h*P^8 + Σ v_j*P^(7-j)) mod 2^52`, which is exactly eight
+    /// scalar Horner steps because the modulus is a multiply-add width.
+    ///
+    /// # Safety
+    ///
+    /// Requires AVX-512F and AVX-512 IFMA.
+    #[target_feature(enable = "avx512f", enable = "avx512ifma")]
+    pub(super) unsafe fn hash_bytes_ifma(bytes: &[u8]) -> u32 {
+        // SAFETY: the caller proved AVX-512F/IFMA.
+        let hash = unsafe { hash_state_ifma(bytes) };
+        let folded = hash ^ (hash >> 32);
+        folded as u32
+    }
+
+    /// The unfolded `mod 2^52` name-hash state, accelerated with IFMA.
+    ///
+    /// # Safety
+    ///
+    /// Requires AVX-512F and AVX-512 IFMA.
+    #[target_feature(enable = "avx512f", enable = "avx512ifma")]
+    pub(super) unsafe fn hash_state_ifma(bytes: &[u8]) -> u64 {
+        // SAFETY: the caller proved AVX-512F/IFMA; `chunks_exact(64)`
+        // keeps every load inside `bytes`, and every intermediate stays
+        // below 2^55 so the reduce cannot overflow.
+        unsafe {
+            let powers = _mm512_loadu_si512(LANE_POWERS.as_ptr().cast());
+            let prime8 = _mm512_set1_epi64(HASH_PRIME_POW8 as i64);
+            let zero = _mm512_setzero_si512();
+            let mut hash = 0u64;
+            let mut chunks = bytes.chunks_exact(64);
+            for chunk in &mut chunks {
+                let words = _mm512_loadu_si512(chunk.as_ptr().cast());
+                let products = _mm512_madd52lo_epu64(words, powers, zero);
+                let lane_sum = (_mm512_reduce_add_epi64(products) as u64) & HASH_MASK;
+                let carried = _mm512_madd52lo_epu64(
+                    _mm512_set1_epi64(hash as i64),
+                    prime8,
+                    _mm512_set1_epi64(lane_sum as i64),
+                );
+                let mut lane = [0u64; 8];
+                _mm512_storeu_si512(lane.as_mut_ptr().cast(), carried);
+                hash = lane[0] & HASH_MASK;
+            }
+            hash_state(hash, chunks.remainder())
         }
     }
 }
@@ -794,5 +1463,232 @@ mod tests {
                 assert_eq!(weight, expected as i8, "row {row} column {column}");
             }
         }
+    }
+
+    #[test]
+    fn count_byte_matches_reference_on_random_bytes() {
+        for seed in 1..40u32 {
+            let bytes = pseudo_random(1 + (seed as usize * 43) % 600, seed);
+            for needle in [0u8, 1, 0x61, 0xFF] {
+                assert_eq!(
+                    count_byte(&bytes, needle),
+                    count_byte_scalar(&bytes, needle),
+                    "seed {seed} needle {needle}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn find_byte_matches_reference_on_random_bytes() {
+        for seed in 1..40u32 {
+            let bytes = pseudo_random(1 + (seed as usize * 47) % 600, seed);
+            for needle in [0u8, 7, 0x7F, 0xFE] {
+                assert_eq!(
+                    find_byte(&bytes, needle),
+                    find_byte_scalar(&bytes, needle),
+                    "seed {seed} needle {needle}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn filter_byte_matches_reference_on_random_bytes() {
+        for seed in 1..40u32 {
+            let bytes = pseudo_random(1 + (seed as usize * 71) % 900, seed);
+            for value in [0u8, 0x20, 0x80, 0xFF] {
+                assert_eq!(
+                    filter_byte(&bytes, value),
+                    filter_byte_scalar(&bytes, value),
+                    "seed {seed} value {value}"
+                );
+            }
+        }
+        assert_eq!(filter_byte(b"", b'x'), Vec::<u8>::new());
+        assert_eq!(filter_byte(b"xxxx", b'x'), Vec::<u8>::new());
+        assert_eq!(filter_byte(b"abcd", b'x'), b"abcd".to_vec());
+    }
+
+    #[test]
+    fn hash_matches_reference_on_random_bytes() {
+        assert_eq!(hash_bytes(b""), hash_bytes_scalar(b""));
+        for seed in 1..40u32 {
+            let bytes = pseudo_random(1 + (seed as usize * 67) % 900, seed);
+            assert_eq!(hash_bytes(&bytes), hash_bytes_scalar(&bytes), "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn hash_reads_little_endian_words_including_a_partial_tail() {
+        // A single trailing byte exercises the zero-padded final word.
+        let mut bytes = vec![0u8; 16];
+        for (index, slot) in bytes.iter_mut().enumerate() {
+            *slot = index as u8 + 1;
+        }
+        bytes.truncate(9);
+        assert_eq!(hash_bytes(&bytes), hash_bytes_scalar(&bytes));
+    }
+
+    /// Every vector tier must agree with the byte-oriented scalar
+    /// references, including on lengths that straddle the block size.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[test]
+    fn byte_tiers_agree_with_scalar() {
+        use codevar_base::cpuid::{Feature, has};
+
+        for seed in 1..20u32 {
+            let bytes = pseudo_random(1 + (seed as usize * 91) % 700, seed);
+            let needle = bytes[seed as usize % bytes.len()];
+            if has(Feature::Sse2) {
+                // SAFETY: `has` proved SSE2.
+                unsafe {
+                    assert_eq!(
+                        x86::count_byte_sse2(&bytes, needle),
+                        count_byte_scalar(&bytes, needle)
+                    );
+                }
+            }
+            if has(Feature::Avx2) {
+                // SAFETY: `has` proved AVX2.
+                unsafe {
+                    assert_eq!(
+                        x86::count_byte_avx2(&bytes, needle),
+                        count_byte_scalar(&bytes, needle)
+                    );
+                }
+            }
+            if has(Feature::Avx512F) && has(Feature::Avx512Bw) {
+                // SAFETY: `has` proved AVX-512F/BW.
+                unsafe {
+                    assert_eq!(
+                        x86::count_byte_avx512(&bytes, needle),
+                        count_byte_scalar(&bytes, needle)
+                    );
+                }
+            }
+            // The needle is present somewhere, so the find paths cannot
+            // return `None`; also probe a byte that cannot be present.
+            if has(Feature::Sse41) {
+                // SAFETY: `has` proved SSE4.1.
+                unsafe {
+                    assert_eq!(
+                        x86::find_byte_sse41(&bytes, needle),
+                        find_byte_scalar(&bytes, needle)
+                    );
+                }
+            }
+            if has(Feature::Avx2) {
+                // SAFETY: `has` proved AVX2.
+                unsafe {
+                    assert_eq!(
+                        x86::find_byte_avx2(&bytes, needle),
+                        find_byte_scalar(&bytes, needle)
+                    );
+                }
+            }
+            if has(Feature::Avx512F) && has(Feature::Avx512Bw) {
+                // SAFETY: `has` proved AVX-512F/BW.
+                unsafe {
+                    assert_eq!(
+                        x86::find_byte_avx512(&bytes, needle),
+                        find_byte_scalar(&bytes, needle)
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[test]
+    fn compaction_tiers_agree_with_scalar() {
+        use codevar_base::cpuid::{Feature, has};
+
+        for seed in 1..20u32 {
+            let bytes = pseudo_random(1 + (seed as usize * 89) % 700, seed);
+            let value = bytes[seed as usize % bytes.len()];
+            if has(Feature::Ssse3) {
+                // SAFETY: `has` proved SSSE3.
+                unsafe {
+                    assert_eq!(
+                        x86::filter_byte_ssse3(&bytes, value),
+                        filter_byte_scalar(&bytes, value)
+                    );
+                }
+            }
+            if has(Feature::Avx512Vl) && has(Feature::Avx512Bw) && has(Feature::Avx512Vbmi2) {
+                // SAFETY: `has` proved AVX-512VL/BW/VBMI2.
+                unsafe {
+                    assert_eq!(
+                        x86::filter_byte_avx512vl(&bytes, value),
+                        filter_byte_scalar(&bytes, value)
+                    );
+                }
+            }
+            if has(Feature::Avx512F) && has(Feature::Avx512Bw) && has(Feature::Avx512Vbmi2) {
+                // SAFETY: `has` proved AVX-512F/BW/VBMI2.
+                unsafe {
+                    assert_eq!(
+                        x86::filter_byte_avx512(&bytes, value),
+                        filter_byte_scalar(&bytes, value)
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[test]
+    fn ifma_hash_agrees_with_scalar() {
+        use codevar_base::cpuid::{Feature, has};
+        if !(has(Feature::Avx512F) && has(Feature::Avx512Ifma)) {
+            return;
+        }
+        for seed in 1..30u32 {
+            let bytes = pseudo_random(1 + (seed as usize * 83) % 900, seed);
+            // SAFETY: `has` proved AVX-512F/IFMA.
+            let got = unsafe { x86::hash_bytes_ifma(&bytes) };
+            assert_eq!(got, hash_bytes_scalar(&bytes), "seed {seed}");
+        }
+    }
+
+    /// The shuffle tables must keep the selected lanes in order and pad
+    /// every unused slot with `0x80` (which `pshufb` zeroes).
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[test]
+    fn compaction_tables_are_sound() {
+        for mask in 0usize..256 {
+            for (offset, table) in [(0u8, &x86::COMPACT_LOW), (8u8, &x86::COMPACT_HIGH)] {
+                let row = table[mask];
+                let mut expected = 0usize;
+                for bit in 0..8usize {
+                    if mask & (1 << bit) != 0 {
+                        assert_eq!(row[expected], bit as u8 + offset, "mask {mask}");
+                        expected += 1;
+                    }
+                }
+                for &pad in &row[expected..] {
+                    assert_eq!(pad, 0x80, "mask {mask} padding");
+                }
+            }
+        }
+    }
+
+    /// The IFMA lane weights must reproduce eight plain Horner steps.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[test]
+    fn ifma_lane_weights_match_repeated_horner() {
+        for lane in 0..8usize {
+            let mut expected = 1u64;
+            for _ in 0..(7 - lane) {
+                expected = hash_step(expected, 0);
+            }
+            assert_eq!(x86::LANE_POWERS[lane], expected, "lane {lane}");
+        }
+        let mut prime8 = 1u64;
+        for _ in 0..8 {
+            prime8 = hash_step(prime8, 0);
+        }
+        assert_eq!(x86::HASH_PRIME_POW8, prime8);
     }
 }

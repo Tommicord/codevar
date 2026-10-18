@@ -43,7 +43,17 @@ use crate::error::WreditError;
 pub const MAX_GAPS: usize = 0x4;
 
 /// Maximum number of cursors a writable can hold.
-pub const MAX_CURSORS: usize = 0x1000;
+///
+/// The pool is a *fixed inline array*, so this bound is what keeps
+/// [`BaseWritable`] inside the engine's 4 KiB inline budget: each
+/// cursor plus its `cursor_to_gap` slot costs about 90 bytes, so the
+/// budget only funds a few dozen entries (the test
+/// `the_working_state_fits_the_inline_budget` pins the arithmetic).
+/// The value also matches
+/// [`SLOT_CURSOR_BITS`](super::shared_gap::SLOT_CURSOR_BITS), the width
+/// of a shared gap's membership mask, so every cursor id this pool can
+/// hand out is also addressable by a shared gap.
+pub const MAX_CURSORS: usize = 16;
 
 /// Number of shared gap slot descriptors in the fixed table.
 pub const SHARED_GAP_SLOTS: usize = 0x10;

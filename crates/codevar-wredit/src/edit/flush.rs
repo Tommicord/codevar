@@ -31,15 +31,15 @@
 
 use alloc::vec::Vec;
 use core::mem::MaybeUninit;
-use core::ptr;
 
 use codevar_logger::log_error;
 
 use super::base::{T_COMMON, T_MERGE, WritableAlignedPtr, make_packed, packed_char, packed_type};
 use super::writable::{MAX_CURSORS, MAX_GAPS, SHARED_GAP_SLOTS, StreamWritable, WritableEvent};
+use crate::arch::{memcpy, memmove};
 
 /// Number of plain elements resolved on the stack per block move.
-const FLUSH_CHUNK: usize = 64;
+const FLUSH_CHUNK: usize = 0x40;
 
 /// Inserts `src` into the raw document at `at`.
 ///
@@ -68,13 +68,30 @@ pub(crate) fn write_bytes_to_raw<Raw: Copy>(
         return raw_length;
     }
     let ptr = raw.as_mut_ptr();
+    let tail_len = raw_length - at;
+    let elem = core::mem::size_of::<Raw>();
+    let byte_len = tail_len * elem;
+    let base = ptr.cast::<u8>();
+    // Prefetch the tail range ahead of the shift so the cache lines are
+    // hot when the memmove runs. Prefetch both source (for the load
+    // side) and destination (for the store side).
+    if byte_len >= crate::arch::CACHE_LINE_SIZE {
+        unsafe {
+            crate::arch::prefetch(base.add(at * elem), crate::arch::PREFETCH_T0);
+            crate::arch::prefetch(base.add((at + src.len()) * elem), crate::arch::PREFETCH_T0);
+        }
+    }
     // Safety: `ensure_capacity(new_length)` guarantees room for
     // `new_length` elements; `at <= raw_length` and `src.len() >= 1`
-    // make both ranges in bounds. `ptr::copy` (memmove) tolerates the
-    // overlap between the shifted tail and its destination.
+    // make both ranges in bounds. `memmove` tolerates the overlap
+    // between the shifted tail and its destination.
     unsafe {
-        ptr::copy(ptr.add(at), ptr.add(at + src.len()), raw_length - at);
-        core::ptr::copy_nonoverlapping(src.as_ptr(), ptr.add(at), src.len());
+        memmove(base.add((at + src.len()) * elem), base.add(at * elem), byte_len);
+        memcpy(
+            base.add(at * elem),
+            src.as_ptr().cast::<u8>(),
+            core::mem::size_of_val(src),
+        );
     }
     raw.set_count(new_length);
     new_length
@@ -186,10 +203,22 @@ unsafe fn commit_pending<Raw: Copy>(
     if count == 0 {
         return length;
     }
+    let tail_len = length - at;
+    let elem = core::mem::size_of::<Raw>();
+    let byte_len = tail_len * elem;
+    let base = ptr.cast::<u8>();
+    // Prefetch the tail range ahead of the block move so the cache
+    // lines are hot when the memmove runs.
+    if byte_len >= crate::arch::CACHE_LINE_SIZE {
+        unsafe {
+            crate::arch::prefetch(base.add(at * elem), crate::arch::PREFETCH_T0);
+            crate::arch::prefetch(base.add((at + count) * elem), crate::arch::PREFETCH_T0);
+        }
+    }
     // Safety: bounds follow from the caller's pre-growth contract;
-    // `ptr::copy` tolerates the tail overlap.
+    // `memmove` tolerates the tail overlap.
     unsafe {
-        ptr::copy(ptr.add(at), ptr.add(at + count), length - at);
+        memmove(base.add((at + count) * elem), base.add(at * elem), byte_len);
         let dst = ptr.add(at);
         for (index, element) in pending.iter().enumerate().take(count) {
             dst.add(index).write(element.assume_init_read());

@@ -18,5 +18,8 @@ codevar-textlike-encode = { workspace = true }
 codevar-ocl = { workspace = true }
 codevar-oclc = { workspace = true }
 
+[build-dependencies]
+cc = { workspace = true }
+
 [lints]
 workspace = true
