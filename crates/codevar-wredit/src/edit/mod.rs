@@ -22,28 +22,12 @@
 //! suballocated from a fixed descriptor table
 //! ([`shared_gap::SharedGapTable`]) and committed into the raw
 //! buffer by the flush layer ([`flush`]).
-//!
-//! Building blocks:
-//!
-//! * [`base`]   - packing constants and the sparse aligned heap buffer
-//! * [`cursor`] - the compact interior-mutable multi-cursor cursor
-//! * [`shared_gap`] - 8-byte shared gap slot descriptors and the table
-//! * [`writable`] - gaps, gap bookkeeping, [`writable::BaseWritable`]
-//!   and the [`writable::StreamWritable`] facade
-//! * [`traits`] - the [`traits::Writable`] contract and the
-//!   `TextEditable*` operation traits
-//! * [`flush`]  - commit path from staged gaps into the raw buffer
-//! * [`ops`]    - the operation implementations
-//!
-//! The engine core keeps its working state inline (bounded by the
-//! 4 KiB budget asserted in the tests) and allocates lazily: the raw
-//! buffer, the shared staging arena and every gap buffer start empty
-//! and grow geometrically on first use.
 
 pub mod base;
 pub mod cursor;
 pub mod flush;
-pub mod ops;
+mod ops;
+mod scan;
 pub mod shared_gap;
 pub mod traits;
 pub mod writable;

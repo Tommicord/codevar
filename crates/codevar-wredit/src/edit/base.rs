@@ -69,7 +69,7 @@ pub const ENC_UTF16BE: u16 = 0x3;
 pub const ENC_SINGLE_BYTE: u16 = 0x4;
 
 /// Capacity of the document name in bytes (without the terminator).
-pub const NAME_LEN: usize = 0x100 - 1;
+pub const NAME_LEN: usize = 0xFF;
 
 /// Packs a character and an element type into one raw element.
 ///
@@ -264,9 +264,18 @@ impl<T: Copy, const ALIGN: usize> WritableAlignedPtr<T, ALIGN> {
         let new_buff = ensure_merge_buffer::<T>(new_capacity, ALIGN.max(align_of::<T>()))?;
         // Copy the initialized prefix into the fresh allocation.
         // Safety: `new_buff` holds `new_capacity >= count` elements of
-        // `T`; both regions are `T`-aligned and non-overlapping.
-        unsafe {
-            core::ptr::copy_nonoverlapping(self.as_ptr(), new_buff.as_ptr(), self.count);
+        // `T`; both regions are in bounds and non-overlapping.
+        let byte_len = self
+            .count
+            .saturating_mul(core::mem::size_of::<T>());
+        if byte_len != 0 {
+            unsafe {
+                crate::arch::memcpy(
+                    new_buff.as_ptr().cast::<u8>(),
+                    self.as_ptr().cast::<u8>(),
+                    byte_len,
+                );
+            }
         }
         if let Some(old) = self.buff {
             // Safety: `old` was allocated by `ensure_merge_buffer`

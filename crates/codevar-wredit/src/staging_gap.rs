@@ -642,9 +642,23 @@ impl<T: Copy + Default, const COMMIT_CAP: usize, const GAP_SIZE: usize> StagingG
         // suffix flush against them — one block move, no data overlaps.
         let old_span = self.committed_len + self.gap_len;
         let tail = self.gap_pos + self.gap_len;
-        self.buf[self.gap_pos..self.gap_pos + total].copy_from_slice(&values[..total]);
-        self.buf
-            .copy_within(tail..old_span, self.gap_pos + total);
+        let elem = core::mem::size_of::<T>();
+        // Safety: invariant 4 caps `total` at `gap_len`, and the
+        // committed span plus gap fit `buf`, so every range below is in
+        // bounds; the second move may overlap and uses `memmove`.
+        unsafe {
+            let buf_ptr = self.buf.as_mut_ptr();
+            crate::arch::memcpy(
+                buf_ptr.add(self.gap_pos).cast::<u8>(),
+                values.as_ptr().cast::<u8>(),
+                total.saturating_mul(elem),
+            );
+            crate::arch::memmove(
+                buf_ptr.add(self.gap_pos + total).cast::<u8>(),
+                buf_ptr.add(tail).cast::<u8>(),
+                (old_span - tail).saturating_mul(elem),
+            );
+        }
         self.committed_len = self.committed_len.saturating_add(total);
         self.gap_pos += total;
         self.gap_len -= total;
@@ -670,13 +684,31 @@ impl<T: Copy + Default, const COMMIT_CAP: usize, const GAP_SIZE: usize> StagingG
             // Elements `[gap_pos, index)` slide left into the gap.
             let count = index - self.gap_pos;
             let src = self.gap_pos + self.gap_len;
-            self.buf
-                .copy_within(src..src + count, self.gap_pos);
+            let elem = core::mem::size_of::<T>();
+            // Safety: both ranges lie inside `buf`; the arch `memmove`
+            // tolerates their overlap.
+            unsafe {
+                let ptr = self.buf.as_mut_ptr();
+                crate::arch::memmove(
+                    ptr.add(self.gap_pos).cast::<u8>(),
+                    ptr.add(src).cast::<u8>(),
+                    count.saturating_mul(elem),
+                );
+            }
         } else {
             // Elements `[index, gap_pos)` slide right past the gap.
-            let _count = self.gap_pos - index;
-            self.buf
-                .copy_within(index..self.gap_pos, index + self.gap_len);
+            let count = self.gap_pos - index;
+            let elem = core::mem::size_of::<T>();
+            // Safety: both ranges lie inside `buf`; the arch `memmove`
+            // tolerates their overlap.
+            unsafe {
+                let ptr = self.buf.as_mut_ptr();
+                crate::arch::memmove(
+                    ptr.add(index + self.gap_len).cast::<u8>(),
+                    ptr.add(index).cast::<u8>(),
+                    count.saturating_mul(elem),
+                );
+            }
         }
         self.gap_pos = index;
     }

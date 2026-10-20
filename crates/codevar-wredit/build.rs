@@ -66,9 +66,16 @@ fn compile_x86_set(dir: &str, lib: &str, suffix: &str, feature: Option<&str>, fl
         .file(format!("{dir}/memmove.S"))
         .file(format!("{dir}/memcpy.S"))
         .file(format!("{dir}/memchr.S"))
+        .file(format!("{dir}/wordscan.S"))
         .define("CODEVAR_SUFFIX", Some(suffix));
     if let Some(name) = feature {
         build.define(name, None);
+    }
+    // POPCNT accompanies every AVX2-class part in practice; keeping the
+    // SSE2 baseline free of it preserves the oldest x86_64 targets.
+    if suffix != "_sse2" {
+        build.define("CODEVAR_HAVE_POPCNT", None);
+        build.flag_if_supported("-mpopcnt");
     }
     for flag in flags {
         build.flag(flag);
@@ -100,7 +107,9 @@ fn build_x86_64(arch_dir: &str) {
         &["-mavx512f", "-mavx512bw", "-mavx512vl", "-mavx2"],
     );
 
-    // Prefetch needs no ISA level: one build, no suffix.
+    // Prefetch needs no ISA level: one build, no suffix. The extra
+    // integer/byte kernels are also baseline-only, so they live in a
+    // separate archive with unsuffixed symbols.
     let mut build = cc::Build::new();
     build
         .include(&dir)

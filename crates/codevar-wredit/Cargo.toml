@@ -18,8 +18,23 @@ codevar-textlike-encode = { workspace = true }
 codevar-ocl = { workspace = true }
 codevar-oclc = { workspace = true }
 
+[dev-dependencies]
+criterion = { workspace = true }
+
 [build-dependencies]
 cc = { workspace = true }
+
+[[bench]]
+name = "text_core"
+harness = false
+
+[[bench]]
+name = "primitives"
+harness = false
+
+[[bench]]
+name = "hot"
+harness = false
 
 [lints]
 workspace = true

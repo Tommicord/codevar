@@ -28,9 +28,6 @@ use core::sync::atomic::{AtomicU8, Ordering};
 
 use codevar_base::cpuid::{Feature, has};
 
-// ---------------------------------------------------------------------
-// Raw assembly entry points (one set per ISA level).
-// ---------------------------------------------------------------------
 unsafe extern "C" {
     fn codevar_wredit_memmove_sse2(dst: *mut u8, src: *const u8, len: usize);
     fn codevar_wredit_memmove_avx2(dst: *mut u8, src: *const u8, len: usize);
@@ -43,6 +40,16 @@ unsafe extern "C" {
     fn codevar_wredit_memchr_sse2(haystack: *const u8, needle: u8, len: usize) -> *const u8;
     fn codevar_wredit_memchr_avx2(haystack: *const u8, needle: u8, len: usize) -> *const u8;
     fn codevar_wredit_memchr_avx512(haystack: *const u8, needle: u8, len: usize) -> *const u8;
+
+    // Spill-free packed-word newline kernels (`wordscan.S`), one set
+    // per ISA level.
+    fn codevar_wredit_wc_count_sse2(raw: *const u32, len: usize) -> usize;
+    fn codevar_wredit_wc_count_avx2(raw: *const u32, len: usize) -> usize;
+    fn codevar_wredit_wc_count_avx512(raw: *const u32, len: usize) -> usize;
+
+    fn codevar_wredit_wc_find_nth_sse2(raw: *const u32, len: usize, n: usize) -> usize;
+    fn codevar_wredit_wc_find_nth_avx2(raw: *const u32, len: usize, n: usize) -> usize;
+    fn codevar_wredit_wc_find_nth_avx512(raw: *const u32, len: usize, n: usize) -> usize;
 
     fn codevar_wredit_prefetch_t0(addr: *const u8);
     fn codevar_wredit_prefetch_t1(addr: *const u8);
@@ -97,10 +104,10 @@ fn level() -> u8 {
 /// `len` bytes, with no overlap.
 #[inline]
 pub unsafe fn memcpy(dst: *mut u8, src: *const u8, len: usize) {
-    if len >= super::CACHE_LINE_SIZE {
-        // Safety: prefetch never faults.
-        unsafe { codevar_wredit_prefetch_range(dst, len) };
-    }
+    // The copy loops stream on their own; prefetching every cache line
+    // up front costs an instruction per line and starves the load/store
+    // ports, so it is deliberately left off here.
+    //
     // Safety: guaranteed by the caller; the ISA level matches the CPU.
     unsafe {
         match level() {
@@ -120,13 +127,6 @@ pub unsafe fn memcpy(dst: *mut u8, src: *const u8, len: usize) {
 /// `len` bytes; the regions may overlap.
 #[inline]
 pub unsafe fn memmove(dst: *mut u8, src: *const u8, len: usize) {
-    if len >= super::CACHE_LINE_SIZE {
-        // Safety: prefetch never faults.
-        unsafe {
-            codevar_wredit_prefetch_range(src, len);
-            codevar_wredit_prefetch_range(dst, len);
-        }
-    }
     // Safety: guaranteed by the caller; the ISA level matches the CPU.
     unsafe {
         match level() {
@@ -145,10 +145,6 @@ pub unsafe fn memmove(dst: *mut u8, src: *const u8, len: usize) {
 /// `haystack` must be valid for reads of `len` bytes.
 #[inline]
 pub unsafe fn memchr(haystack: *const u8, needle: u8, len: usize) -> *const u8 {
-    if len >= super::CACHE_LINE_SIZE {
-        // Safety: prefetch never faults.
-        unsafe { codevar_wredit_prefetch_range(haystack, len) };
-    }
     // Safety: guaranteed by the caller; the ISA level matches the CPU.
     unsafe {
         match level() {
@@ -157,6 +153,43 @@ pub unsafe fn memchr(haystack: *const u8, needle: u8, len: usize) -> *const u8 {
             _ => codevar_wredit_memchr_sse2(haystack, needle, len),
         }
     }
+}
+
+/// Counts packed newline words in `raw[..len]`.
+///
+/// # Safety
+///
+/// `raw` must be valid for reads of `len` `u32` words, or null when
+/// `len == 0`.
+#[inline]
+pub(crate) unsafe fn newline_count(raw: *const u32, len: usize) -> usize {
+    // Safety: guaranteed by the caller; the selected kernel matches
+    // the probed ISA level and never reads past `len`.
+    unsafe {
+        match level() {
+            LEVEL_AVX512 => codevar_wredit_wc_count_avx512(raw, len),
+            LEVEL_AVX2 => codevar_wredit_wc_count_avx2(raw, len),
+            _ => codevar_wredit_wc_count_sse2(raw, len),
+        }
+    }
+}
+
+/// Finds the `n`-th packed newline (one-based) in `raw[..len]`.
+///
+/// # Safety
+///
+/// `raw` must be valid for reads of `len` words; `n > 0`.
+#[inline]
+pub(crate) unsafe fn newline_nth(raw: *const u32, len: usize, n: usize) -> Option<usize> {
+    // Safety: see `newline_count`.
+    let found = unsafe {
+        match level() {
+            LEVEL_AVX512 => codevar_wredit_wc_find_nth_avx512(raw, len, n),
+            LEVEL_AVX2 => codevar_wredit_wc_find_nth_avx2(raw, len, n),
+            _ => codevar_wredit_wc_find_nth_sse2(raw, len, n),
+        }
+    };
+    (found != usize::MAX).then_some(found)
 }
 
 /// Prefetch the cache line containing `addr` with the given hint.

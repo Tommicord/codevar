@@ -28,14 +28,15 @@
 //! the event bridge. [`StreamWritable`] is the facade the operation
 //! layer implements the `TextEditable*` traits on.
 
+use alloc::boxed::Box;
 use alloc::sync::Arc;
-use core::cell::UnsafeCell;
+use core::cell::{Cell, UnsafeCell};
 use core::ptr::NonNull;
 
 use codevar_logger::log_error;
 
 use super::base::{ENC_UNKNOWN, NAME_LEN, WritableAlignedPtr, ensure_merge_buffer};
-use super::cursor::Cursor;
+use super::cursor::{Cursor, LineAnchors, LineRing};
 use super::shared_gap::SharedGapTable;
 use crate::error::WreditError;
 
@@ -53,7 +54,7 @@ pub const MAX_GAPS: usize = 0x4;
 /// [`SLOT_CURSOR_BITS`](super::shared_gap::SLOT_CURSOR_BITS), the width
 /// of a shared gap's membership mask, so every cursor id this pool can
 /// hand out is also addressable by a shared gap.
-pub const MAX_CURSORS: usize = 16;
+pub const MAX_CURSORS: usize = 0x10;
 
 /// Number of shared gap slot descriptors in the fixed table.
 pub const SHARED_GAP_SLOTS: usize = 0x10;
@@ -280,80 +281,128 @@ impl<T: Copy, const GAP_SIZE: usize> WritableGap<T, GAP_SIZE> {
 
 /// The fixed inline set of private gaps.
 ///
-/// Slots are `Option`s: an absent slot is a free gap. Capacity is
-/// [`MAX_GAPS`]; buffers are allocated per slot on first push, never
-/// eagerly.
+/// The slot array is allocated once, inline; occupancy is tracked by
+/// a small bitmask and the windows themselves are *retained* across
+/// `free`, so an interactive typing cycle (stage, flush, stage again)
+/// does not allocate or free on every keystroke. Capacity is
+/// [`MAX_GAPS`]; each window is still allocated lazily on first push.
 pub struct WritableGaps<Raw: Copy, const GAP_SIZE: usize> {
-    /// The fixed slot array.
-    gaps: [Option<WritableGap<Raw, GAP_SIZE>>; MAX_GAPS],
+    /// The fixed slot array; a slot keeps its window after release.
+    gaps: [WritableGap<Raw, GAP_SIZE>; MAX_GAPS],
+    /// Bit `i` is set while slot `i` is occupied.
+    occupied: u8,
 }
 
 impl<Raw: Copy, const GAP_SIZE: usize> WritableGaps<Raw, GAP_SIZE> {
-    /// Creates an empty set: every slot free.
+    /// Creates an empty set: every slot free and no window allocated.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            gaps: core::array::from_fn(|_| None),
+            gaps: core::array::from_fn(|_| WritableGap::at(0)),
+            occupied: 0,
         }
     }
 
     /// Number of occupied slots.
     #[must_use]
+    #[inline]
     pub fn count(&self) -> usize {
-        self.gaps
-            .iter()
-            .filter(|gap| gap.is_some())
-            .count()
+        self.occupied.count_ones() as usize
+    }
+
+    /// `true` when no slot is occupied.
+    #[must_use]
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.occupied == 0
+    }
+
+    /// Bit `i` is set when slot `i` is occupied.
+    ///
+    /// [`MAX_GAPS`] is four, so the mask fits a `u8`; flush and length
+    /// bookkeeping walk the set bits instead of probing every slot.
+    #[must_use]
+    #[inline]
+    pub fn occupied_mask(&self) -> u8 {
+        self.occupied
     }
 
     /// `true` when every slot is occupied.
     #[must_use]
+    #[inline]
     pub fn is_full(&self) -> bool {
         self.count() >= MAX_GAPS
     }
 
     /// Occupies the first free slot as a gap committing at `base`.
     ///
-    /// Returns the slot index, or `None` when every slot is taken.
+    /// The slot keeps whatever window it allocated previously; only
+    /// its staged count and base are reset. Returns the slot index, or
+    /// `None` when every slot is taken.
     pub fn alloc(&mut self, base: usize) -> Option<usize> {
-        for (index, slot) in self.gaps.iter_mut().enumerate() {
-            if slot.is_none() {
-                *slot = Some(WritableGap::at(base));
-                return Some(index);
-            }
+        let limit = if MAX_GAPS >= u8::BITS as usize {
+            u8::MAX
+        } else {
+            (1u8 << MAX_GAPS) - 1
+        };
+        let free = !self.occupied & limit;
+        if free == 0 {
+            return None;
         }
-        None
+        let index = free.trailing_zeros() as usize;
+        let gap = &mut self.gaps[index];
+        gap.clear();
+        gap.set_base(base);
+        self.occupied |= 1u8 << index;
+        Some(index)
     }
 
-    /// Releases the slot at `index`, dropping its staged elements
-    /// and freeing its window.
+    /// Releases the slot at `index`, dropping its staged elements but
+    /// retaining its window for the next allocation.
     ///
     /// Returns `true` when a slot was freed.
     pub fn free(&mut self, index: usize) -> bool {
-        match self.gaps.get_mut(index) {
-            Some(slot) => slot.take().is_some(),
-            None => false,
+        if index >= MAX_GAPS || self.occupied & (1u8 << index) == 0 {
+            return false;
         }
+        self.occupied &= !(1u8 << index);
+        self.gaps[index].clear();
+        true
     }
 
     /// The gap occupying `index`.
     #[must_use]
+    #[inline]
     pub fn get(&self, index: usize) -> Option<&WritableGap<Raw, GAP_SIZE>> {
-        self.gaps.get(index).and_then(Option::as_ref)
+        if index < MAX_GAPS && self.occupied & (1u8 << index) != 0 {
+            self.gaps.get(index)
+        } else {
+            None
+        }
     }
 
     /// The gap occupying `index`, mutably.
     #[must_use]
+    #[inline]
     pub fn get_mut(&mut self, index: usize) -> Option<&mut WritableGap<Raw, GAP_SIZE>> {
-        self.gaps.get_mut(index).and_then(Option::as_mut)
+        if index < MAX_GAPS && self.occupied & (1u8 << index) != 0 {
+            self.gaps.get_mut(index)
+        } else {
+            None
+        }
     }
 
     /// Indices of every occupied slot, ascending.
     pub fn occupied(&self) -> impl Iterator<Item = usize> {
-        self.gaps
-            .iter()
-            .enumerate()
-            .filter_map(|(index, slot)| slot.as_ref().map(|_| index))
+        let mut mask = self.occupied;
+        core::iter::from_fn(move || {
+            if mask == 0 {
+                return None;
+            }
+            let index = mask.trailing_zeros() as usize;
+            mask &= mask - 1;
+            Some(index)
+        })
     }
 }
 
@@ -483,6 +532,7 @@ pub trait EventBridge: Send + Sync {
 /// * `Raw`      - packed raw element type (`u32` in practice)
 /// * `Buf`      - element type of the shared staging arena
 /// * `GAP_SIZE` - private/shared gap window size in elements
+#[repr(C)]
 pub struct BaseWritable<Raw: Copy, Buf: Copy, const GAP_SIZE: usize> {
     /// The packed raw document; grows geometrically.
     pub(crate) raw: UnsafeCell<WritableAlignedPtr<Raw, 64>>,
@@ -498,8 +548,20 @@ pub struct BaseWritable<Raw: Copy, Buf: Copy, const GAP_SIZE: usize> {
     pub(crate) cursor_to_gap: [u16; MAX_CURSORS],
     /// The cursor pool.
     pub(crate) cursors: UnsafeCell<[Option<Cursor<Raw, Buf, GAP_SIZE>>; MAX_CURSORS]>,
+    /// Document-level line-start ring shared by all cursors.
+    ///
+    /// Line starts describe the committed document, not a caret, so one
+    /// ring serves every cursor. Keeping it out of the cursor pool is
+    /// what keeps the hot working set small.
+    pub(crate) line_cache: UnsafeCell<LineRing>,
     /// Id of the cursor driving single-cursor operations.
     pub(crate) active_cursor_id: usize,
+    /// Bit `i` is set while cursor slot `i` is live.
+    ///
+    /// Kept alongside the pool so document-wide passes (rebinding,
+    /// shifting) walk live cursors only instead of probing all
+    /// [`MAX_CURSORS`] `Option`s on every commit.
+    pub(crate) cursor_mask: u16,
     /// Optional event receiver.
     pub(crate) event_bridge: UnsafeCell<Option<Arc<dyn EventBridge>>>,
     /// Document name (raw bytes, NUL padded).
@@ -508,10 +570,24 @@ pub struct BaseWritable<Raw: Copy, Buf: Copy, const GAP_SIZE: usize> {
     pub(crate) flags: u32,
     /// Number of committed elements in `raw`.
     pub(crate) raw_length: usize,
+    /// Number of committed rows (newlines + 1), or `0` when unknown.
+    ///
+    /// This is a hint for the line ring's last-row fast path. It lets a
+    /// caret row query avoid scanning the final line even when the
+    /// sparse anchor index is invalid. Newline-free edits keep it
+    /// exact; a merge marks it unknown until the next anchor build.
+    pub(crate) rows: Cell<usize>,
     /// Committed capacity head-room (mirrors `raw.allocated()`).
     pub(crate) vspace: usize,
     /// Document encoding, one of the `ENC_*` constants.
     pub(crate) encoding: u16,
+    /// Lazily allocated sparse row anchors for jumps outside the L1
+    /// line ring.
+    ///
+    /// The sparse index lives on the heap so it does not enlarge the
+    /// hot inline working state; only the pointer is part of the
+    /// engine struct. `None` means it has never been built.
+    pub(crate) line_anchors: UnsafeCell<Option<Box<LineAnchors>>>,
 }
 
 impl<Raw: Copy, Buf: Copy, const GAP_SIZE: usize> BaseWritable<Raw, Buf, GAP_SIZE> {
@@ -525,13 +601,17 @@ impl<Raw: Copy, Buf: Copy, const GAP_SIZE: usize> BaseWritable<Raw, Buf, GAP_SIZ
             shared_gaps: UnsafeCell::new(SharedGapTable::new()),
             cursor_to_gap: [GAP_NONE; MAX_CURSORS],
             cursors: UnsafeCell::new(core::array::from_fn(|_| None)),
+            line_cache: UnsafeCell::new(LineRing::empty()),
             active_cursor_id: 0,
+            cursor_mask: 0,
             event_bridge: UnsafeCell::new(None),
             name: [0; NAME_LEN],
             flags: 0,
             raw_length: 0,
+            rows: Cell::new(1),
             vspace: 0,
             encoding: ENC_UNKNOWN,
+            line_anchors: UnsafeCell::new(None),
         }
     }
 
@@ -650,16 +730,242 @@ impl<Raw: Copy, Buf: Copy, const GAP_SIZE: usize> BaseWritable<Raw, Buf, GAP_SIZ
     /// resize `raw`, otherwise cursors keep dangling pointers into
     /// the old allocation. Logical positions survive the rebind:
     /// only the dereference bound and the raw pointer change.
-    pub(crate) fn refresh_cursor_views(&mut self) {
+    /// Runs `f` with exclusive access to the document-level line ring.
+    ///
+    /// This avoids the 136-byte copy that `Cell::get`/`set` performed
+    /// on every cached row query. The writable is `!Sync`, so the
+    /// single-thread contract guarantees the mutable borrow does not
+    /// overlap any other access to the ring.
+    #[inline]
+    pub(crate) fn with_line_cache<R>(&self, f: impl FnOnce(&mut LineRing) -> R) -> R {
+        // SAFETY: see the method documentation.
+        unsafe { f(&mut *self.line_cache.get()) }
+    }
+
+    /// Returns valid sparse row anchors, building them on first use.
+    ///
+    /// Building scans the committed document once. Any commit that
+    /// changes the layout invalidates the index, so the next distant
+    /// lookup rebuilds it. The backing allocation is reused across
+    /// rebuilds; only the first lookup pays for it.
+    #[must_use]
+    pub(crate) fn ensure_line_anchors(&self) -> &LineAnchors
+    where
+        Raw: Into<u32>,
+    {
+        // SAFETY: the writable is `!Sync`; the single-thread contract
+        // means no other reference can mutate the index concurrently.
+        let slot = unsafe { &mut *self.line_anchors.get() };
+        if let Some(anchors) = slot {
+            if anchors.is_valid() {
+                return anchors;
+            }
+            let raw = self.raw_ref().as_ptr();
+            let len = self.raw_length;
+            // SAFETY: `raw`/`len` describe the live committed view.
+            **anchors = unsafe { LineAnchors::build(raw, len) };
+            self.rows.set(anchors.rows().max(1));
+            return anchors;
+        }
+        let raw = self.raw_ref().as_ptr();
+        let len = self.raw_length;
+        // SAFETY: `raw`/`len` describe the live committed view.
+        let built = unsafe { LineAnchors::build(raw, len) };
+        self.rows.set(built.rows().max(1));
+        slot.insert(Box::new(built))
+    }
+
+    /// Returns the stored sparse line anchors when they are valid.
+    ///
+    /// Unlike [`Self::ensure_line_anchors`], this never builds the
+    /// index. A caret-local row query can answer from the line ring, so
+    /// forcing a full document build after a newline edit would make a
+    /// single keystroke pay for an index it may not need yet.
+    #[must_use]
+    #[inline]
+    pub(crate) fn valid_line_anchors(&self) -> Option<&LineAnchors> {
+        // SAFETY: the writable is `!Sync`; the single-thread contract
+        // means no other reference can mutate the index concurrently.
+        let slot = unsafe { &*self.line_anchors.get() };
+        slot.as_deref()
+            .filter(|anchors| anchors.is_valid())
+    }
+
+    /// Rebinds every cursor to the current raw view and raises its
+    /// logical clamping bound to the current document length.
+    ///
+    /// This is the cheap half of a refresh: it performs no cache
+    /// invalidation, so callers that only moved a caret (or whose edit
+    /// preserved the line layout) keep the line ring and sparse
+    /// anchors warm.
+    #[inline]
+    fn rebind_cursor_views(&mut self) {
         let ptr = self.raw_ref().as_ptr();
         let raw_length = self.raw_length;
         let logical = self.logical_length();
-        for cursor in self.cursors_mut().iter().flatten() {
+        let mut mask = self.cursor_mask;
+        let pool = self.cursors_mut();
+        while mask != 0 {
+            let id = mask.trailing_zeros() as usize;
+            mask &= mask - 1;
+            let Some(cursor) = pool[id].as_mut() else {
+                continue;
+            };
             // SAFETY: `ptr`/`raw_length` describe the current raw
             // buffer, which outlives the cursors (both live in this
             // struct), and `logical >= raw_length` keeps the
             // dereference bound valid.
             unsafe { cursor.rebind_raw(ptr, raw_length) };
+            cursor.set_logical_length(logical);
+        }
+    }
+
+    /// Rebinds the cursors and drops the document-level line indexes.
+    ///
+    /// Use after an edit that changed the line layout (inserted or
+    /// removed a newline, or merged text with unknown layout effects).
+    pub(crate) fn refresh_cursor_views(&mut self) {
+        self.rebind_cursor_views();
+        // The committed view may have changed: the document-level line
+        // ring and sparse anchors are stale. Cursors themselves carry
+        // no cache, so this is a single reset regardless of cursor
+        // count.
+        // SAFETY: exclusive access through `&mut self`; `clear` only
+        // resets the three bookkeeping fields, leaving the start array
+        // for the next `reload`.
+        unsafe { (*self.line_cache.get()).clear() };
+        // SAFETY: exclusive access through `&mut self`.
+        if let Some(anchors) = unsafe { &mut *self.line_anchors.get() } {
+            anchors.invalidate();
+        }
+    }
+
+    /// Rebinds the cursors after newlines were inserted at `at`.
+    ///
+    /// The line ring survives when the run is purely newlines appended
+    /// after the ring's last line: each new start is exactly one
+    /// element apart. A sparse index whose anchors all sit at or before
+    /// the insertion point also stays valid, so only its row count
+    /// grows. Appending newlines then keeps both row indexes local
+    /// instead of rebuilding them.
+    pub(crate) fn refresh_cursor_views_newline_insert(
+        &mut self,
+        at: usize,
+        newlines: usize,
+        inserted: usize,
+    ) {
+        self.rebind_cursor_views();
+        let rows = self.rows.get();
+        // SAFETY: exclusive access through `&mut self`.
+        let cache = unsafe { &mut *self.line_cache.get() };
+        let at_tail = inserted == newlines
+            && rows != 0
+            && !cache.is_empty()
+            && rows == cache.last_row() + 1 + newlines
+            && at >= cache.last_start();
+        if at_tail {
+            for offset in 1..=newlines {
+                let start = at.saturating_add(offset).min(u32::MAX as usize) as u32;
+                cache.push_back(start);
+            }
+        } else {
+            cache.clear();
+        }
+        // SAFETY: exclusive access through `&mut self`.
+        if let Some(anchors) = unsafe { &mut *self.line_anchors.get() }
+            && !anchors.extend_rows(at, newlines)
+        {
+            anchors.invalidate();
+        }
+    }
+
+    /// Rebinds the cursors after `removed_newlines` were removed from
+    /// `start..start + count`.
+    ///
+    /// A ring whose first line predates the removal keeps its row
+    /// numbers; starts that followed a removed newline are dropped and
+    /// later starts shift left. A sparse index that only loses trailing
+    /// anchors keeps the remaining starts, so the next fallback scan
+    /// stays local.
+    pub(crate) fn refresh_cursor_views_newline_remove(
+        &mut self,
+        start: usize,
+        count: usize,
+        removed_newlines: usize,
+    ) {
+        self.rebind_cursor_views();
+        let end = start.saturating_add(count);
+        let rows = self.rows.get();
+        // SAFETY: exclusive access through `&mut self`.
+        let cache = unsafe { &mut *self.line_cache.get() };
+        let inside_window = rows != 0
+            && !cache.is_empty()
+            && rows.saturating_add(removed_newlines) == cache.last_row() + 1
+            && start >= cache.first_start();
+        if inside_window {
+            cache.trim_removed_range(start, end, count);
+        } else {
+            cache.clear();
+        }
+        // SAFETY: exclusive access through `&mut self`.
+        if let Some(anchors) = unsafe { &mut *self.line_anchors.get() }
+            && !anchors.trim_after(start, end, removed_newlines)
+        {
+            anchors.invalidate();
+        }
+    }
+
+    /// Rebinds the cursors and shifts the line indexes after an edit
+    /// that did not change the number of lines.
+    ///
+    /// `position` is the element index where `delta` elements were
+    /// inserted (`removing == false`) or removed (`removing == true`).
+    /// Both the L1 line ring and the sparse anchors are shifted in
+    /// place, which keeps repeated row lookups O(1) while typing
+    /// instead of refilling the ring and rebuilding the whole document
+    /// index.
+    pub(crate) fn refresh_cursor_views_shifted(&mut self, position: usize, delta: usize, removing: bool) {
+        self.rebind_cursor_views();
+        // SAFETY: exclusive access through `&mut self`.
+        let cache = unsafe { &mut *self.line_cache.get() };
+        if removing {
+            cache.shift_after_remove(position, delta);
+        } else {
+            cache.shift_after_insert(position, delta);
+        }
+        // SAFETY: exclusive access through `&mut self`.
+        if let Some(anchors) = unsafe { &mut *self.line_anchors.get() } {
+            if removing {
+                anchors.shift_after_remove(position, delta);
+            } else {
+                anchors.shift_after_insert(position, delta);
+            }
+        }
+    }
+
+    /// Drops the document-level line indexes after an in-place edit
+    /// whose line layout may have changed.
+    #[inline]
+    pub(crate) fn invalidate_line_layout(&mut self) {
+        // SAFETY: exclusive access through `&mut self`; `clear` only
+        // resets the three bookkeeping fields.
+        unsafe { (*self.line_cache.get()).clear() };
+        // SAFETY: exclusive access through `&mut self`.
+        if let Some(anchors) = unsafe { &mut *self.line_anchors.get() } {
+            anchors.invalidate();
+        }
+    }
+
+    /// Raises one cursor's logical clamping bound to the current
+    /// document length.
+    ///
+    /// Moving a caret cannot change the committed layout, so this is
+    /// all a pure movement needs: no line index is touched and no
+    /// other cursor is disturbed.
+    #[inline]
+    pub(crate) fn sync_cursor_length(&self, cursor_id: usize) {
+        let logical = self.logical_length();
+        if let Some(cursor) = self.cursor(cursor_id) {
             cursor.set_logical_length(logical);
         }
     }
@@ -674,22 +980,35 @@ impl<Raw: Copy, Buf: Copy, const GAP_SIZE: usize> BaseWritable<Raw, Buf, GAP_SIZ
     /// Logical document length: committed elements plus every staged
     /// element still sitting in a gap.
     #[must_use]
+    #[inline]
     pub(crate) fn logical_length(&self) -> usize {
+        // The common committed-only case avoids walking the gap and
+        // shared-slot tables entirely.
+        if self.gaps_ref().is_empty() && self.shared_ref().is_empty() {
+            return self.raw_length;
+        }
         let mut total = self.raw_length;
-        for index in self.gaps_ref().occupied() {
-            if let Some(gap) = self.gaps_ref().get(index) {
-                total = total.saturating_add(gap.staged());
+        let gaps = self.gaps_ref();
+        if !gaps.is_empty() {
+            for index in gaps.occupied() {
+                if let Some(gap) = gaps.get(index) {
+                    total = total.saturating_add(gap.staged());
+                }
             }
         }
+        // The common staged-typing case has one private gap and no
+        // shared region: skip the 16-slot descriptor walk entirely.
         let shared = self.shared_ref();
-        let mut slot = 0;
-        while slot < SHARED_GAP_SLOTS {
-            if let Some(descriptor) = shared.slot(slot)
-                && descriptor.is_allocated()
-            {
-                total = total.saturating_add(descriptor.size());
+        if !shared.is_empty() {
+            let mut slot = 0;
+            while slot < SHARED_GAP_SLOTS {
+                if let Some(descriptor) = shared.slot(slot)
+                    && descriptor.is_allocated()
+                {
+                    total = total.saturating_add(descriptor.size());
+                }
+                slot += 1;
             }
-            slot += 1;
         }
         total
     }
@@ -703,7 +1022,14 @@ impl<Raw: Copy, Buf: Copy, const GAP_SIZE: usize> BaseWritable<Raw, Buf, GAP_SIZ
     pub(crate) fn shift_cursors(&mut self, position: usize, delta: usize, removing: bool) {
         let logical_end = self.logical_length();
         let end = position.saturating_add(delta);
-        for cursor in self.cursors_mut().iter().flatten() {
+        let mut mask = self.cursor_mask;
+        let pool = self.cursors_mut();
+        while mask != 0 {
+            let id = mask.trailing_zeros() as usize;
+            mask &= mask - 1;
+            let Some(cursor) = pool[id].as_mut() else {
+                continue;
+            };
             let pos = cursor.array_pos();
             let new_pos = if removing {
                 if pos <= position {
@@ -954,7 +1280,7 @@ mod tests {
     #[test]
     fn the_working_state_fits_the_inline_budget() {
         // The whole engine core (raw + arena + gaps + table + cursors
-        // + metadata) must stay at or below 4096 bytes inline.
+        // + metad) must stay at or below 4096 bytes inline.
         assert!(
             core::mem::size_of::<BaseWritable<u32, u32, 128>>() <= 4096,
             "BaseWritable exceeds the 4096 byte inline budget: {} bytes",

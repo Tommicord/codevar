@@ -17,7 +17,7 @@
 //!
 //! There is no SIMD on the M-profile, so these are pure integer word
 //! and byte copies. The sources are assembled for whatever
-//! `thumbv6m`/`thumbv7m`/`thumbv7em`/`thumbv8m` baseline the target
+//! `thumbv6m`/`thumbv7m`/`thumbv7m`/`thumbv8m` baseline the target
 //! selects and internally guard the Thumb-2 fast path with
 //! `__ARM_ARCH >= 7`.
 

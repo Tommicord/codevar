@@ -63,10 +63,10 @@ fn sve_enabled() -> bool {
 /// Both ranges must be valid for `len` bytes and must not overlap.
 #[inline]
 pub unsafe fn memcpy(dst: *mut u8, src: *const u8, len: usize) {
-    if len >= super::CACHE_LINE_SIZE {
-        // Safety: prefetch never faults.
-        unsafe { codevar_wredit_prefetch_range(dst, len) };
-    }
+    // The copy loops stream on their own; prefetching every cache line
+    // up front costs an instruction per line and starves the load/store
+    // ports, so it is deliberately left off here.
+    //
     // Safety: guaranteed by the caller; the ISA path matches the CPU.
     unsafe {
         if sve_enabled() {
@@ -84,13 +84,6 @@ pub unsafe fn memcpy(dst: *mut u8, src: *const u8, len: usize) {
 /// Both ranges must be valid for `len` bytes; overlap is allowed.
 #[inline]
 pub unsafe fn memmove(dst: *mut u8, src: *const u8, len: usize) {
-    if len >= super::CACHE_LINE_SIZE {
-        // Safety: prefetch never faults.
-        unsafe {
-            codevar_wredit_prefetch_range(src, len);
-            codevar_wredit_prefetch_range(dst, len);
-        }
-    }
     // Safety: guaranteed by the caller; the ISA path matches the CPU.
     unsafe {
         if sve_enabled() {

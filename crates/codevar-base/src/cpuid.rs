@@ -59,11 +59,15 @@
 //! ## Performance
 //!
 //! [`compile_time_features`] is a pure `const fn`. The first call to
-//! [`features`] probes the CPU and fills an atomic cache; every later call is
-//! a single atomic load plus a `u64` union. [`has`] short-circuits on
+//! [`features`] runs the probes and publishes the union into a lock-free
+//! `AtomicU64`; every later call is a single relaxed 64-bit load. `CPUID`
+//! (roughly a hundred cycles per leaf, and we issue several) therefore runs
+//! exactly once for the whole process. [`has`] additionally short-circuits on
 //! the compile-time answer, so features compiled into the binary cost nothing.
 
 use core::fmt;
+#[cfg(target_has_atomic = "64")]
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::once::Once;
 
 /// Compares two byte slices without calling trait methods, so it can be used
@@ -493,7 +497,27 @@ impl fmt::Debug for Features {
     }
 }
 
-/// Process-wide cache of [`features`].
+/// Sentinel bit marking the cache as initialized.
+///
+/// Feature masks occupy bits 0..=47, so bit 63 is free to double as the
+/// "initialized" flag in the same 64-bit word: the store and the read are
+/// then a single atomic operation with no separate synchronization word.
+/// Only used where 64-bit atomics exist; other targets fall back to [`Once`].
+#[cfg(target_has_atomic = "64")]
+const CACHE_INIT: u64 = 1 << 63;
+
+/// Guards the one-time probe so `CPUID`/`MRS`/`getauxval` run exactly once.
+#[cfg(target_has_atomic = "64")]
+static FEATURES_INIT: Once<()> = Once::new();
+
+/// Process-wide cache of the union of the compile-time and run-time feature
+/// sets, published as [`CACHE_INIT`]` | bits` on first use.
+#[cfg(target_has_atomic = "64")]
+static FEATURES_CACHE: AtomicU64 = AtomicU64::new(0);
+
+/// Process-wide cache of the union of the compile-time and run-time feature
+/// sets, used on targets without 64-bit atomics.
+#[cfg(not(target_has_atomic = "64"))]
 static FEATURES: Once<Features> = Once::new();
 
 /// Returns the union of the compile-time and run-time feature sets for this
@@ -501,11 +525,36 @@ static FEATURES: Once<Features> = Once::new();
 ///
 /// # Performance
 ///
-/// The first call runs [`detect`] and stores the result; later calls are a
-/// single atomic load and a bitwise union.
+/// The first call runs [`detect`] and publishes the result; later calls are a
+/// single relaxed 64-bit load (the flag and the bits share one atomic word).
 #[inline]
 pub fn features() -> Features {
-    *FEATURES.call_once(|| compile_time_features().union(detect()))
+    #[cfg(target_has_atomic = "64")]
+    {
+        let cached = FEATURES_CACHE.load(Ordering::Relaxed);
+        if cached & CACHE_INIT != 0 {
+            return Features(cached & !CACHE_INIT);
+        }
+    }
+    features_slow()
+}
+
+/// Cold path of [`features`]: runs the probe once and publishes it.
+#[cold]
+#[inline(never)]
+fn features_slow() -> Features {
+    #[cfg(target_has_atomic = "64")]
+    {
+        FEATURES_INIT.call_once(|| {
+            let bits = compile_time_features().union(detect()).bits();
+            FEATURES_CACHE.store(bits | CACHE_INIT, Ordering::Relaxed);
+        });
+        Features(FEATURES_CACHE.load(Ordering::Relaxed) & !CACHE_INIT)
+    }
+    #[cfg(not(target_has_atomic = "64"))]
+    {
+        *FEATURES.call_once(|| compile_time_features().union(detect()))
+    }
 }
 
 /// Returns whether `feature` is available here, combining the compile-time

@@ -16,13 +16,15 @@
 // Multi-variant x86_64 memchr.
 //
 // Finds the first occurrence of the low byte of `needle` in
-// `haystack[..len]`. Assembled once per instruction-set level; the
-// exported symbol is `codevar_wredit_memchr<SUFFIX>`.
+// `haystack[..len]`. The hot loop scans four vectors (4*VEC bytes) per
+// iteration and ORs their comparison masks, so a non-match retires with
+// a single branch; only the rare hit re-walks the four chunks to locate
+// the exact byte.
 //
 // Instruction selection (preprocessor):
-//   SSE2   - pcmpeqb + pmovmskb, 16 bytes per iteration
+//   SSE2   - pcmpeqb + pmovmskb, 16 bytes per vector
 //   AVX2   - vpcmpeqb + two pmovmskb (low/high 128-bit halves)
-//   AVX512 - vpcmpb into a mask register + kmovq, 64 bytes per iteration
+//   AVX512 - vpcmpb into a mask register + kmovq
 //
 // ABI: rdi = haystack, esi = needle, rdx = len;
 //      returns rax = pointer to first match, or NULL.
@@ -37,10 +39,32 @@
 
 #if defined(CODEVAR_HAVE_AVX512)
 #define VEC 64
+#define VZERO vzeroupper
+// One comparison mask (64 bits) for the chunk at `off(%r10)`, in rax.
+#define MASK_AT(off) \
+    vmovdqu64 off(%r10), %zmm0 ; \
+    vpcmpb $0, %zmm0, %zmm1, %k1 ; \
+    kmovq %k1, %rax
 #elif defined(CODEVAR_HAVE_AVX2)
 #define VEC 32
+#define VZERO vzeroupper
+// One comparison mask (32 bits, as two 16-bit halves) in rax.
+#define MASK_AT(off) \
+    vmovdqu off(%r10), %ymm0 ; \
+    vpcmpeqb %ymm1, %ymm0, %ymm0 ; \
+    vextracti128 $1, %ymm0, %xmm2 ; \
+    vpmovmskb %xmm0, %eax ; \
+    vpmovmskb %xmm2, %r11d ; \
+    shlq $16, %r11 ; \
+    orq %r11, %rax
 #else
 #define VEC 16
+#define VZERO
+// One comparison mask (16 bits) in rax.
+#define MASK_AT(off) \
+    movdqu off(%r10), %xmm0 ; \
+    pcmpeqb %xmm1, %xmm0 ; \
+    pmovmskb %xmm0, %eax
 #endif
 
     .text
@@ -50,8 +74,7 @@
 
 CODEVAR_FN(codevar_wredit_memchr):
     movq    %rdi, %r10              // r10 = scan pointer
-    movq    %rdx, %r8               // r8 = remaining
-    testq   %r8, %r8
+    testq   %rdx, %rdx
     jz      .Lmc_none
 
 // Broadcast the needle byte to every lane of one vector register.
@@ -69,83 +92,88 @@ CODEVAR_FN(codevar_wredit_memchr):
     pshufd  $0, %xmm1, %xmm1
 #endif
 
-    cmpq    $VEC, %r8
-    jb      .Lmc_scan
+// =====================================================================
+// Wide loop: four vectors (4*VEC bytes) per iteration.
+// =====================================================================
+.Lmc_wide:
+    cmpq    $(4*VEC), %rdx
+    jb      .Lmc_vec
+    MASK_AT(0)
+    movq    %rax, %r8
+    MASK_AT(VEC)
+    orq     %rax, %r8
+    MASK_AT(2*VEC)
+    orq     %rax, %r8
+    MASK_AT(3*VEC)
+    orq     %rax, %r8
+    testq   %r8, %r8
+    jnz     .Lmc_wide_hit
+    addq    $(4*VEC), %r10
+    subq    $(4*VEC), %rdx
+    jmp     .Lmc_wide
 
-.Lmc_loop:
-    prefetchnta 256(%r10)
-#if defined(CODEVAR_HAVE_AVX512)
-    vmovdqu64 (%r10), %zmm0
-    vpcmpb  $0, %zmm0, %zmm1, %k1
-    kmovq   %k1, %rax
+// =====================================================================
+// Single-vector loop: 0..4*VEC-1 bytes left.
+// =====================================================================
+.Lmc_vec:
+    cmpq    $VEC, %rdx
+    jb      .Lmc_tail
+.Lmc_vec_loop:
+    MASK_AT(0)
     testq   %rax, %rax
-    jnz     .Lmc_found
-#elif defined(CODEVAR_HAVE_AVX2)
-    vmovdqu (%r10), %ymm0
-    vpcmpeqb %ymm1, %ymm0, %ymm0
-    vextracti128 $1, %ymm0, %xmm2
-    vpmovmskb %xmm0, %eax
-    vpmovmskb %xmm2, %edi
-    testl   %eax, %eax
-    jnz     .Lmc_found
-    testl   %edi, %edi
-    jnz     .Lmc_found_hi
-#else
-    movdqu  (%r10), %xmm0
-    pcmpeqb %xmm1, %xmm0
-    pmovmskb %xmm0, %eax
-    testl   %eax, %eax
-    jnz     .Lmc_found
-#endif
+    jnz     .Lmc_hit
     addq    $VEC, %r10
-    subq    $VEC, %r8
-    cmpq    $VEC, %r8
-    jae     .Lmc_loop
+    subq    $VEC, %rdx
+    cmpq    $VEC, %rdx
+    jae     .Lmc_vec_loop
 
 // Scalar tail: 0..VEC-1 bytes, always in bounds.
-.Lmc_scan:
-    testq   %r8, %r8
+.Lmc_tail:
+    testq   %rdx, %rdx
     jz      .Lmc_none
-.Lmc_scan_loop:
+.Lmc_tail_loop:
     cmpb    %sil, (%r10)
-    je      .Lmc_found_byte
+    je      .Lmc_hit_byte
     incq    %r10
-    decq    %r8
-    jnz     .Lmc_scan_loop
+    decq    %rdx
+    jnz     .Lmc_tail_loop
     jmp     .Lmc_none
 
-#if defined(CODEVAR_HAVE_AVX2)
-.Lmc_found_hi:
-    // High 128-bit half matched: bit `i` means byte `16 + i`.
-    bsfq    %rdi, %rax
-    addq    $16, %rax
-    addq    %r10, %rax
-    vzeroupper
-    ret
-#endif
+// =====================================================================
+// Slow paths.
+// =====================================================================
+.Lmc_wide_hit:
+    MASK_AT(0)
+    testq   %rax, %rax
+    jnz     .Lmc_hit
+    addq    $VEC, %r10
+    MASK_AT(0)
+    testq   %rax, %rax
+    jnz     .Lmc_hit
+    addq    $VEC, %r10
+    MASK_AT(0)
+    testq   %rax, %rax
+    jnz     .Lmc_hit
+    addq    $VEC, %r10
+    MASK_AT(0)
+    // The OR was non-zero, so the fourth chunk holds the hit.
 
-.Lmc_found:
-    // `rax` holds the match bitmask for the current VEC-byte chunk (the
-    // 64-bit form is required for the AVX-512 `vpcmpb` mask).
-    bsfq    %rax, %rax
+.Lmc_hit:
+    bsfq    %rax, %rax              // index of the first set bit
     addq    %r10, %rax
-#if defined(CODEVAR_HAVE_AVX2) || defined(CODEVAR_HAVE_AVX512)
-    vzeroupper
-#endif
+    VZERO
     ret
 
-.Lmc_found_byte:
+.Lmc_hit_byte:
     movq    %r10, %rax
-#if defined(CODEVAR_HAVE_AVX2) || defined(CODEVAR_HAVE_AVX512)
-    vzeroupper
-#endif
+    VZERO
     ret
 
 .Lmc_none:
     xorl    %eax, %eax
-#if defined(CODEVAR_HAVE_AVX2) || defined(CODEVAR_HAVE_AVX512)
-    vzeroupper
-#endif
+    VZERO
     ret
 
     .size CODEVAR_FN(codevar_wredit_memchr), .-CODEVAR_FN(codevar_wredit_memchr)
+
+.section .note.GNU-stack,"",@progbits

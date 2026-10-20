@@ -28,6 +28,560 @@ use core::cell::Cell;
 use core::marker::PhantomData;
 use core::ptr;
 
+use super::scan;
+
+/// Documents at least this long get a lazily built line-start cache.
+///
+/// The threshold is deliberately small: the ring is stack-resident and
+/// cheap to fill, and interactive row/column queries repeat far more
+/// often than a full vectorised rescan. Above it, repeated work near
+/// the caret becomes constant time.
+const LINE_CACHE_MIN_ELEMENTS: usize = 1 << 6;
+
+/// Number of line starts kept in the cursor's stack-resident ring.
+///
+/// Twenty-four starts cover several screenfuls around the caret while
+/// keeping the whole multi-cursor pool inside the engine's inline size
+/// budget; the wrap is a single compare because the sum of the head and
+/// an offset is at most twice the capacity.
+const LINE_RING_CAPACITY: usize = 0x20;
+
+/// A fixed-capacity ring of consecutive line starts around the caret.
+///
+/// The entries are held on the stack (no allocation) and stay sorted by
+/// row: `starts[head]` is the first cached line, and `first_row` names
+/// its row. Pushing past either end evicts the opposite line, so the
+/// window follows local caret motion without ever growing.
+#[derive(Clone, Copy)]
+pub(crate) struct LineRing {
+    /// Element index where each cached line starts.
+    starts: [u32; LINE_RING_CAPACITY],
+    /// Ring slot of the first (lowest-row) cached start.
+    head: u16,
+    /// Number of valid starts; zero means "cache cold".
+    len: u16,
+    /// Row number of the first cached start.
+    first_row: u32,
+}
+
+impl LineRing {
+    /// An empty ring.
+    #[must_use]
+    pub(crate) const fn empty() -> Self {
+        Self {
+            starts: [0; LINE_RING_CAPACITY],
+            head: 0,
+            len: 0,
+            first_row: 0,
+        }
+    }
+
+    /// `true` when the ring holds no lines.
+    #[must_use]
+    #[inline]
+    pub(crate) const fn is_empty(self) -> bool {
+        self.len == 0
+    }
+
+    /// Number of cached lines.
+    #[must_use]
+    #[inline]
+    const fn len(self) -> usize {
+        self.len as usize
+    }
+
+    /// Drops the cached window without touching the 128-byte start
+    /// array. The next lookup rebuilds it with `reload`.
+    #[inline]
+    pub(crate) fn clear(&mut self) {
+        self.head = 0;
+        self.len = 0;
+        self.first_row = 0;
+    }
+
+    /// Row of the first cached line.
+    #[must_use]
+    #[inline]
+    const fn first_row(self) -> usize {
+        self.first_row as usize
+    }
+
+    /// Row of the last cached line.
+    #[must_use]
+    #[inline]
+    pub(crate) fn last_row(self) -> usize {
+        self.first_row() + self.len() - 1
+    }
+
+    /// Element index where the last cached line starts.
+    #[must_use]
+    #[inline]
+    pub(crate) fn last_start(self) -> usize {
+        self.at(self.len() - 1)
+    }
+
+    /// Element index where the first cached line starts.
+    #[must_use]
+    #[inline]
+    pub(crate) fn first_start(self) -> usize {
+        self.at(0)
+    }
+
+    /// Wraps a slot index that is below twice the capacity.
+    #[must_use]
+    #[inline]
+    const fn wrap(index: usize) -> usize {
+        if index >= LINE_RING_CAPACITY {
+            index - LINE_RING_CAPACITY
+        } else {
+            index
+        }
+    }
+
+    /// Element index where cached line `offset` starts.
+    #[must_use]
+    #[inline]
+    fn at(self, offset: usize) -> usize {
+        let slot = Self::wrap(usize::from(self.head) + offset);
+        self.starts[slot] as usize
+    }
+
+    /// Offset of `row` inside the ring, if it is cached.
+    #[must_use]
+    #[inline]
+    fn offset_of(self, row: usize) -> Option<usize> {
+        let offset = row.checked_sub(self.first_row())?;
+        (offset < self.len()).then_some(offset)
+    }
+
+    /// Replaces the ring with a sorted window of line starts.
+    #[inline]
+    fn reload(&mut self, first_row: usize, entries: &[u32]) {
+        let count = entries.len().min(LINE_RING_CAPACITY);
+        self.starts[..count].copy_from_slice(&entries[..count]);
+        self.head = 0;
+        self.len = count as u16;
+        self.first_row = first_row as u32;
+    }
+
+    /// Shifts every cached start after `position` right by `delta`.
+    ///
+    /// Only valid for a newline-free insertion: the cached rows keep
+    /// their numbers, so the window stays usable instead of being
+    /// dropped and refilled from the document.
+    #[inline]
+    pub(crate) fn shift_after_insert(&mut self, position: usize, delta: usize) {
+        if self.is_empty() || delta == 0 {
+            return;
+        }
+        let position = position.min(u32::MAX as usize) as u32;
+        let delta = delta.min(u32::MAX as usize) as u32;
+        let head = usize::from(self.head);
+        let len = self.len();
+        // Cached starts are sorted, so only the suffix after the edit
+        // moves. Typing at the end then costs one binary search instead
+        // of walking (and dirtying) the whole window.
+        let mut low = 0;
+        let mut high = len;
+        while low < high {
+            let middle = (low + high) / 2;
+            if self.at(middle) <= position as usize {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        for index in low..len {
+            let slot = Self::wrap(head + index);
+            self.starts[slot] = self.starts[slot].saturating_add(delta);
+        }
+    }
+
+    /// Shifts every cached start after `position` left by `count`.
+    ///
+    /// Only valid for a newline-free removal, which preserves the row
+    /// numbers of the cached window.
+    #[inline]
+    pub(crate) fn shift_after_remove(&mut self, position: usize, count: usize) {
+        if self.is_empty() || count == 0 {
+            return;
+        }
+        let position = position.min(u32::MAX as usize) as u32;
+        let count = count.min(u32::MAX as usize) as u32;
+        let head = usize::from(self.head);
+        let len = self.len();
+        let mut low = 0;
+        let mut high = len;
+        while low < high {
+            let middle = (low + high) / 2;
+            if self.at(middle) <= position as usize {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        for index in low..len {
+            let slot = Self::wrap(head + index);
+            self.starts[slot] = self.starts[slot].saturating_sub(count);
+        }
+    }
+
+    /// Applies a removal of `start..end` that contains newlines.
+    ///
+    /// Every cached start strictly inside the removed range follows a
+    /// newline that no longer exists, so it is dropped; starts past the
+    /// range move left by `count`. The first cached row is untouched,
+    /// which is what lets the caller keep `first_row` as-is.
+    #[inline]
+    pub(crate) fn trim_removed_range(&mut self, start: usize, end: usize, count: usize) {
+        if self.is_empty() {
+            return;
+        }
+        let head = usize::from(self.head);
+        let len = self.len();
+        let count = count.min(u32::MAX as usize) as u32;
+        let mut write = 0;
+        for read in 0..len {
+            let slot = Self::wrap(head + read);
+            let value = self.starts[slot];
+            let position = value as usize;
+            if position > start && position <= end {
+                continue;
+            }
+            let value = if position > end {
+                value.saturating_sub(count)
+            } else {
+                value
+            };
+            let target = Self::wrap(head + write);
+            self.starts[target] = value;
+            write += 1;
+        }
+        self.len = write as u16;
+    }
+
+    /// Appends the line starting at `start`, evicting the oldest line
+    /// when the ring is full.
+    #[inline]
+    pub(crate) fn push_back(&mut self, start: u32) {
+        let slot = Self::wrap(usize::from(self.head) + self.len());
+        self.starts[slot] = start;
+        if self.len() == LINE_RING_CAPACITY {
+            self.head = Self::wrap(usize::from(self.head) + 1) as u16;
+            self.first_row = self.first_row.saturating_add(1);
+        } else {
+            self.len += 1;
+        }
+    }
+
+    /// Prepends the line starting at `start`, evicting the newest line
+    /// when the ring is full.
+    ///
+    /// The caller only prepends ahead of an existing window, so there
+    /// is always a row to decrement.
+    #[inline]
+    fn push_front(&mut self, start: u32) {
+        let head = Self::wrap(usize::from(self.head) + LINE_RING_CAPACITY - 1);
+        self.head = head as u16;
+        self.starts[head] = start;
+        self.first_row = self.first_row.saturating_sub(1);
+        if self.len() < LINE_RING_CAPACITY {
+            self.len += 1;
+        }
+    }
+}
+
+/// Number of sparse line starts retained for random row access.
+///
+/// The anchor array is a second-level index: it stores the start of
+/// every `stride`-th row, so resolving an arbitrary row scans at most
+/// one block of `stride` lines instead of the whole document. The
+/// index lives on the heap and is only built after a distant jump, so
+/// its 2 KiB footprint stays out of the engine's inline working set.
+const LINE_ANCHOR_CAPACITY: usize = 512;
+
+/// Smallest distance between two sparse line anchors.
+const LINE_ANCHOR_STRIDE: usize = 1;
+
+/// Sparse, document-level starts for random row/position lookup.
+///
+/// A [`LineRing`] is the L1-resident window around the caret; the
+/// anchors are the fallback used when a jump leaves that window. They
+/// are built lazily on the first distant lookup and invalidated by any
+/// commit that changes the line layout. `len == 0` means "no valid
+/// index", which doubles as the invalidation flag without a second
+/// boolean.
+#[derive(Clone, Copy)]
+pub(crate) struct LineAnchors {
+    /// Start element of rows `0, stride, 2 * stride, ...`.
+    starts: [u32; LINE_ANCHOR_CAPACITY],
+    /// Number of valid entries in `starts`.
+    len: u16,
+    /// Rows between adjacent anchors.
+    stride: u32,
+    /// Number of addressable rows (newlines + one).
+    rows: u32,
+}
+
+impl LineAnchors {
+    /// An invalid/empty index.
+    #[must_use]
+    pub(crate) const fn empty() -> Self {
+        Self {
+            starts: [0; LINE_ANCHOR_CAPACITY],
+            len: 0,
+            stride: 0,
+            rows: 0,
+        }
+    }
+
+    /// `true` when a built index is available.
+    #[must_use]
+    #[inline]
+    pub(crate) const fn is_valid(self) -> bool {
+        self.len != 0
+    }
+
+    /// Drops the index without clearing the backing array.
+    #[inline]
+    pub(crate) fn invalidate(&mut self) {
+        self.len = 0;
+    }
+
+    /// Number of addressable rows in the indexed document.
+    #[must_use]
+    #[inline]
+    pub(crate) const fn rows(self) -> usize {
+        self.rows as usize
+    }
+
+    /// Grows the indexed row count after newlines were appended after
+    /// the last anchor.
+    ///
+    /// The stored starts stay valid when every anchor lies at or before
+    /// the insertion point: the new rows only extend the final block.
+    /// The index is rejected once the last row drifts more than one
+    /// stride past the final anchor, which keeps fallback scans bounded.
+    #[inline]
+    pub(crate) fn extend_rows(&mut self, at: usize, newlines: usize) -> bool {
+        if !self.is_valid() {
+            return false;
+        }
+        if newlines == 0 {
+            return true;
+        }
+        let last = self.len() - 1;
+        if self.starts[last] as usize > at {
+            return false;
+        }
+        let Some(rows) = self.rows().checked_add(newlines) else {
+            return false;
+        };
+        if rows > u32::MAX as usize {
+            return false;
+        }
+        let last_anchor_row = last * self.stride as usize;
+        if (rows - 1).saturating_sub(last_anchor_row) > self.stride as usize {
+            return false;
+        }
+        self.rows = rows as u32;
+        true
+    }
+
+    /// Shrinks the index after a removal whose line starts only affect
+    /// trailing anchors.
+    ///
+    /// `position..end` is the removed range. Anchors strictly after
+    /// `position` cannot survive a newline removal inside that range,
+    /// so they are dropped; the remaining starts and their row numbers
+    /// stay correct because nothing before `position` moved.
+    #[inline]
+    pub(crate) fn trim_after(&mut self, position: usize, end: usize, removed_newlines: usize) -> bool {
+        if !self.is_valid() {
+            return false;
+        }
+        let len = self.len();
+        // Anchors past the removed range would need shifting left,
+        // which also renumbers their rows: fall back to a rebuild.
+        if self.starts[len - 1] as usize > end {
+            return false;
+        }
+        let position = position.min(u32::MAX as usize) as u32;
+        let keep = self.starts[..len].partition_point(|start| *start <= position);
+        if keep == 0 {
+            return false;
+        }
+        let Some(rows) = self.rows().checked_sub(removed_newlines) else {
+            return false;
+        };
+        if rows == 0 {
+            return false;
+        }
+        let last_anchor_row = (keep - 1) * self.stride as usize;
+        if (rows - 1).saturating_sub(last_anchor_row) > self.stride as usize {
+            return false;
+        }
+        self.len = keep as u16;
+        self.rows = rows as u32;
+        true
+    }
+
+    /// Shifts every anchor after `position` right by `delta` elements.
+    ///
+    /// Only valid for an edit that inserts no newline: the row layout
+    /// is unchanged, so the sparse starts merely move with the text.
+    /// A start exactly at `position` is left in place because inserting
+    /// at the beginning of a line does not move that line's start.
+    #[inline]
+    pub(crate) fn shift_after_insert(&mut self, position: usize, delta: usize) {
+        if !self.is_valid() || delta == 0 {
+            return;
+        }
+        let position = position.min(u32::MAX as usize) as u32;
+        let delta = delta.min(u32::MAX as usize) as u32;
+        let len = self.len();
+        let low = self.starts[..len].partition_point(|start| *start <= position);
+        for start in &mut self.starts[low..len] {
+            *start = start.saturating_add(delta);
+        }
+    }
+
+    /// Shifts every anchor after `position` left by `count` elements.
+    ///
+    /// Only valid for a removal that contains no newline: no line start
+    /// can fall strictly inside the removed range, so every later start
+    /// simply moves left and `rows` stays the same.
+    #[inline]
+    pub(crate) fn shift_after_remove(&mut self, position: usize, count: usize) {
+        if !self.is_valid() || count == 0 {
+            return;
+        }
+        let position = position.min(u32::MAX as usize) as u32;
+        let count = count.min(u32::MAX as usize) as u32;
+        let len = self.len();
+        let low = self.starts[..len].partition_point(|start| *start <= position);
+        for start in &mut self.starts[low..len] {
+            *start = start.saturating_sub(count);
+        }
+    }
+
+    /// Number of stored anchors.
+    #[must_use]
+    #[inline]
+    const fn len(self) -> usize {
+        self.len as usize
+    }
+
+    /// Builds the sparse index over `raw[..len]`.
+    ///
+    /// The first pass counts the newlines (vectorised); the second
+    /// walks line starts and records every `stride`-th one. The stride
+    /// grows with the document so the index never exceeds
+    /// [`LINE_ANCHOR_CAPACITY`] entries.
+    ///
+    /// # Safety
+    ///
+    /// `raw` must be valid for reads of `len` initialized elements (or
+    /// be null when `len == 0`).
+    pub(crate) unsafe fn build<Raw: Copy + Into<u32>>(raw: *const Raw, len: usize) -> Self {
+        if len == 0 || raw.is_null() {
+            return Self::empty();
+        }
+        // Safety: the caller guarantees `raw[..len]`.
+        let newlines = unsafe { scan::count_newlines(raw, len) };
+        let rows = newlines.saturating_add(1);
+        let stride = (rows.div_ceil(LINE_ANCHOR_CAPACITY)).max(LINE_ANCHOR_STRIDE);
+        let mut anchors = Self {
+            starts: [0; LINE_ANCHOR_CAPACITY],
+            len: 1,
+            stride: stride as u32,
+            rows: rows as u32,
+        };
+        let mut row = 0;
+        let mut from = 0;
+        while anchors.len() < LINE_ANCHOR_CAPACITY {
+            // Safety: `from <= len` and `raw[..len]` is the committed
+            // view supplied by the caller.
+            let Some(newline) = (unsafe { scan::find_newline_forward(raw, len, from) }) else {
+                break;
+            };
+            let next = newline + 1;
+            row += 1;
+            from = next;
+            if row % stride == 0 {
+                anchors.starts[anchors.len()] = next as u32;
+                anchors.len += 1;
+            }
+        }
+        anchors
+    }
+
+    /// Anchor block containing `row`: `(first_row, first_start)`.
+    ///
+    /// Returns `None` for a row past the last line.
+    #[must_use]
+    #[inline]
+    fn block_for_row(&self, row: usize) -> Option<(usize, usize)> {
+        if !self.is_valid() || row >= self.rows as usize {
+            return None;
+        }
+        let stride = self.stride as usize;
+        let block = (row / stride).min(self.len() - 1);
+        Some((block * stride, self.starts[block] as usize))
+    }
+
+    /// Anchor block at or before element `end`: `(first_row, first_start)`.
+    #[must_use]
+    #[inline]
+    fn block_for_position(&self, end: usize) -> (usize, usize) {
+        if !self.is_valid() {
+            return (0, 0);
+        }
+        let stride = self.stride as usize;
+        let starts = &self.starts[..self.len()];
+        // First anchor strictly after `end`; the previous one is the
+        // block that can reach `end` with a bounded scan.
+        let mut low = 0;
+        let mut high = starts.len();
+        while low < high {
+            let middle = (low + high) / 2;
+            if starts[middle] as usize <= end {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        if low == 0 {
+            return (0, 0);
+        }
+        let block = low - 1;
+        (block * stride, starts[block] as usize)
+    }
+
+    /// Element index where `row` starts, using the nearest anchor.
+    ///
+    /// # Safety
+    ///
+    /// Same contract as [`Self::build`]; the row must be inside the
+    /// indexed document.
+    #[inline]
+    unsafe fn row_start<Raw: Copy + Into<u32>>(
+        &self,
+        raw: *const Raw,
+        len: usize,
+        row: usize,
+    ) -> Option<usize> {
+        let (base_row, base_start) = self.block_for_row(row)?;
+        if row == base_row {
+            return Some(base_start);
+        }
+        let remaining = row - base_row;
+        // Safety: `base_start <= len`, so the sub-slice is in bounds.
+        let newline = unsafe { scan::find_nth_newline(raw.add(base_start), len - base_start, remaining) }?;
+        Some(base_start + newline + 1)
+    }
+}
+
 /// A pair of positions marking the two ends of a bidi run.
 ///
 /// The pair is not ordered: `p0` is the anchor side and `p1` the
@@ -80,7 +634,7 @@ impl BidiIndex {
 ///
 /// The raw buffer is borrowed through a raw pointer; the cursor never
 /// owns or frees it. [`Cursor::set_raw`] must be called (again) after
-/// the document moves its buffer, and the buffer must stay alive and
+/// the document moves it's buffer, and the buffer must stay alive and
 /// at least `length` elements long while the cursor points into it.
 pub struct Cursor<Raw, Buf, const GAP_SIZE: usize> {
     /// Selected range, kept normalized through [`Self::set_selection_end`].
@@ -315,22 +869,196 @@ impl<Raw: Copy + Into<u32> + From<u32>, Buf, const GAP_SIZE: usize> Cursor<Raw, 
             .is_some_and(|element| super::base::packed_char(element) == u32::from(b'\n'))
     }
 
+    /// `true` when the committed view is large enough to amortise the
+    /// line ring and every line start fits its `u32` entry.
+    #[inline]
+    fn indexable(len: usize) -> bool {
+        len >= LINE_CACHE_MIN_ELEMENTS && len <= u32::MAX as usize
+    }
+
+    /// Rebuilds the stack ring around line `row`, which starts at
+    /// element `start`.
+    ///
+    /// The window holds up to [`LINE_RING_CAPACITY`] consecutive starts
+    /// centred on `row`; local navigation then pushes either edge
+    /// without scanning the document.
+    fn rebuild_line_ring(cache: &mut LineRing, raw: *const Raw, len: usize, row: usize, start: usize) {
+        if !Self::indexable(len) || start > len {
+            *cache = LineRing::empty();
+            return;
+        }
+        // The target sits in the middle when there is enough history;
+        // near the document start it moves down so the window still
+        // covers the following lines.
+        let want_back = row.min(LINE_RING_CAPACITY / 2);
+        let mut entries = [0u32; LINE_RING_CAPACITY];
+        entries[want_back] = start as u32;
+        // The vectorised collector fills the whole window with two
+        // scans (one per direction) instead of one search kernel call
+        // per line. It falls back to the per-line loop when the target
+        // is close enough to the document start that fewer than
+        // `want_back` newlines exist below it.
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+            use codevar_base::cpuid::{Feature, has};
+
+            if core::mem::size_of::<Raw>() == core::mem::size_of::<u32>() && has(Feature::Avx2) {
+                let mut back = [0u32; LINE_RING_CAPACITY];
+                let before = start.saturating_sub(1);
+                let backs =
+                    unsafe { scan::collect_newlines_backward(raw, len, before, &mut back[..want_back]) };
+                if backs == want_back {
+                    for (offset, &newline) in back[..backs].iter().enumerate() {
+                        entries[want_back - 1 - offset] = newline.saturating_add(1);
+                    }
+                    let room = LINE_RING_CAPACITY - (want_back + 1);
+                    let mut forward = [0u32; LINE_RING_CAPACITY];
+                    let forwards =
+                        unsafe { scan::collect_newlines_forward(raw, len, start, &mut forward[..room]) };
+                    for (offset, &newline) in forward[..forwards].iter().enumerate() {
+                        entries[want_back + 1 + offset] = newline.saturating_add(1);
+                    }
+                    let count = want_back + 1 + forwards;
+                    let mut ring = LineRing::empty();
+                    ring.reload(row - want_back, &entries[..count]);
+                    *cache = ring;
+                    return;
+                }
+            }
+        }
+        let mut back = 0;
+        let mut cursor = start;
+        while back < want_back {
+            // The newline ending the line *before* the current one is
+            // the last newline before `cursor - 1`.
+            let before = cursor.saturating_sub(1);
+            // Safety: `raw[..len]` is the committed view bound by
+            // `set_raw`/`rebind_raw`, and `cursor <= len`.
+            let previous = match unsafe { scan::find_newline_backward(raw, len, before) } {
+                Some(newline) => newline + 1,
+                None => 0,
+            };
+            cursor = previous;
+            back += 1;
+            entries[want_back - back] = cursor as u32;
+        }
+        let mut count = want_back + 1;
+        let mut forward = start;
+        while count < LINE_RING_CAPACITY {
+            // Safety: same committed-view contract as above.
+            let Some(newline) = (unsafe { scan::find_newline_forward(raw, len, forward) }) else {
+                break;
+            };
+            forward = newline + 1;
+            entries[count] = forward as u32;
+            count += 1;
+        }
+        let mut ring = LineRing::empty();
+        ring.reload(row - back, &entries[..count]);
+        *cache = ring;
+    }
+
+    /// Row of `end` when the cached window covers it.
+    ///
+    /// Returns [`None`] on a miss; the caller then falls back to the
+    /// vectorised full count and refreshes the ring.
+    fn cached_row(&self, cache: &LineRing, rows: Option<usize>, end: usize) -> Option<usize> {
+        if cache.is_empty() {
+            return None;
+        }
+        let first = cache.at(0);
+        if end < first {
+            return None;
+        }
+        let last_start = cache.at(cache.len() - 1);
+        if end < last_start {
+            // First cached start strictly after `end`; the row is the
+            // one just before it.
+            let mut low = 0;
+            let mut high = cache.len();
+            while low < high {
+                let middle = (low + high) / 2;
+                if cache.at(middle) <= end {
+                    low = middle + 1;
+                } else {
+                    high = middle;
+                }
+            }
+            return Some(cache.first_row() + low - 1);
+        }
+        // When the window already reaches the document's last row,
+        // nothing after `last_start` can be a newline: the caret is on
+        // that row without scanning the (potentially long) final line.
+        let last_row = cache.last_row();
+        if let Some(rows) = rows
+            && last_row.saturating_add(1) >= rows
+        {
+            return Some(last_row);
+        }
+        // `end` may still be on the last cached line; only one line
+        // scan is needed to check, rather than counting from 0.
+        if end <= self.line_end(last_start) {
+            Some(last_row)
+        } else {
+            None
+        }
+    }
+
+    /// Start and exclusive end of the logical line containing
+    /// `position`.
+    ///
+    /// A single [`scan::line_bounds`] call performs the CPUID dispatch
+    /// once and runs both SIMD directions, so callers that need both
+    /// boundaries avoid two independent scanner calls.
+    fn line_bounds(&self, position: usize) -> (usize, usize) {
+        let length = self.length.get();
+        let index = position.min(length);
+        let raw = self.raw.get();
+        let len = if raw.is_null() { 0 } else { self.raw_length.get() };
+        // The committed view is the only part that can hold a newline;
+        // staged positions past it share the last committed line.
+        let before = index.min(len);
+        // Safety: `raw[..len]` is the committed view bound by
+        // `set_raw`/`rebind_raw`, and `before <= len`.
+        let (start, end) = unsafe { scan::line_bounds(raw, len, before) };
+        // `line_bounds` reports the committed length when no newline
+        // follows; the logical line also covers the staged tail.
+        let end = if end >= len { length } else { end };
+        (start, end)
+    }
+
     /// First index of the line containing `position`.
     fn line_start(&self, position: usize) -> usize {
-        let mut index = position.min(self.length.get());
-        while index > 0 && !self.is_newline(index - 1) {
-            index -= 1;
+        let index = position.min(self.length.get());
+        let raw = self.raw.get();
+        let len = if raw.is_null() { 0 } else { self.raw_length.get() };
+        // The committed view is the only part that can hold a newline;
+        // staged positions past it share the last committed line.
+        let before = index.min(len);
+        // Safety: `raw[..len]` is the committed view bound by
+        // `set_raw`/`rebind_raw`.
+        match unsafe { scan::find_newline_backward(raw, len, before) } {
+            Some(newline) => newline + 1,
+            None => 0,
         }
-        index
     }
 
     /// First index after the line containing `position`.
     fn line_end(&self, position: usize) -> usize {
-        let mut index = position.min(self.length.get());
-        while index < self.length.get() && !self.is_newline(index) {
-            index += 1;
+        let length = self.length.get();
+        let index = position.min(length);
+        let raw = self.raw.get();
+        let len = if raw.is_null() { 0 } else { self.raw_length.get() };
+        if index >= len {
+            // Past the committed view: no newline can follow.
+            return length;
         }
-        index
+        // Safety: `raw[..len]` is the committed view bound by
+        // `set_raw`/`rebind_raw`, and `index < len`.
+        match unsafe { scan::find_newline_forward(raw, len, index) } {
+            Some(newline) => newline,
+            None => length,
+        }
     }
 
     /// Places the caret at element `position`, clamped to the view.
@@ -360,16 +1088,58 @@ impl<Raw: Copy + Into<u32> + From<u32>, Buf, const GAP_SIZE: usize> Cursor<Raw, 
     /// Caret row: number of newlines before the caret.
     #[must_use]
     pub fn row(&self) -> usize {
+        self.row_impl(None, None, 0)
+    }
+
+    /// Caret row using `cache` to avoid rescanning the document.
+    pub(crate) fn row_cached(
+        &self,
+        cache: &mut LineRing,
+        anchors: Option<&LineAnchors>,
+        rows: usize,
+    ) -> usize {
+        self.row_impl(Some(cache), anchors, rows)
+    }
+
+    /// Shared row query. `cache`/`anchors` are absent for direct cursor
+    /// callers, which have no engine-level line index.
+    fn row_impl(
+        &self,
+        cache: Option<&mut LineRing>,
+        anchors: Option<&LineAnchors>,
+        rows_hint: usize,
+    ) -> usize {
         let position = self.pos.get().min(self.length.get());
-        let mut row = 0;
-        let mut index = 0;
-        while index < position {
-            if self.is_newline(index) {
-                row += 1;
+        let raw = self.raw.get();
+        let len = if raw.is_null() { 0 } else { self.raw_length.get() };
+        let end = position.min(len);
+        if Self::indexable(len)
+            && let Some(cache) = cache
+        {
+            let rows = if rows_hint != 0 {
+                Some(rows_hint)
+            } else {
+                anchors
+                    .filter(|anchors| anchors.is_valid())
+                    .map(|anchors| anchors.rows())
+            };
+            if let Some(row) = self.cached_row(cache, rows, end) {
+                return row;
             }
-            index += 1;
+            // Cold or distant cache: count from the nearest sparse
+            // anchor, then recentre the ring on the caret's line so
+            // following queries stay local.
+            let (base_row, base_start) = anchors.map_or((0, 0), |anchors| anchors.block_for_position(end));
+            // Safety: `raw[..len]` is the committed view bound by
+            // `set_raw`/`rebind_raw`, `base_start <= end <= len`,
+            // so the sub-slice stays in bounds.
+            let row = base_row + unsafe { scan::count_newlines(raw.add(base_start), end - base_start) };
+            Self::rebuild_line_ring(cache, raw, len, row, self.line_start(end));
+            return row;
         }
-        row
+        // Safety: `raw[..len]` is the committed view bound by
+        // `set_raw`/`rebind_raw`, and `end <= len`.
+        unsafe { scan::count_newlines(raw, end) }
     }
 
     /// Caret column: elements since the start of the current line.
@@ -383,8 +1153,7 @@ impl<Raw: Copy + Into<u32> + From<u32>, Buf, const GAP_SIZE: usize> Cursor<Raw, 
     #[must_use]
     pub fn width(&self) -> usize {
         let position = self.pos.get().min(self.length.get());
-        let start = self.line_start(position);
-        let end = self.line_end(position);
+        let (start, end) = self.line_bounds(position);
         end - start
     }
 
@@ -409,30 +1178,24 @@ impl<Raw: Copy + Into<u32> + From<u32>, Buf, const GAP_SIZE: usize> Cursor<Raw, 
     /// Returns the new position.
     pub fn move_next_line(&self) -> usize {
         let position = self.pos.get().min(self.length.get());
-        let column = position - self.line_start(position);
         let length = self.length.get();
-        let target = match self.element_at(position) {
-            Some(_) if self.is_newline(position) => {
-                // Caret sits on the newline: step over it, the next
-                // line starts right after.
-                let next_start = position + 1;
-                let next_end = self.line_end(next_start);
-                next_start + column.min(next_end - next_start)
-            }
-            Some(_) => {
-                // Mid-line: the next newline ends the current line.
-                let end = self.line_end(position);
-                if end < length {
-                    let next_start = end + 1;
-                    let next_end = self.line_end(next_start);
-                    next_start + column.min(next_end - next_start)
-                } else {
-                    length
-                }
-            }
-            None => length,
-        };
-        self.place(target)
+        let (start, current_end) = self.line_bounds(position);
+        let column = position - start;
+        if self.is_newline(position) {
+            // Caret sits on the newline: step over it, the next line
+            // starts right after.
+            let next_start = position + 1;
+            let next_end = self.line_bounds(next_start).1;
+            return self.place(next_start + column.min(next_end - next_start));
+        }
+        if current_end < length {
+            // Mid-line: the next newline ends the current line.
+            let next_start = current_end + 1;
+            let next_end = self.line_bounds(next_start).1;
+            self.place(next_start + column.min(next_end - next_start))
+        } else {
+            self.place(length)
+        }
     }
 
     /// Moves the caret to the same column of the previous line.
@@ -441,32 +1204,154 @@ impl<Raw: Copy + Into<u32> + From<u32>, Buf, const GAP_SIZE: usize> Cursor<Raw, 
     /// Returns the new position.
     pub fn move_prev_line(&self) -> usize {
         let position = self.pos.get().min(self.length.get());
-        let column = position - self.line_start(position);
-        let start = self.line_start(position);
+        let (start, _) = self.line_bounds(position);
+        let column = position - start;
         if start == 0 {
             return self.place(0);
         }
         // The previous line ends at `start - 1` (the newline that
         // separates it from the current line).
         let prev_end = start - 1;
-        let prev_start = self.line_start(prev_end);
+        let (prev_start, _) = self.line_bounds(prev_end);
         self.place(prev_start + column.min(prev_end - prev_start))
     }
 
     /// Places the caret at `(row, col)`, clamped. Returns the
     /// resulting position.
     pub fn move_to(&self, row: usize, col: usize) -> usize {
+        self.move_to_impl(row, col, None, None)
+    }
+
+    /// Places the caret at `(row, col)` using `cache`/`anchors` for row
+    /// lookup.
+    pub(crate) fn move_to_cached(
+        &self,
+        cache: &mut LineRing,
+        anchors: &LineAnchors,
+        row: usize,
+        col: usize,
+    ) -> usize {
+        self.move_to_impl(row, col, Some(cache), Some(anchors))
+    }
+
+    fn move_to_impl(
+        &self,
+        row: usize,
+        col: usize,
+        cache: Option<&mut LineRing>,
+        anchors: Option<&LineAnchors>,
+    ) -> usize {
         let length = self.length.get();
-        let mut index = 0;
-        let mut current_row = 0;
-        while current_row < row && index < length {
-            if self.is_newline(index) {
-                current_row += 1;
+        let raw = self.raw.get();
+        let len = if raw.is_null() { 0 } else { self.raw_length.get() };
+        // Rows are counted over the committed view; the staged tail
+        // holds no newline, so a row past the last committed line parks
+        // the caret at the document end.
+        let mut index = None;
+        if let Some(cache) = cache {
+            index = cache
+                .offset_of(row)
+                .map(|offset| cache.at(offset));
+            if index.is_none() && !cache.is_empty() {
+                if row.checked_add(1) == Some(cache.first_row()) {
+                    // One row before the window: the previous line start
+                    // is the newline before the line preceding
+                    // `first_row`.
+                    let before = cache.at(0).saturating_sub(1);
+                    // Safety: `raw[..len]` is the committed view bound
+                    // by `set_raw`/`rebind_raw`.
+                    let start =
+                        unsafe { scan::find_newline_backward(raw, len, before) }.map_or(0, |nl| nl + 1);
+                    cache.push_front(start as u32);
+                    index = Some(start);
+                } else if cache.last_row().checked_add(1) == Some(row) {
+                    // One row after the window: the newline that ends
+                    // the last cached line begins the next one.
+                    let last = cache.at(cache.len() - 1);
+                    // Safety: same committed-view contract as above.
+                    if let Some(newline) = unsafe { scan::find_newline_forward(raw, len, last) } {
+                        let start = newline + 1;
+                        cache.push_back(start as u32);
+                        index = Some(start);
+                    }
+                }
             }
-            index += 1;
         }
-        let line_end = self.line_end(index);
-        self.place(index + col.min(line_end - index))
+        let index = match index {
+            Some(index) => index,
+            None if row == 0 => 0,
+            None => {
+                // A valid sparse index bounds the scan to one anchor
+                // block; otherwise fall back to the full scan.
+                let start = match anchors.filter(|anchors| anchors.is_valid()) {
+                    // Safety: same committed-view contract as above.
+                    Some(anchors) => unsafe { anchors.row_start(raw, len, row) },
+                    // Safety: same committed-view contract as above.
+                    None => unsafe { scan::find_nth_newline(raw, len, row) }.map(|newline| newline + 1),
+                };
+                match start {
+                    // Deliberately leave the ring untouched on a distant
+                    // jump: random access would pay to build a window it
+                    // never reuses. `row_cached`/`request_region_load`
+                    // rebuild it when local queries need it.
+                    Some(start) => start,
+                    None => length,
+                }
+            }
+        };
+        if col == 0 {
+            // Column zero is the line start whatever the line width is:
+            // avoid scanning to the newline just to clamp against it.
+            return self.place(index);
+        }
+        // The last (or a past-the-end) row has no newline after it, so
+        // its end is the logical end. The sparse index already knows
+        // the row count, which avoids a full forward scan on tail
+        // navigation.
+        let last_row =
+            anchors.is_some_and(|anchors| anchors.is_valid() && row.saturating_add(1) >= anchors.rows());
+        let line_end = if last_row { length } else { self.line_end(index) };
+        self.place(index + col.min(line_end.saturating_sub(index)))
+    }
+
+    /// Preloads the engine's line ring around `row`.
+    ///
+    /// Random row/column work uses the sparse anchors to bound the
+    /// scan to one block; the rebuilt ring then makes the following
+    /// [`Self::move_to_cached`] and [`Self::row_cached`] queries in
+    /// that region constant time. Returns `true` when the cache was
+    /// primed, or `false` for a short document or a row past the last
+    /// committed line.
+    pub(crate) fn request_region_load_cached(
+        &self,
+        cache: &mut LineRing,
+        anchors: &LineAnchors,
+        row: usize,
+    ) -> bool {
+        let raw = self.raw.get();
+        let len = if raw.is_null() { 0 } else { self.raw_length.get() };
+        if !Self::indexable(len) {
+            *cache = LineRing::empty();
+            return false;
+        }
+        let start = if row == 0 {
+            0
+        } else {
+            let start = if anchors.is_valid() {
+                // Safety: `raw[..len]` is the committed view bound by
+                // `set_raw`/`rebind_raw`.
+                unsafe { anchors.row_start(raw, len, row) }
+            } else {
+                // Safety: same committed-view contract.
+                unsafe { scan::find_nth_newline(raw, len, row) }.map(|newline| newline + 1)
+            };
+            let Some(start) = start else {
+                return false;
+            };
+            start
+        };
+        Self::rebuild_line_ring(cache, raw, len, row, start);
+        true
     }
 
     /// The current bidi index.
@@ -505,7 +1390,7 @@ impl<Raw, Buf, const GAP_SIZE: usize> Default for Cursor<Raw, Buf, GAP_SIZE> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BidiIndex, Cursor};
+    use super::{BidiIndex, Cursor, LineAnchors, LineRing};
 
     // Justification: `unwrap` in tests is permitted by the project
     // lint configuration (`allow-unwrap-in-tests`).
@@ -638,5 +1523,121 @@ mod tests {
         assert_eq!(cursor.move_to(5, 5), 0);
         unsafe { cursor.set_raw(core::ptr::null(), 0) };
         assert_eq!(cursor.move_forward(3), 0);
+    }
+
+    #[test]
+    fn line_ring_primes_extends_and_overwrites() {
+        // 200 lines of 30 chars plus '\n': 6200 elements, well above
+        // the cache threshold, with an empty row 200 after the trailing
+        // newline.
+        const LINES: usize = 200;
+        const WIDTH: usize = 30;
+        const STRIDE: usize = WIDTH + 1;
+        let mut doc = alloc::vec::Vec::with_capacity(LINES * STRIDE);
+        for line in 0..LINES {
+            for column in 0..WIDTH {
+                doc.push(ch(u32::from(b'a' + ((line + column) % 26) as u8)));
+            }
+            doc.push(ch('\n'));
+        }
+        let cursor: Cursor<u32, u32, 16> = Cursor::new();
+        // SAFETY: `doc` stays alive for the whole cursor lifetime.
+        unsafe { cursor.set_raw(doc.as_ptr(), doc.len()) };
+        // SAFETY: same live `doc` view as the cursor.
+        let anchors = unsafe { LineAnchors::build(doc.as_ptr(), doc.len()) };
+        assert!(anchors.is_valid());
+
+        // A cold prime finds a distant row and makes its region local.
+        let mut cache = LineRing::empty();
+        assert!(cursor.request_region_load_cached(&mut cache, &anchors, 100));
+        assert_eq!(
+            cursor.move_to_cached(&mut cache, &anchors, 100, 5),
+            100 * STRIDE + 5
+        );
+        assert_eq!(cursor.row_cached(&mut cache, Some(&anchors), anchors.rows()), 100);
+        assert_eq!(cursor.col(), 5);
+
+        // Overwriting the ring with another region discards the first.
+        assert!(cursor.request_region_load_cached(&mut cache, &anchors, 10));
+        assert_eq!(
+            cursor.move_to_cached(&mut cache, &anchors, 10, 2),
+            10 * STRIDE + 2
+        );
+        assert_eq!(cursor.row_cached(&mut cache, Some(&anchors), anchors.rows()), 10);
+
+        // Adjacent moves extend the window without a full rescan.
+        assert_eq!(
+            cursor.move_to_cached(&mut cache, &anchors, 11, 1),
+            11 * STRIDE + 1
+        );
+        assert_eq!(cursor.row_cached(&mut cache, Some(&anchors), anchors.rows()), 11);
+        assert_eq!(cursor.move_to_cached(&mut cache, &anchors, 9, 4), 9 * STRIDE + 4);
+        assert_eq!(cursor.row_cached(&mut cache, Some(&anchors), anchors.rows()), 9);
+
+        // A jump outside the window falls back, rebuilds, and remains
+        // correct at the document tail.
+        assert_eq!(
+            cursor.move_to_cached(&mut cache, &anchors, 150, 3),
+            150 * STRIDE + 3
+        );
+        assert_eq!(cursor.row_cached(&mut cache, Some(&anchors), anchors.rows()), 150);
+        assert_eq!(
+            cursor.move_to_cached(&mut cache, &anchors, 200, 0),
+            LINES * STRIDE
+        );
+        assert_eq!(cursor.row_cached(&mut cache, Some(&anchors), anchors.rows()), 200);
+        assert_eq!(
+            cursor.move_to_cached(&mut cache, &anchors, 201, 9),
+            LINES * STRIDE
+        );
+
+        // Rows past the committed layout are not cacheable.
+        assert!(!cursor.request_region_load_cached(&mut cache, &anchors, 10_000));
+    }
+
+    #[test]
+    fn shifted_anchor_starts_match_a_fresh_build() {
+        const ROWS: usize = 300;
+        const WIDTH: usize = 20;
+        const STRIDE: usize = WIDTH + 1;
+        let mut doc = alloc::vec::Vec::with_capacity(ROWS * STRIDE);
+        for line in 0..ROWS {
+            for column in 0..WIDTH {
+                doc.push(ch(u32::from(b'a' + ((line + column) % 26) as u8)));
+            }
+            doc.push(ch('\n'));
+        }
+        // SAFETY: `doc` outlives the index and the edited copies below.
+        let mut anchors = unsafe { LineAnchors::build(doc.as_ptr(), doc.len()) };
+        assert!(anchors.is_valid());
+
+        // A newline-free insertion in the middle shifts every start
+        // after it; resolving any row must agree with a fresh build.
+        let mut inserted = doc.clone();
+        inserted.splice(50..50, [ch('x'), ch('y')]);
+        anchors.shift_after_insert(50, 2);
+        assert_eq!(anchors.rows(), ROWS + 1);
+        let rebuilt = unsafe { LineAnchors::build(inserted.as_ptr(), inserted.len()) };
+        for row in 0..=ROWS {
+            assert_eq!(
+                unsafe { anchors.row_start(inserted.as_ptr(), inserted.len(), row) },
+                unsafe { rebuilt.row_start(inserted.as_ptr(), inserted.len(), row) },
+                "row {row} after insertion"
+            );
+        }
+
+        // A newline-free removal shifts later starts left.
+        let position = 100 * STRIDE + 3;
+        let mut removed = inserted.clone();
+        removed.drain(position..position + 5);
+        anchors.shift_after_remove(position, 5);
+        let rebuilt = unsafe { LineAnchors::build(removed.as_ptr(), removed.len()) };
+        for row in 0..=ROWS {
+            assert_eq!(
+                unsafe { anchors.row_start(removed.as_ptr(), removed.len(), row) },
+                unsafe { rebuilt.row_start(removed.as_ptr(), removed.len(), row) },
+                "row {row} after removal"
+            );
+        }
     }
 }

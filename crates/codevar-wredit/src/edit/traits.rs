@@ -251,6 +251,15 @@ pub trait TextEditableCursor<Raw, Buf, const GAP_SIZE: usize>: Writable<Raw, Buf
     /// Moves the caret to `(row, col)`; returns the new position.
     fn move_cursor_to(&mut self, cursor_id: usize, row: usize, col: usize) -> WreditResult<usize>;
 
+    /// Preloads the cursor's stack line ring around `row`.
+    ///
+    /// A cold random row jump has to scan the committed document to
+    /// find the row; doing that scan once with this call overwrites the
+    /// current ring and makes the following row/column work in the
+    /// region constant time. Returns `false` for a document below the
+    /// cache threshold or a row past the last committed line.
+    fn request_region_load(&mut self, cursor_id: usize, row: usize) -> WreditResult<bool>;
+
     /// The caret's row.
     fn cursor_row(&self, cursor_id: usize) -> WreditResult<usize>;
 

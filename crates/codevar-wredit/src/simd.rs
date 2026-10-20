@@ -36,6 +36,13 @@ use alloc::vec::Vec;
 /// Number of bytes one SIMD chunk of the UTF-8 scanners owns.
 const UTF8_CHUNK: usize = 64;
 
+/// Prefix block size for index-to-offset mapping.
+///
+/// Counting whole 4 KiB blocks keeps the run-time dispatch and scalar
+/// boundary work amortised; only the block that contains the target is
+/// rescanned byte by byte.
+const UTF8_SCAN_CHUNK: usize = 4096;
+
 /// Period of the integrity checksum's position weight, in bytes.
 const WEIGHT_PERIOD: usize = 13;
 
@@ -167,21 +174,20 @@ pub fn utf8_byte_index_to_unit(bytes: &[u8], byte_index: usize) -> u64 {
 /// ```
 #[must_use]
 pub fn utf8_unit_index_to_byte(bytes: &[u8], unit_index: u64) -> Option<usize> {
-    let total = count_utf8_units(bytes);
-    if unit_index > total {
-        return None;
-    }
-    if unit_index == total {
-        return Some(bytes.len());
-    }
     let mut seen = 0u64;
     let mut chunk_number = 0usize;
-    while seen <= unit_index {
-        let base = chunk_number.checked_mul(UTF8_CHUNK)?;
-        let end = base.saturating_add(UTF8_CHUNK).min(bytes.len());
+    loop {
+        let base = chunk_number.checked_mul(UTF8_SCAN_CHUNK)?;
+        if base >= bytes.len() {
+            // Past the last unit: only the one-past-the-end index maps.
+            return (unit_index == seen).then_some(bytes.len());
+        }
+        let end = base
+            .saturating_add(UTF8_SCAN_CHUNK)
+            .min(bytes.len());
         let chunk = bytes.get(base..end)?;
         let starts = count_utf8_units(chunk);
-        if unit_index < seen + starts {
+        if unit_index < seen.saturating_add(starts) {
             let mut remaining = unit_index - seen;
             for (offset, &byte) in chunk.iter().enumerate() {
                 if !is_continuation(byte) {
@@ -193,10 +199,9 @@ pub fn utf8_unit_index_to_byte(bytes: &[u8], unit_index: u64) -> Option<usize> {
             }
             return None;
         }
-        seen += starts;
+        seen = seen.saturating_add(starts);
         chunk_number += 1;
     }
-    None
 }
 
 /// Maps many sorted code unit indices to byte offsets in one pass.
@@ -221,10 +226,11 @@ pub fn utf8_char_indices_to_byte_offsets(bytes: &[u8], unit_indices: &[u64]) -> 
     if unit_indices.is_empty() {
         return Some(offsets);
     }
-    let total = count_utf8_units(bytes);
+    // Validate ordering up front; range validation happens while the
+    // prefix is scanned, so the buffer is never counted twice.
     let mut previous = 0u64;
     for &index in unit_indices {
-        if index < previous || index > total {
+        if index < previous {
             return None;
         }
         previous = index;
@@ -232,16 +238,21 @@ pub fn utf8_char_indices_to_byte_offsets(bytes: &[u8], unit_indices: &[u64]) -> 
     let mut seen = 0u64;
     let mut chunk_number = 0usize;
     for &wanted in unit_indices {
-        if wanted == total {
-            offsets.push(bytes.len());
-            continue;
-        }
         'chunk: loop {
-            let base = chunk_number.checked_mul(UTF8_CHUNK)?;
-            let end = base.saturating_add(UTF8_CHUNK).min(bytes.len());
+            let base = chunk_number.checked_mul(UTF8_SCAN_CHUNK)?;
+            if base >= bytes.len() {
+                if wanted == seen {
+                    offsets.push(bytes.len());
+                    break 'chunk;
+                }
+                return None;
+            }
+            let end = base
+                .saturating_add(UTF8_SCAN_CHUNK)
+                .min(bytes.len());
             let chunk = bytes.get(base..end)?;
             let starts = count_utf8_units(chunk);
-            if wanted < seen + starts {
+            if wanted < seen.saturating_add(starts) {
                 let mut remaining = wanted - seen;
                 for (offset, &byte) in chunk.iter().enumerate() {
                     if !is_continuation(byte) {
@@ -254,7 +265,7 @@ pub fn utf8_char_indices_to_byte_offsets(bytes: &[u8], unit_indices: &[u64]) -> 
                 }
                 return None;
             }
-            seen += starts;
+            seen = seen.saturating_add(starts);
             chunk_number += 1;
         }
     }
@@ -497,7 +508,8 @@ pub fn filter_byte(bytes: &[u8], value: u8) -> Vec<u8> {
         }
         if has(Feature::Ssse3) {
             // SAFETY: SSSE3 was confirmed; the kernel only shuffles
-            // registers and appends to a fresh `Vec`.
+            // registers and writes into a `Vec` reserved for the
+            // compacted bytes plus one vector of slack.
             return unsafe { x86::filter_byte_ssse3(bytes, value) };
         }
     }
@@ -676,9 +688,15 @@ pub fn checksum_scalar(bytes: &[u8]) -> u32 {
 #[inline]
 fn checksum_scalar_at(bytes: &[u8], offset: usize) -> u32 {
     let mut sum = 0u64;
-    for (index, &byte) in bytes.iter().enumerate() {
-        let weight = (offset + index) % WEIGHT_PERIOD + 1;
+    // Walk the cyclic weight instead of taking a modulo per byte; the
+    // SIMD tiers leave at most one short tail block here.
+    let mut weight = offset % WEIGHT_PERIOD + 1;
+    for &byte in bytes {
         sum += u64::from(byte) * weight as u64;
+        weight += 1;
+        if weight > WEIGHT_PERIOD {
+            weight = 1;
+        }
     }
     (sum & u64::from(CHECKSUM_MASK)) as u32
 }
@@ -1119,7 +1137,10 @@ mod x86 {
     /// Each 16-byte register is split into two eight-byte halves; the
     /// comparison mask selects a shuffle index vector from
     /// [`COMPACT_LOW`]/[`COMPACT_HIGH`], and one `pshufb` squeezes the
-    /// kept bytes to the front of each half.
+    /// kept bytes to the front of each half. The compacted halves are
+    /// stored directly at the output cursor (each store writes eight
+    /// bytes into reserved slack) instead of being copied through a
+    /// stack scratch buffer.
     ///
     /// # Safety
     ///
@@ -1127,12 +1148,13 @@ mod x86 {
     #[target_feature(enable = "ssse3")]
     pub(super) unsafe fn filter_byte_ssse3(bytes: &[u8], value: u8) -> Vec<u8> {
         // SAFETY: the caller proved SSSE3; `chunks_exact(16)` keeps every
-        // load inside `bytes`, and the shuffle indices are all within one
-        // 128-bit lane.
+        // load inside `bytes`, the shuffle indices are all within one
+        // 128-bit lane, and the output reserves one extra 16-byte vector
+        // so the eight-byte stores stay inside the allocation.
         unsafe {
             let target = _mm_set1_epi8(value as i8);
-            let mut out = Vec::with_capacity(bytes.len());
-            let mut scratch = [0u8; 16];
+            let mut out = Vec::<u8>::with_capacity(bytes.len() + 16);
+            let mut written = 0usize;
             let mut chunks = bytes.chunks_exact(16);
             for chunk in &mut chunks {
                 let data = _mm_loadu_si128(chunk.as_ptr().cast());
@@ -1144,12 +1166,14 @@ mod x86 {
                 let high_index = _mm_loadl_epi64(COMPACT_HIGH[high].as_ptr().cast());
                 let index = _mm_unpacklo_epi64(low_index, high_index);
                 let compacted = _mm_shuffle_epi8(data, index);
-                _mm_storeu_si128(scratch.as_mut_ptr().cast(), compacted);
+                let cursor = out.as_mut_ptr().add(written);
                 let low_count = low.count_ones() as usize;
                 let high_count = high.count_ones() as usize;
-                out.extend_from_slice(&scratch[..low_count]);
-                out.extend_from_slice(&scratch[8..8 + high_count]);
+                _mm_storel_epi64(cursor.cast(), compacted);
+                _mm_storel_epi64(cursor.add(low_count).cast(), _mm_srli_si128(compacted, 8));
+                written += low_count + high_count;
             }
+            out.set_len(written);
             for &byte in chunks.remainder() {
                 if byte != value {
                     out.push(byte);

@@ -117,6 +117,7 @@ powerfmt = { version = "0.2.0", default-features = false }
 zeroize = { version = "1.8", features = ["derive"], default-features = false }
 gettid = "0.1.4"
 pem = { version = "3", default-features = false }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
 codevar-dbus = { path = "crates/codevar-dbus" }
 codevar-mergen = { path = "crates/codevar-mergen" }
@@ -176,7 +177,7 @@ strip = "none"
 opt-level = 2
 
 [profile.release]
-opt-level = "z"
+opt-level = 3
 lto = "fat"
 codegen-units = 1
 panic = "abort"
@@ -184,13 +185,14 @@ strip = "symbols"
 overflow-checks = false
 debug-assertions = false
 
-[profile.release.package."*"]
-codegen-units = 1
-opt-level = "z"
-strip = "symbols"
-
 [profile.bench]
 inherits = "release"
+# Benchmarks measure speed, not binary size: the release profile's
+# `opt-level = "z"` would otherwise distort every result.
+opt-level = 3
+# Thin LTO keeps cross-crate inlining without the very long fat-LTO
+# link of the (large) criterion dependency tree.
+lto = "thin"
 debug = true
 
 [profile.dist]
@@ -200,11 +202,3 @@ lto = "fat"
 codegen-units = 1
 opt-level = "z"
 panic = "abort"
-
-[profile.release.package.ash]
-opt-level = "z"
-strip = "symbols"
-
-[profile.release.package.libc]
-opt-level = "z"
-strip = "symbols"

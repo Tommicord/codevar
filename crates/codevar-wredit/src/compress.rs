@@ -69,56 +69,70 @@ const LITERAL_RUN: u8 = 0xFF;
 /// Longest literal run a single [`LITERAL_RUN`] token can carry.
 const MAX_RUN: usize = 0x100;
 
+/// Offset of each codebook entry inside [`CODEBOOK`].
+///
+/// Derived at compile time so [`codebook_entry`] is an O(1) index
+/// instead of a front-to-back walk. `codebook.rs` is generated, so the
+/// table is computed here to stay in sync automatically.
+const CODEBOOK_START: [u16; CODEBOOK_ENTRIES] = {
+    let mut starts = [0u16; CODEBOOK_ENTRIES];
+    let mut offset = 0usize;
+    let mut index = 0usize;
+    while index < CODEBOOK_ENTRIES {
+        starts[index] = offset as u16;
+        offset += CODEBOOK[offset] as usize + 1;
+        index += 1;
+    }
+    starts
+};
+
+/// `BUCKET_BOUNDS[b]..BUCKET_BOUNDS[b + 1]` is the slice of
+/// [`CODEBOOK_BUCKET`] that lists the entries whose first byte is `b`.
+const BUCKET_BOUNDS: [u16; 257] = {
+    let mut bounds = [0u16; 257];
+    let mut index = 0usize;
+    while index < CODEBOOK_ENTRIES {
+        let first = CODEBOOK[(CODEBOOK_START[index] as usize) + 1] as usize;
+        bounds[first + 1] += 1;
+        index += 1;
+    }
+    let mut byte = 1usize;
+    while byte <= 256 {
+        bounds[byte] += bounds[byte - 1];
+        byte += 1;
+    }
+    bounds
+};
+
+/// Codebook entry indices grouped by their first byte.
+///
+/// The encoder only has to test entries that can match the byte under
+/// the cursor, which turns the per-token scan from `CODEBOOK_ENTRIES`
+/// comparisons into a handful. Within a bucket the indices stay in table
+/// order, so the longest-match tie-break is unchanged.
+const CODEBOOK_BUCKET: [u8; CODEBOOK_ENTRIES] = {
+    let mut bucket = [0u8; CODEBOOK_ENTRIES];
+    let mut cursor = BUCKET_BOUNDS;
+    let mut index = 0usize;
+    while index < CODEBOOK_ENTRIES {
+        let first = CODEBOOK[(CODEBOOK_START[index] as usize) + 1] as usize;
+        bucket[cursor[first] as usize] = index as u8;
+        cursor[first] += 1;
+        index += 1;
+    }
+    bucket
+};
+
 /// Returns codebook entry `code`, or [`None`] when the token names no
 /// entry.
 ///
-/// The table is length-prefixed, so this walks from the front; the
-/// entries are short and few, and the walk is branch-free enough that
-/// the decoder stays bound by the output copy.
+/// O(1) thanks to the compile-time [`CODEBOOK_START`] index.
 fn codebook_entry(code: usize) -> Option<&'static [u8]> {
-    if code >= CODEBOOK_ENTRIES {
-        return None;
-    }
-    let mut offset = 0;
-    let mut index = 0;
-    while index < code {
-        let len = usize::from(*CODEBOOK.get(offset)?);
-        offset = offset.checked_add(len + 1)?;
-        index += 1;
-    }
-    let len = usize::from(*CODEBOOK.get(offset)?);
-    let start = offset.checked_add(1)?;
-    let end = start.checked_add(len)?;
-    CODEBOOK.get(start..end)
-}
-
-/// Iterates the codebook as `(token, entry)` pairs in table order.
-fn codebook_entries() -> CodebookIter {
-    CodebookIter { offset: 0, code: 0 }
-}
-
-/// [`codebook_entries`]' cursor over the flat table.
-struct CodebookIter {
-    offset: usize,
-    code: usize,
-}
-
-impl Iterator for CodebookIter {
-    type Item = (u8, &'static [u8]);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.code >= CODEBOOK_ENTRIES {
-            return None;
-        }
-        let len = usize::from(*CODEBOOK.get(self.offset)?);
-        let start = self.offset.checked_add(1)?;
-        let end = start.checked_add(len)?;
-        let entry = CODEBOOK.get(start..end)?;
-        let token = self.code as u8;
-        self.offset = end;
-        self.code += 1;
-        Some((token, entry))
-    }
+    let start = usize::from(*CODEBOOK_START.get(code)?);
+    let len = usize::from(*CODEBOOK.get(start)?);
+    let body = start.checked_add(1)?;
+    let end = body.checked_add(len)?;
+    CODEBOOK.get(body..end)
 }
 
 /// Compresses `name` with the filename codebook.
@@ -135,7 +149,7 @@ impl Iterator for CodebookIter {
 /// ```
 #[must_use]
 pub fn compress(name: &[u8]) -> Vec<u8> {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(name.len());
     compress_into(name, &mut out);
     out
 }
@@ -145,36 +159,41 @@ pub fn compress(name: &[u8]) -> Vec<u8> {
 /// Same output as [`compress`]; provided so a caller that already owns
 /// a reusable buffer can avoid an allocation in the hot path.
 pub fn compress_into(name: &[u8], out: &mut Vec<u8>) {
-    let mut literals = Vec::new();
+    // Literals are always a contiguous slice of `name`, so the encoder
+    // tracks their start instead of copying them into a scratch buffer.
+    let mut literal_start = 0;
     let mut index = 0;
     while index < name.len() {
+        // Only entries that start with this byte can match, so scan that
+        // bucket instead of the whole table.
+        let first = usize::from(name[index]);
+        let bucket = usize::from(BUCKET_BOUNDS[first])..usize::from(BUCKET_BOUNDS[first + 1]);
         let tail = &name[index..];
         let mut best_len = 0usize;
         let mut best_token = 0u8;
-        for (token, entry) in codebook_entries() {
+        for &code in &CODEBOOK_BUCKET[bucket] {
+            let Some(entry) = codebook_entry(usize::from(code)) else {
+                continue;
+            };
             if entry.len() > best_len && tail.starts_with(entry) {
                 best_len = entry.len();
-                best_token = token;
+                best_token = code;
             }
         }
         if best_len > 0 {
-            flush_literals(&mut literals, out);
+            flush_literals(&name[literal_start..index], out);
             out.push(best_token);
             index += best_len;
+            literal_start = index;
         } else {
-            literals.push(name[index]);
             index += 1;
         }
     }
-    flush_literals(&mut literals, out);
+    flush_literals(&name[literal_start..], out);
 }
 
-/// Emits the pending literal bytes as [`LITERAL_BYTE`]/[`LITERAL_RUN`]
-/// tokens and clears the buffer.
-fn flush_literals(literals: &mut Vec<u8>, out: &mut Vec<u8>) {
-    if literals.is_empty() {
-        return;
-    }
+/// Emits literal bytes as [`LITERAL_BYTE`]/[`LITERAL_RUN`] tokens.
+fn flush_literals(literals: &[u8], out: &mut Vec<u8>) {
     let mut start = 0;
     while start < literals.len() {
         let remaining = literals.len() - start;
@@ -191,7 +210,6 @@ fn flush_literals(literals: &mut Vec<u8>, out: &mut Vec<u8>) {
             start += take;
         }
     }
-    literals.clear();
 }
 
 /// Reverses [`compress`].
@@ -211,7 +229,7 @@ fn flush_literals(literals: &mut Vec<u8>, out: &mut Vec<u8>) {
 /// ```
 #[must_use]
 pub fn decompress(block: &[u8]) -> Option<Vec<u8>> {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(block.len());
     let mut index = 0;
     while index < block.len() {
         let token = block[index];
