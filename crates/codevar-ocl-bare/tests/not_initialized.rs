@@ -34,9 +34,12 @@ fn platform_ids_reports_zero_platforms_before_init() {
 }
 
 #[test]
-fn platform_ids_requires_a_count_slot() {
+fn platform_ids_ignores_a_missing_count_slot() {
+    // The count slot is optional in the OpenCL specification: a null
+    // slot is ignored, so the missing platform is what the caller
+    // learns about.
     let code = unsafe { clGetPlatformIDs(4, core::ptr::null_mut(), core::ptr::null_mut()) };
-    assert_eq!(code, sys::INVALID_VALUE);
+    assert_eq!(code, sys::PLATFORM_NOT_FOUND_KHR);
 }
 
 #[test]

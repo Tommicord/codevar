@@ -34,7 +34,7 @@
 //! # Examples
 //!
 //! ```
-//! use codevar_cli_arg_parse::ArgParser;
+//! use codevar_cli_parse::ArgParser;
 //!
 //! let parser = ArgParser::new("demo", "0.1.0", "A demo tool.")
 //!     .flag("verbose", Some('v'), "Enable verbose output")
@@ -45,7 +45,7 @@
 //! assert!(matches.flag("verbose"));
 //! assert_eq!(matches.option("output"), Some("out.txt"));
 //! assert_eq!(matches.positional(0), Some("in.cl"));
-//! # Ok::<(), codevar_cli_arg_parse::ArgError>(())
+//! # Ok::<(), codevar_cli_parse::ArgError>(())
 //! ```
 
 #![cfg_attr(not(test), no_std)]

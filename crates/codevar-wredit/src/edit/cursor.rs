@@ -24,6 +24,9 @@
 //! reference — exactly what the multi-cursor engine needs — without
 //! `RefCell` bookkeeping or panic paths.
 
+use alloc::boxed::Box;
+use alloc::vec;
+use alloc::vec::Vec;
 use core::cell::Cell;
 use core::marker::PhantomData;
 use core::ptr;
@@ -297,11 +300,23 @@ impl LineRing {
 /// every `stride`-th row, so resolving an arbitrary row scans at most
 /// one block of `stride` lines instead of the whole document. The
 /// index lives on the heap and is only built after a distant jump, so
-/// its 2 KiB footprint stays out of the engine's inline working set.
-const LINE_ANCHOR_CAPACITY: usize = 512;
+/// its footprint stays out of the engine's inline working set.
+///
+/// The capacity is deliberately generous: with one anchor per row a
+/// document of up to [`LINE_ANCHOR_CAPACITY`] rows resolves any row
+/// with a single lookup, and a random jump never has to touch the
+/// document text at all. Cachegrind showed that scanning an anchor
+/// block was the single largest source of L1 misses in the navigation
+/// workload, and the scan is exactly what a denser index removes. The
+/// backing store is allocated to the number of rows the document
+/// actually has, so a short file never pays for the full capacity.
+const LINE_ANCHOR_CAPACITY: usize = 16384;
 
 /// Smallest distance between two sparse line anchors.
 const LINE_ANCHOR_STRIDE: usize = 1;
+
+/// Newline positions collected per bulk scan while building the index.
+const LINE_ANCHOR_SCAN_CHUNK: usize = 256;
 
 /// Sparse, document-level starts for random row/position lookup.
 ///
@@ -311,10 +326,10 @@ const LINE_ANCHOR_STRIDE: usize = 1;
 /// commit that changes the line layout. `len == 0` means "no valid
 /// index", which doubles as the invalidation flag without a second
 /// boolean.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct LineAnchors {
     /// Start element of rows `0, stride, 2 * stride, ...`.
-    starts: [u32; LINE_ANCHOR_CAPACITY],
+    starts: Box<[u32]>,
     /// Number of valid entries in `starts`.
     len: u16,
     /// Rows between adjacent anchors.
@@ -326,9 +341,9 @@ pub(crate) struct LineAnchors {
 impl LineAnchors {
     /// An invalid/empty index.
     #[must_use]
-    pub(crate) const fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
-            starts: [0; LINE_ANCHOR_CAPACITY],
+            starts: Vec::new().into_boxed_slice(),
             len: 0,
             stride: 0,
             rows: 0,
@@ -338,7 +353,7 @@ impl LineAnchors {
     /// `true` when a built index is available.
     #[must_use]
     #[inline]
-    pub(crate) const fn is_valid(self) -> bool {
+    pub(crate) const fn is_valid(&self) -> bool {
         self.len != 0
     }
 
@@ -351,7 +366,7 @@ impl LineAnchors {
     /// Number of addressable rows in the indexed document.
     #[must_use]
     #[inline]
-    pub(crate) const fn rows(self) -> usize {
+    pub(crate) const fn rows(&self) -> usize {
         self.rows as usize
     }
 
@@ -468,16 +483,16 @@ impl LineAnchors {
     /// Number of stored anchors.
     #[must_use]
     #[inline]
-    const fn len(self) -> usize {
+    const fn len(&self) -> usize {
         self.len as usize
     }
 
     /// Builds the sparse index over `raw[..len]`.
     ///
     /// The first pass counts the newlines (vectorised); the second
-    /// walks line starts and records every `stride`-th one. The stride
-    /// grows with the document so the index never exceeds
-    /// [`LINE_ANCHOR_CAPACITY`] entries.
+    /// collects the newline positions in bulk and records every
+    /// `stride`-th one. The stride grows with the document so the index
+    /// never exceeds [`LINE_ANCHOR_CAPACITY`] entries.
     ///
     /// # Safety
     ///
@@ -487,33 +502,76 @@ impl LineAnchors {
         if len == 0 || raw.is_null() {
             return Self::empty();
         }
-        // Safety: the caller guarantees `raw[..len]`.
-        let newlines = unsafe { scan::count_newlines(raw, len) };
-        let rows = newlines.saturating_add(1);
-        let stride = (rows.div_ceil(LINE_ANCHOR_CAPACITY)).max(LINE_ANCHOR_STRIDE);
-        let mut anchors = Self {
-            starts: [0; LINE_ANCHOR_CAPACITY],
-            len: 1,
-            stride: stride as u32,
-            rows: rows as u32,
-        };
-        let mut row = 0;
+        // First pass: collect the row starts in blocks. One vectorised
+        // pass replaces one search call per line, and a document that
+        // fits the anchor capacity keeps every row start, so the index
+        // answers a jump with a lookup and never touches the text.
+        let mut buffer = [0u32; LINE_ANCHOR_SCAN_CHUNK];
+        let mut starts: Vec<u32> = Vec::new();
+        starts.push(0);
+        let mut newlines = 0usize;
         let mut from = 0;
-        while anchors.len() < LINE_ANCHOR_CAPACITY {
+        loop {
             // Safety: `from <= len` and `raw[..len]` is the committed
             // view supplied by the caller.
-            let Some(newline) = (unsafe { scan::find_newline_forward(raw, len, from) }) else {
+            let found = unsafe { scan::collect_newlines_forward(raw, len, from, &mut buffer) };
+            if found == 0 {
                 break;
-            };
-            let next = newline + 1;
-            row += 1;
-            from = next;
-            if row % stride == 0 {
-                anchors.starts[anchors.len()] = next as u32;
-                anchors.len += 1;
+            }
+            for newline in &buffer[..found] {
+                newlines += 1;
+                from = *newline as usize + 1;
+                if starts.len() <= LINE_ANCHOR_CAPACITY {
+                    starts.push(*newline + 1);
+                }
             }
         }
-        anchors
+        let rows = newlines.saturating_add(1);
+        if newlines <= LINE_ANCHOR_CAPACITY {
+            // Dense index: every row start is known, so a row lookup
+            // and a line-end lookup are plain array reads.
+            return Self {
+                starts: starts.into_boxed_slice(),
+                len: rows as u16,
+                stride: LINE_ANCHOR_STRIDE as u32,
+                rows: rows as u32,
+            };
+        }
+        // Very large document: keep one start every `stride` rows. The
+        // first pass only counted the newlines, so the strided starts
+        // need a second pass over the text.
+        let stride = rows
+            .div_ceil(LINE_ANCHOR_CAPACITY)
+            .max(LINE_ANCHOR_STRIDE);
+        let capacity = rows.div_ceil(stride);
+        let mut sparse = vec![0u32; capacity].into_boxed_slice();
+        let mut count = 1usize;
+        let mut row = 0usize;
+        let mut from = 0;
+        while count < capacity {
+            // Safety: same committed-view contract as above.
+            let found = unsafe { scan::collect_newlines_forward(raw, len, from, &mut buffer) };
+            if found == 0 {
+                break;
+            }
+            for newline in &buffer[..found] {
+                row += 1;
+                from = *newline as usize + 1;
+                if row.is_multiple_of(stride) {
+                    sparse[count] = *newline + 1;
+                    count += 1;
+                    if count == capacity {
+                        break;
+                    }
+                }
+            }
+        }
+        Self {
+            starts: sparse,
+            len: count as u16,
+            stride: stride as u32,
+            rows: rows as u32,
+        }
     }
 
     /// Anchor block containing `row`: `(first_row, first_start)`.
@@ -528,6 +586,25 @@ impl LineAnchors {
         let stride = self.stride as usize;
         let block = (row / stride).min(self.len() - 1);
         Some((block * stride, self.starts[block] as usize))
+    }
+
+    /// Exclusive end of `row`, when the index stores every row start.
+    ///
+    /// The next row starts right after the newline that ends this row,
+    /// so the end is one element before that start. A dense index turns
+    /// the column clamp of a jump into a lookup instead of a forward
+    /// scan over the line.
+    #[must_use]
+    #[inline]
+    pub(crate) fn row_end(&self, row: usize) -> Option<usize> {
+        if !self.is_valid() || self.stride != 1 {
+            return None;
+        }
+        let next = row + 1;
+        if next >= self.len() {
+            return None;
+        }
+        Some(self.starts[next] as usize - 1)
     }
 
     /// Anchor block at or before element `end`: `(first_row, first_start)`.
@@ -1310,7 +1387,16 @@ impl<Raw: Copy + Into<u32> + From<u32>, Buf, const GAP_SIZE: usize> Cursor<Raw, 
         // navigation.
         let last_row =
             anchors.is_some_and(|anchors| anchors.is_valid() && row.saturating_add(1) >= anchors.rows());
-        let line_end = if last_row { length } else { self.line_end(index) };
+        // A dense index knows every row start, so the next row's start
+        // gives this row's end without touching the document text.
+        let line_end = if last_row {
+            length
+        } else {
+            match anchors.and_then(|anchors| anchors.row_end(row)) {
+                Some(end) => end,
+                None => self.line_end(index),
+            }
+        };
         self.place(index + col.min(line_end.saturating_sub(index)))
     }
 
@@ -1593,6 +1679,44 @@ mod tests {
 
         // Rows past the committed layout are not cacheable.
         assert!(!cursor.request_region_load_cached(&mut cache, &anchors, 10_000));
+    }
+
+    #[test]
+    fn dense_anchors_resolve_rows_and_line_ends() {
+        const LINES: usize = 64;
+        const WIDTH: usize = 12;
+        const STRIDE: usize = WIDTH + 1;
+        let mut doc = alloc::vec::Vec::with_capacity(LINES * STRIDE);
+        for line in 0..LINES {
+            for column in 0..WIDTH {
+                doc.push(ch(u32::from(b'a' + ((line + column) % 26) as u8)));
+            }
+            doc.push(ch('\n'));
+        }
+        let cursor: Cursor<u32, u32, 16> = Cursor::new();
+        // SAFETY: `doc` stays alive for the whole cursor lifetime.
+        unsafe { cursor.set_raw(doc.as_ptr(), doc.len()) };
+        // SAFETY: same live `doc` view as the cursor.
+        let anchors = unsafe { LineAnchors::build(doc.as_ptr(), doc.len()) };
+        assert!(anchors.is_valid());
+        // The index is dense: one anchor per row, so a jump resolves
+        // without reading the document text.
+        assert_eq!(anchors.stride, 1);
+        assert_eq!(anchors.len, (LINES + 1) as u16);
+        assert_eq!(anchors.rows(), LINES + 1);
+        for row in 0..LINES {
+            assert_eq!(anchors.starts[row] as usize, row * STRIDE);
+        }
+        // The line end is the newline before the next row start.
+        for row in 0..LINES {
+            assert_eq!(anchors.row_end(row), Some(row * STRIDE + WIDTH));
+        }
+        // A column past the line end is clamped to it.
+        let mut cache = LineRing::empty();
+        assert_eq!(
+            cursor.move_to_cached(&mut cache, &anchors, 5, 100),
+            5 * STRIDE + WIDTH
+        );
     }
 
     #[test]

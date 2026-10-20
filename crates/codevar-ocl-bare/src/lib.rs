@@ -38,11 +38,14 @@
 //! The implemented subset targets the OpenCL **embedded profile**: buffers
 //! only (no images/samplers/pipes/SVM), an in-order queue per context, no
 //! online compiler — [`api::clCreateProgramWithSource`] returns
-//! [`sys::COMPILER_NOT_AVAILABLE`] and programs bind to kernels registered
-//! statically in the image through [`api::clCreateProgramWithBuiltInKernels`]
-//! (or [`api::clCreateProgramWithBinary`], whose "binary" is the registry key
-//! the compiler would have produced). Out-of-order queues and event profiling
-//! are rejected with [`sys::INVALID_QUEUE_PROPERTIES`].
+//! [`sys::COMPILER_NOT_AVAILABLE`] and programs are built from SPIR-V:
+//! [`api::clCreateProgramWithIL`] and [`api::clCreateProgramWithBinary`]
+//! (whose "binary" is the SPIR-V module the compiler would have produced),
+//! or from the kernels registered statically in the image through
+//! [`api::clCreateProgramWithBuiltInKernels`]. Out-of-order queues and
+//! event profiling are rejected with [`sys::INVALID_QUEUE_PROPERTIES`],
+//! and [`api::clGetEventProfilingInfo`] reports
+//! [`sys::PROFILING_INFO_NOT_AVAILABLE`].
 //!
 //! # Example
 //!

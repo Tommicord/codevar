@@ -1,5 +1,5 @@
 [package]
-name = "codevar-cli-arg-parse"
+name = "codevar-cli-parse"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [lib]
-name = "codevar_cli_arg_parse"
+name = "codevar_cli_parse"
 
 [dependencies]
 bsize = { workspace = true }

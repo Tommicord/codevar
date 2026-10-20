@@ -246,7 +246,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "codevar-cli-arg-parse"
+name = "codevar-cli-parse"
 version = "1.0.0"
 dependencies = [
  "bsize",
@@ -320,7 +320,7 @@ version = "1.0.0"
 dependencies = [
  "ash",
  "codevar-base",
- "codevar-cli-arg-parse",
+ "codevar-cli-parse",
  "codevar-env",
  "codevar-gpu-core",
  "codevar-logger",
@@ -367,11 +367,13 @@ dependencies = [
  "codevar-env",
  "codevar-logger",
  "codevar-ocl-asm",
+ "codevar-ocl-bare",
  "codevar-ocl-ir",
  "codevar-ocl-parse",
  "codevar-ocl-sar",
  "codevar-pathbuf",
  "libc",
+ "spin 0.12.3",
  "windows-link 0.100.0",
 ]
 
@@ -440,7 +442,7 @@ name = "codevar-oclc"
 version = "1.0.0"
 dependencies = [
  "bsize",
- "codevar-cli-arg-parse",
+ "codevar-cli-parse",
  "codevar-console-util",
  "codevar-io",
  "codevar-logger",
@@ -727,7 +729,8 @@ version = "1.0.0"
 dependencies = [
  "codevar-time-core",
  "libc",
- "num-traits",
+ "libm",
+ "spin 0.12.3",
 ]
 
 [[package]]

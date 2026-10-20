@@ -21,7 +21,12 @@
 //! vendor scan, which is useful for diagnosing a broken installation (and
 //! for shipping a driver next to the application without registering it).
 //!
-//! A successful `Runtime` always owns at least one [`Platform`].
+//! When neither yields a platform — the machine has no `libOpenCL.so`, no
+//! `OpenCL.dll` and no vendor driver — the runtime falls back to the
+//! built-in bare driver of the `codevar-ocl-bare` crate: a statically
+//! linked OpenCL implementation with a CPU back end that needs no dynamic
+//! loader at all. A successful `Runtime` therefore always owns at least
+//! one [`Platform`].
 
 use alloc::ffi::CString;
 use alloc::sync::Arc;
@@ -30,6 +35,7 @@ use alloc::vec::Vec;
 use codevar_logger::{log_debug, log_warn};
 
 use crate::api::Api;
+use crate::bare;
 use crate::error::{Error, Result};
 use crate::icd;
 use crate::loader::{self, Library};
@@ -53,12 +59,55 @@ impl Runtime {
     /// or reports zero platforms — a scan of the vendor libraries listed
     /// in the module documentation of [`crate::icd`].
     ///
+    /// When no system installation yields a platform, the built-in bare
+    /// driver takes over (see the `codevar-ocl-bare` crate), so a host
+    /// without any OpenCL installation still gets a working CPU device.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::NoVendorLibraries`] when no candidate library
-    /// could be opened at all, and [`Error::NoPlatforms`] when libraries
-    /// opened but none exposed a usable platform.
+    /// could be opened at all and the built-in driver is unavailable too,
+    /// and [`Error::NoPlatforms`] when libraries opened but none exposed
+    /// a usable platform.
     pub fn load() -> Result<Self> {
+        match Self::load_installed() {
+            Ok(runtime) => Ok(runtime),
+            Err(error) => {
+                log_debug!("no system OpenCL installation is usable ({error}); trying the built-in driver");
+                Self::load_bare().or(Err(error))
+            }
+        }
+    }
+
+    /// Loads OpenCL by scanning vendor driver libraries directly.
+    ///
+    /// The client loader is never consulted; every candidate from
+    /// [`crate::icd::candidates`] is opened and probed first through the
+    /// full `cl*` API (client loaders and legacy vendors) and then through
+    /// the vendor ICD protocol (dispatch table per platform).
+    ///
+    /// When no candidate yields a platform, the built-in bare driver
+    /// takes over (see the `codevar-ocl-bare` crate).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NoVendorLibraries`] when no candidate could be
+    /// opened and the built-in driver is unavailable too, and
+    /// [`Error::NoPlatforms`] when every opened library yielded zero
+    /// platforms.
+    pub fn load_direct() -> Result<Self> {
+        match Self::load_direct_installed() {
+            Ok(runtime) => Ok(runtime),
+            Err(error) => {
+                log_debug!("no system OpenCL driver is usable ({error}); trying the built-in driver");
+                Self::load_bare().or(Err(error))
+            }
+        }
+    }
+
+    /// Opens the system ICD loader and, failing that, the vendor
+    /// libraries.
+    fn load_installed() -> Result<Self> {
         match loader::open_first(loader::client_candidates()) {
             Ok((library, origin)) => {
                 log_debug!("opened the OpenCL client loader {origin}");
@@ -89,22 +138,11 @@ impl Runtime {
                 log_debug!("no OpenCL client loader found: {error}");
             }
         }
-        Self::load_direct()
+        Self::load_direct_installed()
     }
 
-    /// Loads OpenCL by scanning vendor driver libraries directly.
-    ///
-    /// The client loader is never consulted; every candidate from
-    /// [`crate::icd::candidates`] is opened and probed first through the
-    /// full `cl*` API (client loaders and legacy vendors) and then through
-    /// the vendor ICD protocol (dispatch table per platform).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::NoVendorLibraries`] when no candidate could be
-    /// opened and [`Error::NoPlatforms`] when every opened library yielded
-    /// zero platforms.
-    pub fn load_direct() -> Result<Self> {
+    /// Scans the vendor driver libraries.
+    fn load_direct_installed() -> Result<Self> {
         let candidates = icd::candidates();
         if candidates.is_empty() {
             return Err(Error::NoVendorLibraries);
@@ -153,6 +191,14 @@ impl Runtime {
         } else {
             Err(Error::NoVendorLibraries)
         }
+    }
+
+    /// Publishes the built-in bare driver as the runtime's platform.
+    fn load_bare() -> Result<Self> {
+        let platform = bare::platform()?;
+        Ok(Self {
+            platforms: alloc::vec![platform],
+        })
     }
 
     /// Probes one opened library through both supported protocols,
@@ -215,5 +261,17 @@ mod tests {
             .filter_map(|platform| platform.name().ok())
             .collect();
         assert_eq!(loader_names, direct_names);
+    }
+
+    /// The fallback the runtime uses when the machine has no OpenCL
+    /// installation must publish a usable platform with a device.
+    #[test]
+    fn the_bare_fallback_publishes_a_usable_platform() {
+        let runtime = Runtime::load_bare().expect("the built-in driver is always available");
+        assert!(!runtime.platforms().is_empty());
+        let devices = runtime.platforms()[0]
+            .all_devices()
+            .expect("device enumeration");
+        assert!(!devices.is_empty());
     }
 }

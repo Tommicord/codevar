@@ -172,6 +172,9 @@ fn device_array(devices: &[&'static DeviceObject]) -> Vec<u8> {
 /// `clGetPlatformIDs` — reports the one platform of the image, or
 /// `CL_PLATFORM_NOT_FOUND_KHR` before [`crate::init`].
 ///
+/// The count slot is optional, as the OpenCL specification requires: a
+/// null `num_platforms` is ignored.
+///
 /// # Safety
 ///
 /// When non-null, `platforms` points at `num_entries` writable
@@ -182,15 +185,14 @@ pub unsafe extern "C" fn clGetPlatformIDs(
     platforms: *mut PlatformHandle,
     num_platforms: *mut usize,
 ) -> i32 {
-    if num_platforms.is_null() {
-        return sys::INVALID_VALUE;
-    }
     let platform = match crate::platform::state() {
         Ok(platform) => platform,
         Err(error) => {
-            // SAFETY: caller contract guarantees a writable slot.
-            unsafe {
-                *num_platforms = 0;
+            if !num_platforms.is_null() {
+                // SAFETY: caller contract guarantees a writable slot.
+                unsafe {
+                    *num_platforms = 0;
+                }
             }
             return error.to_cl();
         }
@@ -198,9 +200,11 @@ pub unsafe extern "C" fn clGetPlatformIDs(
     if !platforms.is_null() && num_entries == 0 {
         return sys::INVALID_VALUE;
     }
-    // SAFETY: caller contract guarantees a writable slot.
-    unsafe {
-        *num_platforms = 1;
+    if !num_platforms.is_null() {
+        // SAFETY: caller contract guarantees a writable slot.
+        unsafe {
+            *num_platforms = 1;
+        }
     }
     if !platforms.is_null() {
         // SAFETY: caller contract — room for `num_entries >= 1` handles.
@@ -263,6 +267,9 @@ fn device_type_matches(info: &crate::DeviceInfo, requested: u64, is_first: bool)
 
 /// `clGetDeviceIDs` — the platform devices matching a type filter.
 ///
+/// The count slot is optional, as the OpenCL specification requires: a
+/// null `num_devices` is ignored.
+///
 /// # Safety
 ///
 /// When non-null, `devices` points at `num_entries` writable
@@ -275,9 +282,6 @@ pub unsafe extern "C" fn clGetDeviceIDs(
     devices: *mut DeviceHandle,
     num_devices: *mut usize,
 ) -> i32 {
-    if num_devices.is_null() {
-        return sys::INVALID_VALUE;
-    }
     if device_type & !sys::DEVICE_TYPE_ALL != 0 {
         return sys::INVALID_DEVICE_TYPE;
     }
@@ -291,17 +295,21 @@ pub unsafe extern "C" fn clGetDeviceIDs(
     let state = match crate::platform::state() {
         Ok(state) => state,
         Err(error) => {
-            // SAFETY: caller contract guarantees a writable slot.
-            unsafe {
-                *num_devices = 0;
+            if !num_devices.is_null() {
+                // SAFETY: caller contract guarantees a writable slot.
+                unsafe {
+                    *num_devices = 0;
+                }
             }
             return error.to_cl();
         }
     };
     if !state.matches(raw) {
-        // SAFETY: caller contract guarantees a writable slot.
-        unsafe {
-            *num_devices = 0;
+        if !num_devices.is_null() {
+            // SAFETY: caller contract guarantees a writable slot.
+            unsafe {
+                *num_devices = 0;
+            }
         }
         return sys::INVALID_PLATFORM;
     }
@@ -318,9 +326,11 @@ pub unsafe extern "C" fn clGetDeviceIDs(
         }
         count += 1;
     }
-    // SAFETY: caller contract guarantees a writable slot.
-    unsafe {
-        *num_devices = count;
+    if !num_devices.is_null() {
+        // SAFETY: caller contract guarantees a writable slot.
+        unsafe {
+            *num_devices = count;
+        }
     }
     if count == 0 {
         return sys::DEVICE_NOT_FOUND;
@@ -1031,6 +1041,46 @@ pub unsafe extern "C" fn clCreateProgramWithBinary(
                     *binary_status = sys::SUCCESS;
                 }
             }
+            set_err(errcode_ret, sys::SUCCESS);
+            ProgramHandle::from_raw(handle_ptr(program))
+        }
+        Err(_) => fail(sys::INVALID_BINARY),
+    }
+}
+
+/// `clCreateProgramWithIL` — loads a SPIR-V module as the program.
+///
+/// The IL of this driver is a SPIR-V module, exactly like the "binary" of
+/// [`clCreateProgramWithBinary`]: the module is validated once and its
+/// entry points become the program's kernels.
+///
+/// # Safety
+///
+/// `context` must be a handle produced by this driver; `il` points at
+/// `length` readable bytes; `errcode_ret` is null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn clCreateProgramWithIL(
+    context: ContextHandle,
+    il: *const c_void,
+    length: usize,
+    errcode_ret: *mut i32,
+) -> ProgramHandle {
+    let fail = |code: i32| {
+        set_err(errcode_ret, code);
+        ProgramHandle::from_raw(core::ptr::null_mut())
+    };
+    let context = match objects::context(context) {
+        Ok(context) => context,
+        Err(error) => return fail(error.to_cl()),
+    };
+    if il.is_null() || length == 0 {
+        return fail(sys::INVALID_VALUE);
+    }
+    // SAFETY: caller contract — the caller provides `length` readable bytes.
+    let bytes = unsafe { core::slice::from_raw_parts(il.cast::<u8>(), length) };
+    match crate::spirv::load(bytes).and_then(|module| Program::from_spirv(context, module)) {
+        Ok(program) => {
+            let program: &'static Program = Box::leak(program);
             set_err(errcode_ret, sys::SUCCESS);
             ProgramHandle::from_raw(handle_ptr(program))
         }
@@ -1817,6 +1867,37 @@ pub unsafe extern "C" fn clGetEventInfo(
     }
 }
 
+/// `clGetEventProfilingInfo` — always `CL_PROFILING_INFO_NOT_AVAILABLE`.
+///
+/// The embedded profile has no profiling queues: creating one with
+/// `CL_QUEUE_PROFILING_ENABLE` is rejected with
+/// `CL_INVALID_QUEUE_PROPERTIES`, so no device timestamp was ever
+/// recorded and none can be reported.
+///
+/// # Safety
+///
+/// The `clGet*Info` caller contract for the out parameters.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn clGetEventProfilingInfo(
+    event: EventHandle,
+    param_name: u32,
+    _param_value_size: usize,
+    _param_value: *mut c_void,
+    _param_value_size_ret: *mut usize,
+) -> i32 {
+    match param_name {
+        sys::PROFILING_COMMAND_QUEUED
+        | sys::PROFILING_COMMAND_SUBMIT
+        | sys::PROFILING_COMMAND_START
+        | sys::PROFILING_COMMAND_END => {}
+        _ => return sys::INVALID_VALUE,
+    }
+    match objects::event(event) {
+        Ok(_) => sys::PROFILING_INFO_NOT_AVAILABLE,
+        Err(error) => error.to_cl(),
+    }
+}
+
 /// `clRetainEvent`.
 ///
 /// # Safety
@@ -1856,10 +1937,12 @@ mod tests {
 
     const NULL32: *mut c_void = core::ptr::null_mut();
 
+    /// The count slot of `clGetPlatformIDs` is optional: a null slot is
+    /// ignored, not rejected.
     #[test]
-    fn platform_ids_requires_a_num_platforms_slot() {
+    fn platform_ids_ignores_a_null_count_slot() {
         let code = unsafe { clGetPlatformIDs(0, core::ptr::null_mut(), core::ptr::null_mut()) };
-        assert_eq!(code, sys::INVALID_VALUE);
+        assert!(code == sys::SUCCESS || code == sys::PLATFORM_NOT_FOUND_KHR);
     }
 
     #[test]
@@ -1956,6 +2039,49 @@ mod tests {
             )
         };
         assert_eq!(code, sys::INVALID_EVENT);
+    }
+
+    /// `clGetEventProfilingInfo` rejects an unknown parameter and a null
+    /// event; the embedded profile never records timestamps.
+    #[test]
+    fn profiling_info_rejects_bad_parameters_and_handles() {
+        let code = unsafe {
+            clGetEventProfilingInfo(
+                EventHandle::from_raw(NULL32),
+                sys::PROFILING_COMMAND_START,
+                0,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(code, sys::INVALID_EVENT);
+        let code = unsafe {
+            clGetEventProfilingInfo(
+                EventHandle::from_raw(NULL32),
+                0x1234,
+                0,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(code, sys::INVALID_VALUE);
+    }
+
+    /// `clCreateProgramWithIL` rejects a null context and an empty IL
+    /// blob before it touches the module loader.
+    #[test]
+    fn program_with_il_rejects_invalid_arguments() {
+        let mut errcode = sys::SUCCESS;
+        let handle = unsafe {
+            clCreateProgramWithIL(
+                ContextHandle::from_raw(NULL32),
+                core::ptr::null(),
+                0,
+                &mut errcode,
+            )
+        };
+        assert_eq!(errcode, sys::INVALID_CONTEXT);
+        assert!(handle.is_null());
     }
 
     #[test]

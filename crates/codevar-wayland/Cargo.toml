@@ -12,7 +12,8 @@ name = "codevar_wayland"
 
 [dependencies]
 libc = { workspace = true }
-num-traits = { workspace = true }
+spin = { workspace = true }
+libm = { workspace = true }
 codevar-time-core = { workspace = true }
 
 [lints]

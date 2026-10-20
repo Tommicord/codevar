@@ -110,7 +110,7 @@ pub unsafe extern "C" fn main(
 ) -> core::ffi::c_int {
     #[cfg(not(unix))]
     init_heap();
-    let args = match unsafe { codevar_cli_arg_parse::from_c_args(argc, argv) } {
+    let args = match unsafe { codevar_cli_parse::from_c_args(argc, argv) } {
         Ok(args) => args,
         Err(error) => {
             let message = alloc::format!("error: invalid command line: {error}\n");

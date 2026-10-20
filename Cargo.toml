@@ -34,7 +34,7 @@ members = [
     "crates/codevar-truetype-autofit",
     "crates/codevar-truetype-glyf",
     "crates/codevar-ocl-lex",
-    "crates/codevar-cli-arg-parse",
+    "crates/codevar-cli-parse",
     "crates/codevar-oclc",
     "crates/codevar-ocl-parse",
     "crates/codevar-ocl-sar",
@@ -66,7 +66,6 @@ quote = { version = "1.0", default-features = false }
 ash = { version = "0.38", default-features = false }
 libc = { version = "0.2", default-features = false }
 cfg-if = "1.0.5"
-num-traits = { version = "0.2", default-features = false, features = ["libm", "i128"] }
 cargo-ndk = "4.1.2"
 sha1 = { version = "0.10", default-features = false }
 sha2 = { version = "0.10", default-features = false }
@@ -154,7 +153,7 @@ codevar-truetype-pshinter = { path = "crates/codevar-truetype-pshinter" }
 codevar-truetype-autofit = { path = "crates/codevar-truetype-autofit" }
 codevar-truetype-glyf = { path = "crates/codevar-truetype-glyf" }
 codevar-ocl-lex = { path = "crates/codevar-ocl-lex" }
-codevar-cli-arg-parse = { path = "crates/codevar-cli-arg-parse" }
+codevar-cli-parse = { path = "crates/codevar-cli-parse" }
 codevar-oclc = { path = "crates/codevar-oclc" }
 codevar-ocl-parse = { path = "crates/codevar-ocl-parse" }
 codevar-ocl-sar = { path = "crates/codevar-ocl-sar" }

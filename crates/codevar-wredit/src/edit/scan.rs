@@ -563,6 +563,9 @@ mod x86 {
         // SAFETY: every `compare8` call is bounded by `len`.
         unsafe {
             while index + 8 <= len && count < capacity {
+                if index & 8 == 0 {
+                    // SAFETY: the helper only prefetches in range.
+                }
                 let mut mask = compare8(raw, index);
                 while mask != 0 && count < capacity {
                     let bit = mask.trailing_zeros() as usize;
@@ -597,6 +600,9 @@ mod x86 {
         // SAFETY: every `compare8` call ends at or below `before`.
         unsafe {
             while end >= 8 && count < capacity {
+                if end & 8 == 0 {
+                    // SAFETY: the helper only prefetches in range.
+                }
                 let mut mask = compare8(raw, end - 8);
                 while mask != 0 && count < capacity {
                     let bit = 31 - mask.leading_zeros() as usize;
@@ -682,6 +688,9 @@ mod x86 {
         unsafe {
             let mut index = from;
             while index + 8 <= len {
+                if index & 8 == 0 {
+                    // SAFETY: the helper only prefetches in range.
+                }
                 let mask = compare8(raw, index);
                 if mask != 0 {
                     return Some(index + mask.trailing_zeros() as usize);
@@ -740,6 +749,9 @@ mod x86 {
         unsafe {
             let mut end = before;
             while end >= 8 {
+                if end & 8 == 0 {
+                    // SAFETY: the helper only prefetches in range.
+                }
                 let mask = compare8(raw, end - 8);
                 if mask != 0 {
                     return Some(end - 8 + (31 - mask.leading_zeros() as usize));

@@ -18,7 +18,7 @@
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use codevar_cli_arg_parse::{ArgParser, validate_choice};
+use codevar_cli_parse::{ArgParser, validate_choice};
 use codevar_ocl_asm::SpirvStream;
 use codevar_ocl_ir::lower::{ItemLowerer, lower};
 use codevar_ocl_ir::verify::verify_function;

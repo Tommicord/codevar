@@ -20,6 +20,11 @@
 //! compile-time linkage against `libOpenCL`. Call [`Runtime::load`] to
 //! discover platforms through the system ICD loader, or
 //! [`Runtime::load_direct`] to scan vendor libraries directly.
+//!
+//! When the machine has no OpenCL installation at all, both entry points
+//! fall back to the built-in bare driver (see [`Runtime`]): a statically
+//! linked OpenCL implementation with a CPU back end, so a host without
+//! `libOpenCL.so` still has a usable device.
 
 #![cfg_attr(not(test), no_std)]
 #![warn(missing_docs)]
@@ -27,6 +32,7 @@
 extern crate alloc;
 
 mod api;
+mod bare;
 mod buffer;
 mod context;
 mod dispatch;

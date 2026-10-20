@@ -47,6 +47,129 @@ pub mod riscv64;
 #[cfg(target_arch = "riscv32")]
 pub mod riscv32;
 
+// Re-export the hand-written word/byte kernels at a stable path so the
+// engine can use them without naming an architecture module. Every
+// supported target exposes the same `codevar_wredit_k_*` symbols.
+#[cfg(target_arch = "aarch64")]
+pub use self::aarch64::rout;
+#[cfg(all(target_arch = "arm", not(target_feature = "thumb-mode")))]
+pub use self::armv7::rout;
+#[cfg(target_arch = "riscv32")]
+pub use self::riscv32::rout;
+#[cfg(target_arch = "riscv64")]
+pub use self::riscv64::rout;
+#[cfg(all(target_arch = "arm", target_feature = "thumb-mode"))]
+pub use self::thumbv7m::rout;
+
+/// Pure-Rust fallbacks for targets without an assembly implementation.
+///
+/// Only the kernels the engine itself calls are provided here; the
+/// full twenty-routine set is available on every assembled target.
+#[cfg(not(any(
+    target_arch = "aarch64",
+    target_arch = "arm",
+    target_arch = "riscv64",
+    target_arch = "riscv32",
+)))]
+pub mod rout {
+    /// Copies `count` words; ranges must not overlap.
+    ///
+    /// # Safety
+    ///
+    /// `src` must be valid for reads and `dst` for writes of
+    /// `count * 4` bytes, without overlap.
+    #[inline]
+    pub unsafe fn codevar_wredit_k_copy_words(dst: *mut u32, src: *const u32, count: usize) -> *mut u32 {
+        // Safety: guaranteed by the caller.
+        unsafe { core::ptr::copy_nonoverlapping(src, dst, count) };
+        dst
+    }
+
+    /// Copies `count` words, handling overlap.
+    ///
+    /// # Safety
+    ///
+    /// `src` must be valid for reads and `dst` for writes of
+    /// `count * 4` bytes; the ranges may overlap.
+    #[inline]
+    pub unsafe fn codevar_wredit_k_move_words(dst: *mut u32, src: *const u32, count: usize) -> *mut u32 {
+        // Safety: guaranteed by the caller.
+        unsafe { core::ptr::copy(src, dst, count) };
+        dst
+    }
+
+    /// Counts words matching `(word & mask) == value`.
+    ///
+    /// # Safety
+    ///
+    /// `src` must be valid for reads of `count` words.
+    #[inline]
+    pub unsafe fn codevar_wredit_k_count_eq_u32(
+        src: *const u32,
+        value: u32,
+        mask: u32,
+        count: usize,
+    ) -> usize {
+        let mut total = 0;
+        for index in 0..count {
+            // Safety: the caller bounds the range.
+            let word = unsafe { core::ptr::read_unaligned(src.add(index)) };
+            if word & mask == value {
+                total += 1;
+            }
+        }
+        total
+    }
+
+    /// Finds the first word matching `(word & mask) == value`.
+    ///
+    /// # Safety
+    ///
+    /// `src` must be valid for reads of `count` words.
+    #[inline]
+    pub unsafe fn codevar_wredit_k_find_eq_u32(
+        src: *const u32,
+        value: u32,
+        mask: u32,
+        count: usize,
+    ) -> *const u32 {
+        for index in 0..count {
+            // Safety: the caller bounds the range.
+            let word = unsafe { core::ptr::read_unaligned(src.add(index)) };
+            if word & mask == value {
+                // Safety: `index < count`.
+                return unsafe { src.add(index) };
+            }
+        }
+        core::ptr::null()
+    }
+
+    /// Finds the last word matching `(word & mask) == value`.
+    ///
+    /// # Safety
+    ///
+    /// `src` must be valid for reads of `count` words.
+    #[inline]
+    pub unsafe fn codevar_wredit_k_find_eq_u32_rev(
+        src: *const u32,
+        value: u32,
+        mask: u32,
+        count: usize,
+    ) -> *const u32 {
+        let mut index = count;
+        while index > 0 {
+            index -= 1;
+            // Safety: `index < count`.
+            let word = unsafe { core::ptr::read_unaligned(src.add(index)) };
+            if word & mask == value {
+                // Safety: `index < count`.
+                return unsafe { src.add(index) };
+            }
+        }
+        core::ptr::null()
+    }
+}
+
 /// Cache-line size in bytes, used as the prefetch stride and for
 /// buffer-padding decisions. 64 bytes covers the L1 cache line on
 /// x86_64 and the common ARM/RISC-V cores, matching the stride of the

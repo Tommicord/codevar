@@ -38,6 +38,22 @@ use super::base::{T_COMMON, T_MERGE, WritableAlignedPtr, make_packed, packed_cha
 use super::writable::{MAX_GAPS, SHARED_GAP_SLOTS, StreamWritable, WritableEvent};
 use crate::arch::{memcpy, memmove};
 
+/// What a committed run did to the line layout.
+///
+/// The row indexes react differently to each case: a plain insertion
+/// only moves the row starts, added newlines grow the row count, and a
+/// merge can consume an element, so its effect stays unknown until the
+/// index is rebuilt.
+#[derive(Clone, Copy)]
+enum LineLayout {
+    /// No newline and no merge: every row start merely moves.
+    Stable,
+    /// The run added this many newlines at the insertion point.
+    Newlines(usize),
+    /// The run carries a merge, whose layout effect is unknown.
+    Merge,
+}
+
 /// Number of plain elements resolved on the stack per block move.
 const FLUSH_CHUNK: usize = 0x40;
 
@@ -374,7 +390,13 @@ where
                 newlines += 1;
             }
         }
-        let layout_stable = !has_merge && newlines == 0;
+        let layout = if has_merge {
+            LineLayout::Merge
+        } else if newlines != 0 {
+            LineLayout::Newlines(newlines)
+        } else {
+            LineLayout::Stable
+        };
         // Safety: `content` points at `staged` initialized elements
         // of the gap window (never aliased by the raw document).
         let Some(new_length) = flush_gap_buffer_to_raw(self.base.raw_mut(), old_length, content, staged, at)
@@ -388,20 +410,14 @@ where
         self.base.raw_mut().set_count(new_length);
         self.base.vspace = self.base.raw_ref().allocated();
         let rows = self.base.rows.get();
-        if has_merge {
-            self.base.rows.set(0);
-        } else if rows != 0 && newlines != 0 {
-            self.base.rows.set(rows.saturating_add(newlines));
+        match layout {
+            LineLayout::Merge => self.base.rows.set(0),
+            LineLayout::Newlines(count) if rows != 0 => {
+                self.base.rows.set(rows.saturating_add(count));
+            }
+            LineLayout::Newlines(_) | LineLayout::Stable => {}
         }
-        self.commit_bookkeeping(
-            gap_index,
-            at,
-            committed,
-            staged,
-            layout_stable,
-            newlines,
-            has_merge,
-        );
+        self.commit_bookkeeping(gap_index, at, committed, staged, layout);
         self.base
             .emit(WritableEvent::buffer_changed(at, staged));
         committed
@@ -497,12 +513,20 @@ where
             offset += take;
         }
         self.base.vspace = self.base.raw_ref().allocated();
-        let layout_stable = !has_merge && newlines == 0;
+        let layout = if has_merge {
+            LineLayout::Merge
+        } else if newlines != 0 {
+            LineLayout::Newlines(newlines)
+        } else {
+            LineLayout::Stable
+        };
         let rows = self.base.rows.get();
-        if has_merge {
-            self.base.rows.set(0);
-        } else if rows != 0 && newlines != 0 {
-            self.base.rows.set(rows.saturating_add(newlines));
+        match layout {
+            LineLayout::Merge => self.base.rows.set(0),
+            LineLayout::Newlines(count) if rows != 0 => {
+                self.base.rows.set(rows.saturating_add(count));
+            }
+            LineLayout::Newlines(_) | LineLayout::Stable => {}
         }
         // Release the slot and settle every gap base before the cursor
         // bookkeeping, so one refresh sees the final logical length.
@@ -511,14 +535,16 @@ where
             .shift_gap_bases(at, committed_total, false);
         self.base
             .shift_shared_bases(at, committed_total, false);
-        if layout_stable {
-            self.base
-                .refresh_cursor_views_shifted(at, committed_total, false);
-        } else if has_merge {
-            self.base.refresh_cursor_views();
-        } else {
-            self.base
-                .refresh_cursor_views_newline_insert(at, newlines, committed_total);
+        match layout {
+            LineLayout::Stable => {
+                self.base
+                    .refresh_cursor_views_shifted(at, committed_total, false);
+            }
+            LineLayout::Merge => self.base.refresh_cursor_views(),
+            LineLayout::Newlines(newlines) => {
+                self.base
+                    .refresh_cursor_views_newline_insert(at, newlines, committed_total);
+            }
         }
         let mut mask = self.base.cursor_mask;
         while mask != 0 {
@@ -568,9 +594,7 @@ where
         at: usize,
         committed: usize,
         staged: usize,
-        layout_stable: bool,
-        newlines: usize,
-        has_merge: bool,
+        layout: LineLayout,
     ) {
         // Settle the gap bases first so one refresh sees the final
         // logical length; the cursor loop below then only has to move
@@ -582,14 +606,16 @@ where
         // Plain typing preserves the row starts: shift the sparse
         // index with the text rather than rebuilding it on the next
         // row query. Merges and newlines still take the full refresh.
-        if layout_stable {
-            self.base
-                .refresh_cursor_views_shifted(at, committed, false);
-        } else if has_merge {
-            self.base.refresh_cursor_views();
-        } else {
-            self.base
-                .refresh_cursor_views_newline_insert(at, newlines, committed);
+        match layout {
+            LineLayout::Stable => {
+                self.base
+                    .refresh_cursor_views_shifted(at, committed, false);
+            }
+            LineLayout::Merge => self.base.refresh_cursor_views(),
+            LineLayout::Newlines(newlines) => {
+                self.base
+                    .refresh_cursor_views_newline_insert(at, newlines, committed);
+            }
         }
         let mut mask = self.base.cursor_mask;
         while mask != 0 {

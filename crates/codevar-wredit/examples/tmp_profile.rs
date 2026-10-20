@@ -142,6 +142,56 @@ pub fn measure_nav(stream: &mut Stream, n: usize) {
 
 #[unsafe(no_mangle)]
 #[inline(never)]
+pub fn bench_nav_big(n: usize) {
+    let mut stream = Stream::with_capacity(500_000 * 41 + 4096);
+    let id = stream.append_cursor(Cursor::new()).unwrap();
+    stream.set_active_cursor(id);
+    for row in 0..500_000usize {
+        for column in 0..40 {
+            stream
+                .put(0, plain(b'a' + ((row + column) % 26) as u8))
+                .unwrap();
+        }
+        stream.put(0, plain(b'\n')).unwrap();
+    }
+    stream.flush_all();
+    let _ = stream.cursor_row(0).unwrap();
+    let mut rng = Rng(0x9e37_79b9);
+    for _ in 0..n {
+        let row = rng.below(500_000);
+        black_box(stream.move_cursor_to(0, row, 20).unwrap());
+    }
+}
+
+#[unsafe(no_mangle)]
+#[inline(never)]
+pub fn bench_type_middle(n: usize) {
+    let mut stream = Stream::with_capacity(16_000 * 41 + 4096);
+    let id = stream.append_cursor(Cursor::new()).unwrap();
+    stream.set_active_cursor(id);
+    for row in 0..16_000usize {
+        for column in 0..40 {
+            stream
+                .put(0, plain(b'a' + ((row + column) % 26) as u8))
+                .unwrap();
+        }
+        stream.put(0, plain(b'\n')).unwrap();
+    }
+    stream.flush_all();
+    let _ = stream.cursor_row(0).unwrap();
+    // Park the caret in the middle of the document: every keystroke
+    // then shifts the tail of the sparse index.
+    let _ = stream.move_cursor_to(0, 8_000, 0).unwrap();
+    for index in 0..n {
+        stream
+            .put(0, plain(b'a' + (index % 26) as u8))
+            .unwrap();
+        stream.flush_all();
+    }
+}
+
+#[unsafe(no_mangle)]
+#[inline(never)]
 pub fn bench_random_edit(n: usize) {
     let mut stream = new_stream();
     build_text(&mut stream, 200_000);
@@ -157,7 +207,7 @@ pub fn measure_random_edit(stream: &mut Stream, n: usize) {
         let pos = rng.below(length);
         let _ = stream.move_cursor_to(0, 0, pos);
         let _ = stream.delete(0);
-        let _ = stream.put(0, plain(b'x' as u8));
+        let _ = stream.put(0, plain(b'x'));
         let _ = stream.flush_all();
     }
 }
@@ -216,10 +266,12 @@ fn main() {
         .unwrap_or(20_000);
     match workload.as_str() {
         "type_end" => bench_type_end(n),
+        "type_middle" => bench_type_middle(n),
         "type_front" => bench_type_front(n),
         "forward" => bench_forward(n),
         "char_at" => bench_char_at(n),
         "nav" => bench_nav(n),
+        "nav_big" => bench_nav_big(n),
         "random_edit" => bench_random_edit(n),
         "compress" => bench_compress(n),
         "decompress" => bench_decompress(n),
