@@ -214,6 +214,23 @@ struct CompiledKernel {
     source: KernelSource,
     /// Names of the `#[kernel]` functions it declares, in source order.
     entry_points: Vec<String>,
+    /// The kernels that were also compiled to native machine code.
+    native: Vec<NativeKernel>,
+}
+
+/// One `#[kernel]` compiled to native machine code.
+#[derive(Debug, Clone)]
+struct NativeKernel {
+    /// The kernel's name, as it is declared in the source.
+    name: String,
+    /// The sanitized upper-case name of the generated static.
+    static_suffix: String,
+    /// The artifact stem staged in `OUT_DIR`.
+    artifact_stem: String,
+    /// The offset of the entry point inside the machine code.
+    entry_offset: u32,
+    /// The number of machine instructions the code holds.
+    instruction_count: u32,
 }
 
 /// Why binding generation failed; every variant renders as a single line.
@@ -649,7 +666,97 @@ fn compile(source: KernelSource, out_dir: &Path) -> Result<CompiledKernel, Build
         source: error,
     })?;
 
-    Ok(CompiledKernel { source, entry_points })
+    let native = compile_native(&module, &entry_points, &source, out_dir)?;
+
+    Ok(CompiledKernel {
+        source,
+        entry_points,
+        native,
+    })
+}
+
+/// Compiles every kernel of `module` to native machine code and stages the
+/// result in `out_dir`.
+///
+/// The machine code belongs to one architecture, so it is only produced
+/// when the crate is built for the architecture the build script runs on;
+/// a cross build keeps the SPIR-V path and says so with a warning.  A
+/// kernel the native back end cannot express is skipped with a warning
+/// as well: the kernel is valid, the back end is simply not there yet.
+fn compile_native(
+    module: &codevar_ocl_ir::ir::Module,
+    entry_points: &[String],
+    source: &KernelSource,
+    out_dir: &Path,
+) -> Result<Vec<NativeKernel>, BuildFailure> {
+    if entry_points.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !native_target_matches_host() {
+        cargo_warning(&format!(
+            "{}: the native machine code is only built for the host architecture; \
+             the SPIR-V image is embedded instead",
+            source.file_name
+        ));
+        return Ok(Vec::new());
+    }
+    let target = match codevar_ocl_tc::host_target() {
+        Ok(target) => target,
+        Err(error) => {
+            cargo_warning(&format!(
+                "{}: no native back end for this architecture ({error}); \
+                 the SPIR-V image is embedded instead",
+                source.file_name
+            ));
+            return Ok(Vec::new());
+        }
+    };
+    let mut compiled = Vec::with_capacity(entry_points.len());
+    for name in entry_points {
+        let code = match codevar_ocl_tc::compile_module_for(target.as_target(), module, name) {
+            Ok(code) => code,
+            Err(error) => {
+                cargo_warning(&format!(
+                    "{}: the kernel `{name}` has no native machine code ({error}); \
+                     it is embedded as SPIR-V only",
+                    source.file_name
+                ));
+                continue;
+            }
+        };
+        let static_suffix = derive_static_prefix(name);
+        let artifact_stem = format!("{}_{}", source.artifact_stem, name.to_lowercase());
+        let path = out_dir.join(artifact_file_name(&artifact_stem, "bin"));
+        std::fs::write(&path, code.bytes()).map_err(|error| BuildFailure::WriteFile {
+            path,
+            source: error,
+        })?;
+        compiled.push(NativeKernel {
+            name: name.clone(),
+            static_suffix,
+            artifact_stem,
+            entry_offset: code.entry_offset(),
+            instruction_count: code.instruction_count(),
+        });
+    }
+    Ok(compiled)
+}
+
+/// True when the crate is built for the architecture the build script runs
+/// on.
+///
+/// Cargo hands the script both triples: `HOST` is the machine the script
+/// runs on and `TARGET` the machine the crate is built for.  The machine
+/// code of a kernel belongs to one architecture, so it is only embedded
+/// when the two agree.
+fn native_target_matches_host() -> bool {
+    fn architecture(triple: &str) -> &str {
+        triple.split('-').next().unwrap_or(triple)
+    }
+    match (std::env::var("TARGET"), std::env::var("HOST")) {
+        (Ok(target), Ok(host)) => architecture(&target) == architecture(&host),
+        _ => false,
+    }
 }
 
 /// The artifact file name staged in `OUT_DIR` for `stem` (`wredit_block`
@@ -693,8 +800,8 @@ struct ModuleNode {
 
 impl ModuleNode {
     /// Files one directory deeper: recurses until `module_path` is
-    /// empty, then stores the three statics of one kernel file.
-    fn insert(&mut self, module_path: &[String], statics: [TokenStream; 3]) {
+    /// empty, then stores the statics of one kernel file.
+    fn insert(&mut self, module_path: &[String], statics: Vec<TokenStream>) {
         match module_path.split_first() {
             None => self.statics.extend(statics),
             Some((directory, rest)) => {
@@ -730,10 +837,15 @@ impl ModuleNode {
 fn generated_items(kernels: &[CompiledKernel]) -> Vec<TokenStream> {
     let mut root = ModuleNode::default();
     for kernel in kernels {
-        root.insert(
-            &kernel.source.module_path,
-            [spirv_item(kernel), source_item(kernel), entry_points_item(kernel)],
-        );
+        let mut statics = vec![
+            spirv_item(kernel),
+            source_item(kernel),
+            entry_points_item(kernel),
+        ];
+        for native in &kernel.native {
+            statics.push(native_item(kernel, native));
+        }
+        root.insert(&kernel.source.module_path, statics);
     }
     let mut items = root.items();
     items.push(registry_item(kernels));
@@ -776,6 +888,24 @@ fn entry_points_item(kernel: &CompiledKernel) -> TokenStream {
     }
 }
 
+/// `<STEM>_<KERNEL>_NATIVE`: the machine code of one kernel.
+fn native_item(kernel: &CompiledKernel, native: &NativeKernel) -> TokenStream {
+    let ident = static_ident(
+        &kernel.source.static_prefix,
+        &format!("{}_NATIVE", native.static_suffix),
+    );
+    let artifact = artifact_file_name(&native.artifact_stem, "bin");
+    let doc = format!(
+        "Native machine code of the kernel `{}` of `{}`.",
+        native.name,
+        kernel.source.qualified_name()
+    );
+    quote! {
+        #[doc = #doc]
+        pub static #ident: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/", #artifact));
+    }
+}
+
 /// `KERNEL_MODULES`: every compiled kernel, in discovery order.
 fn registry_item(kernels: &[CompiledKernel]) -> TokenStream {
     let entries = kernels.iter().map(|kernel| {
@@ -783,12 +913,14 @@ fn registry_item(kernels: &[CompiledKernel]) -> TokenStream {
         let spirv_path = static_path(kernel, "SPIRV");
         let entry_points_path = static_path(kernel, "ENTRY_POINTS");
         let name = kernel.source.qualified_name();
+        let native = native_registry(kernel);
         quote! {
             KernelModule {
                 name: #name,
                 source: #source_path,
                 spirv: #spirv_path,
                 entry_points: #entry_points_path,
+                native: #native,
             }
         }
     });
@@ -797,6 +929,29 @@ fn registry_item(kernels: &[CompiledKernel]) -> TokenStream {
         #[doc = #doc]
         pub static KERNEL_MODULES: &[KernelModule] = &[#(#entries),*];
     }
+}
+
+/// The `native` field of one kernel module's registry entry.
+///
+/// Every kernel that was compiled to machine code contributes an entry
+/// with its name, its code, the offset of its entry point, and the
+/// number of instructions it holds.
+fn native_registry(kernel: &CompiledKernel) -> TokenStream {
+    let entries = kernel.native.iter().map(|native| {
+        let name = native.name.clone();
+        let code = native_static_path(kernel, native);
+        let entry_offset = native.entry_offset;
+        let instruction_count = native.instruction_count;
+        quote! {
+            NativeKernel {
+                name: #name,
+                code: #code,
+                entry_offset: #entry_offset,
+                instruction_count: #instruction_count,
+            }
+        }
+    });
+    quote! { &[#(#entries),*] }
 }
 
 /// The path of one generated static from the `kernels` module root:
@@ -809,6 +964,21 @@ fn static_path(kernel: &CompiledKernel, suffix: &str) -> TokenStream {
         path.extend(quote! { #ident :: });
     }
     let ident = static_ident(&kernel.source.static_prefix, suffix);
+    path.extend(quote! { #ident });
+    path
+}
+
+/// The path of the static holding one kernel's machine code.
+fn native_static_path(kernel: &CompiledKernel, native: &NativeKernel) -> TokenStream {
+    let mut path = TokenStream::new();
+    for segment in &kernel.source.module_path {
+        let ident = Ident::new(segment, Span::call_site());
+        path.extend(quote! { #ident :: });
+    }
+    let ident = static_ident(
+        &kernel.source.static_prefix,
+        &format!("{}_NATIVE", native.static_suffix),
+    );
     path.extend(quote! { #ident });
     path
 }

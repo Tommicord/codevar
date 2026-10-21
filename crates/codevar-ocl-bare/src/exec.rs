@@ -13,7 +13,7 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-//! Kernel invocation ABI: work-item context, argument marshalling and the
+//! Kernel invocation ABI: work-item context, argument marshaling and the
 //! work-group claim loop every device back end shares.
 //!
 //! # Kernel ABI
@@ -25,6 +25,13 @@
 //! reached through `arg_base`, which points at the launch's argument block:
 //! one 16-byte slot per argument, buffers as native pointers, scalars in the
 //! first bytes of their slot.
+//!
+//! The contract itself belongs to `codevar-ocl-abi` — the crate the
+//! compiler side and this driver share, so generated code and the driver
+//! cannot drift apart. This module re-exports it ([`WorkItem`],
+//! [`KernelFn`], [`MAX_ARGS`], [`MAX_PARAMS`], [`ARG_SLOT`]) and adds the
+//! parts that are the driver's own business: the [`ArgBlock`] the launch
+//! marshals into, the [`Launch`] descriptor and the claim loop.
 //!
 //! # Claim loop
 //!
@@ -41,16 +48,13 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::error::{Error, Result};
 
-/// The invocation type of a kernel — the single ABI all three device
-/// back ends call into.
+/// The kernel ABI, owned by `codevar-ocl-abi` and shared with the
+/// compiler side.
 ///
-/// # Safety
-///
-/// Implementations receive a fully initialized [`WorkItem`] whose
-/// `arg_base` points at a marshalled argument block with at least the
-/// slots the kernel declares; they must not escape the work item or its
-/// argument block beyond the call.
-pub type KernelFn = unsafe extern "C" fn(*mut WorkItem);
+/// The re-export keeps the driver's own paths — `codevar_ocl_bare::exec::WorkItem`
+/// and friends — working while there is exactly one definition of the
+/// contract in the workspace.
+pub use codevar_ocl_abi::{ARG_SLOT, KernelFn, MAX_ARGS, MAX_PARAMS, WorkItem};
 
 /// Handle to the SPIR-V entry point a program-backed kernel executes.
 ///
@@ -102,101 +106,7 @@ impl SpirvBinding {
 unsafe impl Send for SpirvBinding {}
 unsafe impl Sync for SpirvBinding {}
 
-/// Maximum number of kernel arguments the driver can marshal.
-pub const MAX_ARGS: usize = 16;
-
-/// Size in bytes of the whole argument block (`CL_DEVICE_MAX_PARAMETER_SIZE`
-/// of the CPU and AMP devices).
-pub const MAX_PARAMS: usize = 256;
-
-/// Size in bytes of one argument slot.
-pub const ARG_SLOT: usize = MAX_PARAMS / MAX_ARGS;
-
-/// Per-work-item state handed to a kernel.
-///
-/// `#[repr(C)]`, documented field by field because hand-written assembly
-/// kernels load these offsets directly — changing the order breaks them.
-#[repr(C)]
-#[derive(Debug)]
-pub struct WorkItem {
-    /// Global id of this work-item, offset 0.
-    pub global_id: [u32; 3],
-    /// Local (in-group) id, offset 12.
-    pub local_id: [u32; 3],
-    /// Group id of the containing work-group, offset 24.
-    pub group_id: [u32; 3],
-    /// Global offset of the launch, offset 36.
-    pub global_offset: [u32; 3],
-    /// Number of groups in each dimension, offset 48.
-    pub num_groups: [u32; 3],
-    /// Local size of the launch, offset 60.
-    pub local_size: [u32; 3],
-    /// Argument block base, offset 72 (native pointer width).
-    pub arg_base: *mut u8,
-}
-
-impl WorkItem {
-    /// Pointer to argument slot `index`.
-    ///
-    /// Returns null for `index >= MAX_ARGS` so a kernel probing an unused
-    /// slot fails closed instead of stepping off the block.
-    #[must_use]
-    #[inline]
-    pub fn slot(&self, index: usize) -> *mut u8 {
-        if index >= MAX_ARGS || self.arg_base.is_null() {
-            return core::ptr::null_mut();
-        }
-        // The caller (the claim loop) guarantees `arg_base` is a live
-        // `MAX_PARAMS`-byte block, and `index` is in range.
-        unsafe { self.arg_base.add(index * ARG_SLOT) }
-    }
-
-    /// Reads the native pointer stored in argument slot `index`.
-    ///
-    /// # Safety
-    ///
-    /// Slot `index` must hold a buffer argument marshalled by the driver
-    /// (its first `size_of::<usize>()` bytes are a valid pointer).
-    #[must_use]
-    #[inline]
-    pub unsafe fn arg_ptr(&self, index: usize) -> *mut u8 {
-        let slot = self.slot(index);
-        if slot.is_null() {
-            return core::ptr::null_mut();
-        }
-        // SAFETY: slot is inside the driver-maintained block; pointers are
-        // written as native `usize` in the first word of the slot.
-        let mut bytes = [0u8; core::mem::size_of::<usize>()];
-        unsafe {
-            core::ptr::copy_nonoverlapping(slot, bytes.as_mut_ptr(), core::mem::size_of::<usize>());
-        }
-        usize::from_ne_bytes(bytes) as *mut u8
-    }
-
-    /// Reads the `u32` scalar in argument slot `index` (zero when the slot
-    /// is shorter than four bytes).
-    ///
-    /// # Safety
-    ///
-    /// Slot `index` must belong to this work-item's argument block.
-    #[must_use]
-    #[inline]
-    pub unsafe fn arg_u32(&self, index: usize) -> u32 {
-        let slot = self.slot(index);
-        if slot.is_null() {
-            return 0;
-        }
-        // SAFETY: `slot` is in the live argument block; a short read is
-        // impossible because the block is a flat `[u8]` of `MAX_PARAMS`.
-        unsafe {
-            let mut bytes = [0u8; 4];
-            core::ptr::copy_nonoverlapping(slot, bytes.as_mut_ptr(), 4);
-            u32::from_ne_bytes(bytes)
-        }
-    }
-}
-
-/// The marshalled argument block of a launch: one [`ARG_SLOT`]-byte slot
+/// The marshaled argument block of a launch: one [`ARG_SLOT`]-byte slot
 /// per argument, buffer arguments as native pointers, scalars copied
 /// verbatim into the front of their slot.
 ///
@@ -566,12 +476,13 @@ pub unsafe fn run_all(launch: &Launch<'_>) -> Result<()> {
 /// # Safety
 ///
 /// Reads the three buffer pointers of slots 0..=2 and the `u32` count of
-/// slot 3; the caller must have marshalled them with matching sizes.
-pub unsafe extern "C" fn vector_add(item: *mut WorkItem) {
+/// slot 3; the caller must have marshaled them with matching sizes.
+#[cfg(test)]
+pub(crate) unsafe extern "C" fn vector_add(item: *mut WorkItem) {
     // SAFETY: the claim loop passes a live stack work-item.
     let item = unsafe { &mut *item };
     // SAFETY: slots 0..=2 are `f32` buffers of at least `count` elements and
-    // slot 3 holds the element count, as marshalled by the demo/tests.
+    // slot 3 holds the element count, as marshaled by the demo/tests.
     unsafe {
         let a = item.arg_ptr(0).cast::<f32>();
         let b = item.arg_ptr(1).cast::<f32>();
@@ -597,7 +508,7 @@ mod tests {
         // SAFETY: live item from the claim loop; the test's shared log is
         // only touched from the single-threaded test body.
         let item = unsafe { &*item };
-        // SAFETY: slot 0 holds the log pointer the test marshalled.
+        // SAFETY: slot 0 holds the log pointer the test marshaled.
         let dst = unsafe { item.arg_ptr(0).cast::<u32>() };
         if dst.is_null() {
             return;

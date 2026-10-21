@@ -1,0 +1,28 @@
+[package]
+name = "codevar-packlow"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "codevar_packlow"
+
+[dependencies]
+codevar-base = { workspace = true }
+codevar-logger = { workspace = true }
+codevar-ocl = { workspace = true }
+codevar-oclc = { workspace = true }
+spin = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "pack"
+harness = false
+
+[lints]
+workspace = true

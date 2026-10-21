@@ -8,12 +8,6 @@ build
 dist
 target
 android
-gradle
-gradlew
-gradlew.bat
-build.gradle
-settings.gradle
-gradle.properties
 Dockerfile
 docker-compose.yml
 docker

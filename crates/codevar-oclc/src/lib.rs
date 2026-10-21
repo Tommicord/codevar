@@ -94,6 +94,34 @@ pub mod kernels {
         pub spirv: &'static [u8],
         /// Names of the `#[kernel]` entry points the source declares.
         pub entry_points: &'static [&'static str],
+        /// The kernels of the source that were also compiled to native
+        /// machine code.
+        ///
+        /// The machine code belongs to the architecture the crate was
+        /// built for, so the list is empty for a cross build and for a
+        /// kernel the native back end cannot express.
+        pub native: &'static [NativeKernel],
     }
+
+    /// One `#[kernel]` compiled to native machine code.
+    ///
+    /// The code is position-independent: it holds no absolute address,
+    /// so it can be copied into executable memory and entered at
+    /// [`NativeKernel::entry_offset`].  The entry point follows the
+    /// kernel calling convention of `codevar-ocl-abi`: it takes the
+    /// per-work-item state and reads the kernel's arguments from the
+    /// block that state points at.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct NativeKernel {
+        /// The `#[kernel]` name, as it is declared in the source.
+        pub name: &'static str,
+        /// The machine code of the kernel.
+        pub code: &'static [u8],
+        /// The offset of the entry point inside [`NativeKernel::code`].
+        pub entry_offset: u32,
+        /// The number of machine instructions the code holds.
+        pub instruction_count: u32,
+    }
+
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }

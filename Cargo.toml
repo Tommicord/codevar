@@ -11,6 +11,7 @@ members = [
     "crates/codevar-sig-handler",
     "crates/codevar-sig-module-base",
     "crates/codevar-wredit",
+    "crates/codevar-packlow",
     "crates/codevar-wsocket",
     "crates/codevar-launcher",
     "crates/codevar-wayland",
@@ -42,6 +43,12 @@ members = [
     "crates/codevar-ocl-cubin",
     "crates/codevar-ocl-asm",
     "crates/codevar-ocl",
+    "crates/codevar-ocl-abi",
+    "crates/codevar-ocl-native-codegen",
+    "crates/codevar-ocl-native-codegen-x86",
+    "crates/codevar-ocl-native-codegen-thumbv7m",
+    "crates/codevar-ocl-native-codegen-aarch64",
+    "crates/codevar-ocl-tc",
     "crates/codevar-ocl-bare",
     "crates/codevar-inssched",
 ]
@@ -129,6 +136,7 @@ codevar-wayland = { path = "crates/codevar-wayland" }
 codevar-time-util = { path = "crates/codevar-time-util" }
 codevar-time-core = { path = "crates/codevar-time-core" }
 codevar-wredit = { path = "crates/codevar-wredit" }
+codevar-packlow = { path = "crates/codevar-packlow" }
 codevar-wsocket = { path = "crates/codevar-wsocket" }
 codevar-sig-handler = { path = "crates/codevar-sig-handler" }
 codevar-sig-module-base = { path = "crates/codevar-sig-module-base" }
@@ -160,6 +168,12 @@ codevar-ocl-sar = { path = "crates/codevar-ocl-sar" }
 codevar-ocl-ir = { path = "crates/codevar-ocl-ir" }
 codevar-ocl-asm = { path = "crates/codevar-ocl-asm" }
 codevar-ocl-cubin = { path = "crates/codevar-ocl-cubin" }
+codevar-ocl-abi = { path = "crates/codevar-ocl-abi" }
+codevar-ocl-native-codegen = { path = "crates/codevar-ocl-native-codegen" }
+codevar-ocl-native-codegen-x86 = { path = "crates/codevar-ocl-native-codegen-x86" }
+codevar-ocl-native-codegen-thumbv7m = { path = "crates/codevar-ocl-native-codegen-thumbv7m" }
+codevar-ocl-native-codegen-aarch64 = { path = "crates/codevar-ocl-native-codegen-aarch64" }
+codevar-ocl-tc = { path = "crates/codevar-ocl-tc" }
 codevar-ocl-bare = { path = "crates/codevar-ocl-bare" }
 codevar-ocl = { path = "crates/codevar-ocl" }
 codevar-inssched = { path = "crates/codevar-inssched" }

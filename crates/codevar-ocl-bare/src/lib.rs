@@ -73,11 +73,11 @@ pub mod api;
 mod device;
 mod devices;
 mod error;
-mod exec;
 mod objects;
 mod platform;
 mod registry;
 mod spirv;
+pub mod exec;
 pub mod sys;
 
 pub use device::{Device, DeviceInfo, ServiceMode};

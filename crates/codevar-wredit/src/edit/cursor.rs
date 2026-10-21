@@ -310,7 +310,7 @@ impl LineRing {
 /// workload, and the scan is exactly what a denser index removes. The
 /// backing store is allocated to the number of rows the document
 /// actually has, so a short file never pays for the full capacity.
-const LINE_ANCHOR_CAPACITY: usize = 16384;
+const LINE_ANCHOR_CAPACITY: usize = 8192;
 
 /// Smallest distance between two sparse line anchors.
 const LINE_ANCHOR_STRIDE: usize = 1;
@@ -456,7 +456,20 @@ impl LineAnchors {
         let delta = delta.min(u32::MAX as usize) as u32;
         let len = self.len();
         let low = self.starts[..len].partition_point(|start| *start <= position);
-        for start in &mut self.starts[low..len] {
+        let tail = &mut self.starts[low..len];
+        // The common case cannot overflow, and a plain add lets the
+        // compiler vectorise the tail: a keystroke in the middle of a
+        // large document shifts thousands of anchors.
+        if tail
+            .last()
+            .is_none_or(|last| *last <= u32::MAX - delta)
+        {
+            for start in tail.iter_mut() {
+                *start += delta;
+            }
+            return;
+        }
+        for start in tail.iter_mut() {
             *start = start.saturating_add(delta);
         }
     }
@@ -475,7 +488,16 @@ impl LineAnchors {
         let count = count.min(u32::MAX as usize) as u32;
         let len = self.len();
         let low = self.starts[..len].partition_point(|start| *start <= position);
-        for start in &mut self.starts[low..len] {
+        let tail = &mut self.starts[low..len];
+        // Same reasoning as the insert path: the plain subtract
+        // vectorises, the saturating one only runs in the overflow case.
+        if tail.first().is_none_or(|first| *first >= count) {
+            for start in tail.iter_mut() {
+                *start -= count;
+            }
+            return;
+        }
+        for start in tail.iter_mut() {
             *start = start.saturating_sub(count);
         }
     }

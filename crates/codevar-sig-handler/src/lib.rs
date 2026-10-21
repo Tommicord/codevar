@@ -230,7 +230,7 @@ impl LineWriter {
     #[inline]
     fn flush(&mut self) {
         if self.len > 0 {
-            let _ = codevar_consoleutil::write_stderr(&self.buf[..self.len]);
+            let _ = codevar_console_util::write_stderr(&self.buf[..self.len]);
             self.len = 0;
         }
     }

@@ -44,7 +44,7 @@ use core::fmt;
 use core::fmt::Write as _;
 use core::sync::atomic::{AtomicU8, Ordering};
 
-use codevar_consoleutil::{ConsoleError, write_stderr, write_stdout};
+use codevar_console_util::{ConsoleError, write_stderr, write_stdout};
 use codevar_io::{IsTerminal, Stderr, Stdout};
 use codevar_timeutil::{format_utc_iso8601, utc_now};
 
@@ -281,13 +281,13 @@ const RING_CAPACITY: usize = 4;
 
 /// ANSI sequence opening the green color used for a whole log line.
 ///
-/// Matches [`codevar_consoleutil::AnsiColor::Green`]`::fg()`; a unit test
+/// Matches [`codevar_console_util::AnsiColor::Green`]`::fg()`; a unit test
 /// asserts the two stay identical.
 const LINE_COLOR_OPEN: &str = "\x1b[32m";
 
 /// ANSI sequence closing every style on a log line.
 ///
-/// Matches [`codevar_consoleutil::AnsiStyle::Reset`]`::sequence()`; a unit test
+/// Matches [`codevar_console_util::AnsiStyle::Reset`]`::sequence()`; a unit test
 /// asserts the two stay identical.
 const LINE_RESET: &str = "\x1b[0m";
 
@@ -303,7 +303,7 @@ struct StyleCodes {
 /// Preset style applied around the body of a [`log_styled`] message.
 ///
 /// The sequences are byte-for-byte the ones produced by the
-/// [`codevar_consoleutil::style::presets`] styles; unit tests keep them in
+/// [`codevar_console_util::style::presets`] styles; unit tests keep them in
 /// sync so the logger never needs a heap allocation to render them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Preset {
@@ -760,7 +760,7 @@ macro_rules! log_irr {
 
 #[cfg(test)]
 mod tests {
-    use codevar_consoleutil::{AnsiColor, AnsiStyle, style::presets};
+    use codevar_console_util::{AnsiColor, AnsiStyle, style::presets};
 
     use crate::{
         DEFAULT_WRITER, LINE_COLOR_OPEN, LINE_RESET, LogError, LogLevel, LogRing, LogWriter, Preset,

@@ -28,7 +28,7 @@
 //! # Example
 //!
 //! ```rust
-//! use codevar_consoleutil::{AnsiColor, AnsiStyle, Cursor, Clear, Terminal};
+//! use codevar_console_util::{AnsiColor, AnsiStyle, Cursor, Clear, Terminal};
 //!
 //! // Print colored text
 //! println!("{}Red text{}", AnsiColor::Red.fg(), AnsiColor::Default.fg());
@@ -69,7 +69,7 @@ pub use terminal::{Terminal, TerminalCaps, TerminalInfo};
 ///
 /// # Example
 /// ```rust
-/// use codevar_consoleutil::init_ansi_support;
+/// use codevar_console_util::init_ansi_support;
 /// init_ansi_support();
 /// ```
 pub fn init_ansi_support() {
@@ -89,7 +89,7 @@ pub fn init_ansi_support() {
 ///
 /// # Example
 /// ```rust
-/// use codevar_consoleutil::supports_ansi;
+/// use codevar_console_util::supports_ansi;
 /// if supports_ansi() {
 ///     println!("Terminal supports ANSI colors");
 /// }
@@ -102,7 +102,7 @@ pub fn supports_ansi() -> bool {
 ///
 /// # Example
 /// ```rust
-/// use codevar_consoleutil::strip_ansi;
+/// use codevar_console_util::strip_ansi;
 /// let clean = strip_ansi("\x1b[31mRed\x1b[0m text");
 /// assert_eq!(clean, "Red text");
 /// ```

@@ -32,13 +32,13 @@ use crate::fs;
 const PROGRAM: &str = "codevar-oclc";
 
 /// One-line description shown by `--help`.
-const ABOUT: &str = "Compile the Codevar OpenCL dialect to SPIR-V, CUDA PTX, or Metal.";
+const ABOUT: &str = "Compile the Codevar OpenCL dialect to SPIR-V, CUDA PTX, Metal, or native machine code.";
 
 /// Every stage accepted by `--emit` (future stages fail with a clear message).
-const EMIT_STAGES: &[&str] = &["tokens", "ast", "analysis", "ir", "spirv", "ptx", "msl"];
+const EMIT_STAGES: &[&str] = &["tokens", "ast", "analysis", "ir", "spirv", "native", "ptx", "msl"];
 
 /// Stages that currently run to completion.
-const IMPLEMENTED_STAGES: &[&str] = &["tokens", "ast", "analysis", "ir", "spirv"];
+const IMPLEMENTED_STAGES: &[&str] = &["tokens", "ast", "analysis", "ir", "spirv", "native"];
 
 /// Stage used when `--emit` is absent.
 const DEFAULT_EMIT: &str = "tokens";
@@ -118,6 +118,10 @@ impl<'a> Driver<'a> {
             Ok(emit) => emit.unwrap_or(DEFAULT_EMIT),
             Err(error) => return usage(&error.to_string()),
         };
+        let entry = matches.option("entry");
+        if entry.is_some() && emit != "native" {
+            return usage("--entry is only valid with '--emit native'");
+        }
         let input = match matches.positional(0) {
             Some(input) => input,
             None => return usage("missing required argument '<INPUT>'"),
@@ -420,6 +424,10 @@ pub fn run(args: &[String]) -> Exit {
 /// Builds the compiler's flag definition (help text comes from the same
 /// definitions, so `--help` can never drift from what parses).
 pub(crate) fn build_parser() -> ArgParser {
+    let stages = format!(
+        "Select emission stage: {} (default: {DEFAULT_EMIT})",
+        EMIT_STAGES.join(", ")
+    );
     ArgParser::new(PROGRAM, env!("CARGO_PKG_VERSION"), ABOUT)
         .flag("help", Some('h'), "Print help information")
         .flag("version", Some('V'), "Print version information")
@@ -429,7 +437,13 @@ pub(crate) fn build_parser() -> ArgParser {
             "FILE",
             "Write output to FILE (default: stdout)",
         )
-        .option("emit", None, "STAGE", "Select emission stage (default: tokens)")
+        .option("emit", None, "STAGE", &stages)
+        .option(
+            "entry",
+            None,
+            "NAME",
+            "Kernel to compile with '--emit native' (default: the only kernel of the file)",
+        )
         .positional("INPUT", "Input source file, or - for stdin", false)
 }
 
@@ -566,7 +580,7 @@ pub(crate) fn line_column(source: &str, offset: u32) -> (u32, u32) {
 /// the caller's exit status already conveys the failure.
 pub(crate) fn report_error(message: &str) {
     let line = format!("{PROGRAM}: error: {message}\n");
-    let _ = codevar_consoleutil::write_stderr(line.as_bytes());
+    let _ = codevar_console_util::write_stderr(line.as_bytes());
 }
 
 /// Writes a usage error plus a `--help` hint to stderr.
@@ -574,7 +588,7 @@ pub(crate) fn report_error(message: &str) {
 /// A failed stderr write is dropped (see [`report_error`]).
 pub(crate) fn report_usage(message: &str) {
     let line = format!("{PROGRAM}: error: {message}\ntry '{PROGRAM} --help' for more information\n");
-    let _ = codevar_consoleutil::write_stderr(line.as_bytes());
+    let _ = codevar_console_util::write_stderr(line.as_bytes());
 }
 
 /// Reports `message` through [`report_error`] and yields [`Exit::Failure`].
@@ -582,7 +596,7 @@ pub(crate) fn report_usage(message: &str) {
 /// Keeps the error arms of [`Driver::run`]'s matches a single expression
 /// instead of repeating the report-then-return pair in every branch.
 #[inline]
-fn failure(message: &str) -> Exit {
+pub(crate) fn failure(message: &str) -> Exit {
     report_error(message);
     Exit::Failure
 }
@@ -602,22 +616,22 @@ fn usage(message: &str) -> Exit {
 pub(crate) fn report_diagnostic(path: &str, source: &str, offset: u32, message: &str) {
     let (line, column) = line_column(source, offset);
     let text = format!("{path}:{line}:{column}: error: {message}\n");
-    let _ = codevar_consoleutil::write_stderr(text.as_bytes());
+    let _ = codevar_console_util::write_stderr(text.as_bytes());
 }
 
 /// Writes compiler output to stdout, mapping a write failure to
 /// [`Exit::Failure`].
 fn write_stdout_text(text: &str) -> Exit {
-    match codevar_consoleutil::write_stdout(text.as_bytes()) {
+    match codevar_console_util::write_stdout(text.as_bytes()) {
         Ok(()) => Exit::Success,
         Err(_) => failure("failed to write to stdout"),
     }
 }
 
-/// Writes raw compiler output (a SPIR-V module) to stdout, mapping a write
-/// failure to [`Exit::Failure`].
-fn write_stdout_bytes(bytes: &[u8]) -> Exit {
-    match codevar_consoleutil::write_stdout(bytes) {
+/// Writes raw compiler output (a SPIR-V module or a native code unit) to
+/// stdout, mapping a write failure to [`Exit::Failure`].
+pub(crate) fn write_stdout_bytes(bytes: &[u8]) -> Exit {
+    match codevar_console_util::write_stdout(bytes) {
         Ok(()) => Exit::Success,
         Err(_) => failure("failed to write to stdout"),
     }

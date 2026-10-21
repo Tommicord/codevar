@@ -618,7 +618,7 @@ impl Kernel {
             return Err(Error::InvalidArgSize);
         }
         if size > ARG_SLOT {
-            // A by-value argument wider than one marshalling slot (a large
+            // A by-value argument wider than one marshaling slot (a large
             // struct passed by value, typically from a SPIR-V module) has
             // nowhere to live in the argument block.
             return Err(Error::InvalidArgSize);
@@ -811,7 +811,7 @@ impl Event {
     ///
     /// Propagates a device progress failure; a command that completed with
     /// an error is *not* an error here — callers read [`Event::status`]
-    /// afterwards (as `clWaitForEvents` specifies).
+    /// afterward (as `clWaitForEvents` specifies).
     pub fn wait(&self) -> Result<()> {
         while !self.is_complete() {
             if let Some(device) = self.device {

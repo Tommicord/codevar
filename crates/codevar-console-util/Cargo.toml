@@ -12,7 +12,7 @@ default = []
 wasm = []
 
 [lib]
-name = "codevar_consoleutil"
+name = "codevar_console_util"
 
 [dependencies]
 libc = { workspace = true }

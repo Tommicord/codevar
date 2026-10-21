@@ -378,6 +378,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-ocl-abi"
+version = "1.0.0"
+
+[[package]]
 name = "codevar-ocl-asm"
 version = "1.0.0"
 dependencies = [
@@ -391,11 +395,13 @@ name = "codevar-ocl-bare"
 version = "1.0.0"
 dependencies = [
  "codevar-logger",
+ "codevar-ocl-abi",
  "codevar-ocl-asm",
  "codevar-ocl-ir",
  "codevar-rt",
  "codevar-target",
  "codevar-tlsf-alloc",
+ "libc",
  "libm",
  "spin 0.12.3",
 ]
@@ -422,6 +428,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-ocl-native-codegen"
+version = "1.0.0"
+dependencies = [
+ "codevar-inssched",
+ "codevar-logger",
+ "codevar-ocl-abi",
+ "codevar-ocl-ir",
+ "codevar-ocl-parse",
+ "codevar-ocl-sar",
+ "libm",
+]
+
+[[package]]
+name = "codevar-ocl-native-codegen-aarch64"
+version = "1.0.0"
+dependencies = [
+ "codevar-logger",
+ "codevar-ocl-abi",
+ "codevar-ocl-native-codegen",
+]
+
+[[package]]
+name = "codevar-ocl-native-codegen-thumbv7m"
+version = "1.0.0"
+dependencies = [
+ "codevar-logger",
+ "codevar-ocl-abi",
+ "codevar-ocl-native-codegen",
+]
+
+[[package]]
+name = "codevar-ocl-native-codegen-x86"
+version = "1.0.0"
+dependencies = [
+ "codevar-logger",
+ "codevar-ocl-abi",
+ "codevar-ocl-native-codegen",
+ "libc",
+]
+
+[[package]]
 name = "codevar-ocl-parse"
 version = "1.0.0"
 dependencies = [
@@ -438,6 +485,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-ocl-tc"
+version = "1.0.0"
+dependencies = [
+ "codevar-logger",
+ "codevar-ocl-abi",
+ "codevar-ocl-ir",
+ "codevar-ocl-native-codegen",
+ "codevar-ocl-native-codegen-aarch64",
+ "codevar-ocl-native-codegen-thumbv7m",
+ "codevar-ocl-native-codegen-x86",
+ "codevar-ocl-parse",
+ "codevar-ocl-sar",
+ "libc",
+]
+
+[[package]]
 name = "codevar-oclc"
 version = "1.0.0"
 dependencies = [
@@ -451,6 +514,7 @@ dependencies = [
  "codevar-ocl-lex",
  "codevar-ocl-parse",
  "codevar-ocl-sar",
+ "codevar-ocl-tc",
  "codevar-pathbuf",
  "codevar-rt",
  "codevar-sig-handler",
@@ -460,6 +524,18 @@ dependencies = [
  "libc",
  "proc-macro2",
  "quote",
+ "spin 0.12.3",
+]
+
+[[package]]
+name = "codevar-packlow"
+version = "1.0.0"
+dependencies = [
+ "codevar-base",
+ "codevar-logger",
+ "codevar-ocl",
+ "codevar-oclc",
+ "criterion",
  "spin 0.12.3",
 ]
 

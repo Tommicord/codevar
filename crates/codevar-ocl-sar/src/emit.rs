@@ -35,7 +35,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use core::fmt::Write;
 
-use codevar_consoleutil::{AnsiColor, Style};
+use codevar_console_util::{AnsiColor, Style};
 
 use crate::diagnostic::{Diagnostic, Label, Severity};
 
@@ -58,7 +58,7 @@ impl ColorChoice {
         match self {
             Self::Always => true,
             Self::Never => false,
-            Self::Auto => codevar_consoleutil::supports_ansi(),
+            Self::Auto => codevar_console_util::supports_ansi(),
         }
     }
 }
@@ -155,7 +155,7 @@ pub fn render(diagnostics: &[Diagnostic], path: &str, source: &str, choice: Colo
 /// own `report_error`.
 pub fn emit_stderr(diagnostics: &[Diagnostic], path: &str, source: &str, choice: ColorChoice) {
     let text = render(diagnostics, path, source, choice);
-    let _ = codevar_consoleutil::write_stderr(text.as_bytes());
+    let _ = codevar_console_util::write_stderr(text.as_bytes());
 }
 
 /// Digits of the largest line number any diagnostic points at (min 1).

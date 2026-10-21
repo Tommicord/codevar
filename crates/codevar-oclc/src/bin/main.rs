@@ -114,7 +114,7 @@ pub unsafe extern "C" fn main(
         Ok(args) => args,
         Err(error) => {
             let message = alloc::format!("error: invalid command line: {error}\n");
-            let _ = codevar_consoleutil::write_stderr(message.as_bytes());
+            let _ = codevar_console_util::write_stderr(message.as_bytes());
             return driver::Exit::Usage.code();
         }
     };

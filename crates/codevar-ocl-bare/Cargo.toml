@@ -22,12 +22,17 @@ std = []
 spin = { workspace = true }
 codevar-logger = { workspace = true }
 codevar-target = { workspace = true }
+codevar-ocl-abi = { workspace = true }
 libm = { workspace = true }
+# The hosted trampoline maps executable memory; the bare-metal path does
+# not use `libc` at all.
+libc = { workspace = true }
 
 [dev-dependencies]
 codevar-rt = { workspace = true }
 codevar-tlsf-alloc = { workspace = true }
 codevar-ocl-ir = { workspace = true }
+codevar-ocl-abi = { workspace = true }
 codevar-ocl-asm = { workspace = true }
 
 # The build script needs `codevar-rt`'s linker-script helpers, which are `std`
