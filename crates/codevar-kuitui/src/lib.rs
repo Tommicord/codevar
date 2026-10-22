@@ -89,6 +89,10 @@ extern crate alloc;
 
 pub mod color;
 pub mod geometry;
+pub mod text;
+pub mod theme;
 
 pub use color::{Color, ColorScheme};
 pub use geometry::{Alignment, Constraints, EdgeInsets, Offset, Rect, Size};
+pub use text::{FontMetrics, FontWeight, TextSpan, TextStyle};
+pub use theme::{Theme, ThemeMode, Typography};
