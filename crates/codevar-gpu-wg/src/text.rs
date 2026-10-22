@@ -286,10 +286,7 @@ impl GlyphAtlas {
         if width > self.width {
             return false;
         }
-        if self.row_height > 0
-            && height <= self.row_height
-            && self.cursor_x + width <= self.width
-        {
+        if self.row_height > 0 && height <= self.row_height && self.cursor_x + width <= self.width {
             return true;
         }
         self.next_row_y() + height <= self.height
@@ -398,9 +395,8 @@ impl GlyphAtlas {
         if width == 0 || height == 0 {
             return (self.cursor_x, self.cursor_y);
         }
-        let fits_in_row = self.row_height > 0
-            && height <= self.row_height
-            && self.cursor_x + width <= self.width;
+        let fits_in_row =
+            self.row_height > 0 && height <= self.row_height && self.cursor_x + width <= self.width;
         if !fits_in_row && self.row_height > 0 {
             self.cursor_y = self.next_row_y();
             self.cursor_x = 0;
@@ -588,4 +584,3 @@ mod tests {
         assert!(uv[2] > uv[0] && uv[3] > uv[1]);
     }
 }
-
