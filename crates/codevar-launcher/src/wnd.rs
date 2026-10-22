@@ -28,12 +28,15 @@
 //!   `RawWindowHandle` policy.
 //!
 //! The compiled-in backends live in the platform modules
-//! (`wnd_linux` on Unix); this file only owns the abstraction.
+//! (`wnd_linux` on Unix, `wnd_win32` on Windows); this file only owns
+//! the abstraction.
 //! Targets without a windowing system compile no backend at all, so
 //! [`backends`] is empty and [`open`] reports [`WndError::Unsupported`].
 
 #[cfg(unix)]
 use crate::wnd_linux;
+#[cfg(windows)]
+use crate::wnd_win32;
 use alloc::boxed::Box;
 use alloc::string::String;
 use codevar_env::{ENV_APP_ID, ENV_NAME};
@@ -339,7 +342,18 @@ pub fn backends() -> &'static [&'static dyn WndBackend] {
 /// Empty on targets that compile no backend (bare metal, wasm); [`open`]
 /// then reports [`WndError::Unsupported`] for every configuration.
 #[must_use]
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub fn backends() -> &'static [&'static dyn WndBackend] {
+    wnd_win32::BACKENDS
+}
+
+/// Returns the windowing backends compiled into the launcher, in
+/// probe order.
+///
+/// Empty on targets that compile no backend (bare metal, wasm); [`open`]
+/// then reports [`WndError::Unsupported`] for every configuration.
+#[must_use]
+#[cfg(not(any(unix, windows)))]
 pub fn backends() -> &'static [&'static dyn WndBackend] {
     &[]
 }
@@ -393,6 +407,19 @@ mod tests {
             .expect("the Wayland backend must be registered");
         assert_eq!(wayland.id().name(), "wayland");
         assert_eq!(wayland.id().to_string(), "wayland");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn win32_backend_is_registered_and_named_like_sdl_drivers() {
+        let backends = backends();
+        assert!(!backends.is_empty(), "the launcher ships a backend");
+        let win32 = backends
+            .iter()
+            .find(|backend| backend.id() == WndBackendId::Win32)
+            .expect("the Win32 backend must be registered");
+        assert_eq!(win32.id().name(), "win32");
+        assert_eq!(win32.id().to_string(), "win32");
     }
 
     #[test]
