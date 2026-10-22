@@ -317,6 +317,9 @@ dependencies = [
 [[package]]
 name = "codevar-kuitui"
 version = "1.0.0"
+dependencies = [
+ "libm",
+]
 
 [[package]]
 name = "codevar-launcher"

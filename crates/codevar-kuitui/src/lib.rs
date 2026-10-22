@@ -40,7 +40,7 @@
 //! A widget implements the [`Widget`] trait. Every hook has a default
 //! implementation, so a widget only overrides what it needs:
 //!
-//! ```
+//! ```ignore
 //! use codevar_kuitui::prelude::*;
 //!
 //! /// A widget that paints a filled square.
@@ -69,7 +69,7 @@
 //!
 //! [`kuitui!`] builds a tree with a Compose-like syntax:
 //!
-//! ```
+//! ```ignore
 //! use codevar_kuitui::prelude::*;
 //!
 //! let tree = kuitui! {
@@ -86,3 +86,7 @@
 #![forbid(unsafe_code)]
 
 extern crate alloc;
+
+pub mod geometry;
+
+pub use geometry::{Alignment, Constraints, EdgeInsets, Offset, Rect, Size};

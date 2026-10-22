@@ -12,6 +12,7 @@ description = "Kuitui: the Compose-inspired retained-mode UI framework of Codeva
 name = "codevar_kuitui"
 
 [dependencies]
+libm = { workspace = true }
 
 [lints]
 workspace = true
