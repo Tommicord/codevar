@@ -253,6 +253,19 @@ impl<'a> MeasureScope<'a> {
             .measure_child(index, self.theme, constraints)
     }
 
+    /// The size the child at `index` was measured at.
+    #[must_use]
+    pub fn child_size(&self, index: usize) -> Size {
+        self.children.child_size(index)
+    }
+
+    /// How much of the free space of the parent the child at `index`
+    /// takes.
+    #[must_use]
+    pub fn child_flex(&self, index: usize) -> f32 {
+        self.children.child_flex(index)
+    }
+
     /// Measures every child with the same constraints.
     #[must_use]
     pub fn measure_children(&mut self, constraints: Constraints) -> Vec<Size> {

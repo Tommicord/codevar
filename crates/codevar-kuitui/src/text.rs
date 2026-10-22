@@ -205,6 +205,18 @@ impl TextContent {
         text
     }
 
+    /// The lines of the content.
+    ///
+    /// The lines are split once, when the content is built, so that
+    /// drawing the text does not allocate.
+    #[must_use]
+    pub fn lines(&self) -> Vec<Rc<str>> {
+        self.plain_text()
+            .split('\n')
+            .map(Rc::from)
+            .collect()
+    }
+
     /// The number of lines the block occupies when it is not truncated.
     #[must_use]
     pub fn line_count(&self) -> u32 {
