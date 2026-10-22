@@ -17,6 +17,7 @@ members = [
     "crates/codevar-wayland",
     "crates/codevar-xdg-portal",
     "crates/codevar-gpu-core",
+    "crates/codevar-kuitui",
     "crates/codevar-logger",
     "crates/codevar-dbus",
     "crates/codevar-time-util",
@@ -144,6 +145,7 @@ codevar-unwinding = { path = "crates/codevar-unwinding" }
 codevar-pretty-unwind = { path = "crates/codevar-pretty-unwind" }
 codevar-xdg-portal = { path = "crates/codevar-xdg-portal" }
 codevar-gpu-core = { path = "crates/codevar-gpu-core" }
+codevar-kuitui = { path = "crates/codevar-kuitui" }
 codevar-logger = { path = "crates/codevar-logger" }
 codevar-console-util = { path = "crates/codevar-console-util" }
 codevar-io = { path = "crates/codevar-io" }

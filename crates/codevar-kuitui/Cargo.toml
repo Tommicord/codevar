@@ -1,0 +1,17 @@
+[package]
+name = "codevar-kuitui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Kuitui: the Compose-inspired retained-mode UI framework of Codevar"
+
+[lib]
+name = "codevar_kuitui"
+
+[dependencies]
+
+[lints]
+workspace = true

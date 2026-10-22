@@ -315,6 +315,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-kuitui"
+version = "1.0.0"
+
+[[package]]
 name = "codevar-launcher"
 version = "1.0.0"
 dependencies = [
@@ -464,6 +468,7 @@ version = "1.0.0"
 dependencies = [
  "codevar-logger",
  "codevar-ocl-abi",
+ "codevar-ocl-ir",
  "codevar-ocl-native-codegen",
  "libc",
 ]
