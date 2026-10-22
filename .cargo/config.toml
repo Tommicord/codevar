@@ -6,9 +6,13 @@ verbose = true
 
 [target.wasm32-unknown-unknown]
 runner = "wasm-server-runner"
+# The size flags of the web build. The link-time optimization is left
+# to the profile: `[profile.release]` already asks for `lto = "fat"`,
+# and passing `-C lto` here as well clashes with the `embed-bitcode =
+# "no"` of `[profile.dev]`, which makes every `cargo build` for this
+# target fail before it compiles anything.
 rustflags = [
     "-C", "opt-level=z",
-    "-C", "lto=fat",
     "-C", "codegen-units=1",
 ]
 
