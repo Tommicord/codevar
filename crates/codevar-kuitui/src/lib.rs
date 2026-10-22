@@ -94,6 +94,7 @@ pub mod paint;
 pub mod state;
 pub mod text;
 pub mod theme;
+pub mod widget;
 
 pub use color::{Color, ColorScheme};
 pub use event::{Event, EventResult, KeyEvent, PointerButton, PointerEvent, PointerEventKind};
@@ -102,3 +103,4 @@ pub use paint::{CornerRadii, DrawList, DrawOp, Paint};
 pub use state::{MutableState, State};
 pub use text::{FontMetrics, FontWeight, TextSpan, TextStyle};
 pub use theme::{Theme, ThemeMode, Typography};
+pub use widget::{DrawScope, EventScope, Key, MeasureScope, PlaceScope, Widget};
