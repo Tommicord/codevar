@@ -88,6 +88,7 @@
 extern crate alloc;
 
 pub mod color;
+pub mod compose;
 pub mod event;
 pub mod geometry;
 pub mod node;
@@ -98,11 +99,12 @@ pub mod theme;
 pub mod widget;
 
 pub use color::{Color, ColorScheme};
+pub use compose::{Composer, Composition, Recomposition};
 pub use event::{Event, EventResult, KeyEvent, PointerButton, PointerEvent, PointerEventKind};
 pub use geometry::{Alignment, Constraints, EdgeInsets, Offset, Rect, Size};
 pub use node::{Modifier, Node};
 pub use paint::{CornerRadii, DrawList, DrawOp, Paint};
-pub use state::{MutableState, State};
+pub use state::{DirtyState, MutableState, State};
 pub use text::{FontMetrics, FontWeight, TextSpan, TextStyle};
 pub use theme::{Theme, ThemeMode, Typography};
 pub use widget::{DrawScope, EventScope, Key, MeasureScope, PlaceScope, Widget};

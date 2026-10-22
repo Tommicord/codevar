@@ -41,7 +41,6 @@ struct StateCell<T> {
 ///
 /// A `State` observes the value without being able to change it, which
 /// lets a widget that only reads a value say so.
-#[derive(Clone)]
 pub struct State<T> {
     /// The shared value.
     cell: Rc<RefCell<StateCell<T>>>,
@@ -80,10 +79,25 @@ impl<T> State<T> {
 ///
 /// Writing to the state marks it dirty, which asks the composition to
 /// recompose the widgets that read it.
-#[derive(Clone)]
 pub struct MutableState<T> {
     /// The shared value.
     cell: Rc<RefCell<StateCell<T>>>,
+}
+
+impl<T> Clone for State<T> {
+    fn clone(&self) -> Self {
+        Self {
+            cell: Rc::clone(&self.cell),
+        }
+    }
+}
+
+impl<T> Clone for MutableState<T> {
+    fn clone(&self) -> Self {
+        Self {
+            cell: Rc::clone(&self.cell),
+        }
+    }
 }
 
 impl<T> MutableState<T> {
@@ -185,6 +199,29 @@ impl<T: core::fmt::Debug> core::fmt::Debug for State<T> {
             .field("value", &self.cell.borrow().value)
             .field("revision", &self.cell.borrow().revision)
             .finish()
+    }
+}
+
+/// A state that can report whether it was written.
+///
+/// The trait lets the composition watch a set of states of different
+/// types at once, which is what it needs to decide whether the tree
+/// must be recomposed.
+pub trait DirtyState {
+    /// Whether the value was written since the last clean-up.
+    fn is_dirty(&self) -> bool;
+
+    /// Marks the state as clean again.
+    fn clear_dirty(&self);
+}
+
+impl<T> DirtyState for MutableState<T> {
+    fn is_dirty(&self) -> bool {
+        MutableState::is_dirty(self)
+    }
+
+    fn clear_dirty(&self) {
+        MutableState::clear_dirty(self);
     }
 }
 
