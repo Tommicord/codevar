@@ -17,6 +17,7 @@ spin = { workspace = true }
 libm = { workspace = true }
 codevar-base = { workspace = true }
 codevar-wayland = { workspace = true }
+codevar-kuitui = { workspace = true }
 codevar-logger = { workspace = true }
 codevar-console-util = { workspace = true }
 codevar-time-core = { workspace = true }

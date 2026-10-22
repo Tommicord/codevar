@@ -288,6 +288,7 @@ dependencies = [
  "codevar-base",
  "codevar-console-util",
  "codevar-env",
+ "codevar-kuitui",
  "codevar-logger",
  "codevar-time-core",
  "codevar-wayland",
@@ -472,6 +473,7 @@ version = "1.0.0"
 dependencies = [
  "codevar-logger",
  "codevar-ocl-abi",
+ "codevar-ocl-ir",
  "codevar-ocl-native-codegen",
  "libc",
 ]
