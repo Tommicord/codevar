@@ -455,6 +455,57 @@ mod tests {
     }
 
     #[test]
+    fn a_clickable_modifier_receives_the_pointer() {
+        use crate::event::{PointerEvent, PointerEventKind};
+        use crate::node::Modifier;
+
+        let clicks = Rc::new(core::cell::Cell::new(0_u32));
+        let observed = Rc::clone(&clicks);
+        let mut composition = Composition::new(Theme::light());
+        composition.set_content(move |_| {
+            let counter = Rc::clone(&observed);
+            Node::new(Block {
+                width: 20.0,
+                height: 20.0,
+                color: Color::BLACK,
+            })
+            .modifier(Modifier::none().clickable(move |_event| {
+                counter.set(counter.get() + 1);
+                crate::event::EventResult::Consumed
+            }))
+        });
+        composition.recompose(true);
+        composition.layout(Size::new(100.0, 100.0), true);
+
+        let down = Event::Pointer(PointerEvent::new(PointerEventKind::Down, Offset::new(5.0, 5.0)));
+        let result = composition.handle_event(&down);
+        assert!(result.is_consumed());
+        assert_eq!(clicks.get(), 1);
+    }
+
+    #[test]
+    fn a_pointer_outside_of_the_tree_is_not_consumed() {
+        use crate::event::{PointerEvent, PointerEventKind};
+
+        let mut composition = Composition::new(Theme::light());
+        composition.set_content(|_| {
+            Node::new(Block {
+                width: 20.0,
+                height: 20.0,
+                color: Color::BLACK,
+            })
+        });
+        composition.recompose(true);
+        composition.layout(Size::new(100.0, 100.0), true);
+
+        let down = Event::Pointer(PointerEvent::new(
+            PointerEventKind::Down,
+            Offset::new(500.0, 500.0),
+        ));
+        assert!(!composition.handle_event(&down).is_consumed());
+    }
+
+    #[test]
     fn rendering_twice_does_not_double_the_operations() {
         let mut composition = Composition::new(Theme::light());
         composition.set_content(|_| {

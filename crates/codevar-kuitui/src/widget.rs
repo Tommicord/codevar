@@ -91,8 +91,9 @@ pub trait Widget {
     /// The identity of this widget among its siblings.
     ///
     /// Returning `None` — the default — identifies the widget by its
-    /// position. Two siblings with the same key are a bug in the
-    /// application and are reported when the tree is composed.
+    /// position, which is enough for a static tree. A widget that
+    /// names itself keeps its identity when its position changes,
+    /// which is what a list of items needs.
     fn key(&self) -> Option<Key> {
         None
     }

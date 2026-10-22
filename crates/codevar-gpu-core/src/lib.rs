@@ -29,3 +29,4 @@ pub mod pipeline;
 pub mod renderer;
 pub mod resources;
 pub mod types;
+pub mod ui;

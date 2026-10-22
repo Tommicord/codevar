@@ -379,6 +379,7 @@ dependencies = [
  "codevar-base",
  "codevar-console-util",
  "codevar-env",
+ "codevar-kuitui",
  "codevar-logger",
  "codevar-time-core",
  "codevar-wayland",

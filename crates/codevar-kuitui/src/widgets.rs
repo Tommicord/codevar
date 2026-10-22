@@ -37,6 +37,7 @@ use alloc::vec::Vec;
 use crate::geometry::{Alignment, Constraints, Offset, Rect, Size};
 use crate::widget::{MeasureScope, PlaceScope, Widget};
 
+pub use crate::window::{ResizeEdge, ResizeHandle, TitleBar, WindowButton, WindowFrame};
 pub use text::Text;
 
 /// Lays its children out one below the other.
@@ -105,14 +106,11 @@ impl Widget for Column {
         }
 
         let mut total = gaps;
-        let mut rigid = 0.0;
         let mut total_flex = 0.0;
         for index in 0..count {
             total += sizes[index].height;
             if flexes[index] > 0.0 {
                 total_flex += flexes[index];
-            } else {
-                rigid += sizes[index].height;
             }
         }
 
@@ -135,7 +133,6 @@ impl Widget for Column {
             }
         }
 
-        let _ = rigid;
         let width = sizes
             .iter()
             .map(|size| size.width)
