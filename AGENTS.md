@@ -42,7 +42,175 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 CI (`.github/workflows/rust.yml`) runs build, test, `cargo fmt --check`, and clippy on every push/PR to `main`.
 
+### Scoped commands (preferred while working)
+
+The workspace has 53 crates and ~215k lines of code. A full-workspace check costs
+minutes; a per-crate check costs seconds. Scope every command to the crates you
+actually touched, and run the full workspace check once at the end of the task.
+
+```bash
+# Which crates did the working tree touch?
+git diff --name-only --diff-filter=ACMR HEAD | cut -d/ -f2 | sort -u
+
+# Build + lint + test only those crates
+cargo check  -p codevar-tls -p codevar-io
+cargo clippy -p codevar-tls -p codevar-io --all-targets -- -D warnings
+cargo test   -p codevar-tls -p codevar-io
 ```
+
+### Diff size check (run before every commit)
+
+```bash
+git diff --cached --shortstat   # "3 files changed, 120 insertions(+)"
+```
+
+If the staged diff exceeds the commit budget in **Commit discipline** below, split
+it before committing. Never accumulate a large uncommitted change and commit it
+once at the end.
+
+## AI agent operating rules
+
+These rules exist because this repository is developed primarily with AI agents.
+They are not stylistic preferences — violating them makes the codebase unmaintainable
+for a single human reviewer.
+
+### Scope discipline
+
+- **One task = one crate or one coherent concern.** Do not refactor unrelated code.
+- **Do not touch files outside the scope of the task.** If a change requires touching
+  another crate's public API, stop and report it instead of silently widening the diff.
+- **Read before writing.** Match existing patterns in the surrounding code; do not
+  invent new abstractions or module prefixes.
+
+### Commit discipline
+
+The single hardest constraint in this repository: **a commit must be small enough for a
+human to review**. The repository historically averaged ~3,700 added lines per commit,
+which is roughly 10–19 hours of expert review each — impossible for one person, and
+impossible to bisect when a regression lands. That is now forbidden.
+
+**Hard limits per commit:**
+
+| Limit | Value |
+| --- | --- |
+| Added lines | **≤ 800** (excluding `Cargo.lock`) |
+| Files changed | **≤ 3**, or ≤ 20 for a mechanical sweep that stays under 800 lines |
+| Crates touched | **1** (a second crate requires a separate commit) |
+| Purpose | **One** — never mix a refactor with a behavior change |
+
+**When to commit:**
+
+- Commit as soon as the current step compiles and its scoped tests pass. Do **not**
+  save everything up for one large commit at the end of a task.
+- Commit every ~400 lines of new work, or when a coherent subtask completes —
+  whichever comes first.
+- If the working tree approaches the limit, **stop implementing and commit the green
+  state**, then continue. A green checkpoint always beats a bigger uncommitted pile.
+- If a step cannot be made to compile, the step is too large. Reduce its size.
+
+**Never:**
+
+- Never leave more than one logical step uncommitted.
+- Never commit code that does not compile or whose scoped tests fail.
+- Never amend, rebase, or squash a commit that has already been pushed. Add a new commit.
+- Never use `WIP`, `fix stuff`, `updates`, or a bullet dump of filenames as a message.
+
+**Commit message format:**
+
+```
+<scope>: <imperative summary, ≤ 72 characters>
+
+<why the change was needed and what it does, wrapped at 72 characters, ≤ 6 lines>
+```
+
+- `<scope>` is the crate or module name (`codevar-tls`, `ocl-ir`, `logger`).
+- The summary states the *effect*, not the activity: `codevar-tls: reject
+  renegotiation after handshake failure`, not `update tls code`.
+- The body explains **why**, and states what a reviewer should check.
+- Reference issues as `Refs: #123` on the last line.
+
+Examples:
+
+```
+codevar-tls: reject renegotiation after handshake failure
+
+RFC 8446 forbids renegotiation after a completed handshake. Accepting it
+let a peer reset the cipher suite mid-session, which invalidated the
+session ticket binding.
+
+Refs: #412
+```
+
+```
+wredit: split the rope table into a fixed-size array
+
+The rope table was a Vec that reallocated on every insert, which showed up
+as 8% of frame time in the scroll benchmark. A fixed array keeps the
+allocation off the hot path.
+```
+
+### Context loading
+
+The codebase is ~293k lines across 53 crates. **Never try to read the whole repository
+and never paste a whole crate into context.** Instead:
+
+1. Identify the crate that owns the change and read only that crate.
+2. Load the crate's public API surface, dependencies, and invariants before editing
+   (see the `crate-context` skill).
+3. Use the `explore` subagent for questions of the form "where is X used?", "what
+   depends on Y?" instead of grepping by hand across the workspace.
+
+### Verification
+
+- Run the **scoped** checks for the crates you touched before every commit.
+- Run the **full** workspace checks (`build`, `test`, `fmt --check`, `clippy`) once
+  before declaring a task complete.
+- Never report a task as complete on the strength of "it looks right". Only CI
+  decides whether the work is complete.
+
+## OpenCode
+
+This repository ships OpenCode configuration under `.opencode/`. It is the reference
+tooling for AI agents working here; other harnesses should follow the same rules.
+
+| Path | Purpose |
+| --- | --- |
+| `.opencode/opencode.jsonc` | Project config: agents, permissions, instructions, worktree layout |
+| `.opencode/skills/<id>/SKILL.md` | Task skills, loaded on demand with the `skill` tool |
+| `.opencode/agents/*.md` | Subagents (reviewer, verifier) |
+| `.opencode/commands/*.md` | Slash commands (`/commit`, `/check`, `/review`, `/crate`) |
+
+**Skills.** A skill is a directory under `.opencode/skills/` containing a `SKILL.md`.
+The skill ID is the directory name (lowercase, kebab-case). Skills are advertised to
+the agent by their `description`; load one explicitly with the `skill` tool by ID, or
+by mentioning `@<skill-id>` in a prompt.
+
+| Skill ID | Load it when |
+| --- | --- |
+| `commit-discipline` | Committing work, or when the diff is growing past ~800 lines |
+| `crate-context` | Before editing any crate, to load its API surface, deps, and invariants |
+| `verify` | Before declaring a task complete, or when a check fails |
+| `unsafe-audit` | Adding, changing, or reviewing `unsafe` code |
+| `new-crate` | Scaffolding a new crate in the workspace |
+| `public-api` | Changing a public API, or reviewing whether a change breaks callers |
+
+**Commands.** Run from the TUI: `/commit` (checkpoint the current work within the
+commit budget), `/check` (scoped verification for the affected crates), `/review`
+(read-only review of the current diff), `/crate <name>` (brief for a crate).
+
+**Worktrees.** When several agents work in parallel, each agent must use its own
+worktree so changes cannot collide:
+
+```text
+worktree_create(name: "feature-tls-reneg")   # creates .lane/trees/<name>
+session_move(directory: ...)                  # switch this session into it
+worktree_remove(directory: ...)              # clean up after the merge
+worktree_list()                              # see what exists
+```
+
+Only one agent may edit the workspace `Cargo.toml` member list at a time; concurrent
+crate additions conflict in `Cargo.lock`. Use the `new-crate` skill's skeleton-first
+workflow instead of several agents creating crates simultaneously.
 
 ## Coding conventions
 
@@ -90,8 +258,10 @@ New Rust files must include the Apache 2.0 copyright header used elsewhere:
 
 - **Minimize scope** — fix the requested problem; do not refactor unrelated code.
 - **Match existing patterns** — read surrounding code before adding new abstractions.
-- **Do not commit** unless explicitly asked.
-- **Do not add Markdown docs** (README, AGENTS.md, etc.) unless requested.
+- **Commit incrementally** — follow **Commit discipline** above. Commits are expected as
+  part of the work, not only at the end of it. Never push or open a PR unless asked.
+- **Do not add Markdown docs** (README, guides, etc.) unless requested. `AGENTS.md` and
+  the agent tooling under `.opencode/` are exempt.
 - **Performance First** — every change should consider performance implications.
 - **Safety First** — leverage Rust's type system for zero-cost safety.
 
@@ -219,6 +389,9 @@ Before considering code complete, verify:
 - [ ] Tests pass with `cargo test --workspace`
 - [ ] Code formatting passes with `cargo fmt --all`
 - [ ] Clippy passes with `cargo clippy --workspace --all-targets -- -D warnings`
+- [ ] Commits are within budget: ≤ 800 added lines, ≤ 3 files, 1 crate per commit
+- [ ] Commit messages follow `<scope>: <imperative summary>` with a body explaining why
+- [ ] Work was committed incrementally, not accumulated into one large commit
 
 ### Unsafe Code
 
