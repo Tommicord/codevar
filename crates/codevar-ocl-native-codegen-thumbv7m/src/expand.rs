@@ -30,38 +30,61 @@
 //!
 //! # The registers
 //!
-//! The expansion works on physical registers.  A module that has been
-//! through the register allocator names them directly; a module that
-//! has not is given a home here, by a scan that keeps the values of
-//! a function in the callee-saved registers.  The scan refuses a
-//! function whose values do not fit, and asks for the module to be
-//! allocated before it can be compiled.
+//! The expansion works on physical registers.  The module that
+//! reaches the back end has been through the register allocator: every
+//! operand and every destination names a register of the target's
+//! file.  A module that still names a virtual register never went
+//! through the allocator, and the back end refuses it.
+//!
+//! # The scratch
+//!
+//! The expansion needs registers of its own: a constant has to live
+//! in a register before an instruction can use it, and the division
+//! loop needs four of them.  The scratch registers are the four
+//! argument registers, which the allocator never hands out because
+//! they belong to the calling convention.  A live value therefore
+//! never sits in them, and the expansion can use them freely.
+//!
+//! # The frame
+//!
+//! The prologue of a function saves the callee-saved registers it
+//! uses and then reserves the frame of the function.  The frame base
+//! is the value of the stack pointer right after that subtraction, so
+//! every slot of the frame is at a known distance from the stack
+//! pointer, and the saved registers sit above the frame.
 
+use alloc::format;
 use alloc::string::String;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use codevar_ocl_abi::{ARG_BASE_OFFSET, ARG_SLOT};
 use codevar_ocl_native_codegen::error::{CodegenError, Result};
-use codevar_ocl_native_codegen::mir::{
-    ArgKind, Destination, IPred, MInst, MOp, MType, MirFunction, Operand, VReg,
-};
+use codevar_ocl_native_codegen::mir::{ArgKind, Destination, IPred, MInst, MOp, MType, MirFunction, Operand};
 
 use crate::encode;
 use crate::reg;
 
-/// The register the expansion uses for the values it computes on the
-/// way, when it needs one of its own.
-pub const SCRATCH: u8 = 12;
+/// The register the expansion materializes a constant in.
+///
+/// The scratch is one of the four argument registers, and the
+/// allocator never hands those out, so no live value can be
+/// clobbered by it.
+pub const SCRATCH: u8 = 3;
 
-/// The first callee-saved register the allocation uses.
-const ALLOC_FIRST: u8 = 4;
-
-/// The last callee-saved register the allocation uses.
-const ALLOC_LAST: u8 = 11;
+/// The second register the expansion materializes a constant in.
+///
+/// A store needs the address and the value at the same time, so the
+/// value gets a register of its own.
+const SCRATCH_VALUE: u8 = 2;
 
 /// The size of the argument slot of the kernel arguments.
 const ARG_SLOT_SIZE: u32 = ARG_SLOT as u32;
+
+/// The first callee-saved register of the architecture.
+const SAVED_FIRST: u8 = 4;
+
+/// The last callee-saved register of the architecture.
+const SAVED_LAST: u8 = 11;
 
 /// Where a branch of the expansion points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,104 +141,35 @@ pub struct FunctionCode {
     pub instructions: u32,
 }
 
-/// The home of every virtual register of a function.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RegAlloc {
-    /// The register of every virtual register; `None` when the
-    /// virtual register does not appear in the function.
-    homes: Vec<Option<u8>>,
+/// A value an operand of the machine code names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Value {
+    /// A general-purpose register.
+    Reg(u8),
+    /// A constant.
+    Imm(u32),
 }
 
-impl RegAlloc {
-    /// The register of the virtual register, when it has one.
-    #[must_use]
-    #[inline]
-    pub fn home(&self, reg: VReg) -> Option<u8> {
-        self.homes.get(reg.index()).copied().flatten()
-    }
-}
-
-/// Gives every virtual register of the function a home.
-///
-/// The values live in the callee-saved registers, so a call inside
-/// the function does not disturb them.  The scan walks the
-/// instructions in order and keeps the values whose range is still
-/// open; when no register is free the function is refused, because
-/// the module has to be allocated before it can be compiled.
-fn allocate(function: &MirFunction) -> Result<RegAlloc> {
-    let count = function.vreg_types.len();
-    let mut start = vec![usize::MAX; count];
-    let mut end = vec![0usize; count];
-    let mut index = 0usize;
-
-    for block in &function.blocks {
-        for inst in &block.insts {
-            if let Some(Destination::Virtual(dest)) = inst.dest {
-                let slot = dest.index();
-                if slot < count {
-                    start[slot] = start[slot].min(index);
-                    end[slot] = end[slot].max(index);
-                }
-            }
-            for operand in inst.args.as_slice() {
-                if let Operand::Virtual(value) = operand {
-                    let slot = value.index();
-                    if slot < count {
-                        start[slot] = start[slot].min(index);
-                        end[slot] = end[slot].max(index);
-                    }
-                }
-            }
-            index += 1;
-        }
-    }
-
-    let mut order: Vec<usize> = (0..count)
-        .filter(|&slot| start[slot] != usize::MAX)
-        .collect();
-    order.sort_by_key(|&slot| start[slot]);
-
-    let mut homes: Vec<Option<u8>> = vec![None; count];
-    let mut active: Vec<(u8, usize)> = Vec::new();
-    let mut free: Vec<u8> = (ALLOC_FIRST..=ALLOC_LAST).rev().collect();
-
-    for &slot in &order {
-        let first = start[slot];
-        let mut expired = Vec::new();
-        active.retain(|&(number, last)| {
-            if last < first {
-                expired.push(number);
-                false
-            } else {
-                true
-            }
-        });
-        free.extend(expired);
-        free.sort_unstable_by(|a, b| b.cmp(a));
-
-        let Some(&number) = free.last() else {
-            return Err(CodegenError::Target {
-                what: "allocating the registers of the function",
-                detail: String::from(
-                    "the function keeps more values live than the register file holds",
-                ),
-            });
-        };
-        free.pop();
-        homes[slot] = Some(number);
-        active.push((number, end[slot]));
-    }
-
-    Ok(RegAlloc { homes })
+/// The comparison a comparison result needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Compare {
+    /// A register and a register.
+    Regs(u8, u8),
+    /// A register and a constant.
+    RegImm(u8, u32),
+    /// A constant and a register.
+    ImmReg(u32, u8),
+    /// Two constants.
+    Imms(u32, u32),
 }
 
 /// The registers of the function that survive a call, and whether it
 /// calls at all.
 ///
-/// The prologue saves the registers the function uses, so the scan
-/// has to know them before the frame is reserved: the frame and the
-/// saved registers together have to keep the stack pointer aligned.
-fn scan_registers(function: &MirFunction, alloc: &RegAlloc) -> (u16, bool) {
+/// The prologue saves the registers, so the scan has to know them
+/// before the frame is reserved: the frame and the saved registers
+/// together have to keep the stack pointer aligned.
+fn scan_registers(function: &MirFunction) -> (u16, bool) {
     let mut saved = 0u16;
     let mut uses_link = false;
     for block in &function.blocks {
@@ -223,27 +177,15 @@ fn scan_registers(function: &MirFunction, alloc: &RegAlloc) -> (u16, bool) {
             if matches!(inst.op, MOp::Call { .. }) {
                 uses_link = true;
             }
-            if let Some(dest) = inst.dest {
-                match dest {
-                    Destination::Virtual(value) => {
-                        if let Some(number) = alloc.home(value) {
-                            saved |= saved_bit(number);
-                        }
-                    }
-                    Destination::Physical(reg) => {
-                        if let Some(number) = reg::gpr_number(reg) {
-                            saved |= saved_bit(number);
-                        }
-                    }
-                }
+            if let Some(dest) = inst.dest_reg()
+                && let Some(number) = reg::gpr_number(dest)
+            {
+                saved |= saved_bit(number);
             }
             for operand in inst.args.as_slice() {
-                let number = match operand {
-                    Operand::Physical(reg) => reg::gpr_number(*reg),
-                    Operand::Virtual(value) => alloc.home(*value),
-                    _ => None,
-                };
-                if let Some(number) = number {
+                if let Operand::Physical(preg) = operand
+                    && let Some(number) = reg::gpr_number(*preg)
+                {
                     saved |= saved_bit(number);
                 }
             }
@@ -258,7 +200,7 @@ fn scan_registers(function: &MirFunction, alloc: &RegAlloc) -> (u16, bool) {
 /// The mask counts the registers by their architectural number, which
 /// is the way the register lists of the architecture are written.
 fn saved_bit(number: u8) -> u16 {
-    if (ALLOC_FIRST..=ALLOC_LAST).contains(&number) {
+    if (SAVED_FIRST..=SAVED_LAST).contains(&number) {
         1 << number
     } else {
         0
@@ -267,8 +209,6 @@ fn saved_bit(number: u8) -> u16 {
 
 /// The expansion of one function.
 struct Expander<'a> {
-    function: &'a MirFunction,
-    alloc: &'a RegAlloc,
     callees: &'a [Option<usize>],
     has_fp: bool,
     bytes: Vec<u8>,
@@ -283,17 +223,14 @@ impl<'a> Expander<'a> {
     /// Creates the expansion of the function.
     fn new(
         function: &'a MirFunction,
-        alloc: &'a RegAlloc,
         callees: &'a [Option<usize>],
         has_fp: bool,
         saved: u16,
         uses_link: bool,
     ) -> Self {
-        let pushed = u32::from(saved.count_ones()) + u32::from(uses_link);
+        let pushed = saved.count_ones() + u32::from(uses_link);
         let frame = align_frame(function.frame_size, pushed);
         Self {
-            function,
-            alloc,
             callees,
             has_fp,
             bytes: Vec::new(),
@@ -305,28 +242,28 @@ impl<'a> Expander<'a> {
         }
     }
 
-    /// The general-purpose register of the operand.
-    fn gpr(&self, operand: Operand) -> Result<u8> {
+    /// The value an operand names.
+    ///
+    /// The machine code has already been allocated, so an operand
+    /// names a physical register or a constant; a virtual one means
+    /// the machine code never went through the allocator.
+    fn value(&self, operand: Operand) -> Result<Value> {
         match operand {
-            Operand::Physical(reg) => {
-                reg::gpr_number(reg).ok_or_else(|| CodegenError::Target {
-                    what: "reading an operand",
-                    detail: String::from("the operand is not in a general-purpose register"),
-                })
-            }
-            Operand::Virtual(value) => {
-                self.alloc.home(value).ok_or_else(|| CodegenError::Target {
-                    what: "reading an operand",
-                    detail: String::from("the operand is a virtual register without a home"),
-                })
-            }
-            Operand::Immediate(_) => Err(CodegenError::Target {
+            Operand::Physical(preg) => match reg::gpr_number(preg) {
+                Some(number) => Ok(Value::Reg(number)),
+                None => Err(self.foreign_register_error(preg)),
+            },
+            Operand::Immediate(value) => Ok(Value::Imm(value as u32)),
+            Operand::Virtual(value) => Err(CodegenError::Target {
                 what: "reading an operand",
-                detail: String::from("the operand is an immediate"),
+                detail: format!(
+                    "the machine code was not allocated: the operand names the virtual register {}",
+                    value.index()
+                ),
             }),
-            Operand::FloatImmediate(_) => Err(CodegenError::Target {
-                what: "reading an operand",
-                detail: String::from("the operand is a floating-point immediate"),
+            Operand::FloatImmediate(_) => Err(CodegenError::Unsupported {
+                what: "a floating-point constant",
+                detail: String::from("the back end does not implement the floating-point unit"),
             }),
             Operand::Symbol(_) => Err(CodegenError::Target {
                 what: "reading an operand",
@@ -335,12 +272,20 @@ impl<'a> Expander<'a> {
         }
     }
 
-    /// The operand of the instruction at the given position.
-    fn arg(&self, inst: &MInst, index: usize) -> Result<Operand> {
-        inst.args.get(index).ok_or_else(|| CodegenError::Target {
-            what: "expanding an operation",
-            detail: String::from("the operation has too few operands"),
-        })
+    /// The error the back end returns for a register that is not an
+    /// integer one.
+    ///
+    /// A value of the floating-point unit or of the vector unit has
+    /// no home in the integer registers, and the back end refuses it.
+    fn foreign_register_error(&self, preg: codevar_ocl_native_codegen::mir::PReg) -> CodegenError {
+        if reg::is_q(preg) {
+            CodegenError::Unsupported {
+                what: "a vector value",
+                detail: String::from("the architecture has no vector unit"),
+            }
+        } else {
+            self.floating_point_error("a floating-point value")
+        }
     }
 
     /// The general-purpose register the instruction writes.
@@ -350,37 +295,37 @@ impl<'a> Expander<'a> {
             detail: String::from("the operation writes no register"),
         })?;
         match dest {
-            Destination::Virtual(value) => self.gpr(Operand::Virtual(value)),
-            Destination::Physical(reg) => {
-                reg::gpr_number(reg).ok_or_else(|| CodegenError::Target {
-                    what: "expanding an operation",
-                    detail: String::from("the destination is not in a general-purpose register"),
-                })
-            }
+            Destination::Physical(preg) => match reg::gpr_number(preg) {
+                Some(number) => Ok(number),
+                None => Err(self.foreign_register_error(preg)),
+            },
+            Destination::Virtual(value) => Err(CodegenError::Target {
+                what: "expanding an operation",
+                detail: format!(
+                    "the machine code was not allocated: the destination names the virtual register {}",
+                    value.index()
+                ),
+            }),
         }
     }
 
-    /// The type of the virtual register of an operand.
-    fn operand_type(&self, operand: Operand) -> MType {
-        match operand {
-            Operand::Virtual(value) => self
-                .function
-                .vreg_type(value)
-                .cloned()
-                .unwrap_or(MType::I32),
-            _ => MType::I32,
-        }
+    /// The operand of the instruction at the given position.
+    fn arg(&self, inst: &MInst, index: usize) -> Result<Operand> {
+        inst.args
+            .get(index)
+            .ok_or_else(|| CodegenError::Target {
+                what: "expanding an operation",
+                detail: String::from("the operation has too few operands"),
+            })
     }
 
-    /// Records that the expansion used a callee-saved register.
-    fn use_saved(&mut self, number: u8) {
-        self.saved |= saved_bit(number);
+    /// The type of the values an instruction reads.
+    fn operand_type(&self, inst: &MInst) -> MType {
+        inst.operand_ty.clone().unwrap_or(MType::I32)
     }
 
     /// Emits the move of one register into another.
     fn emit_move(&mut self, rd: u8, rm: u8) {
-        self.use_saved(rd);
-        self.use_saved(rm);
         if rd == rm {
             return;
         }
@@ -392,26 +337,56 @@ impl<'a> Expander<'a> {
         self.instructions += 1;
     }
 
-    /// Emits the move of an immediate into a register.
-    fn emit_mov_imm(&mut self, rd: u8, value: u32) {
-        self.use_saved(rd);
-        if value <= 0xff && rd < 8 {
-            encode::movs_imm(&mut self.bytes, rd, u8::try_from(value).unwrap_or(0));
-        } else if value <= 0xffff {
-            encode::movw(&mut self.bytes, rd, u16::try_from(value).unwrap_or(0));
+    /// Emits the move of one register into another, even when the two
+    /// registers are the same.
+    ///
+    /// A conditional block needs its shape, so the move of a register
+    /// into itself is emitted as a move of the register into itself.
+    fn emit_move_always(&mut self, rd: u8, rm: u8) {
+        if rd != rm {
+            self.emit_move(rd, rm);
+            return;
+        }
+        if rd < 8 {
+            encode::mov_reg(&mut self.bytes, rd, rm);
         } else {
-            encode::movw(&mut self.bytes, rd, u16::try_from(value & 0xffff).unwrap_or(0));
-            encode::movt(&mut self.bytes, rd, u16::try_from((value >> 16) & 0xffff).unwrap_or(0));
-            self.instructions += 1;
+            encode::mov_reg_wide(&mut self.bytes, rd, rm);
         }
         self.instructions += 1;
     }
 
+    /// Emits the move of a constant into a register.
+    fn emit_mov_imm(&mut self, rd: u8, value: u32) {
+        if value <= 0xff && rd < 8 {
+            encode::movs_imm(&mut self.bytes, rd, u8::try_from(value).unwrap_or(0));
+            self.instructions += 1;
+        } else if value <= 0xffff {
+            encode::movw(&mut self.bytes, rd, u16::try_from(value).unwrap_or(0));
+            self.instructions += 1;
+        } else {
+            encode::movw(&mut self.bytes, rd, u16::try_from(value & 0xffff).unwrap_or(0));
+            encode::movt(
+                &mut self.bytes,
+                rd,
+                u16::try_from((value >> 16) & 0xffff).unwrap_or(0),
+            );
+            self.instructions += 2;
+        }
+    }
+
+    /// Emits the move of a value into a register.
+    ///
+    /// A constant is materialized in the scratch register, which the
+    /// allocator never hands out.
+    fn emit_value(&mut self, value: Value, rd: u8) {
+        match value {
+            Value::Reg(rm) => self.emit_move(rd, rm),
+            Value::Imm(imm) => self.emit_mov_imm(rd, imm),
+        }
+    }
+
     /// Emits the addition of two registers.
     fn emit_add(&mut self, rd: u8, rn: u8, rm: u8) {
-        self.use_saved(rd);
-        self.use_saved(rn);
-        self.use_saved(rm);
         if rd < 8 && rn < 8 && rm < 8 {
             encode::adds_reg3(&mut self.bytes, rd, rn, rm);
         } else {
@@ -420,20 +395,70 @@ impl<'a> Expander<'a> {
         self.instructions += 1;
     }
 
-    /// Emits the addition of a register and a shifted register.
-    fn emit_add_shifted(&mut self, rd: u8, rn: u8, rm: u8, shift: u8) {
-        self.use_saved(rd);
-        self.use_saved(rn);
-        self.use_saved(rm);
-        encode::adds_reg_shifted(&mut self.bytes, rd, rn, rm, shift);
-        self.instructions += 1;
+    /// Emits the addition of a register and a value.
+    fn emit_add_value(&mut self, rd: u8, rn: u8, value: Value) {
+        match value {
+            Value::Reg(rm) => self.emit_add(rd, rn, rm),
+            Value::Imm(imm) => {
+                if rd == rn && rd < 8 && imm <= 0xff {
+                    encode::adds_imm8(&mut self.bytes, rd, u8::try_from(imm).unwrap_or(0));
+                    self.instructions += 1;
+                } else {
+                    self.emit_mov_imm(SCRATCH, imm);
+                    self.emit_add(rd, rn, SCRATCH);
+                }
+            }
+        }
+    }
+
+    /// Emits the addition of two values.
+    fn emit_add_values(&mut self, rd: u8, left: Value, right: Value) {
+        match (left, right) {
+            (Value::Reg(rn), Value::Reg(rm)) => self.emit_add(rd, rn, rm),
+            (Value::Reg(rn), Value::Imm(imm)) => self.emit_add_value(rd, rn, Value::Imm(imm)),
+            (Value::Imm(imm), Value::Reg(rm)) => {
+                self.emit_mov_imm(rd, imm);
+                self.emit_add(rd, rd, rm);
+            }
+            (Value::Imm(left), Value::Imm(right)) => {
+                self.emit_mov_imm(rd, left);
+                self.emit_add_value(rd, rd, Value::Imm(right));
+            }
+        }
+    }
+
+    /// Emits the subtraction of two values.
+    fn emit_sub_values(&mut self, rd: u8, left: Value, right: Value) {
+        match (left, right) {
+            (Value::Reg(rn), Value::Reg(rm)) => self.emit_sub(rd, rn, rm),
+            (Value::Reg(rn), Value::Imm(imm)) => self.emit_sub_value(rd, rn, Value::Imm(imm)),
+            (Value::Imm(imm), Value::Reg(rm)) => {
+                self.emit_mov_imm(rd, imm);
+                self.emit_sub(rd, rd, rm);
+            }
+            (Value::Imm(left), Value::Imm(right)) => {
+                self.emit_mov_imm(rd, left);
+                self.emit_sub_value(rd, rd, Value::Imm(right));
+            }
+        }
+    }
+
+    /// Emits the addition of a constant to a register.
+    fn emit_add_offset(&mut self, rd: u8, offset: u32) {
+        if offset == 0 {
+            return;
+        }
+        if rd < 8 && offset <= 0xff {
+            encode::adds_imm8(&mut self.bytes, rd, u8::try_from(offset).unwrap_or(0));
+            self.instructions += 1;
+            return;
+        }
+        self.emit_mov_imm(SCRATCH, offset);
+        self.emit_add(rd, rd, SCRATCH);
     }
 
     /// Emits the subtraction of two registers.
     fn emit_sub(&mut self, rd: u8, rn: u8, rm: u8) {
-        self.use_saved(rd);
-        self.use_saved(rn);
-        self.use_saved(rm);
         if rd < 8 && rn < 8 && rm < 8 {
             encode::subs_reg3(&mut self.bytes, rd, rn, rm);
         } else {
@@ -442,10 +467,24 @@ impl<'a> Expander<'a> {
         self.instructions += 1;
     }
 
+    /// Emits the subtraction of a value from a register.
+    fn emit_sub_value(&mut self, rd: u8, rn: u8, value: Value) {
+        match value {
+            Value::Reg(rm) => self.emit_sub(rd, rn, rm),
+            Value::Imm(imm) => {
+                if rd == rn && rd < 8 && imm <= 0xff {
+                    encode::subs_imm8(&mut self.bytes, rd, u8::try_from(imm).unwrap_or(0));
+                    self.instructions += 1;
+                } else {
+                    self.emit_mov_imm(SCRATCH, imm);
+                    self.emit_sub(rd, rn, SCRATCH);
+                }
+            }
+        }
+    }
+
     /// Emits the comparison of two registers.
     fn emit_cmp(&mut self, rn: u8, rm: u8) {
-        self.use_saved(rn);
-        self.use_saved(rm);
         if rn < 8 && rm < 8 {
             encode::cmp_reg(&mut self.bytes, rn, rm);
         } else {
@@ -454,23 +493,19 @@ impl<'a> Expander<'a> {
         self.instructions += 1;
     }
 
-    /// Emits the comparison of a register with an immediate.
+    /// Emits the comparison of a register with a constant.
     fn emit_cmp_imm(&mut self, rn: u8, value: u32) {
-        self.use_saved(rn);
-        if value <= 0xff {
+        if rn < 8 && value <= 0xff {
             encode::cmp_imm(&mut self.bytes, rn, u8::try_from(value).unwrap_or(0));
-        } else {
-            self.emit_mov_imm(SCRATCH, value);
-            encode::cmp_reg_wide(&mut self.bytes, rn, SCRATCH);
             self.instructions += 1;
+            return;
         }
-        self.instructions += 1;
+        self.emit_mov_imm(SCRATCH, value);
+        self.emit_cmp(rn, SCRATCH);
     }
 
     /// Emits the extension of a register.
     fn emit_extend(&mut self, rd: u8, rm: u8, signed: bool, halfword: bool) {
-        self.use_saved(rd);
-        self.use_saved(rm);
         if rd < 8 && rm < 8 {
             match (signed, halfword) {
                 (false, false) => encode::uxtb_reg(&mut self.bytes, rd, rm),
@@ -479,21 +514,12 @@ impl<'a> Expander<'a> {
                 (true, true) => encode::sxth_reg(&mut self.bytes, rd, rm),
             }
         } else {
-            let first = match (signed, halfword) {
-                (false, false) => 0xfa5fu16,
-                (false, true) => 0xfa1fu16,
-                (true, false) => 0xfa4fu16,
-                (true, true) => 0xfa0fu16,
-            };
-            let second = 0xf000u16 | u16::from(rd) << 8 | 0x80 | u16::from(rm);
-            self.bytes
-                .push(u8::try_from(first & 0xff).unwrap_or(0));
-            self.bytes
-                .push(u8::try_from((first >> 8) & 0xff).unwrap_or(0));
-            self.bytes
-                .push(u8::try_from(second & 0xff).unwrap_or(0));
-            self.bytes
-                .push(u8::try_from((second >> 8) & 0xff).unwrap_or(0));
+            match (signed, halfword) {
+                (false, false) => encode::uxtb_reg_wide(&mut self.bytes, rd, rm),
+                (false, true) => encode::uxth_reg_wide(&mut self.bytes, rd, rm),
+                (true, false) => encode::sxtb_reg_wide(&mut self.bytes, rd, rm),
+                (true, true) => encode::sxth_reg_wide(&mut self.bytes, rd, rm),
+            }
         }
         self.instructions += 1;
     }
@@ -522,31 +548,16 @@ impl<'a> Expander<'a> {
         if self.uses_link {
             // The link register was saved with the other registers,
             // so the pop returns to the caller.
-            let mut registers = self.saved;
-            registers |= 1 << 14;
-            encode::pop(&mut self.bytes, registers & 0x0fff, true);
+            encode::pop(&mut self.bytes, self.saved & 0x0fff, true);
+            self.instructions += 1;
         } else {
             if self.saved != 0 {
                 encode::pop(&mut self.bytes, self.saved & 0x0fff, false);
                 self.instructions += 1;
             }
             encode::bx(&mut self.bytes, reg::LR);
+            self.instructions += 1;
         }
-        self.instructions += 1;
-    }
-
-    /// Emits the unsigned division of two registers.
-    ///
-    /// The quotient ends up in the first register and the remainder
-    /// in the fourth.  The division has no instruction, so it becomes
-    /// a loop that shifts the dividend into the remainder.
-    fn emit_unsigned_division(&mut self) {
-        // The registers the loop uses are saved and restored.
-        encode::push(&mut self.bytes, 0x3c, false);
-        self.instructions += 1;
-        self.emit_unsigned_division_body();
-        encode::pop(&mut self.bytes, 0x3c, false);
-        self.instructions += 1;
     }
 
     /// Expands one operation.
@@ -554,22 +565,22 @@ impl<'a> Expander<'a> {
         match &inst.op {
             MOp::Copy => {
                 let rd = self.dest(inst)?;
-                let rm = self.gpr(self.arg(inst, 0)?)?;
-                self.emit_move(rd, rm);
+                let value = self.value(self.arg(inst, 0)?)?;
+                self.emit_value(value, rd);
             }
             MOp::Load { size } => {
                 let rd = self.dest(inst)?;
-                let rn = self.gpr(self.arg(inst, 0)?)?;
-                self.emit_load(rd, rn, *size)?;
+                let address = self.value(self.arg(inst, 0)?)?;
+                self.emit_load(rd, address, *size)?;
             }
             MOp::Store { size } => {
-                let rn = self.gpr(self.arg(inst, 0)?)?;
-                let rm = self.gpr(self.arg(inst, 1)?)?;
-                self.emit_store(rm, rn, *size)?;
+                let address = self.value(self.arg(inst, 0)?)?;
+                let value = self.value(self.arg(inst, 1)?)?;
+                self.emit_store(address, value, *size)?;
             }
             MOp::Gep { size, signed } => {
                 let rd = self.dest(inst)?;
-                let base = self.gpr(self.arg(inst, 0)?)?;
+                let base = self.value(self.arg(inst, 0)?)?;
                 self.emit_gep(inst, rd, base, *size, *signed)?;
             }
             MOp::VecSplat | MOp::VecExtract { .. } | MOp::VecInsert { .. } | MOp::VecShuffle { .. } => {
@@ -580,70 +591,55 @@ impl<'a> Expander<'a> {
             }
             MOp::Add => {
                 let rd = self.dest(inst)?;
-                let rn = self.gpr(self.arg(inst, 0)?)?;
-                let rm = self.gpr(self.arg(inst, 1)?)?;
-                self.emit_add(rd, rn, rm);
+                let left = self.value(self.arg(inst, 0)?)?;
+                let right = self.value(self.arg(inst, 1)?)?;
+                self.emit_add_values(rd, left, right);
             }
             MOp::Sub => {
                 let rd = self.dest(inst)?;
-                let rn = self.gpr(self.arg(inst, 0)?)?;
-                let rm = self.gpr(self.arg(inst, 1)?)?;
-                self.emit_sub(rd, rn, rm);
+                let left = self.value(self.arg(inst, 0)?)?;
+                let right = self.value(self.arg(inst, 1)?)?;
+                self.emit_sub_values(rd, left, right);
             }
             MOp::Mul => {
                 let rd = self.dest(inst)?;
-                let rn = self.gpr(self.arg(inst, 0)?)?;
-                let rm = self.gpr(self.arg(inst, 1)?)?;
-                self.use_saved(rd);
+                let left = self.value(self.arg(inst, 0)?)?;
+                let right = self.value(self.arg(inst, 1)?)?;
+                let rn = self.materialize(left, rd);
+                let rm = self.materialize(right, SCRATCH);
                 encode::muls_reg_wide(&mut self.bytes, rd, rn, rm);
                 self.instructions += 1;
             }
-            MOp::And => {
+            MOp::And | MOp::Or | MOp::Xor => {
                 let rd = self.dest(inst)?;
-                let rn = self.gpr(self.arg(inst, 0)?)?;
-                let rm = self.gpr(self.arg(inst, 1)?)?;
-                self.emit_logic(rd, rn, rm, Logic::And);
+                let left = self.value(self.arg(inst, 0)?)?;
+                let right = self.value(self.arg(inst, 1)?)?;
+                let kind = match inst.op {
+                    MOp::And => Logic::And,
+                    MOp::Or => Logic::Or,
+                    _ => Logic::Xor,
+                };
+                let rn = self.materialize(left, rd);
+                let rm = self.materialize(right, SCRATCH);
+                self.emit_logic(rd, rn, rm, kind);
             }
-            MOp::Or => {
+            MOp::Shl | MOp::LShr | MOp::AShr => {
                 let rd = self.dest(inst)?;
-                let rn = self.gpr(self.arg(inst, 0)?)?;
-                let rm = self.gpr(self.arg(inst, 1)?)?;
-                self.emit_logic(rd, rn, rm, Logic::Or);
-            }
-            MOp::Xor => {
-                let rd = self.dest(inst)?;
-                let rn = self.gpr(self.arg(inst, 0)?)?;
-                let rm = self.gpr(self.arg(inst, 1)?)?;
-                self.emit_logic(rd, rn, rm, Logic::Xor);
-            }
-            MOp::Shl => {
-                let rd = self.dest(inst)?;
-                let rm = self.gpr(self.arg(inst, 0)?)?;
-                let rs = self.gpr(self.arg(inst, 1)?)?;
-                self.use_saved(rd);
-                encode::lsls_reg(&mut self.bytes, rd, rm, rs);
-                self.instructions += 1;
-            }
-            MOp::LShr => {
-                let rd = self.dest(inst)?;
-                let rm = self.gpr(self.arg(inst, 0)?)?;
-                let rs = self.gpr(self.arg(inst, 1)?)?;
-                self.use_saved(rd);
-                encode::lsrs_reg(&mut self.bytes, rd, rm, rs);
-                self.instructions += 1;
-            }
-            MOp::AShr => {
-                let rd = self.dest(inst)?;
-                let rm = self.gpr(self.arg(inst, 0)?)?;
-                let rs = self.gpr(self.arg(inst, 1)?)?;
-                self.use_saved(rd);
-                encode::asrs_reg(&mut self.bytes, rd, rm, rs);
+                let value = self.value(self.arg(inst, 0)?)?;
+                let amount = self.value(self.arg(inst, 1)?)?;
+                let rm = self.materialize(value, rd);
+                let rs = self.materialize(amount, SCRATCH);
+                match inst.op {
+                    MOp::Shl => encode::lsls_reg(&mut self.bytes, rd, rm, rs),
+                    MOp::LShr => encode::lsrs_reg(&mut self.bytes, rd, rm, rs),
+                    _ => encode::asrs_reg(&mut self.bytes, rd, rm, rs),
+                }
                 self.instructions += 1;
             }
             MOp::Neg => {
                 let rd = self.dest(inst)?;
-                let rm = self.gpr(self.arg(inst, 0)?)?;
-                self.use_saved(rd);
+                let value = self.value(self.arg(inst, 0)?)?;
+                let rm = self.materialize(value, rd);
                 if rd < 8 && rm < 8 {
                     encode::negs_reg(&mut self.bytes, rd, rm);
                 } else {
@@ -653,8 +649,8 @@ impl<'a> Expander<'a> {
             }
             MOp::Not => {
                 let rd = self.dest(inst)?;
-                let rm = self.gpr(self.arg(inst, 0)?)?;
-                self.use_saved(rd);
+                let value = self.value(self.arg(inst, 0)?)?;
+                let rm = self.materialize(value, rd);
                 if rd < 8 && rm < 8 {
                     encode::mvns_reg(&mut self.bytes, rd, rm);
                 } else {
@@ -664,46 +660,53 @@ impl<'a> Expander<'a> {
             }
             MOp::UDiv | MOp::URem | MOp::SDiv | MOp::SRem => {
                 let rd = self.dest(inst)?;
-                let rn = self.gpr(self.arg(inst, 0)?)?;
-                let rm = self.gpr(self.arg(inst, 1)?)?;
-                self.emit_division(inst, rd, rn, rm)?;
+                let dividend = self.value(self.arg(inst, 0)?)?;
+                let divisor = self.value(self.arg(inst, 1)?)?;
+                self.emit_division(inst, rd, dividend, divisor);
             }
             MOp::ICmp { pred } => {
                 let rd = self.dest(inst)?;
-                let rn = self.gpr(self.arg(inst, 0)?)?;
-                let rm = self.gpr(self.arg(inst, 1)?)?;
-                self.emit_compare(rd, rn, rm, *pred)?;
+                let left = self.value(self.arg(inst, 0)?)?;
+                let right = self.value(self.arg(inst, 1)?)?;
+                self.emit_compare(rd, left, right, *pred);
             }
             MOp::FCmp { .. } => {
                 return Err(self.floating_point_error("a floating-point comparison"));
             }
-            MOp::FAdd | MOp::FSub | MOp::FMul | MOp::FDiv | MOp::FRem | MOp::FNeg => {
+            MOp::FAdd
+            | MOp::FSub
+            | MOp::FMul
+            | MOp::FDiv
+            | MOp::FRem
+            | MOp::FNeg
+            | MOp::FSqrt
+            | MOp::FAbs
+            | MOp::FMin
+            | MOp::FMax
+            | MOp::FDim
+            | MOp::FCopySign => {
                 return Err(self.floating_point_error("a floating-point operation"));
             }
             MOp::Select => {
                 let rd = self.dest(inst)?;
-                let cond = self.gpr(self.arg(inst, 0)?)?;
-                let yes = self.gpr(self.arg(inst, 1)?)?;
-                let no = self.gpr(self.arg(inst, 2)?)?;
-                self.emit_select(rd, cond, yes, no);
+                let condition = self.value(self.arg(inst, 0)?)?;
+                let yes = self.value(self.arg(inst, 1)?)?;
+                let no = self.value(self.arg(inst, 2)?)?;
+                self.emit_select(rd, condition, yes, no);
             }
-            MOp::ZExt => {
+            MOp::ZExt | MOp::SExt => {
                 let rd = self.dest(inst)?;
-                let rm = self.gpr(self.arg(inst, 0)?)?;
-                let ty = self.operand_type(self.arg(inst, 0)?);
-                self.emit_extend(rd, rm, false, ty == MType::I16);
-            }
-            MOp::SExt => {
-                let rd = self.dest(inst)?;
-                let rm = self.gpr(self.arg(inst, 0)?)?;
-                let ty = self.operand_type(self.arg(inst, 0)?);
-                self.emit_extend(rd, rm, true, ty == MType::I16);
+                let value = self.value(self.arg(inst, 0)?)?;
+                let rm = self.materialize(value, rd);
+                let ty = self.operand_type(inst);
+                let signed = matches!(inst.op, MOp::SExt);
+                self.emit_extend(rd, rm, signed, ty == MType::I16);
             }
             MOp::Trunc => {
                 let rd = self.dest(inst)?;
-                let rm = self.gpr(self.arg(inst, 0)?)?;
-                let ty = inst.ty.clone();
-                match ty {
+                let value = self.value(self.arg(inst, 0)?)?;
+                let rm = self.materialize(value, rd);
+                match inst.ty {
                     MType::I8 | MType::I1 => self.emit_extend(rd, rm, false, false),
                     MType::I16 => self.emit_extend(rd, rm, false, true),
                     _ => self.emit_move(rd, rm),
@@ -714,26 +717,24 @@ impl<'a> Expander<'a> {
             }
             MOp::Bitcast => {
                 let rd = self.dest(inst)?;
-                let rm = self.gpr(self.arg(inst, 0)?)?;
-                if inst.ty.is_floating() || self.operand_type(self.arg(inst, 0)?).is_floating() {
+                let value = self.value(self.arg(inst, 0)?)?;
+                if inst.ty.is_floating() || self.operand_type(inst).is_floating() {
                     return Err(self.floating_point_error("a bit-level reinterpretation"));
                 }
-                self.emit_move(rd, rm);
+                self.emit_value(value, rd);
             }
             MOp::Br { target } => {
                 self.emit_branch(FixupKind::Branch, FixupTarget::Block(*target));
             }
             MOp::CondBr => {
-                let cond = self.gpr(self.arg(inst, 0)?)?;
+                let condition = self.value(self.arg(inst, 0)?)?;
                 let yes = self.block_target(self.arg(inst, 1)?)?;
                 let no = self.block_target(self.arg(inst, 2)?)?;
-                self.emit_cmp_imm(cond, 0);
-                self.emit_branch(FixupKind::BranchCond(encode::COND_NE), FixupTarget::Block(yes));
-                self.emit_branch(FixupKind::Branch, FixupTarget::Block(no));
+                self.emit_conditional_branch(condition, yes, no);
             }
             MOp::Ret => {
-                let rm = self.gpr(self.arg(inst, 0)?)?;
-                self.emit_move(0, rm);
+                let value = self.value(self.arg(inst, 0)?)?;
+                self.emit_value(value, 0);
                 self.emit_epilogue();
             }
             MOp::RetVoid => {
@@ -744,14 +745,17 @@ impl<'a> Expander<'a> {
                 self.instructions += 1;
             }
             MOp::Call { callee } => {
-                let index = self.callees.get(callee.index()).copied().flatten().ok_or_else(|| {
-                    CodegenError::Unsupported {
+                let index = self
+                    .callees
+                    .get(callee.index())
+                    .copied()
+                    .flatten()
+                    .ok_or_else(|| CodegenError::Unsupported {
                         what: "a call",
                         detail: String::from(
                             "the callee is not a function of the module, so it has no relative address",
                         ),
-                    }
-                })?;
+                    })?;
                 let count = inst.args.len();
                 if count > 4 {
                     return Err(CodegenError::Unsupported {
@@ -760,66 +764,55 @@ impl<'a> Expander<'a> {
                     });
                 }
                 for position in 0..count {
-                    let rm = self.gpr(self.arg(inst, position)?)?;
-                    self.emit_move(u8::try_from(position).unwrap_or(0), rm);
+                    let value = self.value(self.arg(inst, position)?)?;
+                    let target = u8::try_from(position).unwrap_or(0);
+                    self.emit_value(value, target);
                 }
                 self.uses_link = true;
                 self.emit_branch(FixupKind::BranchLink, FixupTarget::Function(index));
-                if let Some(dest) = inst.dest {
-                    let rd = match dest {
-                        Destination::Virtual(value) => self.gpr(Operand::Virtual(value))?,
-                        Destination::Physical(reg) => {
-                            reg::gpr_number(reg).ok_or_else(|| CodegenError::Target {
-                                what: "expanding a call",
-                                detail: String::from(
-                                    "the result is not in a general-purpose register",
-                                ),
-                            })?
-                        }
-                    };
-                    self.emit_move(rd, 0);
+                if let Some(rd) = inst.dest_reg()
+                    && let Some(number) = reg::gpr_number(rd)
+                {
+                    self.emit_move(number, 0);
                 }
             }
             MOp::WorkItemLoad { field, lane } => {
                 let rd = self.dest(inst)?;
-                let rn = self.gpr(self.arg(inst, 0)?)?;
+                let pointer = self.value(self.arg(inst, 0)?)?;
                 let offset = field.offset() + lane * 4;
-                self.emit_load_imm(rd, rn, offset, 4);
+                self.emit_load_offset(rd, pointer, offset, 4);
             }
             MOp::ArgBlockBase => {
                 let rd = self.dest(inst)?;
-                let rn = self.gpr(self.arg(inst, 0)?)?;
-                self.emit_load_imm(rd, rn, ARG_BASE_OFFSET, 4);
+                let pointer = self.value(self.arg(inst, 0)?)?;
+                self.emit_load_offset(rd, pointer, ARG_BASE_OFFSET, 4);
             }
             MOp::ArgLoad { index, kind } => {
                 let rd = self.dest(inst)?;
-                let rn = self.gpr(self.arg(inst, 0)?)?;
+                let base = self.value(self.arg(inst, 0)?)?;
                 let offset = index * ARG_SLOT_SIZE;
                 match kind {
-                    ArgKind::Pointer => self.emit_load_imm(rd, rn, offset, 4),
-                    ArgKind::Scalar { size } => self.emit_load_imm(rd, rn, offset, *size),
+                    ArgKind::Pointer => self.emit_load_offset(rd, base, offset, 4),
+                    ArgKind::Scalar { size } => self.emit_load_offset(rd, base, offset, *size),
                 }
             }
             MOp::Param { index } => {
                 let rd = self.dest(inst)?;
-                let source = u8::try_from(*index).unwrap_or(0);
                 if *index >= 4 {
                     return Err(CodegenError::Unsupported {
                         what: "a parameter",
-                        detail: String::from(
-                            "the architecture passes four parameters in registers",
-                        ),
+                        detail: String::from("the architecture passes four parameters in registers"),
                     });
                 }
-                self.emit_move(rd, source);
+                self.emit_move(rd, u8::try_from(*index).unwrap_or(0));
             }
             MOp::FrameAddr { offset } => {
                 let rd = self.dest(inst)?;
                 self.emit_frame_address(rd, *offset);
             }
             MOp::SpillStore { offset, size } => {
-                let rm = self.gpr(self.arg(inst, 0)?)?;
-                self.emit_store_stack(rm, *offset, *size);
+                let value = self.value(self.arg(inst, 0)?)?;
+                self.emit_store_stack(value, *offset, *size);
             }
             MOp::SpillLoad { offset, size } => {
                 let rd = self.dest(inst)?;
@@ -831,6 +824,21 @@ impl<'a> Expander<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Puts a value in a register.
+    ///
+    /// A constant is materialized in the register the caller names,
+    /// which is either the destination of the instruction or the
+    /// scratch register.
+    fn materialize(&mut self, value: Value, rd: u8) -> u8 {
+        match value {
+            Value::Reg(rm) => rm,
+            Value::Imm(imm) => {
+                self.emit_mov_imm(rd, imm);
+                rd
+            }
+        }
     }
 
     /// The block an operand names.
@@ -866,9 +874,6 @@ impl<'a> Expander<'a> {
 
     /// Emits the logical operation of two registers.
     fn emit_logic(&mut self, rd: u8, rn: u8, rm: u8, kind: Logic) {
-        self.use_saved(rd);
-        self.use_saved(rn);
-        self.use_saved(rm);
         if rd < 8 && rn < 8 && rm < 8 && rd == rn {
             // The short form names the destination and one source
             // only, so it fits when the destination is the first
@@ -889,18 +894,10 @@ impl<'a> Expander<'a> {
     }
 
     /// Emits the load of a value.
-    fn emit_load(&mut self, rd: u8, rn: u8, size: u32) -> Result<()> {
+    fn emit_load(&mut self, rd: u8, address: Value, size: u32) -> Result<()> {
         match size {
-            4 => {
-                self.emit_load_imm(rd, rn, 0, 4);
-                Ok(())
-            }
-            1 => {
-                self.emit_load_imm(rd, rn, 0, 1);
-                Ok(())
-            }
-            2 => {
-                self.emit_load_imm(rd, rn, 0, 2);
+            4 | 1 | 2 => {
+                self.emit_load_offset(rd, address, 0, size);
                 Ok(())
             }
             _ => Err(CodegenError::Unsupported {
@@ -913,9 +910,8 @@ impl<'a> Expander<'a> {
     }
 
     /// Emits the load of a value at an offset.
-    fn emit_load_imm(&mut self, rd: u8, rn: u8, offset: u32, size: u32) {
-        self.use_saved(rd);
-        self.use_saved(rn);
+    fn emit_load_offset(&mut self, rd: u8, address: Value, offset: u32, size: u32) {
+        let rn = self.materialize(address, SCRATCH);
         match size {
             1 => {
                 if offset <= 31 {
@@ -925,14 +921,14 @@ impl<'a> Expander<'a> {
                 }
             }
             2 => {
-                if offset <= 62 && offset % 2 == 0 {
+                if offset <= 62 && offset.is_multiple_of(2) {
                     encode::ldrh_imm(&mut self.bytes, rd, rn, u8::try_from(offset / 2).unwrap_or(0));
                 } else {
                     encode::ldrh_imm_wide(&mut self.bytes, rd, rn, u16::try_from(offset).unwrap_or(0));
                 }
             }
             _ => {
-                if offset <= 124 && offset % 4 == 0 {
+                if offset <= 124 && offset.is_multiple_of(4) {
                     encode::ldr_imm(&mut self.bytes, rd, rn, u8::try_from(offset / 4).unwrap_or(0));
                 } else {
                     encode::ldr_imm_wide(&mut self.bytes, rd, rn, u16::try_from(offset).unwrap_or(0));
@@ -943,18 +939,10 @@ impl<'a> Expander<'a> {
     }
 
     /// Emits the store of a value.
-    fn emit_store(&mut self, rm: u8, rn: u8, size: u32) -> Result<()> {
+    fn emit_store(&mut self, address: Value, value: Value, size: u32) -> Result<()> {
         match size {
-            4 => {
-                self.emit_store_imm(rm, rn, 0, 4);
-                Ok(())
-            }
-            1 => {
-                self.emit_store_imm(rm, rn, 0, 1);
-                Ok(())
-            }
-            2 => {
-                self.emit_store_imm(rm, rn, 0, 2);
+            4 | 1 | 2 => {
+                self.emit_store_offset(address, value, 0, size);
                 Ok(())
             }
             _ => Err(CodegenError::Unsupported {
@@ -965,9 +953,9 @@ impl<'a> Expander<'a> {
     }
 
     /// Emits the store of a value at an offset.
-    fn emit_store_imm(&mut self, rm: u8, rn: u8, offset: u32, size: u32) {
-        self.use_saved(rm);
-        self.use_saved(rn);
+    fn emit_store_offset(&mut self, address: Value, value: Value, offset: u32, size: u32) {
+        let rn = self.materialize(address, SCRATCH);
+        let rm = self.materialize(value, SCRATCH_VALUE);
         match size {
             1 => {
                 if offset <= 31 {
@@ -977,14 +965,14 @@ impl<'a> Expander<'a> {
                 }
             }
             2 => {
-                if offset <= 62 && offset % 2 == 0 {
+                if offset <= 62 && offset.is_multiple_of(2) {
                     encode::strh_imm(&mut self.bytes, rm, rn, u8::try_from(offset / 2).unwrap_or(0));
                 } else {
                     encode::strh_imm_wide(&mut self.bytes, rm, rn, u16::try_from(offset).unwrap_or(0));
                 }
             }
             _ => {
-                if offset <= 124 && offset % 4 == 0 {
+                if offset <= 124 && offset.is_multiple_of(4) {
                     encode::str_imm(&mut self.bytes, rm, rn, u8::try_from(offset / 4).unwrap_or(0));
                 } else {
                     encode::str_imm_wide(&mut self.bytes, rm, rn, u16::try_from(offset).unwrap_or(0));
@@ -996,7 +984,6 @@ impl<'a> Expander<'a> {
 
     /// Emits the load of a value from the frame.
     fn emit_load_stack(&mut self, rd: u8, offset: u32, size: u32) {
-        self.use_saved(rd);
         match size {
             1 => {
                 if offset <= 31 {
@@ -1006,14 +993,19 @@ impl<'a> Expander<'a> {
                 }
             }
             2 => {
-                if offset <= 62 && offset % 2 == 0 {
-                    encode::ldrh_imm(&mut self.bytes, rd, reg::SP, u8::try_from(offset / 2).unwrap_or(0));
+                if offset <= 62 && offset.is_multiple_of(2) {
+                    encode::ldrh_imm(
+                        &mut self.bytes,
+                        rd,
+                        reg::SP,
+                        u8::try_from(offset / 2).unwrap_or(0),
+                    );
                 } else {
                     encode::ldrh_imm_wide(&mut self.bytes, rd, reg::SP, u16::try_from(offset).unwrap_or(0));
                 }
             }
             _ => {
-                if offset <= 1020 && offset % 4 == 0 {
+                if offset <= 1020 && offset.is_multiple_of(4) {
                     encode::ldr_sp(&mut self.bytes, rd, u8::try_from(offset / 4).unwrap_or(0));
                 } else {
                     encode::ldr_sp_wide(&mut self.bytes, rd, u16::try_from(offset).unwrap_or(0));
@@ -1024,8 +1016,8 @@ impl<'a> Expander<'a> {
     }
 
     /// Emits the store of a value into the frame.
-    fn emit_store_stack(&mut self, rm: u8, offset: u32, size: u32) {
-        self.use_saved(rm);
+    fn emit_store_stack(&mut self, value: Value, offset: u32, size: u32) {
+        let rm = self.materialize(value, SCRATCH);
         match size {
             1 => {
                 if offset <= 31 {
@@ -1035,14 +1027,19 @@ impl<'a> Expander<'a> {
                 }
             }
             2 => {
-                if offset <= 62 && offset % 2 == 0 {
-                    encode::strh_imm(&mut self.bytes, rm, reg::SP, u8::try_from(offset / 2).unwrap_or(0));
+                if offset <= 62 && offset.is_multiple_of(2) {
+                    encode::strh_imm(
+                        &mut self.bytes,
+                        rm,
+                        reg::SP,
+                        u8::try_from(offset / 2).unwrap_or(0),
+                    );
                 } else {
                     encode::strh_imm_wide(&mut self.bytes, rm, reg::SP, u16::try_from(offset).unwrap_or(0));
                 }
             }
             _ => {
-                if offset <= 1020 && offset % 4 == 0 {
+                if offset <= 1020 && offset.is_multiple_of(4) {
                     encode::str_sp(&mut self.bytes, rm, u8::try_from(offset / 4).unwrap_or(0));
                 } else {
                     encode::str_sp_wide(&mut self.bytes, rm, u16::try_from(offset).unwrap_or(0));
@@ -1054,8 +1051,7 @@ impl<'a> Expander<'a> {
 
     /// Emits the address of a frame slot.
     fn emit_frame_address(&mut self, rd: u8, offset: u32) {
-        self.use_saved(rd);
-        if offset <= 1020 {
+        if offset <= 1020 && offset.is_multiple_of(4) {
             encode::add_sp_imm(&mut self.bytes, rd, u16::try_from(offset).unwrap_or(0));
         } else {
             self.emit_mov_imm(SCRATCH, offset);
@@ -1066,17 +1062,10 @@ impl<'a> Expander<'a> {
     }
 
     /// Emits the computation of an address from a base and indices.
-    fn emit_gep(
-        &mut self,
-        inst: &MInst,
-        rd: u8,
-        base: u8,
-        size: u32,
-        signed: bool,
-    ) -> Result<()> {
+    fn emit_gep(&mut self, inst: &MInst, rd: u8, base: Value, size: u32, signed: bool) -> Result<()> {
         let count = inst.args.len();
         if count == 0 {
-            self.emit_move(rd, base);
+            self.emit_value(base, rd);
             return Ok(());
         }
         let shift = match size {
@@ -1086,68 +1075,78 @@ impl<'a> Expander<'a> {
             8 => Some(3),
             _ => None,
         };
-        self.emit_move(rd, base);
+        let index_type = self.operand_type(inst);
+        self.emit_value(base, rd);
         for position in 1..count {
-            let operand = self.arg(inst, position)?;
-            let mut index = self.gpr(operand)?;
-            let ty = self.operand_type(operand);
-            if signed && matches!(ty, MType::I8 | MType::I16) {
-                // The index is signed, so it has to be widened before
-                // it is scaled.
-                self.emit_move(SCRATCH, index);
-                self.emit_extend(SCRATCH, SCRATCH, true, ty == MType::I16);
-                index = SCRATCH;
-            }
-            match shift {
-                Some(shift) => {
-                    if shift == 0 {
-                        self.emit_add(rd, rd, index);
-                    } else {
-                        self.emit_add_shifted(rd, rd, index, shift);
-                    }
+            let operand = self.value(self.arg(inst, position)?)?;
+            match operand {
+                Value::Imm(imm) => {
+                    // The constant is scaled by the size of the
+                    // element and added to the address.
+                    self.emit_add_offset(rd, imm.wrapping_mul(size));
                 }
-                None => {
-                    // The element size is not a power of two, so the
-                    // index is multiplied by it.
-                    self.emit_mov_imm(SCRATCH, size);
-                    encode::muls_reg_wide(&mut self.bytes, SCRATCH, SCRATCH, index);
-                    self.use_saved(SCRATCH);
-                    self.instructions += 1;
-                    self.emit_add(rd, rd, SCRATCH);
+                Value::Reg(index) => {
+                    let index = if signed && matches!(index_type, MType::I8 | MType::I16) {
+                        // The index is signed, so it has to be widened
+                        // before it is scaled.
+                        self.emit_move(SCRATCH, index);
+                        self.emit_extend(SCRATCH, SCRATCH, true, index_type == MType::I16);
+                        SCRATCH
+                    } else {
+                        index
+                    };
+                    match shift {
+                        Some(0) => self.emit_add(rd, rd, index),
+                        Some(shift) => {
+                            encode::adds_reg_shifted(&mut self.bytes, rd, rd, index, shift);
+                            self.instructions += 1;
+                        }
+                        None => {
+                            // The element size is not a power of two,
+                            // so the index is multiplied by it.
+                            self.emit_mov_imm(SCRATCH, size);
+                            encode::muls_reg_wide(&mut self.bytes, SCRATCH, SCRATCH, index);
+                            self.instructions += 1;
+                            self.emit_add(rd, rd, SCRATCH);
+                        }
+                    }
                 }
             }
         }
         Ok(())
     }
 
-    /// Emits the comparison of two registers into a one-bit value.
-    fn emit_compare(
-        &mut self,
-        rd: u8,
-        rn: u8,
-        rm: u8,
-        pred: IPred,
-    ) -> Result<()> {
-        let cond = match pred {
-            IPred::Eq => encode::COND_EQ,
-            IPred::Ne => encode::COND_NE,
-            IPred::Ugt => encode::COND_HI,
-            IPred::Uge => encode::COND_CS,
-            IPred::Ult => encode::COND_CC,
-            IPred::Ule => encode::COND_LS,
-            IPred::Sgt => encode::COND_GT,
-            IPred::Sge => encode::COND_GE,
-            IPred::Slt => encode::COND_LT,
-            IPred::Sle => encode::COND_LE,
+    /// Emits the comparison of two values into a one-bit value.
+    fn emit_compare(&mut self, rd: u8, left: Value, right: Value, pred: IPred) {
+        let compare = match (left, right) {
+            (Value::Reg(rn), Value::Reg(rm)) => Compare::Regs(rn, rm),
+            (Value::Reg(rn), Value::Imm(imm)) => Compare::RegImm(rn, imm),
+            (Value::Imm(imm), Value::Reg(rm)) => Compare::ImmReg(imm, rm),
+            (Value::Imm(left), Value::Imm(right)) => Compare::Imms(left, right),
         };
+        let condition = condition_code(pred);
+        // Two constants are compared here, so the result is known
+        // before the code is written.
+        if let Compare::Imms(left, right) = compare {
+            let holds = evaluate(pred, left, right);
+            self.emit_mov_imm(rd, u32::from(holds));
+            return;
+        }
         // The value is cleared before the comparison, because the
         // comparison sets the flags the conditional block reads.
         self.emit_mov_imm(rd, 0);
-        self.emit_cmp(rn, rm);
-        encode::it(&mut self.bytes, cond, encode::IT_ONE);
+        match compare {
+            Compare::Regs(rn, rm) => self.emit_cmp(rn, rm),
+            Compare::RegImm(rn, imm) => self.emit_cmp_imm(rn, imm),
+            Compare::ImmReg(imm, rm) => {
+                self.emit_mov_imm(SCRATCH, imm);
+                self.emit_cmp(SCRATCH, rm);
+            }
+            Compare::Imms(_, _) => {}
+        }
+        encode::it(&mut self.bytes, condition, encode::IT_ONE);
         self.instructions += 1;
         self.emit_mov_imm_in_conditional(rd, 1);
-        Ok(())
     }
 
     /// Emits the move of an immediate inside a conditional block.
@@ -1156,116 +1155,161 @@ impl<'a> Expander<'a> {
     /// the wide form, which does not, is the one the conditional
     /// block uses.
     fn emit_mov_imm_in_conditional(&mut self, rd: u8, value: u32) {
-        self.use_saved(rd);
         encode::movw(&mut self.bytes, rd, u16::try_from(value).unwrap_or(0));
         self.instructions += 1;
     }
 
     /// Emits the selection between two values.
-    fn emit_select(&mut self, rd: u8, cond: u8, yes: u8, no: u8) {
-        let test = if rd == cond { SCRATCH } else { cond };
-        if test != cond {
-            self.emit_move(test, cond);
+    fn emit_select(&mut self, rd: u8, condition: Value, yes: Value, no: Value) {
+        // A constant condition is known here, so only the value that
+        // the condition picks is written.
+        if let Value::Imm(value) = condition {
+            if value != 0 {
+                self.emit_value(yes, rd);
+            } else {
+                self.emit_value(no, rd);
+            }
+            return;
         }
+        let Value::Reg(test) = condition else {
+            return;
+        };
+        // A conditional block holds one instruction per part, so the
+        // values of the parts have to live in registers already.
+        let yes = self.block_value(yes, SCRATCH);
+        let no = self.block_value(no, SCRATCH_VALUE);
         self.emit_cmp_imm(test, 0);
         encode::it(&mut self.bytes, encode::COND_NE, encode::IT_THEN_ELSE);
         self.instructions += 1;
-        self.emit_move(rd, yes);
-        self.emit_move(rd, no);
+        self.emit_move_always(rd, yes);
+        self.emit_move_always(rd, no);
     }
 
-    /// Emits the division of two registers.
-    fn emit_division(
-        &mut self,
-        inst: &MInst,
-        rd: u8,
-        rn: u8,
-        rm: u8,
-    ) -> Result<()> {
+    /// Puts the value of a part of a conditional block in a register.
+    fn block_value(&mut self, value: Value, scratch: u8) -> u8 {
+        match value {
+            Value::Reg(rm) => rm,
+            Value::Imm(imm) => {
+                self.emit_mov_imm(scratch, imm);
+                scratch
+            }
+        }
+    }
+
+    /// Emits a conditional branch on a value.
+    fn emit_conditional_branch(&mut self, condition: Value, yes: u32, no: u32) {
+        match condition {
+            Value::Imm(value) => {
+                if value != 0 {
+                    self.emit_branch(FixupKind::Branch, FixupTarget::Block(yes));
+                } else {
+                    self.emit_branch(FixupKind::Branch, FixupTarget::Block(no));
+                }
+            }
+            Value::Reg(rm) => {
+                self.emit_cmp_imm(rm, 0);
+                self.emit_branch(FixupKind::BranchCond(encode::COND_NE), FixupTarget::Block(yes));
+                self.emit_branch(FixupKind::Branch, FixupTarget::Block(no));
+            }
+        }
+    }
+
+    /// Emits the division of two values.
+    ///
+    /// The architecture has no division instruction, so the division
+    /// becomes a loop that shifts the dividend into the remainder.
+    /// The loop works in the four argument registers, which the
+    /// allocator never hands out.
+    fn emit_division(&mut self, inst: &MInst, rd: u8, dividend: Value, divisor: Value) {
         let signed = matches!(inst.op, MOp::SDiv | MOp::SRem);
         let remainder = matches!(inst.op, MOp::URem | MOp::SRem);
         // The dividend goes into the first register and the divisor
         // into the second one, because the division loop works on
-        // them.  The dividend travels through the scratch register, so
-        // that the two moves cannot overwrite each other.
-        self.emit_move(SCRATCH, rn);
-        self.emit_move(1, rm);
-        self.emit_move(0, SCRATCH);
+        // them.
+        self.emit_value(dividend, 0);
+        self.emit_value(divisor, 1);
         if signed {
             self.emit_signed_division();
         } else {
             self.emit_unsigned_division();
         }
-        let value = if remainder { 4 } else { 0 };
+        let value = if remainder { 2 } else { 0 };
         self.emit_move(rd, value);
-        Ok(())
     }
 
     /// Emits the signed division of the first two registers.
+    ///
+    /// The signs of the operands, the magnitudes and the sign of the
+    /// quotient are kept in the saved registers.
     fn emit_signed_division(&mut self) {
-        // The signs of the operands, the magnitudes and the sign of
-        // the quotient are kept in the saved registers.
-        encode::push(&mut self.bytes, 0xfc, false);
-        self.instructions += 1;
-        encode::asrs_imm(&mut self.bytes, 5, 0, 31);
-        encode::asrs_imm(&mut self.bytes, 6, 1, 31);
+        // The signs of the two operands.
+        encode::asrs_imm(&mut self.bytes, 2, 0, 31);
+        encode::asrs_imm(&mut self.bytes, 3, 1, 31);
         self.instructions += 2;
         // The magnitudes of the two operands.
-        encode::eors_reg_wide(&mut self.bytes, 2, 0, 5);
-        encode::subs_reg3(&mut self.bytes, 2, 2, 5);
-        encode::eors_reg_wide(&mut self.bytes, 3, 1, 6);
-        encode::subs_reg3(&mut self.bytes, 3, 3, 6);
-        // The sign of the quotient is the sign of the operands.
-        encode::eors_reg_wide(&mut self.bytes, 7, 5, 6);
-        self.instructions += 5;
-        // The unsigned division of the magnitudes.
-        encode::mov_reg(&mut self.bytes, 1, 3);
-        encode::mov_reg(&mut self.bytes, 0, 2);
-        self.instructions += 2;
-        self.emit_unsigned_division_body();
-        // The quotient takes the sign of the operands, the remainder
-        // the sign of the dividend.
-        encode::eors_reg_wide(&mut self.bytes, 0, 0, 7);
-        encode::subs_reg3(&mut self.bytes, 0, 0, 7);
-        encode::eors_reg_wide(&mut self.bytes, 4, 4, 5);
-        encode::subs_reg3(&mut self.bytes, 4, 4, 5);
+        encode::eors_reg(&mut self.bytes, 0, 2);
+        encode::subs_reg3(&mut self.bytes, 0, 0, 2);
+        encode::eors_reg(&mut self.bytes, 1, 3);
+        encode::subs_reg3(&mut self.bytes, 1, 1, 3);
         self.instructions += 4;
-        encode::pop(&mut self.bytes, 0xfc, false);
+        // The division loop needs the two registers the signs sit in,
+        // so the signs go on the stack.
+        encode::push(&mut self.bytes, 0x0c, false);
         self.instructions += 1;
+        self.emit_unsigned_division_body();
+        // The remainder moves out of the way of the signs.
+        encode::mov_reg(&mut self.bytes, 1, 2);
+        self.instructions += 1;
+        encode::pop(&mut self.bytes, 0x0c, false);
+        self.instructions += 1;
+        // The quotient takes the sign of the operands, the remainder
+        // the sign of the dividend.  A value with the sign of a mask
+        // is the value exclusive-or the mask, less the mask.
+        encode::eors_reg(&mut self.bytes, 3, 2);
+        encode::eors_reg(&mut self.bytes, 0, 3);
+        encode::subs_reg3(&mut self.bytes, 0, 0, 3);
+        self.instructions += 3;
+        encode::eors_reg(&mut self.bytes, 1, 2);
+        encode::subs_reg3(&mut self.bytes, 1, 1, 2);
+        encode::mov_reg(&mut self.bytes, 2, 1);
+        self.instructions += 3;
+    }
+
+    /// Emits the unsigned division of the first two registers.
+    fn emit_unsigned_division(&mut self) {
+        self.emit_unsigned_division_body();
     }
 
     /// Emits the body of the unsigned division.
     ///
     /// The first register holds the dividend, the second the divisor;
     /// the quotient ends up in the first and the remainder in the
-    /// fourth.
+    /// third.
     fn emit_unsigned_division_body(&mut self) {
-        // The counter, the shifted dividend and the remainder.
-        encode::mov_reg(&mut self.bytes, 3, 0);
-        encode::movs_imm(&mut self.bytes, 2, 32);
-        encode::movs_imm(&mut self.bytes, 0, 0);
-        encode::movs_imm(&mut self.bytes, 4, 0);
-        self.instructions += 4;
+        // The remainder and the counter of the loop.
+        encode::movs_imm(&mut self.bytes, 2, 0);
+        encode::movs_imm(&mut self.bytes, 3, 32);
+        self.instructions += 2;
         let top = self.bytes.len();
         // The dividend is shifted into the remainder, and the bit
         // that falls out of the shift is added to it.
-        encode::adds_reg3(&mut self.bytes, 3, 3, 3);
-        encode::adcs_reg(&mut self.bytes, 4, 4);
-        encode::lsls_imm(&mut self.bytes, 0, 0, 1);
-        encode::cmp_reg(&mut self.bytes, 4, 1);
-        self.instructions += 4;
+        encode::adds_reg3(&mut self.bytes, 0, 0, 0);
+        encode::adcs_reg(&mut self.bytes, 2, 2);
+        encode::cmp_reg(&mut self.bytes, 2, 1);
+        self.instructions += 3;
         // The remainder is at least the divisor: take one back.
         let skip_at = self.emit_placeholder();
-        encode::subs_reg3(&mut self.bytes, 4, 4, 1);
+        encode::subs_reg3(&mut self.bytes, 2, 2, 1);
         encode::adds_imm8(&mut self.bytes, 0, 1);
         self.instructions += 2;
         // The counter of the loop.
         let end = self.bytes.len();
-        encode::subs_imm8(&mut self.bytes, 2, 1);
+        encode::subs_imm8(&mut self.bytes, 3, 1);
         self.instructions += 1;
-        let branch_at = self.bytes.len();
-        // The loop branches back to its head, and the branch over the
-        // subtraction goes to the counter.
+        // The branch that closes the loop is a placeholder, because
+        // its displacement is only known once the blocks are laid
+        // out.
+        let branch_at = self.emit_placeholder();
         self.fixups.push(Fixup {
             at: branch_at,
             kind: FixupKind::BranchCond(encode::COND_NE),
@@ -1276,6 +1320,7 @@ impl<'a> Expander<'a> {
             kind: FixupKind::BranchCond(encode::COND_CC),
             target: FixupTarget::Local(end),
         });
+        self.instructions += 1;
     }
 }
 
@@ -1290,6 +1335,38 @@ enum Logic {
     Xor,
 }
 
+/// The condition code of an integer comparison.
+fn condition_code(pred: IPred) -> u8 {
+    match pred {
+        IPred::Eq => encode::COND_EQ,
+        IPred::Ne => encode::COND_NE,
+        IPred::Ugt => encode::COND_HI,
+        IPred::Uge => encode::COND_CS,
+        IPred::Ult => encode::COND_CC,
+        IPred::Ule => encode::COND_LS,
+        IPred::Sgt => encode::COND_GT,
+        IPred::Sge => encode::COND_GE,
+        IPred::Slt => encode::COND_LT,
+        IPred::Sle => encode::COND_LE,
+    }
+}
+
+/// The result of a comparison of two constants.
+fn evaluate(pred: IPred, left: u32, right: u32) -> bool {
+    match pred {
+        IPred::Eq => left == right,
+        IPred::Ne => left != right,
+        IPred::Ugt => left > right,
+        IPred::Uge => left >= right,
+        IPred::Ult => left < right,
+        IPred::Ule => left <= right,
+        IPred::Sgt => (left as i32) > (right as i32),
+        IPred::Sge => (left as i32) >= (right as i32),
+        IPred::Slt => (left as i32) < (right as i32),
+        IPred::Sle => (left as i32) <= (right as i32),
+    }
+}
+
 /// Rounds the size of the frame up so that the stack pointer keeps
 /// its alignment.
 ///
@@ -1297,10 +1374,10 @@ enum Logic {
 /// the frame together are a multiple of eight bytes.
 fn align_frame(size: u32, pushed: u32) -> u32 {
     let mut frame = size;
-    while frame % 4 != 0 {
+    while !frame.is_multiple_of(4) {
         frame += 4;
     }
-    while (frame + 4 * pushed) % 8 != 0 {
+    while !(frame + 4 * pushed).is_multiple_of(8) {
         frame += 4;
     }
     frame
@@ -1312,9 +1389,8 @@ pub fn expand_function(
     callees: &[Option<usize>],
     has_fp: bool,
 ) -> Result<FunctionCode> {
-    let alloc = allocate(function)?;
-    let (saved, uses_link) = scan_registers(function, &alloc);
-    let mut expander = Expander::new(function, &alloc, callees, has_fp, saved, uses_link);
+    let (saved, uses_link) = scan_registers(function);
+    let mut expander = Expander::new(function, callees, has_fp, saved, uses_link);
     let mut blocks = Vec::with_capacity(function.blocks.len());
 
     for block in &function.blocks {
@@ -1348,19 +1424,15 @@ pub fn expand_function(
 /// Builds the prologue of the function.
 ///
 /// The prologue saves the callee-saved registers the function uses,
-/// and then reserves the frame with one subtraction.  The frame base
-/// is the stack pointer right after that subtraction, so every slot
-/// of the frame is at a known distance from the stack pointer.
+/// and then reserves the frame.  The frame base is the stack pointer
+/// right after that subtraction, so every slot of the frame is at a
+/// known distance from the stack pointer, and the saved registers sit
+/// above the frame.
 fn build_prologue(expander: &Expander<'_>) -> Vec<u8> {
     let mut out = Vec::new();
-    let mut saved = expander.saved;
-    if expander.uses_link {
-        saved |= 1 << 14;
-    }
-    if saved != 0 {
-        // The mask of the encoder counts the low registers, and the
-        // saved registers start above them.
-        encode::push(&mut out, saved & 0x0fff, expander.uses_link);
+    let saved = expander.saved & 0x0fff;
+    if saved != 0 || expander.uses_link {
+        encode::push(&mut out, saved, expander.uses_link);
     }
     if expander.frame != 0 {
         emit_frame_reserve(&mut out, expander.frame);
@@ -1372,7 +1444,8 @@ fn build_prologue(expander: &Expander<'_>) -> Vec<u8> {
 ///
 /// The frame is subtracted from the stack pointer in pieces of at
 /// most a kilobyte, because the immediate of the short form reaches
-/// that far.
+/// that far.  The frame base is the stack pointer after the last
+/// subtraction, so the frame has the size the machine code asked for.
 fn emit_frame_reserve(out: &mut Vec<u8>, frame: u32) {
     let mut rest = frame;
     while rest > 1020 {

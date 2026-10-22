@@ -88,6 +88,9 @@ pub const IT_ONE: u8 = 0x8;
 
 /// The mask of a conditional execution block with a "then" and an
 /// "else" part.
+///
+/// The two parts of a block swap places when the condition is odd, so
+/// the mask of an odd condition is the other one.
 pub const IT_THEN_ELSE: u8 = 0xc;
 
 /// The shift kinds of the thirty-two bit data-processing forms.
@@ -141,11 +144,17 @@ pub fn movs_imm(out: &mut Vec<u8>, rd: u8, imm: u8) {
 
 /// `movw rd, #imm16`: move the low half of a sixteen-bit immediate
 /// into a register.
+///
+/// The immediate is split into four fields: the four high bits
+/// travel in the first halfword, the eleventh bit travels in the
+/// flag of the first halfword, the next three bits travel in the
+/// high half of the second halfword, and the low eight bits travel
+/// in the low half.
 #[inline]
 pub fn movw(out: &mut Vec<u8>, rd: u8, imm: u16) {
     word(
         out,
-        (0xf240 | u32::from(imm >> 12)) << 16
+        (0xf240 | u32::from(imm >> 12) | u32::from((imm >> 11) & 1) << 10) << 16
             | (u32::from((imm >> 8) & 0x7) << 12)
             | (u32::from(rd) << 8)
             | u32::from(imm & 0xff),
@@ -154,11 +163,13 @@ pub fn movw(out: &mut Vec<u8>, rd: u8, imm: u16) {
 
 /// `movt rd, #imm16`: move the high half of a sixteen-bit immediate
 /// into a register.
+///
+/// The immediate is split the way [`movw`] splits it.
 #[inline]
 pub fn movt(out: &mut Vec<u8>, rd: u8, imm: u16) {
     word(
         out,
-        (0xf2c0 | u32::from(imm >> 12)) << 16
+        (0xf2c0 | u32::from(imm >> 12) | u32::from((imm >> 11) & 1) << 10) << 16
             | (u32::from((imm >> 8) & 0x7) << 12)
             | (u32::from(rd) << 8)
             | u32::from(imm & 0xff),
@@ -166,30 +177,43 @@ pub fn movt(out: &mut Vec<u8>, rd: u8, imm: u16) {
 }
 
 /// `adds rd, rn, #imm3`: add a small immediate to a register.
+///
+/// The immediate travels in the three bits above the two registers,
+/// and the three registers have to be low ones.
 #[inline]
 pub fn adds_imm3(out: &mut Vec<u8>, rd: u8, rn: u8, imm: u8) {
     halfword(
         out,
-        0x1c00 | u16::from(rn) << 6 | u16::from(rd) << 3 | u16::from(imm & 0x7),
+        0x1c00 | u16::from(imm & 0x7) << 6 | u16::from(rn) << 3 | u16::from(rd),
     );
 }
 
 /// `adds rd, #imm8`: add an eight-bit immediate to a register.
+///
+/// The register is both the destination and the first operand, and
+/// it has to be a low one.
 #[inline]
 pub fn adds_imm8(out: &mut Vec<u8>, rd: u8, imm: u8) {
     halfword(out, 0x3000 | u16::from(rd) << 8 | u16::from(imm));
 }
 
 /// `subs rd, rn, #imm3`: subtract a small immediate from a register.
+///
+/// The immediate travels in the three bits above the two registers,
+/// and the three registers have to be low ones.
 #[inline]
 pub fn subs_imm3(out: &mut Vec<u8>, rd: u8, rn: u8, imm: u8) {
     halfword(
         out,
-        0x1e00 | u16::from(rn) << 6 | u16::from(rd) << 3 | u16::from(imm & 0x7),
+        0x1e00 | u16::from(imm & 0x7) << 6 | u16::from(rn) << 3 | u16::from(rd),
     );
 }
 
-/// `subs rd, #imm8`: subtract an eight-bit immediate from a register.
+/// `subs rd, #imm8`: subtract an eight-bit immediate from a
+/// register.
+///
+/// The register is both the destination and the first operand, and
+/// it has to be a low one.
 #[inline]
 pub fn subs_imm8(out: &mut Vec<u8>, rd: u8, imm: u8) {
     halfword(out, 0x3800 | u16::from(rd) << 8 | u16::from(imm));
@@ -273,19 +297,13 @@ pub fn mov_reg(out: &mut Vec<u8>, rd: u8, rm: u8) {
 /// `mov.w rd, rm`: move a register, in the wide form.
 #[inline]
 pub fn mov_reg_wide(out: &mut Vec<u8>, rd: u8, rm: u8) {
-    word(
-        out,
-        0xea4f_0000 | u32::from(rd) << 8 | u32::from(rm),
-    );
+    word(out, 0xea4f_0000 | u32::from(rd) << 8 | u32::from(rm));
 }
 
 /// `mvn.w rd, rm`: the complement of a register, in the wide form.
 #[inline]
 pub fn mvn_reg_wide(out: &mut Vec<u8>, rd: u8, rm: u8) {
-    word(
-        out,
-        0xea6f_0000 | u32::from(rd) << 8 | u32::from(rm),
-    );
+    word(out, 0xea6f_0000 | u32::from(rd) << 8 | u32::from(rm));
 }
 
 /// `uxtb rd, rm`: the zero-extended low byte of a register.
@@ -297,19 +315,50 @@ pub fn uxtb_reg(out: &mut Vec<u8>, rd: u8, rm: u8) {
 /// `uxth rd, rm`: the zero-extended low halfword of a register.
 #[inline]
 pub fn uxth_reg(out: &mut Vec<u8>, rd: u8, rm: u8) {
-    halfword(out, 0xb288 | u16::from(rm) << 3 | u16::from(rd));
+    halfword(out, 0xb280 | u16::from(rm) << 3 | u16::from(rd));
 }
 
 /// `sxtb rd, rm`: the sign-extended low byte of a register.
 #[inline]
 pub fn sxtb_reg(out: &mut Vec<u8>, rd: u8, rm: u8) {
-    halfword(out, 0xb248 | u16::from(rm) << 3 | u16::from(rd));
+    halfword(out, 0xb240 | u16::from(rm) << 3 | u16::from(rd));
 }
 
 /// `sxth rd, rm`: the sign-extended low halfword of a register.
 #[inline]
 pub fn sxth_reg(out: &mut Vec<u8>, rd: u8, rm: u8) {
-    halfword(out, 0xb208 | u16::from(rm) << 3 | u16::from(rd));
+    halfword(out, 0xb200 | u16::from(rm) << 3 | u16::from(rd));
+}
+
+/// `uxtb.w rd, rm`: the zero-extended low byte of a register, in the
+/// wide form.
+///
+/// The wide form names any register, so it is the one the back end
+/// uses when the registers are not low ones.
+#[inline]
+pub fn uxtb_reg_wide(out: &mut Vec<u8>, rd: u8, rm: u8) {
+    word(out, 0xfa5f_f000 | u32::from(rd) << 8 | 0x80 | u32::from(rm));
+}
+
+/// `uxth.w rd, rm`: the zero-extended low halfword of a register, in
+/// the wide form.
+#[inline]
+pub fn uxth_reg_wide(out: &mut Vec<u8>, rd: u8, rm: u8) {
+    word(out, 0xfa1f_f000 | u32::from(rd) << 8 | 0x80 | u32::from(rm));
+}
+
+/// `sxtb.w rd, rm`: the sign-extended low byte of a register, in the
+/// wide form.
+#[inline]
+pub fn sxtb_reg_wide(out: &mut Vec<u8>, rd: u8, rm: u8) {
+    word(out, 0xfa4f_f000 | u32::from(rd) << 8 | 0x80 | u32::from(rm));
+}
+
+/// `sxth.w rd, rm`: the sign-extended low halfword of a register, in
+/// the wide form.
+#[inline]
+pub fn sxth_reg_wide(out: &mut Vec<u8>, rd: u8, rm: u8) {
+    word(out, 0xfa0f_f000 | u32::from(rd) << 8 | 0x80 | u32::from(rm));
 }
 
 /// `lsls rd, rm, #imm5`: shift a register left by a constant.
@@ -340,33 +389,36 @@ pub fn asrs_imm(out: &mut Vec<u8>, rd: u8, rm: u8, imm: u8) {
     );
 }
 
-/// `lsl.w rd, rm, rs`: shift a register left by the amount in a
+/// `lsls.w rd, rm, rs`: shift a register left by the amount in a
 /// register.
+///
+/// The instruction is the wide form of the shift by a register, so
+/// it names any register and it sets the flags.
 #[inline]
 pub fn lsls_reg(out: &mut Vec<u8>, rd: u8, rm: u8, rs: u8) {
     word(
         out,
-        0xfa00_0000 | u32::from(rs) | 0xf000 | u32::from(rd) << 8 | u32::from(rm),
+        (0xfa10 | u32::from(rm)) << 16 | 0xf000 | u32::from(rd) << 8 | u32::from(rs),
     );
 }
 
-/// `lsr.w rd, rm, rs`: shift a register right by the amount in a
+/// `lsrs.w rd, rm, rs`: shift a register right by the amount in a
 /// register.
 #[inline]
 pub fn lsrs_reg(out: &mut Vec<u8>, rd: u8, rm: u8, rs: u8) {
     word(
         out,
-        0xfa20_0000 | u32::from(rs) | 0xf000 | u32::from(rd) << 8 | u32::from(rm),
+        (0xfa30 | u32::from(rm)) << 16 | 0xf000 | u32::from(rd) << 8 | u32::from(rs),
     );
 }
 
-/// `asr.w rd, rm, rs`: shift a register right, filling with the sign,
-/// by the amount in a register.
+/// `asrs.w rd, rm, rs`: shift a register right, filling with the
+/// sign, by the amount in a register.
 #[inline]
 pub fn asrs_reg(out: &mut Vec<u8>, rd: u8, rm: u8, rs: u8) {
     word(
         out,
-        0xfa40_0000 | u32::from(rs) | 0xf000 | u32::from(rd) << 8 | u32::from(rm),
+        (0xfa50 | u32::from(rm)) << 16 | 0xf000 | u32::from(rd) << 8 | u32::from(rs),
     );
 }
 
@@ -403,15 +455,7 @@ pub fn eors_reg_wide(out: &mut Vec<u8>, rd: u8, rn: u8, rm: u8) {
 }
 
 /// Emits the wide data-processing form with a shifted operand.
-fn data_processing_wide(
-    out: &mut Vec<u8>,
-    base: u16,
-    rd: u8,
-    rn: u8,
-    rm: u8,
-    shift: u8,
-    kind: Shift,
-) {
+fn data_processing_wide(out: &mut Vec<u8>, base: u16, rd: u8, rn: u8, rm: u8, shift: u8, kind: Shift) {
     let imm3 = u32::from((shift >> 2) & 0x7);
     let imm2 = u32::from(shift & 0x3);
     word(
@@ -443,19 +487,16 @@ pub fn cmp_reg_wide(out: &mut Vec<u8>, rn: u8, rm: u8) {
 /// `rsb.w rd, rn, #0`: the negation of a register, in the wide form.
 #[inline]
 pub fn negs_reg_wide(out: &mut Vec<u8>, rd: u8, rn: u8) {
-    word(
-        out,
-        (0xf1c0 | u32::from(rn)) << 16 | u32::from(rd) << 8,
-    );
+    word(out, (0xf1c0 | u32::from(rn)) << 16 | u32::from(rd) << 8);
 }
 
 /// `add rd, sp, #imm`: the address of a stack slot.
 ///
 /// The immediate is the distance from the stack pointer in bytes; it
-/// reaches a kilobyte.
+/// is a multiple of four and reaches a kilobyte.
 #[inline]
 pub fn add_sp_imm(out: &mut Vec<u8>, rd: u8, imm: u16) {
-    halfword(out, 0xa800 | u16::from(rd) | imm & 0x3fc);
+    halfword(out, 0xa800 | u16::from(rd) << 8 | imm >> 2);
 }
 
 /// `sub sp, #imm`: the subtraction of the frame from the stack
@@ -666,38 +707,33 @@ pub fn str_sp_wide(out: &mut Vec<u8>, rd: u8, imm12: u16) {
     );
 }
 
-
-
 /// `push {registers, lr}`: save the callee-saved registers.
+///
+/// The mask names the registers by their architectural numbers; only
+/// the twelve low ones can be saved, and the wide form is used as
+/// soon as one of the four high ones is in the list.
 pub fn push(out: &mut Vec<u8>, registers: u16, link: bool) {
-    let low = registers & 0xff;
-    let high = (registers >> 8) & 0x0f;
-    if high == 0 {
-        halfword(out, 0xb400 | if link { 0x100 } else { 0 } | low);
+    let list = registers & 0x0fff;
+    if list <= 0xff {
+        halfword(out, 0xb400 | if link { 0x100 } else { 0 } | list);
     } else {
-        word(
-            out,
-            0xe92d_0000
-                | if link { 0x4000 } else { 0 }
-                | u32::from(high) << 12
-                | u32::from(low),
-        );
+        word(out, 0xe92d_0000 | if link { 0x4000 } else { 0 } | u32::from(list));
     }
 }
 
 /// `pop {registers, pc}`: restore the callee-saved registers.
+///
+/// The mask names the registers by their architectural numbers; only
+/// the twelve low ones can be restored, and the wide form is used
+/// as soon as one of the four high ones is in the list.
 pub fn pop(out: &mut Vec<u8>, registers: u16, program_counter: bool) {
-    let low = registers & 0xff;
-    let high = (registers >> 8) & 0x0f;
-    if high == 0 {
-        halfword(out, 0xbc00 | if program_counter { 0x100 } else { 0 } | low);
+    let list = registers & 0x0fff;
+    if list <= 0xff {
+        halfword(out, 0xbc00 | if program_counter { 0x100 } else { 0 } | list);
     } else {
         word(
             out,
-            0xe8bd_0000
-                | if program_counter { 0x8000 } else { 0 }
-                | u32::from(high) << 12
-                | u32::from(low),
+            0xe8bd_0000 | if program_counter { 0x8000 } else { 0 } | u32::from(list),
         );
     }
 }
@@ -708,10 +744,21 @@ pub fn bx(out: &mut Vec<u8>, rm: u8) {
     halfword(out, 0x4700 | u16::from(rm) << 3);
 }
 
-/// `it cond, mask`: the head of a conditional execution block.
+/// `it cond, shape`: the head of a conditional execution block.
+///
+/// The shape names the instructions that follow: [`IT_ONE`] for a
+/// block with one instruction and [`IT_THEN_ELSE`] for a block with a
+/// "then" and an "else" part.  The two parts of a block swap places
+/// when the condition is odd, so the mask of the block depends on the
+/// condition as well.
 #[inline]
-pub fn it(out: &mut Vec<u8>, cond: u8, mask: u8) {
-    halfword(out, 0xbf00 | u16::from(cond & 0xf) << 4 | u16::from(mask & 0xf));
+pub fn it(out: &mut Vec<u8>, cond: u8, shape: u8) {
+    let mask = if shape == IT_THEN_ELSE && cond & 1 == 1 {
+        shape ^ 0x8
+    } else {
+        shape
+    };
+    halfword(out, 0xbf00 | u16::from(cond & 0xf) << 4 | u16::from(mask));
 }
 
 /// `udf #0`: an instruction that is always undefined.
@@ -734,7 +781,7 @@ pub fn branch_bytes(offset: i32) -> [u8; 4] {
     let first = 0xf000 | u32::try_from(sign).unwrap_or(0) << 10 | imm10;
     let j1 = (1 - ((offset >> 23) & 1)) ^ sign;
     let j2 = (1 - ((offset >> 22) & 1)) ^ sign;
-    let second = 0xb000
+    let second = 0x8000
         | u32::try_from(j1).unwrap_or(0) << 13
         | 1 << 12
         | u32::try_from(j2).unwrap_or(0) << 11
@@ -759,7 +806,7 @@ pub fn branch_link_bytes(offset: i32) -> [u8; 4] {
     let first = 0xf000 | u32::try_from(sign).unwrap_or(0) << 10 | imm10;
     let j1 = (1 - ((offset >> 23) & 1)) ^ sign;
     let j2 = (1 - ((offset >> 22) & 1)) ^ sign;
-    let second = 0xf000
+    let second = 0xc000
         | u32::try_from(j1).unwrap_or(0) << 13
         | 1 << 12
         | u32::try_from(j2).unwrap_or(0) << 11
@@ -775,7 +822,9 @@ pub fn branch_link_bytes(offset: i32) -> [u8; 4] {
 /// The two halfwords of a conditional branch with a displacement.
 ///
 /// The displacement is the distance from the end of the branch to its
-/// target, in bytes; it must be even.
+/// target, in bytes; it must be even.  The conditional branch reaches
+/// a megabyte, and its two high bits travel in the second halfword
+/// without being inverted.
 #[must_use]
 pub fn branch_cond_bytes(cond: u8, offset: i32) -> [u8; 4] {
     let sign = u32::try_from((offset >> 20) & 1).unwrap_or(0);
@@ -809,6 +858,7 @@ mod tests {
         assert_eq!(bytes_of(|o| movs_imm(o, 0, 1)), vec![0x01, 0x20]);
         assert_eq!(bytes_of(|o| movs_imm(o, 7, 0xff)), vec![0xff, 0x27]);
         assert_eq!(bytes_of(|o| mov_reg(o, 0, 1)), vec![0x08, 0x46]);
+        assert_eq!(bytes_of(|o| mov_reg_wide(o, 4, 5)), vec![0x4f, 0xea, 0x05, 0x04]);
         assert_eq!(bytes_of(|o| bx(o, 14)), vec![0x70, 0x47]);
     }
 
@@ -818,21 +868,41 @@ mod tests {
         assert_eq!(bytes_of(|o| pop(o, 0x10, true)), vec![0x10, 0xbd]);
         assert_eq!(bytes_of(|o| push(o, 0, true)), vec![0x00, 0xb5]);
         assert_eq!(bytes_of(|o| pop(o, 0, true)), vec![0x00, 0xbd]);
+        // The wide form lists the high registers in the low bits of
+        // the second halfword.
+        assert_eq!(bytes_of(|o| push(o, 0xff0, true)), vec![0x2d, 0xe9, 0xf0, 0x4f]);
+        assert_eq!(bytes_of(|o| pop(o, 0xff0, true)), vec![0xbd, 0xe8, 0xf0, 0x8f]);
     }
 
     #[test]
     fn the_additions_match_the_architecture() {
-        assert_eq!(bytes_of(|o| adds_reg(o, 0, 1)), vec![0x08, 0x88]);
         assert_eq!(bytes_of(|o| adds_imm3(o, 0, 1, 7)), vec![0xc8, 0x1d]);
         assert_eq!(bytes_of(|o| adds_imm8(o, 0, 255)), vec![0xff, 0x30]);
+        assert_eq!(bytes_of(|o| subs_imm3(o, 0, 1, 7)), vec![0xc8, 0x1f]);
+        assert_eq!(bytes_of(|o| subs_imm8(o, 0, 255)), vec![0xff, 0x38]);
+        assert_eq!(
+            bytes_of(|o| adds_reg_wide(o, 4, 5, 6)),
+            vec![0x05, 0xeb, 0x06, 0x04]
+        );
+    }
+
+    #[test]
+    fn the_immediates_match_the_architecture() {
+        assert_eq!(bytes_of(|o| movw(o, 0, 0x1234)), vec![0x41, 0xf2, 0x34, 0x20]);
+        assert_eq!(bytes_of(|o| movt(o, 0, 0x5678)), vec![0xc5, 0xf2, 0x78, 0x60]);
+        // The eleventh bit of the immediate travels in the flag of
+        // the first halfword.
+        assert_eq!(bytes_of(|o| movw(o, 0, 0x1834)), vec![0x41, 0xf6, 0x34, 0x00]);
+        assert_eq!(bytes_of(|o| movt(o, 0, 0x9834)), vec![0xc9, 0xf6, 0x34, 0x00]);
     }
 
     #[test]
     fn the_conditional_execution_head_matches_the_architecture() {
         assert_eq!(bytes_of(|o| it(o, COND_EQ, IT_ONE)), vec![0x08, 0xbf]);
-        assert_eq!(
-            bytes_of(|o| it(o, COND_EQ, IT_THEN_ELSE)),
-            vec![0x0c, 0xbf]
-        );
+        assert_eq!(bytes_of(|o| it(o, COND_NE, IT_ONE)), vec![0x18, 0xbf]);
+        assert_eq!(bytes_of(|o| it(o, COND_EQ, IT_THEN_ELSE)), vec![0x0c, 0xbf]);
+        // The two parts of a block swap places when the condition is
+        // odd.
+        assert_eq!(bytes_of(|o| it(o, COND_NE, IT_THEN_ELSE)), vec![0x14, 0xbf]);
     }
 }
