@@ -22,7 +22,7 @@
 //! a real font can implement the trait over `codevar-truetype-core`
 //! and get exact measurements.
 
-use alloc::borrow::Cow;
+use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -138,7 +138,7 @@ pub enum TextAlign {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextSpan {
     /// The characters of the run.
-    pub text: Cow<'static, str>,
+    pub text: Rc<str>,
     /// The style of the run.
     pub style: TextStyle,
 }
@@ -146,18 +146,18 @@ pub struct TextSpan {
 impl TextSpan {
     /// Creates a span with the default style.
     #[must_use]
-    pub fn new(text: impl Into<Cow<'static, str>>) -> Self {
+    pub fn new(text: impl AsRef<str>) -> Self {
         Self {
-            text: text.into(),
+            text: Rc::from(text.as_ref()),
             style: TextStyle::default(),
         }
     }
 
     /// Creates a span with an explicit style.
     #[must_use]
-    pub fn with_style(text: impl Into<Cow<'static, str>>, style: TextStyle) -> Self {
+    pub fn with_style(text: impl AsRef<str>, style: TextStyle) -> Self {
         Self {
-            text: text.into(),
+            text: Rc::from(text.as_ref()),
             style,
         }
     }
@@ -177,7 +177,7 @@ pub struct TextContent {
 impl TextContent {
     /// Creates a single-span block with the default style.
     #[must_use]
-    pub fn new(text: impl Into<Cow<'static, str>>) -> Self {
+    pub fn new(text: impl AsRef<str>) -> Self {
         Self {
             spans: alloc::vec![TextSpan::new(text)],
             align: TextAlign::Left,
@@ -197,15 +197,12 @@ impl TextContent {
 
     /// The concatenated characters of every span.
     #[must_use]
-    pub fn plain_text(&self) -> Cow<'static, str> {
-        if self.spans.len() == 1 {
-            return self.spans[0].text.clone();
-        }
+    pub fn plain_text(&self) -> String {
         let mut text = String::new();
         for span in &self.spans {
             text.push_str(&span.text);
         }
-        Cow::Owned(text)
+        text
     }
 
     /// The number of lines the block occupies when it is not truncated.
