@@ -71,13 +71,18 @@ pub struct UiVertex {
     /// one is the width of the outline in pixels and for a glyph the
     /// four of them are the coordinates of the glyph in the atlas.
     pub params: [f32; 4],
+    /// The rectangle of the glyph in the atlas, as `u0`, `v0`, `u1` and
+    /// `v1`.
+    ///
+    /// The rectangle is empty for every primitive that is not a glyph.
+    pub uv: [f32; 4],
     /// The clipping rectangle of the primitive, as `x`, `y`, `width`
     /// and `height`.
     pub clip: [f32; 4],
 }
 
 /// The size of a vertex, in bytes.
-pub const UI_VERTEX_SIZE: u32 = 80;
+pub const UI_VERTEX_SIZE: u32 = 96;
 
 /// A glyph of the atlas the compositor draws the text with.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -131,6 +136,24 @@ impl core::fmt::Display for UiError {
 }
 
 impl core::error::Error for UiError {}
+
+/// The geometry of one quad of the frame.
+struct Quad {
+    /// The position of the top-left corner of the quad.
+    origin: Offset,
+    /// The size of the quad.
+    size: codevar_kuitui::geometry::Size,
+    /// The radii of the four corners of the quad.
+    radii: [f32; 4],
+    /// The color of the primitive.
+    color: codevar_kuitui::color::Color,
+    /// The kind of the primitive and its parameters.
+    params: [f32; 4],
+    /// The rectangle of the glyph in the atlas.
+    uv: [f32; 4],
+    /// The clipping rectangle of the primitive.
+    clip: [f32; 4],
+}
 
 /// The vertices of a frame of the user interface.
 ///
@@ -240,11 +263,6 @@ impl UiQuadBuilder {
             PaintStyle::Fill => (kind::FILL, 0.0),
             PaintStyle::Stroke(width) => (kind::STROKE, width),
         };
-        let params = if kind == kind::GLYPH {
-            [0.0; 4]
-        } else {
-            [width, 0.0, 0.0, 0.0]
-        };
         let corner = [
             radii.top_left,
             radii.top_right,
@@ -252,14 +270,15 @@ impl UiQuadBuilder {
             radii.bottom_left,
         ];
         let clip = clip_rect(clip);
-        self.push_quad(
-            rect.origin,
-            rect.size,
-            corner,
+        self.push_quad(Quad {
+            origin: rect.origin,
+            size: rect.size,
+            radii: corner,
             color,
-            [kind, params[0], params[1], params[2]],
+            params: [kind, width, 0.0, 0.0],
+            uv: [0.0; 4],
             clip,
-        );
+        });
     }
 
     /// Adds a line to the frame.
@@ -317,14 +336,15 @@ impl UiQuadBuilder {
             .map(|corner| corner.y)
             .fold(f32::NEG_INFINITY, f32::max);
         let rect = Rect::from_min_size(Offset::new(min_x, min_y), max_x - min_x, max_y - min_y);
-        self.push_quad(
-            rect.origin,
-            rect.size,
-            [0.0; 4],
+        self.push_quad(Quad {
+            origin: rect.origin,
+            size: rect.size,
+            radii: [0.0; 4],
             color,
-            [kind::FILL, 0.0, 0.0, 0.0],
-            clip_rect(clip),
-        );
+            params: [kind::FILL, 0.0, 0.0, 0.0],
+            uv: [0.0; 4],
+            clip: clip_rect(clip),
+        });
         Ok(())
     }
 
@@ -353,31 +373,30 @@ impl UiQuadBuilder {
                 glyph.width,
                 glyph.height,
             );
-            self.push_quad(
-                rect.origin,
-                rect.size,
-                [0.0; 4],
+            self.push_quad(Quad {
+                origin: rect.origin,
+                size: rect.size,
+                radii: [0.0; 4],
                 color,
-                [kind::GLYPH, glyph.uv[0], glyph.uv[1], glyph.uv[2]],
-                clip_rect(clip),
-            );
-            // The atlas rectangle of a glyph is four numbers, but the
-            // vertex format carries three of them; the fourth one is
-            // recovered by the shader from the size of the quad.
+                params: [kind::GLYPH, 0.0, 0.0, 0.0],
+                uv: glyph.uv,
+                clip: clip_rect(clip),
+            });
             pen += glyph.advance;
         }
     }
 
     /// Adds a quad of four vertices and six indices to the frame.
-    fn push_quad(
-        &mut self,
-        origin: Offset,
-        size: codevar_kuitui::geometry::Size,
-        radii: [f32; 4],
-        color: codevar_kuitui::color::Color,
-        params: [f32; 4],
-        clip: [f32; 4],
-    ) {
+    fn push_quad(&mut self, quad: Quad) {
+        let Quad {
+            origin,
+            size,
+            radii,
+            color,
+            params,
+            uv,
+            clip,
+        } = quad;
         let base = self.vertices.len() as u32;
         let corners = [
             origin,
@@ -392,6 +411,7 @@ impl UiQuadBuilder {
                 radii,
                 color: [color.red, color.green, color.blue, color.alpha],
                 params,
+                uv,
                 clip,
             });
         }
@@ -589,6 +609,21 @@ mod tests {
     #[test]
     fn the_size_of_a_vertex_matches_the_format() {
         assert_eq!(core::mem::size_of::<UiVertex>(), UI_VERTEX_SIZE as usize);
+    }
+
+    #[test]
+    fn a_glyph_carries_the_whole_rectangle_of_the_atlas() {
+        let mut list = DrawList::new();
+        list.text(
+            Offset::new(0.0, 20.0),
+            codevar_kuitui::text::TextSpan::new("a").text,
+            codevar_kuitui::text::TextStyle::new(16.0),
+        );
+        let mut builder = UiQuadBuilder::new();
+        builder
+            .build(&list, &Squares)
+            .expect("the list is drawable");
+        assert_eq!(builder.vertices()[0].uv, [0.0, 0.0, 1.0, 1.0]);
     }
 
     #[test]
