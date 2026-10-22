@@ -739,11 +739,40 @@ impl<'a> Encoder<'a> {
         self.modrm_rr(dst_field, src_field);
     }
 
-    /// Emits the square root of an SSE register.
+    /// Emits a packed arithmetic instruction between two SSE registers.
     ///
-    /// The machine IR has no operation that asks for a square root
-    /// yet; the encoder knows the instruction all the same.
-    #[allow(dead_code)]
+    /// The packed forms carry the same opcode as the scalar ones: the
+    /// single-precision form has no prefix and the double-precision
+    /// form the width prefix, where the scalar forms carry the
+    /// mandatory prefix.
+    pub(crate) fn packed_xmm_rr(&mut self, arith: Arith, size: Size, dst: u16, src: u16) {
+        self.count += 1;
+        let (src_field, src_ext) = Self::parts(src);
+        let (dst_field, dst_ext) = Self::parts(dst);
+        if size == Size::Qword {
+            self.byte(0x66);
+        }
+        self.rex(false, dst_ext, src_ext, false);
+        self.byte(0x0F);
+        self.byte(arith.opcode());
+        self.modrm_rr(dst_field, src_field);
+    }
+
+    /// Emits a packed integer instruction between two SSE registers.
+    ///
+    /// The packed integer forms always carry the width prefix.
+    pub(crate) fn packed_int_xmm_rr(&mut self, opcode: u8, dst: u16, src: u16) {
+        self.count += 1;
+        let (src_field, src_ext) = Self::parts(src);
+        let (dst_field, dst_ext) = Self::parts(dst);
+        self.byte(0x66);
+        self.rex(false, dst_ext, src_ext, false);
+        self.byte(0x0F);
+        self.byte(opcode);
+        self.modrm_rr(dst_field, src_field);
+    }
+
+    /// Emits the square root of an SSE register.
     pub(crate) fn sqrt_xmm_rr(&mut self, size: Size, dst: u16, src: u16) {
         self.count += 1;
         let (src_field, src_ext) = Self::parts(src);
@@ -755,15 +784,68 @@ impl<'a> Encoder<'a> {
         self.modrm_rr(dst_field, src_field);
     }
 
+    /// Emits the load of a double-precision value from memory onto
+    /// the floating-point stack.
+    pub(crate) fn fld_m64(&mut self, base: u16, disp: i32) {
+        self.count += 1;
+        self.rex_mem(false, 0, base, false);
+        self.byte(0xDD);
+        self.modrm_mem(0, base, disp);
+    }
+
+    /// Emits the store of the floating-point stack's top into
+    /// memory, popping it.
+    pub(crate) fn fstp_m64(&mut self, base: u16, disp: i32) {
+        self.count += 1;
+        self.rex_mem(false, 0, base, false);
+        self.byte(0xDD);
+        self.modrm_mem(3, base, disp);
+    }
+
+    /// Emits the remainder of the floating-point stack's top and the
+    /// one below it.
+    ///
+    /// The stack keeps both values: the remainder replaces the top
+    /// one.
+    pub(crate) fn fprem(&mut self) {
+        self.count += 1;
+        self.byte(0xD9);
+        self.byte(0xF8);
+    }
+
+    /// Emits the pop of the floating-point stack's top.
+    pub(crate) fn fstp_st0(&mut self) {
+        self.count += 1;
+        self.byte(0xDD);
+        self.byte(0xD8);
+    }
+
+    /// Emits the move of a quad-word from memory into an SSE
+    /// register.
+    pub(crate) fn movq_xmm_mr(&mut self, dst: u16, base: u16, disp: i32) {
+        self.count += 1;
+        let (dst_field, _) = Self::parts(dst);
+        self.byte(0xF3);
+        self.rex_mem(false, dst, base, false);
+        self.byte(0x0F);
+        self.byte(0x7E);
+        self.modrm_mem(dst_field, base, disp);
+    }
+
     /// Emits the comparison of two SSE registers.
     ///
     /// The flags the comparison leaves behind follow the ordered
     /// rules: the parity flag is set when either operand is not a
-    /// number.
-    pub(crate) fn ucomis_rr(&mut self, dst: u16, src: u16) {
+    /// number.  The single-precision form compares the low half of
+    /// the registers and the double-precision form the low
+    /// quad-word.
+    pub(crate) fn ucomis_rr(&mut self, size: Size, dst: u16, src: u16) {
         self.count += 1;
         let (src_field, src_ext) = Self::parts(src);
         let (dst_field, dst_ext) = Self::parts(dst);
+        if size == Size::Qword {
+            self.byte(0x66);
+        }
         self.rex(false, dst_ext, src_ext, false);
         self.byte(0x0F);
         self.byte(0x2E);
@@ -975,19 +1057,11 @@ impl<'a> Encoder<'a> {
     }
 
     /// Emits the smaller of two SSE registers.
-    ///
-    /// The machine IR has no operation that asks for a minimum yet;
-    /// the encoder knows the instruction all the same.
-    #[allow(dead_code)]
     pub(crate) fn min_xmm_rr(&mut self, size: Size, dst: u16, src: u16) {
         self.sse_rr(0x5D, size, dst, src);
     }
 
     /// Emits the larger of two SSE registers.
-    ///
-    /// The machine IR has no operation that asks for a maximum yet;
-    /// the encoder knows the instruction all the same.
-    #[allow(dead_code)]
     pub(crate) fn max_xmm_rr(&mut self, size: Size, dst: u16, src: u16) {
         self.sse_rr(0x5F, size, dst, src);
     }

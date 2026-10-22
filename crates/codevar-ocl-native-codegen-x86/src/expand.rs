@@ -37,13 +37,12 @@
 //!
 //! # The width of an operand
 //!
-//! The machine IR gives the type of the value an operation writes, but
-//! not the type of the values it reads.  The expander therefore keeps
-//! track of the type every register holds: the type of a register is
-//! the type of the last operation that wrote it.  A comparison of two
-//! values therefore compares them at the width they were produced at,
-//! and a conversion reads its operand at the width it was produced
-//! at.
+//! The machine IR gives the type of the value an operation writes and
+//! the type of the values it reads, so the expander never has to guess
+//! the width of an operand from the register that holds it: a
+//! comparison of two values compares them at the width the
+//! instruction names, and a conversion reads its operand at the width
+//! it was produced at.
 //!
 //! # The integers
 //!
@@ -108,8 +107,6 @@ struct Expander<'a> {
     saved: Vec<u16>,
     /// The size of the reserved frame.
     frame_size: u32,
-    /// The type every register holds.
-    types: [Option<MType>; reg::TOTAL_REGS as usize],
 }
 
 /// Builds the error of a rejected machine operation.
@@ -169,7 +166,6 @@ impl<'a> Expander<'a> {
             function,
             saved,
             frame_size,
-            types: core::array::from_fn(|_| None),
         }
     }
 
@@ -205,13 +201,31 @@ impl<'a> Expander<'a> {
     }
 
     /// The register an operand names.
-    fn operand_reg(&self, inst: &MInst, index: usize) -> Result<u16, CodegenError> {
+    ///
+    /// An immediate that the operation needs in a register is moved
+    /// into a scratch register first.  The scratch registers are the
+    /// ones the allocator never hands out, so they hold nothing the
+    /// operation needs; the registers in `reserved` are the ones the
+    /// expansion itself uses and are left alone.
+    fn operand_reg(
+        &self,
+        enc: &mut Encoder<'_>,
+        inst: &MInst,
+        index: usize,
+        reserved: &[u16],
+    ) -> Result<u16, CodegenError> {
         match inst.args.get(index) {
             Some(Operand::Physical(reg)) => Ok(reg.number()),
             Some(Operand::Virtual(_)) => Err(target_error(
                 "expanding the machine operation",
                 &format!("operand {index} of the operation is still a virtual register"),
             )),
+            Some(Operand::Immediate(value)) => {
+                let scratch = self.scratch_register(inst, reserved)?;
+                let size = int_size(Self::operand_type(inst).unwrap_or(&inst.ty));
+                enc.mov_ri(size, scratch, value);
+                Ok(scratch)
+            }
             Some(_) => Err(target_error(
                 "expanding the machine operation",
                 &format!("operand {index} of the operation is not a register"),
@@ -223,30 +237,67 @@ impl<'a> Expander<'a> {
         }
     }
 
-    /// The type the register holds, when the expander knows it.
-    fn register_type(&self, reg: u16) -> Option<&MType> {
-        if !reg::is_valid(reg) {
-            return None;
+    /// A scratch register the expansion may use.
+    ///
+    /// The destination of the instruction and the registers the
+    /// expansion reserved are left alone, so a value that is already
+    /// there is never overwritten.
+    fn scratch_register(&self, inst: &MInst, reserved: &[u16]) -> Result<u16, CodegenError> {
+        let dest = self.dest(inst).unwrap_or(u16::MAX);
+        for candidate in reg::SCRATCH_GPRS {
+            if candidate != dest && !reserved.contains(&candidate) {
+                return Ok(candidate);
+            }
         }
-        self.types[reg as usize].as_ref()
+        Err(target_error(
+            "expanding the machine operation",
+            "the operation needs a scratch register and none is free",
+        ))
     }
 
-    /// The type an operand holds, when the expander knows it.
-    fn operand_type(&self, inst: &MInst, index: usize) -> Option<&MType> {
-        let reg = self.operand_reg(inst, index).ok()?;
-        self.register_type(reg)
+    /// The types of the parameters of the function at `index`.
+    ///
+    /// The parameter of a function is read with an instruction that
+    /// names its type, so the signature of the callee is read from
+    /// its own body.
+    fn parameter_types(&self, index: usize) -> Vec<MType> {
+        let mut types: Vec<MType> = Vec::new();
+        let Some(function) = self.module.functions.get(index) else {
+            return types;
+        };
+        for block in &function.blocks {
+            for inst in &block.insts {
+                let MOp::Param { index: position } = inst.op else {
+                    continue;
+                };
+                let slot = position as usize;
+                if types.len() <= slot {
+                    types.resize(slot + 1, MType::Void);
+                }
+                types[slot] = inst.operand_ty.clone().unwrap_or(MType::Void);
+            }
+        }
+        types
     }
 
-    /// The shape of the vector an operand holds.
+    /// The type of the values an instruction reads.
+    ///
+    /// The machine IR names the type of the operands of every
+    /// instruction, so the expander never has to guess it from the
+    /// register that happens to hold the value.
+    fn operand_type(inst: &MInst) -> Option<&MType> {
+        inst.operand_ty.as_ref()
+    }
+
+    /// The shape of the vector an instruction reads.
     ///
     /// The lane size and the number of lanes follow the type of the
-    /// register that holds the vector, which is the type of the
-    /// operation that wrote it.
+    /// vector, which the instruction names.
     fn vector_shape(&self, inst: &MInst, index: usize) -> Result<(Size, u32), CodegenError> {
-        let ty = self.operand_type(inst, index).ok_or_else(|| {
+        let ty = Self::operand_type(inst).ok_or_else(|| {
             target_error(
                 "expanding the machine operation",
-                &format!("the type of the vector in operand {index} is unknown"),
+                "the operation does not name the type of the vector it reads",
             )
         })?;
         let size = lane_size(ty).ok_or_else(|| {
@@ -347,31 +398,14 @@ impl<'a> Expander<'a> {
         }
     }
 
-    /// Remembers the type a register holds.
-    fn record_type(&mut self, inst: &MInst) {
-        if let Some(Destination::Physical(dest)) = inst.dest {
-            let number = dest.number();
-            if reg::is_valid(number) {
-                self.types[number as usize] = Some(inst.ty.clone());
-            }
-        }
-    }
-
     /// Expands one instruction.
-    ///
-    /// The type of the register the instruction writes is remembered
-    /// once the instruction is expanded, so that an instruction that
-    /// reads and writes the same register reads the type the value
-    /// had before.
     fn expand_inst(
         &mut self,
         enc: &mut Encoder<'_>,
         fixups: &mut Vec<Fixup>,
         inst: &MInst,
     ) -> Result<(), CodegenError> {
-        let result = self.expand_op(enc, fixups, inst);
-        self.record_type(inst);
-        result
+        self.expand_op(enc, fixups, inst)
     }
 
     /// Expands one operation.
@@ -410,10 +444,13 @@ impl<'a> Expander<'a> {
             MOp::FSub => self.expand_float(enc, inst, Arith::Sub),
             MOp::FMul => self.expand_float(enc, inst, Arith::Mul),
             MOp::FDiv => self.expand_float(enc, inst, Arith::Div),
-            MOp::FRem => Err(unsupported_error(
-                "the floating-point remainder",
-                "the baseline instruction set has no remainder operation",
-            )),
+            MOp::FRem => self.expand_frem(enc, inst),
+            MOp::FSqrt => self.expand_fsqrt(enc, inst),
+            MOp::FAbs => self.expand_fabs(enc, inst),
+            MOp::FMin => self.expand_fmin(enc, inst, true),
+            MOp::FMax => self.expand_fmin(enc, inst, false),
+            MOp::FDim => self.expand_fdim(enc, inst),
+            MOp::FCopySign => self.expand_fcopysign(enc, inst),
             MOp::ICmp { pred } => self.expand_icmp(enc, inst, *pred),
             MOp::FCmp { pred } => self.expand_fcmp(enc, inst, *pred),
             MOp::Select => self.expand_select(enc, inst),
@@ -439,7 +476,7 @@ impl<'a> Expander<'a> {
             // immediates.
             #[allow(clippy::unneeded_struct_pattern)]
             MOp::CondBr { .. } => {
-                let cond = self.operand_reg(inst, 0)?;
+                let cond = self.operand_reg(enc, inst, 0, &[])?;
                 self.expect_int(cond, 0)?;
                 let (when_true, when_false) = inst.cond_br_targets().ok_or_else(|| {
                     target_error(
@@ -458,7 +495,7 @@ impl<'a> Expander<'a> {
             }
             MOp::Ret => {
                 if inst.ty != MType::Void {
-                    let value = self.operand_reg(inst, 0)?;
+                    let value = self.operand_reg(enc, inst, 0, &[])?;
                     if inst.ty.is_floating() {
                         enc.mov_xmm_rr(Size::Qword, reg::XMM0, value);
                     } else if inst.ty.is_vector() {
@@ -482,7 +519,7 @@ impl<'a> Expander<'a> {
             }
             MOp::Call { callee } => self.expand_call(enc, fixups, inst, *callee),
             MOp::WorkItemLoad { field, lane } => {
-                let base = self.operand_reg(inst, 0)?;
+                let base = self.operand_reg(enc, inst, 0, &[])?;
                 self.expect_int(base, 0)?;
                 let dest = self.dest(inst)?;
                 self.expect_dest(inst, dest)?;
@@ -491,7 +528,7 @@ impl<'a> Expander<'a> {
                 Ok(())
             }
             MOp::ArgBlockBase => {
-                let base = self.operand_reg(inst, 0)?;
+                let base = self.operand_reg(enc, inst, 0, &[])?;
                 self.expect_int(base, 0)?;
                 let dest = self.dest(inst)?;
                 self.expect_dest(inst, dest)?;
@@ -504,7 +541,7 @@ impl<'a> Expander<'a> {
                 Ok(())
             }
             MOp::ArgLoad { index, kind } => {
-                let base = self.operand_reg(inst, 0)?;
+                let base = self.operand_reg(enc, inst, 0, &[])?;
                 self.expect_int(base, 0)?;
                 let dest = self.dest(inst)?;
                 self.expect_dest(inst, dest)?;
@@ -556,7 +593,7 @@ impl<'a> Expander<'a> {
                 Ok(())
             }
             MOp::SpillStore { offset, size } => {
-                let value = self.operand_reg(inst, 0)?;
+                let value = self.operand_reg(enc, inst, 0, &[])?;
                 let disp = i32::try_from(*offset).unwrap_or(i32::MAX);
                 match Self::class_of(value) {
                     Class::Float => {
@@ -640,7 +677,7 @@ impl<'a> Expander<'a> {
             enc.mov_ri(int_size(&inst.ty), dest, value);
             return Ok(());
         }
-        let src = self.operand_reg(inst, 0)?;
+        let src = self.operand_reg(enc, inst, 0, &[])?;
         match (Self::class_of(dest), Self::class_of(src)) {
             (Class::Int, Class::Int) => {
                 enc.mov_rr(int_size(&inst.ty), dest, src);
@@ -674,7 +711,7 @@ impl<'a> Expander<'a> {
 
     /// Expands a load.
     fn expand_load(&self, enc: &mut Encoder<'_>, inst: &MInst, size: u32) -> Result<(), CodegenError> {
-        let base = self.operand_reg(inst, 0)?;
+        let base = self.operand_reg(enc, inst, 0, &[])?;
         self.expect_int(base, 0)?;
         let dest = self.dest(inst)?;
         self.expect_dest(inst, dest)?;
@@ -709,11 +746,45 @@ impl<'a> Expander<'a> {
 
     /// Expands a store.
     fn expand_store(&self, enc: &mut Encoder<'_>, inst: &MInst, size: u32) -> Result<(), CodegenError> {
-        let base = self.operand_reg(inst, 0)?;
+        let base = self.operand_reg(enc, inst, 0, &[])?;
         self.expect_int(base, 0)?;
-        let value = self.operand_reg(inst, 1)?;
-        match Self::class_of(value) {
-            Class::Float => {
+        // A constant is moved into a register first, so that the
+        // store has a value to write.
+        let (value, floating) = match inst.args.get(1) {
+            Some(Operand::Immediate(number)) => {
+                let width = match size {
+                    1 => Size::Byte,
+                    2 => Size::Word,
+                    4 => Size::Dword,
+                    _ => Size::Qword,
+                };
+                enc.mov_ri(width, reg::RAX, number);
+                (reg::RAX, false)
+            }
+            Some(Operand::FloatImmediate(bits)) => {
+                enc.mov_ri(Size::Qword, reg::RAX, bits as i64);
+                enc.movq_xmm_rm(reg::SCRATCH_XMMS[0], reg::RAX);
+                (reg::SCRATCH_XMMS[0], true)
+            }
+            Some(Operand::Physical(reg)) => {
+                let number = reg.number();
+                (number, Self::class_of(number) == Class::Float)
+            }
+            Some(_) => {
+                return Err(target_error(
+                    "expanding the machine operation",
+                    "the value the store writes is not a register",
+                ));
+            }
+            None => {
+                return Err(target_error(
+                    "expanding the machine operation",
+                    "the operation has no second operand",
+                ));
+            }
+        };
+        match floating {
+            true => {
                 let size = match size {
                     4 => Size::Dword,
                     8 => Size::Qword,
@@ -726,7 +797,7 @@ impl<'a> Expander<'a> {
                 };
                 enc.mov_xmm_mr(size, base, 0, value);
             }
-            Class::Int => match size {
+            false => match size {
                 1 => enc.mov_mr(Size::Byte, base, 0, value),
                 2 => enc.mov_mr(Size::Word, base, 0, value),
                 4 => enc.mov_mr(Size::Dword, base, 0, value),
@@ -753,7 +824,7 @@ impl<'a> Expander<'a> {
         size: u32,
         signed: bool,
     ) -> Result<(), CodegenError> {
-        let base = self.operand_reg(inst, 0)?;
+        let base = self.operand_reg(enc, inst, 0, &[])?;
         self.expect_int(base, 0)?;
         let dest = self.dest(inst)?;
         self.expect_dest(inst, dest)?;
@@ -769,7 +840,7 @@ impl<'a> Expander<'a> {
                     }
                 }
                 Some(Operand::Physical(_)) | Some(Operand::Virtual(_)) => {
-                    let source = self.operand_reg(inst, index)?;
+                    let source = self.operand_reg(enc, inst, index, &[reg::RAX])?;
                     self.expect_int(source, index)?;
                     enc.mov_rr(Size::Qword, reg::RAX, source);
                 }
@@ -809,7 +880,7 @@ impl<'a> Expander<'a> {
     fn expand_vec_splat(&self, enc: &mut Encoder<'_>, inst: &MInst) -> Result<(), CodegenError> {
         let dest = self.dest(inst)?;
         self.expect_dest(inst, dest)?;
-        let source = self.operand_reg(inst, 0)?;
+        let source = self.operand_reg(enc, inst, 0, &[])?;
         // The broadcast fills the vector the destination names, so the
         // shape follows the destination.
         let size = lane_size(&inst.ty).unwrap_or(Size::Dword);
@@ -858,7 +929,7 @@ impl<'a> Expander<'a> {
         index: u32,
     ) -> Result<(), CodegenError> {
         let dest = self.dest(inst)?;
-        let source = self.operand_reg(inst, 0)?;
+        let source = self.operand_reg(enc, inst, 0, &[])?;
         self.expect_float(source, 0)?;
         let (size, lanes) = self.vector_shape(inst, 0)?;
         if index >= lanes {
@@ -907,9 +978,9 @@ impl<'a> Expander<'a> {
     /// Expands the write of one lane of a vector.
     fn expand_vec_insert(&self, enc: &mut Encoder<'_>, inst: &MInst, index: u32) -> Result<(), CodegenError> {
         let dest = self.dest(inst)?;
-        let vector = self.operand_reg(inst, 0)?;
+        let vector = self.operand_reg(enc, inst, 0, &[])?;
         self.expect_float(vector, 0)?;
-        let scalar = self.operand_reg(inst, 1)?;
+        let scalar = self.operand_reg(enc, inst, 1, &[])?;
         let (size, lanes) = self.vector_shape(inst, 0)?;
         if index >= lanes {
             return Err(target_error(
@@ -980,8 +1051,8 @@ impl<'a> Expander<'a> {
         mask: &[u32],
     ) -> Result<(), CodegenError> {
         let dest = self.dest(inst)?;
-        let first = self.operand_reg(inst, 0)?;
-        let second = self.operand_reg(inst, 1)?;
+        let first = self.operand_reg(enc, inst, 0, &[])?;
+        let second = self.operand_reg(enc, inst, 1, &[])?;
         self.expect_float(first, 0)?;
         self.expect_float(second, 1)?;
         let (size, lane_count) = self.vector_shape(inst, 0)?;
@@ -1044,10 +1115,15 @@ impl<'a> Expander<'a> {
 
     /// Expands an integer operation of two operands.
     fn expand_binary(&self, enc: &mut Encoder<'_>, inst: &MInst, op: Binary) -> Result<(), CodegenError> {
+        // A vector operation uses the packed forms of the
+        // architecture.
+        if let Some(size) = self.vector_lane_size(inst) {
+            return self.expand_vector_binary(enc, inst, op, size);
+        }
         let dest = self.dest(inst)?;
         self.expect_dest(inst, dest)?;
         let size = int_size(&inst.ty);
-        let left = self.operand_reg(inst, 0)?;
+        let left = self.operand_reg(enc, inst, 0, &[])?;
         self.expect_int(left, 0)?;
         match inst.args.get(1) {
             Some(Operand::Immediate(value)) => {
@@ -1061,16 +1137,18 @@ impl<'a> Expander<'a> {
                     Binary::Mul => match i32::try_from(value) {
                         Ok(factor) => enc.imul_ri(size, dest, dest, factor),
                         Err(_) => {
-                            return Err(unsupported_error(
-                                "the factor of a multiplication",
-                                "the target multiplies by a factor of thirty-two bits",
-                            ));
+                            // The wide form of the multiplication
+                            // takes a thirty-two-bit factor, so a
+                            // wider one moves into a register first.
+                            let scratch = self.scratch_register(inst, &[dest])?;
+                            enc.mov_ri(size, scratch, value);
+                            enc.imul_rr(size, dest, scratch);
                         }
                     },
                 }
             }
             Some(_) => {
-                let right = self.operand_reg(inst, 1)?;
+                let right = self.operand_reg(enc, inst, 1, &[])?;
                 self.expect_int(right, 1)?;
                 enc.mov_rr(size, dest, left);
                 match op {
@@ -1092,6 +1170,137 @@ impl<'a> Expander<'a> {
         Ok(())
     }
 
+    /// The size of a lane of the vector an operation reads, when the
+    /// operation reads a vector.
+    fn vector_lane_size(&self, inst: &MInst) -> Option<Size> {
+        let ty = Self::operand_type(inst)?;
+        if !ty.is_vector() {
+            return None;
+        }
+        match ty {
+            MType::Vec { elem, .. } => match elem.as_ref() {
+                MType::F64 => Some(Size::Qword),
+                _ => Some(Size::Dword),
+            },
+            _ => None,
+        }
+    }
+
+    /// True when the lanes of a vector hold floating-point values.
+    fn vector_is_floating(&self, inst: &MInst) -> bool {
+        let Some(ty) = Self::operand_type(inst) else {
+            return false;
+        };
+        match ty {
+            MType::Vec { elem, .. } => elem.is_floating(),
+            _ => false,
+        }
+    }
+
+    /// Expands an operation over the lanes of a vector.
+    ///
+    /// The architecture has a packed form for the operations it can
+    /// do on several lanes at once; the others are refused.
+    fn expand_vector_binary(
+        &self,
+        enc: &mut Encoder<'_>,
+        inst: &MInst,
+        op: Binary,
+        size: Size,
+    ) -> Result<(), CodegenError> {
+        let dest = self.dest(inst)?;
+        let left = self.operand_reg(enc, inst, 0, &[])?;
+        let right = self.operand_reg(enc, inst, 1, &[])?;
+        if Self::class_of(left) != Class::Float || Self::class_of(right) != Class::Float {
+            return Err(target_error(
+                "expanding the machine operation",
+                "the operation reads a value that is not in a vector register",
+            ));
+        }
+        // The whole vector moves, not one lane of it.
+        enc.mov_xmm_rr(Size::Xmm, dest, left);
+        let floating = self.vector_is_floating(inst);
+        if floating {
+            let arith = match op {
+                Binary::Add => Arith::Add,
+                Binary::Sub => Arith::Sub,
+                Binary::Mul => Arith::Mul,
+                Binary::And | Binary::Or | Binary::Xor => {
+                    return Err(target_error(
+                        "expanding the machine operation",
+                        "the operation has no packed form over floating-point lanes",
+                    ));
+                }
+            };
+            enc.packed_xmm_rr(arith, size, dest, right);
+            return Ok(());
+        }
+        // The packed integer forms: the addition and the subtraction
+        // of thirty-two and sixty-four-bit lanes, and the three
+        // bitwise operations.
+        let opcode = match (op, size) {
+            (Binary::Add, Size::Dword) => 0xFE,
+            (Binary::Add, Size::Qword) => 0xD4,
+            (Binary::Sub, Size::Dword) => 0xF8,
+            (Binary::Sub, Size::Qword) => 0xFB,
+            (Binary::And, _) => 0xDB,
+            (Binary::Or, _) => 0xEB,
+            (Binary::Xor, _) => 0xEF,
+            _ => {
+                // The baseline has no packed multiplication of
+                // thirty-two-bit lanes, so the lanes are multiplied
+                // one at a time.
+                if op == Binary::Mul && size == Size::Dword {
+                    return self.expand_vector_multiply(enc, inst, dest, left, right);
+                }
+                return Err(target_error(
+                    "expanding the machine operation",
+                    &format!(
+                        "the architecture has no packed form for the {} over the lanes of {:?}",
+                        op.name(),
+                        Self::operand_type(inst)
+                    ),
+                ));
+            }
+        };
+        enc.packed_int_xmm_rr(opcode, dest, right);
+        Ok(())
+    }
+
+    /// Multiplies the lanes of two vectors of thirty-two-bit integers.
+    ///
+    /// The baseline has no packed multiplication of thirty-two-bit
+    /// lanes, so every lane is taken out of its vector, multiplied,
+    /// and written back into the result.
+    fn expand_vector_multiply(
+        &self,
+        enc: &mut Encoder<'_>,
+        inst: &MInst,
+        dest: u16,
+        left: u16,
+        right: u16,
+    ) -> Result<(), CodegenError> {
+        let (_, lanes) = self.vector_shape(inst, 0)?;
+        for lane in 0..lanes {
+            // The lanes of the two operands.
+            enc.pshufd(reg::SCRATCH_XMMS[1], left, lane as u8);
+            enc.movd_rm_xmm(reg::RCX, reg::SCRATCH_XMMS[1]);
+            enc.pshufd(reg::SCRATCH_XMMS[1], right, lane as u8);
+            enc.movd_rm_xmm(reg::RDX, reg::SCRATCH_XMMS[1]);
+            // The product of the two lanes.
+            enc.mov_rr(Size::Dword, reg::RAX, reg::RCX);
+            enc.imul_rr(Size::Dword, reg::RAX, reg::RDX);
+            // The result of the lane, written into the vector.
+            if lane == 0 {
+                enc.mov_xmm_rr(Size::Xmm, dest, left);
+            }
+            enc.pinsrw(dest, reg::RAX, (lane * 2) as u8);
+            enc.shift_ri(5, Size::Dword, reg::RAX, 16);
+            enc.pinsrw(dest, reg::RAX, (lane * 2 + 1) as u8);
+        }
+        Ok(())
+    }
+
     /// Expands a division.
     ///
     /// The architecture divides a register pair, so the dividend is
@@ -1108,7 +1317,7 @@ impl<'a> Expander<'a> {
         let dest = self.dest(inst)?;
         self.expect_dest(inst, dest)?;
         let size = int_size(&inst.ty);
-        let dividend = self.operand_reg(inst, 0)?;
+        let dividend = self.operand_reg(enc, inst, 0, &[])?;
         self.expect_int(dividend, 0)?;
         if dest == reg::RCX {
             return Err(target_error(
@@ -1121,7 +1330,7 @@ impl<'a> Expander<'a> {
         match inst.args.get(1) {
             Some(Operand::Immediate(value)) => enc.mov_ri(size, reg::RCX, value),
             Some(_) => {
-                let divisor = self.operand_reg(inst, 1)?;
+                let divisor = self.operand_reg(enc, inst, 1, &[])?;
                 self.expect_int(divisor, 1)?;
                 enc.mov_rr(size, reg::RCX, divisor);
             }
@@ -1151,7 +1360,7 @@ impl<'a> Expander<'a> {
         let dest = self.dest(inst)?;
         self.expect_dest(inst, dest)?;
         let size = int_size(&inst.ty);
-        let value = self.operand_reg(inst, 0)?;
+        let value = self.operand_reg(enc, inst, 0, &[])?;
         self.expect_int(value, 0)?;
         let digit = match op {
             Shift::Left => 4,
@@ -1170,7 +1379,7 @@ impl<'a> Expander<'a> {
                 enc.shift_ri(digit, size, dest, amount as u8);
             }
             Some(_) => {
-                let amount = self.operand_reg(inst, 1)?;
+                let amount = self.operand_reg(enc, inst, 1, &[])?;
                 self.expect_int(amount, 1)?;
                 enc.mov_rr(size, dest, value);
                 enc.mov_rr(size, reg::RCX, amount);
@@ -1191,7 +1400,7 @@ impl<'a> Expander<'a> {
         let dest = self.dest(inst)?;
         self.expect_dest(inst, dest)?;
         let size = int_size(&inst.ty);
-        let value = self.operand_reg(inst, 0)?;
+        let value = self.operand_reg(enc, inst, 0, &[])?;
         self.expect_int(value, 0)?;
         enc.mov_rr(size, dest, value);
         match op {
@@ -1208,7 +1417,7 @@ impl<'a> Expander<'a> {
     fn expand_fneg(&self, enc: &mut Encoder<'_>, inst: &MInst) -> Result<(), CodegenError> {
         let dest = self.dest(inst)?;
         self.expect_dest(inst, dest)?;
-        let value = self.operand_reg(inst, 0)?;
+        let value = self.operand_reg(enc, inst, 0, &[])?;
         self.expect_float(value, 0)?;
         let size = float_size(&inst.ty).unwrap_or(Size::Qword);
         let vector = inst.ty.is_vector();
@@ -1229,22 +1438,273 @@ impl<'a> Expander<'a> {
         Ok(())
     }
 
-    /// Expands a floating-point operation of two operands.
-    fn expand_float(&self, enc: &mut Encoder<'_>, inst: &MInst, op: Arith) -> Result<(), CodegenError> {
-        let dest = self.dest(inst)?;
-        self.expect_dest(inst, dest)?;
-        let size = float_size(&inst.ty).ok_or_else(|| {
+    /// The register an operand of a floating-point operation holds.
+    ///
+    /// A constant is moved into one of the scratch registers first,
+    /// so that the operation has a register to read.
+    fn float_operand(&self, enc: &mut Encoder<'_>, inst: &MInst, index: usize) -> Result<u16, CodegenError> {
+        match inst.args.get(index) {
+            Some(Operand::FloatImmediate(bits)) => {
+                let scratch = if index == 0 {
+                    reg::SCRATCH_XMMS[0]
+                } else {
+                    reg::SCRATCH_XMMS[1]
+                };
+                enc.mov_ri(Size::Qword, reg::RAX, bits as i64);
+                enc.movq_xmm_rm(scratch, reg::RAX);
+                Ok(scratch)
+            }
+            Some(Operand::Physical(reg)) => {
+                let number = reg.number();
+                if !reg::is_valid(number) {
+                    return Err(target_error(
+                        "expanding the machine operation",
+                        &format!("operand {index} names the register {number}, which the file does not hold"),
+                    ));
+                }
+                Ok(number)
+            }
+            Some(_) => Err(target_error(
+                "expanding the machine operation",
+                &format!("operand {index} of the operation is not a floating-point value"),
+            )),
+            None => Err(target_error(
+                "expanding the machine operation",
+                &format!("the operation has no operand {index}"),
+            )),
+        }
+    }
+
+    /// The width of the floating-point operation.
+    fn float_width(&self, inst: &MInst) -> Result<Size, CodegenError> {
+        float_size(&inst.ty).ok_or_else(|| {
             target_error(
                 "expanding the machine operation",
                 "the operation has no floating-point type",
             )
-        })?;
-        let left = self.operand_reg(inst, 0)?;
-        self.expect_float(left, 0)?;
-        let right = self.operand_reg(inst, 1)?;
-        self.expect_float(right, 1)?;
+        })
+    }
+
+    /// The register an operand of a conversion holds.
+    ///
+    /// A constant is moved into the accumulator first, so that the
+    /// conversion has a register to read.
+    fn int_operand(&self, enc: &mut Encoder<'_>, inst: &MInst, index: usize) -> Result<u16, CodegenError> {
+        match inst.args.get(index) {
+            Some(Operand::Immediate(value)) => {
+                enc.mov_ri(Size::Qword, reg::RAX, value);
+                Ok(reg::RAX)
+            }
+            Some(Operand::Physical(reg)) => {
+                let number = reg.number();
+                if !reg::is_valid(number) {
+                    return Err(target_error(
+                        "expanding the machine operation",
+                        &format!("operand {index} names the register {number}, which the file does not hold"),
+                    ));
+                }
+                Ok(number)
+            }
+            Some(_) => Err(target_error(
+                "expanding the machine operation",
+                &format!("operand {index} of the operation is not an integer"),
+            )),
+            None => Err(target_error(
+                "expanding the machine operation",
+                &format!("the operation has no operand {index}"),
+            )),
+        }
+    }
+
+    /// Expands the square root of a floating-point value.
+    fn expand_fsqrt(&self, enc: &mut Encoder<'_>, inst: &MInst) -> Result<(), CodegenError> {
+        let dest = self.dest(inst)?;
+        self.expect_dest(inst, dest)?;
+        let size = self.float_width(inst)?;
+        let value = self.float_operand(enc, inst, 0)?;
+        enc.mov_xmm_rr(size, dest, value);
+        enc.sqrt_xmm_rr(size, dest, dest);
+        Ok(())
+    }
+
+    /// Expands the absolute value of a floating-point value.
+    ///
+    /// The sign bit is cleared with a mask that holds no other bit.
+    fn expand_fabs(&self, enc: &mut Encoder<'_>, inst: &MInst) -> Result<(), CodegenError> {
+        let dest = self.dest(inst)?;
+        self.expect_dest(inst, dest)?;
+        let size = self.float_width(inst)?;
+        let value = self.float_operand(enc, inst, 0)?;
+        let mask = match size {
+            Size::Dword => 0x0000_0000_7FFF_FFFFu64,
+            _ => 0x7FFF_FFFF_FFFF_FFFFu64,
+        };
+        enc.mov_ri(Size::Qword, reg::RAX, mask as i64);
+        enc.movq_xmm_rm(reg::SCRATCH_XMMS[1], reg::RAX);
+        enc.mov_xmm_rr(size, dest, value);
+        enc.andps_rr(dest, reg::SCRATCH_XMMS[1]);
+        Ok(())
+    }
+
+    /// Expands the smaller or the larger of two floating-point
+    /// values.
+    ///
+    /// The instruction of the architecture returns its second operand
+    /// when one of the two is not a number.
+    fn expand_fmin(&self, enc: &mut Encoder<'_>, inst: &MInst, smallest: bool) -> Result<(), CodegenError> {
+        let dest = self.dest(inst)?;
+        self.expect_dest(inst, dest)?;
+        let size = self.float_width(inst)?;
+        let left = self.float_operand(enc, inst, 0)?;
+        let right = self.float_operand(enc, inst, 1)?;
         enc.mov_xmm_rr(size, dest, left);
-        enc.arith_xmm_rr(op, size, dest, right);
+        if smallest {
+            enc.min_xmm_rr(size, dest, right);
+        } else {
+            enc.max_xmm_rr(size, dest, right);
+        }
+        Ok(())
+    }
+
+    /// Expands the positive difference of two floating-point values.
+    ///
+    /// The difference of the values is clamped at zero, which is what
+    /// the difference of a value that is not the larger one comes to.
+    fn expand_fdim(&self, enc: &mut Encoder<'_>, inst: &MInst) -> Result<(), CodegenError> {
+        let dest = self.dest(inst)?;
+        self.expect_dest(inst, dest)?;
+        let size = self.float_width(inst)?;
+        let left = self.float_operand(enc, inst, 0)?;
+        let right = self.float_operand(enc, inst, 1)?;
+        enc.mov_xmm_rr(size, dest, left);
+        enc.arith_xmm_rr(Arith::Sub, size, dest, right);
+        // The zero the difference is clamped at.
+        enc.mov_ri(Size::Qword, reg::RAX, 0);
+        enc.movq_xmm_rm(reg::SCRATCH_XMMS[0], reg::RAX);
+        enc.max_xmm_rr(size, dest, reg::SCRATCH_XMMS[0]);
+        Ok(())
+    }
+
+    /// Expands the magnitude of one floating-point value with the
+    /// sign of another.
+    ///
+    /// The sign of the second value is copied into the result with a
+    /// mask that holds the sign bit alone.
+    fn expand_fcopysign(&self, enc: &mut Encoder<'_>, inst: &MInst) -> Result<(), CodegenError> {
+        let dest = self.dest(inst)?;
+        self.expect_dest(inst, dest)?;
+        let size = self.float_width(inst)?;
+        let magnitude = self.float_operand(enc, inst, 0)?;
+        let sign = self.float_operand(enc, inst, 1)?;
+        enc.mov_xmm_rr(size, dest, magnitude);
+        // The mask of the sign bit.
+        let mask = match size {
+            Size::Dword => 0x0000_0000_8000_0000u64,
+            _ => 0x8000_0000_0000_0000u64,
+        };
+        enc.mov_ri(Size::Qword, reg::RAX, mask as i64);
+        enc.movq_xmm_rm(reg::SCRATCH_XMMS[0], reg::RAX);
+        // The sign of the second value.
+        enc.mov_xmm_rr(size, reg::SCRATCH_XMMS[1], sign);
+        enc.andps_rr(reg::SCRATCH_XMMS[1], reg::SCRATCH_XMMS[0]);
+        // The magnitude without its sign, with the sign of the
+        // second value.
+        enc.andnps_rr(reg::SCRATCH_XMMS[0], dest);
+        enc.orps_rr(dest, reg::SCRATCH_XMMS[1]);
+        Ok(())
+    }
+
+    /// Expands the remainder of a division of two floating-point
+    /// values.
+    ///
+    /// The architecture has no remainder instruction in its scalar
+    /// floating-point unit, but the stack of the unit has one, and it
+    /// computes the remainder exactly.  The two values are therefore
+    /// pushed on the machine stack, the remainder is computed, and
+    /// the result is read back.
+    fn expand_frem(&self, enc: &mut Encoder<'_>, inst: &MInst) -> Result<(), CodegenError> {
+        let dest = self.dest(inst)?;
+        self.expect_dest(inst, dest)?;
+        let size = self.float_width(inst)?;
+        // The bits of the dividend, then the bits of the divisor.
+        let dividend = self.float_operand(enc, inst, 0)?;
+        self.push_double(enc, size, dividend);
+        let divisor = self.float_operand(enc, inst, 1)?;
+        self.push_double(enc, size, divisor);
+        // The divisor goes on the stack first, so that the dividend
+        // is the one the remainder is taken of.
+        enc.fld_m64(reg::RSP, 0);
+        enc.fld_m64(reg::RSP, 8);
+        enc.fprem();
+        enc.fstp_m64(reg::RSP, 0);
+        // The stack of the floating-point unit holds double-precision
+        // values, so the remainder is narrowed when the operation is a
+        // single-precision one.
+        enc.movq_xmm_mr(reg::SCRATCH_XMMS[0], reg::RSP, 0);
+        if size == Size::Dword {
+            enc.cvt_xmm2xmm(false, dest, reg::SCRATCH_XMMS[0]);
+        } else {
+            enc.mov_xmm_rr(Size::Qword, dest, reg::SCRATCH_XMMS[0]);
+        }
+        // The stack of the floating-point unit keeps the dividend.
+        enc.fstp_st0();
+        enc.add_ri(Size::Qword, reg::RSP, 16);
+        Ok(())
+    }
+
+    /// Pushes the bits of a floating-point value on the machine
+    /// stack.
+    ///
+    /// The stack of the floating-point unit holds double-precision
+    /// values, so a single-precision one is widened first.
+    fn push_double(&self, enc: &mut Encoder<'_>, size: Size, value: u16) {
+        if size == Size::Dword {
+            enc.cvt_xmm2xmm(true, reg::SCRATCH_XMMS[1], value);
+            enc.movq_rm_xmm(reg::RAX, reg::SCRATCH_XMMS[1]);
+        } else {
+            enc.movq_rm_xmm(reg::RAX, value);
+        }
+        enc.push(reg::RAX);
+    }
+
+    /// Expands a floating-point operation of two operands.
+    fn expand_float(&self, enc: &mut Encoder<'_>, inst: &MInst, op: Arith) -> Result<(), CodegenError> {
+        let dest = self.dest(inst)?;
+        self.expect_dest(inst, dest)?;
+        // A vector of floating-point values runs the packed form; a
+        // single value runs the scalar one.
+        let vector = match &inst.ty {
+            MType::Vec { elem, .. } => Some(float_size(elem).ok_or_else(|| {
+                target_error(
+                    "expanding the machine operation",
+                    "the lanes of the vector are not floating-point values",
+                )
+            })?),
+            _ => None,
+        };
+        let size = match vector {
+            Some(size) => size,
+            None => float_size(&inst.ty).ok_or_else(|| {
+                target_error(
+                    "expanding the machine operation",
+                    "the operation has no floating-point type",
+                )
+            })?,
+        };
+        let left = self.float_operand(enc, inst, 0)?;
+        self.expect_float(left, 0)?;
+        let right = self.float_operand(enc, inst, 1)?;
+        self.expect_float(right, 1)?;
+        match vector {
+            Some(size) => {
+                enc.mov_xmm_rr(Size::Xmm, dest, left);
+                enc.packed_xmm_rr(op, size, dest, right);
+            }
+            None => {
+                enc.mov_xmm_rr(size, dest, left);
+                enc.arith_xmm_rr(op, size, dest, right);
+            }
+        }
         Ok(())
     }
 
@@ -1252,18 +1712,18 @@ impl<'a> Expander<'a> {
     fn expand_icmp(&self, enc: &mut Encoder<'_>, inst: &MInst, pred: IPred) -> Result<(), CodegenError> {
         let dest = self.dest(inst)?;
         self.expect_dest(inst, dest)?;
-        let left = self.operand_reg(inst, 0)?;
+        let left = self.operand_reg(enc, inst, 0, &[])?;
         self.expect_int(left, 0)?;
-        // The operands are compared at the width they were produced
-        // at: the type of the first operand names it.
-        let size = match self.operand_type(inst, 0) {
+        // The operands are compared at the width the instruction
+        // names, which is the width of the values themselves.
+        let size = match Self::operand_type(inst) {
             Some(MType::I64) | Some(MType::Ptr { .. }) => Size::Qword,
             _ => Size::Dword,
         };
         match inst.args.get(1) {
             Some(Operand::Immediate(value)) => enc.cmp_ri(size, left, value),
             Some(_) => {
-                let right = self.operand_reg(inst, 1)?;
+                let right = self.operand_reg(enc, inst, 1, &[])?;
                 self.expect_int(right, 1)?;
                 enc.cmp_rr(size, left, right);
             }
@@ -1288,11 +1748,16 @@ impl<'a> Expander<'a> {
     fn expand_fcmp(&self, enc: &mut Encoder<'_>, inst: &MInst, pred: FPred) -> Result<(), CodegenError> {
         let dest = self.dest(inst)?;
         self.expect_dest(inst, dest)?;
-        let left = self.operand_reg(inst, 0)?;
+        let left = self.float_operand(enc, inst, 0)?;
         self.expect_float(left, 0)?;
-        let right = self.operand_reg(inst, 1)?;
+        let right = self.float_operand(enc, inst, 1)?;
         self.expect_float(right, 1)?;
-        enc.ucomis_rr(left, right);
+        // The comparison runs at the precision the instruction names.
+        let size = match Self::operand_type(inst) {
+            Some(MType::F64) => Size::Qword,
+            _ => Size::Dword,
+        };
+        enc.ucomis_rr(size, left, right);
         match pred {
             FPred::Oeq => {
                 enc.setcc(Cc::E, reg::RDX);
@@ -1344,7 +1809,7 @@ impl<'a> Expander<'a> {
     fn expand_select(&self, enc: &mut Encoder<'_>, inst: &MInst) -> Result<(), CodegenError> {
         let dest = self.dest(inst)?;
         self.expect_dest(inst, dest)?;
-        let condition = self.operand_reg(inst, 0)?;
+        let condition = self.operand_reg(enc, inst, 0, &[])?;
         self.expect_int(condition, 0)?;
         match Self::class_of(dest) {
             Class::Int => {
@@ -1354,7 +1819,7 @@ impl<'a> Expander<'a> {
                 match inst.args.get(2) {
                     Some(Operand::Immediate(value)) => enc.mov_ri(size, dest, value),
                     Some(_) => {
-                        let when_false = self.operand_reg(inst, 2)?;
+                        let when_false = self.operand_reg(enc, inst, 2, &[])?;
                         self.expect_int(when_false, 2)?;
                         enc.mov_rr(size, dest, when_false);
                     }
@@ -1374,7 +1839,7 @@ impl<'a> Expander<'a> {
                         scratch
                     }
                     Some(_) => {
-                        let when_true = self.operand_reg(inst, 1)?;
+                        let when_true = self.operand_reg(enc, inst, 1, &[])?;
                         self.expect_int(when_true, 1)?;
                         when_true
                     }
@@ -1389,8 +1854,8 @@ impl<'a> Expander<'a> {
                 enc.cmovcc(Cc::Ne, size, dest, source);
             }
             Class::Float => {
-                let when_true = self.operand_reg(inst, 1)?;
-                let when_false = self.operand_reg(inst, 2)?;
+                let when_true = self.operand_reg(enc, inst, 1, &[])?;
+                let when_false = self.operand_reg(enc, inst, 2, &[])?;
                 self.expect_float(when_true, 1)?;
                 self.expect_float(when_false, 2)?;
                 // The mask is all ones when the condition holds and
@@ -1415,10 +1880,10 @@ impl<'a> Expander<'a> {
 
     /// The width of the integer an operand holds.
     ///
-    /// The width follows the type of the register that holds the
-    /// value, which is the type of the operation that wrote it.
-    fn integer_width(&self, inst: &MInst, index: usize) -> Size {
-        match self.operand_type(inst, index) {
+    /// The width follows the type of the values the instruction
+    /// reads, which the instruction names.
+    fn integer_width(&self, inst: &MInst) -> Size {
+        match Self::operand_type(inst) {
             Some(MType::I8) => Size::Byte,
             Some(MType::I16) => Size::Word,
             Some(MType::I32) => Size::Dword,
@@ -1431,10 +1896,10 @@ impl<'a> Expander<'a> {
     fn expand_zext(&self, enc: &mut Encoder<'_>, inst: &MInst) -> Result<(), CodegenError> {
         let dest = self.dest(inst)?;
         self.expect_dest(inst, dest)?;
-        let value = self.operand_reg(inst, 0)?;
+        let value = self.operand_reg(enc, inst, 0, &[])?;
         self.expect_int(value, 0)?;
         let dst_size = int_size(&inst.ty);
-        let src_size = self.integer_width(inst, 0);
+        let src_size = self.integer_width(inst);
         match (dst_size, src_size) {
             (Size::Qword, Size::Byte) => enc.movzx_rr(Size::Byte, Size::Qword, dest, value),
             (Size::Qword, Size::Word) => enc.movzx_rr(Size::Word, Size::Qword, dest, value),
@@ -1452,16 +1917,18 @@ impl<'a> Expander<'a> {
     fn expand_sext(&self, enc: &mut Encoder<'_>, inst: &MInst) -> Result<(), CodegenError> {
         let dest = self.dest(inst)?;
         self.expect_dest(inst, dest)?;
-        let value = self.operand_reg(inst, 0)?;
+        let value = self.operand_reg(enc, inst, 0, &[])?;
         self.expect_int(value, 0)?;
         let dst_size = int_size(&inst.ty);
-        let src_size = self.integer_width(inst, 0);
+        let src_size = self.integer_width(inst);
         match (dst_size, src_size) {
             (Size::Qword, Size::Byte) => enc.movsx_rr(Size::Byte, Size::Qword, dest, value),
             (Size::Qword, Size::Word) => enc.movsx_rr(Size::Word, Size::Qword, dest, value),
+            // The thirty-two-bit form of the move keeps the sign of
+            // the value in the whole register.
+            (Size::Qword, Size::Dword) => enc.movsxd_rr(dest, value),
             (Size::Dword, Size::Byte) => enc.movsx_rr(Size::Byte, Size::Dword, dest, value),
             (Size::Dword, Size::Word) => enc.movsx_rr(Size::Word, Size::Dword, dest, value),
-            (Size::Qword, _) => enc.movsxd_rr(dest, value),
             _ => enc.mov_rr(Size::Dword, dest, value),
         }
         Ok(())
@@ -1471,7 +1938,7 @@ impl<'a> Expander<'a> {
     fn expand_trunc(&self, enc: &mut Encoder<'_>, inst: &MInst) -> Result<(), CodegenError> {
         let dest = self.dest(inst)?;
         self.expect_dest(inst, dest)?;
-        let value = self.operand_reg(inst, 0)?;
+        let value = self.operand_reg(enc, inst, 0, &[])?;
         self.expect_int(value, 0)?;
         match inst.ty {
             MType::I1 => enc.and_ri(Size::Dword, dest, 1),
@@ -1484,18 +1951,49 @@ impl<'a> Expander<'a> {
 
     /// Expands the conversion of a floating-point value into an
     /// unsigned integer.
+    ///
+    /// The baseline converts to a signed integer only, so a
+    /// sixty-four-bit unsigned value is converted in two steps: the
+    /// difference of the value and two to the sixty-third is a signed
+    /// integer, and the high bit is added back to it.
     fn expand_fp_to_ui(&self, enc: &mut Encoder<'_>, inst: &MInst) -> Result<(), CodegenError> {
         let dest = self.dest(inst)?;
         self.expect_dest(inst, dest)?;
-        let value = self.operand_reg(inst, 0)?;
-        self.expect_float(value, 0)?;
-        let to_double = self.source_is_double(inst);
+        let value = self.float_operand(enc, inst, 0)?;
+        let to_double = Self::source_is_double(inst);
         match inst.ty {
             MType::I64 => {
-                return Err(unsupported_error(
-                    "the conversion of a floating-point value into an unsigned integer",
-                    "the baseline instruction set converts only into a signed integer",
-                ));
+                // The bits of two to the sixty-third.
+                const HIGH: i64 = 0x43E0_0000_0000_0000;
+                // The value is widened to double precision first: the
+                // difference of the value and two to the sixty-third
+                // is then exact.
+                let wide = reg::SCRATCH_XMMS[1];
+                let value = self.float_operand(enc, inst, 0)?;
+                if to_double {
+                    enc.mov_xmm_rr(Size::Qword, wide, value);
+                } else {
+                    enc.cvt_xmm2xmm(true, wide, value);
+                }
+                enc.mov_ri(Size::Qword, reg::RAX, HIGH);
+                enc.movq_xmm_rm(reg::SCRATCH_XMMS[0], reg::RAX);
+                // The value below two to the sixty-third fits in a
+                // signed integer; the one above it does not.
+                enc.cvtts_xmm2si(true, Size::Qword, reg::RAX, wide);
+                // The comparison tells the two apart, and it comes
+                // before the instructions that change the flags.
+                enc.ucomis_rr(Size::Qword, wide, reg::SCRATCH_XMMS[0]);
+                // The high bit is taken away, and the value that is
+                // left fits in a signed integer.
+                enc.arith_xmm_rr(Arith::Sub, Size::Qword, wide, reg::SCRATCH_XMMS[0]);
+                enc.cvtts_xmm2si(true, Size::Qword, reg::RCX, wide);
+                // The high bit is put back: the value that is left
+                // holds no bit of its own above the sixty-third, so
+                // setting the bit is the same as adding it.
+                enc.mov_ri(Size::Qword, reg::RDX, i64::MIN);
+                enc.xor_rr(Size::Qword, reg::RCX, reg::RDX);
+                enc.cmovcc(Cc::Ae, Size::Qword, reg::RAX, reg::RCX);
+                enc.mov_rr(Size::Qword, dest, reg::RAX);
             }
             MType::I32 => {
                 // The conversion is exact for every value a
@@ -1506,7 +2004,7 @@ impl<'a> Expander<'a> {
             _ => {
                 return Err(unsupported_error(
                     "the conversion of a floating-point value into an unsigned integer",
-                    "the target converts into a thirty-two-bit unsigned integer",
+                    "the target converts into a thirty-two-bit or a sixty-four-bit integer",
                 ));
             }
         }
@@ -1515,13 +2013,8 @@ impl<'a> Expander<'a> {
 
     /// Whether the value an instruction reads is a double-precision
     /// one.
-    fn source_is_double(&self, inst: &MInst) -> bool {
-        match self.operand_type(inst, 0) {
-            Some(MType::F64) => true,
-            Some(MType::Vec { .. }) => false,
-            Some(MType::F32) => false,
-            _ => false,
-        }
+    fn source_is_double(inst: &MInst) -> bool {
+        matches!(Self::operand_type(inst), Some(MType::F64))
     }
 
     /// Expands the conversion of a floating-point value into a signed
@@ -1529,9 +2022,8 @@ impl<'a> Expander<'a> {
     fn expand_fp_to_si(&self, enc: &mut Encoder<'_>, inst: &MInst) -> Result<(), CodegenError> {
         let dest = self.dest(inst)?;
         self.expect_dest(inst, dest)?;
-        let value = self.operand_reg(inst, 0)?;
-        self.expect_float(value, 0)?;
-        let to_double = self.source_is_double(inst);
+        let value = self.float_operand(enc, inst, 0)?;
+        let to_double = Self::source_is_double(inst);
         match inst.ty {
             MType::I64 => {
                 enc.cvtts_xmm2si(to_double, Size::Qword, dest, value);
@@ -1551,24 +2043,50 @@ impl<'a> Expander<'a> {
 
     /// Expands the conversion of an unsigned integer into a
     /// floating-point value.
+    ///
+    /// The baseline converts a signed integer only, so a
+    /// sixty-four-bit unsigned value is halved first: the quotient is
+    /// exact, and the odd bit is added back afterwards.
     fn expand_ui_to_fp(&self, enc: &mut Encoder<'_>, inst: &MInst) -> Result<(), CodegenError> {
         let dest = self.dest(inst)?;
         self.expect_dest(inst, dest)?;
-        let value = self.operand_reg(inst, 0)?;
-        self.expect_int(value, 0)?;
+        let value = self.int_operand(enc, inst, 0)?;
         let to_double = float_size(&inst.ty).unwrap_or(Size::Dword) == Size::Qword;
         // The width of the source decides the conversion: a
         // thirty-two-bit unsigned integer is converted exactly, a
         // sixty-four-bit one is not.
-        let src_size = match self.operand_type(inst, 0) {
+        let src_size = match Self::operand_type(inst) {
             Some(MType::I64) | Some(MType::Ptr { .. }) => Size::Qword,
             _ => Size::Dword,
         };
         if src_size == Size::Qword {
-            return Err(unsupported_error(
-                "the conversion of an unsigned integer into a floating-point value",
-                "the baseline instruction set converts only a signed integer",
-            ));
+            // The quotient of the value and two is exact, and the bit
+            // that was shifted out is added back as a floating-point
+            // value.
+            enc.mov_rr(Size::Qword, reg::RAX, value);
+            enc.shift_ri(5, Size::Qword, reg::RAX, 1);
+            enc.mov_rr(Size::Qword, reg::RCX, value);
+            enc.and_ri(Size::Qword, reg::RCX, 1);
+            enc.cvtsi2_xmm(true, Size::Qword, reg::SCRATCH_XMMS[0], reg::RAX);
+            enc.arith_xmm_rr(
+                Arith::Add,
+                Size::Qword,
+                reg::SCRATCH_XMMS[0],
+                reg::SCRATCH_XMMS[0],
+            );
+            enc.cvtsi2_xmm(true, Size::Dword, reg::SCRATCH_XMMS[1], reg::RCX);
+            enc.arith_xmm_rr(
+                Arith::Add,
+                Size::Qword,
+                reg::SCRATCH_XMMS[0],
+                reg::SCRATCH_XMMS[1],
+            );
+            if to_double {
+                enc.mov_xmm_rr(Size::Qword, dest, reg::SCRATCH_XMMS[0]);
+            } else {
+                enc.cvt_xmm2xmm(false, dest, reg::SCRATCH_XMMS[0]);
+            }
+            return Ok(());
         }
         // The thirty-two-bit form of the move clears the upper half
         // of the register, so the value is exact.
@@ -1582,11 +2100,10 @@ impl<'a> Expander<'a> {
     fn expand_si_to_fp(&self, enc: &mut Encoder<'_>, inst: &MInst) -> Result<(), CodegenError> {
         let dest = self.dest(inst)?;
         self.expect_dest(inst, dest)?;
-        let value = self.operand_reg(inst, 0)?;
-        self.expect_int(value, 0)?;
+        let value = self.int_operand(enc, inst, 0)?;
         let size = float_size(&inst.ty).unwrap_or(Size::Dword);
-        // The source is read at the width it was produced at.
-        let src_size = match self.operand_type(inst, 0) {
+        // The source is read at the width the instruction names.
+        let src_size = match Self::operand_type(inst) {
             Some(MType::I64) | Some(MType::Ptr { .. }) => Size::Qword,
             _ => Size::Dword,
         };
@@ -1604,7 +2121,7 @@ impl<'a> Expander<'a> {
     ) -> Result<(), CodegenError> {
         let dest = self.dest(inst)?;
         self.expect_dest(inst, dest)?;
-        let value = self.operand_reg(inst, 0)?;
+        let value = self.operand_reg(enc, inst, 0, &[])?;
         self.expect_float(value, 0)?;
         enc.cvt_xmm2xmm(to_double, dest, value);
         Ok(())
@@ -1614,7 +2131,7 @@ impl<'a> Expander<'a> {
     fn expand_bitcast(&self, enc: &mut Encoder<'_>, inst: &MInst) -> Result<(), CodegenError> {
         let dest = self.dest(inst)?;
         self.expect_dest(inst, dest)?;
-        let value = self.operand_reg(inst, 0)?;
+        let value = self.operand_reg(enc, inst, 0, &[])?;
         match (Self::class_of(dest), Self::class_of(value)) {
             (Class::Int, Class::Int) => enc.mov_rr(int_size(&inst.ty), dest, value),
             (Class::Float, Class::Float) => {
@@ -1663,8 +2180,36 @@ impl<'a> Expander<'a> {
             })?;
         let mut integer_args = 0usize;
         let mut float_args = 0usize;
+        // The arguments that are already in a register are read
+        // before anything is moved, so a scratch register must not be
+        // one of them.
+        let mut held: Vec<u16> = Vec::with_capacity(inst.args.len());
+        for operand in inst.args.as_slice() {
+            if let Operand::Physical(reg) = operand {
+                held.push(reg.number());
+            }
+        }
+        let parameters = self.parameter_types(target);
         for index in 0..inst.args.len() {
-            let value = self.operand_reg(inst, index)?;
+            let value = match inst.args.get(index) {
+                Some(Operand::Immediate(value)) => {
+                    // An immediate is an integer argument unless the
+                    // callee takes a floating-point value there.
+                    let floating = parameters
+                        .get(index)
+                        .is_some_and(|ty| ty.is_floating());
+                    if floating {
+                        return Err(target_error(
+                            "expanding the machine operation",
+                            "a floating-point argument must be a value, not an immediate",
+                        ));
+                    }
+                    let scratch = self.scratch_register(inst, &held)?;
+                    enc.mov_ri(Size::Qword, scratch, value);
+                    scratch
+                }
+                _ => self.operand_reg(enc, inst, index, &held)?,
+            };
             match Self::class_of(value) {
                 Class::Int => {
                     if integer_args >= reg::ARG_REGS.len() {
@@ -1731,6 +2276,20 @@ enum Binary {
     Or,
     /// Bitwise exclusive or.
     Xor,
+}
+
+impl Binary {
+    /// The name of the operation, for the diagnostics.
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Add => "addition",
+            Self::Sub => "subtraction",
+            Self::Mul => "multiplication",
+            Self::And => "bitwise and",
+            Self::Or => "bitwise or",
+            Self::Xor => "bitwise exclusive or",
+        }
+    }
 }
 
 /// The operations of one operand.
