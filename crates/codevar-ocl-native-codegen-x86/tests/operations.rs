@@ -98,9 +98,10 @@ fn kernel_module() -> (MirModule, codevar_ocl_native_codegen::mir::SymId) {
         MOp::SRem,
         Operands::two(reg(R10), imm(3)),
     ));
-    entry.insts.push(def(
+    entry.insts.push(def_with_operands(
         condition,
         MType::I1,
+        MType::I32,
         MOp::ICmp { pred: IPred::Slt },
         Operands::two(reg(R10), imm(10)),
     ));

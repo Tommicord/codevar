@@ -123,30 +123,34 @@ fn kernel_module() -> (MirModule, codevar_ocl_native_codegen::mir::SymId) {
         },
         Operands::two(reg(XMM1), reg(XMM1)),
     ));
-    entry.insts.push(def(
+    entry.insts.push(def_with_operands(
         first,
         MType::I32,
+        vector_of_four(),
         MOp::VecExtract { index: 0 },
         Operands::one(reg(XMM2)),
     ));
-    entry.insts.push(def(
+    entry.insts.push(def_with_operands(
         second,
         MType::I32,
+        vector_of_four(),
         MOp::VecExtract { index: 3 },
         Operands::one(reg(XMM2)),
     ));
     entry
         .insts
         .push(def(wide, vector_of_two(), MOp::VecSplat, Operands::one(reg(R10))));
-    entry.insts.push(def(
+    entry.insts.push(def_with_operands(
         third,
         MType::I64,
+        vector_of_two(),
         MOp::VecExtract { index: 1 },
         Operands::one(reg(XMM3)),
     ));
-    entry.insts.push(def(
+    entry.insts.push(def_with_operands(
         fourth,
         MType::I64,
+        vector_of_two(),
         MOp::VecExtract { index: 0 },
         Operands::one(reg(XMM3)),
     ));

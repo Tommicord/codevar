@@ -64,6 +64,10 @@ pub const XMM1: u16 = 17;
 pub const XMM3: u16 = 19;
 /// The number of the third SSE register.
 pub const XMM2: u16 = 18;
+/// The number of the fifth SSE register.
+pub const XMM4: u16 = 20;
+/// The number of the sixth SSE register.
+pub const XMM5: u16 = 21;
 
 /// The register a value lives in, and the type of the value.
 ///
@@ -91,13 +95,29 @@ pub fn imm(value: i64) -> Operand {
 }
 
 /// Builds an instruction that writes a register.
+///
+/// The type of the values the instruction reads is the type of the
+/// value it writes, which is what the selection stage records for
+/// most of the operations.
 pub fn def(dest: u16, ty: MType, op: MOp, args: Operands) -> MInst {
-    MInst::def_physical(PReg::new(dest), ty, op, args)
+    MInst::def_physical(PReg::new(dest), ty.clone(), op, args).with_operand_type(ty)
+}
+
+/// Builds an instruction that writes a register and names the type of
+/// the values it reads.
+pub fn def_with_operands(dest: u16, ty: MType, operand_ty: MType, op: MOp, args: Operands) -> MInst {
+    MInst::def_physical(PReg::new(dest), ty, op, args).with_operand_type(operand_ty)
 }
 
 /// Builds an instruction that writes no register.
 pub fn none(ty: MType, op: MOp, args: Operands) -> MInst {
-    MInst::none(ty, op, args)
+    MInst::none(ty.clone(), op, args).with_operand_type(ty)
+}
+
+/// Builds an instruction that writes no register and names the type
+/// of the values it reads.
+pub fn none_with_operands(ty: MType, operand_ty: MType, op: MOp, args: Operands) -> MInst {
+    MInst::none(ty, op, args).with_operand_type(operand_ty)
 }
 
 /// Creates a module with one function and returns it with the symbol

@@ -88,9 +88,10 @@ fn kernel_module() -> (MirModule, codevar_ocl_native_codegen::mir::SymId) {
         MOp::SpillStore { offset: 8, size: 4 },
         Operands::one(reg(R10)),
     ));
-    entry.insts.push(def(
+    entry.insts.push(def_with_operands(
         condition,
         MType::I1,
+        MType::I32,
         MOp::ICmp { pred: IPred::Slt },
         Operands::two(reg(R10), imm(10)),
     ));

@@ -192,8 +192,8 @@ fn a_call_to_a_symbol_that_is_not_a_function_is_refused() {
 }
 
 #[test]
-fn a_floating_point_remainder_is_refused() {
-    let mut function = MirFunction::new("broken");
+fn a_floating_point_remainder_is_compiled() {
+    let mut function = MirFunction::new("remainder");
     let mut entry = block("entry");
     let left = vreg(&mut function, XMM0, MType::F32);
     let right = vreg(&mut function, XMM1, MType::F32);
@@ -212,11 +212,8 @@ fn a_floating_point_remainder_is_refused() {
     ));
     function.push_block(entry);
     let (module, entry) = module_with(function);
-    let error = target()
+    let image = target()
         .lower_module(&module, entry)
-        .expect_err("the remainder is refused");
-    assert!(matches!(
-        error,
-        codevar_ocl_native_codegen::error::CodegenError::Unsupported { .. }
-    ));
+        .expect("the remainder compiles");
+    assert!(!image.bytes().is_empty());
 }
