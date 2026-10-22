@@ -37,6 +37,7 @@ use alloc::vec::Vec;
 use crate::geometry::{Alignment, Constraints, Offset, Rect, Size};
 use crate::widget::{MeasureScope, PlaceScope, Widget};
 
+pub use crate::window::{ResizeEdge, ResizeHandle, TitleBar, WindowButton, WindowFrame};
 pub use text::Text;
 
 /// Lays its children out one below the other.

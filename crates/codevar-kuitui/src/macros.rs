@@ -234,6 +234,21 @@ mod tests {
     }
 
     #[test]
+    fn the_macro_builds_a_window_frame() {
+        let tree = crate::kuitui! {
+            WindowFrame {
+                TitleBar("Codevar", buttons: vec![crate::window::WindowButton::Close])
+                Column {
+                    Text("content")
+                }
+            }
+        };
+        assert_eq!(tree.children().len(), 2);
+        assert_eq!(tree.children()[0].children().len(), 0);
+        assert_eq!(tree.children()[1].children().len(), 1);
+    }
+
+    #[test]
     fn the_macro_places_the_children_in_order() {
         let theme = Theme::light();
         let mut tree = crate::kuitui! {
