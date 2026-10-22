@@ -73,12 +73,13 @@ pub mod api;
 mod device;
 mod devices;
 mod error;
+pub mod exec;
 mod objects;
 mod platform;
 mod registry;
 mod spirv;
-pub mod exec;
 pub mod sys;
+pub mod trampoline;
 
 pub use device::{Device, DeviceInfo, ServiceMode};
 pub use devices::{
@@ -90,3 +91,4 @@ pub use exec::{KernelFn, MAX_ARGS, MAX_PARAMS, SpirvBinding, WorkItem};
 pub use objects::{Context, Event, Kernel, Mem, Program, Queue};
 pub use platform::{Platform, PlatformConfig, init, platform};
 pub use registry::{ArgKind, KernelDef, KernelModule, Registry};
+pub use trampoline::{Trampoline, TrampolineError};
