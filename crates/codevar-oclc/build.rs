@@ -15,13 +15,13 @@
 
 //! Kernel binding generation for `codevar-oclc`.
 //!
-//! Every `*.cl` file under the crate's `kernels/` directory (override
+//! Every `*.rs` file under the crate's `kernels/` directory (override
 //! with the `CV_KERNEL_DIR` environment variable) is compiled to
 //! SPIR-V with the same pipeline the `codevar-oclc` driver runs for
 //! `--emit spirv` (analyze → parse → lower → assemble), and the
 //! result is embedded in the executable the way shaders are. The
 //! script writes `OUT_DIR/<artifact>.spv` plus a copy of the source
-//! as `OUT_DIR/<artifact>.cl`, then generates `OUT_DIR/bindings.rs`.
+//! as `OUT_DIR/<artifact>.rs`, then generates `OUT_DIR/bindings.rs`.
 //! `src/lib.rs` includes that file under the `kernels` module.
 //!
 //! # Directory layout → module tree
@@ -32,11 +32,11 @@
 //!
 //! ```text
 //! kernels/
-//! ├── truetype/raster.cl   →  kernels::truetype::RASTER_SPIRV
+//! ├── truetype/raster.rs   →  kernels::truetype::RASTER_SPIRV
 //! ├── wredit/
-//! │   ├── block.cl         →  kernels::wredit::BLOCK_SPIRV
-//! │   └── gap.cl           →  kernels::wredit::GAP_SPIRV
-//! └── util.cl              →  kernels::UTIL_SPIRV
+//! │   ├── block.rs         →  kernels::wredit::BLOCK_SPIRV
+//! │   └── gap.rs           →  kernels::wredit::GAP_SPIRV
+//! └── util.rs              →  kernels::UTIL_SPIRV
 //! ```
 //!
 //! Each file contributes three statics to its module — `<STEM>_SPIRV`,
@@ -46,7 +46,7 @@
 //!
 //! The `<artifact>` staged in `OUT_DIR` is the module-qualified
 //! relative path with directory separators folded to `_`
-//! (`wredit/block.cl` → `wredit_block.cl`), so files with equal
+//! (`wredit/block.rs` → `wredit_block.rs`), so files with equal
 //! stems in different directories never overwrite each other.
 //!
 //! Directory names are turned into module identifiers by keeping
@@ -95,7 +95,7 @@ use quote::quote;
 const KERNEL_DIR_ENV: &str = "CV_KERNEL_DIR";
 
 /// File extension of OpenCL dialect sources (matched case-insensitively).
-const KERNEL_EXTENSION: &str = "cl";
+const KERNEL_EXTENSION: &str = "rs";
 
 /// Prefix fallback for a file stem that sanitizes to nothing.
 const FALLBACK_PREFIX: &str = "KERNEL";
@@ -169,9 +169,9 @@ const RUST_KEYWORDS: &[&str] = &[
 /// A discovered kernel source file, validated before compilation.
 #[derive(Debug, Clone)]
 struct KernelSource {
-    /// Path to the `.cl` file as found on disk.
+    /// Path to the `.rs` file as found on disk.
     path: PathBuf,
-    /// UTF-8 file name, e.g. `block.cl`.
+    /// UTF-8 file name, e.g. `block.rs`.
     file_name: String,
     /// File stem, source of the static prefix, e.g. `block`.
     stem: String,
@@ -442,7 +442,7 @@ fn required_env(name: &'static str) -> Result<PathBuf, BuildFailure> {
 /// Collects the kernel sources under `kernel_dir`, sorted by path.
 ///
 /// The tree is walked recursively: every directory becomes a `kernels`
-/// submodule and every `.cl` file a set of statics inside it. A
+/// submodule and every `.rs` file a set of statics inside it. A
 /// directory that does not exist is treated as an empty one: the build
 /// must not fail just because nobody has added kernels yet.
 fn discover(kernel_dir: &Path) -> Result<Vec<KernelSource>, BuildFailure> {
@@ -518,7 +518,7 @@ fn walk(
     Ok(())
 }
 
-/// True when `path` has a `.cl` extension (case-insensitive).
+/// True when `path` has a `.rs` extension (case-insensitive).
 fn is_opencl_source(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
@@ -597,7 +597,7 @@ fn derive_artifact_stem(module_path: &[String], stem: &str) -> String {
 }
 
 /// Runs the analysis → parse → lower → assemble pipeline for one source and
-/// stages its `.cl` and `.spv` artifacts in `out_dir`.
+/// stages its `.rs` and `.spv` artifacts in `out_dir`.
 ///
 /// Mirrors the `--emit spirv` path of the `codevar-oclc` driver: analysis
 /// diagnostics are rendered to stderr before the failure is returned, and
@@ -727,10 +727,8 @@ fn compile_native(
         let static_suffix = derive_static_prefix(name);
         let artifact_stem = format!("{}_{}", source.artifact_stem, name.to_lowercase());
         let path = out_dir.join(artifact_file_name(&artifact_stem, "bin"));
-        std::fs::write(&path, code.bytes()).map_err(|error| BuildFailure::WriteFile {
-            path,
-            source: error,
-        })?;
+        std::fs::write(&path, code.bytes())
+            .map_err(|error| BuildFailure::WriteFile { path, source: error })?;
         compiled.push(NativeKernel {
             name: name.clone(),
             static_suffix,
@@ -760,7 +758,7 @@ fn native_target_matches_host() -> bool {
 }
 
 /// The artifact file name staged in `OUT_DIR` for `stem` (`wredit_block`
-/// → `wredit_block.cl`).
+/// → `wredit_block.rs`).
 fn artifact_file_name(stem: &str, extension: &str) -> String {
     format!("{stem}.{extension}")
 }
@@ -837,11 +835,7 @@ impl ModuleNode {
 fn generated_items(kernels: &[CompiledKernel]) -> Vec<TokenStream> {
     let mut root = ModuleNode::default();
     for kernel in kernels {
-        let mut statics = vec![
-            spirv_item(kernel),
-            source_item(kernel),
-            entry_points_item(kernel),
-        ];
+        let mut statics = vec![spirv_item(kernel), source_item(kernel), entry_points_item(kernel)];
         for native in &kernel.native {
             statics.push(native_item(kernel, native));
         }

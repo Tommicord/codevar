@@ -67,7 +67,7 @@ pub use driver::{Driver, Exit, run};
 /// [`kernels::KERNEL_MODULES`] registry entry plus three statics per
 /// file — `<STEM>_SPIRV`, `<STEM>_SOURCE`, and `<STEM>_ENTRY_POINTS` —
 /// exactly like shader embedding. The directory tree below `kernels/`
-/// becomes this module tree, so `kernels/wredit/block.cl` surfaces as
+/// becomes this module tree, so `kernels/wredit/block.rs` surfaces as
 /// [`kernels::wredit::BLOCK_SPIRV`] and a file directly in `kernels/`
 /// as a static on this module. A missing or empty kernel directory
 /// yields an empty registry instead of a build failure.
@@ -86,7 +86,7 @@ pub mod kernels {
     /// One OpenCL kernel source file compiled and embedded at build time.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct KernelModule {
-        /// Module-qualified source path (`wredit/block.cl` → `wredit/block`).
+        /// Module-qualified source path (`wredit/block.rs` → `wredit/block`).
         pub name: &'static str,
         /// Original OpenCL dialect source text.
         pub source: &'static str,
