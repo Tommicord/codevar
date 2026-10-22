@@ -140,6 +140,9 @@ impl<'a> Driver<'a> {
         if emit == "spirv" {
             return run_spirv(&source, display_path, matches.option("output"));
         }
+        if emit == "native" {
+            return run_native(&source, display_path, entry, matches.option("output"));
+        }
         let text = if emit == "analysis" {
             // The semantic analyzer owns its own Unicode, lexical, and
             // syntax gates, so it runs instead of (not after) the token
@@ -341,6 +344,145 @@ fn run_spirv(source: &str, display_path: &str, output: Option<&str>) -> Exit {
             Err(error) => failure(&format!("cannot write '{path}': {error}")),
         },
         None => write_stdout_bytes(&bytes),
+    }
+}
+
+/// Runs the analysis → parse → lower → machine-code pipeline for
+/// `--emit native`.
+///
+/// The source is analyzed first — the same declaration, body, and
+/// whole-file checks the `--emit spirv` stage runs — so a broken
+/// kernel is reported with a source position instead of a back-end
+/// error.  The selected entry point is then compiled to machine code
+/// and the raw bytes are written to the output (stdout when there is
+/// none).
+///
+/// The machine code is position-independent: it holds no absolute
+/// address, so it can be copied into executable memory and entered at
+/// its entry offset.  The entry point follows the kernel calling
+/// convention of `codevar-ocl-abi`: it takes the per-work-item state
+/// and reads the kernel's arguments from the block that state points
+/// at.
+fn run_native(source: &str, display_path: &str, requested_entry: Option<&str>, output: Option<&str>) -> Exit {
+    let kernels = match analyze_kernels(source, display_path) {
+        Ok(kernels) => kernels,
+        Err(status) => return status,
+    };
+    let entry = match choose_entry(requested_entry, &kernels) {
+        Ok(entry) => entry,
+        Err(message) => return failure(&message),
+    };
+    let code = match codevar_ocl_tc::compile_source(source, entry) {
+        Ok(code) => code,
+        Err(error) => return failure(&format!("native compilation failed: {error}")),
+    };
+    match output {
+        Some(path) => match fs::write_file_bytes(path, code.bytes()) {
+            Ok(()) => Exit::Success,
+            Err(error) => failure(&format!("cannot write '{path}': {error}")),
+        },
+        None => write_stdout_bytes(code.bytes()),
+    }
+}
+
+/// Analyzes `source` and returns the names of the kernels it declares.
+///
+/// The file is walked one top-level item at a time, exactly like the
+/// SPIR-V stage: the declarations are collected first, then every
+/// function body is checked against them, and the whole-file checks
+/// close the run.  Every diagnostic is rendered the way the other
+/// stages render it, and an error anywhere in the file stops the
+/// stage before any code is generated.
+fn analyze_kernels(source: &str, display_path: &str) -> Result<Vec<String>, Exit> {
+    let mut collector = DeclCollector::new();
+    let mut items = ItemStream::new(source);
+    let mut parse_failed = false;
+    while let Some(outcome) = items.next_item() {
+        for error in &outcome.errors {
+            report_diagnostic(display_path, source, error.span.offset, &error.message);
+            parse_failed = true;
+        }
+        collector.feed(source, &outcome.item);
+    }
+    if parse_failed {
+        return Err(Exit::Failure);
+    }
+    let (mut env, diagnostics) = collector.finish();
+    codevar_ocl_sar::emit_stderr(
+        &diagnostics,
+        display_path,
+        source,
+        codevar_ocl_sar::ColorChoice::Auto,
+    );
+    if diagnostics
+        .iter()
+        .any(codevar_ocl_sar::Diagnostic::is_error)
+    {
+        return Err(Exit::Failure);
+    }
+    let mut items = ItemStream::new(source);
+    while let Some(outcome) = items.next_item() {
+        let (diagnostics, _tables) = analyze_body(&mut env, source, &outcome.item);
+        codevar_ocl_sar::emit_stderr(
+            &diagnostics,
+            display_path,
+            source,
+            codevar_ocl_sar::ColorChoice::Auto,
+        );
+        if diagnostics
+            .iter()
+            .any(codevar_ocl_sar::Diagnostic::is_error)
+        {
+            return Err(Exit::Failure);
+        }
+    }
+    let checks = file_checks(&env);
+    codevar_ocl_sar::emit_stderr(&checks, display_path, source, codevar_ocl_sar::ColorChoice::Auto);
+    if checks
+        .iter()
+        .any(codevar_ocl_sar::Diagnostic::is_error)
+    {
+        return Err(Exit::Failure);
+    }
+    Ok(kernel_names(&env))
+}
+
+/// The names of the `#[kernel]` functions of `env`, in source order.
+fn kernel_names(env: &codevar_ocl_sar::DeclEnv) -> Vec<String> {
+    let mut names = Vec::new();
+    for declaration in env.declarations() {
+        if let codevar_ocl_sar::DeclKind::Function { kernel: true, .. } = &declaration.kind {
+            names.push(declaration.name.clone());
+        }
+    }
+    names
+}
+
+/// Chooses the kernel to compile.
+///
+/// An explicit `--entry` must name a kernel of the file.  Without one,
+/// the file must declare exactly one kernel: several candidates are
+/// reported by name so the caller can pick one.
+fn choose_entry<'a>(requested: Option<&'a str>, kernels: &'a [String]) -> Result<&'a str, String> {
+    match requested {
+        Some(name) => {
+            if kernels.iter().any(|kernel| kernel == name) {
+                Ok(name)
+            } else {
+                Err(format!(
+                    "no kernel named '{name}'; the file declares: {}",
+                    kernels.join(", ")
+                ))
+            }
+        }
+        None => match kernels {
+            [only] => Ok(only),
+            [] => Err(String::from("the file declares no kernel")),
+            many => Err(format!(
+                "the file declares several kernels ({}); pick one with '--entry'",
+                many.join(", ")
+            )),
+        },
     }
 }
 
