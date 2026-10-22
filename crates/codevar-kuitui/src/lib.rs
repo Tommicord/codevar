@@ -87,6 +87,8 @@
 
 extern crate alloc;
 
+pub mod color;
 pub mod geometry;
 
+pub use color::{Color, ColorScheme};
 pub use geometry::{Alignment, Constraints, EdgeInsets, Offset, Rect, Size};
