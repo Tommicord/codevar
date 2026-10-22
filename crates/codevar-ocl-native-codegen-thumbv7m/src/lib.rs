@@ -42,7 +42,20 @@
 //! that survive a call are saved by the prologue of the function and
 //! restored by its epilogue.  The frame of a function is reserved
 //! with one subtraction of the stack pointer, so every slot of the
-//! frame is at a known distance from the stack pointer.
+//! frame is at a known distance from the stack pointer, and the saved
+//! registers sit above the frame.
+//!
+//! # The registers of a function
+//!
+//! The machine code that reaches the back end has already been
+//! allocated: every operand and every destination names a physical
+//! register, and the back end reads those registers as they are.  A
+//! machine code that still names a virtual register never went
+//! through the allocator, and the back end refuses it.
+//!
+//! The four argument registers are the scratch of the back end: the
+//! allocator never hands them out, so the back end can use them for
+//! the values it computes on the way without disturbing a live value.
 //!
 //! # Position independence
 //!
@@ -71,7 +84,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use codevar_ocl_native_codegen::error::{CodegenError, Result};
-use codevar_ocl_native_codegen::mir::{MirModule, SymbolKind, SymId};
+use codevar_ocl_native_codegen::mir::{MirModule, SymId, SymbolKind};
 use codevar_ocl_native_codegen::target::{CodeImage, NativeTarget, RegModel};
 
 pub mod encode;
@@ -100,7 +113,7 @@ impl ThumbV7mTarget {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            registers: register_model(true),
+            registers: register_model(),
             has_fp: true,
         }
     }
@@ -113,7 +126,7 @@ impl ThumbV7mTarget {
     #[must_use]
     pub fn without_fp() -> Self {
         Self {
-            registers: register_model(false),
+            registers: register_model_with_fp(false),
             has_fp: false,
         }
     }
@@ -138,7 +151,29 @@ impl Default for ThumbV7mTarget {
 /// calling convention and are never handed out.  The floating-point
 /// registers are the single-precision registers of the unit, and the
 /// quadword registers are the vector registers of the file.
-fn register_model(with_fp: bool) -> RegModel {
+///
+/// # Example
+///
+/// ```
+/// use codevar_ocl_native_codegen::target::NativeTarget;
+/// use codevar_ocl_native_codegen_thumbv7m::register_model;
+///
+/// let registers = register_model();
+/// assert_eq!(registers.pointer_size, 4);
+/// assert_eq!(registers.arg_regs.len(), 4);
+/// assert_eq!(registers.return_regs.len(), 1);
+/// ```
+#[must_use]
+pub fn register_model() -> RegModel {
+    register_model_with_fp(true)
+}
+
+/// The register model of the architecture, with or without the
+/// floating-point unit.
+///
+/// The registers of the unit are part of the model of a core that has
+/// it, and missing from the model of a core that has not.
+fn register_model_with_fp(with_fp: bool) -> RegModel {
     let mut int_regs = Vec::with_capacity(13);
     for number in 0..13u8 {
         int_regs.push(reg::gpr(number));
@@ -184,10 +219,12 @@ impl NativeTarget for ThumbV7mTarget {
     }
 
     fn lower_module(&self, module: &MirModule, entry: SymId) -> Result<CodeImage> {
-        let entry_index = module.function_index(entry).ok_or_else(|| CodegenError::Target {
-            what: "lowering the module",
-            detail: String::from("the entry symbol is not a function of the module"),
-        })?;
+        let entry_index = module
+            .function_index(entry)
+            .ok_or_else(|| CodegenError::Target {
+                what: "lowering the module",
+                detail: String::from("the entry symbol is not a function of the module"),
+            })?;
 
         // The symbol of every function, so that a call can find the
         // function it names.

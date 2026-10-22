@@ -18,9 +18,7 @@
 mod common;
 
 use codevar_ocl_native_codegen::error::CodegenError;
-use codevar_ocl_native_codegen::mir::{
-    MOp, MType, Operand, SymbolKind, SymId,
-};
+use codevar_ocl_native_codegen::mir::{MOp, MType, Operand, SymId, SymbolKind};
 use codevar_ocl_native_codegen::target::NativeTarget;
 
 use codevar_ocl_native_codegen_thumbv7m::ThumbV7mTarget;
@@ -59,10 +57,7 @@ fn adding_module() -> (codevar_ocl_native_codegen::mir::MirModule, SymId) {
         sum,
         MType::I32,
         MOp::Add,
-        common::two(
-            common::vreg_operand(left),
-            common::vreg_operand(right),
-        ),
+        common::two(common::vreg_operand(left), common::vreg_operand(right)),
     ));
     builder.push(common::none(
         MType::Void,
@@ -79,22 +74,51 @@ fn the_code_of_a_small_function_is_exact() {
     //
     // The expected bytes are:
     //
-    //   04 b5      push {lr}
-    //   00 46      mov  r0, r0        ; the first argument
-    //   01 46      mov  r1, r1        ; the second argument
-    //   08 18      adds r0, r0, r1    ; the sum
-    //   00 bd      pop  {pc}
+    //   70 b4      push {r4, r5, r6}
+    //   81 b0      sub  sp, #4      ; the frame keeps the stack aligned
+    //   04 46      mov  r4, r0      ; the first argument
+    //   0d 46      mov  r5, r1      ; the second argument
+    //   66 19      adds r6, r4, r5  ; the sum
+    //   30 46      mov  r0, r6      ; the result
+    //   01 b0      add  sp, #4
+    //   70 bc      pop  {r4, r5, r6}
+    //   70 47      bx   lr
     let (module, entry) = adding_module();
     let target = ThumbV7mTarget::new();
-    let image = target
-        .lower_module(&module, entry)
-        .expect("the module compiles");
-    assert_eq!(
-        hex(image.bytes()),
-        "04b5004601460818 00bd".replace(' ', "")
-    );
+    let image = common::lower(&target, &module, entry);
+    assert_eq!(hex(image.bytes()), "70b481b004460d466619304601b070bc7047");
     assert_eq!(image.entry_offset(), 0);
-    assert_eq!(image.instruction_count(), 6);
+    assert_eq!(image.instruction_count(), 9);
+}
+
+#[test]
+fn a_module_that_was_not_allocated_is_refused() {
+    // The back end reads physical registers, so a module that still
+    // names virtual registers never went through the allocator.
+    let mut builder = common::Builder::new("add");
+    let left = builder.vreg(MType::I32);
+    let right = builder.vreg(MType::I32);
+    builder.push(common::def(
+        left,
+        MType::I32,
+        MOp::Copy,
+        common::one(common::imm(1)),
+    ));
+    builder.push(common::def(
+        right,
+        MType::I32,
+        MOp::Copy,
+        common::one(common::imm(2)),
+    ));
+    let (module, entry) = builder.finish_unallocated();
+    let target = ThumbV7mTarget::new();
+    let error = common::refused(&target, &module, entry);
+    assert!(matches!(error, CodegenError::Target { .. }), "{error}");
+    let detail = match error {
+        CodegenError::Target { detail, .. } => detail,
+        _ => String::new(),
+    };
+    assert!(detail.contains("not allocated"), "{detail}");
 }
 
 #[test]
@@ -105,9 +129,7 @@ fn the_code_holds_no_absolute_address() {
     // as a distance, so no window may hold an address.
     let (module, entry) = adding_module();
     let target = ThumbV7mTarget::new();
-    let image = target
-        .lower_module(&module, entry)
-        .expect("the module compiles");
+    let image = common::lower(&target, &module, entry);
     let bytes = image.bytes();
     assert!(bytes.len() >= 4);
     for window in bytes.windows(4) {
@@ -126,19 +148,26 @@ fn the_floating_point_operations_are_refused_without_the_unit() {
     let right = builder.vreg(MType::F32);
     let sum = builder.vreg(MType::F32);
     builder.push(common::def(
+        left,
+        MType::F32,
+        MOp::Copy,
+        common::one(common::imm(0)),
+    ));
+    builder.push(common::def(
+        right,
+        MType::F32,
+        MOp::Copy,
+        common::one(common::imm(0)),
+    ));
+    builder.push(common::def(
         sum,
         MType::F32,
         MOp::FAdd,
-        common::two(
-            common::vreg_operand(left),
-            common::vreg_operand(right),
-        ),
+        common::two(common::vreg_operand(left), common::vreg_operand(right)),
     ));
     let (module, entry) = builder.finish();
     let target = ThumbV7mTarget::without_fp();
-    let error = target
-        .lower_module(&module, entry)
-        .expect_err("the floating-point operation is refused");
+    let error = common::refused(&target, &module, entry);
     assert!(matches!(error, CodegenError::Unsupported { .. }));
     let detail = match error {
         CodegenError::Unsupported { detail, .. } => detail,
@@ -153,6 +182,12 @@ fn the_vector_operations_are_refused() {
     let source = builder.vreg(MType::I32);
     let target = builder.vreg(MType::I32);
     builder.push(common::def(
+        source,
+        MType::I32,
+        MOp::Copy,
+        common::one(common::imm(0)),
+    ));
+    builder.push(common::def(
         target,
         MType::I32,
         MOp::VecSplat,
@@ -160,9 +195,7 @@ fn the_vector_operations_are_refused() {
     ));
     let (module, entry) = builder.finish();
     let target = ThumbV7mTarget::new();
-    let error = target
-        .lower_module(&module, entry)
-        .expect_err("the vector operation is refused");
+    let error = common::refused(&target, &module, entry);
     assert!(matches!(error, CodegenError::Unsupported { .. }));
 }
 
@@ -177,20 +210,20 @@ fn a_call_to_a_function_of_the_module_is_relative() {
     caller.symbol = entry;
     let mut block = codevar_ocl_native_codegen::mir::MirBlock::new("entry");
     let result = caller.new_vreg(MType::I32);
-    block.insts.push(codevar_ocl_native_codegen::mir::MInst::def(
-        result,
-        MType::I32,
-        MOp::Call { callee },
-        codevar_ocl_native_codegen::mir::Operands::none(),
-    ));
+    block
+        .insts
+        .push(codevar_ocl_native_codegen::mir::MInst::def(
+            result,
+            MType::I32,
+            MOp::Call { callee },
+            codevar_ocl_native_codegen::mir::Operands::none(),
+        ));
     block
         .insts
         .push(codevar_ocl_native_codegen::mir::MInst::none(
             MType::Void,
             MOp::Ret,
-            codevar_ocl_native_codegen::mir::Operands::one(
-                Operand::Virtual(result),
-            ),
+            codevar_ocl_native_codegen::mir::Operands::one(Operand::Virtual(result)),
         ));
     caller.push_block(block);
 
@@ -210,11 +243,10 @@ fn a_call_to_a_function_of_the_module_is_relative() {
 
     module.functions.push(caller);
     module.functions.push(callee_function);
+    common::allocate(&mut module);
 
     let target = ThumbV7mTarget::new();
-    let image = target
-        .lower_module(&module, entry)
-        .expect("the module compiles");
+    let image = common::lower(&target, &module, entry);
     // The call is a relative branch, so the code holds no address.
     let bytes = image.bytes();
     for window in bytes.windows(4) {

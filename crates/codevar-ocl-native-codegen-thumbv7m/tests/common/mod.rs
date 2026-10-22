@@ -15,10 +15,48 @@
 
 //! The pieces of a machine module the tests build.
 
+// Every test binary shares this module, and every binary uses a
+// different part of it.
+#![allow(dead_code)]
+
+use codevar_ocl_native_codegen::error::CodegenError;
 use codevar_ocl_native_codegen::mir::{
-    MInst, MOp, MirBlock, MirFunction, MirModule, MType, Operand, Operands, SymbolKind, SymId,
-    VReg,
+    MInst, MOp, MType, MirBlock, MirFunction, MirModule, Operand, Operands, SymId, SymbolKind, VReg,
 };
+use codevar_ocl_native_codegen::target::{CodeImage, NativeTarget};
+
+use codevar_ocl_native_codegen_thumbv7m::{ThumbV7mTarget, register_model};
+
+/// Allocates the registers of a module.
+///
+/// The machine code that reaches the back end has been through the
+/// allocator, so the tests allocate their modules the way the
+/// pipeline does before they hand them over.
+pub fn allocate(module: &mut MirModule) {
+    let model = register_model();
+    if let Err(error) = codevar_ocl_native_codegen::regalloc::allocate(module, &model) {
+        panic!("the module allocates: {error}");
+    }
+}
+
+/// The code of a module.
+///
+/// The back end refuses a module it cannot express, and a test that
+/// expects the code of a module does not expect a refusal.
+pub fn lower(target: &ThumbV7mTarget, module: &MirModule, entry: SymId) -> CodeImage {
+    match target.lower_module(module, entry) {
+        Ok(image) => image,
+        Err(error) => panic!("the module compiles: {error}"),
+    }
+}
+
+/// The error the back end returns for a module it refuses.
+pub fn refused(target: &ThumbV7mTarget, module: &MirModule, entry: SymId) -> CodegenError {
+    match target.lower_module(module, entry) {
+        Ok(_) => panic!("the module is refused"),
+        Err(error) => error,
+    }
+}
 
 /// A module under construction.
 pub struct Builder {
@@ -32,7 +70,7 @@ impl Builder {
     /// Creates a builder of a module with one function.
     #[must_use]
     pub fn new(name: &str) -> Self {
-        let mut module = MirModule::new();
+        let module = MirModule::new();
         let function = MirFunction::new(name);
         Self { module, function }
     }
@@ -63,12 +101,24 @@ impl Builder {
         self.function.push_block(MirBlock::new(label));
     }
 
-    /// Finishes the module and returns it with the symbol of the
-    /// entry function.
-    pub fn finish(mut self) -> (MirModule, SymId) {
-        let symbol = self
-            .module
-            .add_symbol(&self.function.name.clone(), SymbolKind::Function { index: 0 }, true);
+    /// Finishes the module, allocates its registers, and returns it
+    /// with the symbol of the entry function.
+    pub fn finish(self) -> (MirModule, SymId) {
+        let (module, symbol) = self.finish_unallocated();
+        let mut module = module;
+        allocate(&mut module);
+        (module, symbol)
+    }
+    /// Finishes the module without allocating its registers.
+    ///
+    /// The module is the one the back end refuses, because it still
+    /// names virtual registers.
+    pub fn finish_unallocated(mut self) -> (MirModule, SymId) {
+        let symbol = self.module.add_symbol(
+            &self.function.name.clone(),
+            SymbolKind::Function { index: 0 },
+            true,
+        );
         self.function.symbol = symbol;
         self.function.is_entry = true;
         self.module.functions.push(self.function);

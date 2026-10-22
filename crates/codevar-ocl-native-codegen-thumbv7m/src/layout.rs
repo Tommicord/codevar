@@ -82,20 +82,20 @@ pub fn layout(functions: &[FunctionCode], entry: usize) -> Result<Layout> {
                 let target = match fixup.target {
                     FixupTarget::Block(block) => {
                         let block = block as usize;
-                        *block_addresses[index].get(block).ok_or_else(|| {
-                            CodegenError::Target {
+                        *block_addresses[index]
+                            .get(block)
+                            .ok_or_else(|| CodegenError::Target {
                                 what: "laying out the module",
                                 detail: String::from("a branch points at a block that does not exist"),
-                            }
-                        })?
+                            })?
                     }
                     FixupTarget::Function(function) => {
-                        *function_addresses.get(function).ok_or_else(|| {
-                            CodegenError::Target {
+                        *function_addresses
+                            .get(function)
+                            .ok_or_else(|| CodegenError::Target {
                                 what: "laying out the module",
                                 detail: String::from("a call points at a function that does not exist"),
-                            }
-                        })?
+                            })?
                     }
                     FixupTarget::Local(offset) => base + u32::try_from(offset).unwrap_or(0),
                 };
@@ -108,10 +108,12 @@ pub fn layout(functions: &[FunctionCode], entry: usize) -> Result<Layout> {
         }
     }
 
-    let entry_offset = *function_addresses.get(entry).ok_or_else(|| CodegenError::Target {
-        what: "laying out the module",
-        detail: String::from("the entry function is not a function of the module"),
-    })?;
+    let entry_offset = *function_addresses
+        .get(entry)
+        .ok_or_else(|| CodegenError::Target {
+            what: "laying out the module",
+            detail: String::from("the entry function is not a function of the module"),
+        })?;
 
     Ok(Layout {
         image,
@@ -121,12 +123,7 @@ pub fn layout(functions: &[FunctionCode], entry: usize) -> Result<Layout> {
 }
 
 /// Writes the displacement of a branch.
-fn patch(
-    bytes: &mut [u8],
-    at: usize,
-    kind: FixupKind,
-    distance: i64,
-) -> Result<()> {
+fn patch(bytes: &mut [u8], at: usize, kind: FixupKind, distance: i64) -> Result<()> {
     let range = match kind {
         FixupKind::Branch | FixupKind::BranchLink => BRANCH_RANGE,
         FixupKind::BranchCond(_) => BRANCH_COND_RANGE,
