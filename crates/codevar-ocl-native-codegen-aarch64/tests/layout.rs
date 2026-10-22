@@ -73,14 +73,17 @@ fn golden_module() -> (MirModule, codevar_ocl_native_codegen::mir::SymId) {
         MOp::Add,
         Operands::two(Operand::Virtual(identifier), Operand::Immediate(5)),
     ));
-    entry.insts.push(MInst::def(
-        small,
-        MType::I1,
-        MOp::ICmp {
-            pred: codevar_ocl_native_codegen::mir::IPred::Ult,
-        },
-        Operands::two(Operand::Virtual(shifted), Operand::Immediate(100)),
-    ));
+    entry.insts.push(
+        MInst::def(
+            small,
+            MType::I1,
+            MOp::ICmp {
+                pred: codevar_ocl_native_codegen::mir::IPred::Ult,
+            },
+            Operands::two(Operand::Virtual(shifted), Operand::Immediate(100)),
+        )
+        .with_operand_type(MType::I32),
+    );
     entry.insts.push(MInst::none(
         MType::Void,
         MOp::CondBr,
@@ -450,14 +453,17 @@ fn a_floating_point_function_uses_the_floating_point_registers() {
         MOp::FAdd,
         Operands::two(Operand::Virtual(left), Operand::Virtual(right)),
     ));
-    block.insts.push(MInst::def(
-        comparison,
-        MType::I1,
-        MOp::FCmp {
-            pred: codevar_ocl_native_codegen::mir::FPred::Olt,
-        },
-        Operands::two(Operand::Virtual(sum), Operand::Virtual(right)),
-    ));
+    block.insts.push(
+        MInst::def(
+            comparison,
+            MType::I1,
+            MOp::FCmp {
+                pred: codevar_ocl_native_codegen::mir::FPred::Olt,
+            },
+            Operands::two(Operand::Virtual(sum), Operand::Virtual(right)),
+        )
+        .with_operand_type(MType::F64),
+    );
     block
         .insts
         .push(MInst::none(MType::Void, MOp::RetVoid, Operands::none()));
@@ -582,12 +588,18 @@ fn a_vector_is_built_and_taken_apart_again() {
         MOp::VecSplat,
         Operands::one(Operand::Virtual(scalar)),
     ));
-    entry.insts.push(MInst::def(
-        lane,
-        MType::I32,
-        MOp::VecExtract { index: 2 },
-        Operands::one(Operand::Virtual(wide)),
-    ));
+    entry.insts.push(
+        MInst::def(
+            lane,
+            MType::I32,
+            MOp::VecExtract { index: 2 },
+            Operands::one(Operand::Virtual(wide)),
+        )
+        .with_operand_type(MType::Vec {
+            lanes: 4,
+            elem: Box::new(MType::I32),
+        }),
+    );
     entry.insts.push(MInst::def(
         shuffled,
         MType::Vec {
@@ -651,23 +663,29 @@ fn an_address_is_computed_and_a_value_is_selected() {
         MOp::Param { index: 1 },
         Operands::none(),
     ));
-    entry.insts.push(MInst::def(
-        address,
-        MType::Ptr { size: 8 },
-        MOp::Gep {
-            size: 4,
-            signed: false,
-        },
-        Operands::two(Operand::Virtual(base), Operand::Virtual(index)),
-    ));
-    entry.insts.push(MInst::def(
-        flag,
-        MType::I1,
-        MOp::ICmp {
-            pred: codevar_ocl_native_codegen::mir::IPred::Eq,
-        },
-        Operands::two(Operand::Virtual(index), Operand::Immediate(0)),
-    ));
+    entry.insts.push(
+        MInst::def(
+            address,
+            MType::Ptr { size: 8 },
+            MOp::Gep {
+                size: 4,
+                signed: false,
+            },
+            Operands::two(Operand::Virtual(base), Operand::Virtual(index)),
+        )
+        .with_operand_type(MType::I64),
+    );
+    entry.insts.push(
+        MInst::def(
+            flag,
+            MType::I1,
+            MOp::ICmp {
+                pred: codevar_ocl_native_codegen::mir::IPred::Eq,
+            },
+            Operands::two(Operand::Virtual(index), Operand::Immediate(0)),
+        )
+        .with_operand_type(MType::I64),
+    );
     entry.insts.push(MInst::def(
         chosen,
         MType::I64,
@@ -786,4 +804,135 @@ fn a_function_that_needs_more_registers_than_the_file_holds_spills() {
         .expect("the module compiles");
     assert!(!image.bytes().is_empty());
     assert_eq!(image.bytes().len() % 4, 0);
+}
+
+#[test]
+fn the_mathematical_operations_have_their_own_words() {
+    let mut module = MirModule::new();
+    let symbol = module.add_symbol("math", SymbolKind::Function { index: 0 }, false);
+
+    let mut function = MirFunction::new("math");
+    function.symbol = symbol;
+    function.is_entry = true;
+
+    let value: VReg = function.new_vreg(MType::F64);
+    let other: VReg = function.new_vreg(MType::F64);
+    let root: VReg = function.new_vreg(MType::F64);
+    let absolute: VReg = function.new_vreg(MType::F64);
+    let smaller: VReg = function.new_vreg(MType::F64);
+    let larger: VReg = function.new_vreg(MType::F64);
+    let positive: VReg = function.new_vreg(MType::F64);
+    let sign: VReg = function.new_vreg(MType::F64);
+    let remainder: VReg = function.new_vreg(MType::F64);
+
+    let mut block = MirBlock::new("entry");
+    block.insts.push(
+        MInst::def(value, MType::F64, MOp::Param { index: 0 }, Operands::none())
+            .with_operand_type(MType::F64),
+    );
+    block.insts.push(
+        MInst::def(other, MType::F64, MOp::Copy, Operands::one(Operand::Immediate(0)))
+            .with_operand_type(MType::F64),
+    );
+    block.insts.push(
+        MInst::def(
+            root,
+            MType::F64,
+            MOp::FSqrt,
+            Operands::one(Operand::Virtual(value)),
+        )
+        .with_operand_type(MType::F64),
+    );
+    block.insts.push(
+        MInst::def(
+            absolute,
+            MType::F64,
+            MOp::FAbs,
+            Operands::one(Operand::Virtual(value)),
+        )
+        .with_operand_type(MType::F64),
+    );
+    block.insts.push(
+        MInst::def(
+            smaller,
+            MType::F64,
+            MOp::FMin,
+            Operands::two(Operand::Virtual(value), Operand::Virtual(other)),
+        )
+        .with_operand_type(MType::F64),
+    );
+    block.insts.push(
+        MInst::def(
+            larger,
+            MType::F64,
+            MOp::FMax,
+            Operands::two(Operand::Virtual(value), Operand::Virtual(other)),
+        )
+        .with_operand_type(MType::F64),
+    );
+    block.insts.push(
+        MInst::def(
+            positive,
+            MType::F64,
+            MOp::FDim,
+            Operands::two(Operand::Virtual(value), Operand::Virtual(other)),
+        )
+        .with_operand_type(MType::F64),
+    );
+    block.insts.push(
+        MInst::def(
+            sign,
+            MType::F64,
+            MOp::FCopySign,
+            Operands::two(Operand::Virtual(value), Operand::Virtual(other)),
+        )
+        .with_operand_type(MType::F64),
+    );
+    block.insts.push(
+        MInst::def(
+            remainder,
+            MType::F64,
+            MOp::FRem,
+            Operands::two(Operand::Virtual(value), Operand::Virtual(other)),
+        )
+        .with_operand_type(MType::F64),
+    );
+    block
+        .insts
+        .push(MInst::none(MType::Void, MOp::RetVoid, Operands::none()));
+    function.push_block(block);
+    module.functions.push(function);
+
+    allocate(&mut module).expect("the module allocates");
+    let image = target()
+        .lower_module(&module, symbol)
+        .expect("the module compiles");
+    let words = words(image.bytes());
+    // The square root of the parameter.
+    assert_eq!(words[6], 0x1E61_C10A, "fsqrt d10, d8");
+    // The absolute value of the parameter.
+    assert_eq!(words[7], 0x1E60_C10B, "fabs d11, d8");
+    // The smaller and the larger of the parameter and the zero.
+    assert_eq!(words[8], 0x1E69_590C, "fmin d12, d8, d9");
+    assert_eq!(words[9], 0x1E69_490D, "fmax d13, d8, d9");
+    // The positive difference is the difference of the values,
+    // clamped at zero.
+    assert_eq!(words[10], 0x1E69_390E, "fsub d14, d8, d9");
+    assert_eq!(words[15], 0x9E67_021F, "fmov d31, x16");
+    assert_eq!(words[16], 0x1E7F_49CE, "fmax d14, d14, d31");
+    // The sign copy flips the sign bit of the first value with the
+    // sign bit of the second one.
+    assert_eq!(words[17], 0x4EA8_1D0F, "mov v15.16b, v8.16b");
+    assert_eq!(words[22], 0x9E67_021F, "fmov d31, x16");
+    assert_eq!(words[23], 0x4E3F_1D3E, "and v30.16b, v9.16b, v31.16b");
+    assert_eq!(words[24], 0x6E3E_1DEF, "eor v15.16b, v15.16b, v30.16b");
+    // The remainder is the quotient of a division that is truncated
+    // towards zero, taken away from the dividend.
+    assert_eq!(words[25], 0x4EA8_1D10, "mov v16.16b, v8.16b");
+    assert_eq!(words[26], 0x4EA9_1D3F, "mov v31.16b, v9.16b");
+    assert_eq!(words[27], 0x1E7F_1A1E, "fdiv v30, v16, v31");
+    assert_eq!(words[28], 0x9E78_03D0, "fcvtzs x16, v30");
+    assert_eq!(words[29], 0x9E62_021E, "scvtf v30, x16");
+    assert_eq!(words[30], 0x1E7F_321E, "fmls v30, v16, v31");
+    assert_eq!(words[31], 0x4EBE_1FD0, "mov v16.16b, v30.16b");
 }

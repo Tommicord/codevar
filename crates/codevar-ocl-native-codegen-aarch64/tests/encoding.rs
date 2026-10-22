@@ -589,6 +589,22 @@ fn the_floating_point_registers_reach_their_own_fields() {
         vec![0x83, 0x40, 0x61, 0x1E]
     );
     assert_eq!(
+        emit(|encoder| encoder.fsqrt(3, 4, false)),
+        vec![0x83, 0xC0, 0x61, 0x1E]
+    );
+    assert_eq!(
+        emit(|encoder| encoder.fsqrt(3, 4, true)),
+        vec![0x83, 0xC0, 0x21, 0x1E]
+    );
+    assert_eq!(
+        emit(|encoder| encoder.fmls(3, 4, 5, false)),
+        vec![0x83, 0x30, 0x65, 0x1E]
+    );
+    assert_eq!(
+        emit(|encoder| encoder.fmls(3, 4, 5, true)),
+        vec![0x83, 0x30, 0x25, 0x1E]
+    );
+    assert_eq!(
         emit(|encoder| encoder.fcmp(3, 4, false)),
         vec![0x60, 0x20, 0x64, 0x1E]
     );
