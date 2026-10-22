@@ -40,7 +40,7 @@
 //! A widget implements the [`Widget`] trait. Every hook has a default
 //! implementation, so a widget only overrides what it needs:
 //!
-//! ```ignore
+//! ```
 //! use codevar_kuitui::prelude::*;
 //!
 //! /// A widget that paints a filled square.
@@ -69,7 +69,7 @@
 //!
 //! [`kuitui!`] builds a tree with a Compose-like syntax:
 //!
-//! ```ignore
+//! ```
 //! use codevar_kuitui::prelude::*;
 //!
 //! let tree = kuitui! {
@@ -91,6 +91,7 @@ pub mod color;
 pub mod compose;
 pub mod event;
 pub mod geometry;
+mod macros;
 pub mod node;
 pub mod paint;
 pub mod state;
@@ -103,6 +104,8 @@ pub use color::{Color, ColorScheme};
 pub use compose::{Composer, Composition, Recomposition};
 pub use event::{Event, EventResult, KeyEvent, PointerButton, PointerEvent, PointerEventKind};
 pub use geometry::{Alignment, Constraints, EdgeInsets, Offset, Rect, Size};
+#[doc(hidden)]
+pub use macros::__private;
 pub use node::{Modifier, Node};
 pub use paint::{CornerRadii, DrawList, DrawOp, Paint};
 pub use state::{DirtyState, MutableState, State};
@@ -110,3 +113,28 @@ pub use text::{FontMetrics, FontWeight, TextSpan, TextStyle};
 pub use theme::{Theme, ThemeMode, Typography};
 pub use widget::{DrawScope, EventScope, Key, MeasureScope, PlaceScope, Widget};
 pub use widgets::{Column, Frame, Row, Spacer, Stack, Text};
+
+/// The traits and types a widget implementation usually needs.
+///
+/// Importing the prelude brings in the geometry, the theme, the
+/// scopes and the base components, so that a widget file does not have
+/// to spell out where each of them comes from.
+pub mod prelude {
+    pub use crate::color::{Color, ColorScheme};
+    pub use crate::compose::{Composer, Composition, Recomposition};
+    pub use crate::event::{
+        Event, EventResult, KeyEvent, Modifiers, PointerButton, PointerButtons, PointerEvent,
+        PointerEventKind,
+    };
+    pub use crate::geometry::{Alignment, Constraints, EdgeInsets, Horizontal, Offset, Rect, Size, Vertical};
+    pub use crate::kuitui;
+    pub use crate::node::{Modifier, Node};
+    pub use crate::paint::{CornerRadii, DrawList, DrawOp, Paint, PaintStyle};
+    pub use crate::state::{DirtyState, MutableState, State};
+    pub use crate::text::{
+        ApproximateFontMetrics, FontMetrics, FontWeight, TextAlign, TextContent, TextSpan, TextStyle,
+    };
+    pub use crate::theme::{Theme, ThemeMode, Typography};
+    pub use crate::widget::{Children, DrawScope, EventScope, Key, MeasureScope, PlaceScope, Widget};
+    pub use crate::widgets::{Column, Frame, Row, Spacer, Stack, Text};
+}

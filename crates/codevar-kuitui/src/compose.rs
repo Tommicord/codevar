@@ -26,14 +26,14 @@
 //! as Compose matches them, so a `remember` call must stay at the same
 //! place in the content closure from one recomposition to the next.
 //!
-//! ```ignore
+//! ```
 //! use codevar_kuitui::prelude::*;
 //!
 //! // The counter survives a recomposition even though the closure
 //! // that reads it is run again.
 //! let mut composition = Composition::new(Theme::light());
 //! composition.set_content(|composer| {
-//!     let count = composer.state(0_u32);
+//!     let _count = composer.state(0_u32);
 //!     kuitui! { Text("hello") }
 //! });
 //! ```
