@@ -88,11 +88,13 @@
 extern crate alloc;
 
 pub mod color;
+pub mod event;
 pub mod geometry;
 pub mod text;
 pub mod theme;
 
 pub use color::{Color, ColorScheme};
+pub use event::{Event, EventResult, KeyEvent, PointerButton, PointerEvent, PointerEventKind};
 pub use geometry::{Alignment, Constraints, EdgeInsets, Offset, Rect, Size};
 pub use text::{FontMetrics, FontWeight, TextSpan, TextStyle};
 pub use theme::{Theme, ThemeMode, Typography};
