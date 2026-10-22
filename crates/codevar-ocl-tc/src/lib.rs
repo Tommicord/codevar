@@ -186,7 +186,10 @@ impl fmt::Display for Error {
             Self::Lowering { detail } => write!(f, "lowering failed: {detail}"),
             Self::UnknownEntry { name } => write!(f, "no kernel named '{name}'"),
             Self::NoBackEnd { architecture } => {
-                write!(f, "there is no native back end for the '{architecture}' architecture")
+                write!(
+                    f,
+                    "there is no native back end for the '{architecture}' architecture"
+                )
             }
             Self::Codegen(error) => write!(f, "{error}"),
         }

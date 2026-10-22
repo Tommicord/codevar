@@ -65,7 +65,11 @@ impl Executable {
                 0,
             )
         };
-        assert_ne!(base, libc::MAP_FAILED, "the executable memory could not be mapped");
+        assert_ne!(
+            base,
+            libc::MAP_FAILED,
+            "the executable memory could not be mapped"
+        );
         Self {
             base: base.cast::<u8>(),
             len: rounded,
@@ -102,30 +106,29 @@ impl Drop for Executable {
 struct Launch {
     /// The work-item block.
     item: WorkItem,
-    /// The argument block.
-    args: [u8; 256],
 }
 
 impl Launch {
     /// Builds a launch whose first argument is `buffer` and whose
     /// second is the scalar `factor`.
-    fn new(buffer: *mut i32, factor: i32) -> Self {
+    ///
+    /// The argument block is returned with the launch: the work-item
+    /// block points into it, so it has to outlive the call.
+    fn new(buffer: *mut i32, factor: i32) -> (Self, [u8; 256]) {
         let mut args = [0u8; 256];
         let pointer = buffer as usize;
         args[..size_of::<usize>()].copy_from_slice(&pointer.to_ne_bytes());
         args[ARG_SLOT..ARG_SLOT + 4].copy_from_slice(&factor.to_ne_bytes());
-        Self {
-            item: WorkItem {
-                global_id: [2, 0, 0],
-                local_id: [0; 3],
-                group_id: [0; 3],
-                global_offset: [0; 3],
-                num_groups: [1, 1, 1],
-                local_size: [1, 1, 1],
-                arg_base: args.as_mut_ptr(),
-            },
-            args,
-        }
+        let item = WorkItem {
+            global_id: [1, 0, 0],
+            local_id: [0; 3],
+            group_id: [0; 3],
+            global_offset: [0; 3],
+            num_groups: [1, 1, 1],
+            local_size: [1, 1, 1],
+            arg_base: args.as_mut_ptr(),
+        };
+        (Self { item }, args)
     }
 }
 
@@ -138,7 +141,7 @@ fn the_compiled_kernel_multiplies_the_element() {
     let entry = executable.load(code.bytes(), code.entry_offset());
 
     let mut buffer = [3i32, 5i32, 7i32];
-    let mut launch = Launch::new(buffer.as_mut_ptr(), 4);
+    let (mut launch, _args) = Launch::new(buffer.as_mut_ptr(), 4);
 
     // SAFETY: the code was compiled for this architecture and follows
     // the kernel calling convention: it takes the work-item pointer
@@ -148,5 +151,7 @@ fn the_compiled_kernel_multiplies_the_element() {
         kernel(&mut launch.item);
     }
 
-    assert_eq!(buffer, [12, 20, 28]);
+    // The work item's global identifier is one, so the kernel writes
+    // the second element and leaves the others alone.
+    assert_eq!(buffer, [3, 20, 7], "the buffer holds {buffer:?}");
 }
