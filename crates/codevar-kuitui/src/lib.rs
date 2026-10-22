@@ -97,6 +97,7 @@ pub mod state;
 pub mod text;
 pub mod theme;
 pub mod widget;
+pub mod widgets;
 
 pub use color::{Color, ColorScheme};
 pub use compose::{Composer, Composition, Recomposition};
@@ -108,3 +109,4 @@ pub use state::{DirtyState, MutableState, State};
 pub use text::{FontMetrics, FontWeight, TextSpan, TextStyle};
 pub use theme::{Theme, ThemeMode, Typography};
 pub use widget::{DrawScope, EventScope, Key, MeasureScope, PlaceScope, Widget};
+pub use widgets::{Column, Frame, Row, Spacer, Stack, Text};
