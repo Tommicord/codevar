@@ -509,6 +509,16 @@ impl Children for Vec<Node> {
         self.len()
     }
 
+    fn child_size(&self, index: usize) -> Size {
+        self.get(index)
+            .map_or(Size::ZERO, |child| child.size)
+    }
+
+    fn child_flex(&self, index: usize) -> f32 {
+        self.get(index)
+            .map_or(0.0, |child| child.widget.flex())
+    }
+
     fn measure_child(&mut self, index: usize, theme: &Theme, constraints: Constraints) -> Size {
         match self.get_mut(index) {
             Some(child) => child.measure(theme, constraints),

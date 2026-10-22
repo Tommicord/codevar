@@ -159,6 +159,17 @@ pub trait Widget {
     fn hit_testable(&self) -> bool {
         false
     }
+
+    /// How much of the free space of the parent this widget takes.
+    ///
+    /// A widget that returns `0.0` — the default — is laid out at the
+    /// size it asked for. A widget that returns a positive number
+    /// shares the free space of its parent with the other flexible
+    /// widgets, in proportion to the numbers they return. This is the
+    /// weight of Compose's `Modifier.weight`.
+    fn flex(&self) -> f32 {
+        0.0
+    }
 }
 
 /// The children a widget lays out.
@@ -171,6 +182,13 @@ pub trait Widget {
 pub trait Children {
     /// The number of children.
     fn child_count(&self) -> usize;
+
+    /// The size the child at `index` was measured at.
+    fn child_size(&self, index: usize) -> Size;
+
+    /// How much of the free space of the parent the child at `index`
+    /// takes.
+    fn child_flex(&self, index: usize) -> f32;
 
     /// Measures the child at `index` inside `constraints`.
     fn measure_child(&mut self, index: usize, theme: &Theme, constraints: Constraints) -> Size;
@@ -269,6 +287,19 @@ impl<'a> PlaceScope<'a> {
     #[must_use]
     pub fn child_count(&self) -> usize {
         self.children.child_count()
+    }
+
+    /// The size the child at `index` was measured at.
+    #[must_use]
+    pub fn child_size(&self, index: usize) -> Size {
+        self.children.child_size(index)
+    }
+
+    /// How much of the free space of the parent the child at `index`
+    /// takes.
+    #[must_use]
+    pub fn child_flex(&self, index: usize) -> f32 {
+        self.children.child_flex(index)
     }
 
     /// Places the child at `index` at `offset` from the origin of the
@@ -461,6 +492,14 @@ mod tests {
 
         fn measure_child(&mut self, _index: usize, _theme: &Theme, constraints: Constraints) -> Size {
             constraints.enforce(Size::ZERO)
+        }
+
+        fn child_size(&self, _index: usize) -> Size {
+            Size::ZERO
+        }
+
+        fn child_flex(&self, _index: usize) -> f32 {
+            0.0
         }
 
         fn place_child(&mut self, _index: usize, _position: Offset) {}
