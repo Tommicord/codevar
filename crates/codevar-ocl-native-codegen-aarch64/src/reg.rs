@@ -72,6 +72,10 @@ pub const SCRATCH_B: u8 = 17;
 /// The SIMD-and-floating-point register scratch of the back end.
 pub const SIMD_SCRATCH: u8 = 31;
 
+/// The second SIMD-and-floating-point register scratch of the back
+/// end.
+pub const SIMD_SCRATCH_B: u8 = 30;
+
 /// The physical number of a general-purpose register.
 #[must_use]
 #[inline]

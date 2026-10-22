@@ -763,6 +763,22 @@ impl<'a> Encoder<'a> {
         self.fp1(0x1E61_4000, rd, rn, single);
     }
 
+    /// `fsqrt rd, rn`.
+    #[inline]
+    pub fn fsqrt(&mut self, rd: u8, rn: u8, single: bool) {
+        self.fp1(0x1E61_C000, rd, rn, single);
+    }
+
+    /// `fmls rd, rn, rm`.
+    ///
+    /// The destination holds the multiplier, so the instruction
+    /// computes `rn - rd * rm` and writes the result into it.
+    #[inline]
+    pub fn fmls(&mut self, rd: u8, rn: u8, rm: u8, single: bool) {
+        let base = if single { 0x1E20_3000 } else { 0x1E60_3000 };
+        self.word(base | (rm as u32) << 16 | (rn as u32) << 5 | rd as u32);
+    }
+
     /// `fcmp rn, rm`.
     #[inline]
     pub fn fcmp(&mut self, rn: u8, rm: u8, single: bool) {

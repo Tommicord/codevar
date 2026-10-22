@@ -46,12 +46,11 @@
 //! names a virtual register, because such a machine code never went
 //! through the allocator.
 //!
-//! The machine code does not carry the type of the values that live
-//! in the registers, so the back end remembers it: the type of a
-//! register is the type of the last instruction that wrote it.  The
-//! types are what tell a thirty-two-bit comparison from a
-//! sixty-four-bit one and a single-precision value from a
-//! double-precision one.
+//! The machine code names the type of the values every instruction
+//! reads, so the back end never has to guess the width of a value
+//! from the register that holds it.  The types are what tell a
+//! thirty-two-bit comparison from a sixty-four-bit one and a
+//! single-precision value from a double-precision one.
 
 use alloc::vec::Vec;
 
@@ -112,9 +111,6 @@ pub struct FunctionCode {
     pub instructions: u32,
 }
 
-/// The number of registers the table of types covers.
-const REGISTER_COUNT: usize = 64;
-
 /// The expansion of one function.
 struct Expander<'a> {
     /// The module the function belongs to.
@@ -138,9 +134,6 @@ struct Expander<'a> {
     released: bool,
     /// Whether the machine code asked for the frame to be set up.
     frame_setup: bool,
-    /// The type every register holds, as the last instruction that
-    /// wrote it.
-    types: [Option<MType>; REGISTER_COUNT],
 }
 
 /// Turns the machine code of a function into the words of the
@@ -162,7 +155,6 @@ pub fn expand(module: &MirModule, function: &MirFunction) -> Result<FunctionCode
         save_area: 0,
         released: false,
         frame_setup: false,
-        types: core::array::from_fn(|_| None),
     };
     expander.run()?;
     let instructions = (expander.bytes.len() / 4) as u32;
@@ -378,27 +370,67 @@ impl<'a> Expander<'a> {
         }
     }
 
-    /// The type of an operand, when the back end knows it.
+    /// The type of the values an instruction reads.
     ///
-    /// The type of a register is the type of the last instruction
-    /// that wrote it, which is the only account of the types the
-    /// machine code gives once its operands are physical registers.
-    fn operand_type(&self, operand: Operand) -> Option<&MType> {
-        let Operand::Physical(preg) = operand else {
-            return None;
-        };
-        let number = preg.number() as usize;
-        self.types.get(number)?.as_ref()
+    /// The machine code names the type of the operands of every
+    /// instruction, so the back end never has to guess it from the
+    /// register that happens to hold the value.
+    fn operand_type(inst: &MInst) -> Option<&MType> {
+        inst.operand_ty.as_ref()
     }
 
-    /// Remembers the type a register holds.
-    fn record_type(&mut self, inst: &MInst) {
-        let Some(dest) = inst.dest_reg() else {
-            return;
-        };
-        let number = dest.number() as usize;
-        if number < REGISTER_COUNT {
-            self.types[number] = Some(inst.ty.clone());
+    /// The type of the argument at `index` of a call to `callee`.
+    ///
+    /// The arguments of a call have types of their own, so the
+    /// instruction does not name them; the callee's own parameters
+    /// do.
+    fn argument_type(&self, callee: SymId, index: usize) -> Option<&MType> {
+        let function = self.module.function(callee)?;
+        let param = function.params.get(index)?;
+        function.vreg_types.get(param.index())
+    }
+
+    /// The SIMD register a floating-point operand holds.
+    ///
+    /// A constant is moved into one of the scratch registers first, so
+    /// that the operation has a register to read.
+    fn float_operand(&mut self, inst: &MInst, index: usize) -> Result<u8> {
+        let operand = self.arg(inst, index)?;
+        match self.loc(operand)? {
+            Loc::Simd(reg) => Ok(reg),
+            Loc::FloatImm(bits) => {
+                let single = matches!(inst.ty, MType::F32);
+                let scratch = if index == 0 {
+                    reg::SIMD_SCRATCH
+                } else {
+                    reg::SIMD_SCRATCH_B
+                };
+                self.materialize_float(scratch, bits, single);
+                Ok(scratch)
+            }
+            _ => Err(CodegenError::Target {
+                what: "reading a floating-point operand",
+                detail: alloc::string::String::from("the value is not a floating-point value"),
+            }),
+        }
+    }
+
+    /// The general-purpose register an integer operand holds.
+    ///
+    /// A constant is moved into the scratch register first, so that
+    /// the operation has a register to read.
+    fn int_operand(&mut self, inst: &MInst, index: usize) -> Result<u8> {
+        let operand = self.arg(inst, index)?;
+        match self.loc(operand)? {
+            Loc::Gpr(reg) => Ok(reg),
+            Loc::Imm(number) => {
+                self.materialize(reg::SCRATCH_A, number as u64, Width::Bits64);
+                Ok(reg::SCRATCH_A)
+            }
+            _ => Err(CodegenError::Target {
+                what: "reading an integer operand",
+                detail: alloc::string::String::from("the value is not an integer"),
+            }),
         }
     }
 
@@ -448,14 +480,10 @@ impl<'a> Expander<'a> {
 
     /// The width of the values an operation compares.
     fn compare_width(&self, inst: &MInst) -> Width {
-        for operand in inst.args.as_slice() {
-            if let Some(ty) = self.operand_type(*operand)
-                && let Some(size) = ty.size_in_bytes()
-            {
-                return Width::of_type(Some(size));
-            }
+        match Self::operand_type(inst).and_then(MType::size_in_bytes) {
+            Some(size) => Width::of_type(Some(size)),
+            None => Width::Bits32,
         }
-        Width::Bits32
     }
 
     /// Puts a constant into a register.
@@ -491,7 +519,6 @@ impl<'a> Expander<'a> {
 
     /// Expands an instruction that is not a terminator.
     fn expand_inst(&mut self, inst: &MInst) -> Result<()> {
-        self.record_type(inst);
         match &inst.op {
             MOp::Copy => self.expand_copy(inst),
             MOp::Load { size } => self.expand_load(inst, *size),
@@ -521,12 +548,13 @@ impl<'a> Expander<'a> {
             MOp::FSub => self.expand_float(inst, Float::Sub),
             MOp::FMul => self.expand_float(inst, Float::Mul),
             MOp::FDiv => self.expand_float(inst, Float::Div),
-            MOp::FRem => Err(CodegenError::Unsupported {
-                what: "a floating-point remainder",
-                detail: alloc::string::String::from(
-                    "the architecture has no remainder and the code may not name a helper",
-                ),
-            }),
+            MOp::FRem => self.expand_frem(inst),
+            MOp::FSqrt => self.expand_fsqrt(inst),
+            MOp::FAbs => self.expand_fabs(inst),
+            MOp::FMin => self.expand_fmin(inst, true),
+            MOp::FMax => self.expand_fmin(inst, false),
+            MOp::FDim => self.expand_fdim(inst),
+            MOp::FCopySign => self.expand_fcopysign(inst),
             MOp::ICmp { pred } => self.expand_icmp(inst, *pred),
             MOp::FCmp { pred } => self.expand_fcmp(inst, *pred),
             MOp::Select => self.expand_select(inst),
@@ -577,7 +605,6 @@ impl<'a> Expander<'a> {
 
     /// Expands the terminator of a block.
     fn expand_terminator(&mut self, inst: &MInst) -> Result<()> {
-        self.record_type(inst);
         match &inst.op {
             MOp::Br { target } => {
                 self.branch(*target);
@@ -759,7 +786,9 @@ impl<'a> Expander<'a> {
         match value {
             Loc::Gpr(reg) => self.enc().store(reg, base, 0, size)?,
             Loc::Simd(reg) => {
-                let single = matches!(self.operand_type(value_operand), Some(MType::F32));
+                // The stored value keeps its precision, which the
+                // instruction names.
+                let single = matches!(Self::operand_type(inst), Some(MType::F32));
                 self.enc().fmov_to_gp(reg::SCRATCH_A, reg, single);
                 self.enc()
                     .store(reg::SCRATCH_A, base, 0, if single { 4 } else { 8 })?;
@@ -812,8 +841,12 @@ impl<'a> Expander<'a> {
                     offset = offset.saturating_add(number.saturating_mul(i64::from(size)));
                 }
                 Loc::Gpr(index) => {
-                    let narrow =
-                        matches!(self.operand_type(*operand), Some(ty) if ty.size_in_bytes() == Some(4));
+                    // The index says how wide it is, so a narrow one
+                    // is widened before it is scaled.
+                    let narrow = matches!(
+                        Self::operand_type(inst),
+                        Some(ty) if ty.size_in_bytes() == Some(4)
+                    );
                     let index = if narrow {
                         if signed {
                             self.enc().sxtw(reg::SCRATCH_A, index);
@@ -995,7 +1028,7 @@ impl<'a> Expander<'a> {
                 detail: alloc::format!("the lane map has {} entries for {lanes} lanes", mask.len()),
             });
         }
-        let first_lanes = self.lanes_of(self.arg(inst, 0)?, lanes);
+        let first_lanes = self.lanes_of(inst, lanes);
 
         if target == second {
             self.enc().mov_vec(reg::SIMD_SCRATCH, second);
@@ -1033,9 +1066,9 @@ impl<'a> Expander<'a> {
         ty.lane_count()
     }
 
-    /// The number of lanes of the vector an operand names.
-    fn lanes_of(&self, operand: Operand, fallback: u32) -> u32 {
-        match self.operand_type(operand) {
+    /// The number of lanes of the vector an instruction reads.
+    fn lanes_of(&self, inst: &MInst, fallback: u32) -> u32 {
+        match Self::operand_type(inst) {
             Some(ty) if ty.is_vector() => ty.lane_count(),
             _ => fallback,
         }
@@ -1430,20 +1463,8 @@ impl<'a> Expander<'a> {
 
     /// Expands a floating-point operation.
     fn expand_float(&mut self, inst: &MInst, op: Float) -> Result<()> {
-        let source = self.loc(self.arg(inst, 0)?)?;
-        let Loc::Simd(first) = source else {
-            return Err(CodegenError::Target {
-                what: "combining floating-point values",
-                detail: alloc::string::String::from("the value is not a floating-point value"),
-            });
-        };
-        let second = self.loc(self.arg(inst, 1)?)?;
-        let Loc::Simd(second) = second else {
-            return Err(CodegenError::Target {
-                what: "combining floating-point values",
-                detail: alloc::string::String::from("the value is not a floating-point value"),
-            });
-        };
+        let first = self.float_operand(inst, 0)?;
+        let second = self.float_operand(inst, 1)?;
         let target = self.dest_simd(inst)?;
         let single = matches!(inst.ty, MType::F32);
         match op {
@@ -1452,6 +1473,123 @@ impl<'a> Expander<'a> {
             Float::Mul => self.enc().fmul(target, first, second, single),
             Float::Div => self.enc().fdiv(target, first, second, single),
         }
+        Ok(())
+    }
+
+    /// Expands the square root of a floating-point value.
+    fn expand_fsqrt(&mut self, inst: &MInst) -> Result<()> {
+        let target = self.dest_simd(inst)?;
+        let reg = self.float_operand(inst, 0)?;
+        let single = matches!(inst.ty, MType::F32);
+        self.enc().fsqrt(target, reg, single);
+        Ok(())
+    }
+
+    /// Expands the absolute value of a floating-point value.
+    fn expand_fabs(&mut self, inst: &MInst) -> Result<()> {
+        let target = self.dest_simd(inst)?;
+        let reg = self.float_operand(inst, 0)?;
+        let single = matches!(inst.ty, MType::F32);
+        self.enc().fabs(target, reg, single);
+        Ok(())
+    }
+
+    /// Expands the smaller or the larger of two floating-point
+    /// values.
+    ///
+    /// The instruction of the architecture returns a value that is not
+    /// a number when one of the two is not one.
+    fn expand_fmin(&mut self, inst: &MInst, smallest: bool) -> Result<()> {
+        let target = self.dest_simd(inst)?;
+        let first = self.float_operand(inst, 0)?;
+        let second = self.float_operand(inst, 1)?;
+        let single = matches!(inst.ty, MType::F32);
+        if smallest {
+            self.enc().fmin(target, first, second, single);
+        } else {
+            self.enc().fmax(target, first, second, single);
+        }
+        Ok(())
+    }
+
+    /// Expands the positive difference of two floating-point values.
+    ///
+    /// The difference of the values is clamped at zero, which is what
+    /// the difference of a value that is not the larger one comes to.
+    fn expand_fdim(&mut self, inst: &MInst) -> Result<()> {
+        let target = self.dest_simd(inst)?;
+        let first = self.float_operand(inst, 0)?;
+        let second = self.float_operand(inst, 1)?;
+        let single = matches!(inst.ty, MType::F32);
+        self.enc().fsub(target, first, second, single);
+        // The zero the difference is clamped at.
+        self.materialize(reg::SCRATCH_A, 0, Width::Bits64);
+        self.enc()
+            .fmov_from_gp(reg::SIMD_SCRATCH, reg::SCRATCH_A, single);
+        self.enc()
+            .fmax(target, target, reg::SIMD_SCRATCH, single);
+        Ok(())
+    }
+
+    /// Expands the magnitude of one floating-point value with the
+    /// sign of another.
+    ///
+    /// The sign of the second value is copied into the result with a
+    /// mask that holds the sign bit alone.
+    fn expand_fcopysign(&mut self, inst: &MInst) -> Result<()> {
+        let target = self.dest_simd(inst)?;
+        let magnitude = self.float_operand(inst, 0)?;
+        let sign = self.float_operand(inst, 1)?;
+        let single = matches!(inst.ty, MType::F32);
+        // The magnitude comes to the destination first: the mask and
+        // the sign take the scratches afterwards.
+        self.enc().mov_vec(target, magnitude);
+        // The mask of the sign bit.
+        let mask = if single {
+            0x0000_0000_8000_0000u64
+        } else {
+            0x8000_0000_0000_0000u64
+        };
+        self.materialize(reg::SCRATCH_A, mask, Width::Bits64);
+        self.enc()
+            .fmov_from_gp(reg::SIMD_SCRATCH, reg::SCRATCH_A, false);
+        // The sign of the second value, and the magnitude with that
+        // sign.
+        self.enc()
+            .and_vec(reg::SIMD_SCRATCH_B, sign, reg::SIMD_SCRATCH);
+        self.enc()
+            .eor_vec(target, target, reg::SIMD_SCRATCH_B);
+        Ok(())
+    }
+
+    /// Expands the remainder of a division of two floating-point
+    /// values.
+    ///
+    /// The architecture has no remainder instruction, so the
+    /// quotient of a division that is truncated towards zero is
+    /// computed first, and the remainder follows from it.
+    fn expand_frem(&mut self, inst: &MInst) -> Result<()> {
+        let target = self.dest_simd(inst)?;
+        let first = self.float_operand(inst, 0)?;
+        let second = self.float_operand(inst, 1)?;
+        let single = matches!(inst.ty, MType::F32);
+        // The dividend and the divisor move to registers of their
+        // own, so that the quotient can be computed without losing
+        // them.
+        self.enc().mov_vec(target, first);
+        self.enc().mov_vec(reg::SIMD_SCRATCH, second);
+        // The quotient of the division.
+        self.enc()
+            .fdiv(reg::SIMD_SCRATCH_B, target, reg::SIMD_SCRATCH, single);
+        // The quotient of a division that is truncated towards zero.
+        self.enc()
+            .fcvtzs(reg::SCRATCH_A, reg::SIMD_SCRATCH_B, single, true);
+        self.enc()
+            .scvtf(reg::SIMD_SCRATCH_B, reg::SCRATCH_A, single);
+        // The dividend less the quotient times the divisor.
+        self.enc()
+            .fmls(reg::SIMD_SCRATCH_B, target, reg::SIMD_SCRATCH, single);
+        self.enc().mov_vec(target, reg::SIMD_SCRATCH_B);
         Ok(())
     }
 
@@ -1511,7 +1649,7 @@ impl<'a> Expander<'a> {
                 detail: alloc::string::String::from("a value is not a floating-point value"),
             });
         };
-        let single = matches!(self.operand_type(self.arg(inst, 0)?), Some(MType::F32));
+        let single = !matches!(Self::operand_type(inst), Some(MType::F64));
         self.enc().fcmp(a, b, single);
         match pred {
             FPred::Oeq => self.enc().cset(target, Cond::Eq, Width::Bits32),
@@ -1591,9 +1729,7 @@ impl<'a> Expander<'a> {
         let source = self.loc(operand)?;
         let target = self.dest_gpr(inst)?;
         let width = self.int_width(inst);
-        let source_size = self
-            .operand_type(operand)
-            .and_then(MType::size_in_bytes);
+        let source_size = Self::operand_type(inst).and_then(MType::size_in_bytes);
         match (source, source_size) {
             (Loc::Gpr(reg), Some(1)) => self.enc().uxtb(target, reg),
             (Loc::Gpr(reg), Some(2)) => self.enc().uxth(target, reg),
@@ -1622,9 +1758,7 @@ impl<'a> Expander<'a> {
         let source = self.loc(operand)?;
         let target = self.dest_gpr(inst)?;
         let width = self.int_width(inst);
-        let source_size = self
-            .operand_type(operand)
-            .and_then(MType::size_in_bytes);
+        let source_size = Self::operand_type(inst).and_then(MType::size_in_bytes);
         match (source, source_size) {
             (Loc::Gpr(reg), Some(1)) => {
                 if width.is_64() {
@@ -1665,9 +1799,7 @@ impl<'a> Expander<'a> {
         let source = self.loc(operand)?;
         let target = self.dest_gpr(inst)?;
         let width = self.int_width(inst);
-        let source_size = self
-            .operand_type(operand)
-            .and_then(MType::size_in_bytes);
+        let source_size = Self::operand_type(inst).and_then(MType::size_in_bytes);
         match (source, source_size) {
             (Loc::Gpr(reg), Some(1)) => self.enc().uxtb(target, reg),
             (Loc::Gpr(reg), Some(2)) => self.enc().uxth(target, reg),
@@ -1692,15 +1824,9 @@ impl<'a> Expander<'a> {
     /// Expands the conversion of a floating-point value to an
     /// integer.
     fn expand_fp_to_int(&mut self, inst: &MInst, signed: bool) -> Result<()> {
-        let source = self.loc(self.arg(inst, 0)?)?;
-        let Loc::Simd(reg) = source else {
-            return Err(CodegenError::Target {
-                what: "converting a value",
-                detail: alloc::string::String::from("the value is not a floating-point value"),
-            });
-        };
+        let reg = self.float_operand(inst, 0)?;
         let target = self.dest_gpr(inst)?;
-        let single = matches!(self.operand_type(self.arg(inst, 0)?), Some(MType::F32));
+        let single = !matches!(Self::operand_type(inst), Some(MType::F64));
         let wide = self.int_width(inst).is_64();
         if signed {
             self.enc().fcvtzs(target, reg, single, wide);
@@ -1721,22 +1847,28 @@ impl<'a> Expander<'a> {
     /// Expands the conversion of an integer to a floating-point
     /// value.
     fn expand_int_to_fp(&mut self, inst: &MInst, signed: bool) -> Result<()> {
-        let source = self.loc(self.arg(inst, 0)?)?;
-        let Loc::Gpr(reg) = source else {
-            return Err(CodegenError::Target {
-                what: "converting a value",
-                detail: alloc::string::String::from("the value is not an integer"),
-            });
-        };
+        let reg = self.int_operand(inst, 0)?;
         let target = self.dest_simd(inst)?;
         let single = matches!(inst.ty, MType::F32);
-        let wide = self.compare_width(inst).is_64();
+        // The source is read at the width the instruction names: a
+        // thirty-two-bit value keeps its bits in the low half of the
+        // register, so it is widened before it is converted.
+        let wide = Self::operand_type(inst).and_then(MType::size_in_bytes) == Some(8);
+        let reg = if wide {
+            reg
+        } else {
+            if signed {
+                self.enc().sxtw(reg::SCRATCH_A, reg);
+            } else {
+                self.enc().uxtw(reg::SCRATCH_A, reg);
+            }
+            reg::SCRATCH_A
+        };
         if signed {
             self.enc().scvtf(target, reg, single);
         } else {
             self.enc().ucvtf(target, reg, single);
         }
-        let _ = wide;
         Ok(())
     }
 
@@ -1797,7 +1929,7 @@ impl<'a> Expander<'a> {
                 self.enc().mov_reg(target, reg, width);
             }
             (Some(Loc::Gpr(target)), Loc::Simd(reg)) => {
-                let single = matches!(self.operand_type(operand), Some(MType::F32));
+                let single = !matches!(Self::operand_type(inst), Some(MType::F64));
                 self.enc().fmov_to_gp(target, reg, single);
             }
             (Some(Loc::Simd(target)), Loc::Gpr(reg)) => {
@@ -1835,9 +1967,15 @@ impl<'a> Expander<'a> {
 
         let mut integers = 0u32;
         let mut floats = 0u32;
-        for operand in inst.args.as_slice() {
+        for (index, operand) in inst.args.as_slice().iter().enumerate() {
             let value = self.loc(*operand)?;
-            let single = !matches!(self.operand_type(*operand), Some(MType::F64));
+            // The arguments of a call have types of their own, which
+            // the callee's own parameters name.
+            let argument_ty = self.argument_type(callee, index);
+            // The wide move is right for a value of either
+            // precision: a single-precision one keeps its bits in the
+            // low half of the register.
+            let single = matches!(argument_ty, Some(MType::F32));
             match value {
                 Loc::Gpr(reg) => {
                     if integers >= 8 {
@@ -1849,8 +1987,7 @@ impl<'a> Expander<'a> {
                         });
                     }
                     if reg != integers as u8 {
-                        let width = self
-                            .operand_type(*operand)
+                        let width = argument_ty
                             .and_then(MType::size_in_bytes)
                             .map_or(Width::Bits64, |size| Width::of_type(Some(size)));
                         self.enc().mov_reg(integers as u8, reg, width);

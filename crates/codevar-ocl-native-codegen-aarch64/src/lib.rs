@@ -170,7 +170,9 @@ pub fn register_model() -> RegModel {
 
     let mut float_regs: Vec<PReg> = Vec::new();
     let mut vec_regs: Vec<PReg> = Vec::new();
-    for index in 8u8..=31 {
+    // The last two registers of the file are the scratches of the
+    // back end, so they are never given to a value.
+    for index in 8u8..reg::SIMD_SCRATCH_B {
         float_regs.push(reg::simd(index));
         vec_regs.push(reg::simd(index));
     }
