@@ -122,8 +122,6 @@ struct Active {
     value: VReg,
     /// The register.
     register: PReg,
-    /// The class of the register.
-    class: RegClass,
     /// The position the value is live until.
     end: u32,
     /// Whether the interval belongs to a reloaded value, which is
@@ -161,7 +159,17 @@ struct Item {
 struct Allocator<'a> {
     /// The register file of the target.
     registers: &'a RegModel,
+    /// The registers of every class, without the argument registers.
+    ///
+    /// A target whose vectors live in the same file as its floats
+    /// lists the same registers in two classes, so the pools overlap.
+    pools: [Vec<PReg>; 3],
     /// The free registers of every class.
+    ///
+    /// A register that belongs to two classes is in the free list of
+    /// both until it is taken: taking it removes it from every list
+    /// it belongs to, and freeing it returns it to every list, so a
+    /// register is never handed out to two classes at the same time.
     free: [Vec<PReg>; 3],
     /// The intervals that hold a register.
     active: Vec<Active>,
@@ -200,8 +208,21 @@ struct Allocator<'a> {
 impl<'a> Allocator<'a> {
     /// Creates an allocator over the register file of `registers`.
     fn new(registers: &'a RegModel) -> Self {
+        let mut pools: [Vec<PReg>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        for class in [RegClass::Integer, RegClass::Float, RegClass::Vector] {
+            let index = class_index(class);
+            for &reg in registers.regs_for(class) {
+                if registers.arg_regs.contains(&reg) {
+                    continue;
+                }
+                if !pools[index].contains(&reg) {
+                    pools[index].push(reg);
+                }
+            }
+        }
         Self {
             registers,
+            pools,
             free: [Vec::new(), Vec::new(), Vec::new()],
             active: Vec::new(),
             def_pos: Vec::new(),
@@ -252,14 +273,8 @@ impl<'a> Allocator<'a> {
         self.free[0].clear();
         self.free[1].clear();
         self.free[2].clear();
-        for class in [RegClass::Integer, RegClass::Float, RegClass::Vector] {
-            let list = self.registers.regs_for(class);
-            for &reg in list {
-                if self.registers.arg_regs.contains(&reg) {
-                    continue;
-                }
-                self.free[class_index(class)].push(reg);
-            }
+        for index in 0..3 {
+            self.free[index].extend(self.pools[index].iter().copied());
         }
         self.active.clear();
         self.def_pos.clear();
@@ -429,7 +444,6 @@ impl<'a> Allocator<'a> {
             self.active.push(Active {
                 value: VReg::new(0),
                 register,
-                class: item.class,
                 end: position,
                 transient: true,
             });
@@ -444,7 +458,6 @@ impl<'a> Allocator<'a> {
         self.active.push(Active {
             value,
             register,
-            class: item.class,
             end,
             transient: false,
         });
@@ -456,7 +469,7 @@ impl<'a> Allocator<'a> {
         while index < self.active.len() {
             if self.active[index].end < position {
                 let entry = self.active.remove(index);
-                self.free[class_index(entry.class)].push(entry.register);
+                self.release_register(entry.register);
             } else {
                 index += 1;
             }
@@ -464,19 +477,46 @@ impl<'a> Allocator<'a> {
     }
 
     /// Takes a free register of the given class.
+    ///
+    /// A register that belongs to more than one class leaves every
+    /// list it is in, so that no other class is handed the same
+    /// register while this one holds it.
     fn take_register(&mut self, class: RegClass) -> Option<PReg> {
-        let list = &mut self.free[class_index(class)];
-        if list.is_empty() {
-            return None;
+        let index = class_index(class);
+        let register = *self.free[index].first()?;
+        for other in 0..3 {
+            if other == index || !self.pools[other].contains(&register) {
+                continue;
+            }
+            if let Some(position) = self.free[other]
+                .iter()
+                .position(|held| *held == register)
+            {
+                self.free[other].remove(position);
+            }
         }
-        Some(list.remove(0))
+        self.free[index].remove(0);
+        Some(register)
+    }
+
+    /// Returns a register to every class whose pool holds it.
+    fn release_register(&mut self, register: PReg) {
+        for index in 0..3 {
+            if self.pools[index].contains(&register) {
+                self.free[index].push(register);
+            }
+        }
     }
 
     /// The interval to spill to make room.
+    ///
+    /// Only an interval whose register belongs to the pool of the
+    /// class can be spilled: freeing a register of another pool would
+    /// not make room for the value that needs one.
     fn pick_victim(&self, class: RegClass) -> Option<VReg> {
         let mut best: Option<&Active> = None;
         for entry in &self.active {
-            if entry.transient || entry.class != class {
+            if entry.transient || !self.pools[class_index(class)].contains(&entry.register) {
                 continue;
             }
             match best {
@@ -550,7 +590,7 @@ impl<'a> Allocator<'a> {
         while index < self.active.len() {
             if self.active[index].value == value && !self.active[index].transient {
                 let entry = self.active.remove(index);
-                self.free[class_index(entry.class)].push(entry.register);
+                self.release_register(entry.register);
                 return;
             }
             index += 1;
@@ -589,15 +629,18 @@ impl<'a> Allocator<'a> {
                                 "the reloaded value has no register",
                             )
                         })?;
-                        insts.push(MInst::def_physical(
-                            register,
-                            ty,
-                            MOp::SpillLoad {
-                                offset: reload.offset,
-                                size: reload.size,
-                            },
-                            Operands::none(),
-                        ));
+                        insts.push(
+                            MInst::def_physical(
+                                register,
+                                ty.clone(),
+                                MOp::SpillLoad {
+                                    offset: reload.offset,
+                                    size: reload.size,
+                                },
+                                Operands::none(),
+                            )
+                            .with_operand_type(ty),
+                        );
                         added += 1;
                     }
                 }
@@ -625,13 +668,14 @@ impl<'a> Allocator<'a> {
         let ty = self.type_of(value);
         let size = self.value_size(&ty);
         Ok(MInst::none(
-            ty,
+            ty.clone(),
             MOp::SpillStore {
                 offset: self.slot[index],
                 size,
             },
             Operands::one(Operand::Physical(register)),
-        ))
+        )
+        .with_operand_type(ty))
     }
 
     /// Rewrites the destination of one instruction.
@@ -643,9 +687,8 @@ impl<'a> Allocator<'a> {
         let Some(dest) = inst.dest_vreg() else {
             return Ok(());
         };
-        let register = self.assigned[dest.index()].ok_or_else(|| {
-            allocation_error("assigning a register", "a virtual register has no register")
-        })?;
+        let register = self.assigned[dest.index()]
+            .ok_or_else(|| allocation_error("assigning a register", "a virtual register has no register"))?;
         inst.dest = Some(Destination::Physical(register));
         Ok(())
     }
@@ -936,6 +979,98 @@ mod tests {
         assert!(
             matches!(&error, CodegenError::Allocation { .. }),
             "unexpected error: {error}"
+        );
+    }
+
+    /// A register model whose vectors live in the same file as its
+    /// floats, the way the targets that keep them together publish
+    /// it.
+    fn shared_model() -> RegModel {
+        let mut model = model(8);
+        model.vec_regs = model.float_regs.clone();
+        model
+    }
+
+    /// A function with a floating-point value and a vector value that
+    /// are live at the same time.
+    ///
+    /// The target keeps its vectors in the same file as its floats, so
+    /// the two values must not be given the same register.
+    fn float_and_vector_function() -> MirFunction {
+        let mut function = MirFunction::new("mixed");
+        let scalar = function.new_vreg(MType::F32);
+        let vector = function.new_vreg(MType::Vec {
+            lanes: 4,
+            elem: Box::new(MType::F32),
+        });
+        let sum = function.new_vreg(MType::F32);
+        let mut block = MirBlock::new("entry");
+        block.insts.push(MInst::def(
+            scalar,
+            MType::F32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(1)),
+        ));
+        block.insts.push(MInst::def(
+            vector,
+            MType::Vec {
+                lanes: 4,
+                elem: Box::new(MType::F32),
+            },
+            MOp::VecSplat,
+            Operands::one(Operand::Immediate(2)),
+        ));
+        // The two values are live at the same time: the sum reads
+        // the scalar and the vector is read afterwards.
+        block.insts.push(MInst::def(
+            sum,
+            MType::F32,
+            MOp::FAdd,
+            Operands::two(Operand::Virtual(scalar), Operand::Virtual(scalar)),
+        ));
+        block.insts.push(MInst::none(
+            MType::Void,
+            MOp::Ret,
+            Operands::one(Operand::Virtual(vector)),
+        ));
+        function.push_block(block);
+        function
+    }
+
+    #[test]
+    fn a_float_and_a_vector_never_share_a_register() {
+        let mut machine = module(float_and_vector_function());
+        allocate(&mut machine, &shared_model()).expect("the allocation succeeds");
+        let function = &machine.functions[0];
+        let mut registers: Vec<u16> = Vec::new();
+        for block in &function.blocks {
+            for inst in &block.insts {
+                if let Some(dest) = inst.dest_reg() {
+                    registers.push(dest.number());
+                }
+            }
+        }
+        assert!(
+            registers
+                .windows(2)
+                .all(|pair| pair[0] != pair[1]),
+            "two values share a register: {registers:?}"
+        );
+        // The two classes draw from the same file, so the two values
+        // are in two different registers of it.
+        let mut floats: Vec<u16> = Vec::new();
+        for block in &function.blocks {
+            for inst in &block.insts {
+                if let Some(dest) = inst.dest_reg()
+                    && dest.number() >= 100
+                {
+                    floats.push(dest.number());
+                }
+            }
+        }
+        assert!(
+            floats.len() >= 2,
+            "the two values are in the floating-point file: {floats:?}"
         );
     }
 
