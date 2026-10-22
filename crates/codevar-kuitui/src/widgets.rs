@@ -105,14 +105,11 @@ impl Widget for Column {
         }
 
         let mut total = gaps;
-        let mut rigid = 0.0;
         let mut total_flex = 0.0;
         for index in 0..count {
             total += sizes[index].height;
             if flexes[index] > 0.0 {
                 total_flex += flexes[index];
-            } else {
-                rigid += sizes[index].height;
             }
         }
 
@@ -135,7 +132,6 @@ impl Widget for Column {
             }
         }
 
-        let _ = rigid;
         let width = sizes
             .iter()
             .map(|size| size.width)
