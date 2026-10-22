@@ -198,14 +198,8 @@ mod tests {
 
     #[test]
     fn scalar_arguments_carry_their_size() {
-        assert_eq!(
-            argument_kind(&MType::I32),
-            ArgKind::Scalar { size: 4 }
-        );
-        assert_eq!(
-            argument_kind(&MType::F64),
-            ArgKind::Scalar { size: 8 }
-        );
+        assert_eq!(argument_kind(&MType::I32), ArgKind::Scalar { size: 4 });
+        assert_eq!(argument_kind(&MType::F64), ArgKind::Scalar { size: 8 });
     }
 
     #[test]

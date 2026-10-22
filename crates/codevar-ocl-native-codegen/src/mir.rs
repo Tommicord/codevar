@@ -560,9 +560,28 @@ pub enum MOp {
     /// Floating-point division.
     FDiv,
     /// Floating-point remainder.
+    ///
+    /// The remainder is the one of a division that is truncated
+    /// towards zero, and it has the sign of the dividend.
     FRem,
     /// Floating-point negation.
     FNeg,
+    /// Floating-point square root.
+    FSqrt,
+    /// Floating-point absolute value.
+    FAbs,
+    /// The smaller of two floating-point values.
+    FMin,
+    /// The larger of two floating-point values.
+    FMax,
+    /// The positive difference of two floating-point values.
+    ///
+    /// The difference of the two values, or zero when the first is
+    /// not the larger one.
+    FDim,
+    /// The magnitude of one floating-point value with the sign of
+    /// another.
+    FCopySign,
     /// Integer comparison; the result is one bit wide.
     ICmp {
         /// The predicate.
@@ -713,12 +732,42 @@ impl Destination {
 }
 
 /// One machine instruction.
+///
+/// The instruction carries the type of the value it writes
+/// ([`MInst::ty`]) and the type of the values it reads
+/// ([`MInst::operand_ty`]).  The second type is what tells a back end
+/// how wide a comparison is, how precise a floating-point operation
+/// is, how large a load or a store is, and how large the elements of a
+/// vector are; without it a back end would have to guess the width of
+/// an operand from the register that happens to hold it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MInst {
     /// The register the instruction writes, when it writes one.
     pub dest: Option<Destination>,
     /// The type of the written value.
     pub ty: MType,
+    /// The type of the values the instruction reads.
+    ///
+    /// The meaning depends on the operation:
+    ///
+    /// * A comparison reads two values of the type of the compared
+    ///   values, which is the width the comparison runs at.
+    /// * A load reads the value the pointer points at, so the type is
+    ///   the pointee type.
+    /// * A store writes the value its second operand holds, so the
+    ///   type is the type of the stored value.
+    /// * A conversion reads a value of the source type, which is the
+    ///   width the conversion reads its operand at.
+    /// * A vector operation reads or writes a vector of this type; the
+    ///   type of a lane — the element type — is the element type of
+    ///   the vector.
+    /// * An address computation reads an index of this type, which
+    ///   says how wide the index is.
+    ///
+    /// `None` means that the operation reads no value, or that the
+    /// type of the values it reads is of no interest: a branch, a
+    /// return of nothing, a frame operation.
+    pub operand_ty: Option<MType>,
     /// The operation.
     pub op: MOp,
     /// The operands.
@@ -727,36 +776,78 @@ pub struct MInst {
 
 impl MInst {
     /// Builds an instruction that writes the virtual register `dest`.
+    ///
+    /// The type of the values the instruction reads is left unknown;
+    /// [`MInst::with_operand_type`] names it.
     #[must_use]
     pub fn def(dest: VReg, ty: MType, op: MOp, args: Operands) -> Self {
         Self {
             dest: Some(Destination::Virtual(dest)),
             ty,
+            operand_ty: None,
             op,
             args,
         }
     }
 
     /// Builds an instruction that writes the physical register `dest`.
+    ///
+    /// The type of the values the instruction reads is left unknown;
+    /// [`MInst::with_operand_type`] names it.
     #[must_use]
     pub fn def_physical(dest: PReg, ty: MType, op: MOp, args: Operands) -> Self {
         Self {
             dest: Some(Destination::Physical(dest)),
             ty,
+            operand_ty: None,
             op,
             args,
         }
     }
 
     /// Builds an instruction that writes no register.
+    ///
+    /// The type of the values the instruction reads is left unknown;
+    /// [`MInst::with_operand_type`] names it.
     #[must_use]
     pub fn none(ty: MType, op: MOp, args: Operands) -> Self {
         Self {
             dest: None,
             ty,
+            operand_ty: None,
             op,
             args,
         }
+    }
+
+    /// Names the type of the values the instruction reads.
+    ///
+    /// The instruction is returned unchanged apart from the type, so
+    /// the call reads as one expression:
+    ///
+    /// ```
+    /// use codevar_ocl_native_codegen::mir::{MInst, MOp, MType, Operand, Operands, VReg};
+    ///
+    /// let instruction = MInst::def(
+    ///     VReg::new(0),
+    ///     MType::I1,
+    ///     MOp::ICmp { pred: codevar_ocl_native_codegen::mir::IPred::Eq },
+    ///     Operands::two(Operand::Immediate(1), Operand::Immediate(2)),
+    /// )
+    /// .with_operand_type(MType::I64);
+    /// assert_eq!(instruction.operand_ty, Some(MType::I64));
+    /// ```
+    #[must_use]
+    pub fn with_operand_type(mut self, operand_ty: MType) -> Self {
+        self.operand_ty = Some(operand_ty);
+        self
+    }
+
+    /// The type of the values the instruction reads, when it is known.
+    #[must_use]
+    #[inline]
+    pub fn operand_type(&self) -> Option<&MType> {
+        self.operand_ty.as_ref()
     }
 
     /// The register the instruction writes, when it writes one that
@@ -1093,6 +1184,20 @@ mod tests {
         assert_eq!(second.index(), 1);
         assert_eq!(function.vreg_type(first), Some(&MType::I32));
         assert_eq!(function.vreg_type(second), Some(&MType::F32));
+    }
+
+    #[test]
+    fn an_instruction_names_the_type_of_its_operands() {
+        let instruction = MInst::def(
+            VReg::new(0),
+            MType::I1,
+            MOp::ICmp { pred: IPred::Eq },
+            Operands::two(Operand::Immediate(1), Operand::Immediate(2)),
+        );
+        assert_eq!(instruction.operand_type(), None, "the type is unknown");
+        let instruction = instruction.with_operand_type(MType::I64);
+        assert_eq!(instruction.operand_type(), Some(&MType::I64));
+        assert_eq!(instruction.ty, MType::I1, "the result keeps its own type");
     }
 
     #[test]
