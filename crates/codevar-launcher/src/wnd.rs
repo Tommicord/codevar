@@ -47,6 +47,8 @@ use codevar_time_core::TimeDuration;
 pub enum WndBackendId {
     /// Native Wayland window driven through `xdg-shell`.
     Wayland,
+    /// Native Win32 window driven through the message queue.
+    Win32,
 }
 
 impl WndBackendId {
@@ -55,6 +57,7 @@ impl WndBackendId {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Wayland => "wayland",
+            Self::Win32 => "win32",
         }
     }
 }
@@ -135,6 +138,12 @@ pub enum WndEvent {
     CloseRequested,
     /// The compositor resized the window to the carried size.
     Resized(WndSize),
+    /// The window asked for a new frame to be drawn.
+    ///
+    /// Backends without a drawing surface (the Win32 one has none
+    /// yet) report the request so the driver can present a new frame
+    /// of its own.
+    RedrawRequested,
 }
 
 /// Errors reported by window operations.

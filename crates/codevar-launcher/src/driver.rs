@@ -72,6 +72,7 @@ fn loop_handler() -> Exit {
     let mut on_event = |event: WndEvent| match event {
         WndEvent::CloseRequested => log_info!("wnd close requested"),
         WndEvent::Resized(size) => log_info!("wnd resized to {}", size),
+        WndEvent::RedrawRequested => log_debug!("wnd redraw requested"),
     };
     while window.is_open() {
         if let Err(error) = poll_window(window.as_mut(), &mut on_event) {
