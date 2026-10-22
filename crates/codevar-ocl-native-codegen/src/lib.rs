@@ -78,6 +78,6 @@ pub mod target;
 pub mod vecz;
 
 pub use error::{CodegenError, Result};
-pub use mir::{MInst, MOp, MirBlock, MirFunction, MirModule, MType, Operand, Operands, VReg};
+pub use mir::{MInst, MOp, MType, MirBlock, MirFunction, MirModule, Operand, Operands, VReg};
 pub use pipeline::{CodegenOptions, CompiledCode, compile_module};
 pub use target::{CodeImage, NativeTarget, RegModel};
