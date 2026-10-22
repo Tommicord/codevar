@@ -25,15 +25,28 @@
 //! # The three layers
 //!
 //! 1. **Composition** — a tree of [`Node`]s is built by a *content*
-//!    closure. Re-running the closure *recomposes* the tree: nodes are
-//!    matched against their previous counterparts by [`Key`], so widget
-//!    state survives a recomposition. Values that must outlive a
-//!    recomposition are created with [`Composer::remember`].
+//!    closure. Re-running the closure *recomposes* the tree. A value
+//!    that must outlive a recomposition is created with
+//!    [`Composer::remember`], exactly as Compose keeps a value in a
+//!    `remember` block; a value that is *read* by a widget and
+//!    *written* by the application is a [`MutableState`], which marks
+//!    the composition dirty when it is written.
 //! 2. **Layout** — the tree is measured and placed in two passes, with
 //!    the same *measure / place* split Jetpack Compose uses
 //!    ([`Widget::measure`], [`Widget::place`]).
 //! 3. **Painting** — the placed tree is recorded into a [`DrawList`],
 //!    a flat sequence of [`DrawOp`]s that a backend replays.
+//!
+//! # Where Kuitui stands
+//!
+//! Kuitui is deliberately *not* an immediate-mode library like `egui`:
+//! the tree is retained and only the parts that changed are rebuilt,
+//! which is what a code editor needs, where the tree is large and
+//! most of it does not change from one frame to the next. It is not a
+//! retained-mode library with widgets that own their children either:
+//! the containers lay out the children the tree gave them, which is
+//! the split Compose makes between a composable that emits children
+//! and the layout that arranges them.
 //!
 //! # Writing a widget
 //!
