@@ -23,7 +23,7 @@
 
 use std::vec::Vec;
 
-use codevar_ocl_native_codegen::mir::{MirModule, MOp, Operand, SymId};
+use codevar_ocl_native_codegen::mir::{MOp, MirModule, Operand, SymId};
 use codevar_ocl_native_codegen::pipeline::{CodegenOptions, compile_module};
 use codevar_ocl_native_codegen::target::{CodeImage, NativeTarget, RegModel};
 
@@ -49,7 +49,7 @@ impl RecordingTarget {
     /// Creates the target with a small register file.
     fn new() -> Self {
         let int_regs = (0..8)
-            .map(|number| codevar_ocl_native_codegen::mir::PReg::new(number))
+            .map(codevar_ocl_native_codegen::mir::PReg::new)
             .collect();
         Self {
             registers: RegModel {
@@ -77,7 +77,11 @@ impl NativeTarget for RecordingTarget {
         &self.registers
     }
 
-    fn lower_module(&self, module: &MirModule, entry: SymId) -> Result<CodeImage, codevar_ocl_native_codegen::error::CodegenError> {
+    fn lower_module(
+        &self,
+        module: &MirModule,
+        entry: SymId,
+    ) -> Result<CodeImage, codevar_ocl_native_codegen::error::CodegenError> {
         *self.seen.borrow_mut() = Some(module.clone());
         let _ = entry;
         Ok(CodeImage {
@@ -90,23 +94,34 @@ impl NativeTarget for RecordingTarget {
 
 /// Compiles the kernel and returns the machine module the target saw.
 fn compile() -> MirModule {
-    let module = codevar_ocl_ir::lower::lower_source(KERNEL).expect("the kernel lowers");
+    let module = match codevar_ocl_ir::lower::lower_source(KERNEL) {
+        Ok(module) => module,
+        Err(error) => panic!("the kernel lowers: {error}"),
+    };
     let target = RecordingTarget::new();
     let options = CodegenOptions::default();
-    compile_module(&module, &target, &options).expect("the kernel compiles");
-    target.seen.into_inner().expect("the target saw a module")
+    if let Err(error) = compile_module(&module, &target, &options) {
+        panic!("the kernel compiles: {error}");
+    }
+    target
+        .seen
+        .into_inner()
+        .unwrap_or_else(|| panic!("the target saw a module"))
 }
 
 #[test]
 fn the_entry_function_takes_the_work_item_pointer() {
     let module = compile();
-    let entry = module.functions.first().expect("the module has a function");
+    let entry = module
+        .functions
+        .first()
+        .unwrap_or_else(|| panic!("the module has a function"));
     assert!(entry.is_entry);
     let work_item = entry
         .blocks
         .first()
         .and_then(|block| block.insts.first())
-        .expect("the entry block has an instruction");
+        .unwrap_or_else(|| panic!("the entry block has an instruction"));
     assert!(
         matches!(work_item.op, MOp::Param { index: 0 }),
         "the entry block does not read the work-item pointer"
@@ -116,7 +131,10 @@ fn the_entry_function_takes_the_work_item_pointer() {
 #[test]
 fn the_kernel_arguments_are_read_from_the_argument_block() {
     let module = compile();
-    let entry = module.functions.first().expect("the module has a function");
+    let entry = module
+        .functions
+        .first()
+        .unwrap_or_else(|| panic!("the module has a function"));
     let loads: Vec<_> = entry
         .blocks
         .iter()
@@ -137,7 +155,10 @@ fn the_kernel_arguments_are_read_from_the_argument_block() {
 #[test]
 fn the_work_item_query_becomes_a_read_of_the_work_item() {
     let module = compile();
-    let entry = module.functions.first().expect("the module has a function");
+    let entry = module
+        .functions
+        .first()
+        .unwrap_or_else(|| panic!("the module has a function"));
     let reads: Vec<_> = entry
         .blocks
         .iter()
@@ -171,7 +192,10 @@ fn every_operand_and_destination_is_physical() {
 #[test]
 fn the_frame_is_reserved_for_the_stack_slots() {
     let module = compile();
-    let entry = module.functions.first().expect("the module has a function");
+    let entry = module
+        .functions
+        .first()
+        .unwrap_or_else(|| panic!("the module has a function"));
     assert!(
         entry.frame_size >= entry.fixed_frame_size,
         "the frame is smaller than the slots the function reserved"
