@@ -79,11 +79,13 @@ use codevar_ocl_ir::ir::{
     ValueId, ValueKind,
 };
 
-use crate::abi::{WorkItemSource, argument_kind, extended_instruction_name, math_op, work_item_source};
+use crate::abi::{
+    MathOp, WorkItemSource, argument_kind, extended_instruction_name, math_op, work_item_source,
+};
 use crate::error::{CodegenError, Result};
 use crate::mir::{
-    Destination, FPred, IPred, MInst, MOp, MType, MirBlock, MirFunction, MirModule, Operand, Operands,
-    SymId, SymbolKind, VReg,
+    FPred, IPred, MInst, MOp, MType, MirBlock, MirFunction, MirModule, Operand, Operands, SymId, SymbolKind,
+    VReg,
 };
 
 /// The alignment every frame is padded to.
@@ -129,6 +131,42 @@ fn selection_error(what: &'static str, detail: impl Into<String>) -> CodegenErro
         what,
         detail: detail.into(),
     }
+}
+
+/// The comparison an integer minimum or maximum stands for.
+///
+/// The signed and unsigned minima and maxima of the dialect are four
+/// extended instructions; each of them is a comparison followed by a
+/// selection, so the comparison is named here.
+fn integer_min_max(name: &str) -> Option<IPred> {
+    let predicate = match name {
+        "s_min" => IPred::Slt,
+        "s_max" => IPred::Sgt,
+        "u_min" => IPred::Ult,
+        "u_max" => IPred::Ugt,
+        _ => return None,
+    };
+    Some(predicate)
+}
+
+/// The comparison an integer clamp stands for.
+///
+/// The clamp of the dialect is the smaller of the larger value and the
+/// lower bound, compared with the upper bound; the signed and
+/// unsigned forms differ in the comparison they use.
+fn integer_clamp(name: &str) -> Option<(IPred, IPred)> {
+    let predicates = match name {
+        "s_clamp" => (IPred::Sgt, IPred::Slt),
+        "u_clamp" => (IPred::Ugt, IPred::Ult),
+        _ => return None,
+    };
+    Some(predicates)
+}
+
+/// True when the extended instruction is the absolute value of an
+/// unsigned integer, which is the value itself.
+fn unsigned_absolute(name: &str) -> bool {
+    name == "u_abs"
 }
 
 /// Counts how often every value of the module is used.
@@ -668,20 +706,26 @@ impl FnSel<'_> {
             let work_item = self.out.new_vreg(pointer.clone());
             self.work_item = Some(work_item);
             self.out.params.push(work_item);
-            insts.push(MInst::def(
-                work_item,
-                pointer.clone(),
-                MOp::Param { index: 0 },
-                Operands::none(),
-            ));
+            insts.push(
+                MInst::def(
+                    work_item,
+                    pointer.clone(),
+                    MOp::Param { index: 0 },
+                    Operands::none(),
+                )
+                .with_operand_type(pointer.clone()),
+            );
             if !self.def.args.is_empty() {
                 let base = self.out.new_vreg(pointer.clone());
-                insts.push(MInst::def(
-                    base,
-                    pointer,
-                    MOp::ArgBlockBase,
-                    Operands::one(Operand::Virtual(work_item)),
-                ));
+                insts.push(
+                    MInst::def(
+                        base,
+                        pointer.clone(),
+                        MOp::ArgBlockBase,
+                        Operands::one(Operand::Virtual(work_item)),
+                    )
+                    .with_operand_type(pointer.clone()),
+                );
                 for (index, &arg) in self.def.args.iter().enumerate() {
                     let Some(dest) = self.vregs.get(&arg).copied() else {
                         continue;
@@ -692,15 +736,18 @@ impl FnSel<'_> {
                         .cloned()
                         .unwrap_or(MType::Void);
                     let kind = argument_kind(&ty);
-                    insts.push(MInst::def(
-                        dest,
-                        ty,
-                        MOp::ArgLoad {
-                            index: u32::try_from(index).unwrap_or(u32::MAX),
-                            kind,
-                        },
-                        Operands::one(Operand::Virtual(base)),
-                    ));
+                    insts.push(
+                        MInst::def(
+                            dest,
+                            ty,
+                            MOp::ArgLoad {
+                                index: u32::try_from(index).unwrap_or(u32::MAX),
+                                kind,
+                            },
+                            Operands::one(Operand::Virtual(base)),
+                        )
+                        .with_operand_type(pointer.clone()),
+                    );
                 }
             }
         } else {
@@ -714,14 +761,17 @@ impl FnSel<'_> {
                     .cloned()
                     .unwrap_or(MType::Void);
                 self.out.params.push(dest);
-                insts.push(MInst::def(
-                    dest,
-                    ty,
-                    MOp::Param {
-                        index: u32::try_from(index).unwrap_or(u32::MAX),
-                    },
-                    Operands::none(),
-                ));
+                insts.push(
+                    MInst::def(
+                        dest,
+                        ty.clone(),
+                        MOp::Param {
+                            index: u32::try_from(index).unwrap_or(u32::MAX),
+                        },
+                        Operands::none(),
+                    )
+                    .with_operand_type(ty),
+                );
             }
         }
         for block in self.body {
@@ -752,11 +802,15 @@ impl FnSel<'_> {
                 if let Some(init) = init {
                     let size = self.pointee_size(result);
                     let value = self.operand(*init)?;
-                    insts.push(MInst::none(
-                        ty,
-                        MOp::Store { size },
-                        Operands::two(Operand::Virtual(dest), value),
-                    ));
+                    let value_ty = self.type_of_value(*init)?;
+                    insts.push(
+                        MInst::none(
+                            ty,
+                            MOp::Store { size },
+                            Operands::two(Operand::Virtual(dest), value),
+                        )
+                        .with_operand_type(value_ty),
+                    );
                 }
             }
         }
@@ -793,9 +847,9 @@ impl FnSel<'_> {
                     // the merge block.
                     Operand::Virtual(reg)
                 };
-                block
-                    .insts
-                    .push(MInst::def(reg, ty, MOp::Copy, Operands::one(source)));
+                block.insts.push(
+                    MInst::def(reg, ty.clone(), MOp::Copy, Operands::one(source)).with_operand_type(ty),
+                );
             }
         }
         let last = ir_block.insts.len().saturating_sub(1);
@@ -813,14 +867,144 @@ impl FnSel<'_> {
                         Some(source) => Operand::Virtual(source),
                         None => self.operand(value)?,
                     };
-                    block
-                        .insts
-                        .push(MInst::def(reg, ty, MOp::Copy, Operands::one(source)));
+                    block.insts.push(
+                        MInst::def(reg, ty.clone(), MOp::Copy, Operands::one(source)).with_operand_type(ty),
+                    );
                 }
             }
             self.emit_inst(&mut block, inst)?;
         }
         Ok(block)
+    }
+
+    /// Selects the integer minimum or maximum of two values.
+    ///
+    /// The machine code has no operation for them, so they become a
+    /// comparison and a selection: the smaller (or the larger) of the
+    /// two is the one the comparison picks.
+    fn emit_integer_min_max(
+        &mut self,
+        block: &mut MirBlock,
+        inst: &Inst,
+        args: &[ValueId],
+        predicate: IPred,
+    ) -> Result<()> {
+        if args.len() != 2 {
+            return Err(selection_error(
+                "selecting an integer minimum",
+                "the operation takes two values",
+            ));
+        }
+        let dest = self.dest_of(inst)?;
+        let ty = self.type_of_dest(inst)?;
+        let first = self.operand(args[0])?;
+        let second = self.operand(args[1])?;
+        let flag = self.out.new_vreg(MType::I1);
+        block.insts.push(
+            MInst::def(
+                flag,
+                MType::I1,
+                MOp::ICmp { pred: predicate },
+                Operands::two(first, second),
+            )
+            .with_operand_type(ty.clone()),
+        );
+        block.insts.push(
+            MInst::def(
+                dest,
+                ty.clone(),
+                MOp::Select,
+                Operands::three(Operand::Virtual(flag), first, second),
+            )
+            .with_operand_type(ty.clone()),
+        );
+        Ok(())
+    }
+
+    /// Selects the integer clamp of a value between two bounds.
+    ///
+    /// The clamp is the smaller of the larger value and the lower
+    /// bound, compared with the upper bound: two comparisons and two
+    /// selections.
+    fn emit_integer_clamp(
+        &mut self,
+        block: &mut MirBlock,
+        inst: &Inst,
+        args: &[ValueId],
+        lower: IPred,
+        upper: IPred,
+    ) -> Result<()> {
+        if args.len() != 3 {
+            return Err(selection_error(
+                "selecting an integer clamp",
+                "the operation takes three values",
+            ));
+        }
+        let dest = self.dest_of(inst)?;
+        let ty = self.type_of_dest(inst)?;
+        let value = self.operand(args[0])?;
+        let low = self.operand(args[1])?;
+        let high = self.operand(args[2])?;
+        // The larger of the value and the lower bound.
+        let first_flag = self.out.new_vreg(MType::I1);
+        block.insts.push(
+            MInst::def(
+                first_flag,
+                MType::I1,
+                MOp::ICmp { pred: lower },
+                Operands::two(value, low),
+            )
+            .with_operand_type(ty.clone()),
+        );
+        let raised = self.out.new_vreg(ty.clone());
+        block.insts.push(
+            MInst::def(
+                raised,
+                ty.clone(),
+                MOp::Select,
+                Operands::three(Operand::Virtual(first_flag), value, low),
+            )
+            .with_operand_type(ty.clone()),
+        );
+        // The smaller of that and the upper bound.
+        let second_flag = self.out.new_vreg(MType::I1);
+        block.insts.push(
+            MInst::def(
+                second_flag,
+                MType::I1,
+                MOp::ICmp { pred: upper },
+                Operands::two(Operand::Virtual(raised), high),
+            )
+            .with_operand_type(ty.clone()),
+        );
+        block.insts.push(
+            MInst::def(
+                dest,
+                ty.clone(),
+                MOp::Select,
+                Operands::three(Operand::Virtual(second_flag), Operand::Virtual(raised), high),
+            )
+            .with_operand_type(ty),
+        );
+        Ok(())
+    }
+
+    /// Selects the absolute value of an unsigned integer, which is the
+    /// value itself.
+    fn emit_unsigned_absolute(&mut self, block: &mut MirBlock, inst: &Inst, args: &[ValueId]) -> Result<()> {
+        let [value] = args else {
+            return Err(selection_error(
+                "selecting an unsigned absolute value",
+                "the operation takes one value",
+            ));
+        };
+        let dest = self.dest_of(inst)?;
+        let ty = self.type_of_dest(inst)?;
+        let operand = self.operand(*value)?;
+        block
+            .insts
+            .push(MInst::def(dest, ty.clone(), MOp::Copy, Operands::one(operand)).with_operand_type(ty));
+        Ok(())
     }
 
     /// Selects one instruction.
@@ -842,12 +1026,12 @@ impl FnSel<'_> {
             Op::Store { ptr, value } => {
                 let size = self.pointee_size(*ptr);
                 let pointer = self.operand(*ptr)?;
+                let value_ty = self.type_of_value(*value)?;
                 let value = self.operand(*value)?;
-                block.insts.push(MInst::none(
-                    MType::Void,
-                    MOp::Store { size },
-                    Operands::two(pointer, value),
-                ));
+                block.insts.push(
+                    MInst::none(MType::Void, MOp::Store { size }, Operands::two(pointer, value))
+                        .with_operand_type(value_ty),
+                );
             }
             Op::AccessChain { base, indices } => {
                 self.emit_access_chain(block, inst, *base, indices)?;
@@ -859,9 +1043,9 @@ impl FnSel<'_> {
                 let dest = self.dest_of(inst)?;
                 let ty = self.type_of_dest(inst)?;
                 let source = self.operand(*operand)?;
-                block
-                    .insts
-                    .push(MInst::def(dest, ty, MOp::Copy, Operands::one(source)));
+                block.insts.push(
+                    MInst::def(dest, ty.clone(), MOp::Copy, Operands::one(source)).with_operand_type(ty),
+                );
             }
             Op::Unary { op, operand } => {
                 let dest = self.dest_of(inst)?;
@@ -874,7 +1058,7 @@ impl FnSel<'_> {
                 let source = self.operand(*operand)?;
                 block
                     .insts
-                    .push(MInst::def(dest, ty, op, Operands::one(source)));
+                    .push(MInst::def(dest, ty.clone(), op, Operands::one(source)).with_operand_type(ty));
             }
             Op::Binary { op, lhs, rhs } => {
                 let dest = self.dest_of(inst)?;
@@ -903,7 +1087,7 @@ impl FnSel<'_> {
                 let rhs = self.operand(*rhs)?;
                 block
                     .insts
-                    .push(MInst::def(dest, ty, op, Operands::two(lhs, rhs)));
+                    .push(MInst::def(dest, ty.clone(), op, Operands::two(lhs, rhs)).with_operand_type(ty));
             }
             Op::Compare { op, lhs, rhs } => {
                 let dest = self.dest_of(inst)?;
@@ -926,11 +1110,14 @@ impl FnSel<'_> {
                     CmpOp::FOrdGreaterThan => MOp::FCmp { pred: FPred::Ogt },
                     CmpOp::FOrdGreaterThanEqual => MOp::FCmp { pred: FPred::Oge },
                 };
+                let operand_ty = self.type_of_value(*lhs)?;
                 let lhs = self.operand(*lhs)?;
                 let rhs = self.operand(*rhs)?;
+                // The comparison runs at the width of the values it
+                // compares, not at the width of its own result.
                 block
                     .insts
-                    .push(MInst::def(dest, ty, op, Operands::two(lhs, rhs)));
+                    .push(MInst::def(dest, ty, op, Operands::two(lhs, rhs)).with_operand_type(operand_ty));
             }
             Op::Select { cond, a, b } => {
                 let dest = self.dest_of(inst)?;
@@ -938,9 +1125,10 @@ impl FnSel<'_> {
                 let cond = self.operand(*cond)?;
                 let a = self.operand(*a)?;
                 let b = self.operand(*b)?;
-                block
-                    .insts
-                    .push(MInst::def(dest, ty, MOp::Select, Operands::three(cond, a, b)));
+                block.insts.push(
+                    MInst::def(dest, ty.clone(), MOp::Select, Operands::three(cond, a, b))
+                        .with_operand_type(ty),
+                );
             }
             Op::Convert { op, operand } => {
                 let dest = self.dest_of(inst)?;
@@ -948,9 +1136,10 @@ impl FnSel<'_> {
                 let source_ty = self.module.type_of(*operand);
                 let op = self.convert_op(*op, source_ty, &ty);
                 let source = self.operand(*operand)?;
+                let operand_ty = self.type_of_value(*operand)?;
                 block
                     .insts
-                    .push(MInst::def(dest, ty, op, Operands::one(source)));
+                    .push(MInst::def(dest, ty, op, Operands::one(source)).with_operand_type(operand_ty));
             }
             Op::Call { callee, args } => {
                 let symbol = self.syms.get(callee).copied().ok_or_else(|| {
@@ -965,6 +1154,8 @@ impl FnSel<'_> {
                     Some(result) => {
                         let dest = self.vreg(result)?;
                         let ty = self.type_of_dest(inst)?;
+                        // The arguments of a call have types of their
+                        // own, so the instruction names none of them.
                         block
                             .insts
                             .push(MInst::def(dest, ty, op, Operands::many(operands)));
@@ -977,19 +1168,43 @@ impl FnSel<'_> {
                 }
             }
             Op::ExtInst {
-                set, inst: number, ..
+                set,
+                inst: number,
+                args,
             } => {
                 let name = extended_instruction_name(*number);
                 let set_name = self.module.ext_inst_set(*set).name.clone();
-                let detail = match math_op(*number) {
-                    Some(operation) => format!(
-                        "the extended instruction {name} of {set_name} is the mathematical operation {operation:?}, which the machine code has no operation for"
-                    ),
-                    None => {
-                        format!("the extended instruction {name} of {set_name} has no machine counterpart")
+                if let Some(predicate) = integer_min_max(name) {
+                    self.emit_integer_min_max(block, inst, args, predicate)?;
+                } else if let Some((lower, upper)) = integer_clamp(name) {
+                    self.emit_integer_clamp(block, inst, args, lower, upper)?;
+                } else if unsigned_absolute(name) {
+                    self.emit_unsigned_absolute(block, inst, args)?;
+                } else {
+                    let Some(operation) = math_op(*number) else {
+                        let detail = format!(
+                            "the extended instruction {name} of {set_name} has no machine counterpart"
+                        );
+                        return Err(unsupported("an extended instruction", detail));
+                    };
+                    let dest = self.dest_of(inst)?;
+                    let ty = self.type_of_dest(inst)?;
+                    let mut operands: Vec<Operand> = Vec::with_capacity(args.len());
+                    for &arg in args {
+                        operands.push(self.operand(arg)?);
                     }
-                };
-                return Err(unsupported("an extended instruction", detail));
+                    let op = match operation {
+                        MathOp::Sqrt => MOp::FSqrt,
+                        MathOp::Abs => MOp::FAbs,
+                        MathOp::Min => MOp::FMin,
+                        MathOp::Max => MOp::FMax,
+                        MathOp::Dim => MOp::FDim,
+                        MathOp::CopySign => MOp::FCopySign,
+                    };
+                    block.insts.push(
+                        MInst::def(dest, ty.clone(), op, Operands::many(operands)).with_operand_type(ty),
+                    );
+                }
             }
             Op::CompositeExtract { composite, indices } => {
                 self.emit_extract(block, inst, *composite, indices)?;
@@ -1027,16 +1242,20 @@ impl FnSel<'_> {
                 ));
             }
             Op::BranchConditional { cond, then, other } => {
+                let cond_ty = self.type_of_value(*cond)?;
                 let cond = self.operand(*cond)?;
-                block.insts.push(MInst::none(
-                    MType::Void,
-                    MOp::CondBr,
-                    Operands::three(
-                        cond,
-                        Operand::Immediate(i64::try_from(then.index()).unwrap_or(i64::MAX)),
-                        Operand::Immediate(i64::try_from(other.index()).unwrap_or(i64::MAX)),
-                    ),
-                ));
+                block.insts.push(
+                    MInst::none(
+                        MType::Void,
+                        MOp::CondBr,
+                        Operands::three(
+                            cond,
+                            Operand::Immediate(i64::try_from(then.index()).unwrap_or(i64::MAX)),
+                            Operand::Immediate(i64::try_from(other.index()).unwrap_or(i64::MAX)),
+                        ),
+                    )
+                    .with_operand_type(cond_ty),
+                );
             }
             Op::Return => {
                 block
@@ -1044,10 +1263,11 @@ impl FnSel<'_> {
                     .push(MInst::none(MType::Void, MOp::RetVoid, Operands::none()));
             }
             Op::ReturnValue { value } => {
+                let value_ty = self.type_of_value(*value)?;
                 let value = self.operand(*value)?;
-                block
-                    .insts
-                    .push(MInst::none(MType::Void, MOp::Ret, Operands::one(value)));
+                block.insts.push(
+                    MInst::none(MType::Void, MOp::Ret, Operands::one(value)).with_operand_type(value_ty),
+                );
             }
             Op::Unreachable => {
                 block
@@ -1083,9 +1303,11 @@ impl FnSel<'_> {
         };
         let dest = self.vreg(result)?;
         let ty = self.type_of_dest(inst)?;
-        block
-            .insts
-            .push(MInst::def(dest, ty, MOp::Load { size }, Operands::one(pointer)));
+        // The load reads the value the pointer points at, so the type
+        // of the operands is the type of the loaded value.
+        block.insts.push(
+            MInst::def(dest, ty.clone(), MOp::Load { size }, Operands::one(pointer)).with_operand_type(ty),
+        );
         Ok(())
     }
 
@@ -1119,17 +1341,23 @@ impl FnSel<'_> {
             let size = self.element_size(pointee)?;
             let signed = integer_signedness(self.module, self.module.type_of(index)).unwrap_or(false);
             let offset = self.operand(index)?;
+            // The index says how wide it is, which is what the back
+            // end needs to know to extend it.
+            let index_ty = self.type_of_value(index)?;
             let next = if step + 1 == indices.len() {
                 dest
             } else {
                 self.out.new_vreg(ty.clone())
             };
-            block.insts.push(MInst::def(
-                next,
-                ty.clone(),
-                MOp::Gep { size, signed },
-                Operands::two(pointer, offset),
-            ));
+            block.insts.push(
+                MInst::def(
+                    next,
+                    ty.clone(),
+                    MOp::Gep { size, signed },
+                    Operands::two(pointer, offset),
+                )
+                .with_operand_type(index_ty),
+            );
             pointer = Operand::Virtual(next);
             current = self.element_type(pointee);
         }
@@ -1190,12 +1418,13 @@ impl FnSel<'_> {
             ));
         }
         let source = self.operand(composite)?;
-        block.insts.push(MInst::def(
-            dest,
-            ty,
-            MOp::VecExtract { index },
-            Operands::one(source),
-        ));
+        // The read names the lane it takes out of the vector, so the
+        // type of the operands is the type of the vector.
+        let vector_ty = self.type_of_value(composite)?;
+        block.insts.push(
+            MInst::def(dest, ty, MOp::VecExtract { index }, Operands::one(source))
+                .with_operand_type(vector_ty),
+        );
         Ok(())
     }
 
@@ -1211,9 +1440,9 @@ impl FnSel<'_> {
         };
         if constituents.iter().all(|&value| value == first) {
             let source = self.operand(first)?;
-            block
-                .insts
-                .push(MInst::def(dest, ty, MOp::VecSplat, Operands::one(source)));
+            block.insts.push(
+                MInst::def(dest, ty.clone(), MOp::VecSplat, Operands::one(source)).with_operand_type(ty),
+            );
             return Ok(());
         }
         // A vector of distinct values: the first lane is broadcast and
@@ -1227,24 +1456,24 @@ impl FnSel<'_> {
         }
         let mut current = self.out.new_vreg(ty.clone());
         let source = self.operand(first)?;
-        block
-            .insts
-            .push(MInst::def(current, ty.clone(), MOp::VecSplat, Operands::one(source)));
+        block.insts.push(
+            MInst::def(current, ty.clone(), MOp::VecSplat, Operands::one(source))
+                .with_operand_type(ty.clone()),
+        );
         for (lane, &value) in constituents.iter().enumerate().skip(1) {
             let last = lane + 1 == constituents.len();
-            let target = if last {
-                dest
-            } else {
-                self.out.new_vreg(ty.clone())
-            };
+            let target = if last { dest } else { self.out.new_vreg(ty.clone()) };
             let scalar = self.operand(value)?;
             let index = u32::try_from(lane).unwrap_or(u32::MAX);
-            block.insts.push(MInst::def(
-                target,
-                ty.clone(),
-                MOp::VecInsert { index },
-                Operands::two(Operand::Virtual(current), scalar),
-            ));
+            block.insts.push(
+                MInst::def(
+                    target,
+                    ty.clone(),
+                    MOp::VecInsert { index },
+                    Operands::two(Operand::Virtual(current), scalar),
+                )
+                .with_operand_type(ty.clone()),
+            );
             current = target;
         }
         Ok(())
@@ -1305,6 +1534,11 @@ impl FnSel<'_> {
             )
         })?;
         machine_type(self.module, self.module.type_of(result))
+    }
+
+    /// The machine type of a value of the intermediate representation.
+    fn type_of_value(&self, value: ValueId) -> Result<MType> {
+        machine_type(self.module, self.module.type_of(value))
     }
 
     /// The virtual register of a value.
@@ -1379,44 +1613,40 @@ impl FnSel<'_> {
                     _ => WorkItemField::LocalSize,
                 };
                 if natural == ty {
-                    block.insts.push(MInst::def(
-                        dest,
-                        ty,
-                        MOp::WorkItemLoad { field, lane },
-                        Operands::one(Operand::Virtual(work_item)),
-                    ));
+                    block.insts.push(
+                        MInst::def(
+                            dest,
+                            ty,
+                            MOp::WorkItemLoad { field, lane },
+                            Operands::one(Operand::Virtual(work_item)),
+                        )
+                        .with_operand_type(MType::Ptr { size: 0 }),
+                    );
                     return Ok(());
                 }
                 let raw = self.out.new_vreg(MType::I32);
-                block.insts.push(MInst::def(
-                    raw,
-                    MType::I32,
-                    MOp::WorkItemLoad { field, lane },
-                    Operands::one(Operand::Virtual(work_item)),
-                ));
+                self.emit_work_item_load(block, raw, MType::I32, field, lane, work_item);
                 self.convert_into(block, raw, MType::I32, ty, dest)?;
             }
             WorkItemSource::GlobalSize => {
                 let groups = self.out.new_vreg(MType::I32);
-                block.insts.push(MInst::def(
+                self.emit_work_item_load(
+                    block,
                     groups,
                     MType::I32,
-                    MOp::WorkItemLoad {
-                        field: WorkItemField::NumGroups,
-                        lane,
-                    },
-                    Operands::one(Operand::Virtual(work_item)),
-                ));
+                    WorkItemField::NumGroups,
+                    lane,
+                    work_item,
+                );
                 let local = self.out.new_vreg(MType::I32);
-                block.insts.push(MInst::def(
+                self.emit_work_item_load(
+                    block,
                     local,
                     MType::I32,
-                    MOp::WorkItemLoad {
-                        field: WorkItemField::LocalSize,
-                        lane,
-                    },
-                    Operands::one(Operand::Virtual(work_item)),
-                ));
+                    WorkItemField::LocalSize,
+                    lane,
+                    work_item,
+                );
                 let groups = self.widen_to(block, groups, MType::I32)?;
                 let local = self.widen_to(block, local, MType::I32)?;
                 let product = if natural == ty {
@@ -1424,12 +1654,15 @@ impl FnSel<'_> {
                 } else {
                     self.out.new_vreg(MType::I64)
                 };
-                block.insts.push(MInst::def(
-                    product,
-                    MType::I64,
-                    MOp::Mul,
-                    Operands::two(Operand::Virtual(groups), Operand::Virtual(local)),
-                ));
+                block.insts.push(
+                    MInst::def(
+                        product,
+                        MType::I64,
+                        MOp::Mul,
+                        Operands::two(Operand::Virtual(groups), Operand::Virtual(local)),
+                    )
+                    .with_operand_type(MType::I64),
+                );
                 if natural != ty {
                     self.convert_into(block, product, MType::I64, ty, dest)?;
                 }
@@ -1465,12 +1698,7 @@ impl FnSel<'_> {
             let value = match source {
                 WorkItemSource::Field(field) => {
                     let raw = self.out.new_vreg(MType::I32);
-                    block.insts.push(MInst::def(
-                        raw,
-                        MType::I32,
-                        MOp::WorkItemLoad { field, lane },
-                        Operands::one(Operand::Virtual(work_item)),
-                    ));
+                    self.emit_work_item_load(block, raw, MType::I32, field, lane, work_item);
                     if natural == MType::I32 {
                         raw
                     } else {
@@ -1479,15 +1707,14 @@ impl FnSel<'_> {
                 }
                 WorkItemSource::EnqueuedLocalSize => {
                     let raw = self.out.new_vreg(MType::I32);
-                    block.insts.push(MInst::def(
+                    self.emit_work_item_load(
+                        block,
                         raw,
                         MType::I32,
-                        MOp::WorkItemLoad {
-                            field: WorkItemField::LocalSize,
-                            lane,
-                        },
-                        Operands::one(Operand::Virtual(work_item)),
-                    ));
+                        WorkItemField::LocalSize,
+                        lane,
+                        work_item,
+                    );
                     if natural == MType::I32 {
                         raw
                     } else {
@@ -1496,25 +1723,23 @@ impl FnSel<'_> {
                 }
                 WorkItemSource::GlobalSize => {
                     let groups = self.out.new_vreg(MType::I32);
-                    block.insts.push(MInst::def(
+                    self.emit_work_item_load(
+                        block,
                         groups,
                         MType::I32,
-                        MOp::WorkItemLoad {
-                            field: WorkItemField::NumGroups,
-                            lane,
-                        },
-                        Operands::one(Operand::Virtual(work_item)),
-                    ));
+                        WorkItemField::NumGroups,
+                        lane,
+                        work_item,
+                    );
                     let local = self.out.new_vreg(MType::I32);
-                    block.insts.push(MInst::def(
+                    self.emit_work_item_load(
+                        block,
                         local,
                         MType::I32,
-                        MOp::WorkItemLoad {
-                            field: WorkItemField::LocalSize,
-                            lane,
-                        },
-                        Operands::one(Operand::Virtual(work_item)),
-                    ));
+                        WorkItemField::LocalSize,
+                        lane,
+                        work_item,
+                    );
                     let groups = self.widen_to(block, groups, MType::I32)?;
                     let local = self.widen_to(block, local, MType::I32)?;
                     let product = self.out.new_vreg(MType::I64);
@@ -1538,31 +1763,37 @@ impl FnSel<'_> {
         let first = self.compare_lane(block, index, 0)?;
         let second = self.compare_lane(block, index, 1)?;
         let lower = self.out.new_vreg(natural.clone());
-        block.insts.push(MInst::def(
-            lower,
-            natural.clone(),
-            MOp::Select,
-            Operands::three(
-                Operand::Virtual(first),
-                Operand::Virtual(lanes[0]),
-                Operand::Virtual(lanes[1]),
-            ),
-        ));
+        block.insts.push(
+            MInst::def(
+                lower,
+                natural.clone(),
+                MOp::Select,
+                Operands::three(
+                    Operand::Virtual(first),
+                    Operand::Virtual(lanes[0]),
+                    Operand::Virtual(lanes[1]),
+                ),
+            )
+            .with_operand_type(natural.clone()),
+        );
         let upper = if natural == ty {
             dest
         } else {
             self.out.new_vreg(natural.clone())
         };
-        block.insts.push(MInst::def(
-            upper,
-            natural.clone(),
-            MOp::Select,
-            Operands::three(
-                Operand::Virtual(second),
-                Operand::Virtual(lower),
-                Operand::Virtual(lanes[2]),
-            ),
-        ));
+        block.insts.push(
+            MInst::def(
+                upper,
+                natural.clone(),
+                MOp::Select,
+                Operands::three(
+                    Operand::Virtual(second),
+                    Operand::Virtual(lower),
+                    Operand::Virtual(lanes[2]),
+                ),
+            )
+            .with_operand_type(natural.clone()),
+        );
         if natural != ty {
             self.convert_into(block, upper, natural, ty, dest)?;
         }
@@ -1572,12 +1803,15 @@ impl FnSel<'_> {
     /// Compares a component index with a constant.
     fn compare_lane(&mut self, block: &mut MirBlock, index: Operand, lane: u32) -> Result<VReg> {
         let flag = self.out.new_vreg(MType::I1);
-        block.insts.push(MInst::def(
-            flag,
-            MType::I1,
-            MOp::ICmp { pred: IPred::Eq },
-            Operands::two(index, Operand::Immediate(i64::from(lane))),
-        ));
+        block.insts.push(
+            MInst::def(
+                flag,
+                MType::I1,
+                MOp::ICmp { pred: IPred::Eq },
+                Operands::two(index, Operand::Immediate(i64::from(lane))),
+            )
+            .with_operand_type(MType::I32),
+        );
         Ok(flag)
     }
 
@@ -1652,48 +1886,76 @@ impl FnSel<'_> {
             ));
         };
         let raw = self.out.new_vreg(MType::I32);
-        block.insts.push(MInst::def(
-            raw,
-            MType::I32,
-            MOp::WorkItemLoad { field, lane },
-            Operands::one(Operand::Virtual(work_item)),
-        ));
+        self.emit_work_item_load(block, raw, MType::I32, field, lane, work_item);
         self.widen_to(block, raw, MType::I32)
+    }
+
+    /// Emits the read of one component of the work-item state.
+    ///
+    /// The read takes the work-item pointer, so the type of the
+    /// operands is the type of that pointer.
+    fn emit_work_item_load(
+        &self,
+        block: &mut MirBlock,
+        dest: VReg,
+        ty: MType,
+        field: WorkItemField,
+        lane: u32,
+        work_item: VReg,
+    ) {
+        block.insts.push(
+            MInst::def(
+                dest,
+                ty,
+                MOp::WorkItemLoad { field, lane },
+                Operands::one(Operand::Virtual(work_item)),
+            )
+            .with_operand_type(MType::Ptr { size: 0 }),
+        );
     }
 
     /// Adds two values.
     fn add(&mut self, block: &mut MirBlock, lhs: VReg, rhs: VReg) -> Result<VReg> {
         let dest = self.out.new_vreg(MType::I64);
-        block.insts.push(MInst::def(
-            dest,
-            MType::I64,
-            MOp::Add,
-            Operands::two(Operand::Virtual(lhs), Operand::Virtual(rhs)),
-        ));
+        block.insts.push(
+            MInst::def(
+                dest,
+                MType::I64,
+                MOp::Add,
+                Operands::two(Operand::Virtual(lhs), Operand::Virtual(rhs)),
+            )
+            .with_operand_type(MType::I64),
+        );
         Ok(dest)
     }
 
     /// Multiplies two values.
     fn mul(&mut self, block: &mut MirBlock, lhs: VReg, rhs: VReg) -> Result<VReg> {
         let dest = self.out.new_vreg(MType::I64);
-        block.insts.push(MInst::def(
-            dest,
-            MType::I64,
-            MOp::Mul,
-            Operands::two(Operand::Virtual(lhs), Operand::Virtual(rhs)),
-        ));
+        block.insts.push(
+            MInst::def(
+                dest,
+                MType::I64,
+                MOp::Mul,
+                Operands::two(Operand::Virtual(lhs), Operand::Virtual(rhs)),
+            )
+            .with_operand_type(MType::I64),
+        );
         Ok(dest)
     }
 
     /// Widens a value, returning the new register.
     fn widen_to(&mut self, block: &mut MirBlock, source: VReg, from: MType) -> Result<VReg> {
         let dest = self.out.new_vreg(MType::I64);
-        block.insts.push(MInst::def(
-            dest,
-            MType::I64,
-            conversion(&from, &MType::I64),
-            Operands::one(Operand::Virtual(source)),
-        ));
+        block.insts.push(
+            MInst::def(
+                dest,
+                MType::I64,
+                conversion(&from, &MType::I64),
+                Operands::one(Operand::Virtual(source)),
+            )
+            .with_operand_type(from),
+        );
         Ok(dest)
     }
 
@@ -1709,7 +1971,7 @@ impl FnSel<'_> {
         let op = conversion(&from, &to);
         block
             .insts
-            .push(MInst::def(dest, to, op, Operands::one(Operand::Virtual(source))));
+            .push(MInst::def(dest, to, op, Operands::one(Operand::Virtual(source))).with_operand_type(from));
         Ok(())
     }
 }
@@ -1737,7 +1999,7 @@ fn constant_operand(constant: ConstValue, module: &Module, value: ValueId) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mir::ArgKind;
+    use crate::mir::{ArgKind, Destination};
     use codevar_ocl_ir::ir::{Linkage, Target};
     use codevar_ocl_ir::lower::lower_source;
 
@@ -1813,7 +2075,9 @@ mod tests {
             .expect("the argument block has a base");
         assert_eq!(
             loads[0].args.get(0),
-            base.dest.and_then(Destination::virtual_reg).map(Operand::Virtual)
+            base.dest
+                .and_then(Destination::virtual_reg)
+                .map(Operand::Virtual)
         );
     }
 
@@ -1870,8 +2134,9 @@ mod tests {
 
     #[test]
     fn the_global_size_is_the_group_count_times_the_local_size() {
-        let selection =
-            select("#[kernel]\nfn k(out: *mut long) {\n    let s = get_global_size(0);\n    out[0] = s;\n}\n");
+        let selection = select(
+            "#[kernel]\nfn k(out: *mut long) {\n    let s = get_global_size(0);\n    out[0] = s;\n}\n",
+        );
         let reads: Vec<&MInst> = insts(&selection)
             .into_iter()
             .filter(|inst| matches!(inst.op, MOp::WorkItemLoad { .. }))
@@ -1994,7 +2259,7 @@ mod tests {
 
     #[test]
     fn an_extended_instruction_is_refused() {
-        let module = lower("#[kernel]\nfn k(out: *mut float) {\n    let x = sqrt(2.0);\n    *out = x;\n}\n");
+        let module = lower("#[kernel]\nfn k(out: *mut float) {\n    let x = tanh(2.0);\n    *out = x;\n}\n");
         let entry = module
             .entry_points
             .first()
@@ -2004,10 +2269,105 @@ mod tests {
         match &error {
             CodegenError::Unsupported { what, detail } => {
                 assert_eq!(*what, "an extended instruction");
-                assert!(detail.contains("sqrt"), "unexpected detail: {detail}");
+                assert!(detail.contains("tanh"), "unexpected detail: {detail}");
             }
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[test]
+    fn the_square_root_becomes_a_machine_operation() {
+        let selection =
+            select("#[kernel]\nfn k(out: *mut float) {\n    let x = sqrt(2.0);\n    *out = x;\n}\n");
+        let roots: Vec<&MInst> = insts(&selection)
+            .into_iter()
+            .filter(|inst| matches!(inst.op, MOp::FSqrt))
+            .collect();
+        assert_eq!(roots.len(), 1, "the built-in becomes a square root");
+        assert_eq!(roots[0].ty, MType::F32, "the result is a float");
+        assert_eq!(
+            roots[0].operand_type(),
+            Some(&MType::F32),
+            "the operand is a float as well"
+        );
+    }
+
+    #[test]
+    fn the_mathematical_built_ins_become_machine_operations() {
+        let cases = [
+            ("fabs(-1.0)", MOp::FAbs),
+            ("fmin(1.0, 2.0)", MOp::FMin),
+            ("fmax(1.0, 2.0)", MOp::FMax),
+        ];
+        for (expression, expected) in cases {
+            let source = format!(
+                "#[kernel]\nfn k(out: *mut float) {{\n    let x = {expression};\n    *out = x;\n}}\n"
+            );
+            let selection = select(&source);
+            let found: Vec<&MInst> = insts(&selection)
+                .into_iter()
+                .filter(|inst| matches!(inst.op, ref op if *op == expected))
+                .collect();
+            assert_eq!(found.len(), 1, "{expression} becomes {expected:?}");
+        }
+    }
+
+    #[test]
+    fn the_integer_minimum_becomes_a_comparison_and_a_selection() {
+        let selection = select(
+            "#[kernel]\nfn k(a: int, b: int, out: *mut int) {\n    let x = min(a, b);\n    out[0] = x;\n}\n",
+        );
+        let entry = &selection.module.functions[0];
+        let comparison = entry
+            .blocks
+            .iter()
+            .flat_map(|block| block.insts.iter())
+            .find(|inst| matches!(inst.op, MOp::ICmp { pred: IPred::Slt }))
+            .expect("the minimum compares two values");
+        let selection_inst = entry
+            .blocks
+            .iter()
+            .flat_map(|block| block.insts.iter())
+            .find(|inst| matches!(inst.op, MOp::Select))
+            .expect("the minimum selects one of the two values");
+        let flag = comparison
+            .dest
+            .and_then(Destination::virtual_reg)
+            .expect("the comparison writes a register");
+        assert!(
+            selection_inst.args.get(0) == Some(Operand::Virtual(flag)),
+            "the selection reads the comparison"
+        );
+    }
+
+    #[test]
+    fn the_type_of_the_operands_is_recorded() {
+        let selection = select(
+            "#[kernel]\nfn k(n: int, out: *mut int) {\n    let x = n + 1;\n    if x < 3 {\n        out[0] = 1;\n    } else {\n        out[0] = 2;\n    }\n}\n",
+        );
+        let entry = &selection.module.functions[0];
+        let comparison = entry
+            .blocks
+            .iter()
+            .flat_map(|block| block.insts.iter())
+            .find(|inst| matches!(inst.op, MOp::ICmp { .. }))
+            .expect("the function compares two values");
+        assert_eq!(
+            comparison.operand_type(),
+            Some(&MType::I32),
+            "the comparison names the type of the values it compares"
+        );
+        let addition = entry
+            .blocks
+            .iter()
+            .flat_map(|block| block.insts.iter())
+            .find(|inst| matches!(inst.op, MOp::Add))
+            .expect("the function adds two values");
+        assert_eq!(
+            addition.operand_type(),
+            Some(&MType::I32),
+            "the addition names the type of the values it adds"
+        );
     }
 
     #[test]
