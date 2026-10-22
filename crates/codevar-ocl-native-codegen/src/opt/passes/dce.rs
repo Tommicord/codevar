@@ -28,7 +28,7 @@
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
-use codevar_ocl_ir::ir::{ConstValue, Module, TypeId, ValueId};
+use codevar_ocl_ir::ir::{BasicBlock, ConstValue, Inst, Module, Op, TypeId, ValueId};
 
 use crate::error::Result;
 use crate::opt::util::{collect_operands, is_removable, replace_with_copy};
@@ -105,21 +105,79 @@ fn eliminate(module: &mut Module, func: ValueId) -> Result<()> {
         let Some(body) = function.body.as_mut() else {
             return Ok(());
         };
+        // The dead instructions of every block, by their position.
+        let mut per_block: BTreeMap<usize, Vec<(usize, ValueId, TypeId)>> = BTreeMap::new();
         for (block_index, inst_index, result, ty) in dead {
+            per_block
+                .entry(block_index)
+                .or_default()
+                .push((inst_index, result, ty));
+        }
+        for (block_index, list) in per_block {
             let Some(block) = body.get_mut(block_index) else {
                 continue;
             };
-            let Some(inst) = block.insts.get_mut(inst_index) else {
-                continue;
-            };
-            if removed.contains(&result) {
-                continue;
-            }
-            let Some(undef) = undefs.get(&ty).copied() else {
-                continue;
-            };
-            replace_with_copy(inst, undef);
-            removed.insert(result);
+            rewrite_block(block, &list, &undefs, &mut removed);
         }
     }
+}
+
+/// Rewrites one block: every dead computation becomes a copy of the
+/// undefined value.
+///
+/// A merge block starts with its merges, and a merge that nobody reads
+/// is replaced by a copy — which is not a merge, so it moves behind
+/// the merges that stay.  The block therefore keeps the shape the
+/// verifier expects.
+fn rewrite_block(
+    block: &mut BasicBlock,
+    dead: &[(usize, ValueId, TypeId)],
+    undefs: &BTreeMap<TypeId, ValueId>,
+    removed: &mut BTreeSet<ValueId>,
+) {
+    let mut dead_by_index: BTreeMap<usize, (ValueId, TypeId)> = BTreeMap::new();
+    for (inst_index, result, ty) in dead {
+        dead_by_index.insert(*inst_index, (*result, *ty));
+    }
+    let old = core::mem::take(&mut block.insts);
+    let mut merges: Vec<Inst> = Vec::new();
+    let mut rest: Vec<Inst> = Vec::new();
+    let mut copies: Vec<Inst> = Vec::new();
+    for (inst_index, mut inst) in old.into_iter().enumerate() {
+        let is_merge = matches!(inst.op, Op::Phi { .. });
+        let dead_entry = dead_by_index.get(&inst_index).copied();
+        match (is_merge, dead_entry) {
+            (true, Some((result, ty))) => {
+                if removed.contains(&result) {
+                    continue;
+                }
+                let Some(undef) = undefs.get(&ty).copied() else {
+                    merges.push(inst);
+                    continue;
+                };
+                // The merge goes away; its value stays defined by a
+                // copy that sits behind the merges that remain.
+                copies.push(Inst::def(result, ty, Op::CopyObject { operand: undef }));
+                removed.insert(result);
+            }
+            (true, None) => merges.push(inst),
+            (false, Some((result, ty))) => {
+                if removed.contains(&result) {
+                    continue;
+                }
+                let Some(undef) = undefs.get(&ty).copied() else {
+                    rest.push(inst);
+                    continue;
+                };
+                replace_with_copy(&mut inst, undef);
+                removed.insert(result);
+                rest.push(inst);
+            }
+            (false, None) => rest.push(inst),
+        }
+    }
+    let mut fresh = merges;
+    fresh.extend(copies);
+    fresh.extend(rest);
+    block.insts = fresh;
 }

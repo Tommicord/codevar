@@ -33,7 +33,7 @@
 //! has no single entering block, or when the block that enters it does
 //! not branch into the header directly.
 
-use alloc::collections::BTreeSet;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -91,6 +91,21 @@ fn hoist_loop(module: &mut Module, func: ValueId, header: usize, cont: usize) ->
     let order = dominator_preorder(&cfg, &children);
     let defs = definitions(body);
 
+    // The blocks that read every value.
+    let mut readers: BTreeMap<ValueId, Vec<usize>> = BTreeMap::new();
+    for (block_index, block) in body.iter().enumerate() {
+        for inst in &block.insts {
+            let mut operands = Vec::new();
+            collect_operands(&inst.op, &mut operands);
+            for operand in operands {
+                readers
+                    .entry(operand)
+                    .or_default()
+                    .push(block_index);
+            }
+        }
+    }
+
     // The blocks of the loop.
     let loop_blocks = natural_loop(&cfg, header, cont);
 
@@ -147,6 +162,19 @@ fn hoist_loop(module: &mut Module, func: ValueId, header: usize, cont: usize) ->
                     continue;
                 }
                 if !is_movable(&inst.op) {
+                    continue;
+                }
+                // The value must not be read outside the loop: the
+                // block that enters the loop does not necessarily
+                // dominate every reader.
+                if readers
+                    .get(&result)
+                    .is_some_and(|blocks: &Vec<usize>| {
+                        blocks
+                            .iter()
+                            .any(|block| !loop_blocks.contains(block))
+                    })
+                {
                     continue;
                 }
                 let mut operands = Vec::new();
@@ -244,9 +272,19 @@ fn hoist_loop(module: &mut Module, func: ValueId, header: usize, cont: usize) ->
     };
     let mut old = core::mem::take(&mut preheader_block.insts);
     let terminator = old.pop();
+    // The block starts with its merges, and a merge must stay at the
+    // front.  The hoisted instructions join the block behind the
+    // instructions it already holds: an operand of a hoisted
+    // instruction may be defined anywhere in this block, and only its
+    // end is behind all of them.
+    let merges = old
+        .iter()
+        .position(|inst| !matches!(inst.op, Op::Phi { .. }))
+        .unwrap_or(old.len());
     let mut fresh: Vec<Inst> = Vec::with_capacity(old.len() + moved.len() + 1);
+    fresh.extend_from_slice(&old[..merges]);
+    fresh.extend_from_slice(&old[merges..]);
     fresh.extend(moved);
-    fresh.extend(old);
     if let Some(terminator) = terminator {
         fresh.push(terminator);
     }
