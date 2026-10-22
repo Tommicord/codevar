@@ -24,6 +24,10 @@ codevar-logger = { workspace = true }
 codevar-target = { workspace = true }
 codevar-rt = { workspace = true }
 
+# The Win32 window backend only exists on Windows.
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true }
+
 # Only for the linker-script helpers in `codevar-rt`; resolver 2 keeps the
 # feature out of the binary's own dependency graph.
 [build-dependencies]

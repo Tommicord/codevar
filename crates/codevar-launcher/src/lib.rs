@@ -20,3 +20,5 @@ pub mod driver;
 pub mod wnd;
 #[cfg(unix)]
 mod wnd_linux;
+#[cfg(windows)]
+mod wnd_win32;

@@ -340,6 +340,7 @@ dependencies = [
  "codevar-wayland",
  "libc",
  "spin 0.12.3",
+ "windows",
 ]
 
 [[package]]
@@ -471,7 +472,6 @@ version = "1.0.0"
 dependencies = [
  "codevar-logger",
  "codevar-ocl-abi",
- "codevar-ocl-ir",
  "codevar-ocl-native-codegen",
  "libc",
 ]

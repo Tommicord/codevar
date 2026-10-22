@@ -83,7 +83,7 @@ heapless = { version = "0.9.3", default-features = false }
 windows-link = "0.100.0"
 spin = { version = "0.12.3", default-features = false, features = ["once", "mutex", "rwlock", "barrier", "lazy", "spin_mutex"] }
 hkdf = { version = "0.12", default-features = false }
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Console", "Win32_Storage_FileSystem"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Console", "Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader"] }
 hmac = { version = "0.12", default-features = false }
 bytes = { version = "1.12.1", default-features = false }
 const_format = { version = "0.2.36", features = ["fmt"], default-features = false }
