@@ -50,6 +50,7 @@ pub mod error;
 pub mod mesh;
 pub mod renderer;
 pub mod text;
+pub mod upload;
 
 pub use config::WgConfig;
 pub use error::WgError;
