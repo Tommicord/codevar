@@ -20,6 +20,7 @@ extern crate alloc;
 pub mod base;
 pub mod comm;
 pub mod compositor;
+pub mod compute;
 pub mod frame;
 pub mod mix;
 pub mod offscreen;

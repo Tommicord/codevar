@@ -25,8 +25,15 @@ codevar-console-util = { workspace = true }
 codevar-time-core = { workspace = true }
 codevar-env = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+codevar-pathbuf = { workspace = true }
+
 [target.'cfg(windows)'.dependencies]
 windows-link = { workspace = true }
+windows = { workspace = true, features = [
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Devices_Properties",
+] }
 
 [lints]
 workspace = true

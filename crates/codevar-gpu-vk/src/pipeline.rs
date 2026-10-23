@@ -527,7 +527,7 @@ fn modifier_supported(instance: &ash::Instance, physical: vk::PhysicalDevice, mo
 }
 
 /// Creates the instance after verifying the loader reports Vulkan 1.3.
-fn create_instance(entry: &ash::Entry) -> Result<ash::Instance, PipelineError> {
+pub(crate) fn create_instance(entry: &ash::Entry) -> Result<ash::Instance, PipelineError> {
     // SAFETY: `entry` is a freshly built, valid loader handle.
     let loader_version =
         unsafe { entry.try_enumerate_instance_version() }.map_err(PipelineError::InstanceCreate)?;
