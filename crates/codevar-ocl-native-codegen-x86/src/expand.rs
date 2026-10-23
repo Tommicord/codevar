@@ -523,6 +523,7 @@ impl<'a> Expander<'a> {
                 }
                 Ok(())
             }
+            MOp::CondBrCmp { pred } => self.expand_cond_br_cmp(enc, fixups, inst, *pred, current),
             MOp::Ret => {
                 if inst.ty != MType::Void {
                     let value = self.operand_reg(enc, inst, 0, &[])?;
@@ -1796,6 +1797,71 @@ impl<'a> Expander<'a> {
         Ok(())
     }
 
+    /// Expands an integer comparison followed by a conditional branch.
+    ///
+    /// The comparison is emitted exactly as [`Self::expand_icmp`] would
+    /// emit it, but the one-bit result is never materialised: the
+    /// condition code left by the comparison branches directly.  When
+    /// one of the two blocks is the following block, control falls
+    /// through to it and only the other block needs a jump.
+    fn expand_cond_br_cmp(
+        &self,
+        enc: &mut Encoder<'_>,
+        fixups: &mut Vec<Fixup>,
+        inst: &MInst,
+        pred: IPred,
+        current: usize,
+    ) -> Result<(), CodegenError> {
+        let left = self.operand_reg(enc, inst, 0, &[])?;
+        self.expect_int(left, 0)?;
+        // The operands are compared at the width the instruction
+        // names, which is the width of the values themselves.
+        let size = match Self::operand_type(inst) {
+            Some(MType::I64) | Some(MType::Ptr { .. }) => Size::Qword,
+            _ => Size::Dword,
+        };
+        match inst.args.get(1) {
+            Some(Operand::Immediate(value)) => enc.cmp_ri(size, left, value),
+            Some(_) => {
+                let right = self.operand_reg(enc, inst, 1, &[])?;
+                self.expect_int(right, 1)?;
+                enc.cmp_rr(size, left, right);
+            }
+            None => {
+                return Err(target_error(
+                    "expanding the machine operation",
+                    "the operation has no second operand",
+                ));
+            }
+        }
+        let (when_true, when_false) = inst.cond_br_targets().ok_or_else(|| {
+            target_error(
+                "expanding the machine operation",
+                "the conditional branch does not name the two blocks it branches to",
+            )
+        })?;
+        self.check_block(when_true)?;
+        self.check_block(when_false)?;
+        // When one of the targets is the following block, the branch
+        // only needs to cover the other one: control falls through to
+        // the following block either way, and a trailing jump would be
+        // redundant.  When the true block falls through, the predicate
+        // is inverted so the jump covers the false block.
+        if when_false as usize == current + 1 {
+            let site = enc.jcc_rel32(prediction(pred));
+            fixups.push(Fixup::block(site, when_true));
+        } else if when_true as usize == current + 1 {
+            let site = enc.jcc_rel32(negated(pred));
+            fixups.push(Fixup::block(site, when_false));
+        } else {
+            let site = enc.jcc_rel32(prediction(pred));
+            fixups.push(Fixup::block(site, when_true));
+            let site = enc.jmp_rel32();
+            fixups.push(Fixup::block(site, when_false));
+        }
+        Ok(())
+    }
+
     /// Expands a floating-point comparison.
     fn expand_fcmp(&self, enc: &mut Encoder<'_>, inst: &MInst, pred: FPred) -> Result<(), CodegenError> {
         let dest = self.dest(inst)?;
@@ -2377,6 +2443,26 @@ fn prediction(pred: IPred) -> Cc {
         IPred::Sge => Cc::Ge,
         IPred::Slt => Cc::L,
         IPred::Sle => Cc::Le,
+    }
+}
+
+/// The condition code of the logical negation of an integer comparison.
+///
+/// This is the code a `jcc` uses to take the false edge when the true
+/// edge falls through: the jump is taken exactly when the predicate
+/// does not hold, so it covers the block that is not the fall-through.
+fn negated(pred: IPred) -> Cc {
+    match pred {
+        IPred::Eq => Cc::Ne,
+        IPred::Ne => Cc::E,
+        IPred::Ugt => Cc::Be,
+        IPred::Uge => Cc::B,
+        IPred::Ult => Cc::Ae,
+        IPred::Ule => Cc::A,
+        IPred::Sgt => Cc::Le,
+        IPred::Sge => Cc::L,
+        IPred::Slt => Cc::Ge,
+        IPred::Sle => Cc::G,
     }
 }
 

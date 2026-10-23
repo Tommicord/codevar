@@ -594,12 +594,15 @@ impl<'a> Expander<'a> {
                 self.released = true;
                 Ok(())
             }
-            MOp::Br { .. } | MOp::CondBr | MOp::Ret | MOp::RetVoid | MOp::Unreachable => {
-                Err(CodegenError::Target {
-                    what: "expanding an instruction",
-                    detail: alloc::string::String::from("the operation belongs to the end of a block"),
-                })
-            }
+            MOp::Br { .. }
+            | MOp::CondBr
+            | MOp::CondBrCmp { .. }
+            | MOp::Ret
+            | MOp::RetVoid
+            | MOp::Unreachable => Err(CodegenError::Target {
+                what: "expanding an instruction",
+                detail: alloc::string::String::from("the operation belongs to the end of a block"),
+            }),
         }
     }
 
@@ -628,6 +631,38 @@ impl<'a> Expander<'a> {
                 };
                 let at = self.bytes.len() as u32;
                 self.enc().cbnz(cond, Width::Bits32);
+                self.fixups.push(Fixup::Branch {
+                    at,
+                    block: taken as u32,
+                    wide: false,
+                });
+                let at = self.bytes.len() as u32;
+                self.enc().b();
+                self.fixups.push(Fixup::Branch {
+                    at,
+                    block: missed as u32,
+                    wide: true,
+                });
+                Ok(())
+            }
+            MOp::CondBrCmp { pred } => {
+                // The comparison sets the condition flags; `cset`
+                // turns them into the one-bit value the branch reads,
+                // so that the branch keeps the single encoding the
+                // separate comparison would feed.
+                self.compare_values(inst)?;
+                self.enc()
+                    .cset(reg::SCRATCH_A, Self::condition(*pred), Width::Bits32);
+                let taken = self.arg(inst, 2)?;
+                let missed = self.arg(inst, 3)?;
+                let (Loc::Imm(taken), Loc::Imm(missed)) = (self.loc(taken)?, self.loc(missed)?) else {
+                    return Err(CodegenError::Target {
+                        what: "branching on a comparison",
+                        detail: alloc::string::String::from("the targets of the branch are not blocks"),
+                    });
+                };
+                let at = self.bytes.len() as u32;
+                self.enc().cbnz(reg::SCRATCH_A, Width::Bits32);
                 self.fixups.push(Fixup::Branch {
                     at,
                     block: taken as u32,
@@ -1596,6 +1631,19 @@ impl<'a> Expander<'a> {
     /// Expands an integer comparison.
     fn expand_icmp(&mut self, inst: &MInst, pred: IPred) -> Result<()> {
         let target = self.dest_gpr(inst)?;
+        self.compare_values(inst)?;
+        self.enc()
+            .cset(target, Self::condition(pred), Width::Bits32);
+        Ok(())
+    }
+
+    /// Compares the two integer values an instruction names, leaving
+    /// the condition flags set for them.
+    ///
+    /// A comparison that produces a value turns those flags into the
+    /// one-bit result with `cset`; a fused compare-and-branch reads
+    /// them directly.
+    fn compare_values(&mut self, inst: &MInst) -> Result<()> {
         let width = self.compare_width(inst);
         let first = self.loc(self.arg(inst, 0)?)?;
         let second = self.loc(self.arg(inst, 1)?)?;
@@ -1617,7 +1665,12 @@ impl<'a> Expander<'a> {
                 });
             }
         }
-        let cond = match pred {
+        Ok(())
+    }
+
+    /// The condition a comparison predicate stands for.
+    fn condition(pred: IPred) -> Cond {
+        match pred {
             IPred::Eq => Cond::Eq,
             IPred::Ne => Cond::Ne,
             IPred::Ugt => Cond::Hi,
@@ -1628,9 +1681,7 @@ impl<'a> Expander<'a> {
             IPred::Sge => Cond::Ge,
             IPred::Slt => Cond::Lt,
             IPred::Sle => Cond::Le,
-        };
-        self.enc().cset(target, cond, Width::Bits32);
-        Ok(())
+        }
     }
 
     /// Expands a floating-point comparison.

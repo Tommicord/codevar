@@ -732,6 +732,17 @@ impl<'a> Expander<'a> {
                 let no = self.block_target(self.arg(inst, 2)?)?;
                 self.emit_conditional_branch(condition, yes, no);
             }
+            MOp::CondBrCmp { pred } => {
+                // The comparison writes its one-bit result into the
+                // scratch register, which the branch then tests: the
+                // architecture branches on a value, not on the flags.
+                let first = self.value(self.arg(inst, 0)?)?;
+                let second = self.value(self.arg(inst, 1)?)?;
+                let yes = self.block_target(self.arg(inst, 2)?)?;
+                let no = self.block_target(self.arg(inst, 3)?)?;
+                self.emit_compare(SCRATCH_VALUE, first, second, *pred);
+                self.emit_conditional_branch(Value::Reg(SCRATCH_VALUE), yes, no);
+            }
             MOp::Ret => {
                 let value = self.value(self.arg(inst, 0)?)?;
                 self.emit_value(value, 0);

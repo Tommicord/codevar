@@ -628,6 +628,21 @@ pub enum MOp {
     /// code, not a value.  Use [`MInst::cond_br_targets`] to read
     /// them.
     CondBr,
+    /// Conditional branch on an integer comparison.
+    ///
+    /// The operands are, in order: the left value, the right value,
+    /// the block taken when the predicate holds, and the block taken
+    /// when it does not.  The two blocks are the numbers of the blocks
+    /// in the function's block list, carried as immediates — they name
+    /// a place in the code, not a value.  A back end lowers the
+    /// operation to a comparison followed by a conditional branch,
+    /// without materialising the one-bit result the separate
+    /// [`MOp::ICmp`] would produce.  Use [`MInst::cond_br_targets`] to
+    /// read the two blocks.
+    CondBrCmp {
+        /// The predicate.
+        pred: IPred,
+    },
     /// Return the first operand.
     Ret,
     /// Return nothing.
@@ -892,14 +907,19 @@ impl MInst {
     /// Returns `None` for every instruction that is not a conditional
     /// branch, and for a conditional branch whose block operands are
     /// not immediates.
+    ///
+    /// A plain [`MOp::CondBr`] tests the condition in its first operand,
+    /// so its targets are operands 1 and 2; the fused [`MOp::CondBrCmp`]
+    /// tests the two values held by its first two operands, so its
+    /// targets are operands 2 and 3.
     #[must_use]
     pub fn cond_br_targets(&self) -> Option<(u32, u32)> {
-        if !matches!(self.op, MOp::CondBr) {
-            return None;
-        }
-        let then = self.arg1()?.immediate()?;
-        let otherwise = self.arg2()?.immediate()?;
-        Some((then as u32, otherwise as u32))
+        let (then, otherwise) = match self.op {
+            MOp::CondBr => (self.arg1()?, self.arg2()?),
+            MOp::CondBrCmp { .. } => (self.args.get(2)?, self.args.get(3)?),
+            _ => return None,
+        };
+        Some((then.immediate()? as u32, otherwise.immediate()? as u32))
     }
 }
 
@@ -1173,6 +1193,27 @@ mod tests {
         assert_eq!(branch.cond_br_targets(), Some((3, 7)));
         let other = MInst::none(MType::Void, MOp::RetVoid, Operands::none());
         assert_eq!(other.cond_br_targets(), None);
+    }
+
+    #[test]
+    fn a_fused_conditional_branch_names_its_two_blocks() {
+        let branch = MInst::none(
+            MType::Void,
+            MOp::CondBrCmp { pred: IPred::Eq },
+            Operands::many(vec![
+                Operand::Virtual(VReg::new(0)),
+                Operand::Virtual(VReg::new(1)),
+                Operand::Immediate(4),
+                Operand::Immediate(9),
+            ]),
+        );
+        assert_eq!(branch.cond_br_targets(), Some((4, 9)));
+        let short = MInst::none(
+            MType::Void,
+            MOp::CondBrCmp { pred: IPred::Eq },
+            Operands::two(Operand::Virtual(VReg::new(0)), Operand::Virtual(VReg::new(1))),
+        );
+        assert_eq!(short.cond_br_targets(), None, "the blocks are missing");
     }
 
     #[test]

@@ -41,7 +41,12 @@ const PAGE: usize = 4096;
 
 /// Builds a kernel that branches on the global identifier and keeps a
 /// value in the frame.
-fn kernel_module() -> (MirModule, codevar_ocl_native_codegen::mir::SymId) {
+///
+/// When `fused` is set the branch is a single
+/// [`MOp::CondBrCmp`] that compares and branches without
+/// materialising the one-bit condition; otherwise the separate
+/// [`MOp::ICmp`] and [`MOp::CondBr`] pair is emitted.
+fn kernel_module(fused: bool) -> (MirModule, codevar_ocl_native_codegen::mir::SymId) {
     let mut function = MirFunction::new("kernel");
     let mut entry = block("entry");
     let item = vreg(&mut function, RBX, MType::Ptr { size: 4 });
@@ -88,18 +93,26 @@ fn kernel_module() -> (MirModule, codevar_ocl_native_codegen::mir::SymId) {
         MOp::SpillStore { offset: 8, size: 4 },
         Operands::one(reg(R10)),
     ));
-    entry.insts.push(def_with_operands(
-        condition,
-        MType::I1,
-        MType::I32,
-        MOp::ICmp { pred: IPred::Slt },
-        Operands::two(reg(R10), imm(10)),
-    ));
-    entry.insts.push(none(
-        MType::Void,
-        MOp::CondBr,
-        Operands::three(reg(R13), imm(1), imm(2)),
-    ));
+    if fused {
+        entry.insts.push(none(
+            MType::Void,
+            MOp::CondBrCmp { pred: IPred::Slt },
+            Operands::many(vec![reg(R10), imm(10), imm(1), imm(2)]),
+        ));
+    } else {
+        entry.insts.push(def_with_operands(
+            condition,
+            MType::I1,
+            MType::I32,
+            MOp::ICmp { pred: IPred::Slt },
+            Operands::two(reg(R10), imm(10)),
+        ));
+        entry.insts.push(none(
+            MType::Void,
+            MOp::CondBr,
+            Operands::three(reg(R13), imm(1), imm(2)),
+        ));
+    }
     function.push_block(entry);
 
     let mut then_block = block("then");
@@ -179,8 +192,8 @@ fn executable_page() -> *mut u8 {
 
 /// Runs the kernel with the given global identifier and returns the
 /// two words it wrote.
-fn run(global_id: u32) -> [u32; 2] {
-    let (module, entry) = kernel_module();
+fn run(global_id: u32, fused: bool) -> [u32; 2] {
+    let (module, entry) = kernel_module(fused);
     let image = target()
         .lower_module(&module, entry)
         .expect("the module compiles");
@@ -222,14 +235,28 @@ fn run(global_id: u32) -> [u32; 2] {
 
 #[test]
 fn the_branch_that_the_condition_selects_is_taken() {
-    let result = run(5);
+    let result = run(5, false);
     assert_eq!(result[0], 1, "the wrong branch was taken");
     assert_eq!(result[1], 5, "the frame does not hold the value");
 }
 
 #[test]
 fn the_other_branch_is_taken_when_the_condition_fails() {
-    let result = run(50);
+    let result = run(50, false);
+    assert_eq!(result[0], 2, "the wrong branch was taken");
+    assert_eq!(result[1], 50, "the frame does not hold the value");
+}
+
+#[test]
+fn the_fused_comparison_branches_to_the_selected_block() {
+    let result = run(5, true);
+    assert_eq!(result[0], 1, "the wrong branch was taken");
+    assert_eq!(result[1], 5, "the frame does not hold the value");
+}
+
+#[test]
+fn the_fused_comparison_falls_through_when_the_condition_fails() {
+    let result = run(50, true);
     assert_eq!(result[0], 2, "the wrong branch was taken");
     assert_eq!(result[1], 50, "the frame does not hold the value");
 }

@@ -229,22 +229,22 @@ fn a_small_function_compiles_to_the_expected_words() {
             0x1100_154B,
             // cmp w11, #100
             0x7101_917F,
-            // cset w12, lo
-            0x1A9F_27EC,
-            // cbnz w12, taken
-            0x3500_004C,
+            // cset w16, lo
+            0x1A9F_27F0,
+            // cbnz w16, taken
+            0x3500_0050,
             // b missed
             0x1400_0004,
-            // add w13, w11, #1
-            0x1100_056D,
-            // mov w0, w13
-            0x2A0D_03E0,
+            // add w12, w11, #1
+            0x1100_056C,
+            // mov w0, w12
+            0x2A0C_03E0,
             // ret
             0xD65F_03C0,
-            // sub w14, w11, #1
-            0x5100_056E,
-            // mov w0, w14
-            0x2A0E_03E0,
+            // sub w13, w11, #1
+            0x5100_056D,
+            // mov w0, w13
+            0x2A0D_03E0,
             // ret
             0xD65F_03C0,
         ]

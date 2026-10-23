@@ -247,6 +247,7 @@ impl<'a> Allocator<'a> {
     /// Allocates the registers of one function.
     fn allocate_function(&mut self, function: &mut MirFunction) -> Result<AllocStats> {
         self.reset(function);
+        fuse_compare_branches(function);
         self.coalesce_copies(function);
         self.gather(function)?;
         self.plan(function)?;
@@ -898,6 +899,133 @@ impl<'a> Allocator<'a> {
     }
 }
 
+/// Fuses an integer comparison with the conditional branch that
+/// consumes it.
+///
+/// The selection stage leaves a comparison and the branch that tests
+/// its one-bit result as two instructions, so a back end materialises
+/// the result and then tests it again.  The pass replaces the pair
+/// with a single [`MOp::CondBrCmp`] whose operands are the compared
+/// values followed by the two target blocks, which a back end lowers
+/// to one comparison and one conditional branch instead of the five
+/// instructions the separate pair takes.
+///
+/// The rewrite is sound only when the comparison has a single use and
+/// a single definition.  The machine code is not in static single
+/// assignment form — a phi is lowered to a copy in every predecessor —
+/// so a register written by several instructions, or read more than
+/// once, cannot be folded into the branch without changing the values
+/// the branch sees.  The comparison may sit in any block: the single
+/// use is the branch, and a value is available at every use.
+///
+/// Only an integer comparison is fused.  A floating-point comparison
+/// keeps its own lowering, which handles the ordered and unordered
+/// results a [`MOp::FCmp`] can produce.
+fn fuse_compare_branches(function: &mut MirFunction) {
+    let count = function.vreg_types.len();
+    let mut defs: Vec<u32> = vec![0; count];
+    let mut uses: Vec<u32> = vec![0; count];
+    let mut def_at: Vec<Option<(usize, usize)>> = vec![None; count];
+    for (block_index, block) in function.blocks.iter().enumerate() {
+        for (inst_index, inst) in block.insts.iter().enumerate() {
+            if let Some(dest) = inst.dest_vreg()
+                && let Some(slot) = defs.get_mut(dest.index())
+            {
+                *slot = slot.saturating_add(1);
+                if let Some(location) = def_at.get_mut(dest.index()) {
+                    *location = Some((block_index, inst_index));
+                }
+            }
+            for operand in inst.args.as_slice() {
+                if let Some(value) = operand.virtual_reg()
+                    && let Some(slot) = uses.get_mut(value.index())
+                {
+                    *slot = slot.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    // Collect the rewrites before applying them, so that deleting a
+    // comparison in one block and replacing a branch in another cannot
+    // disturb the indices of the scan.
+    let mut deleted: BTreeMap<(usize, usize), ()> = BTreeMap::new();
+    let mut replaced: BTreeMap<(usize, usize), MInst> = BTreeMap::new();
+    let mut touched: BTreeMap<usize, ()> = BTreeMap::new();
+    for (block_index, block) in function.blocks.iter().enumerate() {
+        for (inst_index, inst) in block.insts.iter().enumerate() {
+            if !matches!(inst.op, MOp::CondBr) {
+                continue;
+            }
+            let Some(Operand::Virtual(condition)) = inst.arg0() else {
+                continue;
+            };
+            if defs.get(condition.index()).copied().unwrap_or(0) != 1
+                || uses.get(condition.index()).copied().unwrap_or(0) != 1
+            {
+                continue;
+            }
+            let Some(Some((def_block, def_index))) = def_at.get(condition.index()).copied() else {
+                continue;
+            };
+            if def_block == block_index && def_index == inst_index {
+                continue;
+            }
+            let definition = &function.blocks[def_block].insts[def_index];
+            let MOp::ICmp { pred } = definition.op else {
+                continue;
+            };
+            let (Some(left), Some(right)) = (definition.arg0(), definition.arg1()) else {
+                continue;
+            };
+            let Some((then, otherwise)) = inst.cond_br_targets() else {
+                continue;
+            };
+            let operand_ty = definition.operand_ty.clone();
+            let mut fused = MInst::none(
+                MType::Void,
+                MOp::CondBrCmp { pred },
+                Operands::many(vec![
+                    left,
+                    right,
+                    Operand::Immediate(i64::from(then)),
+                    Operand::Immediate(i64::from(otherwise)),
+                ]),
+            );
+            if let Some(ty) = operand_ty {
+                fused = fused.with_operand_type(ty);
+            }
+            deleted.insert((def_block, def_index), ());
+            replaced.insert((block_index, inst_index), fused);
+            touched.insert(def_block, ());
+            touched.insert(block_index, ());
+        }
+    }
+    if replaced.is_empty() {
+        return;
+    }
+    for (block_index, block) in function.blocks.iter_mut().enumerate() {
+        if !touched.contains_key(&block_index) {
+            continue;
+        }
+        let mut kept: Vec<MInst> = Vec::with_capacity(block.insts.len());
+        for (inst_index, inst) in core::mem::take(&mut block.insts)
+            .into_iter()
+            .enumerate()
+        {
+            if deleted.contains_key(&(block_index, inst_index)) {
+                continue;
+            }
+            if let Some(fused) = replaced.get(&(block_index, inst_index)) {
+                kept.push(fused.clone());
+                continue;
+            }
+            kept.push(inst);
+        }
+        block.insts = kept;
+    }
+}
+
 /// Replaces every use of `dest` with `src`.
 ///
 /// The caller forwards a copy whose destination has one use, or several
@@ -940,7 +1068,7 @@ const fn align_up(value: u32, align: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mir::MirBlock;
+    use crate::mir::{FPred, IPred, MirBlock};
     use alloc::vec;
     use alloc::vec::Vec;
 
@@ -1623,5 +1751,280 @@ mod tests {
         let collapsed = function.clone();
         coalesce(&mut function);
         assert_eq!(collapsed, function, "the pass makes no further change");
+    }
+
+    /// A comparison whose result feeds a branch in the same block.
+    fn compared_function() -> MirFunction {
+        let mut function = MirFunction::new("compared");
+        let left = function.new_vreg(MType::I32);
+        let right = function.new_vreg(MType::I32);
+        let condition = function.new_vreg(MType::I1);
+        let mut block = MirBlock::new("entry");
+        block.insts.push(MInst::def(
+            left,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(1)),
+        ));
+        block.insts.push(MInst::def(
+            right,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(2)),
+        ));
+        block.insts.push(
+            MInst::def(
+                condition,
+                MType::I1,
+                MOp::ICmp { pred: IPred::Slt },
+                Operands::two(Operand::Virtual(left), Operand::Virtual(right)),
+            )
+            .with_operand_type(MType::I32),
+        );
+        block.insts.push(MInst::none(
+            MType::Void,
+            MOp::CondBr,
+            Operands::three(
+                Operand::Virtual(condition),
+                Operand::Immediate(4),
+                Operand::Immediate(5),
+            ),
+        ));
+        function.push_block(block);
+        function
+    }
+
+    /// The fused branch of a function, when it has one.
+    fn fused_branch(function: &MirFunction) -> Option<&MInst> {
+        function
+            .blocks
+            .iter()
+            .flat_map(|block| block.insts.iter())
+            .find(|inst| matches!(inst.op, MOp::CondBrCmp { .. }))
+    }
+
+    /// The number of separate comparisons and conditional branches of
+    /// a function, as a pair.
+    fn comparison_branches(function: &MirFunction) -> (usize, usize) {
+        let mut comparisons = 0usize;
+        let mut branches = 0usize;
+        for block in &function.blocks {
+            for inst in &block.insts {
+                if matches!(inst.op, MOp::ICmp { .. }) {
+                    comparisons += 1;
+                }
+                if matches!(inst.op, MOp::CondBr) {
+                    branches += 1;
+                }
+            }
+        }
+        (comparisons, branches)
+    }
+
+    #[test]
+    fn a_comparison_feeding_a_branch_is_fused() {
+        let mut function = compared_function();
+        fuse_compare_branches(&mut function);
+        assert_eq!(
+            comparison_branches(&function),
+            (0, 0),
+            "the pair is replaced by one fused branch"
+        );
+        let branch = fused_branch(&function).expect("the branch is fused");
+        assert_eq!(
+            branch.args.as_slice(),
+            &[
+                Operand::Virtual(VReg::new(0)),
+                Operand::Virtual(VReg::new(1)),
+                Operand::Immediate(4),
+                Operand::Immediate(5),
+            ],
+            "the branch carries the compared values and the two blocks"
+        );
+        assert_eq!(
+            branch.operand_type(),
+            Some(&MType::I32),
+            "the compare width is kept"
+        );
+        assert_eq!(branch.cond_br_targets(), Some((4, 5)));
+    }
+
+    #[test]
+    fn a_comparison_in_another_block_is_fused() {
+        let mut function = MirFunction::new("split");
+        let left = function.new_vreg(MType::I32);
+        let right = function.new_vreg(MType::I32);
+        let condition = function.new_vreg(MType::I1);
+        let mut first = MirBlock::new("first");
+        first.insts.push(MInst::def(
+            left,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(1)),
+        ));
+        first.insts.push(MInst::def(
+            right,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(2)),
+        ));
+        first.insts.push(
+            MInst::def(
+                condition,
+                MType::I1,
+                MOp::ICmp { pred: IPred::Slt },
+                Operands::two(Operand::Virtual(left), Operand::Virtual(right)),
+            )
+            .with_operand_type(MType::I32),
+        );
+        first
+            .insts
+            .push(MInst::none(MType::Void, MOp::Br { target: 1 }, Operands::none()));
+        let mut second = MirBlock::new("second");
+        second.insts.push(MInst::none(
+            MType::Void,
+            MOp::CondBr,
+            Operands::three(
+                Operand::Virtual(condition),
+                Operand::Immediate(0),
+                Operand::Immediate(2),
+            ),
+        ));
+        function.push_block(first);
+        function.push_block(second);
+        fuse_compare_branches(&mut function);
+        assert_eq!(
+            comparison_branches(&function),
+            (0, 0),
+            "the pair is fused across blocks"
+        );
+        let branch = fused_branch(&function).expect("the branch is fused");
+        assert_eq!(branch.cond_br_targets(), Some((0, 2)));
+        assert!(
+            !function.blocks[0]
+                .insts
+                .iter()
+                .any(|inst| matches!(inst.op, MOp::ICmp { .. })),
+            "the comparison block no longer holds the comparison"
+        );
+    }
+
+    #[test]
+    fn a_comparison_with_two_uses_is_not_fused() {
+        let mut function = compared_function();
+        let extra = function.new_vreg(MType::I32);
+        let last = function.blocks[0].insts.len();
+        // A second use of the condition keeps the separate comparison
+        // alive: folding it would have the branch and this use read the
+        // same one-bit value.
+        function.blocks[0].insts.insert(
+            last - 1,
+            MInst::def(
+                extra,
+                MType::I32,
+                MOp::Add,
+                Operands::two(Operand::Virtual(VReg::new(2)), Operand::Virtual(VReg::new(2))),
+            ),
+        );
+        fuse_compare_branches(&mut function);
+        assert_eq!(
+            comparison_branches(&function),
+            (1, 1),
+            "the comparison and the branch are kept"
+        );
+        assert!(fused_branch(&function).is_none(), "nothing was fused");
+    }
+
+    #[test]
+    fn a_comparison_written_twice_is_not_fused() {
+        let mut function = compared_function();
+        // The condition register is defined a second time, so folding
+        // the first comparison would change the value the branch reads.
+        function.blocks[0].insts.insert(
+            2,
+            MInst::def(
+                VReg::new(2),
+                MType::I1,
+                MOp::ICmp { pred: IPred::Slt },
+                Operands::two(Operand::Immediate(0), Operand::Immediate(1)),
+            ),
+        );
+        fuse_compare_branches(&mut function);
+        assert_eq!(
+            comparison_branches(&function),
+            (2, 1),
+            "both comparisons and the branch are kept"
+        );
+        assert!(fused_branch(&function).is_none(), "nothing was fused");
+    }
+
+    #[test]
+    fn a_condition_that_is_not_an_integer_comparison_is_not_fused() {
+        let mut floating = MirFunction::new("floating");
+        let left = floating.new_vreg(MType::F32);
+        let right = floating.new_vreg(MType::F32);
+        let condition = floating.new_vreg(MType::I1);
+        let mut block = MirBlock::new("entry");
+        block.insts.push(MInst::def(
+            left,
+            MType::F32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(1)),
+        ));
+        block.insts.push(MInst::def(
+            right,
+            MType::F32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(2)),
+        ));
+        block.insts.push(
+            MInst::def(
+                condition,
+                MType::I1,
+                MOp::FCmp { pred: FPred::Olt },
+                Operands::two(Operand::Virtual(left), Operand::Virtual(right)),
+            )
+            .with_operand_type(MType::F32),
+        );
+        block.insts.push(MInst::none(
+            MType::Void,
+            MOp::CondBr,
+            Operands::three(
+                Operand::Virtual(condition),
+                Operand::Immediate(0),
+                Operand::Immediate(1),
+            ),
+        ));
+        floating.push_block(block);
+        fuse_compare_branches(&mut floating);
+        assert!(
+            fused_branch(&floating).is_none(),
+            "a floating-point comparison is kept"
+        );
+
+        let mut copied = MirFunction::new("copied");
+        let condition = copied.new_vreg(MType::I1);
+        let mut block = MirBlock::new("entry");
+        block.insts.push(MInst::def(
+            condition,
+            MType::I1,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(1)),
+        ));
+        block.insts.push(MInst::none(
+            MType::Void,
+            MOp::CondBr,
+            Operands::three(
+                Operand::Virtual(condition),
+                Operand::Immediate(0),
+                Operand::Immediate(1),
+            ),
+        ));
+        copied.push_block(block);
+        fuse_compare_branches(&mut copied);
+        assert!(
+            fused_branch(&copied).is_none(),
+            "a condition that is a plain copy is kept"
+        );
     }
 }
