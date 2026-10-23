@@ -67,7 +67,7 @@ fn char_count(data: *const uchar, len: int, counts: *mut int) -> void {
 // weight cycles with period 13 so that a one-byte edit changes both a
 // value and the weight of every later byte in its period. The host
 // sums the partials and reduces modulo 2^30, matching
-// `codevar_wredit::gpu::linear_checksum` exactly — the CPU and GPU
+// `codevar_wredit::simd::linear_checksum` exactly — the CPU and GPU
 // paths must agree on every input or block-integrity checks would
 // report false corruption.
 //

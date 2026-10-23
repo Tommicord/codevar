@@ -28,7 +28,7 @@
 //
 // Computes `sum(data[i] * ((i % 13) + 1))` over the chunk; the host
 // sums the partials and reduces modulo 2^30, matching
-// `codevar_wredit::gpu::linear_checksum`. The weight cycle makes the
+// `codevar_wredit::simd::linear_checksum`. The weight cycle makes the
 // result sensitive to insertions as well as value changes.
 //
 // `i % 13` is spelled as `i - (i / 13) * 13` so only integer division
