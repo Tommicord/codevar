@@ -174,6 +174,137 @@ fn kernel_module(fused: bool) -> (MirModule, codevar_ocl_native_codegen::mir::Sy
     (module, symbol)
 }
 
+/// Builds a kernel whose second conditional branch falls through to its
+/// false block.
+///
+/// The block the first condition selects is placed before the block
+/// that branches again, so the ordering of the emitted code makes the
+/// second branch's false block, not its true block, the one that
+/// follows in the emitted code.  The true block is the one the branch
+/// jumps to, and the false block is the one control falls through to;
+/// the two blocks write different words, so a branch that is emitted
+/// with the wrong sense is visible.
+fn false_fallthrough_module(fused: bool) -> (MirModule, codevar_ocl_native_codegen::mir::SymId) {
+    let mut function = MirFunction::new("kernel");
+    let mut entry = block("entry");
+    let item = vreg(&mut function, RBX, MType::Ptr { size: 4 });
+    let value = vreg(&mut function, R10, MType::I32);
+    let condition = vreg(&mut function, R13, MType::I1);
+    let base = vreg(&mut function, R15, MType::Ptr { size: 4 });
+    let output = vreg(&mut function, RBX, MType::Ptr { size: 4 });
+
+    entry.insts.push(def(
+        item,
+        MType::Ptr { size: 4 },
+        MOp::Param { index: 0 },
+        Operands::none(),
+    ));
+    entry.insts.push(def(
+        value,
+        MType::I32,
+        MOp::WorkItemLoad {
+            field: WorkItemField::GlobalId,
+            lane: 0,
+        },
+        Operands::one(reg(RBX)),
+    ));
+    entry.insts.push(def(
+        base,
+        MType::Ptr { size: 4 },
+        MOp::ArgBlockBase,
+        Operands::one(reg(RBX)),
+    ));
+    entry.insts.push(def(
+        output,
+        MType::Ptr { size: 4 },
+        MOp::ArgLoad {
+            index: 0,
+            kind: ArgKind::Pointer,
+        },
+        Operands::one(reg(R15)),
+    ));
+    if fused {
+        entry.insts.push(none(
+            MType::Void,
+            MOp::CondBrCmp { pred: IPred::Slt },
+            Operands::many(vec![reg(R10), imm(10), imm(1), imm(2)]),
+        ));
+    } else {
+        entry.insts.push(def_with_operands(
+            condition,
+            MType::I1,
+            MType::I32,
+            MOp::ICmp { pred: IPred::Slt },
+            Operands::two(reg(R10), imm(10)),
+        ));
+        entry.insts.push(none(
+            MType::Void,
+            MOp::CondBr,
+            Operands::three(reg(R13), imm(1), imm(2)),
+        ));
+    }
+    function.push_block(entry);
+
+    // The block the first condition selects.  It is placed first, so
+    // the second branch names it as the block it jumps to.
+    let mut taken = block("taken");
+    taken.insts.push(none(
+        MType::Void,
+        MOp::Store { size: 4 },
+        Operands::two(reg(RBX), imm(11)),
+    ));
+    taken
+        .insts
+        .push(none(MType::Void, MOp::RetVoid, Operands::none()));
+    function.push_block(taken);
+
+    // The block the first condition falls through to.  Its true block
+    // is already placed, so the false block is the one that follows in
+    // the emitted code.
+    let mut second = block("second");
+    if fused {
+        second.insts.push(none(
+            MType::Void,
+            MOp::CondBrCmp { pred: IPred::Slt },
+            Operands::many(vec![reg(R10), imm(10), imm(1), imm(3)]),
+        ));
+    } else {
+        second.insts.push(def_with_operands(
+            condition,
+            MType::I1,
+            MType::I32,
+            MOp::ICmp { pred: IPred::Slt },
+            Operands::two(reg(R10), imm(10)),
+        ));
+        second.insts.push(none(
+            MType::Void,
+            MOp::CondBr,
+            Operands::three(reg(R13), imm(1), imm(3)),
+        ));
+    }
+    function.push_block(second);
+
+    // The false block of the second branch: control falls through to
+    // it when the second condition fails.
+    let mut fell = block("fell");
+    fell.insts.push(none(
+        MType::Void,
+        MOp::Store { size: 4 },
+        Operands::two(reg(RBX), imm(33)),
+    ));
+    fell.insts
+        .push(none(MType::Void, MOp::RetVoid, Operands::none()));
+    function.push_block(fell);
+
+    function.frame_size = 0;
+
+    let mut module = MirModule::new();
+    let symbol = module.add_symbol("kernel", SymbolKind::Function { index: 0 }, false);
+    function.symbol = symbol;
+    module.functions.push(function);
+    (module, symbol)
+}
+
 /// A page of memory the code can run in.
 fn executable_page() -> *mut u8 {
     let page = unsafe {
@@ -194,8 +325,14 @@ fn executable_page() -> *mut u8 {
 /// two words it wrote.
 fn run(global_id: u32, fused: bool) -> [u32; 2] {
     let (module, entry) = kernel_module(fused);
+    run_module(global_id, &module, entry)
+}
+
+/// Runs `module` with the given global identifier and returns the two
+/// words it wrote.
+fn run_module(global_id: u32, module: &MirModule, entry: codevar_ocl_native_codegen::mir::SymId) -> [u32; 2] {
     let image = target()
-        .lower_module(&module, entry)
+        .lower_module(module, entry)
         .expect("the module compiles");
     let page = executable_page();
     // SAFETY: the page holds a whole number of bytes of executable
@@ -259,4 +396,34 @@ fn the_fused_comparison_falls_through_when_the_condition_fails() {
     let result = run(50, true);
     assert_eq!(result[0], 2, "the wrong branch was taken");
     assert_eq!(result[1], 50, "the frame does not hold the value");
+}
+
+#[test]
+fn the_false_block_falls_through_when_the_second_condition_fails() {
+    let (module, entry) = false_fallthrough_module(false);
+    assert_eq!(
+        run_module(50, &module, entry)[0],
+        33,
+        "the false block does not fall through"
+    );
+    assert_eq!(
+        run_module(5, &module, entry)[0],
+        11,
+        "the true block is not taken"
+    );
+}
+
+#[test]
+fn the_fused_false_block_falls_through_when_the_second_condition_fails() {
+    let (module, entry) = false_fallthrough_module(true);
+    assert_eq!(
+        run_module(50, &module, entry)[0],
+        33,
+        "the false block does not fall through"
+    );
+    assert_eq!(
+        run_module(5, &module, entry)[0],
+        11,
+        "the true block is not taken"
+    );
 }

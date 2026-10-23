@@ -46,13 +46,14 @@
 //! is 31.  A register number therefore tells whether the value it
 //! holds is an integer or a floating-point one.
 //!
-//! The allocator is offered the registers `r10`, `r11`, `rbx`, `r12`,
-//! `r13`, `r14`, and `r15` as integer registers, and `xmm0` through
-//! `xmm13` as floating-point and vector registers.  The argument
-//! registers, the accumulator, and the two last SSE registers belong
-//! to the back end: the expander uses them as scratch space, and the
-//! calling convention reserves them for the arguments and the result
-//! of a call.
+//! The allocator is offered the registers `r10`, `r11`, `rbx`, `rbp`,
+//! `r12`, `r13`, `r14`, and `r15` as integer registers, and `xmm0`
+//! through `xmm13` as floating-point and vector registers.  The
+//! argument registers, the accumulator, and the two last SSE registers
+//! belong to the back end: the expander uses them as scratch space, and
+//! the calling convention reserves them for the arguments and the
+//! result of a call.  The frame pointer is not one of the registers the
+//! back end reserves, so `rbp` is an ordinary callee-saved register.
 //!
 //! # The registers of the machine IR
 //!
@@ -105,11 +106,12 @@ impl X86Target {
     /// Creates the target.
     #[must_use]
     pub fn new() -> Self {
-        let mut int_regs: Vec<PReg> = Vec::with_capacity(7);
+        let mut int_regs: Vec<PReg> = Vec::with_capacity(8);
         for number in [
             reg::R10,
             reg::R11,
             reg::RBX,
+            reg::RBP,
             reg::R12,
             reg::R13,
             reg::R14,
@@ -205,7 +207,7 @@ mod tests {
     fn the_register_model_holds_the_expected_registers() {
         let target = X86Target::new();
         let registers = target.registers();
-        assert_eq!(registers.int_regs.len(), 7);
+        assert_eq!(registers.int_regs.len(), 8);
         assert_eq!(registers.float_regs.len(), 14);
         assert_eq!(registers.vec_regs, registers.float_regs);
         assert_eq!(registers.arg_regs.len(), 6);

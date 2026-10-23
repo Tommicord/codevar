@@ -400,30 +400,31 @@ impl<'a> Expander<'a> {
 
     /// Expands one instruction.
     ///
-    /// `current` is the index of the block the instruction belongs to,
-    /// which is the block that follows the previous one in the emitted
-    /// code, so a branch to `current + 1` falls through.
+    /// `next` is the index of the block the emitted code reaches by
+    /// falling through, which is the block that follows this one in the
+    /// emitted order.  A branch whose target is that block needs no
+    /// instruction.
     fn expand_inst(
         &mut self,
         enc: &mut Encoder<'_>,
         fixups: &mut Vec<Fixup>,
         inst: &MInst,
-        current: usize,
+        next: Option<usize>,
     ) -> Result<(), CodegenError> {
-        self.expand_op(enc, fixups, inst, current)
+        self.expand_op(enc, fixups, inst, next)
     }
 
     /// Expands one operation.
     ///
-    /// `current` is the index of the block the instruction belongs to.
-    /// It is passed on to the branch arms, which can elide a branch whose
-    /// target is the following block.
+    /// `next` is the index of the block the emitted code reaches by
+    /// falling through.  The branch arms elide a branch whose target is
+    /// that block.
     fn expand_op(
         &mut self,
         enc: &mut Encoder<'_>,
         fixups: &mut Vec<Fixup>,
         inst: &MInst,
-        current: usize,
+        next: Option<usize>,
     ) -> Result<(), CodegenError> {
         match &inst.op {
             MOp::Copy => self.expand_copy(enc, inst),
@@ -477,10 +478,10 @@ impl<'a> Expander<'a> {
             MOp::Br { target } => {
                 let block = *target;
                 self.check_block(block)?;
-                // The block emitted right after this one is the block
-                // that follows in index order, so a branch to it has
-                // nothing to emit.
-                if block as usize == current + 1 {
+                // The block emitted right after this one is reached by
+                // falling through, so a branch to it has nothing to
+                // emit.
+                if Some(block as usize) == next {
                     return Ok(());
                 }
                 let site = enc.jmp_rel32();
@@ -502,15 +503,16 @@ impl<'a> Expander<'a> {
                 })?;
                 self.check_block(when_true)?;
                 self.check_block(when_false)?;
-                // When one of the targets is the following block, the
-                // branch only needs to cover the other one: control
-                // falls through to the following block either way, and
-                // a trailing jump would be redundant.
-                if when_false as usize == current + 1 {
+                // When one of the targets is the block that follows in
+                // the emitted code, the branch only needs to cover the
+                // other one: control falls through to the following
+                // block either way, and a trailing jump would be
+                // redundant.
+                if Some(when_false as usize) == next {
                     enc.test_rr(Size::Dword, cond, cond);
                     let site = enc.jcc_rel32(Cc::Ne);
                     fixups.push(Fixup::block(site, when_true));
-                } else if when_true as usize == current + 1 {
+                } else if Some(when_true as usize) == next {
                     enc.test_rr(Size::Dword, cond, cond);
                     let site = enc.jcc_rel32(Cc::E);
                     fixups.push(Fixup::block(site, when_false));
@@ -523,7 +525,7 @@ impl<'a> Expander<'a> {
                 }
                 Ok(())
             }
-            MOp::CondBrCmp { pred } => self.expand_cond_br_cmp(enc, fixups, inst, *pred, current),
+            MOp::CondBrCmp { pred } => self.expand_cond_br_cmp(enc, fixups, inst, *pred, next),
             MOp::Ret => {
                 if inst.ty != MType::Void {
                     let value = self.operand_reg(enc, inst, 0, &[])?;
@@ -1825,7 +1827,7 @@ impl<'a> Expander<'a> {
         fixups: &mut Vec<Fixup>,
         inst: &MInst,
         pred: IPred,
-        current: usize,
+        next: Option<usize>,
     ) -> Result<(), CodegenError> {
         let left = self.operand_reg(enc, inst, 0, &[])?;
         self.expect_int(left, 0)?;
@@ -1857,15 +1859,16 @@ impl<'a> Expander<'a> {
         })?;
         self.check_block(when_true)?;
         self.check_block(when_false)?;
-        // When one of the targets is the following block, the branch
-        // only needs to cover the other one: control falls through to
-        // the following block either way, and a trailing jump would be
-        // redundant.  When the true block falls through, the predicate
-        // is inverted so the jump covers the false block.
-        if when_false as usize == current + 1 {
+        // When one of the targets is the block that follows in the
+        // emitted code, the branch only needs to cover the other one:
+        // control falls through to the following block either way, and a
+        // trailing jump would be redundant.  When the true block falls
+        // through, the predicate is inverted so the jump covers the
+        // false block.
+        if Some(when_false as usize) == next {
             let site = enc.jcc_rel32(prediction(pred));
             fixups.push(Fixup::block(site, when_true));
-        } else if when_true as usize == current + 1 {
+        } else if Some(when_true as usize) == next {
             let site = enc.jcc_rel32(negated(pred));
             fixups.push(Fixup::block(site, when_false));
         } else {
@@ -2541,19 +2544,134 @@ fn frame_size(function: &MirFunction) -> u32 {
     function.frame_size.div_ceil(16) * 16
 }
 
+/// The blocks a block branches to, at most two, as the indices of the
+/// blocks of the function.
+///
+/// A branch that names a block the function does not hold contributes
+/// no successor: the expansion reports it when it reaches the branch,
+/// and the ordering must not index a block that is not there.
+fn successors_of(function: &MirFunction, block: usize) -> [Option<usize>; 2] {
+    let mut successors = [None, None];
+    let Some(block) = function.blocks.get(block) else {
+        return successors;
+    };
+    let Some(terminator) = block.terminator() else {
+        return successors;
+    };
+    let count = function.blocks.len();
+    match &terminator.op {
+        MOp::Br { target } => {
+            let target = *target as usize;
+            if target < count {
+                successors[0] = Some(target);
+            }
+        }
+        MOp::CondBr | MOp::CondBrCmp { .. } => {
+            if let Some((when_true, when_false)) = terminator.cond_br_targets() {
+                let when_true = when_true as usize;
+                let when_false = when_false as usize;
+                if when_true < count {
+                    successors[0] = Some(when_true);
+                }
+                if when_false < count && when_false != when_true {
+                    successors[1] = Some(when_false);
+                }
+            }
+        }
+        _ => {}
+    }
+    successors
+}
+
+/// The order the blocks of a function are emitted in.
+///
+/// The blocks are laid out trace by trace.  A trace starts at a block
+/// nothing has placed yet and follows, at each block, the first
+/// successor that is not placed yet, so the block that follows in the
+/// emitted code is usually one a branch of the trace's preceding block
+/// names: the branch then falls through instead of jumping.  The
+/// successors the trace does not follow become the starts of the next
+/// traces.  Loops fall out of the rule on their own, because a branch
+/// back to a block already placed is not followed.  A block no trace
+/// reaches — a block beyond an unconditional branch, say — is placed
+/// after the traces, in index order, so that every block has a place.
+fn block_order(function: &MirFunction) -> Vec<usize> {
+    let count = function.blocks.len();
+    let mut order: Vec<usize> = Vec::with_capacity(count);
+    let mut placed: Vec<bool> = alloc::vec![false; count];
+    // The traces that have not been walked yet; the entry block is the
+    // first block of the function, so its trace comes first.
+    let mut pending: Vec<usize> = Vec::new();
+    if count > 0 {
+        pending.push(0);
+    }
+    while let Some(start) = pending.pop() {
+        if placed.get(start).copied().unwrap_or(true) {
+            continue;
+        }
+        let mut current = start;
+        loop {
+            match placed.get_mut(current) {
+                Some(slot) if !*slot => *slot = true,
+                _ => break,
+            }
+            order.push(current);
+            let mut next: Option<usize> = None;
+            for candidate in successors_of(function, current)
+                .into_iter()
+                .flatten()
+            {
+                if candidate == current {
+                    // A block that branches to itself cannot fall
+                    // through to itself; the branch jumps.
+                    continue;
+                }
+                if let Some(false) = placed.get(candidate).copied() {
+                    if next.is_none() {
+                        next = Some(candidate);
+                    } else {
+                        pending.push(candidate);
+                    }
+                }
+            }
+            match next {
+                Some(successor) => current = successor,
+                None => break,
+            }
+        }
+    }
+    for (block, slot) in placed.iter_mut().enumerate() {
+        if !*slot {
+            *slot = true;
+            order.push(block);
+        }
+    }
+    order
+}
+
 /// Expands a function into the bytes of its instructions.
 pub(crate) fn expand_function(module: &MirModule, function: &MirFunction) -> Result<Expanded, CodegenError> {
     let mut expander = Expander::new(module, function);
     let mut bytes: Vec<u8> = Vec::with_capacity(64);
     let mut fixups: Vec<Fixup> = Vec::new();
-    let mut block_offsets: Vec<u32> = Vec::with_capacity(function.blocks.len());
+    // The offset of a block is recorded by the block's own index, not
+    // by its place in the emitted code, because the fixups name blocks
+    // by index.
+    let mut block_offsets: Vec<u32> = alloc::vec![0; function.blocks.len()];
+    let order = block_order(function);
     let instruction_count = {
         let mut encoder = Encoder::new(&mut bytes);
         expander.emit_prologue(&mut encoder);
-        for (index, block) in function.blocks.iter().enumerate() {
-            block_offsets.push(encoder.position());
-            for inst in &block.insts {
-                expander.expand_inst(&mut encoder, &mut fixups, inst, index)?;
+        for (position, block) in order.iter().copied().enumerate() {
+            let Some(body) = function.blocks.get(block) else {
+                continue;
+            };
+            let next = order.get(position + 1).copied();
+            if let Some(offset) = block_offsets.get_mut(block) {
+                *offset = encoder.position();
+            }
+            for inst in &body.insts {
+                expander.expand_inst(&mut encoder, &mut fixups, inst, next)?;
             }
         }
         encoder.count()
