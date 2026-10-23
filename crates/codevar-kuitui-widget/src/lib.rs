@@ -32,3 +32,7 @@
 #![warn(missing_docs)]
 
 extern crate alloc;
+
+pub mod shaders;
+
+pub use shaders::{PushConstants, TextVertex, UiVertex};
