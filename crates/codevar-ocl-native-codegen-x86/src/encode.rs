@@ -148,6 +148,70 @@ impl Arith {
     }
 }
 
+/// The width of a packed vector operand.
+///
+/// The three widths share their register numbers on x86-64: `xmm0`,
+/// `ymm0` and `zmm0` are all register zero, so the allocator never has
+/// to choose between them.  The width of an instruction is what
+/// selects the encoding rather than the register.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[allow(dead_code)]
+pub(crate) enum VecWidth {
+    /// A 128-bit vector, the width of the baseline.
+    Xmm,
+    /// A 256-bit vector, the width AVX and AVX2 add.
+    Ymm,
+    /// A 512-bit vector, the width AVX-512 adds.
+    Zmm,
+}
+
+impl VecWidth {
+    /// The size of the register in bytes.
+    #[allow(dead_code)]
+    #[inline]
+    pub(crate) const fn bytes(self) -> u32 {
+        match self {
+            Self::Xmm => 16,
+            Self::Ymm => 32,
+            Self::Zmm => 64,
+        }
+    }
+}
+
+/// The mandatory prefix of a packed instruction.
+///
+/// The vector opcodes of the baseline carry the same two bits in their
+/// extension prefix; the encoder names them so an instruction's method
+/// can state the prefix it needs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SimdPrefix {
+    /// No mandatory prefix.
+    None,
+    /// The `66` prefix.
+    P66,
+    /// The `F3` prefix.
+    F3,
+}
+
+impl SimdPrefix {
+    /// The two bits of the prefix.
+    #[inline]
+    const fn bits(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::P66 => 1,
+            Self::F3 => 2,
+        }
+    }
+}
+
+/// The `0F` opcode map.
+const MAP_0F: u8 = 1;
+/// The `0F 38` opcode map.
+const MAP_0F38: u8 = 2;
+/// The `0F 3A` opcode map.
+const MAP_0F3A: u8 = 3;
+
 /// The encoder of the target's instructions.
 ///
 /// The encoder owns no buffer of its own: it writes into the vector
@@ -1219,6 +1283,386 @@ impl<'a> Encoder<'a> {
     }
 }
 
+/// The encodings of the vector instructions above the baseline.
+///
+/// The methods mirror the baseline ones: each emits one instruction,
+/// takes the width the operation needs, and keeps the register numbers
+/// of the allocator.  The prefix machinery writes the short VEX form
+/// below 512 bits and the EVEX form at 512 bits.
+///
+/// The expander selects a subset of these encodings today; the rest are
+/// covered by the unit tests and wait for a machine operation that
+/// expresses them.  The `dead_code` allowance records that and goes
+/// away as the selection catches up.  The prefix helpers take the whole
+/// shape of the instruction, so they carry more arguments than the
+/// lint prefers.
+#[allow(dead_code, clippy::too_many_arguments)]
+impl<'a> Encoder<'a> {
+    /// Emits the VEX prefix of a packed instruction.
+    ///
+    /// The prefix takes its two-byte form whenever it can and its
+    /// three-byte form otherwise.  `vvvv` is the register of the
+    /// non-destructive source, or `xmm0` when the instruction has none.
+    fn vex(&mut self, w: bool, vvvv: u16, width: VecWidth, prefix: SimdPrefix, map: u8, reg: u16, rm: u16) {
+        let (_, reg_ext) = Self::parts(reg);
+        let (_, rm_ext) = Self::parts(rm);
+        let (v_field, v_ext) = Self::parts(vvvv);
+        let v = (v_field & 7) | (v_ext << 3);
+        let l = u8::from(matches!(width, VecWidth::Ymm));
+        let short = map == MAP_0F && !w && rm_ext == 0;
+        if short {
+            self.byte(0xC5);
+            self.byte(((!reg_ext & 1) << 7) | (((!v) & 0xF) << 3) | (l << 2) | prefix.bits());
+        } else {
+            self.byte(0xC4);
+            self.byte(((!reg_ext & 1) << 7) | (1 << 6) | ((!rm_ext & 1) << 5) | (map & 0x1F));
+            self.byte((u8::from(w) << 7) | (((!v) & 0xF) << 3) | (l << 2) | prefix.bits());
+        }
+    }
+
+    /// Emits the EVEX prefix of a packed instruction.
+    ///
+    /// The register file holds sixteen vector registers, so the high
+    /// bits of the fields are zero: the prefix writes the complemented
+    /// zero for `R'`, `X` and `V'`.
+    fn evex(&mut self, w: bool, vvvv: u16, width: VecWidth, prefix: SimdPrefix, map: u8, reg: u16, rm: u16) {
+        let (_, reg_ext) = Self::parts(reg);
+        let (_, rm_ext) = Self::parts(rm);
+        let (v_field, v_ext) = Self::parts(vvvv);
+        let v = (v_field & 7) | (v_ext << 3);
+        let (l_prime, l) = match width {
+            VecWidth::Xmm => (0u8, 0u8),
+            VecWidth::Ymm => (0, 1),
+            VecWidth::Zmm => (1, 0),
+        };
+        self.byte(0x62);
+        self.byte(((!reg_ext & 1) << 7) | (1 << 6) | ((!rm_ext & 1) << 5) | (1 << 4) | (map & 3));
+        self.byte((u8::from(w) << 7) | (((!v) & 0xF) << 3) | (1 << 2) | prefix.bits());
+        self.byte((l_prime << 6) | (l << 5) | (1 << 3));
+    }
+
+    /// Emits the prefix of a packed instruction that takes the VEX form
+    /// below 512 bits and the EVEX form at 512 bits.
+    fn packed_prefix(
+        &mut self,
+        width: VecWidth,
+        w: bool,
+        vvvv: u16,
+        prefix: SimdPrefix,
+        map: u8,
+        reg: u16,
+        rm: u16,
+    ) {
+        if width == VecWidth::Zmm {
+            self.evex(w, vvvv, width, prefix, map, reg, rm);
+        } else {
+            self.vex(w, vvvv, width, prefix, map, reg, rm);
+        }
+    }
+
+    /// Emits a packed instruction of three registers whose first
+    /// source is a register of its own.
+    fn nds(
+        &mut self,
+        width: VecWidth,
+        w: bool,
+        prefix: SimdPrefix,
+        map: u8,
+        opcode: u8,
+        dst: u16,
+        src1: u16,
+        src2: u16,
+    ) {
+        self.count += 1;
+        self.packed_prefix(width, w, src1, prefix, map, dst, src2);
+        self.byte(opcode);
+        self.modrm_rr(Self::parts(dst).0, Self::parts(src2).0);
+    }
+
+    /// Emits a packed instruction of two registers whose reserved
+    /// source field is unused.
+    fn ndd(&mut self, width: VecWidth, w: bool, prefix: SimdPrefix, map: u8, opcode: u8, dst: u16, src: u16) {
+        self.count += 1;
+        self.packed_prefix(width, w, reg::XMM0, prefix, map, dst, src);
+        self.byte(opcode);
+        self.modrm_rr(Self::parts(dst).0, Self::parts(src).0);
+    }
+
+    /// Emits `vaddps`.
+    pub(crate) fn vaddps(&mut self, width: VecWidth, dst: u16, src1: u16, src2: u16) {
+        self.nds(width, false, SimdPrefix::None, MAP_0F, 0x58, dst, src1, src2);
+    }
+
+    /// Emits `vsubps`.
+    pub(crate) fn vsubps(&mut self, width: VecWidth, dst: u16, src1: u16, src2: u16) {
+        self.nds(width, false, SimdPrefix::None, MAP_0F, 0x5C, dst, src1, src2);
+    }
+
+    /// Emits `vmulps`.
+    pub(crate) fn vmulps(&mut self, width: VecWidth, dst: u16, src1: u16, src2: u16) {
+        self.nds(width, false, SimdPrefix::None, MAP_0F, 0x59, dst, src1, src2);
+    }
+
+    /// Emits `vandps`.
+    pub(crate) fn vandps(&mut self, width: VecWidth, dst: u16, src1: u16, src2: u16) {
+        self.nds(width, false, SimdPrefix::None, MAP_0F, 0x54, dst, src1, src2);
+    }
+
+    /// Emits `vorps`.
+    pub(crate) fn vorps(&mut self, width: VecWidth, dst: u16, src1: u16, src2: u16) {
+        self.nds(width, false, SimdPrefix::None, MAP_0F, 0x56, dst, src1, src2);
+    }
+
+    /// Emits `vxorps`.
+    pub(crate) fn vxorps(&mut self, width: VecWidth, dst: u16, src1: u16, src2: u16) {
+        self.nds(width, false, SimdPrefix::None, MAP_0F, 0x57, dst, src1, src2);
+    }
+
+    /// Emits `vpaddd`.
+    pub(crate) fn vpaddd(&mut self, width: VecWidth, dst: u16, src1: u16, src2: u16) {
+        self.nds(width, false, SimdPrefix::P66, MAP_0F, 0xFE, dst, src1, src2);
+    }
+
+    /// Emits `vpsubd`.
+    pub(crate) fn vpsubd(&mut self, width: VecWidth, dst: u16, src1: u16, src2: u16) {
+        self.nds(width, false, SimdPrefix::P66, MAP_0F, 0xFA, dst, src1, src2);
+    }
+
+    /// Emits `vpmulld`.
+    pub(crate) fn vpmulld(&mut self, width: VecWidth, dst: u16, src1: u16, src2: u16) {
+        self.nds(width, false, SimdPrefix::P66, MAP_0F38, 0x40, dst, src1, src2);
+    }
+
+    /// Emits `vpxor`, the EVEX form of which is `vpxord`.
+    pub(crate) fn vpxor(&mut self, width: VecWidth, dst: u16, src1: u16, src2: u16) {
+        self.nds(width, false, SimdPrefix::P66, MAP_0F, 0xEF, dst, src1, src2);
+    }
+
+    /// Emits `vpshufd`.
+    pub(crate) fn vpshufd(&mut self, width: VecWidth, dst: u16, src: u16, selector: u8) {
+        self.ndd(width, false, SimdPrefix::P66, MAP_0F, 0x70, dst, src);
+        self.byte(selector);
+    }
+
+    /// Emits `vmovdqa`; the 512-bit form is `vmovdqa64`.
+    pub(crate) fn vmovdqa(&mut self, width: VecWidth, dst: u16, src: u16) {
+        let w = matches!(width, VecWidth::Zmm);
+        self.ndd(width, w, SimdPrefix::P66, MAP_0F, 0x6F, dst, src);
+    }
+
+    /// Emits `vmovdqu`; the 512-bit form is `vmovdqu64`.
+    pub(crate) fn vmovdqu(&mut self, width: VecWidth, dst: u16, src: u16) {
+        let w = matches!(width, VecWidth::Zmm);
+        self.ndd(width, w, SimdPrefix::F3, MAP_0F, 0x6F, dst, src);
+    }
+
+    /// Emits `vpbroadcastd`, broadcasting the low double-word across
+    /// the lanes.
+    pub(crate) fn vpbroadcastd(&mut self, width: VecWidth, dst: u16, src: u16) {
+        self.ndd(width, false, SimdPrefix::P66, MAP_0F38, 0x58, dst, src);
+    }
+
+    /// Emits the EVEX mode byte of an instruction that reads or writes
+    /// memory.
+    ///
+    /// The eight-bit displacement of EVEX is scaled by the size of the
+    /// memory operand, which the encoder does not model, so the full
+    /// displacement is used when there is one.
+    fn evex_modrm_mem(&mut self, reg: u8, base: u16, disp: i32) {
+        let rm = (base & 7) as u8;
+        let wide = !(disp == 0 && rm != 5);
+        let mode = if wide { 2u8 } else { 0u8 };
+        self.byte((mode << 6) | ((reg & 7) << 3) | rm);
+        if rm == 4 {
+            // A scale of one, no index register, and the base itself.
+            self.byte(0x24);
+        }
+        if wide {
+            let bytes = (disp as u32).to_le_bytes();
+            self.out.extend_from_slice(&bytes);
+        }
+    }
+
+    /// Emits a store of a whole vector to memory with `vmovdqu`.
+    pub(crate) fn vmovdqu_mr(&mut self, width: VecWidth, base: u16, disp: i32, src: u16) {
+        self.count += 1;
+        let w = matches!(width, VecWidth::Zmm);
+        self.packed_prefix(width, w, reg::XMM0, SimdPrefix::F3, MAP_0F, src, base);
+        self.byte(0x7F);
+        if width == VecWidth::Zmm {
+            self.evex_modrm_mem(Self::parts(src).0, base, disp);
+        } else {
+            self.modrm_mem(Self::parts(src).0, base, disp);
+        }
+    }
+
+    /// Emits a load of a whole vector from memory with `vmovdqu`.
+    pub(crate) fn vmovdqu_rm(&mut self, width: VecWidth, dst: u16, base: u16, disp: i32) {
+        self.count += 1;
+        let w = matches!(width, VecWidth::Zmm);
+        self.packed_prefix(width, w, reg::XMM0, SimdPrefix::F3, MAP_0F, dst, base);
+        self.byte(0x6F);
+        if width == VecWidth::Zmm {
+            self.evex_modrm_mem(Self::parts(dst).0, base, disp);
+        } else {
+            self.modrm_mem(Self::parts(dst).0, base, disp);
+        }
+    }
+
+    /// Emits `vextracti128`, reading the low or high half of a
+    /// 256-bit vector.
+    pub(crate) fn vextracti128(&mut self, dst: u16, src: u16, index: u8) {
+        self.count += 1;
+        self.vex(
+            false,
+            reg::XMM0,
+            VecWidth::Ymm,
+            SimdPrefix::P66,
+            MAP_0F3A,
+            src,
+            dst,
+        );
+        self.byte(0x39);
+        self.modrm_rr(Self::parts(src).0, Self::parts(dst).0);
+        self.byte(index);
+    }
+
+    /// Emits `vinserti128`, writing over half of a 256-bit vector.
+    pub(crate) fn vinserti128(&mut self, dst: u16, src1: u16, src2: u16, index: u8) {
+        self.count += 1;
+        self.vex(false, src1, VecWidth::Ymm, SimdPrefix::P66, MAP_0F3A, dst, src2);
+        self.byte(0x38);
+        self.modrm_rr(Self::parts(dst).0, Self::parts(src2).0);
+        self.byte(index);
+    }
+
+    /// Emits `vextracti32x4`, reading a thirty-two-byte quarter of a
+    /// 512-bit vector.
+    pub(crate) fn vextracti32x4(&mut self, dst: u16, src: u16, index: u8) {
+        self.count += 1;
+        self.evex(
+            false,
+            reg::XMM0,
+            VecWidth::Zmm,
+            SimdPrefix::P66,
+            MAP_0F3A,
+            src,
+            dst,
+        );
+        self.byte(0x39);
+        self.modrm_rr(Self::parts(src).0, Self::parts(dst).0);
+        self.byte(index);
+    }
+
+    /// Emits `vinserti32x4`, writing over a quarter of a 512-bit
+    /// vector.
+    pub(crate) fn vinserti32x4(&mut self, dst: u16, src1: u16, src2: u16, index: u8) {
+        self.count += 1;
+        self.evex(false, src1, VecWidth::Zmm, SimdPrefix::P66, MAP_0F3A, dst, src2);
+        self.byte(0x38);
+        self.modrm_rr(Self::parts(dst).0, Self::parts(src2).0);
+        self.byte(index);
+    }
+
+    /// Emits `vpermb`, the byte permute of AVX-512 VBMI.
+    pub(crate) fn vpermb(&mut self, width: VecWidth, dst: u16, src1: u16, src2: u16) {
+        self.count += 1;
+        self.evex(false, src1, width, SimdPrefix::P66, MAP_0F38, dst, src2);
+        self.byte(0x8D);
+        self.modrm_rr(Self::parts(dst).0, Self::parts(src2).0);
+    }
+
+    /// Emits `vpermi2b`, the two-table byte permute of AVX-512 VBMI.
+    pub(crate) fn vpermi2b(&mut self, width: VecWidth, dst: u16, src1: u16, src2: u16) {
+        self.count += 1;
+        self.evex(false, src1, width, SimdPrefix::P66, MAP_0F38, dst, src2);
+        self.byte(0x75);
+        self.modrm_rr(Self::parts(dst).0, Self::parts(src2).0);
+    }
+
+    /// Emits `vpermt2b`, the two-table byte permute of AVX-512 VBMI
+    /// that writes the tables instead of the indices.
+    pub(crate) fn vpermt2b(&mut self, width: VecWidth, dst: u16, src1: u16, src2: u16) {
+        self.count += 1;
+        self.evex(false, src1, width, SimdPrefix::P66, MAP_0F38, dst, src2);
+        self.byte(0x7D);
+        self.modrm_rr(Self::parts(dst).0, Self::parts(src2).0);
+    }
+
+    /// Emits `vpcompressb`, packing the bytes of a vector together.
+    ///
+    /// The destination is the memory field, so the encoding names the
+    /// source in the register field.
+    pub(crate) fn vpcompressb(&mut self, width: VecWidth, dst: u16, src: u16) {
+        self.count += 1;
+        self.evex(false, reg::XMM0, width, SimdPrefix::P66, MAP_0F38, src, dst);
+        self.byte(0x63);
+        self.modrm_rr(Self::parts(src).0, Self::parts(dst).0);
+    }
+
+    /// Emits `vpexpandb`, spreading the bytes of a vector out again.
+    pub(crate) fn vpexpandb(&mut self, width: VecWidth, dst: u16, src: u16) {
+        self.count += 1;
+        self.evex(false, reg::XMM0, width, SimdPrefix::P66, MAP_0F38, dst, src);
+        self.byte(0x62);
+        self.modrm_rr(Self::parts(dst).0, Self::parts(src).0);
+    }
+
+    /// Emits `vpshldd`, the double-word funnel shift of AVX-512 VBMI2.
+    pub(crate) fn vpshldd(&mut self, width: VecWidth, dst: u16, src1: u16, src2: u16, amount: u8) {
+        self.count += 1;
+        self.evex(false, src1, width, SimdPrefix::P66, MAP_0F3A, dst, src2);
+        self.byte(0x71);
+        self.modrm_rr(Self::parts(dst).0, Self::parts(src2).0);
+        self.byte(amount);
+    }
+
+    /// Emits `vpshrdd`, the double-word funnel shift of AVX-512 VBMI2.
+    pub(crate) fn vpshrdd(&mut self, width: VecWidth, dst: u16, src1: u16, src2: u16, amount: u8) {
+        self.count += 1;
+        self.evex(false, src1, width, SimdPrefix::P66, MAP_0F3A, dst, src2);
+        self.byte(0x73);
+        self.modrm_rr(Self::parts(dst).0, Self::parts(src2).0);
+        self.byte(amount);
+    }
+
+    /// Emits `vpshldw`, the word funnel shift of AVX-512 VBMI2.
+    pub(crate) fn vpshldw(&mut self, width: VecWidth, dst: u16, src1: u16, src2: u16, amount: u8) {
+        self.count += 1;
+        self.evex(true, src1, width, SimdPrefix::P66, MAP_0F3A, dst, src2);
+        self.byte(0x70);
+        self.modrm_rr(Self::parts(dst).0, Self::parts(src2).0);
+        self.byte(amount);
+    }
+
+    /// Emits `vpshrdw`, the word funnel shift of AVX-512 VBMI2.
+    pub(crate) fn vpshrdw(&mut self, width: VecWidth, dst: u16, src1: u16, src2: u16, amount: u8) {
+        self.count += 1;
+        self.evex(true, src1, width, SimdPrefix::P66, MAP_0F3A, dst, src2);
+        self.byte(0x72);
+        self.modrm_rr(Self::parts(dst).0, Self::parts(src2).0);
+        self.byte(amount);
+    }
+
+    /// Emits `vpmadd52luq`, the low half of the AVX-512 IFMA
+    /// multiply-add.
+    pub(crate) fn vpmadd52luq(&mut self, width: VecWidth, dst: u16, src1: u16, src2: u16) {
+        self.count += 1;
+        self.evex(true, src1, width, SimdPrefix::P66, MAP_0F38, dst, src2);
+        self.byte(0xB4);
+        self.modrm_rr(Self::parts(dst).0, Self::parts(src2).0);
+    }
+
+    /// Emits `vpmadd52huq`, the high half of the AVX-512 IFMA
+    /// multiply-add.
+    pub(crate) fn vpmadd52huq(&mut self, width: VecWidth, dst: u16, src1: u16, src2: u16) {
+        self.count += 1;
+        self.evex(true, src1, width, SimdPrefix::P66, MAP_0F38, dst, src2);
+        self.byte(0xB5);
+        self.modrm_rr(Self::parts(dst).0, Self::parts(src2).0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1231,6 +1675,11 @@ mod tests {
             f(&mut encoder);
         }
         out
+    }
+
+    /// The number of the `n`-th vector register.
+    fn xmm(n: u16) -> u16 {
+        reg::XMM_BASE + n
     }
 
     #[test]
@@ -1493,6 +1942,206 @@ mod tests {
         assert_eq!(
             bytes_of(|e| e.pextrd_rm_xmm(reg::RAX, reg::XMM14, 3)),
             vec![0x66, 0x44, 0x0F, 0x3A, 0x16, 0xF0, 0x03]
+        );
+    }
+
+    #[test]
+    fn the_packed_floating_point_forms_have_the_expected_bytes() {
+        assert_eq!(
+            bytes_of(|e| e.vaddps(VecWidth::Xmm, xmm(1), xmm(2), xmm(3))),
+            vec![0xC5, 0xE8, 0x58, 0xCB]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vaddps(VecWidth::Ymm, xmm(1), xmm(2), xmm(3))),
+            vec![0xC5, 0xEC, 0x58, 0xCB]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vaddps(VecWidth::Zmm, xmm(1), xmm(2), xmm(3))),
+            vec![0x62, 0xF1, 0x6C, 0x48, 0x58, 0xCB]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vaddps(VecWidth::Ymm, xmm(14), xmm(15), xmm(0))),
+            vec![0xC5, 0x04, 0x58, 0xF0]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vsubps(VecWidth::Zmm, xmm(1), xmm(2), xmm(3))),
+            vec![0x62, 0xF1, 0x6C, 0x48, 0x5C, 0xCB]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vmulps(VecWidth::Zmm, xmm(1), xmm(2), xmm(3))),
+            vec![0x62, 0xF1, 0x6C, 0x48, 0x59, 0xCB]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vandps(VecWidth::Zmm, xmm(1), xmm(2), xmm(3))),
+            vec![0x62, 0xF1, 0x6C, 0x48, 0x54, 0xCB]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vorps(VecWidth::Zmm, xmm(1), xmm(2), xmm(3))),
+            vec![0x62, 0xF1, 0x6C, 0x48, 0x56, 0xCB]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vxorps(VecWidth::Zmm, xmm(1), xmm(2), xmm(3))),
+            vec![0x62, 0xF1, 0x6C, 0x48, 0x57, 0xCB]
+        );
+    }
+
+    #[test]
+    fn the_packed_integer_forms_have_the_expected_bytes() {
+        assert_eq!(
+            bytes_of(|e| e.vpaddd(VecWidth::Zmm, xmm(1), xmm(2), xmm(3))),
+            vec![0x62, 0xF1, 0x6D, 0x48, 0xFE, 0xCB]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vpsubd(VecWidth::Zmm, xmm(1), xmm(2), xmm(3))),
+            vec![0x62, 0xF1, 0x6D, 0x48, 0xFA, 0xCB]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vpmulld(VecWidth::Zmm, xmm(1), xmm(2), xmm(3))),
+            vec![0x62, 0xF2, 0x6D, 0x48, 0x40, 0xCB]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vpxor(VecWidth::Ymm, xmm(1), xmm(2), xmm(3))),
+            vec![0xC5, 0xED, 0xEF, 0xCB]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vpxor(VecWidth::Zmm, xmm(1), xmm(2), xmm(3))),
+            vec![0x62, 0xF1, 0x6D, 0x48, 0xEF, 0xCB]
+        );
+    }
+
+    #[test]
+    fn the_packed_shuffle_and_move_forms_have_the_expected_bytes() {
+        assert_eq!(
+            bytes_of(|e| e.vpshufd(VecWidth::Ymm, xmm(1), xmm(2), 0x1B)),
+            vec![0xC5, 0xFD, 0x70, 0xCA, 0x1B]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vpshufd(VecWidth::Zmm, xmm(1), xmm(2), 0x1B)),
+            vec![0x62, 0xF1, 0x7D, 0x48, 0x70, 0xCA, 0x1B]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vmovdqa(VecWidth::Ymm, xmm(1), xmm(2))),
+            vec![0xC5, 0xFD, 0x6F, 0xCA]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vmovdqu(VecWidth::Ymm, xmm(1), xmm(2))),
+            vec![0xC5, 0xFE, 0x6F, 0xCA]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vmovdqa(VecWidth::Zmm, xmm(1), xmm(2))),
+            vec![0x62, 0xF1, 0xFD, 0x48, 0x6F, 0xCA]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vmovdqu(VecWidth::Zmm, xmm(1), xmm(2))),
+            vec![0x62, 0xF1, 0xFE, 0x48, 0x6F, 0xCA]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vpbroadcastd(VecWidth::Ymm, xmm(1), xmm(2))),
+            vec![0xC4, 0xE2, 0x7D, 0x58, 0xCA]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vpbroadcastd(VecWidth::Zmm, xmm(1), xmm(2))),
+            vec![0x62, 0xF2, 0x7D, 0x48, 0x58, 0xCA]
+        );
+    }
+
+    #[test]
+    fn the_packed_lane_forms_have_the_expected_bytes() {
+        assert_eq!(
+            bytes_of(|e| e.vextracti128(xmm(1), xmm(2), 1)),
+            vec![0xC4, 0xE3, 0x7D, 0x39, 0xD1, 0x01]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vinserti128(xmm(1), xmm(2), xmm(3), 1)),
+            vec![0xC4, 0xE3, 0x6D, 0x38, 0xCB, 0x01]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vextracti32x4(xmm(1), xmm(2), 1)),
+            vec![0x62, 0xF3, 0x7D, 0x48, 0x39, 0xD1, 0x01]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vinserti32x4(xmm(1), xmm(2), xmm(3), 1)),
+            vec![0x62, 0xF3, 0x6D, 0x48, 0x38, 0xCB, 0x01]
+        );
+    }
+
+    #[test]
+    fn the_packed_spill_forms_have_the_expected_bytes() {
+        assert_eq!(
+            bytes_of(|e| e.vmovdqu_rm(VecWidth::Xmm, xmm(1), reg::RSP, 0x20)),
+            vec![0xC5, 0xFA, 0x6F, 0x4C, 0x24, 0x20]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vmovdqu_rm(VecWidth::Ymm, xmm(1), reg::RSP, 0x20)),
+            vec![0xC5, 0xFE, 0x6F, 0x4C, 0x24, 0x20]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vmovdqu_rm(VecWidth::Zmm, xmm(1), reg::RSP, 0)),
+            vec![0x62, 0xF1, 0xFE, 0x48, 0x6F, 0x0C, 0x24]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vmovdqu_rm(VecWidth::Zmm, xmm(1), reg::RSP, 0x20)),
+            vec![0x62, 0xF1, 0xFE, 0x48, 0x6F, 0x8C, 0x24, 0x20, 0x00, 0x00, 0x00]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vmovdqu_mr(VecWidth::Zmm, reg::RSP, 0x20, xmm(1))),
+            vec![0x62, 0xF1, 0xFE, 0x48, 0x7F, 0x8C, 0x24, 0x20, 0x00, 0x00, 0x00]
+        );
+    }
+
+    #[test]
+    fn the_vbmi_forms_have_the_expected_bytes() {
+        assert_eq!(
+            bytes_of(|e| e.vpermb(VecWidth::Zmm, xmm(1), xmm(2), xmm(3))),
+            vec![0x62, 0xF2, 0x6D, 0x48, 0x8D, 0xCB]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vpermi2b(VecWidth::Zmm, xmm(1), xmm(2), xmm(3))),
+            vec![0x62, 0xF2, 0x6D, 0x48, 0x75, 0xCB]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vpermt2b(VecWidth::Zmm, xmm(1), xmm(2), xmm(3))),
+            vec![0x62, 0xF2, 0x6D, 0x48, 0x7D, 0xCB]
+        );
+    }
+
+    #[test]
+    fn the_vbmi2_forms_have_the_expected_bytes() {
+        assert_eq!(
+            bytes_of(|e| e.vpcompressb(VecWidth::Zmm, xmm(1), xmm(2))),
+            vec![0x62, 0xF2, 0x7D, 0x48, 0x63, 0xD1]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vpexpandb(VecWidth::Zmm, xmm(1), xmm(2))),
+            vec![0x62, 0xF2, 0x7D, 0x48, 0x62, 0xCA]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vpshldd(VecWidth::Zmm, xmm(1), xmm(2), xmm(3), 5)),
+            vec![0x62, 0xF3, 0x6D, 0x48, 0x71, 0xCB, 0x05]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vpshrdd(VecWidth::Zmm, xmm(1), xmm(2), xmm(3), 5)),
+            vec![0x62, 0xF3, 0x6D, 0x48, 0x73, 0xCB, 0x05]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vpshldw(VecWidth::Zmm, xmm(1), xmm(2), xmm(3), 5)),
+            vec![0x62, 0xF3, 0xED, 0x48, 0x70, 0xCB, 0x05]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vpshrdw(VecWidth::Zmm, xmm(1), xmm(2), xmm(3), 5)),
+            vec![0x62, 0xF3, 0xED, 0x48, 0x72, 0xCB, 0x05]
+        );
+    }
+
+    #[test]
+    fn the_ifma_forms_have_the_expected_bytes() {
+        assert_eq!(
+            bytes_of(|e| e.vpmadd52luq(VecWidth::Zmm, xmm(1), xmm(2), xmm(3))),
+            vec![0x62, 0xF2, 0xED, 0x48, 0xB4, 0xCB]
+        );
+        assert_eq!(
+            bytes_of(|e| e.vpmadd52huq(VecWidth::Zmm, xmm(1), xmm(2), xmm(3))),
+            vec![0x62, 0xF2, 0xED, 0x48, 0xB5, 0xCB]
         );
     }
 }
