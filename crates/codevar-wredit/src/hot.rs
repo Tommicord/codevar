@@ -55,6 +55,30 @@ const GAP_SHIFT_DELETE_KERNEL: &str = "gap_shift_delete";
 const FIND_MATCHES_KERNEL: &str = "find_matches";
 /// Kernel entry point for parallel UTF-8 validation.
 const UTF8_VALIDATE_KERNEL: &str = "utf8_validate_chunk";
+/// Kernel entry point for the parallel UTF-8 code-point count.
+const CHAR_COUNT_KERNEL: &str = "char_count";
+/// Kernel entry point for the parallel UTF-8 code-point count (alias).
+const UTF8_COUNT_KERNEL: &str = "utf8_count_code_points";
+/// Kernel entry point for the position-weighted block checksum.
+const BLOCK_CHECKSUM_KERNEL: &str = "block_checksum";
+/// Kernel entry point for the position-weighted history checksum.
+const HISTORY_CHECKSUM_KERNEL: &str = "history_checksum";
+/// Kernel entry point for the parallel newline count.
+const COUNT_NEWLINES_KERNEL: &str = "count_newlines";
+/// Kernel entry point for the parallel `u32` occurrence count.
+const COUNT_U32_KERNEL: &str = "count_u32";
+/// Kernel entry point for the parallel `u32` locate-first query.
+const FIND_FIRST_U32_KERNEL: &str = "find_first_u32";
+/// Kernel entry point for the parallel gap compaction.
+const GAP_COMPACT_KERNEL: &str = "gap_compact";
+
+/// Number of work items used for the strided `count_u32` and
+/// `find_first_u32` kernels: each item owns `ceil(n / 256)` elements.
+const STRIDED_WORK_ITEMS: usize = 256;
+
+/// Modulus of the position-weighted checksum: `2^30`, matching
+/// [`crate::simd::linear_checksum`] so the CPU and GPU checksums agree.
+const CHECKSUM_MASK: u32 = (1 << 30) - 1;
 
 /// Largest sequence length the kernel's 32-bit parameters accept.
 ///
@@ -465,6 +489,327 @@ pub unsafe fn utf8_validate(data: *const u8, len: usize) -> Option<bool> {
     Some(valid.iter().all(|&v| v != 0))
 }
 
+/// Counts the UTF-8 code points in `bytes` on the GPU.
+///
+/// Returns the same value as [`crate::simd::count_utf8_units`] when the
+/// GPU handled the buffer, and [`None`] when the caller must run the
+/// CPU/SIMD reference: no pipeline, an empty input, a length past the
+/// kernel's 32-bit limits, or any driver error.
+///
+/// # Examples
+///
+/// ```
+/// use codevar_wredit::hot::try_char_count;
+///
+/// // With no GPU this is `None`; with one it equals the CPU answer.
+/// if let Some(count) = try_char_count("héllo".as_bytes()) {
+///     assert_eq!(count, 5);
+/// }
+/// ```
+#[must_use]
+pub fn try_char_count(data: &[u8]) -> Option<u64> {
+    if data.is_empty() || data.len() > MAX_LEN {
+        return None;
+    }
+    let partials = byte_partials(CHAR_COUNT_KERNEL, data)?;
+    Some(sum_partials(&partials))
+}
+
+/// Counts the UTF-8 code points in `bytes` via the dedicated
+/// `utf8_count_code_points` kernel.
+///
+/// Byte-identical to [`try_char_count`]; exposed separately so the
+/// history/import paths can name their own kernel without sharing the
+/// storage kernel's cache slot.
+#[must_use]
+pub fn try_utf8_count(data: &[u8]) -> Option<u64> {
+    if data.is_empty() || data.len() > MAX_LEN {
+        return None;
+    }
+    let partials = byte_partials(UTF8_COUNT_KERNEL, data)?;
+    Some(sum_partials(&partials))
+}
+
+/// Position-weighted checksum of `data` on the GPU.
+///
+/// Returns the same value as [`crate::simd::linear_checksum`] when the
+/// GPU handled the buffer, and [`None`] when the caller must run the
+/// CPU/SIMD reference.
+///
+/// # Examples
+///
+/// ```
+/// use codevar_wredit::hot::try_block_checksum;
+///
+/// // With no GPU this is `None`; with one it equals the CPU answer.
+/// if let Some(sum) = try_block_checksum(b"AB") {
+///     assert_eq!(sum, 197);
+/// }
+/// ```
+#[must_use]
+pub fn try_block_checksum(data: &[u8]) -> Option<u32> {
+    if data.is_empty() || data.len() > MAX_LEN {
+        return None;
+    }
+    let partials = byte_partials(BLOCK_CHECKSUM_KERNEL, data)?;
+    Some(checksum_from_partials(&partials))
+}
+
+/// Position-weighted checksum of a serialized history transaction.
+///
+/// Byte-identical to [`try_block_checksum`]; the history layer uses its
+/// own kernel so an undo stack and a storage block can be checked
+/// independently.
+#[must_use]
+pub fn try_history_checksum(data: &[u8]) -> Option<u32> {
+    if data.is_empty() || data.len() > MAX_LEN {
+        return None;
+    }
+    let partials = byte_partials(HISTORY_CHECKSUM_KERNEL, data)?;
+    Some(checksum_from_partials(&partials))
+}
+
+/// Counts line feeds in a plain `u32` code-point buffer on the GPU.
+///
+/// The kernel compares raw words against `10`, so `data` must hold
+/// *unpacked* code points (the packed document masks its type bits and
+/// stays on the CPU/SIMD path). Returns [`None`] when the caller must
+/// fall back.
+#[must_use]
+pub fn try_count_newlines(data: &[u32]) -> Option<usize> {
+    if data.is_empty() || data.len() > MAX_LEN {
+        return None;
+    }
+    let partials = word_partials(COUNT_NEWLINES_KERNEL, data)?;
+    Some(
+        partials
+            .iter()
+            .filter_map(|&p| usize::try_from(p).ok())
+            .sum(),
+    )
+}
+
+/// Counts occurrences of `needle` in a `u32` buffer on the GPU.
+///
+/// Returns the count when the GPU handled the buffer, and [`None`] when
+/// the caller must run [`crate::simd::count_value_u32`].
+#[must_use]
+pub fn try_count_u32(data: &[u32], needle: u32) -> Option<usize> {
+    if data.is_empty() || data.len() > MAX_LEN {
+        return None;
+    }
+    let n = u32::try_from(data.len()).ok()?;
+    let mut partials = vec![0u32; STRIDED_WORK_ITEMS];
+    with_pipeline(COUNT_U32_KERNEL, |pipeline| {
+        let context = pipeline.queue.context();
+        let data_buf = Buffer::from_slice(context, data)?;
+        let out_buf = Buffer::from_slice(context, &partials)?;
+        pipeline
+            .kernel
+            .set_arg(0, Arg::Buffer(&data_buf))?;
+        pipeline.kernel.set_arg(1, Arg::U32(n))?;
+        pipeline.kernel.set_arg(2, Arg::U32(needle))?;
+        pipeline
+            .kernel
+            .set_arg(3, Arg::Buffer(&out_buf))?;
+        let event = pipeline
+            .queue
+            .enqueue_kernel(&pipeline.kernel, &[STRIDED_WORK_ITEMS], None)?;
+        event.wait()?;
+        pipeline
+            .queue
+            .read_buffer(&out_buf, 0, &mut partials)?;
+        Ok::<(), codevar_ocl::Error>(())
+    })
+    .and_then(|result| result.ok())?;
+    Some(partials.iter().map(|&p| p as usize).sum())
+}
+
+/// Index of the first `needle` in a `u32` buffer on the GPU.
+///
+/// The outer [`Option`] reports whether the GPU handled the query; the
+/// inner one is the match itself, so `Some(None)` means "the GPU ran
+/// and found nothing" while [`None`] means "fall back to
+/// [`crate::simd::find_first_u32`]".
+#[must_use]
+pub fn try_find_first_u32(data: &[u32], needle: u32) -> Option<Option<usize>> {
+    if data.is_empty() || data.len() > MAX_LEN {
+        return None;
+    }
+    let n = u32::try_from(data.len()).ok()?;
+    let mut partials = vec![u32::MAX; STRIDED_WORK_ITEMS];
+    with_pipeline(FIND_FIRST_U32_KERNEL, |pipeline| {
+        let context = pipeline.queue.context();
+        let data_buf = Buffer::from_slice(context, data)?;
+        let out_buf = Buffer::from_slice(context, &partials)?;
+        pipeline
+            .kernel
+            .set_arg(0, Arg::Buffer(&data_buf))?;
+        pipeline.kernel.set_arg(1, Arg::U32(n))?;
+        pipeline.kernel.set_arg(2, Arg::U32(needle))?;
+        pipeline
+            .kernel
+            .set_arg(3, Arg::Buffer(&out_buf))?;
+        let event = pipeline
+            .queue
+            .enqueue_kernel(&pipeline.kernel, &[STRIDED_WORK_ITEMS], None)?;
+        event.wait()?;
+        pipeline
+            .queue
+            .read_buffer(&out_buf, 0, &mut partials)?;
+        Ok::<(), codevar_ocl::Error>(())
+    })
+    .and_then(|result| result.ok())?;
+    let found = partials
+        .into_iter()
+        .filter(|&partial| partial != u32::MAX)
+        .min();
+    Some(found.map(|index| index as usize))
+}
+
+/// Parallel gap compaction: drops the gap `[gap_start, gap_start +
+/// gap_len)` and writes the `live_len` surviving elements to `dst`.
+///
+/// Returns `Some(())` when the GPU handled the compaction, `None` when
+/// the caller should run the CPU path.
+///
+/// # Safety
+///
+/// `src` must be valid for `live_len + gap_len` elements; `dst` must be
+/// valid for `live_len` elements. `gap_start <= live_len`.
+pub unsafe fn gap_compact(
+    src: *const u32,
+    live_len: usize,
+    gap_start: usize,
+    gap_len: usize,
+    dst: *mut u32,
+) -> Option<()> {
+    if live_len == 0 || gap_len == 0 || gap_start > live_len {
+        return None;
+    }
+    let src_len = live_len.checked_add(gap_len)?;
+    if src_len > MAX_LEN {
+        return None;
+    }
+    let len_i = i32::try_from(live_len).ok()?;
+    let start_i = i32::try_from(gap_start).ok()?;
+    let gap_i = i32::try_from(gap_len).ok()?;
+    with_pipeline(GAP_COMPACT_KERNEL, |pipeline| {
+        let context = pipeline.queue.context();
+        // Safety: `src` is valid for `live_len + gap_len` elements per
+        // the caller's contract.
+        let src_slice = unsafe { core::slice::from_raw_parts(src, src_len) };
+        let src_buf = Buffer::from_slice(context, src_slice)?;
+        let dst_vec = vec![0u32; live_len];
+        let dst_buf = Buffer::from_slice(context, &dst_vec)?;
+        pipeline
+            .kernel
+            .set_arg(0, Arg::Buffer(&src_buf))?;
+        pipeline.kernel.set_arg(1, Arg::I32(len_i))?;
+        pipeline.kernel.set_arg(2, Arg::I32(start_i))?;
+        pipeline.kernel.set_arg(3, Arg::I32(gap_i))?;
+        pipeline
+            .kernel
+            .set_arg(4, Arg::Buffer(&dst_buf))?;
+        let global = live_len.next_power_of_two();
+        let event = pipeline
+            .queue
+            .enqueue_kernel(&pipeline.kernel, &[global], None)?;
+        event.wait()?;
+        let mut out = vec![0u32; live_len];
+        pipeline
+            .queue
+            .read_buffer(&dst_buf, 0, &mut out)?;
+        // Safety: `dst` is valid for `live_len` elements per the caller.
+        unsafe { core::ptr::copy_nonoverlapping(out.as_ptr(), dst, live_len) };
+        Ok::<(), codevar_ocl::Error>(())
+    })
+    .and_then(|result| result.ok())
+}
+
+/// Runs a 64-element-per-item partial kernel over a byte buffer and
+/// returns the per-chunk `i32` partials in buffer order.
+///
+/// Every partial kernel guarded by `i < len` writes one slot per 64-byte
+/// chunk, so the host launches exactly `ceil(len / 64)` work items and
+/// sums the whole output.
+fn byte_partials(kernel_name: &str, data: &[u8]) -> Option<Vec<i32>> {
+    let len_i = i32::try_from(data.len()).ok()?;
+    let chunk_count = data.len().div_ceil(64);
+    let mut partials = vec![0i32; chunk_count];
+    with_pipeline(kernel_name, |pipeline| {
+        let context = pipeline.queue.context();
+        let data_buf = Buffer::from_slice(context, data)?;
+        let out_buf = Buffer::from_slice(context, &partials)?;
+        pipeline
+            .kernel
+            .set_arg(0, Arg::Buffer(&data_buf))?;
+        pipeline.kernel.set_arg(1, Arg::I32(len_i))?;
+        pipeline
+            .kernel
+            .set_arg(2, Arg::Buffer(&out_buf))?;
+        let event = pipeline
+            .queue
+            .enqueue_kernel(&pipeline.kernel, &[chunk_count], None)?;
+        event.wait()?;
+        pipeline
+            .queue
+            .read_buffer(&out_buf, 0, &mut partials)?;
+        Ok::<(), codevar_ocl::Error>(())
+    })
+    .and_then(|result| result.ok())?;
+    Some(partials)
+}
+
+/// Runs a 64-element-per-item partial kernel over a `u32` buffer and
+/// returns the per-chunk `i32` partials in buffer order.
+fn word_partials(kernel_name: &str, data: &[u32]) -> Option<Vec<i32>> {
+    let len_i = i32::try_from(data.len()).ok()?;
+    let chunk_count = data.len().div_ceil(64);
+    let mut partials = vec![0i32; chunk_count];
+    with_pipeline(kernel_name, |pipeline| {
+        let context = pipeline.queue.context();
+        let data_buf = Buffer::from_slice(context, data)?;
+        let out_buf = Buffer::from_slice(context, &partials)?;
+        pipeline
+            .kernel
+            .set_arg(0, Arg::Buffer(&data_buf))?;
+        pipeline.kernel.set_arg(1, Arg::I32(len_i))?;
+        pipeline
+            .kernel
+            .set_arg(2, Arg::Buffer(&out_buf))?;
+        let event = pipeline
+            .queue
+            .enqueue_kernel(&pipeline.kernel, &[chunk_count], None)?;
+        event.wait()?;
+        pipeline
+            .queue
+            .read_buffer(&out_buf, 0, &mut partials)?;
+        Ok::<(), codevar_ocl::Error>(())
+    })
+    .and_then(|result| result.ok())?;
+    Some(partials)
+}
+
+/// Sums non-negative partial counts.
+#[inline]
+fn sum_partials(partials: &[i32]) -> u64 {
+    partials
+        .iter()
+        .map(|&partial| u64::try_from(partial).unwrap_or(0))
+        .sum()
+}
+
+/// Sums checksum partials and reduces modulo `2^30`.
+#[inline]
+fn checksum_from_partials(partials: &[i32]) -> u32 {
+    let mut sum = 0u64;
+    for &partial in partials {
+        sum = sum.wrapping_add(u64::try_from(partial).unwrap_or(0));
+    }
+    (sum & u64::from(CHECKSUM_MASK)) as u32
+}
+
 /// Uploads both sequences, launches the kernel over a single work item,
 /// and reads the saturated distance back.
 ///
@@ -607,5 +952,76 @@ mod tests {
         // The answer is cached, so two calls agree; a machine without a
         // device simply reports `false`.
         assert_eq!(gpu_available(), gpu_available());
+    }
+
+    #[test]
+    fn empty_inputs_are_left_to_the_cpu_for_every_kernel() {
+        assert_eq!(try_char_count(&[]), None);
+        assert_eq!(try_utf8_count(&[]), None);
+        assert_eq!(try_block_checksum(&[]), None);
+        assert_eq!(try_history_checksum(&[]), None);
+        assert_eq!(try_count_newlines(&[]), None);
+        assert_eq!(try_count_u32(&[], 3), None);
+        assert_eq!(try_find_first_u32(&[], 3), None);
+    }
+
+    /// When a device is usable every CPU/GPU pair must agree; when it is
+    /// not, the GPU query answers [`None`]. Both outcomes are valid here.
+    #[test]
+    fn gpu_bulk_ops_match_the_cpu_reference_when_available() {
+        use crate::simd::{count_utf8_units, linear_checksum};
+
+        // A byte buffer whose multi-byte sequence straddles the 64-byte
+        // chunk boundary.
+        let mut bytes = vec![b'a'; 200];
+        bytes[63] = 0xC3;
+        bytes[64] = 0xA9;
+        if let Some(count) = try_char_count(&bytes) {
+            assert_eq!(count, count_utf8_units(&bytes));
+        }
+        if let Some(count) = try_utf8_count(&bytes) {
+            assert_eq!(count, count_utf8_units(&bytes));
+        }
+        if let Some(sum) = try_block_checksum(&bytes) {
+            assert_eq!(sum, linear_checksum(&bytes));
+        }
+        if let Some(sum) = try_history_checksum(&bytes) {
+            assert_eq!(sum, linear_checksum(&bytes));
+        }
+
+        // Plain code points: newline count, value count and locate.
+        let mut words = vec![u32::from(b'x'); 300];
+        words[0] = u32::from(b'\n');
+        words[64] = u32::from(b'\n');
+        words[299] = 7;
+        if let Some(count) = try_count_newlines(&words) {
+            assert_eq!(count, 2);
+        }
+        if let Some(count) = try_count_u32(&words, 7) {
+            assert_eq!(count, 1);
+        }
+        if let Some(found) = try_find_first_u32(&words, 7) {
+            assert_eq!(found, Some(299));
+        }
+        if let Some(found) = try_find_first_u32(&words, 1234) {
+            assert_eq!(found, None);
+        }
+    }
+
+    #[test]
+    fn gap_compact_matches_the_cpu_reference_when_available() {
+        let slots: [u32; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+        // Five live elements once the gap `[2, 5)` is dropped.
+        let mut dst = [0u32; 5];
+        let handled = unsafe { gap_compact(slots.as_ptr(), 5, 2, 3, dst.as_mut_ptr()) };
+        if handled.is_some() {
+            assert_eq!(dst, [1, 2, 6, 7, 8]);
+        }
+        // A zero-length gap is deliberately left to the CPU.
+        let mut untouched = [0u32; 5];
+        assert_eq!(
+            unsafe { gap_compact(slots.as_ptr(), 5, 0, 0, untouched.as_mut_ptr()) },
+            None
+        );
     }
 }
