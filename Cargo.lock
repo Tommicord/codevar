@@ -406,6 +406,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-kuitui-widget"
+version = "1.0.0"
+dependencies = [
+ "codevar-kuitui",
+ "codevar-truetype-core",
+ "codevar-truetype-glyf",
+ "codevar-truetype-sfnt",
+ "codevar-truetype-smooth",
+]
+
+[[package]]
 name = "codevar-launcher"
 version = "1.0.0"
 dependencies = [
