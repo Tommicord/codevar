@@ -202,6 +202,14 @@ struct Allocator<'a> {
     starting: BTreeMap<u32, Vec<VReg>>,
     /// The type of every virtual register.
     types: Vec<MType>,
+    /// The constant every virtual register can be recomputed from.
+    ///
+    /// A register whose single definition is a copy of an integer
+    /// immediate is listed here: when the allocator would spill it, it
+    /// recomputes the constant at every use instead of saving the
+    /// value in the frame.  A register with several definitions, or
+    /// with a definition that is not a constant, has `None`.
+    rematerializable: Vec<Option<i64>>,
     /// The next free offset of the frame.
     next_slot: u32,
 }
@@ -240,6 +248,7 @@ impl<'a> Allocator<'a> {
             reload_of: BTreeMap::new(),
             starting: BTreeMap::new(),
             types: Vec::new(),
+            rematerializable: Vec::new(),
             next_slot: 0,
         }
     }
@@ -261,6 +270,7 @@ impl<'a> Allocator<'a> {
         // leave copies that are now single-use, so one more round of
         // coalescing cleans them up.
         self.coalesce_copies(function);
+        self.find_rematerializable(function);
         self.gather(function)?;
         self.plan(function)?;
         let added = self.rewrite(function)?;
@@ -280,36 +290,40 @@ impl<'a> Allocator<'a> {
 
     /// Coalesces the copies the selection stage left behind.
     ///
-    /// The machine IR is in SSA form, so a virtual register has exactly
-    /// one definition, and a copy `dest = copy src` is often a move the
-    /// selection stage made for its own convenience rather than for the
-    /// hardware.  The pass forwards such a copy, replacing every use of
-    /// its destination with `src` and dropping the copy, when both ends
-    /// have the same type and one of two conditions holds:
+    /// A copy `dest = copy src` is often a move the selection stage made
+    /// for its own convenience rather than for the hardware.  The pass
+    /// forwards such a copy, replacing every use of its destination with
+    /// `src` and dropping the copy, when both ends have the same type and
+    /// the destination has a single definition.  Two cases are forwarded:
     ///
     /// * The destination is used exactly once.  The one use reads `src`
-    ///   directly, whether or not the forwarding extends the live range
-    ///   of `src`.
-    /// * The source already outlives the destination, that is
-    ///   `last_use(src) >= last_use(dest)`.  Every use of `dest` sits
-    ///   between the copy and its last use, and `src` is already live
-    ///   over that whole range, so rewriting the uses of `dest` to read
-    ///   `src` does not extend the live interval of `src` at all: the
-    ///   coalescing is free and cannot increase register pressure.
+    ///   directly, whether or not the forwarding extends the live range of
+    ///   `src`.
+    /// * The source has a single definition.  Its value cannot change, so
+    ///   every use of the destination reads what the copy read.  Folding
+    ///   the destination into the source also never raises the number of
+    ///   values that are live at once: the destination lives from the copy
+    ///   to its last use and the source lives from its definition to its
+    ///   last use, and after the forwarding the source's interval is the
+    ///   union of the two, so no position that had fewer live values gains
+    ///   one.
+    ///
+    /// A destination whose source has several definitions is forwarded only
+    /// when the source already outlives it, that is
+    /// `last_use(src) >= last_use(dest)`: several definitions can give the
+    /// source a different value on the path that reaches the copy, so the
+    /// forwarding is only taken where the source is already live across the
+    /// destination's whole interval.
     ///
     /// A destination that is never used drops the copy as well, since a
     /// copy has no side effect to preserve.  A copy whose source is an
-    /// immediate or a physical register is left alone, because there is
-    /// no register to forward to, and so is a copy whose destination is
-    /// used more than once while its source is not already live long
-    /// enough, because forwarding it would extend the live range of
-    /// `src` across uses that may not be able to share a register.
+    /// immediate or a physical register is left alone, because there is no
+    /// register to forward to.
     ///
-    /// Only a destination with a single definition is forwarded.  The
-    /// machine code is not in static single assignment form — a phi is
-    /// lowered to one copy in every predecessor block — so a register
-    /// written by several copies cannot be renamed without changing the
-    /// value its uses read.
+    /// The machine code is not in static single assignment form — a phi is
+    /// lowered to one copy in every predecessor block — so only a
+    /// destination with a single definition is renamed: a register written
+    /// by several copies would read a different value at each use.
     ///
     /// The pass runs to a fixpoint and recomputes the use counts and the
     /// last uses on every round, so deleting a copy can expose the copy
@@ -326,10 +340,11 @@ impl<'a> Allocator<'a> {
             for block in &function.blocks {
                 for inst in &block.insts {
                     if let Some(dest) = inst.dest_vreg() {
-                        if let Some(slot) = defs.get_mut(dest.index()) {
+                        let index = dest.index();
+                        if let Some(slot) = defs.get_mut(index) {
                             *slot = slot.saturating_add(1);
                         }
-                        if let Some(entry) = last_use.get_mut(dest.index())
+                        if let Some(entry) = last_use.get_mut(index)
                             && *entry == NOWHERE
                         {
                             *entry = position;
@@ -363,35 +378,34 @@ impl<'a> Allocator<'a> {
                         chosen = Some((block_index, inst_index, dest, dest));
                         break;
                     }
-                    // The machine code is not in static single assignment
-                    // form: a phi is lowered to a copy in every
-                    // predecessor block, so one register can be written
-                    // by several instructions.  Forwarding a copy into
-                    // the uses of such a register would let a use read a
-                    // value written by a different definition, so only a
-                    // register with a single definition may be
-                    // forwarded.
-                    if defs.get(dest.index()).copied().unwrap_or(0) != 1 {
-                        continue;
-                    }
                     let Some(Operand::Virtual(src)) = inst.arg0() else {
                         continue;
                     };
                     if self.type_of(dest) != self.type_of(src) {
                         continue;
                     }
+                    if defs.get(dest.index()).copied().unwrap_or(0) != 1 {
+                        continue;
+                    }
                     if dest_uses != 1 {
-                        // Forwarding a multiply-used destination only
-                        // stays free when `src` is already live at
-                        // least as long as `dest`.
-                        let Some(&src_last) = last_use.get(src.index()) else {
-                            continue;
-                        };
-                        let Some(&dest_last) = last_use.get(dest.index()) else {
-                            continue;
-                        };
-                        if src_last == NOWHERE || dest_last == NOWHERE || src_last < dest_last {
-                            continue;
+                        // A source with a single definition holds the
+                        // same value over its whole interval, so
+                        // forwarding the destination into it is always
+                        // sound; a source with several definitions is
+                        // only forwarded when it already outlives the
+                        // destination, which keeps its value at every
+                        // use of the destination the same as at the copy.
+                        let src_single = defs.get(src.index()).copied().unwrap_or(0) == 1;
+                        if !src_single {
+                            let Some(&src_last) = last_use.get(src.index()) else {
+                                continue;
+                            };
+                            let Some(&dest_last) = last_use.get(dest.index()) else {
+                                continue;
+                            };
+                            if src_last == NOWHERE || dest_last == NOWHERE || src_last < dest_last {
+                                continue;
+                            }
                         }
                     }
                     chosen = Some((block_index, inst_index, dest, src));
@@ -450,7 +464,64 @@ impl<'a> Allocator<'a> {
         self.stored_after.clear();
         self.reload_of.clear();
         self.starting.clear();
+        self.rematerializable.clear();
+        self.rematerializable.resize(count, None);
         self.next_slot = function.fixed_frame_size;
+    }
+
+    /// Finds the virtual registers the allocator can recompute instead
+    /// of spilling.
+    ///
+    /// A register is rematerializable when the function defines it
+    /// exactly once and that definition is a copy of an integer
+    /// immediate: its value is a constant, so a use may read the
+    /// constant again instead of the register.  Recomputing a constant
+    /// costs one materialization at the use and no frame slot, while
+    /// spilling it costs a save and one read per use.
+    ///
+    /// Only a register with a single definition is rematerialized.  The
+    /// machine code is not in static single assignment form — a phi is
+    /// lowered to a copy in every predecessor block — so a register
+    /// written by several instructions could hold a different constant
+    /// on the path that reaches each use, and replacing every use with
+    /// one constant would change the values the uses read.
+    ///
+    /// Only an integer, pointer, or boolean constant is rematerialized:
+    /// a floating-point or vector constant is copied from a
+    /// [`Operand::FloatImmediate`], which the allocator never rewrites.
+    fn find_rematerializable(&mut self, function: &MirFunction) {
+        let count = function.vreg_types.len();
+        let mut defs: Vec<u32> = vec![0; count];
+        let mut constant: Vec<Option<i64>> = vec![None; count];
+        for block in &function.blocks {
+            for inst in &block.insts {
+                let Some(dest) = inst.dest_vreg() else {
+                    continue;
+                };
+                let index = dest.index();
+                let Some(slot) = defs.get_mut(index) else {
+                    continue;
+                };
+                *slot = slot.saturating_add(1);
+                if let Some(entry) = constant.get_mut(index) {
+                    *entry = match inst.arg0() {
+                        Some(Operand::Immediate(value)) if matches!(inst.op, MOp::Copy) => Some(value),
+                        _ => None,
+                    };
+                }
+            }
+        }
+        for index in 0..count {
+            let integral = self
+                .types
+                .get(index)
+                .is_some_and(MType::is_integral);
+            self.rematerializable[index] = if defs.get(index).copied().unwrap_or(0) == 1 && integral {
+                constant.get(index).copied().flatten()
+            } else {
+                None
+            };
+        }
     }
 
     /// Collects the definitions and the uses of every virtual register.
@@ -560,7 +631,7 @@ impl<'a> Allocator<'a> {
             let item = queue[cursor];
             cursor += 1;
             let Some(register) = self.take_register(item.class) else {
-                let Some(victim) = self.pick_victim(item.class) else {
+                let Some(victim) = self.pick_victim(item.class, position) else {
                     return Err(allocation_error(
                         "assigning a register",
                         "the target has no register of the class the value needs",
@@ -663,18 +734,36 @@ impl<'a> Allocator<'a> {
     /// Only an interval whose register belongs to the pool of the
     /// class can be spilled: freeing a register of another pool would
     /// not make room for the value that needs one.
-    fn pick_victim(&self, class: RegClass) -> Option<VReg> {
+    ///
+    /// The interval that is live the longest is preferred, which is the
+    /// linear scan rule that keeps the values that die soon in registers.
+    /// A value that is read at the current position is only chosen when
+    /// no other interval is available: spilling it makes its use read the
+    /// value back from the frame at once, which is a reload that spilling
+    /// any other interval avoids.
+    fn pick_victim(&self, class: RegClass, position: u32) -> Option<VReg> {
         let mut best: Option<&Active> = None;
+        let mut not_read_here: Option<&Active> = None;
         for entry in &self.active {
             if entry.transient || !self.pools[class_index(class)].contains(&entry.register) {
                 continue;
+            }
+            let used_here = self
+                .uses
+                .get(entry.value.index())
+                .is_some_and(|uses| uses.contains(&position));
+            if !used_here {
+                match not_read_here {
+                    Some(current) if current.end >= entry.end => {}
+                    _ => not_read_here = Some(entry),
+                }
             }
             match best {
                 Some(current) if current.end >= entry.end => {}
                 _ => best = Some(entry),
             }
         }
-        best.map(|entry| entry.value)
+        not_read_here.or(best).map(|entry| entry.value)
     }
 
     /// Spills a value: its register is saved in the frame and freed.
@@ -682,6 +771,9 @@ impl<'a> Allocator<'a> {
         let index = victim.index();
         if self.spilled[index] {
             return Ok(());
+        }
+        if self.rematerializable[index].is_some() {
+            return self.rematerialize(victim, position);
         }
         self.spilled[index] = true;
         let ty = self.type_of(victim);
@@ -730,6 +822,31 @@ impl<'a> Allocator<'a> {
                 self.pending.entry(use_pos).or_default().push(id);
             }
         }
+        self.release(victim);
+        Ok(())
+    }
+
+    /// Spills a constant by recomputing it at every use.
+    ///
+    /// The value is never given a frame slot: the definition stays
+    /// where it is until the rewriting drops it, and every use at or
+    /// after the spill point reads the immediate again through
+    /// [`Allocator::rewrite_operand`].  The register the value held is
+    /// freed like any other spill, so the value that needed it can take
+    /// it.
+    ///
+    /// A value defined at the spill position still holds its register
+    /// while the instruction runs, exactly as a framed spill does, so
+    /// only the uses that follow it are recomputed.
+    fn rematerialize(&mut self, victim: VReg, position: u32) -> Result<()> {
+        let index = victim.index();
+        self.spilled[index] = true;
+        let defined_here = self.def_pos[index] == position;
+        self.spill_point[index] = if defined_here {
+            position.saturating_add(1)
+        } else {
+            position
+        };
         self.release(victim);
         Ok(())
     }
@@ -794,9 +911,14 @@ impl<'a> Allocator<'a> {
                         added += 1;
                     }
                 }
-                self.rewrite_operands(&mut inst, position)?;
-                self.rewrite_destination(&mut inst)?;
-                insts.push(inst);
+                let dropped = inst
+                    .dest_vreg()
+                    .is_some_and(|dest| self.rematerialized(dest));
+                if !dropped {
+                    self.rewrite_operands(&mut inst, position)?;
+                    self.rewrite_destination(&mut inst)?;
+                    insts.push(inst);
+                }
                 if let Some(values) = self.stored_after.get(&position) {
                     for value in values.clone() {
                         insts.push(self.save(value)?);
@@ -864,6 +986,16 @@ impl<'a> Allocator<'a> {
         };
         let index = value.index();
         if self.spilled[index] && position >= self.spill_point[index] {
+            // A rematerialized constant has no reload: the use reads the
+            // constant again.
+            if let Some(constant) = self
+                .rematerializable
+                .get(index)
+                .copied()
+                .flatten()
+            {
+                return Ok(Operand::Immediate(constant));
+            }
             let id = self
                 .reload_of
                 .get(&(position, index))
@@ -884,6 +1016,23 @@ impl<'a> Allocator<'a> {
         let register = self.assigned[index]
             .ok_or_else(|| allocation_error("assigning a register", "a virtual register has no register"))?;
         Ok(Operand::Physical(register))
+    }
+
+    /// Whether a value is spilled by recomputing its constant.
+    ///
+    /// Only a value the allocator chose to rematerialize answers true:
+    /// it has a constant definition and was spilled, so every use reads
+    /// the constant again and [`Allocator::rewrite`] drops the
+    /// definition.
+    fn rematerialized(&self, value: VReg) -> bool {
+        self.spilled
+            .get(value.index())
+            .copied()
+            .unwrap_or(false)
+            && self
+                .rematerializable
+                .get(value.index())
+                .is_some_and(Option::is_some)
     }
 
     /// The type of a virtual register.
@@ -1301,6 +1450,61 @@ mod tests {
         function
     }
 
+    /// A function that keeps three values the allocator cannot recompute
+    /// alive at once, built from shifts.
+    ///
+    /// Each value is copied from a register the function does not define,
+    /// so the allocator cannot rematerialise it and a file with three
+    /// registers still has to spill one of them.  A shift is not
+    /// two-address, so the register-reuse pass leaves the function alone
+    /// and the three values stay live at the same time.
+    fn three_live_incoming_function() -> MirFunction {
+        let mut function = MirFunction::new("incoming");
+        let first = function.new_vreg(MType::I32);
+        let second = function.new_vreg(MType::I32);
+        let third = function.new_vreg(MType::I32);
+        let shifted = function.new_vreg(MType::I32);
+        let total = function.new_vreg(MType::I32);
+        let mut block = MirBlock::new("entry");
+        block.insts.push(MInst::def(
+            first,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Physical(PReg::new(20))),
+        ));
+        block.insts.push(MInst::def(
+            second,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Physical(PReg::new(21))),
+        ));
+        block.insts.push(MInst::def(
+            third,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Physical(PReg::new(22))),
+        ));
+        block.insts.push(MInst::def(
+            shifted,
+            MType::I32,
+            MOp::Shl,
+            Operands::two(Operand::Virtual(first), Operand::Virtual(second)),
+        ));
+        block.insts.push(MInst::def(
+            total,
+            MType::I32,
+            MOp::Shl,
+            Operands::two(Operand::Virtual(third), Operand::Virtual(shifted)),
+        ));
+        block.insts.push(MInst::none(
+            MType::Void,
+            MOp::Ret,
+            Operands::one(Operand::Virtual(total)),
+        ));
+        function.push_block(block);
+        function
+    }
+
     /// A module with one function.
     fn module(function: MirFunction) -> MirModule {
         let mut module = MirModule::new();
@@ -1342,8 +1546,10 @@ mod tests {
     fn a_small_file_spills_the_values_that_do_not_fit() {
         // The reuse pass folds the additions of `three_live_function`,
         // which removes the pressure; the shifts here are not
-        // two-address, so the three values stay live.
-        let mut machine = module(three_live_shift_function());
+        // two-address, so the three values stay live.  The values come
+        // from registers the function does not define, so none of them
+        // can be recomputed and one has to be saved in the frame.
+        let mut machine = module(three_live_incoming_function());
         let stats = allocate(&mut machine, &model(3)).expect("the allocation succeeds");
         assert_eq!(stats.spills, 1, "one value did not fit");
         assert!(stats.rewrites > 0, "the rewriting added instructions");
@@ -1372,6 +1578,93 @@ mod tests {
             unreachable!("the instruction reads a value back");
         };
         assert_eq!(read, offset, "the value is read from the slot it was saved in");
+    }
+
+    /// A constant that would be the victim of a spill is recomputed at
+    /// its use instead of being saved in the frame.
+    ///
+    /// The three shifts keep three values live in a three-register file,
+    /// so one value has to give up its register.  The value is a copy of
+    /// an immediate, so the allocator reads the immediate again at the
+    /// use: no frame slot is reserved, nothing is saved or read back,
+    /// and the defining copy is dropped.
+    #[test]
+    fn a_constant_is_rematerialized_instead_of_spilled() {
+        let mut machine = module(three_live_shift_function());
+        let stats = allocate(&mut machine, &model(3)).expect("the allocation succeeds");
+        assert_eq!(stats.spills, 1, "one value gave up its register");
+        let function = &machine.functions[0];
+        let stores = function
+            .blocks
+            .iter()
+            .flat_map(|block| block.insts.iter())
+            .filter(|inst| matches!(inst.op, MOp::SpillStore { .. }))
+            .count();
+        let loads = function
+            .blocks
+            .iter()
+            .flat_map(|block| block.insts.iter())
+            .filter(|inst| matches!(inst.op, MOp::SpillLoad { .. }))
+            .count();
+        assert_eq!(stores, 0, "the constant is not saved in the frame");
+        assert_eq!(loads, 0, "the constant is not read back");
+        assert_eq!(
+            function.frame_size, function.fixed_frame_size,
+            "no frame slot is reserved for the constant"
+        );
+        let uses: Vec<Operand> = function
+            .blocks
+            .iter()
+            .flat_map(|block| block.insts.iter())
+            .filter(|inst| matches!(inst.op, MOp::Shl))
+            .filter_map(|inst| inst.args.as_slice().first().copied())
+            .collect();
+        assert!(
+            uses.contains(&Operand::Immediate(3)),
+            "the use of the rematerialized constant reads the immediate"
+        );
+    }
+
+    /// The allocator spills a value that is not read at the current
+    /// position in preference to one that is.
+    ///
+    /// Spilling the value that is read here forces its use to read the
+    /// value back from the frame at once, so a value that lives longer
+    /// is still a worse victim when it is the one the current position
+    /// reads.  The value read here is spilled only when it is the only
+    /// interval of the right class.
+    #[test]
+    fn a_value_read_here_is_spilled_only_when_it_is_the_only_candidate() {
+        let registers = model(2);
+        let mut allocator = Allocator::new(&registers);
+        let read_here = VReg::new(0);
+        let read_later = VReg::new(1);
+        allocator.uses = vec![vec![10], vec![5]];
+        allocator.active.push(Active {
+            value: read_here,
+            register: PReg::new(1),
+            end: 10,
+            transient: false,
+        });
+        allocator.active.push(Active {
+            value: read_later,
+            register: PReg::new(0),
+            end: 5,
+            transient: false,
+        });
+        assert_eq!(
+            allocator.pick_victim(RegClass::Integer, 10),
+            Some(read_later),
+            "the value that is not read here is spilled"
+        );
+        allocator
+            .active
+            .retain(|entry| entry.value == read_here);
+        assert_eq!(
+            allocator.pick_victim(RegClass::Integer, 10),
+            Some(read_here),
+            "the value that is read here is spilled when it is the only candidate"
+        );
     }
 
     #[test]
@@ -1620,8 +1913,15 @@ mod tests {
         );
     }
 
+    /// A copy whose destination has two uses is folded when the source
+    /// is defined exactly once.
+    ///
+    /// A source with a single definition holds the same value over its
+    /// whole interval, so every use of the destination reads the value
+    /// the copy read, and folding the destination into the source does
+    /// not raise the number of values that are live at once.
     #[test]
-    fn a_copy_with_two_uses_is_kept() {
+    fn a_copy_with_two_uses_is_folded_when_the_source_is_defined_once() {
         let mut function = MirFunction::new("twice");
         let source = function.new_vreg(MType::I32);
         let copied = function.new_vreg(MType::I32);
@@ -1652,10 +1952,25 @@ mod tests {
         ));
         function.push_block(block);
         coalesce(&mut function);
-        assert_eq!(copies(&function), 2, "the two-use copy is kept");
+        assert_eq!(copies(&function), 1, "only the copy from the immediate survives");
         assert!(
-            defined(&function).contains(&copied),
-            "the two-use copy still defines its value"
+            !defined(&function).contains(&copied),
+            "the folded copy no longer defines its value"
+        );
+        let sum_inst = function.blocks[0]
+            .insts
+            .iter()
+            .find(|inst| inst.dest_vreg() == Some(sum))
+            .expect("the sum instruction survives");
+        assert_eq!(
+            sum_inst.arg0(),
+            Some(Operand::Virtual(source)),
+            "the first use reads the source"
+        );
+        assert_eq!(
+            sum_inst.args.as_slice().get(1),
+            Some(&Operand::Virtual(source)),
+            "the second use reads the source"
         );
     }
 
@@ -1724,10 +2039,15 @@ mod tests {
         );
     }
 
-    /// A two-use copy whose source dies before the destination is kept:
-    /// forwarding it would extend the source's live range.
+    /// A two-use copy whose source is written by more than one
+    /// instruction is kept when the source dies before the destination.
+    ///
+    /// The source can hold a different value on the path that reaches the
+    /// copy than on the path that reaches the use, so forwarding it is not
+    /// proven safe; the allocator only folds it when the source already
+    /// outlives the destination.
     #[test]
-    fn a_two_use_copy_is_kept_when_the_source_dies_earlier() {
+    fn a_two_use_copy_with_a_multi_definition_source_is_kept() {
         let mut function = MirFunction::new("earlier");
         let source = function.new_vreg(MType::I32);
         let copied = function.new_vreg(MType::I32);
@@ -1739,6 +2059,14 @@ mod tests {
             MType::I32,
             MOp::Copy,
             Operands::one(Operand::Immediate(1)),
+        ));
+        // The source is written a second time, the way a phi lowers to a
+        // copy in each predecessor.
+        block.insts.push(MInst::def(
+            source,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(9)),
         ));
         block.insts.push(MInst::def(
             copied,
@@ -1766,10 +2094,14 @@ mod tests {
         ));
         function.push_block(block);
         coalesce(&mut function);
-        assert_eq!(copies(&function), 2, "the two-use copy is kept");
+        assert_eq!(
+            copies(&function),
+            3,
+            "the copy with a multi-definition source is kept"
+        );
         assert!(
             defined(&function).contains(&copied),
-            "the two-use copy still defines its value"
+            "the kept copy still defines its value"
         );
     }
 
