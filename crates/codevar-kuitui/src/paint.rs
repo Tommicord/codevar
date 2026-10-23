@@ -27,6 +27,7 @@
 //! that applies to each of them already resolved. A backend therefore
 //! never has to model a clip stack.
 
+use alloc::collections::{VecDeque, vec_deque};
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 
@@ -165,55 +166,99 @@ pub enum DrawOp {
     },
 }
 
-/// The list of drawing operations of one frame.
+/// One queued drawing operation together with the clip that was open
+/// when it was recorded.
+///
+/// A command is the unit a backend drains from the [`DrawList`]: the
+/// operation and its resolved clip travel together, so a consumer can
+/// never observe one without the other the way two parallel arrays
+/// would allow.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DrawCommand {
+    /// The operation to replay.
+    pub op: DrawOp,
+    /// The clipping rectangle that applied when the operation was
+    /// recorded; `None` means the whole surface.
+    pub clip: Option<Rect>,
+}
+
+/// The FIFO queue of drawing operations of one frame.
+///
+/// Kuitui records a laid-out tree into a queue and a backend drains it in
+/// paint order: [`DrawList::push`] appends to the back and
+/// [`DrawList::pop_front`] hands the oldest command to the renderer.
+/// Recording and replaying therefore share one ordered structure, which
+/// is what lets a compositor pipe consume a frame in order without
+/// copying it.
 ///
 /// A list is reused across frames: [`DrawList::clear`] empties it
 /// without giving the memory back, so a steady-state frame performs no
 /// allocation at all.
 #[derive(Debug, Default)]
 pub struct DrawList {
-    /// The operations, in paint order.
-    ops: Vec<DrawOp>,
-    /// The clipping rectangle of each operation, in the same order.
-    op_clips: Vec<Option<Rect>>,
+    /// The queued commands, oldest first (the queue).
+    commands: VecDeque<DrawCommand>,
     /// The rectangles of the open clips.
     clips: Vec<Rect>,
 }
 
 impl DrawList {
-    /// Creates an empty list.
+    /// Creates an empty queue.
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            ops: Vec::new(),
-            op_clips: Vec::new(),
+            commands: VecDeque::new(),
             clips: Vec::new(),
         }
     }
 
-    /// Empties the list, keeping its memory.
+    /// Empties the queue, keeping its memory.
     pub fn clear(&mut self) {
-        self.ops.clear();
-        self.op_clips.clear();
+        self.commands.clear();
         self.clips.clear();
     }
 
-    /// The operations of the list, in paint order.
-    #[must_use]
-    pub fn ops(&self) -> &[DrawOp] {
-        &self.ops
+    /// The operations of the queue, in paint order.
+    pub fn ops(&self) -> impl Iterator<Item = &DrawOp> + '_ {
+        self.commands.iter().map(|command| &command.op)
     }
 
-    /// The number of operations of the list.
+    /// The commands of the queue, in paint order.
+    pub fn commands(&self) -> impl Iterator<Item = &DrawCommand> + '_ {
+        self.commands.iter()
+    }
+
+    /// The number of commands in the queue.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.ops.len()
+        self.commands.len()
     }
 
-    /// Whether the list holds no operation.
+    /// Whether the queue holds no command.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.ops.is_empty()
+        self.commands.is_empty()
+    }
+
+    /// Removes and returns the oldest command, or `None` when the queue
+    /// is empty.
+    ///
+    /// This is the FIFO drain a backend replay uses: commands come out in
+    /// the order they were recorded.
+    pub fn pop_front(&mut self) -> Option<DrawCommand> {
+        self.commands.pop_front()
+    }
+
+    /// The oldest command without removing it.
+    #[must_use]
+    pub fn peek_front(&self) -> Option<&DrawCommand> {
+        self.commands.front()
+    }
+
+    /// Removes every command in paint order, leaving the clip stack
+    /// untouched.
+    pub fn drain(&mut self) -> impl Iterator<Item = DrawCommand> + '_ {
+        self.commands.drain(..)
     }
 
     /// The number of clips that are currently open.
@@ -250,11 +295,10 @@ impl DrawList {
         self.clips.pop();
     }
 
-    /// Records an operation.
+    /// Enqueues an operation with the clip that is open right now.
     pub fn push(&mut self, op: DrawOp) {
         let clip = self.current_clip();
-        self.ops.push(op);
-        self.op_clips.push(clip);
+        self.commands.push_back(DrawCommand { op, clip });
     }
 
     /// Records a rectangle.
@@ -279,27 +323,23 @@ impl DrawList {
     /// was open when it was recorded.
     pub fn clipped_ops(&self) -> ClippedOps<'_> {
         ClippedOps {
-            ops: self.ops.iter(),
-            clips: self.op_clips.iter(),
+            commands: self.commands.iter(),
         }
     }
 }
 
 /// The iterator returned by [`DrawList::clipped_ops`].
 pub struct ClippedOps<'a> {
-    /// The operations of the list.
-    ops: core::slice::Iter<'a, DrawOp>,
-    /// The clipping rectangle of each operation.
-    clips: core::slice::Iter<'a, Option<Rect>>,
+    /// The queued commands.
+    commands: vec_deque::Iter<'a, DrawCommand>,
 }
 
 impl<'a> Iterator for ClippedOps<'a> {
     type Item = (&'a DrawOp, Option<Rect>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let op = self.ops.next()?;
-        let clip = self.clips.next().copied().flatten();
-        Some((op, clip))
+        let command = self.commands.next()?;
+        Some((&command.op, command.clip))
     }
 }
 
@@ -334,8 +374,69 @@ mod tests {
             Paint::stroke(Color::WHITE, 1.0),
         );
         assert_eq!(list.len(), 2);
-        assert!(matches!(list.ops()[0], DrawOp::Rect { .. }));
-        assert!(matches!(list.ops()[1], DrawOp::Line { .. }));
+        assert!(matches!(list.ops().next(), Some(DrawOp::Rect { .. })));
+        assert!(matches!(list.ops().nth(1), Some(DrawOp::Line { .. })));
+    }
+
+    #[test]
+    fn commands_drain_in_fifo_order() {
+        let mut list = DrawList::new();
+        list.rect(
+            Rect::from_min_size(Offset::ZERO, 10.0, 10.0),
+            CornerRadii::ZERO,
+            Paint::fill(Color::BLACK),
+        );
+        list.line(
+            Offset::ZERO,
+            Offset::new(1.0, 1.0),
+            Paint::stroke(Color::WHITE, 1.0),
+        );
+        assert!(matches!(
+            list.peek_front(),
+            Some(DrawCommand {
+                op: DrawOp::Rect { .. },
+                ..
+            })
+        ));
+        assert!(matches!(
+            list.pop_front(),
+            Some(DrawCommand {
+                op: DrawOp::Rect { .. },
+                ..
+            })
+        ));
+        assert!(matches!(
+            list.pop_front(),
+            Some(DrawCommand {
+                op: DrawOp::Line { .. },
+                ..
+            })
+        ));
+        assert_eq!(list.pop_front(), None);
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn a_command_carries_the_clip_that_was_open_when_it_was_recorded() {
+        let mut list = DrawList::new();
+        let clip = Rect::from_min_size(Offset::new(5.0, 5.0), 20.0, 20.0);
+        list.push_clip(clip);
+        list.rect(
+            Rect::from_min_size(Offset::ZERO, 100.0, 100.0),
+            CornerRadii::ZERO,
+            Paint::fill(Color::BLACK),
+        );
+        list.pop_clip();
+        list.rect(
+            Rect::from_min_size(Offset::ZERO, 10.0, 10.0),
+            CornerRadii::ZERO,
+            Paint::fill(Color::BLACK),
+        );
+
+        let commands: Vec<DrawCommand> = list.drain().collect();
+        assert_eq!(commands.len(), 2);
+        assert_eq!(commands[0].clip, Some(clip));
+        assert_eq!(commands[1].clip, None);
     }
 
     #[test]

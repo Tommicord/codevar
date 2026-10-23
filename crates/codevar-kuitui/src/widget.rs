@@ -573,8 +573,8 @@ mod tests {
         let mut square = Square { side: 4.0 };
         square.draw(&mut scope, Rect::from_min_size(Offset::ZERO, 4.0, 4.0));
         assert_eq!(list.len(), 1);
-        match &list.ops()[0] {
-            crate::paint::DrawOp::Rect { rect, .. } => {
+        match list.ops().next() {
+            Some(crate::paint::DrawOp::Rect { rect, .. }) => {
                 assert_eq!(rect.origin, Offset::new(10.0, 20.0));
             }
             other => panic!("expected a rectangle, got {other:?}"),

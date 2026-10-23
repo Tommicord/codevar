@@ -645,8 +645,8 @@ mod tests {
         node.place(Rect::from_min_size(Offset::ZERO, 10.0, 10.0));
         node.draw(&theme, &mut list);
         assert_eq!(list.len(), 2);
-        match &list.ops()[0] {
-            DrawOp::Rect { paint, .. } => assert_eq!(paint.color, Color::RED),
+        match list.ops().next() {
+            Some(DrawOp::Rect { paint, .. }) => assert_eq!(paint.color, Color::RED),
             other => panic!("expected a rectangle, got {other:?}"),
         }
     }

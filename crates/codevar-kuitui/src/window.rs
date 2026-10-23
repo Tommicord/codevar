@@ -492,8 +492,8 @@ mod tests {
         node.place(Rect::new(Offset::ZERO, Size::new(400.0, 32.0)));
         node.draw(&theme, &mut list);
         assert!(list.len() >= 2);
-        assert!(matches!(list.ops()[0], DrawOp::Rect { .. }));
-        assert!(matches!(list.ops()[1], DrawOp::Text { .. }));
+        assert!(matches!(list.ops().next(), Some(DrawOp::Rect { .. })));
+        assert!(matches!(list.ops().nth(1), Some(DrawOp::Text { .. })));
     }
 
     #[test]

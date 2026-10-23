@@ -202,7 +202,7 @@ mod tests {
         node.place(Rect::new(Offset::ZERO, Size::new(100.0, 100.0)));
         node.draw(&theme, &mut list);
         assert_eq!(list.len(), 3);
-        assert!(matches!(list.ops()[0], DrawOp::Text { .. }));
+        assert!(matches!(list.ops().next(), Some(DrawOp::Text { .. })));
     }
 
     #[test]
@@ -224,8 +224,8 @@ mod tests {
         node.measure(&theme, Constraints::unbounded());
         node.place(Rect::new(Offset::ZERO, Size::new(100.0, 100.0)));
         node.draw(&theme, &mut list);
-        match &list.ops()[0] {
-            DrawOp::Text { style, .. } => assert_eq!(style.color, Color::RED),
+        match list.ops().next() {
+            Some(DrawOp::Text { style, .. }) => assert_eq!(style.color, Color::RED),
             other => panic!("expected a text, got {other:?}"),
         }
     }
