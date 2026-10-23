@@ -248,13 +248,9 @@ pub fn host_target() -> Result<HostTarget, Error> {
 pub fn host_target_with(code: TargetCode) -> Result<HostTarget, Error> {
     #[cfg(target_arch = "x86_64")]
     {
-        // The back end of the running machine implements the baseline
-        // today; the extension codes arrive with the vector back end.
-        if code == TargetCode::Baseline {
-            Ok(HostTarget::X86(X86Target::new()))
-        } else {
-            Err(Error::UnsupportedTargetCode { code })
-        }
+        // The x86-64 back end selects the instructions of `code` when
+        // it lowers the module; every code is accepted here.
+        Ok(HostTarget::X86(X86Target::with_code(code)))
     }
     #[cfg(target_arch = "aarch64")]
     {
