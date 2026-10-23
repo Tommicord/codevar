@@ -49,12 +49,107 @@ use core::fmt;
 
 use codevar_ocl_ir::ir::ValueId;
 use codevar_ocl_native_codegen::error::CodegenError;
+use codevar_ocl_native_codegen::opt::Optimizations;
 use codevar_ocl_native_codegen::pipeline::{CodegenOptions, compile_entry};
 use codevar_ocl_native_codegen::target::NativeTarget;
+
+pub use codevar_ocl_native_codegen::target::{TARGET_CODES, TargetCode};
 
 use codevar_ocl_native_codegen_aarch64::AArch64Target;
 use codevar_ocl_native_codegen_thumbv7m::ThumbV7mTarget;
 use codevar_ocl_native_codegen_x86::X86Target;
+
+/// The inlining threshold `-O3` raises the default to, in instructions.
+const AGGRESSIVE_INLINE_THRESHOLD: u32 = 96;
+
+/// The unrolling limit `-O3` raises the default to, in iterations.
+const AGGRESSIVE_UNROLL_LIMIT: u32 = 16;
+
+/// The optimization level a compile runs at.
+///
+/// The levels follow the compiler driver's `-O` flag.  [`OptLevel::O0`]
+/// keeps the intermediate representation as the front end left it,
+/// [`OptLevel::O1`] runs the cheap local passes, [`OptLevel::O2`] runs
+/// every optimizer pass (including the vectorizer), and [`OptLevel::O3`]
+/// runs [`OptLevel::O2`] and then repeats the structural passes with
+/// larger inlining and unrolling limits.
+///
+/// # Examples
+///
+/// ```
+/// use codevar_ocl_tc::{OptLevel, compile_source_at};
+///
+/// let source = "#[kernel]\nfn fill(out: *mut int) {\n    out[0] = 7;\n}\n";
+/// match compile_source_at(source, "fill", OptLevel::O0) {
+///     Ok(code) => assert!(!code.bytes().is_empty()),
+///     Err(error) => assert!(!error.to_string().is_empty()),
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OptLevel {
+    /// `-O0`: no optimization.
+    O0,
+    /// `-O1`: the cheap local passes.
+    O1,
+    /// `-O2`: every optimizer pass (the default).
+    #[default]
+    O2,
+    /// `-O3`: `-O2` plus the aggressive escalation.
+    O3,
+}
+
+impl OptLevel {
+    /// The level a single `-O` digit names, or `None` for a digit the
+    /// compiler does not know.
+    #[must_use]
+    pub const fn from_digit(digit: u8) -> Option<Self> {
+        match digit {
+            b'0' => Some(Self::O0),
+            b'1' => Some(Self::O1),
+            b'2' => Some(Self::O2),
+            b'3' => Some(Self::O3),
+            _ => None,
+        }
+    }
+
+    /// The ASCII digit this level is written as (`-O2` → `b'2'`).
+    #[must_use]
+    pub const fn digit(self) -> u8 {
+        match self {
+            Self::O0 => b'0',
+            Self::O1 => b'1',
+            Self::O2 => b'2',
+            Self::O3 => b'3',
+        }
+    }
+
+    /// The optimizations this level selects.
+    #[must_use]
+    pub const fn optimizations(self) -> Optimizations {
+        match self {
+            Self::O0 => Optimizations::O0,
+            Self::O1 => Optimizations::O1,
+            Self::O2 => Optimizations::O2,
+            Self::O3 => Optimizations::O3,
+        }
+    }
+
+    /// The codegen options of this level.
+    ///
+    /// `O3` raises the inliner and unroller limits on top of the
+    /// [`OptLevel::O2`] optimizations; every other level keeps the
+    /// configured defaults.
+    #[must_use]
+    fn codegen_options(self) -> CodegenOptions {
+        let mut options = CodegenOptions::default();
+        options.opt.optimizations = self.optimizations();
+        if self == Self::O3 {
+            options.opt.inline_threshold = AGGRESSIVE_INLINE_THRESHOLD;
+            options.opt.unroll_limit = AGGRESSIVE_UNROLL_LIMIT;
+        }
+        options
+    }
+}
 
 /// The machine code of a compiled kernel.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,6 +234,65 @@ pub fn host_target() -> Result<HostTarget, Error> {
     }
 }
 
+/// The back end of the architecture the program is running on, at the
+/// instruction-set extensions `code`.
+///
+/// A code the selected back end does not implement is refused instead of
+/// being silently compiled at the baseline: a caller that asked for
+/// AVX-512 must not receive SSE2 code without being told.
+///
+/// # Errors
+///
+/// Returns an error when the architecture has no back end yet, or when
+/// the back end does not implement `code`.
+pub fn host_target_with(code: TargetCode) -> Result<HostTarget, Error> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // The back end of the running machine implements the baseline
+        // today; the extension codes arrive with the vector back end.
+        if code == TargetCode::Baseline {
+            Ok(HostTarget::X86(X86Target::new()))
+        } else {
+            Err(Error::UnsupportedTargetCode { code })
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        baseline_only(code)?;
+        Ok(HostTarget::AArch64(AArch64Target::new()))
+    }
+    #[cfg(target_arch = "arm")]
+    {
+        baseline_only(code)?;
+        Ok(HostTarget::Thumb(ThumbV7mTarget::new()))
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "arm")))]
+    {
+        Err(Error::NoBackEnd {
+            architecture: String::from(core::env!("CARGO_CFG_TARGET_ARCH")),
+        })
+    }
+}
+
+/// Refuses every target code but the baseline.
+///
+/// The non-x86 back ends implement only the baseline instruction set, so
+/// a caller that asks for an extension is told instead of being handed
+/// baseline code.
+///
+/// # Errors
+///
+/// Returns [`Error::UnsupportedTargetCode`] when `code` is not the
+/// baseline.
+#[cfg(not(target_arch = "x86_64"))]
+fn baseline_only(code: TargetCode) -> Result<(), Error> {
+    if code == TargetCode::Baseline {
+        Ok(())
+    } else {
+        Err(Error::UnsupportedTargetCode { code })
+    }
+}
+
 /// Why a kernel could not be compiled.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
@@ -168,6 +322,11 @@ pub enum Error {
         /// The architecture the program is running on.
         architecture: String,
     },
+    /// The back end does not implement the requested target code.
+    UnsupportedTargetCode {
+        /// The target code the caller asked for.
+        code: TargetCode,
+    },
     /// The machine code could not be produced.
     Codegen(CodegenError),
 }
@@ -191,6 +350,13 @@ impl fmt::Display for Error {
                     "there is no native back end for the '{architecture}' architecture"
                 )
             }
+            Self::UnsupportedTargetCode { code } => {
+                write!(
+                    f,
+                    "the back end does not implement the target code '{}' yet",
+                    code.name()
+                )
+            }
             Self::Codegen(error) => write!(f, "{error}"),
         }
     }
@@ -211,7 +377,8 @@ impl From<CodegenError> for Error {
     }
 }
 
-/// Compiles the kernel `entry` of `source` for the host target.
+/// Compiles the kernel `entry` of `source` for the host target at the
+/// default optimization level ([`OptLevel::O2`]).
 ///
 /// # Errors
 ///
@@ -219,11 +386,41 @@ impl From<CodegenError> for Error {
 /// does not lower, names no such kernel, or when the machine code
 /// cannot be produced.
 pub fn compile_source(source: &str, entry: &str) -> Result<CompiledCode, Error> {
-    let target = host_target()?;
-    compile_source_for(target.as_target(), source, entry)
+    compile_source_at(source, entry, OptLevel::default())
 }
 
-/// Compiles the kernel `entry` of `source` for `target`.
+/// Compiles the kernel `entry` of `source` for the host target at
+/// `level`.
+///
+/// # Errors
+///
+/// Returns an error when the source does not analyze, does not parse,
+/// does not lower, names no such kernel, or when the machine code
+/// cannot be produced.
+pub fn compile_source_at(source: &str, entry: &str, level: OptLevel) -> Result<CompiledCode, Error> {
+    compile_source_at_with(source, entry, level, TargetCode::Baseline)
+}
+
+/// Compiles the kernel `entry` of `source` for the host target at
+/// `level`, using the instruction-set extensions `code`.
+///
+/// # Errors
+///
+/// Returns an error when the source does not analyze, does not parse,
+/// does not lower, names no such kernel, when the back end does not
+/// implement `code`, or when the machine code cannot be produced.
+pub fn compile_source_at_with(
+    source: &str,
+    entry: &str,
+    level: OptLevel,
+    code: TargetCode,
+) -> Result<CompiledCode, Error> {
+    let target = host_target_with(code)?;
+    compile_source_for_at(target.as_target(), source, entry, level)
+}
+
+/// Compiles the kernel `entry` of `source` for `target` at the default
+/// optimization level ([`OptLevel::O2`]).
 ///
 /// # Errors
 ///
@@ -235,12 +432,28 @@ pub fn compile_source_for(
     source: &str,
     entry: &str,
 ) -> Result<CompiledCode, Error> {
+    compile_source_for_at(target, source, entry, OptLevel::default())
+}
+
+/// Compiles the kernel `entry` of `source` for `target` at `level`.
+///
+/// # Errors
+///
+/// Returns an error when the source does not analyze, does not parse,
+/// does not lower, names no such kernel, or when the machine code
+/// cannot be produced.
+pub fn compile_source_for_at(
+    target: &dyn NativeTarget,
+    source: &str,
+    entry: &str,
+    level: OptLevel,
+) -> Result<CompiledCode, Error> {
     let module = lower(source)?;
-    compile_module_for(target, &module, entry)
+    compile_module_for_at(target, &module, entry, level)
 }
 
 /// Compiles the kernel `entry` of an already lowered `module` for
-/// `target`.
+/// `target` at the default optimization level ([`OptLevel::O2`]).
 ///
 /// Lowering once and compiling several entry points of the same module
 /// is what a build script does: the source is analyzed and lowered a
@@ -256,8 +469,24 @@ pub fn compile_module_for(
     module: &codevar_ocl_ir::ir::Module,
     entry: &str,
 ) -> Result<CompiledCode, Error> {
+    compile_module_for_at(target, module, entry, OptLevel::default())
+}
+
+/// Compiles the kernel `entry` of an already lowered `module` for
+/// `target` at `level`.
+///
+/// # Errors
+///
+/// Returns an error when the module names no such kernel, or when the
+/// machine code cannot be produced.
+pub fn compile_module_for_at(
+    target: &dyn NativeTarget,
+    module: &codevar_ocl_ir::ir::Module,
+    entry: &str,
+    level: OptLevel,
+) -> Result<CompiledCode, Error> {
     let function = find_entry(module, entry)?;
-    let options = CodegenOptions::default();
+    let options = level.codegen_options();
     let code = compile_entry(module, target, &options, function)?;
     Ok(CompiledCode {
         bytes: code.bytes().to_vec(),
