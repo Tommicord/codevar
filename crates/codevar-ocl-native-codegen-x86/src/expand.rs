@@ -399,21 +399,31 @@ impl<'a> Expander<'a> {
     }
 
     /// Expands one instruction.
+    ///
+    /// `current` is the index of the block the instruction belongs to,
+    /// which is the block that follows the previous one in the emitted
+    /// code, so a branch to `current + 1` falls through.
     fn expand_inst(
         &mut self,
         enc: &mut Encoder<'_>,
         fixups: &mut Vec<Fixup>,
         inst: &MInst,
+        current: usize,
     ) -> Result<(), CodegenError> {
-        self.expand_op(enc, fixups, inst)
+        self.expand_op(enc, fixups, inst, current)
     }
 
     /// Expands one operation.
+    ///
+    /// `current` is the index of the block the instruction belongs to.
+    /// It is passed on to the branch arms, which can elide a branch whose
+    /// target is the following block.
     fn expand_op(
         &mut self,
         enc: &mut Encoder<'_>,
         fixups: &mut Vec<Fixup>,
         inst: &MInst,
+        current: usize,
     ) -> Result<(), CodegenError> {
         match &inst.op {
             MOp::Copy => self.expand_copy(enc, inst),
@@ -467,6 +477,12 @@ impl<'a> Expander<'a> {
             MOp::Br { target } => {
                 let block = *target;
                 self.check_block(block)?;
+                // The block emitted right after this one is the block
+                // that follows in index order, so a branch to it has
+                // nothing to emit.
+                if block as usize == current + 1 {
+                    return Ok(());
+                }
                 let site = enc.jmp_rel32();
                 fixups.push(Fixup::block(site, block));
                 Ok(())
@@ -486,11 +502,25 @@ impl<'a> Expander<'a> {
                 })?;
                 self.check_block(when_true)?;
                 self.check_block(when_false)?;
-                enc.test_rr(Size::Dword, cond, cond);
-                let site = enc.jcc_rel32(Cc::Ne);
-                fixups.push(Fixup::block(site, when_true));
-                let site = enc.jmp_rel32();
-                fixups.push(Fixup::block(site, when_false));
+                // When one of the targets is the following block, the
+                // branch only needs to cover the other one: control
+                // falls through to the following block either way, and
+                // a trailing jump would be redundant.
+                if when_false as usize == current + 1 {
+                    enc.test_rr(Size::Dword, cond, cond);
+                    let site = enc.jcc_rel32(Cc::Ne);
+                    fixups.push(Fixup::block(site, when_true));
+                } else if when_true as usize == current + 1 {
+                    enc.test_rr(Size::Dword, cond, cond);
+                    let site = enc.jcc_rel32(Cc::E);
+                    fixups.push(Fixup::block(site, when_false));
+                } else {
+                    enc.test_rr(Size::Dword, cond, cond);
+                    let site = enc.jcc_rel32(Cc::Ne);
+                    fixups.push(Fixup::block(site, when_true));
+                    let site = enc.jmp_rel32();
+                    fixups.push(Fixup::block(site, when_false));
+                }
                 Ok(())
             }
             MOp::Ret => {
@@ -678,6 +708,12 @@ impl<'a> Expander<'a> {
             return Ok(());
         }
         let src = self.operand_reg(enc, inst, 0, &[])?;
+        if dest == src {
+            // A register copied onto itself has nothing to do.  The allocator
+            // leaves these behind after coalescing, and they showed up as a
+            // quarter of the moves in the embedded kernels.
+            return Ok(());
+        }
         match (Self::class_of(dest), Self::class_of(src)) {
             (Class::Int, Class::Int) => {
                 enc.mov_rr(int_size(&inst.ty), dest, src);
@@ -2413,10 +2449,10 @@ pub(crate) fn expand_function(module: &MirModule, function: &MirFunction) -> Res
     let instruction_count = {
         let mut encoder = Encoder::new(&mut bytes);
         expander.emit_prologue(&mut encoder);
-        for block in &function.blocks {
+        for (index, block) in function.blocks.iter().enumerate() {
             block_offsets.push(encoder.position());
             for inst in &block.insts {
-                expander.expand_inst(&mut encoder, &mut fixups, inst)?;
+                expander.expand_inst(&mut encoder, &mut fixups, inst, index)?;
             }
         }
         encoder.count()
