@@ -45,6 +45,7 @@
 //! instruction writes its result.
 
 use alloc::collections::BTreeMap;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::error::{CodegenError, Result};
@@ -246,6 +247,7 @@ impl<'a> Allocator<'a> {
     /// Allocates the registers of one function.
     fn allocate_function(&mut self, function: &mut MirFunction) -> Result<AllocStats> {
         self.reset(function);
+        self.coalesce_copies(function);
         self.gather(function)?;
         self.plan(function)?;
         let added = self.rewrite(function)?;
@@ -261,6 +263,85 @@ impl<'a> Allocator<'a> {
             spills: u32::try_from(spills).unwrap_or(u32::MAX),
             rewrites: added,
         })
+    }
+
+    /// Coalesces the copies the selection stage left behind.
+    ///
+    /// The machine IR is in SSA form, so a virtual register has exactly
+    /// one definition, and a copy `dest = copy src` is often a move the
+    /// selection stage made for its own convenience rather than for the
+    /// hardware.  The pass forwards such a copy when its destination is
+    /// used exactly once and both ends have the same type: the single
+    /// use then reads `src` directly and the copy is dropped.  A
+    /// destination that is never used drops the copy as well, since a
+    /// copy has no side effect to preserve.  A copy whose source is an
+    /// immediate or a physical register is left alone, because there is
+    /// no register to forward to, and so is a copy whose destination is
+    /// used more than once, because forwarding it would extend the live
+    /// range of `src` across uses that may not be able to share a
+    /// register.
+    ///
+    /// The pass runs to a fixpoint and recomputes the use counts on
+    /// every round, so deleting a copy can expose the copy that defined
+    /// the forwarded value as single-use in turn: a chain of copies
+    /// collapses in one call.  Every round removes exactly one copy, so
+    /// the loop terminates.
+    fn coalesce_copies(&mut self, function: &mut MirFunction) {
+        let count = function.vreg_types.len();
+        loop {
+            let mut uses: Vec<u32> = vec![0; count];
+            for block in &function.blocks {
+                for inst in &block.insts {
+                    for operand in inst.args.as_slice() {
+                        let Some(value) = operand.virtual_reg() else {
+                            continue;
+                        };
+                        if let Some(slot) = uses.get_mut(value.index()) {
+                            *slot = slot.saturating_add(1);
+                        }
+                    }
+                }
+            }
+            let mut chosen: Option<(usize, usize, VReg, VReg)> = None;
+            for (block_index, block) in function.blocks.iter().enumerate() {
+                for (inst_index, inst) in block.insts.iter().enumerate() {
+                    if !matches!(inst.op, MOp::Copy) {
+                        continue;
+                    }
+                    let Some(dest) = inst.dest_vreg() else {
+                        continue;
+                    };
+                    let dest_uses = uses.get(dest.index()).copied().unwrap_or(0);
+                    if dest_uses == 0 {
+                        chosen = Some((block_index, inst_index, dest, dest));
+                        break;
+                    }
+                    if dest_uses != 1 {
+                        continue;
+                    }
+                    let Some(Operand::Virtual(src)) = inst.arg0() else {
+                        continue;
+                    };
+                    if self.type_of(dest) != self.type_of(src) {
+                        continue;
+                    }
+                    chosen = Some((block_index, inst_index, dest, src));
+                    break;
+                }
+                if chosen.is_some() {
+                    break;
+                }
+            }
+            let Some((block_index, inst_index, dest, src)) = chosen else {
+                return;
+            };
+            if dest != src {
+                rewrite_uses(function, dest, src);
+            }
+            function.blocks[block_index]
+                .insts
+                .remove(inst_index);
+        }
     }
 
     /// Empties the allocator's buffers and prepares them for a
@@ -761,6 +842,34 @@ impl<'a> Allocator<'a> {
     }
 }
 
+/// Replaces every use of `dest` with `src`.
+///
+/// The caller only forwards a copy whose destination has a single use,
+/// so the walk rewrites one operand; it scans the whole function to
+/// stay independent of where that use sits.
+fn rewrite_uses(function: &mut MirFunction, dest: VReg, src: VReg) {
+    for block in &mut function.blocks {
+        for inst in &mut block.insts {
+            if !inst
+                .args
+                .as_slice()
+                .contains(&Operand::Virtual(dest))
+            {
+                continue;
+            }
+            let mut operands: Vec<Operand> = Vec::with_capacity(inst.args.len());
+            for operand in inst.args.as_slice() {
+                if *operand == Operand::Virtual(dest) {
+                    operands.push(Operand::Virtual(src));
+                } else {
+                    operands.push(*operand);
+                }
+            }
+            inst.args = Operands::many(operands);
+        }
+    }
+}
+
 /// Rounds `value` up to a multiple of `align`.
 #[inline]
 const fn align_up(value: u32, align: u32) -> u32 {
@@ -1091,5 +1200,186 @@ mod tests {
             matches!(&error, CodegenError::Allocation { .. }),
             "unexpected error: {error}"
         );
+    }
+
+    /// Runs only the copy-coalescing pre-pass over `function`.
+    fn coalesce(function: &mut MirFunction) {
+        let registers = model(4);
+        let mut allocator = Allocator::new(&registers);
+        allocator.reset(function);
+        allocator.coalesce_copies(function);
+    }
+
+    /// The number of copy instructions of a function.
+    fn copies(function: &MirFunction) -> usize {
+        function
+            .blocks
+            .iter()
+            .flat_map(|block| block.insts.iter())
+            .filter(|inst| matches!(inst.op, MOp::Copy))
+            .count()
+    }
+
+    /// The values a function defines.
+    fn defined(function: &MirFunction) -> Vec<VReg> {
+        function
+            .blocks
+            .iter()
+            .flat_map(|block| block.insts.iter())
+            .filter_map(MInst::dest_vreg)
+            .collect()
+    }
+
+    /// A function whose source is defined from an immediate and then
+    /// copied through a chain that ends in a return.
+    fn copy_chain() -> MirFunction {
+        let mut function = MirFunction::new("chain");
+        let source = function.new_vreg(MType::I32);
+        let middle = function.new_vreg(MType::I32);
+        let last = function.new_vreg(MType::I32);
+        let mut block = MirBlock::new("entry");
+        block.insts.push(MInst::def(
+            source,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(7)),
+        ));
+        block.insts.push(MInst::def(
+            middle,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Virtual(source)),
+        ));
+        block.insts.push(MInst::def(
+            last,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Virtual(middle)),
+        ));
+        block.insts.push(MInst::none(
+            MType::Void,
+            MOp::Ret,
+            Operands::one(Operand::Virtual(last)),
+        ));
+        function.push_block(block);
+        function
+    }
+
+    #[test]
+    fn a_chain_of_copies_collapses_to_the_original_source() {
+        let mut function = copy_chain();
+        let source = VReg::new(0);
+        coalesce(&mut function);
+        assert_eq!(copies(&function), 1, "only the copy from the immediate survives");
+        let return_inst = function.blocks[0]
+            .insts
+            .last()
+            .expect("the block ends with a return");
+        assert_eq!(
+            return_inst.arg0(),
+            Some(Operand::Virtual(source)),
+            "the return reads the original source"
+        );
+    }
+
+    #[test]
+    fn a_copy_with_two_uses_is_kept() {
+        let mut function = MirFunction::new("twice");
+        let source = function.new_vreg(MType::I32);
+        let copied = function.new_vreg(MType::I32);
+        let sum = function.new_vreg(MType::I32);
+        let mut block = MirBlock::new("entry");
+        block.insts.push(MInst::def(
+            source,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(1)),
+        ));
+        block.insts.push(MInst::def(
+            copied,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Virtual(source)),
+        ));
+        block.insts.push(MInst::def(
+            sum,
+            MType::I32,
+            MOp::Add,
+            Operands::two(Operand::Virtual(copied), Operand::Virtual(copied)),
+        ));
+        block.insts.push(MInst::none(
+            MType::Void,
+            MOp::Ret,
+            Operands::one(Operand::Virtual(sum)),
+        ));
+        function.push_block(block);
+        coalesce(&mut function);
+        assert_eq!(copies(&function), 2, "the two-use copy is kept");
+        assert!(
+            defined(&function).contains(&copied),
+            "the two-use copy still defines its value"
+        );
+    }
+
+    #[test]
+    fn a_copy_whose_value_is_never_used_is_deleted() {
+        let mut function = MirFunction::new("dead");
+        let source = function.new_vreg(MType::I32);
+        let dead = function.new_vreg(MType::I32);
+        let mut block = MirBlock::new("entry");
+        block.insts.push(MInst::def(
+            source,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(3)),
+        ));
+        block.insts.push(MInst::def(
+            dead,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Virtual(source)),
+        ));
+        block.insts.push(MInst::none(
+            MType::Void,
+            MOp::Ret,
+            Operands::one(Operand::Virtual(source)),
+        ));
+        function.push_block(block);
+        coalesce(&mut function);
+        assert_eq!(copies(&function), 1, "the dead copy is deleted");
+        assert!(
+            !defined(&function).contains(&dead),
+            "the dead value is no longer defined"
+        );
+    }
+
+    #[test]
+    fn a_copy_from_an_immediate_is_kept() {
+        let mut function = MirFunction::new("immediate");
+        let value = function.new_vreg(MType::I32);
+        let mut block = MirBlock::new("entry");
+        block.insts.push(MInst::def(
+            value,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(9)),
+        ));
+        block.insts.push(MInst::none(
+            MType::Void,
+            MOp::Ret,
+            Operands::one(Operand::Virtual(value)),
+        ));
+        function.push_block(block);
+        coalesce(&mut function);
+        assert_eq!(copies(&function), 1, "there is no register to forward to");
+    }
+
+    #[test]
+    fn the_copy_coalescing_is_idempotent() {
+        let mut function = copy_chain();
+        coalesce(&mut function);
+        let collapsed = function.clone();
+        coalesce(&mut function);
+        assert_eq!(collapsed, function, "the pass makes no further change");
     }
 }
