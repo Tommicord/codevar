@@ -259,6 +259,9 @@ mod tests {
 
     #[test]
     fn a_surface_round_trips_its_configuration() {
+        // The platform fixture proves the trait shape; the device is what
+        // the round-trip below needs.
+        assert_eq!(TestPlatform.backend(), Backend::WebGpu);
         let mut device = TestDevice;
         let config = SurfaceConfig {
             width: 640,
