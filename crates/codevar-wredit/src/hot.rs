@@ -40,8 +40,9 @@
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
+use codevar_gpu_core::{ComputeProfile, HostLink, pcie_link_bandwidth};
 use codevar_logger::{log_debug, log_warn};
-use codevar_ocl::{Arg, Buffer, CommandQueue, Context, DeviceKind, Kernel, Program, Runtime};
+use codevar_ocl::{Arg, Buffer, CommandQueue, Context, Device, DeviceKind, Kernel, Program, Runtime};
 use codevar_oclc::kernels;
 use spin::Mutex;
 
@@ -87,6 +88,47 @@ const CHECKSUM_MASK: u32 = (1 << 30) - 1;
 /// it) comfortably below half of `i32::MAX`; a longer input simply
 /// falls back to the CPU reference.
 const MAX_LEN: usize = i32::MAX as usize / 2;
+
+/// Floating-point operations retired by one fused multiply-add: the
+/// instruction is a multiply and an add.
+const FLOPS_PER_FMA: u32 = 2;
+
+/// Hertz in one megahertz, to lift the device clock query into SI units
+/// without a hardcoded float.
+const HERTZ_PER_MEGAHERTZ: u32 = 1_000_000;
+
+/// Microseconds in one second, to lift the documented estimates below
+/// into seconds without a hardcoded float.
+const MICROSECONDS_PER_SECOND: u32 = 1_000_000;
+
+/// Default PCIe signalling rate per lane, in gigatransfers per second,
+/// used only until a probe replaces it: generation-3 (8 GT/s) is the
+/// most common accelerator slot.
+const FALLBACK_LINK_GIGATRANSFERS_PER_LANE: u32 = 8;
+
+/// Default PCIe link width, in lanes, paired with the fallback rate.
+const FALLBACK_LINK_LANES: u32 = 16;
+
+/// Fixed per-dispatch cost of the queue submit and kernel launch, in
+/// microseconds. OpenCL exposes no query for it.
+const DISPATCH_MICROSECONDS: u32 = 10;
+
+/// One-way link start-up cost, in microseconds. OpenCL exposes no query
+/// for it; the value mirrors the estimate the Vulkan probe uses.
+const LINK_STARTUP_MICROSECONDS: u32 = 5;
+
+/// Device memory streams this many times faster than the link that feeds
+/// it. OpenCL exposes no memory-bandwidth query, so the device bandwidth
+/// is derived from the link rather than guessed as an absolute figure.
+const DEVICE_MEMORY_OVER_LINK: u32 = 4;
+
+/// Host memory bandwidth, in gibibytes per second, for a device that
+/// shares the host's memory. OpenCL cannot query it.
+const HOST_MEMORY_GIB_PER_SECOND: u32 = 20;
+
+/// Bytes in one gibibyte, to lift the host-memory estimate into SI
+/// units.
+const BYTES_PER_GIB: u32 = 1 << 30;
 
 /// Why a GPU pipeline could not be built.
 #[derive(Debug)]
@@ -147,6 +189,113 @@ static PIPELINE: Mutex<PipelineState> = Mutex::new(PipelineState::Uninit);
 /// engine typically uses one GPU kernel per editing session.
 static PIPELINE_KERNEL: spin::LazyLock<Mutex<String>> = spin::LazyLock::new(|| Mutex::new(String::new()));
 
+/// Process-wide device profile, built lazily like the pipeline. The
+/// dispatcher asks for it every time it is constructed, so it must be
+/// cached rather than re-open the driver on each call.
+enum ProfileState {
+    /// Nothing attempted yet.
+    Uninit,
+    /// No usable device was found; never touch the driver again.
+    Unavailable,
+    /// The profile of the selected device.
+    Ready(ComputeProfile),
+}
+
+/// The cached device profile.
+static DEVICE_PROFILE: Mutex<ProfileState> = Mutex::new(ProfileState::Uninit);
+
+/// Selects the first available GPU device any platform exposes.
+fn select_device(runtime: &Runtime) -> Option<Device> {
+    for platform in runtime.platforms() {
+        let Ok(devices) = platform.devices(DeviceKind::Gpu) else {
+            continue;
+        };
+        for device in devices {
+            if device.available().unwrap_or(false) {
+                return Some(device);
+            }
+        }
+    }
+    None
+}
+
+/// Turns the documented integer microsecond estimates into seconds.
+#[inline]
+fn seconds_from_microseconds(microseconds: u32) -> f64 {
+    f64::from(microseconds) / f64::from(MICROSECONDS_PER_SECOND)
+}
+
+/// Builds a cost-model profile from OpenCL device queries.
+///
+/// OpenCL exposes the compute-unit count, the peak clock and the native
+/// float vector width, so the arithmetic throughput is the theoretical
+/// upper bound `CUs × clock × lanes × 2`. It exposes no device-memory or
+/// host-link query, so those come from the documented estimates above; an
+/// integration layer can replace them with the exact numbers from the
+/// Vulkan PCIe probe. A device that reports a zero core count, clock or
+/// vector width yields `None`.
+fn profile_for(device: &Device) -> Option<ComputeProfile> {
+    let compute_units = device.max_compute_units().ok()?;
+    let clock_mhz = device.max_clock_frequency().ok()?;
+    let lanes = device.native_vector_width_float().ok()?;
+    if compute_units == 0 || clock_mhz == 0 || lanes == 0 {
+        return None;
+    }
+    let peak_flops = f64::from(compute_units)
+        * f64::from(clock_mhz)
+        * f64::from(HERTZ_PER_MEGAHERTZ)
+        * f64::from(lanes)
+        * f64::from(FLOPS_PER_FMA);
+    let unified = device.host_unified_memory().unwrap_or(false);
+    let host_link = if unified {
+        HostLink::LOCAL
+    } else {
+        HostLink {
+            bandwidth: pcie_link_bandwidth(
+                f64::from(FALLBACK_LINK_GIGATRANSFERS_PER_LANE),
+                FALLBACK_LINK_LANES,
+            ),
+            latency: seconds_from_microseconds(LINK_STARTUP_MICROSECONDS),
+        }
+    };
+    let memory_bandwidth = if unified {
+        f64::from(HOST_MEMORY_GIB_PER_SECOND) * f64::from(BYTES_PER_GIB)
+    } else {
+        host_link.bandwidth * f64::from(DEVICE_MEMORY_OVER_LINK)
+    };
+    let profile = ComputeProfile::discrete(
+        peak_flops,
+        memory_bandwidth,
+        host_link,
+        seconds_from_microseconds(DISPATCH_MICROSECONDS),
+    );
+    profile.is_usable().then_some(profile)
+}
+
+/// The cost-model profile of this machine's OpenCL device, if any.
+///
+/// The probe runs once and is cached for the lifetime of the process:
+/// [`crate::dispatch::Accelerator::with_defaults`] asks for it on every
+/// construction, and the answer must not re-open the driver each time.
+#[must_use]
+pub fn device_profile() -> Option<ComputeProfile> {
+    let mut state = DEVICE_PROFILE.lock();
+    if matches!(*state, ProfileState::Uninit) {
+        let profile = Runtime::load()
+            .ok()
+            .and_then(|runtime| select_device(&runtime))
+            .and_then(|device| profile_for(&device));
+        *state = match profile {
+            Some(profile) => ProfileState::Ready(profile),
+            None => ProfileState::Unavailable,
+        };
+    }
+    match *state {
+        ProfileState::Ready(profile) => Some(profile),
+        ProfileState::Uninit | ProfileState::Unavailable => None,
+    }
+}
+
 /// Builds the OpenCL pipeline for `kernel_name`: loader → GPU device →
 /// context → queue → embedded SPIR-V program → kernel.
 ///
@@ -159,22 +308,7 @@ static PIPELINE_KERNEL: spin::LazyLock<Mutex<String>> = spin::LazyLock::new(|| M
 /// SPIR-V image).
 fn build_pipeline(kernel_name: &str) -> Result<GpuPipeline, PipelineError> {
     let runtime = Runtime::load()?;
-    let mut selected = None;
-    for platform in runtime.platforms() {
-        let Ok(devices) = platform.devices(DeviceKind::Gpu) else {
-            continue;
-        };
-        for device in devices {
-            if device.available().unwrap_or(false) {
-                selected = Some(device);
-                break;
-            }
-        }
-        if selected.is_some() {
-            break;
-        }
-    }
-    let device = selected.ok_or(PipelineError::NoGpuDevice)?;
+    let device = select_device(&runtime).ok_or(PipelineError::NoGpuDevice)?;
     let context = Context::new(&device)?;
     let queue = CommandQueue::new(&context, &device)?;
 

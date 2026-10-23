@@ -17,87 +17,67 @@
 //!
 //! The engine has two ways to run a bulk scan: the runtime-dispatched
 //! SIMD kernels in [`crate::simd`] (CPU), and the OpenCL kernels in
-//! [`crate::hot`] (GPU). The GPU wins on huge documents but pays a
-//! fixed per-dispatch cost — a buffer upload and a read-back, plus a
-//! program rebuild whenever the process switches kernels — so on small
-//! inputs it is strictly slower than the CPU tier.
+//! [`crate::hot`] (GPU). The GPU wins on huge documents but pays a fixed
+//! per-dispatch cost — a buffer upload and a read-back, plus a program
+//! rebuild whenever the process switches kernels — so on small inputs it
+//! is strictly slower than the CPU tier.
 //!
-//! [`Heuristic`] encodes that crossover, [`BulkBackend`] is the tier
-//! contract (the GPU tier answers [`None`] when it declines, the SIMD
-//! tier always answers), and [`Accelerator`] applies the heuristic and
+//! The crossover is no longer a hand-tuned size. [`Accelerator`] builds a
+//! [`ComputeProfile`] for this machine — the accelerator's throughput and
+//! its host link come from the [`crate::hot::device_profile`] probe — and
+//! asks the shared [`CostModel`] which tier is cheaper for the workload.
+//! [`BulkBackend`] is the tier contract (the GPU tier answers [`None`]
+//! when it declines, the SIMD tier always answers), and [`Accelerator`]
 //! falls through from the GPU to the SIMD tier. [`BulkOps`] is the
-//! engine-facing surface: callers depend on it without knowing which
-//! tier ran.
+//! engine-facing surface: callers depend on it without knowing which tier
+//! ran.
 //!
 //! # Performance
 //!
-//! The defaults in [`Heuristic::DEFAULT`] are deliberately
-//! conservative: they keep the CPU/SIMD tier for everything below a few
-//! mebibytes, so enabling the dispatcher can never make an existing
-//! small edit slower. Tune them with `cargo bench -p codevar-wredit
-//! --bench hot` on the target machine.
+//! The CPU side of the comparison is a documented reference, not a
+//! measurement: a `no_std` crate cannot read the host clock or core
+//! count. With the [`GPU_MARGIN`] bias the dispatcher keeps the CPU/SIMD
+//! tier for everything well below a mebibyte, so enabling it can never
+//! make an existing small edit slower. Tune the constants with `cargo
+//! bench -p codevar-wredit --bench hot` on the target machine.
 
 use alloc::vec;
 use alloc::vec::Vec;
 
+use codevar_gpu_core::{ComputeProfile, CostModel, Tier, Workload};
+
 use crate::hot;
 use crate::simd;
 
-/// Which execution tier should service a bulk operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Backend {
-    /// The parallel OpenCL kernels.
-    Gpu,
-    /// The runtime-dispatched SIMD kernels.
-    Cpu,
-}
+/// A documented reference for the host's arithmetic throughput, in
+/// billions of operations per second. The CPU's clock and core count are
+/// not queryable from a `no_std` crate, so the dispatcher compares the
+/// accelerator against this reference instead of a measurement.
+const CPU_GIGAFLOPS: u32 = 8;
 
-/// The input sizes at which the GPU overtakes the CPU/SIMD tier.
-///
-/// Two thresholds because the two families of kernels take different
-/// unit sizes: the byte kernels index UTF-8/transaction buffers, the
-/// word kernels index the engine's `u32` code points.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Heuristic {
-    /// Minimum byte length before the GPU is considered.
-    pub gpu_min_bytes: usize,
-    /// Minimum word length before the GPU is considered.
-    pub gpu_min_words: usize,
-}
+/// A documented reference for the host's effective streaming bandwidth,
+/// in gibibytes per second. Kept below raw DRAM speed because the bulk
+/// kernels decode UTF-8 and branch, so they stream slower than memory.
+const CPU_GIB_PER_SECOND: u32 = 4;
 
-impl Heuristic {
-    /// Conservative defaults: the GPU is only considered from a few
-    /// mebibytes upward, so small edits always stay on the CPU tier.
-    pub const DEFAULT: Self = Self {
-        gpu_min_bytes: 4 << 20,
-        gpu_min_words: 1 << 20,
-    };
+/// One billion, to lift the integer throughput reference into SI units.
+const BILLION: u32 = 1_000_000_000;
 
-    /// The tier to use for a byte-oriented operation of `len` bytes.
-    #[must_use]
-    pub const fn backend_for_bytes(&self, len: usize) -> Backend {
-        if len >= self.gpu_min_bytes {
-            Backend::Gpu
-        } else {
-            Backend::Cpu
-        }
-    }
+/// One gibibyte, to lift the integer bandwidth reference into SI units.
+const GIB: u32 = 1 << 30;
 
-    /// The tier to use for a word-oriented operation of `len` words.
-    #[must_use]
-    pub const fn backend_for_words(&self, len: usize) -> Backend {
-        if len >= self.gpu_min_words {
-            Backend::Gpu
-        } else {
-            Backend::Cpu
-        }
-    }
-}
+/// The speed-up the accelerator must reach before the dispatcher uses it.
+/// A value of one is neutral; two keeps the CPU unless the GPU is
+/// predicted to be at least twice as fast, damping the noise around the
+/// crossover.
+const GPU_MARGIN: u32 = 2;
 
-impl Default for Heuristic {
-    fn default() -> Self {
-        Self::DEFAULT
-    }
+/// The CPU reference profile: host memory, no link, no dispatch cost.
+fn cpu_profile() -> ComputeProfile {
+    ComputeProfile::host_only(
+        f64::from(CPU_GIGAFLOPS) * f64::from(BILLION),
+        f64::from(CPU_GIB_PER_SECOND) * f64::from(GIB),
+    )
 }
 
 /// A tier that can service the engine's bulk operations.
@@ -310,115 +290,162 @@ pub trait BulkOps {
     fn gap_compact(&self, words: &[u32], gap_start: usize, gap_len: usize) -> Vec<u32>;
 }
 
-/// Runs [`BulkOps`] over the GPU and SIMD tiers, picking one per call.
+/// Runs [`BulkOps`] over the GPU and SIMD tiers, picking one per call
+/// from a [`CostModel`].
 #[derive(Debug, Clone, Copy)]
 pub struct Accelerator {
-    heuristic: Heuristic,
-    gpu: GpuBackend,
-    cpu: SimdBackend,
+    /// The policy that compares the two profiles.
+    model: CostModel,
+    /// The host reference the accelerator is compared against.
+    cpu: ComputeProfile,
+    /// The probed accelerator, absent when no usable device was found.
+    gpu: Option<ComputeProfile>,
+    /// The GPU tier.
+    gpu_backend: GpuBackend,
+    /// The CPU/SIMD tier.
+    cpu_backend: SimdBackend,
 }
 
 impl Accelerator {
-    /// Builds an accelerator with an explicit heuristic.
+    /// Builds an accelerator from an explicit CPU profile, an optional
+    /// accelerator profile and a policy.
     #[must_use]
-    pub const fn new(heuristic: Heuristic) -> Self {
+    pub const fn new(cpu: ComputeProfile, gpu: Option<ComputeProfile>, model: CostModel) -> Self {
         Self {
-            heuristic,
-            gpu: GpuBackend,
-            cpu: SimdBackend,
+            model,
+            cpu,
+            gpu,
+            gpu_backend: GpuBackend,
+            cpu_backend: SimdBackend,
         }
     }
 
-    /// Builds an accelerator with the conservative defaults.
+    /// Builds an accelerator for this machine: the CPU reference profile
+    /// and the probed [`crate::hot::device_profile`].
     #[must_use]
-    pub const fn with_defaults() -> Self {
-        Self::new(Heuristic::DEFAULT)
+    pub fn with_defaults() -> Self {
+        Self::new(
+            cpu_profile(),
+            hot::device_profile(),
+            CostModel::new(f64::from(GPU_MARGIN)),
+        )
     }
 
     /// The policy in force.
     #[must_use]
-    pub const fn heuristic(&self) -> Heuristic {
-        self.heuristic
+    pub const fn model(&self) -> CostModel {
+        self.model
+    }
+
+    /// The CPU reference profile.
+    #[must_use]
+    pub const fn cpu_profile(&self) -> ComputeProfile {
+        self.cpu
+    }
+
+    /// The probed accelerator profile, if a device is present.
+    #[must_use]
+    pub const fn gpu_profile(&self) -> Option<ComputeProfile> {
+        self.gpu
+    }
+
+    /// The tier the policy picks for `workload`.
+    #[must_use]
+    fn tier_for(&self, workload: Workload) -> Tier {
+        match self.gpu {
+            Some(gpu) => self.model.select(&self.cpu, &gpu, workload),
+            None => Tier::Cpu,
+        }
     }
 
     /// `true` when a byte operation of `len` bytes is routed to the GPU.
     #[must_use]
-    pub const fn prefers_gpu_for_bytes(&self, len: usize) -> bool {
-        matches!(self.heuristic.backend_for_bytes(len), Backend::Gpu)
+    pub fn prefers_gpu_for_bytes(&self, len: usize) -> bool {
+        self.tier_for(Workload::byte_scan(u64::try_from(len).unwrap_or(u64::MAX))) == Tier::Gpu
     }
 
     /// `true` when a word operation of `len` words is routed to the GPU.
     #[must_use]
-    pub const fn prefers_gpu_for_words(&self, len: usize) -> bool {
-        matches!(self.heuristic.backend_for_words(len), Backend::Gpu)
+    pub fn prefers_gpu_for_words(&self, len: usize) -> bool {
+        self.tier_for(Workload::word_scan(u64::try_from(len).unwrap_or(u64::MAX))) == Tier::Gpu
     }
 }
 
 impl BulkOps for Accelerator {
     fn count_code_points(&self, bytes: &[u8]) -> u64 {
         if self.prefers_gpu_for_bytes(bytes.len())
-            && let Some(count) = self.gpu.count_code_points(bytes)
+            && let Some(count) = self.gpu_backend.count_code_points(bytes)
         {
             return count;
         }
         // The SIMD tier always answers; the zero is an unreachable net.
-        self.cpu.count_code_points(bytes).unwrap_or(0)
+        self.cpu_backend
+            .count_code_points(bytes)
+            .unwrap_or(0)
     }
 
     fn checksum(&self, bytes: &[u8]) -> u32 {
         if self.prefers_gpu_for_bytes(bytes.len())
-            && let Some(sum) = self.gpu.checksum(bytes)
+            && let Some(sum) = self.gpu_backend.checksum(bytes)
         {
             return sum;
         }
-        self.cpu.checksum(bytes).unwrap_or(0)
+        self.cpu_backend.checksum(bytes).unwrap_or(0)
     }
 
     fn count_newlines(&self, words: &[u32]) -> usize {
         if self.prefers_gpu_for_words(words.len())
-            && let Some(count) = self.gpu.count_newlines(words)
+            && let Some(count) = self.gpu_backend.count_newlines(words)
         {
             return count;
         }
-        self.cpu.count_newlines(words).unwrap_or(0)
+        self.cpu_backend
+            .count_newlines(words)
+            .unwrap_or(0)
     }
 
     fn count_value(&self, words: &[u32], needle: u32) -> usize {
         if self.prefers_gpu_for_words(words.len())
-            && let Some(count) = self.gpu.count_value(words, needle)
+            && let Some(count) = self.gpu_backend.count_value(words, needle)
         {
             return count;
         }
-        self.cpu.count_value(words, needle).unwrap_or(0)
+        self.cpu_backend
+            .count_value(words, needle)
+            .unwrap_or(0)
     }
 
     fn find_first(&self, words: &[u32], needle: u32) -> Option<usize> {
         if self.prefers_gpu_for_words(words.len())
-            && let Some(found) = self.gpu.find_first(words, needle)
+            && let Some(found) = self.gpu_backend.find_first(words, needle)
         {
             return found;
         }
-        self.cpu.find_first(words, needle).flatten()
+        self.cpu_backend
+            .find_first(words, needle)
+            .flatten()
     }
 
     fn find_matches(&self, words: &[u32], needle: &[u32]) -> Vec<u32> {
         if self.prefers_gpu_for_words(words.len())
-            && let Some(flags) = self.gpu.find_matches(words, needle)
+            && let Some(flags) = self.gpu_backend.find_matches(words, needle)
         {
             return flags;
         }
-        self.cpu
+        self.cpu_backend
             .find_matches(words, needle)
             .unwrap_or_else(|| vec![0u32; words.len()])
     }
 
     fn gap_compact(&self, words: &[u32], gap_start: usize, gap_len: usize) -> Vec<u32> {
         if self.prefers_gpu_for_words(words.len())
-            && let Some(out) = self.gpu.gap_compact(words, gap_start, gap_len)
+            && let Some(out) = self
+                .gpu_backend
+                .gap_compact(words, gap_start, gap_len)
         {
             return out;
         }
-        self.cpu
+        self.cpu_backend
             .gap_compact(words, gap_start, gap_len)
             .unwrap_or_default()
     }
@@ -432,14 +459,26 @@ impl Default for Accelerator {
 
 #[cfg(test)]
 mod tests {
-    use super::{Accelerator, Backend, BulkBackend, BulkOps, Heuristic, SimdBackend};
+    use super::{Accelerator, BulkBackend, BulkOps, SimdBackend, cpu_profile};
+    use codevar_gpu_core::{ComputeProfile, CostModel, HostLink};
 
-    /// A heuristic that always takes the GPU branch, so the tests
-    /// exercise the fall-through path regardless of the device.
-    const ALL_GPU: Heuristic = Heuristic {
-        gpu_min_bytes: 0,
-        gpu_min_words: 0,
-    };
+    /// An accelerator profile so potent that the model always prefers
+    /// it, so the tests exercise the GPU fall-through path regardless of
+    /// the machine's real device.
+    fn all_gpu() -> Accelerator {
+        // Derived from the integer maximum rather than a float literal.
+        let huge = f64::from(u32::MAX) * f64::from(u32::MAX);
+        let gpu = ComputeProfile::discrete(
+            huge,
+            huge,
+            HostLink {
+                bandwidth: huge,
+                latency: 0.0,
+            },
+            0.0,
+        );
+        Accelerator::new(cpu_profile(), Some(gpu), CostModel::DEFAULT)
+    }
 
     fn words(len: usize) -> alloc::vec::Vec<u32> {
         let mut out = alloc::vec![u32::from(b'x'); len];
@@ -453,19 +492,37 @@ mod tests {
     }
 
     #[test]
-    fn heuristic_selects_by_threshold() {
-        let heuristic = Heuristic {
-            gpu_min_bytes: 10,
-            gpu_min_words: 20,
-        };
-        assert_eq!(heuristic.backend_for_bytes(9), Backend::Cpu);
-        assert_eq!(heuristic.backend_for_bytes(10), Backend::Gpu);
-        assert_eq!(heuristic.backend_for_words(19), Backend::Cpu);
-        assert_eq!(heuristic.backend_for_words(20), Backend::Gpu);
-        // The defaults keep small edits on the CPU tier.
-        let defaults = Heuristic::DEFAULT;
-        assert_eq!(defaults.backend_for_bytes(1024), Backend::Cpu);
-        assert_eq!(defaults.backend_for_words(1024), Backend::Cpu);
+    fn the_crossover_is_derived_from_the_profiles() {
+        let cpu = ComputeProfile::host_only(1.0e9, 1.0e10);
+        let gpu = ComputeProfile::discrete(
+            4.0e12,
+            5.0e11,
+            HostLink {
+                bandwidth: 1.2e10,
+                latency: 5.0e-6,
+            },
+            1.0e-5,
+        );
+        let accelerator = Accelerator::new(cpu, Some(gpu), CostModel::DEFAULT);
+        assert!(
+            !accelerator.prefers_gpu_for_bytes(64),
+            "a tiny scan stays on the CPU"
+        );
+        assert!(
+            accelerator.prefers_gpu_for_bytes(1 << 24),
+            "a large scan takes the GPU"
+        );
+        // Without a device, nothing is ever routed to the GPU.
+        let no_device = Accelerator::new(cpu, None, CostModel::DEFAULT);
+        assert!(!no_device.prefers_gpu_for_bytes(usize::MAX));
+        assert!(!no_device.prefers_gpu_for_words(usize::MAX));
+    }
+
+    #[test]
+    fn small_scans_stay_on_the_cpu() {
+        let accelerator = Accelerator::with_defaults();
+        assert!(!accelerator.prefers_gpu_for_bytes(0));
+        assert!(!accelerator.prefers_gpu_for_words(0));
     }
 
     /// The dispatcher must return exactly what the SIMD tier returns,
@@ -475,7 +532,7 @@ mod tests {
         let cpu = SimdBackend;
         for len in [0usize, 1, 63, 64, 65, 300] {
             let buffer = words(len);
-            for accelerator in [Accelerator::with_defaults(), Accelerator::new(ALL_GPU)] {
+            for accelerator in [Accelerator::with_defaults(), all_gpu()] {
                 assert_eq!(
                     accelerator.find_first(&buffer, 7),
                     cpu.find_first(&buffer, 7).flatten(),
@@ -505,7 +562,7 @@ mod tests {
                 bytes[len - 1] = 0xC3;
                 bytes[len - 2] = 0xA9;
             }
-            for accelerator in [Accelerator::with_defaults(), Accelerator::new(ALL_GPU)] {
+            for accelerator in [Accelerator::with_defaults(), all_gpu()] {
                 assert_eq!(
                     accelerator.count_code_points(&bytes),
                     cpu.count_code_points(&bytes).unwrap_or(0),
@@ -528,7 +585,7 @@ mod tests {
         let expected = alloc::vec![10u32, 50, 60, 70];
         let cpu = SimdBackend;
         assert_eq!(cpu.gap_compact(&buffer, 1, 3), Some(expected.clone()));
-        for accelerator in [Accelerator::with_defaults(), Accelerator::new(ALL_GPU)] {
+        for accelerator in [Accelerator::with_defaults(), all_gpu()] {
             assert_eq!(accelerator.gap_compact(&buffer, 1, 3), expected, "len 7");
         }
         // A zero-length gap is left to the caller (empty result).
@@ -562,7 +619,7 @@ mod tests {
             alloc::vec![9],
         ] {
             let expected = oracle(&needle);
-            for accelerator in [Accelerator::with_defaults(), Accelerator::new(ALL_GPU)] {
+            for accelerator in [Accelerator::with_defaults(), all_gpu()] {
                 assert_eq!(
                     accelerator.find_matches(&haystack, &needle),
                     expected,

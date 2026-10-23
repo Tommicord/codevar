@@ -361,11 +361,13 @@ dependencies = [
  "codevar-gpu-core",
  "codevar-kuitui",
  "codevar-logger",
+ "codevar-pathbuf",
  "codevar-time-core",
  "codevar-wayland",
  "libc",
  "libm",
  "spin 0.12.3",
+ "windows",
  "windows-link 0.100.0",
 ]
 
@@ -925,6 +927,7 @@ version = "1.0.0"
 dependencies = [
  "cc",
  "codevar-base",
+ "codevar-gpu-core",
  "codevar-logger",
  "codevar-ocl",
  "codevar-oclc",
