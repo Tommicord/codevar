@@ -70,25 +70,28 @@ fn adding_module() -> (codevar_ocl_native_codegen::mir::MirModule, SymId) {
 #[test]
 fn the_code_of_a_small_function_is_exact() {
     // The function moves its two arguments into the registers the
-    // allocator gave them, adds them and returns the sum.
+    // allocator gave them, adds the second to the first and returns the
+    // first.
+    //
+    // The add is two-address, so the register allocator gives the sum
+    // the register the first argument already holds and the back end
+    // adds in place instead of emitting a move of the destination.
     //
     // The expected bytes are:
     //
-    //   70 b4      push {r4, r5, r6}
-    //   81 b0      sub  sp, #4      ; the frame keeps the stack aligned
+    //   30 b4      push {r4, r5}
     //   04 46      mov  r4, r0      ; the first argument
     //   0d 46      mov  r5, r1      ; the second argument
-    //   66 19      adds r6, r4, r5  ; the sum
-    //   30 46      mov  r0, r6      ; the result
-    //   01 b0      add  sp, #4
-    //   70 bc      pop  {r4, r5, r6}
+    //   64 19      adds r4, r4, r5  ; the sum, in place
+    //   20 46      mov  r0, r4      ; the result
+    //   30 bc      pop  {r4, r5}
     //   70 47      bx   lr
     let (module, entry) = adding_module();
     let target = ThumbV7mTarget::new();
     let image = common::lower(&target, &module, entry);
-    assert_eq!(hex(image.bytes()), "70b481b004460d466619304601b070bc7047");
+    assert_eq!(hex(image.bytes()), "30b404460d466419204630bc7047");
     assert_eq!(image.entry_offset(), 0);
-    assert_eq!(image.instruction_count(), 9);
+    assert_eq!(image.instruction_count(), 7);
 }
 
 #[test]

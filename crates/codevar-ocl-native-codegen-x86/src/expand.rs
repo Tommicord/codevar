@@ -1192,7 +1192,12 @@ impl<'a> Expander<'a> {
         self.expect_int(left, 0)?;
         match inst.args.get(1) {
             Some(Operand::Immediate(value)) => {
-                enc.mov_rr(size, dest, left);
+                // The two-address reuse pass may have made the
+                // destination and the first operand one value; then
+                // the copy would move a register onto itself.
+                if dest != left {
+                    enc.mov_rr(size, dest, left);
+                }
                 match op {
                     Binary::Add => enc.add_ri(size, dest, value),
                     Binary::Sub => enc.sub_ri(size, dest, value),
@@ -1215,7 +1220,12 @@ impl<'a> Expander<'a> {
             Some(_) => {
                 let right = self.operand_reg(enc, inst, 1, &[])?;
                 self.expect_int(right, 1)?;
-                enc.mov_rr(size, dest, left);
+                // The two-address reuse pass may have made the
+                // destination and the first operand one value; then
+                // the copy would move a register onto itself.
+                if dest != left {
+                    enc.mov_rr(size, dest, left);
+                }
                 match op {
                     Binary::Add => enc.add_rr(size, dest, right),
                     Binary::Sub => enc.sub_rr(size, dest, right),
@@ -1455,7 +1465,12 @@ impl<'a> Expander<'a> {
         let size = int_size(&inst.ty);
         let value = self.operand_reg(enc, inst, 0, &[])?;
         self.expect_int(value, 0)?;
-        enc.mov_rr(size, dest, value);
+        // The two-address reuse pass may have made the destination
+        // and the first operand one value; then the copy would move a
+        // register onto itself.
+        if dest != value {
+            enc.mov_rr(size, dest, value);
+        }
         match op {
             Unary::Neg => enc.neg_rr(size, dest),
             Unary::Not => enc.not_rr(size, dest),

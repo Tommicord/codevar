@@ -248,6 +248,7 @@ impl<'a> Allocator<'a> {
     fn allocate_function(&mut self, function: &mut MirFunction) -> Result<AllocStats> {
         self.reset(function);
         fuse_compare_branches(function);
+        reuse_two_address_destinations(function);
         self.coalesce_copies(function);
         self.gather(function)?;
         self.plan(function)?;
@@ -1026,6 +1027,91 @@ fn fuse_compare_branches(function: &mut MirFunction) {
     }
 }
 
+/// Reuses a two-address operation's first operand as its destination.
+///
+/// The x86 form of [`MOp::Add`], [`MOp::Sub`], [`MOp::Mul`],
+/// [`MOp::And`], [`MOp::Or`], [`MOp::Xor`], [`MOp::Neg`] and
+/// [`MOp::Not`] is two-address: the destination is also the first
+/// operand, so a back end emits `mov dest, left` before the operation.
+/// When the first operand is dead after the operation, that copy is
+/// unnecessary: the operation can write its result into the register the
+/// operand already holds.
+///
+/// The pass therefore rewrites `dest = op(left, ...)` into
+/// `left = op(left, ...)` and replaces every use of `dest` with `left`.
+/// The allocator then gives the old value of `left` and the result of
+/// the operation the same register, and the back end drops the copy.
+///
+/// Only an operation whose first operand has a single definition and is
+/// read for the last time by the operation, and whose destination has a
+/// single definition, is rewritten.  The machine code is not in static
+/// single assignment form — a phi is lowered to one copy per predecessor
+/// block — so a register written by several instructions cannot be
+/// renamed without changing the values its uses read, and the old value
+/// of the first operand is dead after the operation only when the
+/// operation is its last use.
+///
+/// Only the two-address operations are rewritten.  A shift or a division
+/// reads a fixed register in its back end and is not two-address in the
+/// same way.
+///
+/// The pass runs to a fixpoint and recomputes the definition and the last
+/// use of every register on each round, so a rewrite can expose the
+/// operation that produced the first operand as reusable in turn.  Every
+/// round leaves one fewer register defined, so the loop terminates.
+fn reuse_two_address_destinations(function: &mut MirFunction) {
+    let count = function.vreg_types.len();
+    loop {
+        let mut defs: Vec<u32> = vec![0; count];
+        let mut last_use: Vec<u32> = vec![NOWHERE; count];
+        let mut position = 0u32;
+        for block in &function.blocks {
+            for inst in &block.insts {
+                if let Some(dest) = inst.dest_vreg()
+                    && let Some(slot) = defs.get_mut(dest.index())
+                {
+                    *slot = slot.saturating_add(1);
+                }
+                for operand in inst.args.as_slice() {
+                    let Some(value) = operand.virtual_reg() else {
+                        continue;
+                    };
+                    if let Some(entry) = last_use.get_mut(value.index()) {
+                        *entry = position;
+                    }
+                }
+                position = position.saturating_add(1);
+            }
+        }
+        let mut chosen: Option<(usize, usize, VReg, VReg)> = None;
+        let mut position = 0u32;
+        for (block_index, block) in function.blocks.iter().enumerate() {
+            for (inst_index, inst) in block.insts.iter().enumerate() {
+                if chosen.is_none()
+                    && matches!(
+                        inst.op,
+                        MOp::Add | MOp::Sub | MOp::Mul | MOp::And | MOp::Or | MOp::Xor | MOp::Neg | MOp::Not
+                    )
+                    && let Some(dest) = inst.dest_vreg()
+                    && let Some(Operand::Virtual(left)) = inst.arg0()
+                    && dest != left
+                    && defs.get(left.index()).copied().unwrap_or(0) == 1
+                    && defs.get(dest.index()).copied().unwrap_or(0) == 1
+                    && last_use.get(left.index()).copied() == Some(position)
+                {
+                    chosen = Some((block_index, inst_index, dest, left));
+                }
+                position = position.saturating_add(1);
+            }
+        }
+        let Some((block_index, inst_index, dest, left)) = chosen else {
+            return;
+        };
+        function.blocks[block_index].insts[inst_index].dest = Some(Destination::Virtual(left));
+        rewrite_uses(function, dest, left);
+    }
+}
+
 /// Replaces every use of `dest` with `src`.
 ///
 /// The caller forwards a copy whose destination has one use, or several
@@ -1151,6 +1237,59 @@ mod tests {
         function
     }
 
+    /// A function that keeps three values alive at once, built from
+    /// shifts.
+    ///
+    /// A shift is not two-address, so the register-reuse pass leaves the
+    /// function alone and the three values stay live at the same time: a
+    /// file with three registers still has to spill one of them.
+    fn three_live_shift_function() -> MirFunction {
+        let mut function = MirFunction::new("shift");
+        let first = function.new_vreg(MType::I32);
+        let second = function.new_vreg(MType::I32);
+        let third = function.new_vreg(MType::I32);
+        let shifted = function.new_vreg(MType::I32);
+        let total = function.new_vreg(MType::I32);
+        let mut block = MirBlock::new("entry");
+        block.insts.push(MInst::def(
+            first,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(1)),
+        ));
+        block.insts.push(MInst::def(
+            second,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(2)),
+        ));
+        block.insts.push(MInst::def(
+            third,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(3)),
+        ));
+        block.insts.push(MInst::def(
+            shifted,
+            MType::I32,
+            MOp::Shl,
+            Operands::two(Operand::Virtual(first), Operand::Virtual(second)),
+        ));
+        block.insts.push(MInst::def(
+            total,
+            MType::I32,
+            MOp::Shl,
+            Operands::two(Operand::Virtual(third), Operand::Virtual(shifted)),
+        ));
+        block.insts.push(MInst::none(
+            MType::Void,
+            MOp::Ret,
+            Operands::one(Operand::Virtual(total)),
+        ));
+        function.push_block(block);
+        function
+    }
+
     /// A module with one function.
     fn module(function: MirFunction) -> MirModule {
         let mut module = MirModule::new();
@@ -1190,7 +1329,10 @@ mod tests {
 
     #[test]
     fn a_small_file_spills_the_values_that_do_not_fit() {
-        let mut machine = module(three_live_function());
+        // The reuse pass folds the additions of `three_live_function`,
+        // which removes the pressure; the shifts here are not
+        // two-address, so the three values stay live.
+        let mut machine = module(three_live_shift_function());
         let stats = allocate(&mut machine, &model(3)).expect("the allocation succeeds");
         assert_eq!(stats.spills, 1, "one value did not fit");
         assert!(stats.rewrites > 0, "the rewriting added instructions");
@@ -2025,6 +2167,349 @@ mod tests {
         assert!(
             fused_branch(&copied).is_none(),
             "a condition that is a plain copy is kept"
+        );
+    }
+
+    /// A function whose first operand is read for the last time by a
+    /// two-address addition, so the addition may write into it.
+    fn two_address_function() -> MirFunction {
+        let mut function = MirFunction::new("two_address");
+        let left = function.new_vreg(MType::I32);
+        let right = function.new_vreg(MType::I32);
+        let sum = function.new_vreg(MType::I32);
+        let mut block = MirBlock::new("entry");
+        block.insts.push(MInst::def(
+            left,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(1)),
+        ));
+        block.insts.push(MInst::def(
+            right,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(2)),
+        ));
+        block.insts.push(MInst::def(
+            sum,
+            MType::I32,
+            MOp::Add,
+            Operands::two(Operand::Virtual(left), Operand::Virtual(right)),
+        ));
+        block.insts.push(MInst::none(
+            MType::Void,
+            MOp::Ret,
+            Operands::one(Operand::Virtual(sum)),
+        ));
+        function.push_block(block);
+        function
+    }
+
+    /// The operation with the given predicate, when the function has one.
+    fn operation(function: &MirFunction, wanted: fn(&MOp) -> bool) -> Option<&MInst> {
+        function
+            .blocks
+            .iter()
+            .flat_map(|block| block.insts.iter())
+            .find(|inst| wanted(&inst.op))
+    }
+
+    #[test]
+    fn a_two_address_operation_writes_into_its_dead_operand() {
+        let mut function = two_address_function();
+        let left = VReg::new(0);
+        let sum = VReg::new(2);
+        reuse_two_address_destinations(&mut function);
+        assert!(
+            !defined(&function).contains(&sum),
+            "the old destination is no longer defined"
+        );
+        let add = operation(&function, |op| matches!(op, MOp::Add)).expect("the addition survives");
+        assert_eq!(
+            add.dest_vreg(),
+            Some(left),
+            "the addition writes into its first operand"
+        );
+        let return_inst = function.blocks[0]
+            .insts
+            .last()
+            .expect("the block ends with a return");
+        assert_eq!(
+            return_inst.arg0(),
+            Some(Operand::Virtual(left)),
+            "the return reads the first operand"
+        );
+    }
+
+    #[test]
+    fn a_negation_writes_into_its_dead_operand() {
+        let mut function = MirFunction::new("negation");
+        let value = function.new_vreg(MType::I32);
+        let negated = function.new_vreg(MType::I32);
+        let mut block = MirBlock::new("entry");
+        block.insts.push(MInst::def(
+            value,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(1)),
+        ));
+        block.insts.push(MInst::def(
+            negated,
+            MType::I32,
+            MOp::Neg,
+            Operands::one(Operand::Virtual(value)),
+        ));
+        block.insts.push(MInst::none(
+            MType::Void,
+            MOp::Ret,
+            Operands::one(Operand::Virtual(negated)),
+        ));
+        function.push_block(block);
+        reuse_two_address_destinations(&mut function);
+        assert!(
+            !defined(&function).contains(&negated),
+            "the old destination is no longer defined"
+        );
+        let neg = operation(&function, |op| matches!(op, MOp::Neg)).expect("the negation survives");
+        assert_eq!(
+            neg.dest_vreg(),
+            Some(value),
+            "the negation writes into its operand"
+        );
+    }
+
+    #[test]
+    fn a_two_address_operation_keeps_an_operand_that_is_used_later() {
+        let mut function = MirFunction::new("live");
+        let left = function.new_vreg(MType::I32);
+        let right = function.new_vreg(MType::I32);
+        let sum = function.new_vreg(MType::I32);
+        let mut block = MirBlock::new("entry");
+        block.insts.push(MInst::def(
+            left,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(1)),
+        ));
+        block.insts.push(MInst::def(
+            right,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(2)),
+        ));
+        block.insts.push(MInst::def(
+            sum,
+            MType::I32,
+            MOp::Add,
+            Operands::two(Operand::Virtual(left), Operand::Virtual(right)),
+        ));
+        // The first operand is read once more, after the addition.
+        block.insts.push(MInst::none(
+            MType::Void,
+            MOp::Ret,
+            Operands::one(Operand::Virtual(left)),
+        ));
+        function.push_block(block);
+        reuse_two_address_destinations(&mut function);
+        let add = operation(&function, |op| matches!(op, MOp::Add)).expect("the addition survives");
+        assert_eq!(add.dest_vreg(), Some(sum), "the addition keeps its destination");
+        assert!(
+            defined(&function).contains(&sum),
+            "the destination is still defined"
+        );
+    }
+
+    #[test]
+    fn a_two_address_operation_keeps_an_operand_written_twice() {
+        let mut function = MirFunction::new("redefined_operand");
+        let left = function.new_vreg(MType::I32);
+        let right = function.new_vreg(MType::I32);
+        let sum = function.new_vreg(MType::I32);
+        let mut block = MirBlock::new("entry");
+        block.insts.push(MInst::def(
+            left,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(1)),
+        ));
+        // The first operand is defined a second time.
+        block.insts.push(MInst::def(
+            left,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(2)),
+        ));
+        block.insts.push(MInst::def(
+            right,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(3)),
+        ));
+        block.insts.push(MInst::def(
+            sum,
+            MType::I32,
+            MOp::Add,
+            Operands::two(Operand::Virtual(left), Operand::Virtual(right)),
+        ));
+        block.insts.push(MInst::none(
+            MType::Void,
+            MOp::Ret,
+            Operands::one(Operand::Virtual(sum)),
+        ));
+        function.push_block(block);
+        reuse_two_address_destinations(&mut function);
+        let add = operation(&function, |op| matches!(op, MOp::Add)).expect("the addition survives");
+        assert_eq!(add.dest_vreg(), Some(sum), "the addition keeps its destination");
+    }
+
+    #[test]
+    fn a_two_address_operation_keeps_a_destination_written_twice() {
+        let mut function = MirFunction::new("redefined_destination");
+        let left = function.new_vreg(MType::I32);
+        let right = function.new_vreg(MType::I32);
+        let sum = function.new_vreg(MType::I32);
+        let mut block = MirBlock::new("entry");
+        block.insts.push(MInst::def(
+            left,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(1)),
+        ));
+        block.insts.push(MInst::def(
+            right,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(2)),
+        ));
+        // The destination is defined a first time by a copy.
+        block.insts.push(MInst::def(
+            sum,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(3)),
+        ));
+        block.insts.push(MInst::def(
+            sum,
+            MType::I32,
+            MOp::Add,
+            Operands::two(Operand::Virtual(left), Operand::Virtual(right)),
+        ));
+        block.insts.push(MInst::none(
+            MType::Void,
+            MOp::Ret,
+            Operands::one(Operand::Virtual(sum)),
+        ));
+        function.push_block(block);
+        reuse_two_address_destinations(&mut function);
+        let add = operation(&function, |op| matches!(op, MOp::Add)).expect("the addition survives");
+        assert_eq!(add.dest_vreg(), Some(sum), "the addition keeps its destination");
+    }
+
+    #[test]
+    fn an_operation_that_is_not_two_address_is_kept() {
+        let mut shifted = MirFunction::new("shifted");
+        let value = shifted.new_vreg(MType::I32);
+        let amount = shifted.new_vreg(MType::I32);
+        let result = shifted.new_vreg(MType::I32);
+        let mut block = MirBlock::new("entry");
+        block.insts.push(MInst::def(
+            value,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(1)),
+        ));
+        block.insts.push(MInst::def(
+            amount,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(2)),
+        ));
+        block.insts.push(MInst::def(
+            result,
+            MType::I32,
+            MOp::Shl,
+            Operands::two(Operand::Virtual(value), Operand::Virtual(amount)),
+        ));
+        block.insts.push(MInst::none(
+            MType::Void,
+            MOp::Ret,
+            Operands::one(Operand::Virtual(result)),
+        ));
+        shifted.push_block(block);
+        reuse_two_address_destinations(&mut shifted);
+        let shift = operation(&shifted, |op| matches!(op, MOp::Shl)).expect("the shift survives");
+        assert_eq!(shift.dest_vreg(), Some(result), "a shift keeps its destination");
+
+        let mut compared = MirFunction::new("compared");
+        let left = compared.new_vreg(MType::I32);
+        let right = compared.new_vreg(MType::I32);
+        let condition = compared.new_vreg(MType::I1);
+        let mut block = MirBlock::new("entry");
+        block.insts.push(MInst::def(
+            left,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(1)),
+        ));
+        block.insts.push(MInst::def(
+            right,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(2)),
+        ));
+        block.insts.push(
+            MInst::def(
+                condition,
+                MType::I1,
+                MOp::ICmp { pred: IPred::Slt },
+                Operands::two(Operand::Virtual(left), Operand::Virtual(right)),
+            )
+            .with_operand_type(MType::I32),
+        );
+        block.insts.push(MInst::none(
+            MType::Void,
+            MOp::Ret,
+            Operands::one(Operand::Virtual(condition)),
+        ));
+        compared.push_block(block);
+        reuse_two_address_destinations(&mut compared);
+        let compare =
+            operation(&compared, |op| matches!(op, MOp::ICmp { .. })).expect("the comparison survives");
+        assert_eq!(
+            compare.dest_vreg(),
+            Some(condition),
+            "a comparison keeps its destination"
+        );
+    }
+
+    #[test]
+    fn the_allocation_folds_a_two_address_operation() {
+        let mut machine = module(two_address_function());
+        allocate(&mut machine, &model(4)).expect("the allocation succeeds");
+        let function = &machine.functions[0];
+        let add = operation(function, |op| matches!(op, MOp::Add)).expect("the addition survives");
+        let destination = add
+            .dest_reg()
+            .expect("the addition writes a register");
+        // The addition writes the register its first operand already
+        // holds, so the back end has nothing to move.
+        let first = function.blocks[0]
+            .insts
+            .first()
+            .expect("the block starts with a copy");
+        assert_eq!(
+            first.dest_reg(),
+            Some(destination),
+            "the operand and the result share a register"
+        );
+        let return_inst = function.blocks[0]
+            .insts
+            .last()
+            .expect("the block ends with a return");
+        assert_eq!(
+            return_inst.arg0().and_then(Operand::physical_reg),
+            Some(destination),
+            "the return reads the shared register"
         );
     }
 }
