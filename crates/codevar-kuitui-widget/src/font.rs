@@ -346,8 +346,10 @@ impl Font {
             let advance = mul_fix(i64::from(font.advance_for_glyph(glyph_index)), self.scale);
             if glyph_index != 0
                 && let Some(bitmap) = rasterize_glyph(&font, &mut slot, &mut raster, &metrics, glyph_index)?
-                && let Some(region) = atlas.insert(&bitmap.bitmap)
             {
+                let Some(region) = atlas.insert(&bitmap.bitmap) else {
+                    return Err(FontError::AtlasFull);
+                };
                 let atlas_width = atlas.width() as f32;
                 let atlas_height = atlas.height() as f32;
                 quads.push(GlyphQuad {
@@ -451,7 +453,7 @@ impl GlyphAtlas {
         Self {
             width,
             height,
-            pixels: alloc::vec![0u8; (width * height) as usize],
+            pixels: alloc::vec![0u8; width as usize * height as usize],
             pen_x: 0,
             pen_y: 0,
             shelf_height: 0,
@@ -481,12 +483,16 @@ impl GlyphAtlas {
 
     /// Copies a glyph bitmap into the atlas, returning where it landed.
     ///
-    /// Returns `None` when the atlas has no room left; the caller can
-    /// then grow the atlas or start a new one.
+    /// The atlas stores one byte per pixel, so `bitmap` should be gray
+    /// (one byte per pixel). A packed mode such as `Mono` contributes
+    /// only the bytes its row actually holds; the rest of the region
+    /// stays zeroed. Returns `None` when the glyph is larger than the
+    /// atlas or the atlas has no room left; the caller can then grow the
+    /// atlas or start a new one.
     pub fn insert(&mut self, bitmap: &Bitmap) -> Option<AtlasRegion> {
         let width = bitmap.width;
         let height = bitmap.rows;
-        if width == 0 || height == 0 {
+        if width == 0 || height == 0 || width > self.width || height > self.height {
             return None;
         }
         if self.pen_x + width > self.width {
@@ -513,8 +519,11 @@ impl GlyphAtlas {
                 .pixels
                 .get_mut(destination_start..destination_end)
             {
-                let copy = width as usize;
-                destination.copy_from_slice(&source[..copy.min(source.len())]);
+                // A packed pixel mode has a row stride shorter than `width`;
+                // copy only what the row holds and leave the rest zeroed
+                // rather than panicking on a length mismatch.
+                let copy = (width as usize).min(source.len());
+                destination[..copy].copy_from_slice(&source[..copy]);
             }
         }
         self.pen_x += width + ATLAS_PADDING;
@@ -787,5 +796,19 @@ mod tests {
         }
         assert!(atlas.insert(&bitmap).is_some());
         assert!(atlas.insert(&bitmap).is_none());
+    }
+
+    #[test]
+    fn a_glyph_larger_than_the_atlas_is_rejected() {
+        let mut atlas = GlyphAtlas::new(4, 4);
+        let bitmap = Bitmap::new_sized(2, 8, PixelMode::Gray, 256).unwrap();
+        assert!(atlas.insert(&bitmap).is_none());
+    }
+
+    #[test]
+    fn a_packed_bitmap_is_copied_without_panicking() {
+        let mut atlas = GlyphAtlas::new(8, 8);
+        let bitmap = Bitmap::new_sized(4, 8, PixelMode::Mono, 2).unwrap();
+        assert!(atlas.insert(&bitmap).is_some());
     }
 }
