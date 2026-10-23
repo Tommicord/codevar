@@ -24,7 +24,7 @@
 //! outline rasterization with `GrayRaster` — to produce the
 //! single-channel coverage the `text` shader samples.
 //!
-//! The pipeline is a port of the repository's `gpu_font_raster` probe,
+//! The pipeline is a port of the standalone `gpu_font_raster` probe,
 //! rewritten without its panicking error handling:
 //!
 //! 1. open the face and map a character to a glyph index;

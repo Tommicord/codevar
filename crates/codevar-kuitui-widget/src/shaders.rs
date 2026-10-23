@@ -26,10 +26,10 @@
 //!
 //! | Static | Source | Stage |
 //! | --- | --- | --- |
-//! | [`UI_VERT_SPIRV`] | `ui.vert` | vertex |
-//! | [`UI_FRAG_SPIRV`] | `ui.frag` | fragment |
-//! | [`TEXT_VERT_SPIRV`] | `text.vert` | vertex |
-//! | [`TEXT_FRAG_SPIRV`] | `text.frag` | fragment |
+//! | [`UI_VERT_SPIRV`] | `ui.vert.glsl` | vertex |
+//! | [`UI_FRAG_SPIRV`] | `ui.frag.glsl` | fragment |
+//! | [`TEXT_VERT_SPIRV`] | `text.vert.glsl` | vertex |
+//! | [`TEXT_FRAG_SPIRV`] | `text.frag.glsl` | fragment |
 //!
 //! [`SHADERS`] is the registry of all four and [`SHADERS_COMPILED`] is
 //! `false` on a build host without `glslc`, in which case every image is
