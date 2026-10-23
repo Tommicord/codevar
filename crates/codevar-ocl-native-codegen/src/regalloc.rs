@@ -270,28 +270,58 @@ impl<'a> Allocator<'a> {
     /// The machine IR is in SSA form, so a virtual register has exactly
     /// one definition, and a copy `dest = copy src` is often a move the
     /// selection stage made for its own convenience rather than for the
-    /// hardware.  The pass forwards such a copy when its destination is
-    /// used exactly once and both ends have the same type: the single
-    /// use then reads `src` directly and the copy is dropped.  A
-    /// destination that is never used drops the copy as well, since a
+    /// hardware.  The pass forwards such a copy, replacing every use of
+    /// its destination with `src` and dropping the copy, when both ends
+    /// have the same type and one of two conditions holds:
+    ///
+    /// * The destination is used exactly once.  The one use reads `src`
+    ///   directly, whether or not the forwarding extends the live range
+    ///   of `src`.
+    /// * The source already outlives the destination, that is
+    ///   `last_use(src) >= last_use(dest)`.  Every use of `dest` sits
+    ///   between the copy and its last use, and `src` is already live
+    ///   over that whole range, so rewriting the uses of `dest` to read
+    ///   `src` does not extend the live interval of `src` at all: the
+    ///   coalescing is free and cannot increase register pressure.
+    ///
+    /// A destination that is never used drops the copy as well, since a
     /// copy has no side effect to preserve.  A copy whose source is an
     /// immediate or a physical register is left alone, because there is
     /// no register to forward to, and so is a copy whose destination is
-    /// used more than once, because forwarding it would extend the live
-    /// range of `src` across uses that may not be able to share a
-    /// register.
+    /// used more than once while its source is not already live long
+    /// enough, because forwarding it would extend the live range of
+    /// `src` across uses that may not be able to share a register.
     ///
-    /// The pass runs to a fixpoint and recomputes the use counts on
-    /// every round, so deleting a copy can expose the copy that defined
-    /// the forwarded value as single-use in turn: a chain of copies
-    /// collapses in one call.  Every round removes exactly one copy, so
-    /// the loop terminates.
+    /// Only a destination with a single definition is forwarded.  The
+    /// machine code is not in static single assignment form — a phi is
+    /// lowered to one copy in every predecessor block — so a register
+    /// written by several copies cannot be renamed without changing the
+    /// value its uses read.
+    ///
+    /// The pass runs to a fixpoint and recomputes the use counts and the
+    /// last uses on every round, so deleting a copy can expose the copy
+    /// that defined the forwarded value as single-use in turn: a chain
+    /// of copies collapses in one call.  Every round removes exactly one
+    /// copy, so the loop terminates.
     fn coalesce_copies(&mut self, function: &mut MirFunction) {
         let count = function.vreg_types.len();
         loop {
             let mut uses: Vec<u32> = vec![0; count];
+            let mut defs: Vec<u32> = vec![0; count];
+            let mut last_use: Vec<u32> = vec![NOWHERE; count];
+            let mut position = 0u32;
             for block in &function.blocks {
                 for inst in &block.insts {
+                    if let Some(dest) = inst.dest_vreg() {
+                        if let Some(slot) = defs.get_mut(dest.index()) {
+                            *slot = slot.saturating_add(1);
+                        }
+                        if let Some(entry) = last_use.get_mut(dest.index())
+                            && *entry == NOWHERE
+                        {
+                            *entry = position;
+                        }
+                    }
                     for operand in inst.args.as_slice() {
                         let Some(value) = operand.virtual_reg() else {
                             continue;
@@ -299,7 +329,11 @@ impl<'a> Allocator<'a> {
                         if let Some(slot) = uses.get_mut(value.index()) {
                             *slot = slot.saturating_add(1);
                         }
+                        if let Some(entry) = last_use.get_mut(value.index()) {
+                            *entry = position;
+                        }
                     }
+                    position = position.saturating_add(1);
                 }
             }
             let mut chosen: Option<(usize, usize, VReg, VReg)> = None;
@@ -316,7 +350,15 @@ impl<'a> Allocator<'a> {
                         chosen = Some((block_index, inst_index, dest, dest));
                         break;
                     }
-                    if dest_uses != 1 {
+                    // The machine code is not in static single assignment
+                    // form: a phi is lowered to a copy in every
+                    // predecessor block, so one register can be written
+                    // by several instructions.  Forwarding a copy into
+                    // the uses of such a register would let a use read a
+                    // value written by a different definition, so only a
+                    // register with a single definition may be
+                    // forwarded.
+                    if defs.get(dest.index()).copied().unwrap_or(0) != 1 {
                         continue;
                     }
                     let Some(Operand::Virtual(src)) = inst.arg0() else {
@@ -324,6 +366,20 @@ impl<'a> Allocator<'a> {
                     };
                     if self.type_of(dest) != self.type_of(src) {
                         continue;
+                    }
+                    if dest_uses != 1 {
+                        // Forwarding a multiply-used destination only
+                        // stays free when `src` is already live at
+                        // least as long as `dest`.
+                        let Some(&src_last) = last_use.get(src.index()) else {
+                            continue;
+                        };
+                        let Some(&dest_last) = last_use.get(dest.index()) else {
+                            continue;
+                        };
+                        if src_last == NOWHERE || dest_last == NOWHERE || src_last < dest_last {
+                            continue;
+                        }
                     }
                     chosen = Some((block_index, inst_index, dest, src));
                     break;
@@ -844,9 +900,10 @@ impl<'a> Allocator<'a> {
 
 /// Replaces every use of `dest` with `src`.
 ///
-/// The caller only forwards a copy whose destination has a single use,
-/// so the walk rewrites one operand; it scans the whole function to
-/// stay independent of where that use sits.
+/// The caller forwards a copy whose destination has one use, or several
+/// uses that the source already outlives, so the walk rewrites every
+/// operand that reads `dest`; it scans the whole function to stay
+/// independent of where those uses sit.
 fn rewrite_uses(function: &mut MirFunction, dest: VReg, src: VReg) {
     for block in &mut function.blocks {
         for inst in &mut block.insts {
@@ -1318,6 +1375,191 @@ mod tests {
         assert!(
             defined(&function).contains(&copied),
             "the two-use copy still defines its value"
+        );
+    }
+
+    /// A two-use copy whose source is read after the last use of the
+    /// destination is folded: the source is already live across both
+    /// uses, so forwarding it is free.
+    #[test]
+    fn a_two_use_copy_is_folded_when_the_source_outlives_it() {
+        let mut function = MirFunction::new("outlives");
+        let source = function.new_vreg(MType::I32);
+        let copied = function.new_vreg(MType::I32);
+        let sum = function.new_vreg(MType::I32);
+        let total = function.new_vreg(MType::I32);
+        let mut block = MirBlock::new("entry");
+        block.insts.push(MInst::def(
+            source,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(1)),
+        ));
+        block.insts.push(MInst::def(
+            copied,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Virtual(source)),
+        ));
+        block.insts.push(MInst::def(
+            sum,
+            MType::I32,
+            MOp::Add,
+            Operands::two(Operand::Virtual(copied), Operand::Virtual(copied)),
+        ));
+        // The source is read after the two uses of the destination.
+        block.insts.push(MInst::def(
+            total,
+            MType::I32,
+            MOp::Add,
+            Operands::two(Operand::Virtual(source), Operand::Virtual(sum)),
+        ));
+        block.insts.push(MInst::none(
+            MType::Void,
+            MOp::Ret,
+            Operands::one(Operand::Virtual(total)),
+        ));
+        function.push_block(block);
+        coalesce(&mut function);
+        assert_eq!(copies(&function), 1, "only the copy from the immediate survives");
+        assert!(
+            !defined(&function).contains(&copied),
+            "the folded copy no longer defines its value"
+        );
+        let sum_inst = function.blocks[0]
+            .insts
+            .iter()
+            .find(|inst| inst.dest_vreg() == Some(sum))
+            .expect("the sum instruction survives");
+        assert_eq!(
+            sum_inst.arg0(),
+            Some(Operand::Virtual(source)),
+            "the first use reads the source"
+        );
+        assert_eq!(
+            sum_inst.args.as_slice().get(1),
+            Some(&Operand::Virtual(source)),
+            "the second use reads the source"
+        );
+    }
+
+    /// A two-use copy whose source dies before the destination is kept:
+    /// forwarding it would extend the source's live range.
+    #[test]
+    fn a_two_use_copy_is_kept_when_the_source_dies_earlier() {
+        let mut function = MirFunction::new("earlier");
+        let source = function.new_vreg(MType::I32);
+        let copied = function.new_vreg(MType::I32);
+        let before = function.new_vreg(MType::I32);
+        let sum = function.new_vreg(MType::I32);
+        let mut block = MirBlock::new("entry");
+        block.insts.push(MInst::def(
+            source,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(1)),
+        ));
+        block.insts.push(MInst::def(
+            copied,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Virtual(source)),
+        ));
+        // The source's last use is here, before the destination's uses.
+        block.insts.push(MInst::def(
+            before,
+            MType::I32,
+            MOp::Add,
+            Operands::two(Operand::Virtual(source), Operand::Virtual(source)),
+        ));
+        block.insts.push(MInst::def(
+            sum,
+            MType::I32,
+            MOp::Add,
+            Operands::two(Operand::Virtual(copied), Operand::Virtual(copied)),
+        ));
+        block.insts.push(MInst::none(
+            MType::Void,
+            MOp::Ret,
+            Operands::one(Operand::Virtual(sum)),
+        ));
+        function.push_block(block);
+        coalesce(&mut function);
+        assert_eq!(copies(&function), 2, "the two-use copy is kept");
+        assert!(
+            defined(&function).contains(&copied),
+            "the two-use copy still defines its value"
+        );
+    }
+
+    /// A register written by a copy in two predecessors carries the
+    /// phi's value there: neither copy may be forwarded, because a use
+    /// would then read the value of one predecessor only.
+    #[test]
+    fn a_copy_into_a_merge_block_is_kept() {
+        let mut function = MirFunction::new("merge");
+        let left = function.new_vreg(MType::I32);
+        let right = function.new_vreg(MType::I32);
+        let merged = function.new_vreg(MType::I32);
+
+        let mut first = MirBlock::new("first");
+        first.insts.push(MInst::def(
+            left,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(1)),
+        ));
+        first.insts.push(MInst::def(
+            merged,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Virtual(left)),
+        ));
+        first
+            .insts
+            .push(MInst::none(MType::Void, MOp::Br { target: 2 }, Operands::none()));
+
+        let mut second = MirBlock::new("second");
+        second.insts.push(MInst::def(
+            right,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(2)),
+        ));
+        second.insts.push(MInst::def(
+            merged,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Virtual(right)),
+        ));
+        second
+            .insts
+            .push(MInst::none(MType::Void, MOp::Br { target: 2 }, Operands::none()));
+
+        let mut join = MirBlock::new("join");
+        join.insts.push(MInst::none(
+            MType::Void,
+            MOp::Ret,
+            Operands::one(Operand::Virtual(merged)),
+        ));
+
+        function.push_block(first);
+        function.push_block(second);
+        function.push_block(join);
+        coalesce(&mut function);
+        assert_eq!(copies(&function), 4, "the two merge copies are kept");
+        assert!(
+            defined(&function).contains(&merged),
+            "the merge value is still defined"
+        );
+        let return_inst = function.blocks[2]
+            .insts
+            .last()
+            .expect("the block ends with a return");
+        assert_eq!(
+            return_inst.arg0(),
+            Some(Operand::Virtual(merged)),
+            "the return still reads the merge value"
         );
     }
 
