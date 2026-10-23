@@ -90,6 +90,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use ash::vk;
+use codevar_gpu_core::CompletionKind;
 use core::fmt;
 
 use crate::pipeline::{OwnedFd, PipelineContext};
@@ -196,6 +197,9 @@ pub enum RendererError {
     DuplicateLayer(String),
     /// No registered layer matched the requested name.
     UnknownLayer(String),
+    /// A frame completion handle of another backend was passed to the
+    /// Vulkan frame lifecycle.
+    UnsupportedCompletion(CompletionKind),
     /// An internal invariant was violated; this indicates a bug in this
     /// module.
     Internal(&'static str),
@@ -238,6 +242,9 @@ impl fmt::Display for RendererError {
                 write!(f, "a layer named {name:?} is already registered")
             }
             Self::UnknownLayer(name) => write!(f, "no layer named {name:?} is registered"),
+            Self::UnsupportedCompletion(kind) => {
+                write!(f, "the Vulkan backend cannot wait on a {kind} completion")
+            }
             Self::Internal(msg) => write!(f, "internal renderer error: {msg}"),
         }
     }
@@ -603,6 +610,13 @@ impl<'p> RendererSubsystem<'p> {
     #[must_use]
     pub fn layers_mut(&mut self) -> &mut LayerPipe<'p> {
         &mut self.layers
+    }
+
+    /// The pipeline context whose device this subsystem records on.
+    #[inline]
+    #[must_use]
+    pub const fn context(&self) -> &'p PipelineContext {
+        self.context
     }
 
     /// Allocates the frame command buffer and enters the running state.

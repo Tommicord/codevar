@@ -4,7 +4,7 @@
 //! compliance with the License. You may obtain a copy of the
 //! License at
 //!
-//!   https://www.apache.org/licenses/LICENSE-2.0
+//!   http://www.apache.org/licenses/LICENSE-2.0
 //!
 //! Unless required by applicable law or agreed to in
 //! writing, software distributed under the License is
@@ -13,741 +13,646 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-//! The renderer that replays a display list with WebGPU.
+//! The WebGPU renderer subsystem: the three-step frame lifecycle of
+//! [`GpuRenderer`].
 //!
-//! The renderer walks the display list of `codevar-kuitui` and fills
-//! the vertex buffer of the frame with one quad per primitive. Every
-//! quad carries its own color and its own corner radii, so a frame is
-//! a single draw call.
+//! [`WgRenderer`] owns one command encoder and the canvas texture of the
+//! frame in flight. [`GpuRenderer::begin_frame`] acquires the canvas
+//! texture, [`GpuRenderer::submit_frame`] records a clear pass over it and
+//! submits it, and [`GpuRenderer::end_frame`] presents it. The Vulkan
+//! subsystem records the same three steps and exports a `sync_file`
+//! instead of presenting in the browser.
 //!
-//! # The shape of a frame
-//!
-//! 1. [`WgRenderer::render`] turns the display list into a mesh,
-//!    uploads it and records the draw call.
-//! 2. [`WgRenderer::present`] submits the frame and, in a browser,
-//!    hands it to the canvas.
-//!
-//! On the desktop there is no canvas, so the frame is rendered into an
-//! offscreen texture; the application reads it back or hands it to
-//! another backend.
+//! The real subsystem is compiled on `wasm32` only; every other target
+//! compiles the stub at the bottom, whose frame methods report
+//! [`CompositorError::UnsupportedTarget`].
 
-use codevar_kuitui::DrawList;
+use codevar_gpu_core::{
+    Backend, FrameCompletion, GpuCapabilities, GpuFeature, GpuFeatures, GpuLimits, GpuRenderer,
+};
 
-use crate::config::WgConfig;
-use crate::error::WgError;
-use crate::mesh::{Mesh, build_mesh};
-use crate::text::GlyphAtlas;
-use crate::upload::{pad_coverage, vertex_bytes, vertex_layout};
+use crate::types::{CompositorError, CompositorPhase, CompositorState};
 
-/// The shader of the user interface.
-const SHADER: &str = include_str!("shaders/ui.wgsl");
-
-/// The number of bytes of the uniform of a frame.
-const UNIFORM_SIZE: u64 = 16;
-
-/// The renderer that replays a display list with WebGPU.
-pub struct WgRenderer {
-    /// The configuration of the renderer.
-    config: WgConfig,
-    /// The device every resource of the renderer lives on.
-    device: wgpu::Device,
-    /// The queue the frames are submitted to.
-    queue: wgpu::Queue,
-    /// The pipeline that draws the quads of a frame.
-    pipeline: Option<wgpu::RenderPipeline>,
-    /// The group that holds the uniform, the atlas and the sampler.
-    bind_group: Option<wgpu::BindGroup>,
-    /// The uniform of the frame in flight.
-    uniform_buffer: Option<wgpu::Buffer>,
-    /// The vertices of the frame.
-    vertex_buffer: Option<wgpu::Buffer>,
-    /// The indices of the frame.
-    index_buffer: Option<wgpu::Buffer>,
-    /// The texture of the atlas of the glyphs.
-    atlas_texture: Option<wgpu::Texture>,
-    /// The view of the texture of the atlas.
-    atlas_view: Option<wgpu::TextureView>,
-    /// The sampler of the atlas.
-    sampler: Option<wgpu::Sampler>,
-    /// The mesh of the frame.
-    mesh: Mesh,
-    /// The atlas of the glyphs.
-    atlas: GlyphAtlas,
-    /// The revision of the atlas the texture was filled with.
-    atlas_revision: u32,
-    /// The surface the frames are presented to, in a browser.
-    surface: Option<wgpu::Surface<'static>>,
-    /// The texture of the offscreen target, on the desktop.
-    offscreen: Option<wgpu::TextureView>,
-    /// The encoder that records the frame.
-    encoder: Option<wgpu::CommandEncoder>,
-    /// The view of the texture the frame is rendered into.
-    target: Option<wgpu::TextureView>,
-    /// The texture of the surface the frame is rendered into.
-    surface_texture: Option<wgpu::SurfaceTexture>,
-    /// The width of the target, in device pixels.
-    width: u32,
-    /// The height of the target, in device pixels.
-    height: u32,
-    /// The number of device pixels per logical pixel.
-    scale: f32,
-    /// The format of the target of the renderer.
-    color_format: wgpu::TextureFormat,
+/// The features the WebGPU renderer reports.
+#[inline]
+#[must_use]
+pub const fn renderer_features() -> GpuFeatures {
+    GpuFeatures::NONE
+        .with(GpuFeature::SrgbSurface)
+        .with(GpuFeature::DirectDisplayList)
+        .with(GpuFeature::Compute)
 }
 
-impl WgRenderer {
-    /// Creates a renderer for `config`.
-    ///
-    /// The device is asked for asynchronously: in a browser the
-    /// adapter is chosen by the page, which needs a turn of the event
-    /// loop.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`WgError`] when no adapter can render, when the
-    /// device cannot be created, when the canvas of the configuration
-    /// is not in the document or when the surface of the canvas cannot
-    /// be created.
-    pub async fn new(config: WgConfig) -> Result<Self, WgError> {
-        let instance = wgpu::Instance::default();
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                force_fallback_adapter: false,
-                compatible_surface: None,
-                apply_limit_buckets: false,
-            })
-            .await
-            .map_err(|error| WgError::AdapterNotFound(error.to_string()))?;
+#[cfg(target_arch = "wasm32")]
+mod imp {
+    use super::*;
 
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("codevar-kuitui"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::downlevel_webgl2_defaults(),
-                experimental_features: wgpu::ExperimentalFeatures::default(),
-                memory_hints: wgpu::MemoryHints::default(),
-                trace: wgpu::Trace::Off,
-            })
-            .await
-            .map_err(|error| WgError::DeviceCreate(error.to_string()))?;
+    use core::iter;
 
-        let surface = create_surface(&instance, &config)?;
-        let color_format = match &surface {
-            Some(surface) => {
-                let capabilities = surface.get_capabilities(&adapter);
-                capabilities
-                    .formats
-                    .iter()
-                    .copied()
-                    .find(|format| format.is_srgb())
-                    .unwrap_or(capabilities.formats[0])
+    use wgpu_hal::gles::{CommandEncoder, Texture};
+    use wgpu_hal::{
+        Attachment, AttachmentOps, ColorAttachment, CommandEncoder as _, CommandEncoderDescriptor,
+        Device as _, Queue as _, RenderPassDescriptor, StateTransition, Surface as _, TextureBarrier,
+        TextureViewDescriptor,
+    };
+    use wgpu_types as wgt;
+
+    use crate::pipeline::WgContext;
+
+    /// The full subresource range of a single-level, single-layer texture.
+    fn full_range() -> wgt::ImageSubresourceRange {
+        wgt::ImageSubresourceRange {
+            aspect: wgt::TextureAspect::All,
+            base_mip_level: 0,
+            mip_level_count: Some(1),
+            base_array_layer: 0,
+            array_layer_count: Some(1),
+        }
+    }
+
+    /// The WebGPU frame lifecycle.
+    ///
+    /// The `'p` lifetime keeps the renderer from outliving the
+    /// [`WgContext`] that owns its device, queue and canvas surface.
+    pub struct WgRenderer<'p> {
+        /// Device, queue and canvas surface every frame uses.
+        context: &'p WgContext,
+        /// The single command encoder, reset and reused every frame.
+        encoder: CommandEncoder,
+        /// Whether the subsystem accepts frames.
+        state: CompositorState,
+        /// Progress of the frame in flight.
+        phase: CompositorPhase,
+        /// Canvas texture acquired for the frame in flight, presented (or
+        /// discarded on `Drop`) when the frame ends.
+        pending: Option<Texture>,
+        /// Value the next submission stores in the context fence.
+        fence_value: u64,
+        /// Number of frames fully presented.
+        frame_index: u64,
+    }
+
+    impl<'p> WgRenderer<'p> {
+        /// Creates the subsystem in the [`CompositorState::Stopped`] state.
+        ///
+        /// Call [`WgRenderer::start`] before the first frame.
+        ///
+        /// # Errors
+        ///
+        /// [`CompositorError::Graphics`] when the driver rejects the
+        /// command encoder.
+        pub fn new(context: &'p WgContext) -> Result<Self, CompositorError> {
+            let descriptor = CommandEncoderDescriptor {
+                label: Some("codevar-renderer"),
+                queue: context.queue(),
+            };
+            // SAFETY: the context owns the queue and outlives the encoder.
+            let encoder = unsafe {
+                context
+                    .device()
+                    .create_command_encoder(&descriptor)
             }
-            None => wgpu::TextureFormat::Rgba8Unorm,
-        };
+            .map_err(|err| CompositorError::graphics("create_command_encoder", err))?;
+            Ok(Self {
+                context,
+                encoder,
+                state: CompositorState::Stopped,
+                phase: CompositorPhase::Idle,
+                pending: None,
+                fence_value: 0,
+                frame_index: 0,
+            })
+        }
 
-        let mut renderer = Self::empty(config, device, queue, color_format, surface);
-        renderer.create_resources(atlas_size())?;
-        if let Some(surface) = renderer.surface.as_ref() {
-            let configuration = wgpu::SurfaceConfiguration {
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                format: color_format,
-                width: renderer.width.max(1),
-                height: renderer.height.max(1),
-                present_mode: wgpu::PresentMode::Fifo,
-                alpha_mode: renderer.alpha_mode(),
-                color_space: wgpu::SurfaceColorSpace::Srgb,
-                view_formats: Vec::new(),
-                desired_maximum_frame_latency: 2,
+        /// The lifecycle state.
+        #[inline]
+        #[must_use]
+        pub const fn state(&self) -> CompositorState {
+            self.state
+        }
+
+        /// Progress of the frame in flight.
+        #[inline]
+        #[must_use]
+        pub const fn phase(&self) -> CompositorPhase {
+            self.phase
+        }
+
+        /// Moves from [`CompositorState::Stopped`] to
+        /// [`CompositorState::Running`].
+        ///
+        /// # Errors
+        ///
+        /// [`CompositorError::InvalidState`] when the subsystem is not
+        /// stopped.
+        pub fn start(&mut self) -> Result<(), CompositorError> {
+            match self.state {
+                CompositorState::Stopped => {
+                    self.state = CompositorState::Running;
+                    Ok(())
+                }
+                state => Err(CompositorError::InvalidState {
+                    operation: "start",
+                    state,
+                }),
+            }
+        }
+
+        /// Moves from [`CompositorState::Running`] to
+        /// [`CompositorState::Paused`].
+        ///
+        /// # Errors
+        ///
+        /// [`CompositorError::InvalidState`] when the subsystem is not
+        /// running.
+        pub fn pause(&mut self) -> Result<(), CompositorError> {
+            match self.state {
+                CompositorState::Running => {
+                    self.state = CompositorState::Paused;
+                    Ok(())
+                }
+                state => Err(CompositorError::InvalidState {
+                    operation: "pause",
+                    state,
+                }),
+            }
+        }
+
+        /// Moves from [`CompositorState::Paused`] back to
+        /// [`CompositorState::Running`].
+        ///
+        /// # Errors
+        ///
+        /// [`CompositorError::InvalidState`] when the subsystem is not
+        /// paused.
+        pub fn resume(&mut self) -> Result<(), CompositorError> {
+            match self.state {
+                CompositorState::Paused => {
+                    self.state = CompositorState::Running;
+                    Ok(())
+                }
+                state => Err(CompositorError::InvalidState {
+                    operation: "resume",
+                    state,
+                }),
+            }
+        }
+
+        /// Moves back to [`CompositorState::Stopped`].
+        ///
+        /// # Errors
+        ///
+        /// [`CompositorError::FramePhase`] when a frame is in flight.
+        pub fn stop(&mut self) -> Result<(), CompositorError> {
+            if self.phase != CompositorPhase::Idle {
+                return Err(CompositorError::FramePhase {
+                    operation: "stop",
+                    expected: CompositorPhase::Idle,
+                    actual: self.phase,
+                });
+            }
+            self.state = CompositorState::Stopped;
+            Ok(())
+        }
+
+        /// Acquires the canvas texture of the next frame.
+        ///
+        /// `wait` must be `None` or [`FrameCompletion::Complete`]: the
+        /// browser queue serialises its own submissions, so a foreign
+        /// completion handle cannot be awaited and is rejected rather than
+        /// ignored.
+        ///
+        /// # Errors
+        ///
+        /// * [`CompositorError::InvalidState`] when the subsystem is not
+        ///   running.
+        /// * [`CompositorError::FramePhase`] when a frame is already in
+        ///   flight.
+        /// * [`CompositorError::Graphics`] when the canvas texture cannot be
+        ///   acquired.
+        pub fn begin_frame(&mut self, wait: Option<FrameCompletion>) -> Result<(), CompositorError> {
+            if self.state != CompositorState::Running {
+                return Err(CompositorError::InvalidState {
+                    operation: "begin_frame",
+                    state: self.state,
+                });
+            }
+            if self.phase != CompositorPhase::Idle {
+                return Err(CompositorError::FramePhase {
+                    operation: "begin_frame",
+                    expected: CompositorPhase::Idle,
+                    actual: self.phase,
+                });
+            }
+            if let Some(completion) = wait
+                && !matches!(completion, FrameCompletion::Complete)
+            {
+                return Err(CompositorError::Internal(
+                    "the WebGPU renderer cannot wait on a foreign frame completion",
+                ));
+            }
+            // SAFETY: no frame is in flight, so the surface has no acquired
+            // texture, and the fence is the one every submission signals.
+            let acquired = unsafe {
+                self.context
+                    .surface()
+                    .acquire_texture(None, self.context.fence())
+            }
+            .map_err(|err| CompositorError::graphics("acquire_texture", err))?;
+            self.pending = Some(acquired.texture);
+            self.phase = CompositorPhase::Recording;
+            Ok(())
+        }
+
+        /// Records a clear pass over the acquired canvas texture and submits
+        /// it, signalling the context fence.
+        ///
+        /// # Errors
+        ///
+        /// * [`CompositorError::FramePhase`] when no frame is being
+        ///   recorded.
+        /// * [`CompositorError::Graphics`] when a graphics call fails.
+        pub fn submit_frame(&mut self) -> Result<(), CompositorError> {
+            if self.phase != CompositorPhase::Recording {
+                return Err(CompositorError::FramePhase {
+                    operation: "submit_frame",
+                    expected: CompositorPhase::Recording,
+                    actual: self.phase,
+                });
+            }
+            let texture = match self.pending.as_ref() {
+                Some(texture) => texture,
+                None => {
+                    return Err(CompositorError::Internal(
+                        "submit_frame ran without an acquired canvas texture",
+                    ));
+                }
             };
-            surface.configure(&renderer.device, &configuration);
-        }
-        Ok(renderer)
-    }
+            let device = self.context.device();
 
-    /// Creates a renderer without any resource.
-    fn empty(
-        config: WgConfig,
-        device: wgpu::Device,
-        queue: wgpu::Queue,
-        color_format: wgpu::TextureFormat,
-        surface: Option<wgpu::Surface<'static>>,
-    ) -> Self {
-        let width = config.width.max(1);
-        let height = config.height.max(1);
-        Self {
-            config,
-            device,
-            queue,
-            pipeline: None,
-            bind_group: None,
-            uniform_buffer: None,
-            vertex_buffer: None,
-            index_buffer: None,
-            atlas_texture: None,
-            atlas_view: None,
-            sampler: None,
-            mesh: Mesh::new(),
-            atlas: GlyphAtlas::new(atlas_size().0, atlas_size().1),
-            atlas_revision: 0,
-            surface,
-            offscreen: None,
-            encoder: None,
-            target: None,
-            surface_texture: None,
-            width,
-            height,
-            scale: 1.0,
-            color_format,
-        }
-    }
-
-    /// The configuration of the renderer.
-    #[inline]
-    #[must_use]
-    pub const fn config(&self) -> &WgConfig {
-        &self.config
-    }
-
-    /// The atlas of the rasterized glyphs.
-    #[inline]
-    #[must_use]
-    pub const fn atlas(&self) -> &GlyphAtlas {
-        &self.atlas
-    }
-
-    /// The atlas of the rasterized glyphs, for mutation.
-    ///
-    /// A glyph that is added to the atlas is uploaded to the texture of
-    /// the atlas at the beginning of the next frame.
-    #[inline]
-    pub fn atlas_mut(&mut self) -> &mut GlyphAtlas {
-        &mut self.atlas
-    }
-
-    /// The number of quads of the last frame.
-    #[inline]
-    #[must_use]
-    pub fn primitive_count(&self) -> usize {
-        self.mesh.quad_count()
-    }
-
-    /// The width of the target, in device pixels.
-    #[inline]
-    #[must_use]
-    pub const fn width(&self) -> u32 {
-        self.width
-    }
-
-    /// The height of the target, in device pixels.
-    #[inline]
-    #[must_use]
-    pub const fn height(&self) -> u32 {
-        self.height
-    }
-
-    /// Resizes the target.
-    ///
-    /// The size is in device pixels; the number of device pixels per
-    /// logical pixel follows from it.
-    pub fn resize(&mut self, width: u32, height: u32, scale: f32) {
-        self.width = width.max(1);
-        self.height = height.max(1);
-        self.scale = scale.max(f32::MIN_POSITIVE);
-        if let Some(surface) = self.surface.as_ref() {
-            let configuration = wgpu::SurfaceConfiguration {
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                format: self.color_format,
-                width: self.width,
-                height: self.height,
-                present_mode: wgpu::PresentMode::Fifo,
-                alpha_mode: self.alpha_mode(),
-                color_space: wgpu::SurfaceColorSpace::Srgb,
-                view_formats: Vec::new(),
-                desired_maximum_frame_latency: 2,
+            let view_descriptor = TextureViewDescriptor {
+                label: Some("codevar-surface-view"),
+                format: self.context.format(),
+                dimension: wgt::TextureViewDimension::D2,
+                usage: wgt::TextureUses::COLOR_TARGET,
+                range: full_range(),
             };
-            surface.configure(&self.device, &configuration);
-        } else {
-            self.offscreen = None;
-        }
-    }
+            // SAFETY: the view covers the whole surface texture, which was
+            // created on this device.
+            let view = unsafe { device.create_texture_view(texture, &view_descriptor) }
+                .map_err(|err| CompositorError::graphics("create_texture_view", err))?;
 
-    /// Draws the display list into the target of the renderer.
-    ///
-    /// The frame is recorded but not submitted; [`WgRenderer::present`]
-    /// submits it.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`WgError`] when the target of the frame could not
-    /// be acquired or when the buffers of the frame could not be
-    /// filled.
-    pub fn render(&mut self, list: &DrawList) -> Result<(), WgError> {
-        let (target, surface_texture) = self.acquire_target()?;
-        let viewport =
-            codevar_kuitui::Size::new(self.width as f32 / self.scale, self.height as f32 / self.scale);
-        build_mesh(list, &self.atlas, viewport, &mut self.mesh);
-        self.upload_atlas();
-        self.upload_mesh();
+            // SAFETY: the encoder is not recording; the previous frame was
+            // reset after its submission.
+            unsafe { self.encoder.begin_encoding(Some("codevar-frame")) }
+                .map_err(|err| CompositorError::graphics("begin_encoding", err))?;
 
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("codevar-kuitui-frame"),
-            });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("codevar-kuitui-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.0,
-                            g: 0.0,
-                            b: 0.0,
-                            a: 0.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
+            let barrier = TextureBarrier {
+                texture,
+                range: full_range(),
+                usage: StateTransition {
+                    from: wgt::TextureUses::PRESENT,
+                    to: wgt::TextureUses::COLOR_TARGET,
+                },
+            };
+            // SAFETY: the barrier names the acquired surface texture and the
+            // usage it is being moved to.
+            unsafe {
+                self.encoder
+                    .transition_textures(iter::once(barrier))
+            };
+
+            let attachment = ColorAttachment {
+                target: Attachment {
+                    view: &view,
+                    usage: wgt::TextureUses::COLOR_TARGET,
+                },
+                depth_slice: None,
+                resolve_target: None,
+                ops: AttachmentOps::LOAD_CLEAR | AttachmentOps::STORE,
+                clear_value: wgt::Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 1.0,
+                },
+            };
+            let attachments = [Some(attachment)];
+            let pass = RenderPassDescriptor {
+                label: Some("codevar-clear"),
+                extent: self.context.config().extent,
+                sample_count: 1,
+                color_attachments: &attachments,
                 depth_stencil_attachment: None,
+                multiview_mask: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            let pipeline = self
-                .pipeline
-                .as_ref()
-                .ok_or_else(|| WgError::Pipeline(String::from("the pipeline is missing")))?;
-            let bind_group = self
-                .bind_group
-                .as_ref()
-                .ok_or_else(|| WgError::Pipeline(String::from("the bind group is missing")))?;
-            let vertex_buffer = self
-                .vertex_buffer
-                .as_ref()
-                .ok_or_else(|| WgError::Buffer(String::from("the vertex buffer is missing")))?;
-            let index_buffer = self
-                .index_buffer
-                .as_ref()
-                .ok_or_else(|| WgError::Buffer(String::from("the index buffer is missing")))?;
-            pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, bind_group, &[]);
-            pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-            pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..self.mesh.index_count() as u32, 0, 0..1);
+            };
+            // SAFETY: the attachment view is alive for the whole pass and is
+            // a colour target of the pass's only attachment slot.
+            unsafe { self.encoder.begin_render_pass(&pass) }
+                .map_err(|err| CompositorError::graphics("begin_render_pass", err))?;
+            // SAFETY: a render pass is recording.
+            unsafe { self.encoder.end_render_pass() };
+
+            // SAFETY: a render pass was begun and ended on this encoder.
+            let command_buffer = unsafe { self.encoder.end_encoding() }
+                .map_err(|err| CompositorError::graphics("end_encoding", err))?;
+
+            self.fence_value += 1;
+            // SAFETY: the command buffer writes only to the surface texture,
+            // which is listed as a surface texture so `submit` transitions it
+            // to the present state; the fence belongs to this context.
+            unsafe {
+                self.context.queue().submit(
+                    &[&command_buffer],
+                    &[texture],
+                    (self.context.fence(), self.fence_value),
+                )
+            }
+            .map_err(|err| CompositorError::graphics("submit", err))?;
+            // SAFETY: the browser backend executes submissions synchronously,
+            // so the command buffer is free to be recycled immediately.
+            unsafe { self.encoder.reset_all(iter::once(command_buffer)) };
+            // SAFETY: the render pass that referenced the view has ended and
+            // the view is referenced by nothing else.
+            unsafe { device.destroy_texture_view(view) };
+
+            self.phase = CompositorPhase::Submitted;
+            Ok(())
         }
-        self.encoder = Some(encoder);
-        self.target = Some(target);
-        self.surface_texture = surface_texture;
-        Ok(())
-    }
 
-    /// Submits the frame and presents it.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`WgError`] when the frame could not be submitted.
-    pub fn present(&mut self) -> Result<(), WgError> {
-        let Some(encoder) = self.encoder.take() else {
-            return Ok(());
-        };
-        self.queue.submit(Some(encoder.finish()));
-        self.target = None;
-        // The surface texture is presented when it is dropped.
-        self.surface_texture = None;
-        Ok(())
-    }
-
-    /// Creates the buffers, the pipeline and the texture of the atlas.
-    fn create_resources(&mut self, atlas: (u32, u32)) -> Result<(), WgError> {
-        self.uniform_buffer = Some(
-            self.device
-                .create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("codevar-kuitui-uniform"),
-                    size: UNIFORM_SIZE,
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                }),
-        );
-        self.vertex_buffer = Some(
-            self.device
-                .create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("codevar-kuitui-vertices"),
-                    size: VERTEX_CAPACITY,
-                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                }),
-        );
-        self.index_buffer = Some(
-            self.device
-                .create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("codevar-kuitui-indices"),
-                    size: INDEX_CAPACITY,
-                    usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                }),
-        );
-
-        let atlas_texture = self
-            .device
-            .create_texture(&wgpu::TextureDescriptor {
-                label: Some("codevar-kuitui-atlas"),
-                size: wgpu::Extent3d {
-                    width: atlas.0.max(1),
-                    height: atlas.1.max(1),
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::R8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
-        self.atlas_view = Some(atlas_texture.create_view(&wgpu::TextureViewDescriptor::default()));
-        self.atlas_texture = Some(atlas_texture);
-
-        self.sampler = Some(
-            self.device
-                .create_sampler(&wgpu::SamplerDescriptor {
-                    label: Some("codevar-kuitui-atlas-sampler"),
-                    address_mode_u: wgpu::AddressMode::ClampToEdge,
-                    address_mode_v: wgpu::AddressMode::ClampToEdge,
-                    address_mode_w: wgpu::AddressMode::ClampToEdge,
-                    mag_filter: wgpu::FilterMode::Linear,
-                    min_filter: wgpu::FilterMode::Linear,
-                    mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-                    ..wgpu::SamplerDescriptor::default()
-                }),
-        );
-
-        let bind_group_layout = self
-            .device
-            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("codevar-kuitui-bind-group"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(UNIFORM_SIZE),
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-            });
-        self.bind_group =
-            Some(
-                self.device
-                    .create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("codevar-kuitui-bind-group"),
-                        layout: &bind_group_layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: self
-                                    .uniform_buffer
-                                    .as_ref()
-                                    .ok_or_else(|| {
-                                        WgError::Buffer(String::from("the uniform buffer is missing"))
-                                    })?
-                                    .as_entire_binding(),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::TextureView(
-                                    self.atlas_view.as_ref().ok_or_else(|| {
-                                        WgError::Buffer(String::from("the atlas is missing"))
-                                    })?,
-                                ),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 2,
-                                resource: wgpu::BindingResource::Sampler(self.sampler.as_ref().ok_or_else(
-                                    || WgError::Buffer(String::from("the sampler is missing")),
-                                )?),
-                            },
-                        ],
-                    }),
-            );
-
-        let module = self
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("codevar-kuitui-shader"),
-                source: wgpu::ShaderSource::Wgsl(SHADER.into()),
-            });
-        let layout = self
-            .device
-            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("codevar-kuitui-layout"),
-                bind_group_layouts: &[Some(&bind_group_layout)],
-                immediate_size: 0,
-            });
-        self.pipeline = Some(
-            self.device
-                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some("codevar-kuitui-pipeline"),
-                    layout: Some(&layout),
-                    vertex: wgpu::VertexState {
-                        module: &module,
-                        entry_point: Some("vs_main"),
-                        compilation_options: wgpu::PipelineCompilationOptions::default(),
-                        buffers: &[Some(vertex_layout())],
-                    },
-                    fragment: Some(wgpu::FragmentState {
-                        module: &module,
-                        entry_point: Some("fs_main"),
-                        compilation_options: wgpu::PipelineCompilationOptions::default(),
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format: self.color_format,
-                            blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
-                    }),
-                    primitive: wgpu::PrimitiveState {
-                        topology: wgpu::PrimitiveTopology::TriangleList,
-                        strip_index_format: None,
-                        front_face: wgpu::FrontFace::Ccw,
-                        cull_mode: None,
-                        unclipped_depth: false,
-                        polygon_mode: wgpu::PolygonMode::Fill,
-                        conservative: false,
-                    },
-                    depth_stencil: None,
-                    multisample: wgpu::MultisampleState::default(),
-                    multiview_mask: None,
-                    cache: None,
-                }),
-        );
-        Ok(())
-    }
-
-    /// The alpha mode of the surface.
-    fn alpha_mode(&self) -> wgpu::CompositeAlphaMode {
-        match self.config.alpha_mode {
-            crate::config::WgAlphaMode::Opaque => wgpu::CompositeAlphaMode::Opaque,
-            crate::config::WgAlphaMode::Premultiplied => wgpu::CompositeAlphaMode::PreMultiplied,
-        }
-    }
-
-    /// Acquires the texture the frame is rendered into.
-    fn acquire_target(&mut self) -> Result<(wgpu::TextureView, Option<wgpu::SurfaceTexture>), WgError> {
-        if let Some(surface) = self.surface.as_ref() {
-            let frame = surface.get_current_texture();
-            let texture = match frame {
-                wgpu::CurrentSurfaceTexture::Success(texture) => texture,
-                wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
-                wgpu::CurrentSurfaceTexture::Timeout => {
-                    return Err(WgError::Submit(String::from("the surface timed out")));
-                }
-                wgpu::CurrentSurfaceTexture::Occluded => {
-                    return Err(WgError::Submit(String::from("the surface is occluded")));
-                }
-                wgpu::CurrentSurfaceTexture::Outdated => {
-                    return Err(WgError::Submit(String::from("the surface is outdated")));
-                }
-                other => {
-                    return Err(WgError::Submit(alloc::format!(
-                        "the surface cannot be acquired: {other:?}"
-                    )));
+        /// Presents the submitted canvas texture and retires the frame.
+        ///
+        /// # Errors
+        ///
+        /// * [`CompositorError::FramePhase`] when no frame was submitted.
+        /// * [`CompositorError::Graphics`] when presentation fails.
+        pub fn end_frame(&mut self) -> Result<FrameCompletion, CompositorError> {
+            if self.phase != CompositorPhase::Submitted {
+                return Err(CompositorError::FramePhase {
+                    operation: "end_frame",
+                    expected: CompositorPhase::Submitted,
+                    actual: self.phase,
+                });
+            }
+            let texture = match self.pending.take() {
+                Some(texture) => texture,
+                None => {
+                    return Err(CompositorError::Internal(
+                        "end_frame ran without a submitted canvas texture",
+                    ));
                 }
             };
-            let view = texture
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor::default());
-            return Ok((view, Some(texture)));
-        }
-        if self.offscreen.is_none() {
-            let texture = self
-                .device
-                .create_texture(&wgpu::TextureDescriptor {
-                    label: Some("codevar-kuitui-offscreen"),
-                    size: wgpu::Extent3d {
-                        width: self.width,
-                        height: self.height,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: self.color_format,
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-                    view_formats: &[],
-                });
-            self.offscreen = Some(texture.create_view(&wgpu::TextureViewDescriptor::default()));
-        }
-        let view = self
-            .offscreen
-            .clone()
-            .ok_or_else(|| WgError::Submit(String::from("the target is missing")))?;
-        Ok((view, None))
-    }
-
-    /// Uploads the atlas of the glyphs when it changed.
-    fn upload_atlas(&mut self) {
-        if self.atlas.revision() == self.atlas_revision {
-            return;
-        }
-        self.atlas_revision = self.atlas.revision();
-        let (width, height) = atlas_size();
-        let bytes = self.atlas.coverage();
-        let padded = pad_coverage(bytes, width, height);
-        let Some(texture) = self.atlas_texture.as_ref() else {
-            return;
-        };
-        self.queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &padded,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(width),
-                rows_per_image: Some(height),
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
-    }
-
-    /// Uploads the mesh of the frame.
-    fn upload_mesh(&mut self) {
-        let vertices = self.mesh.vertices();
-        let indices = self.mesh.indices();
-        if !vertices.is_empty()
-            && let Some(buffer) = self.vertex_buffer.as_ref()
-        {
-            let bytes = vertex_bytes(vertices);
-            self.queue.write_buffer(buffer, 0, &bytes);
-        }
-        if !indices.is_empty()
-            && let Some(buffer) = self.index_buffer.as_ref()
-        {
-            let mut bytes = Vec::with_capacity(indices.len() * 4);
-            for index in indices {
-                bytes.extend_from_slice(&index.to_le_bytes());
+            // SAFETY: the texture was acquired from this surface, submitted
+            // (which moved it to the present state) and is not referenced
+            // elsewhere.
+            unsafe {
+                self.context
+                    .queue()
+                    .present(self.context.surface(), texture)
             }
-            self.queue.write_buffer(buffer, 0, &bytes);
+            .map_err(|err| CompositorError::graphics("present", err))?;
+            self.frame_index += 1;
+            self.phase = CompositorPhase::Idle;
+            Ok(FrameCompletion::Complete)
         }
-        let mut uniform = Vec::with_capacity(UNIFORM_SIZE as usize);
-        uniform.extend_from_slice(&(self.width as f32).to_le_bytes());
-        uniform.extend_from_slice(&(self.height as f32).to_le_bytes());
-        uniform.extend_from_slice(&self.scale.to_le_bytes());
-        uniform.extend_from_slice(&0.0_f32.to_le_bytes());
-        if let Some(buffer) = self.uniform_buffer.as_ref() {
-            self.queue.write_buffer(buffer, 0, &uniform);
+
+        /// The number of frames fully presented.
+        #[inline]
+        #[must_use]
+        pub const fn frame_index(&self) -> u64 {
+            self.frame_index
+        }
+
+        /// Blocks until every submitted frame finished.
+        ///
+        /// # Errors
+        ///
+        /// [`CompositorError::Graphics`] when the queue is lost.
+        pub fn wait_idle(&self) -> Result<(), CompositorError> {
+            // SAFETY: nothing is submitted concurrently; `self` has exclusive
+            // access to the context.
+            unsafe { self.context.queue().wait_for_idle() }
+                .map_err(|err| CompositorError::graphics("wait_for_idle", err))
+        }
+    }
+
+    impl Drop for WgRenderer<'_> {
+        fn drop(&mut self) {
+            // An acquired but never presented texture must be returned to the
+            // swapchain or the surface wedges on the next acquire.
+            if let Some(texture) = self.pending.take() {
+                // SAFETY: the texture was acquired from this surface and was
+                // neither presented nor discarded.
+                unsafe { self.context.surface().discard_texture(texture) };
+            }
+        }
+    }
+
+    impl GpuRenderer for WgRenderer<'_> {
+        type Error = CompositorError;
+
+        fn backend(&self) -> Backend {
+            Backend::WebGpu
+        }
+
+        fn capabilities(&self) -> GpuCapabilities {
+            GpuCapabilities {
+                backend: Backend::WebGpu,
+                features: renderer_features(),
+                limits: GpuLimits::MINIMAL,
+            }
+        }
+
+        fn begin_frame(&mut self, wait: Option<FrameCompletion>) -> Result<(), Self::Error> {
+            WgRenderer::begin_frame(self, wait)
+        }
+
+        fn submit_frame(&mut self) -> Result<(), Self::Error> {
+            WgRenderer::submit_frame(self)
+        }
+
+        fn end_frame(&mut self) -> Result<FrameCompletion, Self::Error> {
+            WgRenderer::end_frame(self)
+        }
+
+        fn frame_index(&self) -> u64 {
+            WgRenderer::frame_index(self)
         }
     }
 }
 
-/// The size of the atlas of the glyphs.
-fn atlas_size() -> (u32, u32) {
-    (1024, 1024)
-}
-
-/// The capacity of the vertex buffer, in bytes.
-const VERTEX_CAPACITY: u64 = 1 << 20;
-
-/// The capacity of the index buffer, in bytes.
-const INDEX_CAPACITY: u64 = 1 << 18;
-
-/// Creates the surface of the canvas of the configuration.
-///
-/// On the desktop there is no canvas, so the renderer draws into an
-/// offscreen texture.
-#[cfg(target_arch = "wasm32")]
-fn create_surface(
-    instance: &wgpu::Instance,
-    config: &WgConfig,
-) -> Result<Option<wgpu::Surface<'static>>, WgError> {
-    let canvas = find_canvas(&config.canvas_id)?;
-    let surface = instance
-        .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
-        .map_err(|error| WgError::SurfaceCreate(error.to_string()))?;
-    Ok(Some(surface))
-}
-
-/// Creates the surface of the canvas of the configuration.
-///
-/// On the desktop there is no canvas, so the renderer draws into an
-/// offscreen texture.
 #[cfg(not(target_arch = "wasm32"))]
-fn create_surface(
-    _instance: &wgpu::Instance,
-    _config: &WgConfig,
-) -> Result<Option<wgpu::Surface<'static>>, WgError> {
-    Ok(None)
+mod imp {
+    use super::*;
+
+    use crate::pipeline::WgContext;
+
+    /// The WebGPU frame lifecycle (unavailable off the web).
+    #[derive(Debug)]
+    pub struct WgRenderer<'p> {
+        /// Kept for parity with the wasm renderer, which borrows its context.
+        context: &'p WgContext,
+        /// Whether the subsystem accepts frames.
+        state: CompositorState,
+        /// Progress of the frame in flight.
+        phase: CompositorPhase,
+        /// Number of frames fully presented.
+        frame_index: u64,
+    }
+
+    impl<'p> WgRenderer<'p> {
+        /// Creates the subsystem in the [`CompositorState::Stopped`] state.
+        ///
+        /// # Errors
+        ///
+        /// Never; the placeholder always succeeds.
+        pub fn new(context: &'p WgContext) -> Result<Self, CompositorError> {
+            Ok(Self {
+                context,
+                state: CompositorState::Stopped,
+                phase: CompositorPhase::Idle,
+                frame_index: 0,
+            })
+        }
+
+        /// The lifecycle state.
+        #[inline]
+        #[must_use]
+        pub const fn state(&self) -> CompositorState {
+            self.state
+        }
+
+        /// Progress of the frame in flight.
+        #[inline]
+        #[must_use]
+        pub const fn phase(&self) -> CompositorPhase {
+            self.phase
+        }
+
+        /// The context the renderer was created against.
+        #[inline]
+        #[must_use]
+        pub const fn context(&self) -> &'p WgContext {
+            self.context
+        }
+
+        /// Moves from [`CompositorState::Stopped`] to
+        /// [`CompositorState::Running`].
+        ///
+        /// # Errors
+        ///
+        /// [`CompositorError::InvalidState`] when the subsystem is not
+        /// stopped.
+        pub fn start(&mut self) -> Result<(), CompositorError> {
+            match self.state {
+                CompositorState::Stopped => {
+                    self.state = CompositorState::Running;
+                    Ok(())
+                }
+                state => Err(CompositorError::InvalidState {
+                    operation: "start",
+                    state,
+                }),
+            }
+        }
+
+        /// Moves back to [`CompositorState::Stopped`].
+        ///
+        /// # Errors
+        ///
+        /// Never; the placeholder is always idle.
+        pub fn stop(&mut self) -> Result<(), CompositorError> {
+            self.state = CompositorState::Stopped;
+            Ok(())
+        }
+
+        /// Always [`CompositorError::UnsupportedTarget`]: a frame only
+        /// exists on a live browser device.
+        ///
+        /// # Errors
+        ///
+        /// Always [`CompositorError::UnsupportedTarget`].
+        pub fn begin_frame(&mut self, _wait: Option<FrameCompletion>) -> Result<(), CompositorError> {
+            Err(CompositorError::UnsupportedTarget)
+        }
+
+        /// Always [`CompositorError::UnsupportedTarget`].
+        ///
+        /// # Errors
+        ///
+        /// Always [`CompositorError::UnsupportedTarget`].
+        pub fn submit_frame(&mut self) -> Result<(), CompositorError> {
+            Err(CompositorError::UnsupportedTarget)
+        }
+
+        /// Always [`CompositorError::UnsupportedTarget`].
+        ///
+        /// # Errors
+        ///
+        /// Always [`CompositorError::UnsupportedTarget`].
+        pub fn end_frame(&mut self) -> Result<FrameCompletion, CompositorError> {
+            Err(CompositorError::UnsupportedTarget)
+        }
+
+        /// The number of frames fully presented.
+        #[inline]
+        #[must_use]
+        pub const fn frame_index(&self) -> u64 {
+            self.frame_index
+        }
+    }
+
+    impl GpuRenderer for WgRenderer<'_> {
+        type Error = CompositorError;
+
+        fn backend(&self) -> Backend {
+            Backend::WebGpu
+        }
+
+        fn capabilities(&self) -> GpuCapabilities {
+            GpuCapabilities {
+                backend: Backend::WebGpu,
+                features: renderer_features(),
+                limits: GpuLimits::MINIMAL,
+            }
+        }
+
+        fn begin_frame(&mut self, wait: Option<FrameCompletion>) -> Result<(), Self::Error> {
+            WgRenderer::begin_frame(self, wait)
+        }
+
+        fn submit_frame(&mut self) -> Result<(), Self::Error> {
+            WgRenderer::submit_frame(self)
+        }
+
+        fn end_frame(&mut self) -> Result<FrameCompletion, Self::Error> {
+            WgRenderer::end_frame(self)
+        }
+
+        fn frame_index(&self) -> u64 {
+            WgRenderer::frame_index(self)
+        }
+    }
 }
 
-/// Finds the canvas of the document that the configuration names.
-#[cfg(target_arch = "wasm32")]
-fn find_canvas(id: &str) -> Result<wgpu::web_sys::HtmlCanvasElement, WgError> {
-    use wasm_bindgen::JsCast;
-
-    let window = wgpu::web_sys::window().ok_or_else(|| WgError::CanvasNotFound(String::from(id)))?;
-    let document = window
-        .document()
-        .ok_or_else(|| WgError::CanvasNotFound(String::from(id)))?;
-    let element = document
-        .get_element_by_id(id)
-        .ok_or_else(|| WgError::CanvasNotFound(String::from(id)))?;
-    element
-        .dyn_into::<wgpu::web_sys::HtmlCanvasElement>()
-        .map_err(|_| WgError::CanvasNotFound(String::from(id)))
-}
+pub use imp::WgRenderer;
 
 #[cfg(test)]
 mod tests {
+    //! The off-web stub's lifecycle, which needs no browser.
+
     use super::*;
-    use codevar_kuitui::Color;
-    use codevar_kuitui::geometry::{Offset, Rect};
-    use codevar_kuitui::paint::{CornerRadii, Paint};
 
     #[test]
-    fn the_mesh_of_a_list_holds_a_quad_per_primitive() {
-        let mut list = codevar_kuitui::DrawList::new();
-        list.rect(
-            Rect::from_min_size(Offset::ZERO, 10.0, 10.0),
-            CornerRadii::ZERO,
-            Paint::fill(Color::RED),
-        );
-        let mut mesh = Mesh::new();
-        build_mesh(
-            &list,
-            &GlyphAtlas::new(64, 64),
-            codevar_kuitui::Size::new(100.0, 100.0),
-            &mut mesh,
-        );
-        assert_eq!(mesh.quad_count(), 1);
-        assert_eq!(mesh.vertex_count(), 4);
-        assert_eq!(mesh.index_count(), 6);
+    fn the_renderer_reports_webgpu_capabilities() {
+        let capabilities = GpuCapabilities {
+            backend: Backend::WebGpu,
+            features: renderer_features(),
+            limits: GpuLimits::MINIMAL,
+        };
+        assert!(capabilities.supports(GpuFeature::SrgbSurface));
+        assert!(!capabilities.supports(GpuFeature::DmaBufExport));
     }
 }

@@ -17,6 +17,7 @@ members = [
     "crates/codevar-wayland",
     "crates/codevar-xdg-portal",
     "crates/codevar-gpu-core",
+    "crates/codevar-gpu-vk",
     "crates/codevar-gpu-wg",
     "crates/codevar-kuitui",
     "crates/codevar-logger",
@@ -82,9 +83,11 @@ webpki-roots = { version = "1", default-features = false }
 arc-swap = { version = "1.7", default-features = false }
 heapless = { version = "0.9.3", default-features = false }
 windows-link = "0.100.0"
-wgpu = { version = "30.0", default-features = false }
+wgpu-hal = { version = "30.0.1", default-features = false }
+wgpu-types = { version = "30.0.1", default-features = false }
 js-sys = "0.3"
 wasm-bindgen = "0.2"
+web-sys = "0.3"
 spin = { version = "0.12.3", default-features = false, features = ["once", "mutex", "rwlock", "barrier", "lazy", "spin_mutex"] }
 hkdf = { version = "0.12", default-features = false }
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Console", "Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader"] }
@@ -149,6 +152,7 @@ codevar-unwinding = { path = "crates/codevar-unwinding" }
 codevar-pretty-unwind = { path = "crates/codevar-pretty-unwind" }
 codevar-xdg-portal = { path = "crates/codevar-xdg-portal" }
 codevar-gpu-core = { path = "crates/codevar-gpu-core" }
+codevar-gpu-vk = { path = "crates/codevar-gpu-vk" }
 codevar-gpu-wg = { path = "crates/codevar-gpu-wg" }
 codevar-kuitui = { path = "crates/codevar-kuitui" }
 codevar-logger = { path = "crates/codevar-logger" }

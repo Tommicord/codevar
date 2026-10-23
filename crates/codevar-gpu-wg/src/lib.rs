@@ -4,7 +4,7 @@
 //! compliance with the License. You may obtain a copy of the
 //! License at
 //!
-//!   https://www.apache.org/licenses/LICENSE-2.0
+//!   http://www.apache.org/licenses/LICENSE-2.0
 //!
 //! Unless required by applicable law or agreed to in
 //! writing, software distributed under the License is
@@ -13,47 +13,36 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-//! The WebGPU backend of the Kuitui user interface.
+//! The WebGPU backend and compositor of Codevar.
 //!
-//! This crate turns the display list of `codevar-kuitui` into GPU
-//! work with WebGPU. It is the counterpart of the Vulkan backend that
-//! lives in `codevar-gpu-core`: both consume the very same display
-//! list, so a user interface looks the same on the desktop and in a
-//! browser.
+//! This crate mirrors [`codevar-gpu-vk`] primitive for primitive — the
+//! pipeline context, the offscreen colour targets, the pipe model, the
+//! fragment-shader mix pass and the renderer subsystem — but drives the
+//! browser graphics API through the raw, bounds-check-free `wgpu-hal`
+//! layer instead of `ash`.
 //!
-//! # Why WebGPU
+//! The traits themselves live in `codevar-gpu-core`; a caller assembled
+//! for the web only depends on that crate and this backend.
 //!
-//! The desktop of Codevar renders with Vulkan, which is not available
-//! in a browser. WebGPU is the only graphics API a browser offers, so
-//! the web build of the editor uses this backend. The Vulkan backend
-//! is not replaced: it stays the backend of the desktop build.
+//! # Target
 //!
-//! # The shape of a frame
+//! The backend is compiled on `wasm32` only. Every other target builds
+//! [`platform`]'s stub, which reports [`Backend::WebGpu`] but refuses to
+//! create a device: the browser is the only host that can open a WebGPU
+//! surface.
 //!
-//! 1. The application builds a tree of widgets and lays it out. The
-//!    tree is recorded into a [`codevar_kuitui::DrawList`].
-//! 2. [`WgRenderer::render`] walks the display list and fills the
-//!    vertex and index buffers of the frame.
-//! 3. [`WgRenderer::present`] submits the frame and, in a browser,
-//!    hands it to the canvas.
-//!
-//! The crate uses `std`, because `wgpu` does; the rest of Codevar
-//! stays `no_std`.
+//! [`codevar-gpu-vk`]: https://docs.rs/codevar-gpu-vk
 
+#![cfg_attr(not(test), no_std)]
 #![warn(missing_docs)]
-#![forbid(unsafe_code)]
 
 extern crate alloc;
 
-pub mod config;
-pub mod error;
-pub mod mesh;
+pub mod base;
+pub mod offscreen;
+pub mod pipe;
+pub mod pipe_ctx;
+pub mod pipeline;
+pub mod platform;
 pub mod renderer;
-pub mod text;
-pub mod upload;
-
-pub use config::WgConfig;
-pub use error::WgError;
-pub use mesh::{Mesh, PrimitiveKind, Vertex};
-pub use renderer::WgRenderer;
-pub use text::{Glyph, GlyphAtlas, GlyphKey};
+pub mod types;

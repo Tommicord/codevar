@@ -69,82 +69,7 @@ fn target_usage() -> vk::ImageUsageFlags {
     vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC
 }
 
-/// An owned operating-system file descriptor (a dma-buf or `sync_file`).
-///
-/// This is the `no_std` counterpart of `std::os::fd::OwnedFd`: the raw
-/// descriptor is closed exactly once when the value drops, moved with
-/// [`OwnedFd::into_raw`], adopted with [`OwnedFd::from_raw`] and inspected
-/// with [`OwnedFd::as_raw`].
-///
-/// On non-unix, non-Windows targets dropping is a no-op; the dma-buf and
-/// `sync_file` Vulkan extensions this type wraps are only reachable on
-/// unix (and Win32 handles are not small integers, so they never enter
-/// this type).
-#[derive(Debug, PartialEq, Eq, Hash)]
-pub struct OwnedFd {
-    raw: core::ffi::c_int,
-}
-
-impl OwnedFd {
-    /// Adopts a raw descriptor that is already open.
-    ///
-    /// # Safety
-    ///
-    /// `raw` must be an open descriptor that is owned by the caller and
-    /// has not been borrowed by any other owner. After this call the
-    /// descriptor is closed by [`OwnedFd`]'s `Drop`.
-    #[inline]
-    #[must_use]
-    pub const unsafe fn from_raw(raw: core::ffi::c_int) -> Self {
-        Self { raw }
-    }
-
-    /// Returns the raw descriptor without giving up ownership.
-    #[inline]
-    #[must_use]
-    pub const fn as_raw(&self) -> core::ffi::c_int {
-        self.raw
-    }
-
-    /// Returns the raw descriptor and gives up ownership; the caller must
-    /// close it.
-    #[inline]
-    #[must_use]
-    pub const fn into_raw(self) -> core::ffi::c_int {
-        let raw = self.raw;
-        core::mem::forget(self);
-        raw
-    }
-}
-
-impl Drop for OwnedFd {
-    fn drop(&mut self) {
-        #[cfg(unix)]
-        // SAFETY: `raw` was open when adopted by `from_raw` and this `Drop`
-        // runs exactly once per descriptor (moves go through `into_raw`,
-        // which forgets `self`); closing a descriptor twice is therefore
-        // impossible.
-        unsafe {
-            libc::close(self.raw);
-        }
-        #[cfg(windows)]
-        {
-            windows_link::link!(
-                "kernel32.dll" "system"
-                fn CloseHandle(hObject: *mut core::ffi::c_void) -> i32
-            );
-            // SAFETY: as above for the descriptor itself; `CloseHandle` only
-            // fails on an already-closed handle, which cannot happen here.
-            unsafe {
-                let _ = CloseHandle(self.raw as isize as *mut core::ffi::c_void);
-            }
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            let _ = self.raw;
-        }
-    }
-}
+pub use codevar_gpu_core::OwnedFd;
 
 /// Error returned by Vulkan loader, instance, device and render-target
 /// setup.
@@ -197,6 +122,17 @@ pub enum PipelineError {
     ModifierQuery(vk::Result),
     /// Creating the graphics command pool failed.
     CommandAllocation(vk::Result),
+    /// Waiting for the device to become idle failed (for example device
+    /// loss).
+    DeviceWait(vk::Result),
+    /// The surface configuration asks for a size the context was not
+    /// created with.
+    SurfaceConfigUnsupported {
+        /// The width and height the caller requested.
+        requested: (u32, u32),
+        /// The width and height the context's render target has.
+        actual: (u32, u32),
+    },
     /// An internal invariant was violated; this indicates a bug in this module.
     Internal(&'static str),
 }
@@ -246,6 +182,14 @@ impl fmt::Display for PipelineError {
             }
             Self::CommandAllocation(err) => {
                 write!(f, "graphics command pool creation failed: {err:?}")
+            }
+            Self::DeviceWait(err) => write!(f, "waiting for the device failed: {err:?}"),
+            Self::SurfaceConfigUnsupported { requested, actual } => {
+                write!(
+                    f,
+                    "the surface was asked for {}x{} but the render target is {}x{}",
+                    requested.0, requested.1, actual.0, actual.1
+                )
             }
             Self::Internal(msg) => write!(f, "internal Vulkan pipeline error: {msg}"),
         }
