@@ -107,6 +107,126 @@ impl RegModel {
     }
 }
 
+/// The instruction-set extensions a back end is allowed to use.
+///
+/// A back end may use any instruction of the selected code and of every
+/// code below it: AVX-512 implies AVX2, and AVX2 implies AVX.  The code
+/// is chosen by the compiler driver's `--tc` flag; the baseline is the
+/// smallest instruction set the architecture guarantees on every
+/// machine of the family.
+///
+/// Only the x86-64 back end distinguishes the codes today; every other
+/// back end runs at its baseline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum TargetCode {
+    /// The architecture's baseline (SSE2 for x86-64).
+    #[default]
+    Baseline,
+    /// AVX: 256-bit floating-point operations and three-operand forms.
+    Avx,
+    /// AVX2: 256-bit integer operations.
+    Avx2,
+    /// The AVX-512 foundation: 512-bit vectors and mask registers.
+    Avx512,
+    /// AVX-512 IFMA: 52-bit integer fused multiply-add.
+    Avx512Ifma,
+    /// AVX-512 VBMI: byte permutes across a whole vector.
+    Avx512Vbmi,
+    /// AVX-512 VBMI2: byte compress, expand, and funnel shifts.
+    Avx512Vbmi2,
+}
+
+/// Every target code, in the order the driver lists them.
+pub const TARGET_CODES: &[TargetCode] = &[
+    TargetCode::Baseline,
+    TargetCode::Avx,
+    TargetCode::Avx2,
+    TargetCode::Avx512,
+    TargetCode::Avx512Ifma,
+    TargetCode::Avx512Vbmi,
+    TargetCode::Avx512Vbmi2,
+];
+
+impl TargetCode {
+    /// The spelling the driver accepts for this code.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Baseline => "baseline",
+            Self::Avx => "avx",
+            Self::Avx2 => "avx2",
+            Self::Avx512 => "avx512",
+            Self::Avx512Ifma => "avx512ifma",
+            Self::Avx512Vbmi => "avx512vbmi",
+            Self::Avx512Vbmi2 => "avx512vbmi2",
+        }
+    }
+
+    /// The code a driver spelling names, or `None` for an unknown one.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        TARGET_CODES
+            .iter()
+            .copied()
+            .find(|code| code.name() == name)
+    }
+
+    /// Whether the code includes AVX.
+    #[must_use]
+    pub const fn has_avx(self) -> bool {
+        !matches!(self, Self::Baseline)
+    }
+
+    /// Whether the code includes AVX2.
+    #[must_use]
+    pub const fn has_avx2(self) -> bool {
+        matches!(
+            self,
+            Self::Avx2 | Self::Avx512 | Self::Avx512Ifma | Self::Avx512Vbmi | Self::Avx512Vbmi2
+        )
+    }
+
+    /// Whether the code includes the AVX-512 foundation.
+    #[must_use]
+    pub const fn has_avx512(self) -> bool {
+        matches!(
+            self,
+            Self::Avx512 | Self::Avx512Ifma | Self::Avx512Vbmi | Self::Avx512Vbmi2
+        )
+    }
+
+    /// Whether the code includes AVX-512 IFMA.
+    #[must_use]
+    pub const fn has_ifma(self) -> bool {
+        matches!(self, Self::Avx512Ifma)
+    }
+
+    /// Whether the code includes AVX-512 VBMI.
+    #[must_use]
+    pub const fn has_vbmi(self) -> bool {
+        matches!(self, Self::Avx512Vbmi | Self::Avx512Vbmi2)
+    }
+
+    /// Whether the code includes AVX-512 VBMI2.
+    #[must_use]
+    pub const fn has_vbmi2(self) -> bool {
+        matches!(self, Self::Avx512Vbmi2)
+    }
+
+    /// The width of a vector in bytes at this code: 16 at the baseline,
+    /// 32 with AVX2, and 64 with AVX-512.
+    #[must_use]
+    pub const fn vector_bytes(self) -> u32 {
+        if self.has_avx512() {
+            64
+        } else if self.has_avx2() {
+            32
+        } else {
+            16
+        }
+    }
+}
+
 /// The machine code of a whole module.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodeImage {
@@ -165,4 +285,36 @@ pub trait NativeTarget {
     /// [`CodegenError::Unsupported`](crate::error::CodegenError::Unsupported)
     /// when the machine IR itself is outside the target's reach.
     fn lower_module(&self, module: &MirModule, entry: SymId) -> Result<CodeImage>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_target_code_round_trips_through_its_name() {
+        for code in TARGET_CODES {
+            assert_eq!(TargetCode::from_name(code.name()), Some(*code));
+        }
+        assert_eq!(TargetCode::from_name("avx512vbmi3"), None);
+    }
+
+    #[test]
+    fn a_higher_code_includes_every_lower_one() {
+        assert!(!TargetCode::Baseline.has_avx());
+        assert!(TargetCode::Avx.has_avx() && !TargetCode::Avx.has_avx2());
+        assert!(TargetCode::Avx2.has_avx2() && !TargetCode::Avx2.has_avx512());
+        assert!(TargetCode::Avx512.has_avx512() && !TargetCode::Avx512.has_vbmi());
+        assert!(TargetCode::Avx512Vbmi2.has_avx512());
+        assert!(TargetCode::Avx512Vbmi2.has_vbmi() && TargetCode::Avx512Vbmi2.has_vbmi2());
+        assert!(TargetCode::Avx512Ifma.has_ifma() && TargetCode::Avx512Ifma.has_avx2());
+    }
+
+    #[test]
+    fn the_vector_width_grows_with_the_code() {
+        assert_eq!(TargetCode::Baseline.vector_bytes(), 16);
+        assert_eq!(TargetCode::Avx2.vector_bytes(), 32);
+        assert_eq!(TargetCode::Avx512.vector_bytes(), 64);
+        assert_eq!(TargetCode::Avx512Vbmi2.vector_bytes(), 64);
+    }
 }
