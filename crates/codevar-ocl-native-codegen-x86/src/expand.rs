@@ -73,7 +73,7 @@ use codevar_ocl_native_codegen::mir::{
 };
 use codevar_ocl_native_codegen::target::TargetCode;
 
-use crate::encode::{Arith, Cc, Encoder, Size};
+use crate::encode::{Arith, Cc, Encoder, Size, VecWidth};
 use crate::layout::Fixup;
 use crate::reg;
 
@@ -105,10 +105,6 @@ struct Expander<'a> {
     /// The function being expanded.
     function: &'a MirFunction,
     /// The instruction-set extensions the target may use.
-    ///
-    /// Read by the instruction selection that picks the AVX forms of
-    /// the vector operations; the baseline plumbing stores it first.
-    #[allow(dead_code)]
     code: TargetCode,
     /// The callee-saved registers the function saves.
     saved: Vec<u16>,
@@ -159,6 +155,28 @@ fn lane_size(ty: &MType) -> Option<Size> {
             MType::I8 => Some(Size::Byte),
             _ => None,
         },
+        _ => None,
+    }
+}
+
+/// The number of bytes one lane of `size` occupies.
+fn lane_bytes(size: Size) -> u32 {
+    match size {
+        Size::Byte => 1,
+        Size::Word => 2,
+        Size::Dword => 4,
+        Size::Qword => 8,
+        Size::Xmm => 16,
+    }
+}
+
+/// The width a vector of `lanes` lanes of `lane` occupies, when it fills
+/// one register exactly.
+fn packed_width(lane: Size, lanes: u32) -> Option<VecWidth> {
+    match lane_bytes(lane).saturating_mul(lanes) {
+        16 => Some(VecWidth::Xmm),
+        32 => Some(VecWidth::Ymm),
+        64 => Some(VecWidth::Zmm),
         _ => None,
     }
 }
@@ -637,19 +655,23 @@ impl<'a> Expander<'a> {
                 let value = self.operand_reg(enc, inst, 0, &[])?;
                 let disp = i32::try_from(*offset).unwrap_or(i32::MAX);
                 match Self::class_of(value) {
-                    Class::Float => {
-                        let size = match size {
-                            4 => Size::Dword,
-                            8 => Size::Qword,
-                            _ => {
-                                return Err(unsupported_error(
-                                    "the size of a spilled value",
-                                    "the target spills floating-point values of four or eight bytes",
-                                ));
-                            }
-                        };
-                        enc.mov_xmm_mr(size, reg::RSP, disp, value);
-                    }
+                    Class::Float => match size {
+                        4 => enc.mov_xmm_mr(Size::Dword, reg::RSP, disp, value),
+                        8 => enc.mov_xmm_mr(Size::Qword, reg::RSP, disp, value),
+                        16 => enc.mov_xmm_mr(Size::Xmm, reg::RSP, disp, value),
+                        32 if self.code.has_avx2() => {
+                            enc.vmovdqu_mr(VecWidth::Ymm, reg::RSP, disp, value);
+                        }
+                        64 if self.code.has_avx512() => {
+                            enc.vmovdqu_mr(VecWidth::Zmm, reg::RSP, disp, value);
+                        }
+                        _ => {
+                            return Err(unsupported_error(
+                                "the size of a spilled value",
+                                "the target spills a vector whole at a width the selected code offers",
+                            ));
+                        }
+                    },
                     Class::Int => match size {
                         1 => enc.mov_mr(Size::Byte, reg::RSP, disp, value),
                         2 => enc.mov_mr(Size::Word, reg::RSP, disp, value),
@@ -669,6 +691,24 @@ impl<'a> Expander<'a> {
                 let dest = self.dest(inst)?;
                 self.expect_dest(inst, dest)?;
                 let disp = i32::try_from(*offset).unwrap_or(i32::MAX);
+                if Self::class_of(dest) == Class::Float && matches!(size, 16 | 32 | 64) {
+                    match size {
+                        16 => enc.mov_xmm_rm(Size::Xmm, dest, reg::RSP, disp),
+                        32 if self.code.has_avx2() => {
+                            enc.vmovdqu_rm(VecWidth::Ymm, dest, reg::RSP, disp);
+                        }
+                        64 if self.code.has_avx512() => {
+                            enc.vmovdqu_rm(VecWidth::Zmm, dest, reg::RSP, disp);
+                        }
+                        _ => {
+                            return Err(unsupported_error(
+                                "the size of a spilled value",
+                                "the target reloads a vector whole at a width the selected code offers",
+                            ));
+                        }
+                    }
+                    return Ok(());
+                }
                 match size {
                     1 => enc.movzx_rm(Size::Byte, Size::Dword, dest, reg::RSP, disp),
                     2 => enc.movzx_rm(Size::Word, Size::Dword, dest, reg::RSP, disp),
@@ -730,12 +770,18 @@ impl<'a> Expander<'a> {
                 enc.mov_rr(int_size(&inst.ty), dest, src);
             }
             (Class::Float, Class::Float) => {
-                let size = if inst.ty.is_vector() {
-                    Size::Xmm
+                if let Some(width) = self.wide_vector_width(&inst.ty) {
+                    // A vector wider than the baseline register moves as
+                    // a whole with the AVX form.
+                    enc.vmovdqa(width, dest, src);
                 } else {
-                    float_size(&inst.ty).unwrap_or(Size::Xmm)
-                };
-                enc.mov_xmm_rr(size, dest, src);
+                    let size = if inst.ty.is_vector() {
+                        Size::Xmm
+                    } else {
+                        float_size(&inst.ty).unwrap_or(Size::Xmm)
+                    };
+                    enc.mov_xmm_rr(size, dest, src);
+                }
             }
             (Class::Int, Class::Float) => {
                 if int_size(&inst.ty) == Size::Qword {
@@ -1271,6 +1317,22 @@ impl<'a> Expander<'a> {
         }
     }
 
+    /// The width a vector type occupies when it is wider than the
+    /// baseline register and the selected code can hold it.
+    ///
+    /// A 128-bit vector keeps the baseline move; the wider widths are
+    /// only named when the code permits their instructions.
+    fn wide_vector_width(&self, ty: &MType) -> Option<VecWidth> {
+        let lane = lane_size(ty)?;
+        let width = packed_width(lane, ty.lane_count().max(1))?;
+        let allowed = match width {
+            VecWidth::Xmm => false,
+            VecWidth::Ymm => self.code.has_avx2(),
+            VecWidth::Zmm => self.code.has_avx512(),
+        };
+        allowed.then_some(width)
+    }
+
     /// True when the lanes of a vector hold floating-point values.
     fn vector_is_floating(&self, inst: &MInst) -> bool {
         let Some(ty) = Self::operand_type(inst) else {
@@ -1280,6 +1342,67 @@ impl<'a> Expander<'a> {
             MType::Vec { elem, .. } => elem.is_floating(),
             _ => false,
         }
+    }
+
+    /// Emits the AVX form of a vector operation when the selected code
+    /// offers one, and reports whether it did.
+    ///
+    /// The three-register form writes the destination, the first source
+    /// and the second source in one instruction, so it replaces the
+    /// move the baseline needs to preserve the left operand.  When the
+    /// width or the operation has no AVX form the caller falls back to
+    /// the baseline expansion.
+    fn try_vector_avx(&self, enc: &mut Encoder<'_>, inst: &MInst, op: Binary) -> Result<bool, CodegenError> {
+        let (lane, lanes) = self.vector_shape(inst, 0)?;
+        let Some(width) = packed_width(lane, lanes) else {
+            return Ok(false);
+        };
+        let allowed = match width {
+            VecWidth::Xmm => self.code.has_avx(),
+            VecWidth::Ymm => self.code.has_avx2(),
+            VecWidth::Zmm => self.code.has_avx512(),
+        };
+        if !allowed {
+            return Ok(false);
+        }
+        let floating = self.vector_is_floating(inst);
+        // Decide which forms the encoding covers before reading the
+        // operands, so a fall-back emits nothing.
+        let handled = if floating {
+            true
+        } else {
+            matches!(
+                (op, lane),
+                (Binary::Add | Binary::Sub | Binary::Mul, Size::Dword) | (Binary::Xor, _)
+            )
+        };
+        if !handled {
+            return Ok(false);
+        }
+        let dest = self.dest(inst)?;
+        let left = self.operand_reg(enc, inst, 0, &[])?;
+        let right = self.operand_reg(enc, inst, 1, &[])?;
+        if Self::class_of(left) != Class::Float || Self::class_of(right) != Class::Float {
+            return Ok(false);
+        }
+        if floating {
+            match op {
+                Binary::Add => enc.vaddps(width, dest, left, right),
+                Binary::Sub => enc.vsubps(width, dest, left, right),
+                Binary::Mul => enc.vmulps(width, dest, left, right),
+                Binary::And => enc.vandps(width, dest, left, right),
+                Binary::Or => enc.vorps(width, dest, left, right),
+                Binary::Xor => enc.vxorps(width, dest, left, right),
+            }
+            return Ok(true);
+        }
+        match op {
+            Binary::Add => enc.vpaddd(width, dest, left, right),
+            Binary::Sub => enc.vpsubd(width, dest, left, right),
+            Binary::Mul => enc.vpmulld(width, dest, left, right),
+            Binary::And | Binary::Or | Binary::Xor => enc.vpxor(width, dest, left, right),
+        }
+        Ok(true)
     }
 
     /// Expands an operation over the lanes of a vector.
@@ -1293,6 +1416,9 @@ impl<'a> Expander<'a> {
         op: Binary,
         size: Size,
     ) -> Result<(), CodegenError> {
+        if self.try_vector_avx(enc, inst, op)? {
+            return Ok(());
+        }
         let dest = self.dest(inst)?;
         let left = self.operand_reg(enc, inst, 0, &[])?;
         let right = self.operand_reg(enc, inst, 1, &[])?;

@@ -29,8 +29,8 @@ use std::ptr;
 
 use codevar_ocl_abi::{MAX_PARAMS, WorkItem, WorkItemField};
 use codevar_ocl_native_codegen::mir::{ArgKind, MOp, MType, MirFunction, MirModule, Operands, SymbolKind};
-use codevar_ocl_native_codegen::target::NativeTarget;
-use codevar_ocl_native_codegen_x86::target;
+use codevar_ocl_native_codegen::target::{NativeTarget, TargetCode};
+use codevar_ocl_native_codegen_x86::X86Target;
 use common::*;
 
 /// The size of the page the code is copied into.
@@ -205,8 +205,13 @@ fn kernel_module() -> (MirModule, codevar_ocl_native_codegen::mir::SymId) {
 /// Runs the kernel with the given global identifier and returns the
 /// four words it wrote.
 fn run(global_id: u32) -> [u32; 4] {
+    run_with(TargetCode::Baseline, global_id)
+}
+
+/// Runs the kernel under the selected instruction set.
+fn run_with(code: TargetCode, global_id: u32) -> [u32; 4] {
     let (module, entry) = kernel_module();
-    let image = target()
+    let image = X86Target::with_code(code)
         .lower_module(&module, entry)
         .expect("the module compiles");
     let page = unsafe {
@@ -262,5 +267,16 @@ fn the_lanes_are_added_and_multiplied() {
     // doubled vector is twelve, fourteen, sixteen and eighteen, and
     // the product with three is thirty-six, forty-two, forty-eight and
     // fifty-four.
+    assert_eq!(output, [21, 24, 27, 30], "the lanes are wrong");
+}
+
+#[test]
+fn the_lanes_are_added_and_multiplied_with_avx2() {
+    if !std::is_x86_feature_detected!("avx2") {
+        return;
+    }
+    // The three-register AVX2 forms compute the same result as the
+    // baseline, which they replace when the code allows them.
+    let output = run_with(TargetCode::Avx2, 5);
     assert_eq!(output, [21, 24, 27, 30], "the lanes are wrong");
 }
