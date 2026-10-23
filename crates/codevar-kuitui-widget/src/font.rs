@@ -137,23 +137,7 @@ impl Font {
     ///
     /// Same as [`Font::from_bytes`].
     pub fn from_arc(bytes: Arc<[u8]>) -> Result<Self, FontError> {
-        let (units_per_em, ascender, descender, line_gap, has_outline) = {
-            let font = SfntFont::open(&bytes, 0).map_err(FontError::Open)?;
-            let hhea = font.hhea();
-            (
-                font.units_per_em(),
-                i32::from(hhea.ascender),
-                i32::from(hhea.descender),
-                i32::from(hhea.line_gap),
-                font.has_outline(),
-            )
-        };
-        if !has_outline {
-            return Err(FontError::NoOutlines);
-        }
-        if units_per_em == 0 {
-            return Err(FontError::Open(TtError::INVALID_TABLE));
-        }
+        let (units_per_em, ascender, descender, line_gap) = read_face_metrics(&bytes, 0)?;
         let mut font = Self {
             bytes,
             face_index: 0,
@@ -177,10 +161,25 @@ impl Font {
     }
 
     /// The face with a different sub-font index.
-    #[must_use]
-    pub fn with_face_index(mut self, face_index: i32) -> Self {
+    ///
+    /// The `head` and `hhea` metrics cached by [`Font::from_arc`] are
+    /// re-read from the new face, so measurement keeps matching the
+    /// glyphs [`Font::sfnt`] will load.
+    ///
+    /// # Errors
+    ///
+    /// [`FontError::Open`] when the container has no face at
+    /// `face_index`, or [`FontError::NoOutlines`] when that face has no
+    /// outlines.
+    pub fn with_face_index(mut self, face_index: i32) -> Result<Self, FontError> {
+        let (units_per_em, ascender, descender, line_gap) = read_face_metrics(&self.bytes, face_index)?;
         self.face_index = face_index;
-        self
+        self.units_per_em = units_per_em;
+        self.ascender = ascender;
+        self.descender = descender;
+        self.line_gap = line_gap;
+        self.rescale();
+        Ok(self)
     }
 
     /// Recomputes the 16.16 scale from the current ppem and upem.
@@ -377,6 +376,30 @@ impl Font {
             baseline: self.ascent(),
         })
     }
+}
+
+/// Reads the `head`/`hhea` metrics [`Font`] caches for one face.
+///
+/// # Errors
+///
+/// [`FontError::Open`] when the container has no face at `face_index`,
+/// or [`FontError::NoOutlines`] when that face carries no outlines.
+fn read_face_metrics(bytes: &[u8], face_index: i32) -> Result<(u16, i32, i32, i32), FontError> {
+    let font = SfntFont::open(bytes, face_index).map_err(FontError::Open)?;
+    if !font.has_outline() {
+        return Err(FontError::NoOutlines);
+    }
+    let units_per_em = font.units_per_em();
+    if units_per_em == 0 {
+        return Err(FontError::Open(TtError::INVALID_TABLE));
+    }
+    let hhea = font.hhea();
+    Ok((
+        units_per_em,
+        i32::from(hhea.ascender),
+        i32::from(hhea.descender),
+        i32::from(hhea.line_gap),
+    ))
 }
 
 impl FontMetrics for Font {
@@ -810,5 +833,11 @@ mod tests {
         let mut atlas = GlyphAtlas::new(8, 8);
         let bitmap = Bitmap::new_sized(4, 8, PixelMode::Mono, 2).unwrap();
         assert!(atlas.insert(&bitmap).is_some());
+    }
+
+    #[test]
+    fn an_unknown_face_index_is_an_error() {
+        let font = test_font(16);
+        assert!(font.with_face_index(9).is_err());
     }
 }
