@@ -368,6 +368,54 @@ impl Device {
         self.info_u32(sys::DEVICE_MAX_COMPUTE_UNITS)
     }
 
+    /// Returns the PCI vendor ID of the device.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Status`] when the driver rejects the query.
+    pub fn vendor_id(&self) -> Result<u32> {
+        self.info_u32(sys::DEVICE_VENDOR_ID)
+    }
+
+    /// Returns the maximum clock frequency of the compute units, in MHz.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Status`] when the driver rejects the query.
+    pub fn max_clock_frequency(&self) -> Result<u32> {
+        self.info_u32(sys::DEVICE_MAX_CLOCK_FREQUENCY)
+    }
+
+    /// Returns the preferred `float` vector width reported to the
+    /// compiler, in lanes per work item.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Status`] when the driver rejects the query.
+    pub fn preferred_vector_width_float(&self) -> Result<u32> {
+        self.info_u32(sys::DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT)
+    }
+
+    /// Returns the native `float` vector width of the hardware, in lanes
+    /// per work item.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Status`] when the driver rejects the query.
+    pub fn native_vector_width_float(&self) -> Result<u32> {
+        self.info_u32(sys::DEVICE_NATIVE_VECTOR_WIDTH_FLOAT)
+    }
+
+    /// Whether the device shares its memory with the host, i.e. is an
+    /// integrated accelerator or the CPU itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Status`] when the driver rejects the query.
+    pub fn host_unified_memory(&self) -> Result<bool> {
+        self.info_bool(sys::DEVICE_HOST_UNIFIED_MEMORY)
+    }
+
     /// Returns the maximum work-group size for kernels on this device.
     ///
     /// # Errors
@@ -471,6 +519,13 @@ mod tests {
                 if let Ok(name) = device.name() {
                     assert!(!name.is_empty());
                 }
+                // The potency queries may be unsupported on any given
+                // driver; the only contract is that they must not panic.
+                let _ = device.vendor_id();
+                let _ = device.max_clock_frequency();
+                let _ = device.preferred_vector_width_float();
+                let _ = device.native_vector_width_float();
+                let _ = device.host_unified_memory();
             }
         }
     }

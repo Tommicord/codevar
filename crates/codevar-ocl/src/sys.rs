@@ -362,6 +362,8 @@ pub const PLATFORM_ICD_SUFFIX_KHR: u32 = 0x0920;
 
 /// Device type bitfield (`CL_DEVICE_TYPE`).
 pub const DEVICE_TYPE: u32 = 0x1000;
+/// PCI vendor ID of the device (`CL_DEVICE_VENDOR_ID`).
+pub const DEVICE_VENDOR_ID: u32 = 0x1001;
 /// Maximum number of compute units (`CL_DEVICE_MAX_COMPUTE_UNITS`).
 pub const DEVICE_MAX_COMPUTE_UNITS: u32 = 0x1002;
 /// Dimensionality of the work-item grid (`CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS`).
@@ -370,6 +372,12 @@ pub const DEVICE_MAX_WORK_ITEM_DIMENSIONS: u32 = 0x1003;
 pub const DEVICE_MAX_WORK_GROUP_SIZE: u32 = 0x1004;
 /// Maximum work-item sizes per dimension (`CL_DEVICE_MAX_WORK_ITEM_SIZES`).
 pub const DEVICE_MAX_WORK_ITEM_SIZES: u32 = 0x1005;
+/// Preferred number of `float` lanes per work item
+/// (`CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT`).
+pub const DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT: u32 = 0x100A;
+/// Maximum clock frequency of the compute units in MHz
+/// (`CL_DEVICE_MAX_CLOCK_FREQUENCY`).
+pub const DEVICE_MAX_CLOCK_FREQUENCY: u32 = 0x100C;
 /// Address width in bits (`CL_DEVICE_ADDRESS_BITS`).
 pub const DEVICE_ADDRESS_BITS: u32 = 0x100D;
 /// Maximum single allocation size in bytes (`CL_DEVICE_MAX_MEM_ALLOC_SIZE`).
@@ -398,6 +406,12 @@ pub const DEVICE_VERSION: u32 = 0x102F;
 pub const DEVICE_EXTENSIONS: u32 = 0x1030;
 /// The platform the device belongs to (`CL_DEVICE_PLATFORM`).
 pub const DEVICE_PLATFORM: u32 = 0x1031;
+/// Whether the device shares its memory with the host
+/// (`CL_DEVICE_HOST_UNIFIED_MEMORY`).
+pub const DEVICE_HOST_UNIFIED_MEMORY: u32 = 0x1035;
+/// Native number of `float` lanes per work item
+/// (`CL_DEVICE_NATIVE_VECTOR_WIDTH_FLOAT`).
+pub const DEVICE_NATIVE_VECTOR_WIDTH_FLOAT: u32 = 0x103A;
 
 /// Reference count of the program (`CL_PROGRAM_REFERENCE_COUNT`).
 pub const PROGRAM_REFERENCE_COUNT: u32 = 0x1160;
