@@ -248,7 +248,18 @@ impl<'a> Allocator<'a> {
     fn allocate_function(&mut self, function: &mut MirFunction) -> Result<AllocStats> {
         self.reset(function);
         fuse_compare_branches(function);
+        // Coalescing runs before the two-address reuse: the reuse writes
+        // an operation into its first operand, which gives that operand a
+        // second definition, and a copy can no longer be forwarded into a
+        // register with several definitions.  Forwarding the copies first
+        // lets the reuse see the operation's real operand -- otherwise the
+        // first operand is often the destination of an unforwarded copy
+        // and the copy survives as a move.
+        self.coalesce_copies(function);
         reuse_two_address_destinations(function);
+        // The reuse rewrites the destination of the operation, which can
+        // leave copies that are now single-use, so one more round of
+        // coalescing cleans them up.
         self.coalesce_copies(function);
         self.gather(function)?;
         self.plan(function)?;
