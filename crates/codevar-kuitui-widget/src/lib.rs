@@ -33,6 +33,8 @@
 
 extern crate alloc;
 
+pub mod canvas;
 pub mod shaders;
 
+pub use canvas::{Canvas, LinearGradient, ScanlineSpan, Shape};
 pub use shaders::{PushConstants, TextVertex, UiVertex};
