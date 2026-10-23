@@ -157,17 +157,36 @@ fn find_group(
         if independent(block, definitions, &members)
             && let Some(insert) = insertion_point(block, definitions, &members)
         {
-            return Some(Group {
+            let group = Group {
                 members,
                 insert,
                 shape: first.shape,
                 operand_ty: first.operand_ty,
                 result_ty: first.result_ty,
-            });
+            };
+            if group_is_profitable(&group) {
+                return Some(group);
+            }
         }
         index += 1;
     }
     None
+}
+
+/// True when rewriting `group` into one vector operation saves work.
+///
+/// The packed operation replaces one scalar operation per member, but
+/// the rewrite also builds the operand vectors with a `CompositeConstruct`
+/// and reads every member's scalar result back out with a
+/// `CompositeExtract`.  Those extra instructions only pay for themselves
+/// once the packed operation covers enough lanes: a group with fewer than
+/// four members is rejected, and a group with four or more members is
+/// accepted.  The decision depends only on the group, so it is
+/// deterministic and cannot panic.
+fn group_is_profitable(group: &Group) -> bool {
+    /// Lanes the packed operation must cover before it saves work.
+    const LANES_OVERHEAD: usize = 3;
+    group.members.len() > LANES_OVERHEAD
 }
 
 /// True when no member of the group reads the result of another one.
