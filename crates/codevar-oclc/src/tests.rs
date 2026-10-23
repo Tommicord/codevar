@@ -200,6 +200,32 @@ fn fill(out: *mut int) -> void {
 }
 
 /// `unwrap` is safe: the path and kernel source are constructed here.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "arm"))]
+#[test]
+fn native_stage_accepts_the_baseline_target_code() {
+    let input = temp_path("native-tc.cl");
+    let output = temp_path("native-tc.bin");
+    let kernel = "\
+#[kernel]
+fn fill(out: *mut int) -> void {
+    out[0] = 7;
+}
+";
+    fs::write_file(&input, kernel).unwrap();
+    cleanup(&output);
+
+    let exit = run(&args(&[
+        "--emit", "native", "--tc", "baseline", "-o", &output, &input,
+    ]));
+    let bytes = std::fs::read(&output).unwrap_or_default();
+    cleanup(&input);
+    cleanup(&output);
+
+    assert_eq!(exit, Exit::Success);
+    assert!(!bytes.is_empty(), "the target code produced no code");
+}
+
+/// `unwrap` is safe: the path and kernel source are constructed here.
 #[test]
 fn spirv_stage_reports_analysis_errors() {
     let input = temp_path("spirv-bad.cl");
