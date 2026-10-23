@@ -1187,6 +1187,12 @@ impl<'a> Expander<'a> {
                 ),
             ));
         }
+        // A whole register of bytes permutes in one instruction with the
+        // byte permute of AVX-512 VBMI: the mask is built once into a
+        // scratch register and the instruction permutes both sources.
+        if size == Size::Byte && lane_count == 64 && self.code.has_vbmi() {
+            return self.expand_vec_shuffle_vbmi(enc, dest, first, second, mask);
+        }
         for (lane, entry) in mask.iter().enumerate() {
             if *entry >= lanes as u32 * 2 {
                 return Err(target_error(
@@ -1231,6 +1237,52 @@ impl<'a> Expander<'a> {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Expands a full register of bytes with the two-table byte permute
+    /// of AVX-512 VBMI.
+    ///
+    /// The index the instruction reads is the mask of the shuffle: its
+    /// top bit selects the second source and its low bits select the
+    /// byte within it.  The mask is a constant, so it is built into a
+    /// scratch register one double-word at a time and the permute then
+    /// writes the result; the scratch keeps the sources readable when
+    /// the destination names one of them.
+    fn expand_vec_shuffle_vbmi(
+        &self,
+        enc: &mut Encoder<'_>,
+        dest: u16,
+        first: u16,
+        second: u16,
+        mask: &[u32],
+    ) -> Result<(), CodegenError> {
+        for entry in mask {
+            if *entry >= 128 {
+                return Err(target_error(
+                    "expanding the machine operation",
+                    &format!("the shuffle names the lane {entry}, which is outside the sources"),
+                ));
+            }
+        }
+        let index = reg::SCRATCH_XMMS[0];
+        let quarter = reg::SCRATCH_XMMS[1];
+        for group in 0..4u8 {
+            for lane in 0..4u8 {
+                let base = (group as usize) * 16 + (lane as usize) * 4;
+                let word =
+                    mask[base] | (mask[base + 1] << 8) | (mask[base + 2] << 16) | (mask[base + 3] << 24);
+                enc.mov_ri(Size::Dword, reg::RAX, i64::from(word));
+                if lane == 0 {
+                    enc.movd_xmm_rm(quarter, reg::RAX);
+                } else {
+                    enc.pinsrd_xmm_rr(quarter, reg::RAX, lane);
+                }
+            }
+            enc.vinserti32x4(index, index, quarter, group);
+        }
+        enc.vpermi2b(VecWidth::Zmm, index, first, second);
+        enc.vmovdqa(VecWidth::Zmm, dest, index);
         Ok(())
     }
 

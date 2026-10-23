@@ -23,8 +23,8 @@
 mod common;
 
 use codevar_ocl_native_codegen::mir::{MOp, MType, MirFunction, Operand, Operands};
-use codevar_ocl_native_codegen::target::NativeTarget;
-use codevar_ocl_native_codegen_x86::target;
+use codevar_ocl_native_codegen::target::{NativeTarget, TargetCode};
+use codevar_ocl_native_codegen_x86::X86Target;
 use common::*;
 
 /// The bits of one and a half, in single precision.
@@ -33,6 +33,12 @@ const ONE_AND_A_HALF: u64 = 0x3FC0_0000;
 /// Builds a module whose only operation is `op` and returns the bytes
 /// of the code.
 fn bytes_of(ty: MType, op: MOp, args: Operands) -> Vec<u8> {
+    bytes_of_code(TargetCode::Baseline, ty, op, args)
+}
+
+/// Builds a module whose only operation is `op`, lowered for the given
+/// instruction set, and returns the bytes of the code.
+fn bytes_of_code(code: TargetCode, ty: MType, op: MOp, args: Operands) -> Vec<u8> {
     let mut function = MirFunction::new("operation");
     let dest = vreg(&mut function, XMM0, ty.clone());
     let mut block = block("entry");
@@ -43,7 +49,7 @@ fn bytes_of(ty: MType, op: MOp, args: Operands) -> Vec<u8> {
     function.push_block(block);
     function.frame_size = 0;
     let (module, symbol) = module_with(function);
-    let image = target()
+    let image = X86Target::with_code(code)
         .lower_module(&module, symbol)
         .expect("the module compiles");
     image.bytes().to_vec()
@@ -54,6 +60,13 @@ fn body_of(ty: MType, op: MOp, args: Operands) -> Vec<u8> {
     let bytes = bytes_of(ty, op, args);
     // The prologue pushes one register and the epilogue pops it, so
     // the body lies between them.
+    bytes[1..bytes.len() - 2].to_vec()
+}
+
+/// The bytes of the operation under the given instruction set, without
+/// the prologue and the epilogue.
+fn body_of_code(code: TargetCode, ty: MType, op: MOp, args: Operands) -> Vec<u8> {
+    let bytes = bytes_of_code(code, ty, op, args);
     bytes[1..bytes.len() - 2].to_vec()
 }
 
@@ -157,5 +170,47 @@ fn a_float_immediate_is_moved_into_a_register() {
         bytes,
         hex("48 C7 C0 00 00 C0 3F 66 4C 0F 6E F0 F3 41 0F 10 C6 F3 0F 51 C0"),
         "unexpected bytes for the square root"
+    );
+}
+
+/// The type of a full register of sixty-four bytes.
+fn vector_of_bytes() -> MType {
+    MType::Vec {
+        lanes: 64,
+        elem: Box::new(MType::I8),
+    }
+}
+
+#[test]
+fn a_full_vector_byte_shuffle_is_one_two_table_permute() {
+    // The mask is a constant of the program, so the sequence first
+    // builds it in a scratch register, four bytes at a time, then
+    // permutes both sources with a single `vpermi2b`.  The mask is
+    // the identity in reverse, and its top bit selects the second
+    // source, which the instruction reads from the index itself.
+    let mask: Vec<u32> = (0..64u32).rev().collect();
+    let bytes = body_of_code(
+        TargetCode::Avx512Vbmi2,
+        vector_of_bytes(),
+        MOp::VecShuffle { mask },
+        Operands::two(reg(XMM1), reg(XMM2)),
+    );
+    assert_eq!(
+        bytes,
+        hex(
+            "B8 3F 3E 3D 3C 66 44 0F 6E F8 B8 3B 3A 39 38 66 44 0F 3A 22 F8 01 \
+             B8 37 36 35 34 66 44 0F 3A 22 F8 02 B8 33 32 31 30 66 44 0F 3A 22 F8 03 \
+             62 53 0D 48 38 F7 00 \
+             B8 2F 2E 2D 2C 66 44 0F 6E F8 B8 2B 2A 29 28 66 44 0F 3A 22 F8 01 \
+             B8 27 26 25 24 66 44 0F 3A 22 F8 02 B8 23 22 21 20 66 44 0F 3A 22 F8 03 \
+             62 53 0D 48 38 F7 01 \
+             B8 1F 1E 1D 1C 66 44 0F 6E F8 B8 1B 1A 19 18 66 44 0F 3A 22 F8 01 \
+             B8 17 16 15 14 66 44 0F 3A 22 F8 02 B8 13 12 11 10 66 44 0F 3A 22 F8 03 \
+             62 53 0D 48 38 F7 02 \
+             B8 0F 0E 0D 0C 66 44 0F 6E F8 B8 0B 0A 09 08 66 44 0F 3A 22 F8 01 \
+             B8 07 06 05 04 66 44 0F 3A 22 F8 02 B8 03 02 01 00 66 44 0F 3A 22 F8 03 \
+             62 53 0D 48 38 F7 03 62 72 75 48 75 F2 62 D1 FD 48 6F C6"
+        ),
+        "unexpected bytes for the byte shuffle"
     );
 }
