@@ -472,6 +472,105 @@ pub fn find_byte_scalar(bytes: &[u8], needle: u8) -> Option<usize> {
     bytes.iter().position(|&byte| byte == needle)
 }
 
+/// Counts occurrences of `needle` in a slice of `u32` words.
+///
+/// This is the CPU/SIMD counterpart of the `count_u32` GPU kernel: the
+/// engine runs it over packed documents to gather word-oriented
+/// statistics (spaces, separators, sentinels) without walking the
+/// document one word at a time. Every vector tier must agree with
+/// [`count_value_u32_scalar`] bit for bit.
+///
+/// # Examples
+///
+/// ```
+/// use codevar_wredit::simd::count_value_u32;
+///
+/// assert_eq!(count_value_u32(&[1, 2, 1, 3, 1], 1), 3);
+/// assert_eq!(count_value_u32(&[], 7), 0);
+/// ```
+#[must_use]
+pub fn count_value_u32(words: &[u32], needle: u32) -> u64 {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        use codevar_base::cpuid::{Feature, has};
+
+        if has(Feature::Avx2) {
+            // SAFETY: the probe above confirmed AVX2; `chunks_exact(8)`
+            // keeps every load inside `words`.
+            return unsafe { x86::count_u32_avx2(words, needle) };
+        }
+        if has(Feature::Sse2) {
+            // SAFETY: the probe above confirmed SSE2; loads stay
+            // inside `words`.
+            return unsafe { x86::count_u32_sse2(words, needle) };
+        }
+    }
+    count_value_u32_scalar(words, needle)
+}
+
+/// Reference implementation of [`count_value_u32`].
+///
+/// # Examples
+///
+/// ```
+/// use codevar_wredit::simd::count_value_u32_scalar;
+///
+/// assert_eq!(count_value_u32_scalar(&[9, 9, 8], 9), 2);
+/// ```
+#[must_use]
+pub fn count_value_u32_scalar(words: &[u32], needle: u32) -> u64 {
+    words
+        .iter()
+        .filter(|&&word| word == needle)
+        .count() as u64
+}
+
+/// Index of the first occurrence of `needle` in a slice of `u32` words.
+///
+/// The CPU/SIMD counterpart of the `find_first_u32` GPU kernel.
+///
+/// # Examples
+///
+/// ```
+/// use codevar_wredit::simd::find_first_u32;
+///
+/// assert_eq!(find_first_u32(&[4, 5, 6], 5), Some(1));
+/// assert_eq!(find_first_u32(&[4, 5, 6], 7), None);
+/// ```
+#[must_use]
+pub fn find_first_u32(words: &[u32], needle: u32) -> Option<usize> {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        use codevar_base::cpuid::{Feature, has};
+
+        if has(Feature::Avx2) {
+            // SAFETY: the probe above confirmed AVX2; loads stay
+            // inside `words`.
+            return unsafe { x86::find_first_u32_avx2(words, needle) };
+        }
+        if has(Feature::Sse2) {
+            // SAFETY: the probe above confirmed SSE2; loads stay
+            // inside `words`.
+            return unsafe { x86::find_first_u32_sse2(words, needle) };
+        }
+    }
+    find_first_u32_scalar(words, needle)
+}
+
+/// Reference implementation of [`find_first_u32`].
+///
+/// # Examples
+///
+/// ```
+/// use codevar_wredit::simd::find_first_u32_scalar;
+///
+/// assert_eq!(find_first_u32_scalar(&[1, 2, 3], 3), Some(2));
+/// ```
+#[must_use]
+pub fn find_first_u32_scalar(words: &[u32], needle: u32) -> Option<usize> {
+    words.iter().position(|&word| word == needle)
+}
+
 /// Returns `bytes` with every occurrence of `value` removed.
 ///
 /// This is the engine's byte-compaction primitive: dropping the gap
@@ -1299,6 +1398,102 @@ mod x86 {
             hash_state(hash, chunks.remainder())
         }
     }
+
+    /// Counts occurrences of `needle` over four-word SSE2 blocks.
+    ///
+    /// # Safety
+    ///
+    /// Requires SSE2.
+    #[target_feature(enable = "sse2")]
+    pub(super) unsafe fn count_u32_sse2(words: &[u32], needle: u32) -> u64 {
+        // SAFETY: the caller proved SSE2; `chunks_exact(4)` keeps every
+        // load inside `words`.
+        unsafe {
+            let target = _mm_set1_epi32(needle as i32);
+            let mut total = 0u64;
+            let mut chunks = words.chunks_exact(4);
+            for chunk in &mut chunks {
+                let data = _mm_loadu_si128(chunk.as_ptr().cast());
+                let equal = _mm_cmpeq_epi32(data, target);
+                let bits = _mm_movemask_ps(_mm_castsi128_ps(equal)) as u32;
+                total += u64::from(bits.count_ones());
+            }
+            total + super::count_value_u32_scalar(chunks.remainder(), needle)
+        }
+    }
+
+    /// Counts occurrences of `needle` over eight-word AVX2 blocks.
+    ///
+    /// # Safety
+    ///
+    /// Requires AVX2.
+    #[target_feature(enable = "avx2")]
+    pub(super) unsafe fn count_u32_avx2(words: &[u32], needle: u32) -> u64 {
+        // SAFETY: the caller proved AVX2; `chunks_exact(8)` keeps every
+        // load inside `words`.
+        unsafe {
+            let target = _mm256_set1_epi32(needle as i32);
+            let mut total = 0u64;
+            let mut chunks = words.chunks_exact(8);
+            for chunk in &mut chunks {
+                let data = _mm256_loadu_si256(chunk.as_ptr().cast());
+                let equal = _mm256_cmpeq_epi32(data, target);
+                let bits = _mm256_movemask_ps(_mm256_castsi256_ps(equal)) as u32;
+                total += u64::from(bits.count_ones());
+            }
+            total + super::count_value_u32_scalar(chunks.remainder(), needle)
+        }
+    }
+
+    /// Finds the first `needle` over four-word SSE2 blocks.
+    ///
+    /// # Safety
+    ///
+    /// Requires SSE2.
+    #[target_feature(enable = "sse2")]
+    pub(super) unsafe fn find_first_u32_sse2(words: &[u32], needle: u32) -> Option<usize> {
+        // SAFETY: the caller proved SSE2; loads stay inside `words`.
+        unsafe {
+            let target = _mm_set1_epi32(needle as i32);
+            let mut base = 0usize;
+            let mut chunks = words.chunks_exact(4);
+            for chunk in &mut chunks {
+                let data = _mm_loadu_si128(chunk.as_ptr().cast());
+                let equal = _mm_cmpeq_epi32(data, target);
+                let bits = _mm_movemask_ps(_mm_castsi128_ps(equal)) as u32;
+                if bits != 0 {
+                    return Some(base + bits.trailing_zeros() as usize);
+                }
+                base += 4;
+            }
+            super::find_first_u32_scalar(chunks.remainder(), needle).map(|index| base + index)
+        }
+    }
+
+    /// Finds the first `needle` over eight-word AVX2 blocks.
+    ///
+    /// # Safety
+    ///
+    /// Requires AVX2.
+    #[target_feature(enable = "avx2")]
+    pub(super) unsafe fn find_first_u32_avx2(words: &[u32], needle: u32) -> Option<usize> {
+        // SAFETY: the caller proved AVX2; loads stay inside `words`.
+        unsafe {
+            let target = _mm256_set1_epi32(needle as i32);
+            let mut base = 0usize;
+            let mut chunks = words.chunks_exact(8);
+            for chunk in &mut chunks {
+                let data = _mm256_loadu_si256(chunk.as_ptr().cast());
+                let equal = _mm256_cmpeq_epi32(data, target);
+                let bits = _mm256_movemask_ps(_mm256_castsi256_ps(equal)) as u32;
+                if bits != 0 {
+                    return Some(base + bits.trailing_zeros() as usize);
+                }
+                base += 8;
+            }
+            super::find_first_u32_scalar(chunks.remainder(), needle).map(|index| base + index)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1315,6 +1510,20 @@ mod tests {
             state ^= state >> 17;
             state ^= state << 5;
             out.push(state as u8);
+        }
+        out
+    }
+
+    /// Deterministic pseudo-random `u32` words (xorshift), so the word
+    /// tiers meet inputs no hand-written case would cover.
+    fn pseudo_random_u32(len: usize, seed: u32) -> Vec<u32> {
+        let mut state = seed | 1;
+        let mut out = Vec::with_capacity(len);
+        for _ in 0..len {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            out.push(state);
         }
         out
     }
@@ -1714,5 +1923,72 @@ mod tests {
             prime8 = hash_step(prime8, 0);
         }
         assert_eq!(x86::HASH_PRIME_POW8, prime8);
+    }
+
+    #[test]
+    fn count_u32_matches_reference_on_random_words() {
+        for seed in 1..40u32 {
+            let words = pseudo_random_u32(1 + (seed as usize * 29) % 500, seed);
+            for needle in [0u32, 1, 0x61, 0xFFFF_FFFF] {
+                assert_eq!(
+                    count_value_u32(&words, needle),
+                    count_value_u32_scalar(&words, needle),
+                    "seed {seed} needle {needle}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn find_first_u32_matches_reference_on_random_words() {
+        for seed in 1..40u32 {
+            let words = pseudo_random_u32(1 + (seed as usize * 31) % 500, seed);
+            for needle in [0u32, 7, 0x7F, 0xDEAD_BEEF] {
+                assert_eq!(
+                    find_first_u32(&words, needle),
+                    find_first_u32_scalar(&words, needle),
+                    "seed {seed} needle {needle}"
+                );
+            }
+        }
+    }
+
+    /// Every word tier must agree with the scalar references, including
+    /// on lengths that straddle the block size.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[test]
+    fn u32_tiers_agree_with_scalar() {
+        use codevar_base::cpuid::{Feature, has};
+
+        for seed in 1..20u32 {
+            let words = pseudo_random_u32(1 + (seed as usize * 17) % 400, seed);
+            let needle = words[seed as usize % words.len()];
+            if has(Feature::Sse2) {
+                // SAFETY: `has` proved SSE2.
+                unsafe {
+                    assert_eq!(
+                        x86::count_u32_sse2(&words, needle),
+                        count_value_u32_scalar(&words, needle)
+                    );
+                    assert_eq!(
+                        x86::find_first_u32_sse2(&words, needle),
+                        find_first_u32_scalar(&words, needle)
+                    );
+                }
+            }
+            if has(Feature::Avx2) {
+                // SAFETY: `has` proved AVX2.
+                unsafe {
+                    assert_eq!(
+                        x86::count_u32_avx2(&words, needle),
+                        count_value_u32_scalar(&words, needle)
+                    );
+                    assert_eq!(
+                        x86::find_first_u32_avx2(&words, needle),
+                        find_first_u32_scalar(&words, needle)
+                    );
+                }
+            }
+        }
     }
 }
