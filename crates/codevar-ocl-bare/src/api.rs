@@ -1760,6 +1760,7 @@ pub unsafe extern "C" fn clEnqueueNDRangeKernel(
         kernel: def.func,
         name: def.name.as_ref(),
         binding: def.binding,
+        native: None,
         args: &args,
         dims: work_dim,
         offset,

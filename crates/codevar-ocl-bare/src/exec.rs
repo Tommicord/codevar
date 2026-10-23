@@ -47,6 +47,7 @@ use core::ffi::c_void;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::error::{Error, Result};
+use crate::trampoline::Trampoline;
 
 /// The kernel ABI, owned by `codevar-ocl-abi` and shared with the
 /// compiler side.
@@ -207,6 +208,10 @@ pub struct Launch<'a> {
     /// Kernel entry point (native kernels; never called when `binding` is
     /// set — the SPIR-V interpreter runs the entry point instead).
     pub kernel: KernelFn,
+    /// Optional native trampoline: when set, `run_group` dispatches through
+    /// it instead of `kernel`. The trampoline is borrowed from the owning
+    /// `Program` and lives at least as long as this launch.
+    pub native: Option<&'a Trampoline>,
     /// The kernel name — what the accelerator's opcode dispatch looks up.
     /// Descriptor rings do not carry it (only the host-side dispatch reads
     /// it, before publishing), so a rebuilt descriptor launch reports `""`.
@@ -329,6 +334,26 @@ pub fn validate_sizes(
     Ok((off, glob, loc))
 }
 
+/// Calls the kernel for one work-item `item`, preferring the native
+/// trampoline when one is loaded and falling back to `launch.kernel`.
+///
+/// # Safety
+///
+/// `item` must be a valid pointer to a fully initialized [`WorkItem`]
+/// whose `arg_base` points at a marshalled argument block the kernel can
+/// read.
+unsafe fn call_kernel(launch: &Launch<'_>, item: &mut WorkItem) {
+    if let Some(trampoline) = launch.native {
+        // SAFETY: the trampoline's entry point is valid executable memory
+        // following the kernel ABI; `item` is a complete WorkItem.
+        trampoline.call(item as *mut WorkItem);
+    } else {
+        // SAFETY: `launch.kernel` is valid for the arguments in
+        // `launch.args`, and `item` is fully initialized.
+        unsafe { (launch.kernel)(item) };
+    }
+}
+
 /// Executes every work-item of work-group `index` of `launch` on the
 /// calling core.
 ///
@@ -379,10 +404,9 @@ unsafe fn run_group(launch: &Launch<'_>, index: u32) -> Result<()> {
                     launch.offset[1] + y * local[1] + yl,
                     launch.offset[2] + z * local[2] + zl,
                 ];
-                // SAFETY: contract of the function: the kernel pointer
-                // and the argument block both belong to this launch, and
-                // `item` is a complete value on the stack of this call.
-                unsafe { (launch.kernel)(&mut item) };
+                // SAFETY: `item` is a fully initialized WorkItem; the kernel
+                // (trampoline or `launch.kernel`) is valid for this launch.
+                unsafe { call_kernel(launch, &mut item) };
                 xl += 1;
             }
             yl += 1;
@@ -429,10 +453,10 @@ pub unsafe fn run_claimed(launch: &Launch<'_>, claim: &AtomicU32, done: &AtomicU
             break;
         }
         // SAFETY: the index comes from the claim counter below `total`.
-        if let Err(error) = unsafe { run_group(launch, index) } {
-            if first_error.is_none() {
-                first_error = Some(error);
-            }
+        if let Err(error) = unsafe { run_group(launch, index) }
+            && first_error.is_none()
+        {
+            first_error = Some(error);
         }
         executed += 1;
         // Release so the waiter that observes `done == total` also observes
@@ -535,6 +559,7 @@ mod tests {
             kernel: record_ids,
             name: "record_ids",
             binding: SpirvBinding::NONE,
+            native: None,
             args: &args,
             dims: 2,
             offset: [0, 0, 0],
@@ -566,6 +591,7 @@ mod tests {
             kernel: record_ids,
             name: "record_ids",
             binding: SpirvBinding::NONE,
+            native: None,
             args: &args,
             dims: 1,
             offset: [0, 0, 0],
@@ -633,6 +659,7 @@ mod tests {
             kernel: vector_add,
             name: "vector_add",
             binding: SpirvBinding::NONE,
+            native: None,
             args: &args,
             dims: 1,
             offset: [0, 0, 0],

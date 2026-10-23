@@ -91,6 +91,7 @@ fn the_driver_runs_a_trampoline_as_a_native_kernel() {
         kernel: trampoline.kernel_fn(),
         name: "write_42",
         binding: SpirvBinding::NONE,
+        native: None,
         args: &args,
         dims: 1,
         offset: [0, 0, 0],

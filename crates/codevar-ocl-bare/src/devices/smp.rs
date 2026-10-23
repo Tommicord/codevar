@@ -89,6 +89,7 @@ impl JobDesc {
             // no claim-loop participant ever consults it.
             name: "",
             binding: self.binding,
+            native: None,
             args: &self.args,
             dims: self.dims,
             offset: self.offset,

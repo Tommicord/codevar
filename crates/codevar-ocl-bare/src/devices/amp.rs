@@ -227,6 +227,7 @@ impl AmpDevice {
                 // opcode dispatch that does never cross the ring.
                 name: "",
                 binding: payload.binding,
+                native: None,
                 args: &args,
                 dims: payload.dims,
                 offset: payload.offset,

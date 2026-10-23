@@ -239,6 +239,7 @@ impl AccelDesc {
             kernel: self.kernel,
             name: "",
             binding: SpirvBinding::NONE,
+            native: None,
             args: &self.args,
             dims: self.dims,
             offset: self.offset,
