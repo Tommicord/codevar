@@ -74,7 +74,7 @@ pub fn load_spir_v(bytes: &[u8]) -> Result<Vec<u32>, CompositorError> {
 /// * [`CompositorError::ShaderLoad`] — the embedded module is malformed.
 /// * [`CompositorError::ShaderModuleCreate`] — `vkCreateShaderModule`
 ///   failed.
-fn shader_module(device: &ash::Device, bytes: &[u8]) -> Result<vk::ShaderModule, CompositorError> {
+pub(crate) fn shader_module(device: &ash::Device, bytes: &[u8]) -> Result<vk::ShaderModule, CompositorError> {
     let words = load_spir_v(bytes)?;
     let info = vk::ShaderModuleCreateInfo::default().code(&words);
     // SAFETY: `words` is a validated, 4-byte-aligned SPIR-V module that

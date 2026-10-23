@@ -131,13 +131,16 @@ pub enum CompositorError {
     ImageCreate(vk::Result),
     /// `vkCreateImageView` failed for an offscreen target.
     ImageViewCreate(vk::Result),
-    /// No memory type both allowed by the offscreen image and
-    /// device-local could be found.
+    /// No memory type matching the requested properties could be found.
     NoSuitableMemoryType,
     /// `vkAllocateMemory` failed.
     MemoryAllocate(vk::Result),
-    /// `vkBindImageMemory` failed.
+    /// Binding memory to an image or a buffer failed.
     MemoryBind(vk::Result),
+    /// `vkCreateBuffer` failed.
+    BufferCreate(vk::Result),
+    /// `vkMapMemory` failed.
+    BufferMap(vk::Result),
     /// A pipe could not be started or recorded.
     Pipe {
         /// Zero-based position of the failing pipe in the queue.
@@ -191,9 +194,11 @@ impl fmt::Display for CompositorError {
             Self::PipelineCreate(err) => write!(f, "graphics pipeline creation failed: {err:?}"),
             Self::ImageCreate(err) => write!(f, "offscreen image creation failed: {err:?}"),
             Self::ImageViewCreate(err) => write!(f, "offscreen image view creation failed: {err:?}"),
-            Self::NoSuitableMemoryType => f.write_str("no suitable memory type for an offscreen image"),
-            Self::MemoryAllocate(err) => write!(f, "offscreen memory allocation failed: {err:?}"),
-            Self::MemoryBind(err) => write!(f, "binding offscreen memory failed: {err:?}"),
+            Self::NoSuitableMemoryType => f.write_str("no suitable memory type"),
+            Self::MemoryAllocate(err) => write!(f, "memory allocation failed: {err:?}"),
+            Self::MemoryBind(err) => write!(f, "binding memory failed: {err:?}"),
+            Self::BufferCreate(err) => write!(f, "buffer creation failed: {err:?}"),
+            Self::BufferMap(err) => write!(f, "mapping buffer memory failed: {err:?}"),
             Self::Pipe { index, source } => write!(f, "pipe {index} failed: {source}"),
             Self::Internal(msg) => write!(f, "internal compositor error: {msg}"),
         }
