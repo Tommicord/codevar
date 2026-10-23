@@ -816,7 +816,11 @@ impl<'a> Expander<'a> {
     /// Expands an address computation.
     ///
     /// The base is copied into the destination and every index is
-    /// scaled by the size of the pointee and added.
+    /// scaled by the size of the pointee and added.  A single index
+    /// becomes one address computation when the architecture can scale
+    /// it: the addressing mode multiplies the index by the size of the
+    /// pointee and adds the base, so the index never leaves its
+    /// register.
     fn expand_gep(
         &self,
         enc: &mut Encoder<'_>,
@@ -828,6 +832,33 @@ impl<'a> Expander<'a> {
         self.expect_int(base, 0)?;
         let dest = self.dest(inst)?;
         self.expect_dest(inst, dest)?;
+        // The addressing mode scales the index by one, two, four, or
+        // eight and adds the base.  An index of `rsp` has no encoding
+        // in the index field of the byte that carries the scale, and a
+        // constant index is scaled when its product fits the
+        // displacement.
+        if inst.args.len() == 2 {
+            match inst.args.get(1) {
+                Some(Operand::Immediate(value)) => {
+                    let disp = value
+                        .checked_mul(i64::from(size))
+                        .and_then(|disp| i32::try_from(disp).ok());
+                    if let Some(disp) = disp {
+                        enc.lea(dest, base, disp);
+                        return Ok(());
+                    }
+                }
+                Some(Operand::Physical(_)) | Some(Operand::Virtual(_)) => {
+                    let index = self.operand_reg(enc, inst, 1, &[])?;
+                    self.expect_int(index, 1)?;
+                    if matches!(size, 1 | 2 | 4 | 8) && index != reg::RSP {
+                        enc.lea_indexed(dest, base, index, size as u8, 0);
+                        return Ok(());
+                    }
+                }
+                _ => {}
+            }
+        }
         enc.mov_rr(Size::Qword, dest, base);
         let mut index = 1;
         while index < inst.args.len() {
@@ -949,11 +980,11 @@ impl<'a> Expander<'a> {
                 enc.pextrw(dest, source, index as u8);
             }
             Size::Dword => {
-                enc.pshufd(reg::SCRATCH_XMMS[1], source, index as u8);
                 if Self::class_of(dest) == Class::Float {
+                    enc.pshufd(reg::SCRATCH_XMMS[1], source, index as u8);
                     enc.mov_xmm_rr(Size::Dword, dest, reg::SCRATCH_XMMS[1]);
                 } else {
-                    enc.movd_rm_xmm(dest, reg::SCRATCH_XMMS[1]);
+                    enc.pextrd_rm_xmm(dest, source, index as u8);
                 }
             }
             Size::Qword => {
@@ -999,15 +1030,12 @@ impl<'a> Expander<'a> {
                 enc.pinsrw(dest, reg::RAX, index as u8);
             }
             Size::Dword => {
-                if Self::class_of(scalar) == Class::Float {
-                    enc.movd_rm_xmm(reg::RAX, scalar);
-                } else {
-                    enc.mov_rr(Size::Dword, reg::RAX, scalar);
-                }
                 enc.mov_xmm_rr(Size::Xmm, dest, vector);
-                enc.pinsrw(dest, reg::RAX, (index * 2) as u8);
-                enc.shift_ri(5, Size::Dword, reg::RAX, 16);
-                enc.pinsrw(dest, reg::RAX, (index * 2 + 1) as u8);
+                if Self::class_of(scalar) == Class::Float {
+                    enc.insertps_xmm_rr(dest, scalar, index as u8);
+                } else {
+                    enc.pinsrd_xmm_rr(dest, scalar, index as u8);
+                }
             }
             Size::Qword => {
                 if Self::class_of(scalar) == Class::Float {
@@ -1269,9 +1297,10 @@ impl<'a> Expander<'a> {
 
     /// Multiplies the lanes of two vectors of thirty-two-bit integers.
     ///
-    /// The baseline has no packed multiplication of thirty-two-bit
-    /// lanes, so every lane is taken out of its vector, multiplied,
-    /// and written back into the result.
+    /// The packed multiplication of thirty-two-bit lanes computes
+    /// every product at once, so the lanes never leave their vectors.
+    /// The instruction is the packed form the architecture gained
+    /// with SSE4.1.
     fn expand_vector_multiply(
         &self,
         enc: &mut Encoder<'_>,
@@ -1280,24 +1309,11 @@ impl<'a> Expander<'a> {
         left: u16,
         right: u16,
     ) -> Result<(), CodegenError> {
-        let (_, lanes) = self.vector_shape(inst, 0)?;
-        for lane in 0..lanes {
-            // The lanes of the two operands.
-            enc.pshufd(reg::SCRATCH_XMMS[1], left, lane as u8);
-            enc.movd_rm_xmm(reg::RCX, reg::SCRATCH_XMMS[1]);
-            enc.pshufd(reg::SCRATCH_XMMS[1], right, lane as u8);
-            enc.movd_rm_xmm(reg::RDX, reg::SCRATCH_XMMS[1]);
-            // The product of the two lanes.
-            enc.mov_rr(Size::Dword, reg::RAX, reg::RCX);
-            enc.imul_rr(Size::Dword, reg::RAX, reg::RDX);
-            // The result of the lane, written into the vector.
-            if lane == 0 {
-                enc.mov_xmm_rr(Size::Xmm, dest, left);
-            }
-            enc.pinsrw(dest, reg::RAX, (lane * 2) as u8);
-            enc.shift_ri(5, Size::Dword, reg::RAX, 16);
-            enc.pinsrw(dest, reg::RAX, (lane * 2 + 1) as u8);
-        }
+        // The operation reads a vector, which the shape confirms, but
+        // the instruction reads the whole register at once.
+        let _ = self.vector_shape(inst, 0)?;
+        enc.mov_xmm_rr(Size::Xmm, dest, left);
+        enc.pmulld_xmm_rr(dest, right);
         Ok(())
     }
 

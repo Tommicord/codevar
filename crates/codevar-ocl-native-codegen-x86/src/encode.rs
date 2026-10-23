@@ -224,6 +224,19 @@ impl<'a> Encoder<'a> {
         self.rex(w, reg_ext, base_ext, force);
     }
 
+    /// Emits the extension prefix of an instruction whose effective
+    /// address carries an index register.
+    ///
+    /// `w` is the width bit; `r`, `x` and `b` are the extension bits of
+    /// the register, index and base fields.
+    #[inline]
+    fn rex_sib(&mut self, w: bool, r: u8, x: u8, b: u8) {
+        let prefix = 0x40 | (u8::from(w) << 3) | ((r & 1) << 2) | ((x & 1) << 1) | (b & 1);
+        if prefix != 0x40 {
+            self.byte(prefix);
+        }
+    }
+
     /// Emits the mode byte of a register-to-register instruction.
     #[inline]
     fn modrm_rr(&mut self, reg: u8, rm: u8) {
@@ -616,6 +629,48 @@ impl<'a> Encoder<'a> {
         self.modrm_mem(dst_field, base, disp);
     }
 
+    /// Emits a computed address `dst = base + index * scale + disp`.
+    ///
+    /// Preconditions: `scale` is 1, 2, 4 or 8, and `index` is not `rsp`
+    /// (the encoding reserves the index field value 4 with no extension
+    /// bit for "no index").
+    pub(crate) fn lea_indexed(&mut self, dst: u16, base: u16, index: u16, scale: u8, disp: i32) {
+        self.count += 1;
+        debug_assert!(matches!(scale, 1 | 2 | 4 | 8));
+        debug_assert!(index != reg::RSP);
+        let (dst_field, dst_ext) = Self::parts(dst);
+        let (index_field, index_ext) = Self::parts(index);
+        let (base_field, base_ext) = Self::parts(base);
+        self.rex_sib(true, dst_ext, index_ext, base_ext);
+        self.byte(0x8D);
+        // The base field value 5 names rbp or r13, which the mode that
+        // has no displacement cannot address, so a zero displacement
+        // still takes the byte form.
+        let (mode, disp_size) = if disp == 0 && base_field != 5 {
+            (0u8, 0u8)
+        } else if (-128..=127).contains(&disp) {
+            (1, 1)
+        } else {
+            (2, 4)
+        };
+        self.byte((mode << 6) | (dst_field << 3) | 4);
+        let scale_log = match scale {
+            1 => 0u8,
+            2 => 1,
+            4 => 2,
+            _ => 3,
+        };
+        self.byte((scale_log << 6) | (index_field << 3) | base_field);
+        match disp_size {
+            1 => self.byte(disp as i8 as u8),
+            4 => {
+                let bytes = (disp as u32).to_le_bytes();
+                self.out.extend_from_slice(&bytes);
+            }
+            _ => {}
+        }
+    }
+
     /// Emits the push of a register.
     pub(crate) fn push(&mut self, reg: u16) {
         self.count += 1;
@@ -770,6 +825,69 @@ impl<'a> Encoder<'a> {
         self.byte(0x0F);
         self.byte(opcode);
         self.modrm_rr(dst_field, src_field);
+    }
+
+    /// Emits `pmulld dst, src` (packed multiply of four 32-bit integers, SSE4.1).
+    pub(crate) fn pmulld_xmm_rr(&mut self, dst: u16, src: u16) {
+        self.count += 1;
+        let (src_field, src_ext) = Self::parts(src);
+        let (dst_field, dst_ext) = Self::parts(dst);
+        self.byte(0x66);
+        self.rex(false, dst_ext, src_ext, false);
+        self.byte(0x0F);
+        self.byte(0x38);
+        self.byte(0x40);
+        self.modrm_rr(dst_field, src_field);
+    }
+
+    /// Emits `pinsrd dst, src, lane`, inserting lane `lane` of `dst` with the
+    /// double-word held by the general-purpose register `src` (SSE4.1).
+    pub(crate) fn pinsrd_xmm_rr(&mut self, dst: u16, src: u16, lane: u8) {
+        self.count += 1;
+        debug_assert!(lane < 4);
+        let (src_field, src_ext) = Self::parts(src);
+        let (dst_field, dst_ext) = Self::parts(dst);
+        self.byte(0x66);
+        self.rex(false, dst_ext, src_ext, false);
+        self.byte(0x0F);
+        self.byte(0x3A);
+        self.byte(0x22);
+        self.modrm_rr(dst_field, src_field);
+        self.byte(lane);
+    }
+
+    /// Emits `pextrd dst, src, lane`, writing lane `lane` of the SSE register
+    /// `src` into the general-purpose register `dst` (SSE4.1).
+    pub(crate) fn pextrd_rm_xmm(&mut self, dst: u16, src: u16, lane: u8) {
+        self.count += 1;
+        debug_assert!(lane < 4);
+        let (src_field, src_ext) = Self::parts(src);
+        let (dst_field, dst_ext) = Self::parts(dst);
+        self.byte(0x66);
+        self.rex(false, src_ext, dst_ext, false);
+        self.byte(0x0F);
+        self.byte(0x3A);
+        self.byte(0x16);
+        self.modrm_rr(src_field, dst_field);
+        self.byte(lane);
+    }
+
+    /// Emits `insertps dst, src, lane`, moving lane 0 of the SSE register
+    /// `src` into lane `lane` of `dst` (SSE4.1).
+    pub(crate) fn insertps_xmm_rr(&mut self, dst: u16, src: u16, lane: u8) {
+        self.count += 1;
+        debug_assert!(lane < 4);
+        let (src_field, src_ext) = Self::parts(src);
+        let (dst_field, dst_ext) = Self::parts(dst);
+        self.byte(0x66);
+        self.rex(false, dst_ext, src_ext, false);
+        self.byte(0x0F);
+        self.byte(0x3A);
+        self.byte(0x21);
+        self.modrm_rr(dst_field, src_field);
+        // Source element zero, destination element `lane`, and no
+        // zero-mask.
+        self.byte((lane & 3) << 2);
     }
 
     /// Emits the square root of an SSE register.
@@ -1307,6 +1425,74 @@ mod tests {
         assert_eq!(
             bytes_of(|e| e.pinsrw(reg::XMM0, reg::RAX, 2)),
             vec![0x66, 0x0F, 0xC4, 0xC0, 0x02]
+        );
+    }
+
+    #[test]
+    fn the_indexed_address_form_has_the_expected_bytes() {
+        assert_eq!(
+            bytes_of(|e| e.lea_indexed(reg::RAX, reg::RDI, reg::RAX, 4, 0)),
+            vec![0x48, 0x8D, 0x04, 0x87]
+        );
+        assert_eq!(
+            bytes_of(|e| e.lea_indexed(reg::RCX, reg::RSI, reg::RDX, 2, -8)),
+            vec![0x48, 0x8D, 0x4C, 0x56, 0xF8]
+        );
+        assert_eq!(
+            bytes_of(|e| e.lea_indexed(reg::RAX, reg::RBP, reg::RAX, 1, 0)),
+            vec![0x48, 0x8D, 0x44, 0x05, 0x00]
+        );
+        assert_eq!(
+            bytes_of(|e| e.lea_indexed(reg::RAX, reg::R13, reg::RAX, 1, 0)),
+            vec![0x49, 0x8D, 0x44, 0x05, 0x00]
+        );
+        assert_eq!(
+            bytes_of(|e| e.lea_indexed(reg::RAX, reg::RDI, reg::R9, 8, 0)),
+            vec![0x4A, 0x8D, 0x04, 0xCF]
+        );
+    }
+
+    #[test]
+    fn the_packed_multiply_form_has_the_expected_bytes() {
+        assert_eq!(
+            bytes_of(|e| e.pmulld_xmm_rr(reg::XMM1, reg::XMM0)),
+            vec![0x66, 0x0F, 0x38, 0x40, 0xC8]
+        );
+        assert_eq!(
+            bytes_of(|e| e.pmulld_xmm_rr(reg::XMM14, reg::XMM15)),
+            vec![0x66, 0x45, 0x0F, 0x38, 0x40, 0xF7]
+        );
+    }
+
+    #[test]
+    fn the_pinsrd_form_has_the_expected_bytes() {
+        assert_eq!(
+            bytes_of(|e| e.pinsrd_xmm_rr(reg::XMM0, reg::RAX, 1)),
+            vec![0x66, 0x0F, 0x3A, 0x22, 0xC0, 0x01]
+        );
+        assert_eq!(
+            bytes_of(|e| e.pinsrd_xmm_rr(reg::XMM14, reg::R9, 3)),
+            vec![0x66, 0x45, 0x0F, 0x3A, 0x22, 0xF1, 0x03]
+        );
+    }
+
+    #[test]
+    fn the_insertps_form_has_the_expected_bytes() {
+        assert_eq!(
+            bytes_of(|e| e.insertps_xmm_rr(reg::XMM0, reg::XMM1, 2)),
+            vec![0x66, 0x0F, 0x3A, 0x21, 0xC1, 0x08]
+        );
+    }
+
+    #[test]
+    fn the_pextrd_form_has_the_expected_bytes() {
+        assert_eq!(
+            bytes_of(|e| e.pextrd_rm_xmm(reg::RAX, reg::XMM0, 0)),
+            vec![0x66, 0x0F, 0x3A, 0x16, 0xC0, 0x00]
+        );
+        assert_eq!(
+            bytes_of(|e| e.pextrd_rm_xmm(reg::RAX, reg::XMM14, 3)),
+            vec![0x66, 0x44, 0x0F, 0x3A, 0x16, 0xF0, 0x03]
         );
     }
 }
