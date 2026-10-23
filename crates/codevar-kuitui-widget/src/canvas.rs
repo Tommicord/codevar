@@ -440,7 +440,7 @@ pub fn gradient_bands(rect: Rect, gradient: &LinearGradient, steps: u32) -> Vec<
 fn floor_to_i32(value: f32) -> i32 {
     let truncated = value as i32;
     if truncated as f32 > value {
-        truncated - 1
+        truncated.saturating_sub(1)
     } else {
         truncated
     }
@@ -451,7 +451,7 @@ fn floor_to_i32(value: f32) -> i32 {
 fn ceil_to_i32(value: f32) -> i32 {
     let truncated = value as i32;
     if (truncated as f32) < value {
-        truncated + 1
+        truncated.saturating_add(1)
     } else {
         truncated
     }
