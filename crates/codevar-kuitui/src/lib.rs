@@ -107,6 +107,17 @@ pub mod geometry;
 mod macros;
 pub mod node;
 pub mod paint;
+/// Compiled UI shaders.
+///
+/// `build.rs` compiles every GLSL source under the crate's `shaders/`
+/// directory to SPIR-V (`SHADERS_COMPILED`) and embeds the images here,
+/// so a backend builds its UI pipelines from the same programs instead
+/// of shipping private copies. When `glslc` was unavailable at build
+/// time the modules are empty and [`shaders::SHADERS_COMPILED`] is
+/// `false`.
+pub mod shaders {
+    include!(concat!(env!("OUT_DIR"), "/shaders.rs"));
+}
 pub mod state;
 pub mod text;
 pub mod theme;
