@@ -141,6 +141,15 @@ pub trait BulkBackend {
         None
     }
 
+    /// Marks which positions of `words` start a `needle` match.
+    ///
+    /// `flags[i]` is `1` when `words[i..i + needle.len()] == needle` and
+    /// `0` otherwise; the result has the same length as `words`.
+    fn find_matches(&self, words: &[u32], needle: &[u32]) -> Option<Vec<u32>> {
+        let _ = (words, needle);
+        None
+    }
+
     /// Compacts `words` by dropping the gap `[gap_start, gap_start +
     /// gap_len)`; the input holds `live_len + gap_len` elements and the
     /// result holds the `live_len` survivors.
@@ -186,6 +195,10 @@ impl BulkBackend for SimdBackend {
         Some(simd::find_first_u32(words, needle))
     }
 
+    fn find_matches(&self, words: &[u32], needle: &[u32]) -> Option<Vec<u32>> {
+        Some(simd_find_matches(words, needle))
+    }
+
     fn gap_compact(&self, words: &[u32], gap_start: usize, gap_len: usize) -> Option<Vec<u32>> {
         if gap_len == 0 || gap_start > words.len() {
             return None;
@@ -220,6 +233,14 @@ impl BulkBackend for GpuBackend {
         hot::try_find_first_u32(words, needle)
     }
 
+    fn find_matches(&self, words: &[u32], needle: &[u32]) -> Option<Vec<u32>> {
+        if words.is_empty() || needle.is_empty() {
+            return None;
+        }
+        // Safety: both slices are valid for their whole lengths.
+        unsafe { hot::find_matches(words.as_ptr(), words.len(), needle.as_ptr(), needle.len()) }
+    }
+
     fn gap_compact(&self, words: &[u32], gap_start: usize, gap_len: usize) -> Option<Vec<u32>> {
         if gap_len == 0 || gap_start > words.len() {
             return None;
@@ -232,6 +253,33 @@ impl BulkBackend for GpuBackend {
             unsafe { hot::gap_compact(words.as_ptr(), live_len, gap_start, gap_len, out.as_mut_ptr()) };
         handled.map(|()| out)
     }
+}
+
+/// CPU/SIMD match flags for [`BulkBackend::find_matches`].
+///
+/// Only positions whose leading word equals `needle[0]` can start a
+/// match, so the scan uses [`simd::find_first_u32`] to jump between
+/// candidates instead of comparing every position: the vector kernel
+/// rejects the long runs that do not contain the first word.
+fn simd_find_matches(words: &[u32], needle: &[u32]) -> Vec<u32> {
+    let mut flags = vec![0u32; words.len()];
+    if needle.is_empty() || needle.len() > words.len() {
+        return flags;
+    }
+    let last_start = words.len() - needle.len();
+    let first = needle[0];
+    let mut from = 0usize;
+    while from <= last_start {
+        let Some(offset) = simd::find_first_u32(&words[from..=last_start], first) else {
+            break;
+        };
+        let candidate = from + offset;
+        if words[candidate..candidate + needle.len()] == *needle {
+            flags[candidate] = 1;
+        }
+        from = candidate + 1;
+    }
+    flags
 }
 
 /// The bulk operations the editing engine runs over documents.
@@ -253,6 +301,9 @@ pub trait BulkOps {
 
     /// Locates the first `needle` in a `u32` buffer.
     fn find_first(&self, words: &[u32], needle: u32) -> Option<usize>;
+
+    /// Marks which positions of `words` start a `needle` match.
+    fn find_matches(&self, words: &[u32], needle: &[u32]) -> Vec<u32>;
 
     /// Compacts `words` by dropping the gap `[gap_start, gap_start +
     /// gap_len)`.
@@ -348,6 +399,17 @@ impl BulkOps for Accelerator {
             return found;
         }
         self.cpu.find_first(words, needle).flatten()
+    }
+
+    fn find_matches(&self, words: &[u32], needle: &[u32]) -> Vec<u32> {
+        if self.prefers_gpu_for_words(words.len())
+            && let Some(flags) = self.gpu.find_matches(words, needle)
+        {
+            return flags;
+        }
+        self.cpu
+            .find_matches(words, needle)
+            .unwrap_or_else(|| vec![0u32; words.len()])
     }
 
     fn gap_compact(&self, words: &[u32], gap_start: usize, gap_len: usize) -> Vec<u32> {
@@ -474,5 +536,39 @@ mod tests {
             Accelerator::with_defaults().gap_compact(&buffer, 0, 0),
             alloc::vec![]
         );
+    }
+
+    /// Match flags must agree with a scalar oracle for a length-one
+    /// needle and for overlapping multi-word needles.
+    #[test]
+    fn find_matches_flags_match_a_scalar_oracle() {
+        let haystack = [1u32, 2, 1, 2, 1, 2, 1];
+        let oracle = |needle: &[u32]| -> alloc::vec::Vec<u32> {
+            let mut flags = alloc::vec![0u32; haystack.len()];
+            if needle.is_empty() || needle.len() > haystack.len() {
+                return flags;
+            }
+            for i in 0..=haystack.len() - needle.len() {
+                if haystack[i..i + needle.len()] == *needle {
+                    flags[i] = 1;
+                }
+            }
+            flags
+        };
+        for needle in [
+            alloc::vec![1u32],
+            alloc::vec![1, 2, 1],
+            alloc::vec![2, 1],
+            alloc::vec![9],
+        ] {
+            let expected = oracle(&needle);
+            for accelerator in [Accelerator::with_defaults(), Accelerator::new(ALL_GPU)] {
+                assert_eq!(
+                    accelerator.find_matches(&haystack, &needle),
+                    expected,
+                    "needle {needle:?}"
+                );
+            }
+        }
     }
 }
