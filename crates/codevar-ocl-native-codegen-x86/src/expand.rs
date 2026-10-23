@@ -71,6 +71,7 @@ use codevar_ocl_native_codegen::error::CodegenError;
 use codevar_ocl_native_codegen::mir::{
     ArgKind, Destination, FPred, IPred, MInst, MOp, MType, MirFunction, MirModule, Operand, SymId,
 };
+use codevar_ocl_native_codegen::target::TargetCode;
 
 use crate::encode::{Arith, Cc, Encoder, Size};
 use crate::layout::Fixup;
@@ -103,6 +104,12 @@ struct Expander<'a> {
     module: &'a MirModule,
     /// The function being expanded.
     function: &'a MirFunction,
+    /// The instruction-set extensions the target may use.
+    ///
+    /// Read by the instruction selection that picks the AVX forms of
+    /// the vector operations; the baseline plumbing stores it first.
+    #[allow(dead_code)]
+    code: TargetCode,
     /// The callee-saved registers the function saves.
     saved: Vec<u16>,
     /// The size of the reserved frame.
@@ -158,12 +165,13 @@ fn lane_size(ty: &MType) -> Option<Size> {
 
 impl<'a> Expander<'a> {
     /// Creates the expander of a function.
-    fn new(module: &'a MirModule, function: &'a MirFunction) -> Self {
+    fn new(module: &'a MirModule, function: &'a MirFunction, code: TargetCode) -> Self {
         let saved = saved_registers(function);
         let frame_size = frame_size(function);
         Self {
             module,
             function,
+            code,
             saved,
             frame_size,
         }
@@ -2650,8 +2658,12 @@ fn block_order(function: &MirFunction) -> Vec<usize> {
 }
 
 /// Expands a function into the bytes of its instructions.
-pub(crate) fn expand_function(module: &MirModule, function: &MirFunction) -> Result<Expanded, CodegenError> {
-    let mut expander = Expander::new(module, function);
+pub(crate) fn expand_function(
+    module: &MirModule,
+    function: &MirFunction,
+    code: TargetCode,
+) -> Result<Expanded, CodegenError> {
+    let mut expander = Expander::new(module, function, code);
     let mut bytes: Vec<u8> = Vec::with_capacity(64);
     let mut fixups: Vec<Fixup> = Vec::new();
     // The offset of a block is recorded by the block's own index, not

@@ -88,7 +88,7 @@ use alloc::vec::Vec;
 
 use codevar_ocl_native_codegen::error::Result;
 use codevar_ocl_native_codegen::mir::{MirModule, PReg, SymId};
-use codevar_ocl_native_codegen::target::{CodeImage, NativeTarget, RegModel};
+use codevar_ocl_native_codegen::target::{CodeImage, NativeTarget, RegModel, TargetCode};
 
 mod encode;
 mod expand;
@@ -100,12 +100,25 @@ mod reg;
 pub struct X86Target {
     /// The register file of the target.
     registers: RegModel,
+    /// The instruction-set extensions the target may use.
+    code: TargetCode,
 }
 
 impl X86Target {
-    /// Creates the target.
+    /// Creates the target at the baseline instruction set.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_code(TargetCode::Baseline)
+    }
+
+    /// Creates the target at the instruction-set extensions `code`.
+    ///
+    /// The code selects the instructions the target may use above the
+    /// baseline: AVX and AVX2 widen the vectors to 256 bits, AVX-512 to
+    /// 512, and the AVX-512 extension flags open the byte permutes and
+    /// funnel shifts of VBMI and VBMI2 and the multiply-add of IFMA.
+    #[must_use]
+    pub fn with_code(code: TargetCode) -> Self {
         let mut int_regs: Vec<PReg> = Vec::with_capacity(8);
         for number in [
             reg::R10,
@@ -153,7 +166,14 @@ impl X86Target {
                 return_regs,
                 pointer_size: 8,
             },
+            code,
         }
+    }
+
+    /// The instruction-set extensions the target may use.
+    #[must_use]
+    pub const fn code(&self) -> TargetCode {
+        self.code
     }
 }
 
@@ -187,7 +207,7 @@ impl NativeTarget for X86Target {
         }
         let mut expanded = Vec::with_capacity(module.functions.len());
         for function in &module.functions {
-            expanded.push(expand::expand_function(module, function)?);
+            expanded.push(expand::expand_function(module, function, self.code)?);
         }
         layout::lay_out(&expanded, entry_index)
     }
@@ -241,5 +261,15 @@ mod tests {
             assert!(!registers.float_regs.contains(&reg));
             assert!(!registers.vec_regs.contains(&reg));
         }
+    }
+
+    #[test]
+    fn the_target_keeps_the_selected_instruction_set() {
+        assert_eq!(X86Target::new().code(), TargetCode::Baseline);
+        assert_eq!(X86Target::default().code(), TargetCode::Baseline);
+        assert_eq!(
+            X86Target::with_code(TargetCode::Avx512Vbmi2).code(),
+            TargetCode::Avx512Vbmi2
+        );
     }
 }
