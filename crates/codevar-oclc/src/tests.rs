@@ -76,6 +76,59 @@ fn run_rejects_unknown_emit() {
 }
 
 #[test]
+fn run_rejects_unknown_opt_level() {
+    assert_eq!(run(&args(&["-O4", "in.cl"])), Exit::Usage);
+    assert_eq!(run(&args(&["--opt-level", "fast", "in.cl"])), Exit::Usage);
+}
+
+#[test]
+fn run_accepts_every_opt_level() {
+    // The input is missing, so the stage fails after the command line is
+    // parsed: a non-usage status proves the level was accepted.
+    for level in ["0", "1", "2", "3"] {
+        let flag = format!("-O{level}");
+        assert_eq!(
+            run(&args(&[flag.as_str(), "/nonexistent/codevar-oclc-input.cl"])),
+            Exit::Failure,
+            "level {level}"
+        );
+    }
+}
+
+#[test]
+fn run_rejects_tc_without_native_emit() {
+    assert_eq!(run(&args(&["--tc", "avx2", "in.cl"])), Exit::Usage);
+}
+
+#[test]
+fn run_rejects_unknown_tc() {
+    assert_eq!(
+        run(&args(&["--emit", "native", "--tc", "avx1024", "in.cl"])),
+        Exit::Usage
+    );
+}
+
+#[test]
+fn run_accepts_every_tc_on_native_emit() {
+    // The input is missing, so the stage fails after the command line is
+    // parsed: a non-usage status proves the code was accepted.
+    for code in codevar_ocl_tc::TARGET_CODES {
+        assert_eq!(
+            run(&args(&[
+                "--emit",
+                "native",
+                "--tc",
+                code.name(),
+                "/nonexistent/codevar-oclc-input.cl",
+            ])),
+            Exit::Failure,
+            "target code {}",
+            code.name()
+        );
+    }
+}
+
+#[test]
 fn run_fails_on_missing_input_file() {
     let args = args(&["/nonexistent/codevar-oclc-input.cl"]);
     assert_eq!(run(&args), Exit::Failure);
@@ -113,6 +166,37 @@ fn vector_add(a: *const float, b: *const float, c: *mut float, n: int) -> void {
     assert_eq!(exit, Exit::Success);
     assert!(bytes.len() >= 20, "byte length: {}", bytes.len());
     assert_eq!(&bytes[0..4], &[0x03, 0x02, 0x23, 0x07], "SPIR-V magic");
+}
+
+/// `unwrap` is safe: the path and kernel source are constructed here.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "arm"))]
+#[test]
+fn native_stage_honors_the_opt_level() {
+    let input = temp_path("native-opt.cl");
+    let unoptimized = temp_path("native-o0.bin");
+    let optimized = temp_path("native-o3.bin");
+    let kernel = "\
+#[kernel]
+fn fill(out: *mut int) -> void {
+    out[0] = 7;
+}
+";
+    fs::write_file(&input, kernel).unwrap();
+    cleanup(&unoptimized);
+    cleanup(&optimized);
+
+    let exit0 = run(&args(&["--emit", "native", "-O0", "-o", &unoptimized, &input]));
+    let exit3 = run(&args(&["--emit", "native", "-O3", "-o", &optimized, &input]));
+    let bytes0 = std::fs::read(&unoptimized).unwrap_or_default();
+    let bytes3 = std::fs::read(&optimized).unwrap_or_default();
+    cleanup(&input);
+    cleanup(&unoptimized);
+    cleanup(&optimized);
+
+    assert_eq!(exit0, Exit::Success);
+    assert_eq!(exit3, Exit::Success);
+    assert!(!bytes0.is_empty(), "the -O0 code is empty");
+    assert!(!bytes3.is_empty(), "the -O3 code is empty");
 }
 
 /// `unwrap` is safe: the path and kernel source are constructed here.

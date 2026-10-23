@@ -25,6 +25,7 @@ use codevar_ocl_ir::verify::verify_function;
 use codevar_ocl_lex::{Base, LiteralKind, Token, TokenKind, tokenize};
 use codevar_ocl_parse::{GenericParam, ItemKind, ItemStream, optimize, parse};
 use codevar_ocl_sar::{DeclCollector, analyze_body, file_checks};
+use codevar_ocl_tc::{OptLevel, TargetCode};
 
 use crate::fs;
 
@@ -42,6 +43,12 @@ const IMPLEMENTED_STAGES: &[&str] = &["tokens", "ast", "analysis", "ir", "spirv"
 
 /// Stage used when `--emit` is absent.
 const DEFAULT_EMIT: &str = "tokens";
+
+/// Every optimization level accepted by `-O`/`--opt-level`.
+const OPT_LEVELS: &[&str] = &["0", "1", "2", "3"];
+
+/// Optimization level used when `-O` is absent.
+const DEFAULT_OPT_LEVEL: &str = "2";
 
 /// Process exit status produced by the driver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +129,30 @@ impl<'a> Driver<'a> {
         if entry.is_some() && emit != "native" {
             return usage("--entry is only valid with '--emit native'");
         }
+        if matches.option("tc").is_some() && emit != "native" {
+            return usage("--tc is only valid with '--emit native'");
+        }
+        let level = match validate_choice("--opt-level", matches.option("opt-level"), OPT_LEVELS) {
+            Ok(level) => level.unwrap_or(DEFAULT_OPT_LEVEL),
+            Err(error) => return usage(&error.to_string()),
+        };
+        let level = match level
+            .as_bytes()
+            .first()
+            .copied()
+            .and_then(OptLevel::from_digit)
+        {
+            Some(level) => level,
+            None => return usage("--opt-level must be 0, 1, 2, or 3"),
+        };
+        let target_code = match validate_choice("--tc", matches.option("tc"), &target_code_names()) {
+            Ok(Some(name)) => match TargetCode::from_name(name) {
+                Some(code) => code,
+                None => return usage(&format!("--tc must name a known target code, not '{name}'")),
+            },
+            Ok(None) => TargetCode::Baseline,
+            Err(error) => return usage(&error.to_string()),
+        };
         let input = match matches.positional(0) {
             Some(input) => input,
             None => return usage("missing required argument '<INPUT>'"),
@@ -141,7 +172,14 @@ impl<'a> Driver<'a> {
             return run_spirv(&source, display_path, matches.option("output"));
         }
         if emit == "native" {
-            return run_native(&source, display_path, entry, matches.option("output"));
+            return run_native(
+                &source,
+                display_path,
+                entry,
+                level,
+                target_code,
+                matches.option("output"),
+            );
         }
         let text = if emit == "analysis" {
             // The semantic analyzer owns its own Unicode, lexical, and
@@ -354,8 +392,8 @@ fn run_spirv(source: &str, display_path: &str, output: Option<&str>) -> Exit {
 /// whole-file checks the `--emit spirv` stage runs — so a broken
 /// kernel is reported with a source position instead of a back-end
 /// error.  The selected entry point is then compiled to machine code
-/// and the raw bytes are written to the output (stdout when there is
-/// none).
+/// at the requested `level` and the raw bytes are written to the output
+/// (stdout when there is none).
 ///
 /// The machine code is position-independent: it holds no absolute
 /// address, so it can be copied into executable memory and entered at
@@ -363,7 +401,14 @@ fn run_spirv(source: &str, display_path: &str, output: Option<&str>) -> Exit {
 /// convention of `codevar-ocl-abi`: it takes the per-work-item state
 /// and reads the kernel's arguments from the block that state points
 /// at.
-fn run_native(source: &str, display_path: &str, requested_entry: Option<&str>, output: Option<&str>) -> Exit {
+fn run_native(
+    source: &str,
+    display_path: &str,
+    requested_entry: Option<&str>,
+    level: OptLevel,
+    target_code: TargetCode,
+    output: Option<&str>,
+) -> Exit {
     let kernels = match analyze_kernels(source, display_path) {
         Ok(kernels) => kernels,
         Err(status) => return status,
@@ -372,7 +417,7 @@ fn run_native(source: &str, display_path: &str, requested_entry: Option<&str>, o
         Ok(entry) => entry,
         Err(message) => return failure(&message),
     };
-    let code = match codevar_ocl_tc::compile_source(source, entry) {
+    let code = match codevar_ocl_tc::compile_source_at_with(source, entry, level, target_code) {
         Ok(code) => code,
         Err(error) => return failure(&format!("native compilation failed: {error}")),
     };
@@ -586,7 +631,30 @@ pub(crate) fn build_parser() -> ArgParser {
             "NAME",
             "Kernel to compile with '--emit native' (default: the only kernel of the file)",
         )
+        .option(
+            "opt-level",
+            Some('O'),
+            "LEVEL",
+            "Optimization level for '--emit native': 0, 1, 2, or 3 (default: 2)",
+        )
+        .option(
+            "tc",
+            None,
+            "CODE",
+            &format!(
+                "Instruction-set extensions for '--emit native': {} (default: baseline)",
+                target_code_names().join(", ")
+            ),
+        )
         .positional("INPUT", "Input source file, or - for stdin", false)
+}
+
+/// The spellings `--tc` accepts, in the order the help text lists them.
+fn target_code_names() -> Vec<&'static str> {
+    codevar_ocl_tc::TARGET_CODES
+        .iter()
+        .map(|code| code.name())
+        .collect()
 }
 
 /// Expands `@response` file arguments using rustc's rules: a single level
