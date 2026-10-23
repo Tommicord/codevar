@@ -21,6 +21,7 @@ pub mod change;
 mod codebook;
 pub mod compress;
 pub mod cursor_allocator;
+pub mod dispatch;
 pub mod edit;
 pub mod error;
 pub mod hot;
