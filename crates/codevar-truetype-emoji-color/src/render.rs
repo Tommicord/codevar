@@ -2345,6 +2345,333 @@ mod tests {
             .unwrap()
     }
 
+    /// Appends a big-endian `u24` (an `Offset24`) to `bytes`.
+    fn push_u24(bytes: &mut Vec<u8>, value: u32) {
+        bytes.extend_from_slice(&value.to_be_bytes()[1..]);
+    }
+
+    /// A `PaintSolid` with a full F2Dot14 alpha.
+    fn solid_paint(palette: u16) -> Vec<u8> {
+        let mut bytes = alloc::vec![2u8];
+        bytes.extend_from_slice(&palette.to_be_bytes());
+        bytes.extend_from_slice(&0x4000i16.to_be_bytes());
+        bytes
+    }
+
+    /// A `PaintGlyph` whose child paint starts right after the header.
+    fn glyph_paint(glyph: u16, child: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(6 + child.len());
+        bytes.push(10);
+        push_u24(&mut bytes, 6);
+        bytes.extend_from_slice(&glyph.to_be_bytes());
+        bytes.extend_from_slice(child);
+        bytes
+    }
+
+    /// A `PaintColrLayers` for `num_layers` entries from `first`.
+    fn layer_list_paint(num_layers: u8, first: u32) -> Vec<u8> {
+        let mut bytes = alloc::vec![1u8, num_layers];
+        bytes.extend_from_slice(&first.to_be_bytes());
+        bytes
+    }
+
+    /// A `PaintTransform`; `matrix` is in stream order
+    /// `[xx, yx, xy, yy, dx, dy]`.
+    fn transform_paint(child: &[u8], matrix: [i32; 6]) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(28 + child.len());
+        bytes.push(12);
+        push_u24(&mut bytes, 28);
+        for value in matrix {
+            bytes.extend_from_slice(&value.to_be_bytes());
+        }
+        bytes.extend_from_slice(child);
+        bytes
+    }
+
+    /// A `PaintComposite`; both children are appended in order.
+    fn composite_paint(source: &[u8], mode: u8, backdrop: &[u8]) -> Vec<u8> {
+        let mut bytes = alloc::vec![32u8];
+        push_u24(&mut bytes, 8);
+        bytes.push(mode);
+        push_u24(&mut bytes, 8 + source.len() as u32);
+        bytes.extend_from_slice(source);
+        bytes.extend_from_slice(backdrop);
+        bytes
+    }
+
+    /// A `ColorLine` with the given extend mode and `(offset, palette)`
+    /// stops; every stop gets a full F2Dot14 alpha.
+    fn color_line(extend: u8, stops: &[(i16, u16)]) -> Vec<u8> {
+        let mut bytes = alloc::vec![extend];
+        bytes.extend_from_slice(&(stops.len() as u16).to_be_bytes());
+        for &(offset, palette) in stops {
+            bytes.extend_from_slice(&offset.to_be_bytes());
+            bytes.extend_from_slice(&palette.to_be_bytes());
+            bytes.extend_from_slice(&0x4000i16.to_be_bytes());
+        }
+        bytes
+    }
+
+    /// A `PaintLinearGradient` from (0, 0) to (500, 0) with the
+    /// rotation point (0, 700).
+    fn linear_gradient_paint(stops: &[u8]) -> Vec<u8> {
+        let mut bytes = alloc::vec![4u8];
+        push_u24(&mut bytes, 16);
+        for value in [0i16, 0, 500, 0, 0, 700] {
+            bytes.extend_from_slice(&value.to_be_bytes());
+        }
+        bytes.extend_from_slice(stops);
+        bytes
+    }
+
+    /// Assembles a `COLR` version 1 table with one base glyph record
+    /// for glyph 0, an optional `LayerList`, and `base_paint` plus
+    /// `layer_paints` as the paint data.
+    ///
+    /// Offsets follow the specification: the record's paint offset is
+    /// from the start of the base glyph list, `LayerList` entries are
+    /// from the start of the `LayerList`, and offsets inside a paint
+    /// are from that paint's start.
+    fn colr_v1_table(base_paint: &[u8], layer_paints: &[&[u8]]) -> Vec<u8> {
+        const BASE_LIST: usize = 34;
+        let layer_list = BASE_LIST + 10;
+        let layer_list_len = if layer_paints.is_empty() {
+            0
+        } else {
+            4 + 4 * layer_paints.len()
+        };
+        let paints = layer_list + layer_list_len;
+
+        let mut table = alloc::vec![0u8; paints];
+        table[0..2].copy_from_slice(&1u16.to_be_bytes());
+        table[14..18].copy_from_slice(&(BASE_LIST as u32).to_be_bytes());
+        let layer_header = if layer_paints.is_empty() {
+            0
+        } else {
+            layer_list as u32
+        };
+        table[18..22].copy_from_slice(&layer_header.to_be_bytes());
+        table[BASE_LIST..BASE_LIST + 4].copy_from_slice(&1u32.to_be_bytes());
+        table[BASE_LIST + 4..BASE_LIST + 6].copy_from_slice(&0u16.to_be_bytes());
+        table[BASE_LIST + 6..BASE_LIST + 10].copy_from_slice(&((paints - BASE_LIST) as u32).to_be_bytes());
+
+        if !layer_paints.is_empty() {
+            table[layer_list..layer_list + 4].copy_from_slice(&(layer_paints.len() as u32).to_be_bytes());
+            let mut offset = paints + base_paint.len();
+            for (index, paint) in layer_paints.iter().enumerate() {
+                let entry = layer_list + 4 + index * 4;
+                table[entry..entry + 4].copy_from_slice(&((offset - layer_list) as u32).to_be_bytes());
+                offset += paint.len();
+            }
+        }
+
+        table.extend_from_slice(base_paint);
+        for paint in layer_paints {
+            table.extend_from_slice(paint);
+        }
+        table
+    }
+
+    /// A color font with a one-palette `CPAL` (red at 0, green at 1)
+    /// and the given `COLR` v1 table.
+    fn v1_font(glyphs: &[Vec<u8>], metrics: &[(u16, i16)], colr: Vec<u8>) -> Vec<u8> {
+        color_font(
+            glyphs,
+            metrics,
+            &[
+                (TAG_COLR, colr),
+                (TAG_CPAL, cpal_table(&[(0, 0, 255, 255), (0, 255, 0, 255)], false)),
+            ],
+        )
+    }
+
+    /// An opaque color stop with linear-light premultiplied channels.
+    fn remembered_stop(offset: i64, color: [u8; 3]) -> ResolvedStop {
+        let alpha = 255;
+        ResolvedStop {
+            offset,
+            alpha,
+            linear: [
+                i64::from(srgb_to_linear(color[0])) * alpha,
+                i64::from(srgb_to_linear(color[1])) * alpha,
+                i64::from(srgb_to_linear(color[2])) * alpha,
+            ],
+        }
+    }
+
+    /// A 0 -> 65536 linear gradient from red to green in extend mode
+    /// `extend`, with geometry that does not affect [`GradientFill::color_at`].
+    fn extend_fill(extend: PaintExtend) -> GradientFill {
+        let stops = alloc::vec![
+            remembered_stop(0, [0, 0, 255]),
+            remembered_stop(65536, [0, 255, 0]),
+        ];
+        let first = stops.first().map_or(0, |stop| stop.offset);
+        let last = stops.last().map_or(0, |stop| stop.offset);
+        GradientFill {
+            stops,
+            extend,
+            kind: GradientKind::Linear {
+                p0: (0, 0),
+                p1: (65536, 0),
+                p2: (0, 65536),
+            },
+            transform: Affine::root(&scaled_size(1000, 16)),
+            first,
+            last,
+        }
+    }
+
+    #[test]
+    fn colr_v1_solid_paint_renders_the_palette_color() {
+        let glyphs = [Vec::new(), rect_glyph(0, 0, 500, 700)];
+        let metrics = [(600, 0), (600, 0)];
+        let base = glyph_paint(1, &solid_paint(0));
+        let bytes = v1_font(&glyphs, &metrics, colr_v1_table(&base, &[]));
+        let font = open(&bytes);
+        assert!(font.has_color());
+
+        let glyph = font.render_glyph(0, 16, 0).unwrap();
+        assert_eq!((glyph.bitmap.width, glyph.bitmap.rows), (8, 12));
+        assert_eq!(glyph.bitmap.pixel_mode, PixelMode::Bgra);
+        // The paint path maps font units directly: the box starts at
+        // x = 0, unlike the hinted outline's -1.
+        assert_eq!((glyph.bitmap_left, glyph.bitmap_top), (0, 12));
+        assert_eq!(glyph.advance, 614);
+        assert_eq!(glyph.source_ppem, 16);
+
+        // The top scanline keeps 13/64 coverage; the rows below are
+        // fully covered by the red palette entry.
+        assert_eq!(bgra(&glyph.bitmap, 0, 0), [0, 0, 52, 52]);
+        assert_eq!(bgra(&glyph.bitmap, 3, 4), [0, 0, 255, 255]);
+        assert_eq!(bgra(&glyph.bitmap, 11, 7), [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn colr_v1_layer_list_composites_layers_with_src_over() {
+        let glyphs = [
+            Vec::new(),
+            rect_glyph(0, 0, 500, 700),
+            rect_glyph(100, 100, 400, 400),
+        ];
+        let metrics = [(600, 0), (600, 0), (600, 100)];
+        let layer_paints = [glyph_paint(1, &solid_paint(0)), glyph_paint(2, &solid_paint(1))];
+        let layers: [&[u8]; 2] = [&layer_paints[0], &layer_paints[1]];
+        let base = layer_list_paint(2, 0);
+        let bytes = v1_font(&glyphs, &metrics, colr_v1_table(&base, &layers));
+        let font = open(&bytes);
+
+        let glyph = font.render_glyph(0, 16, 0).unwrap();
+        assert_eq!((glyph.bitmap.width, glyph.bitmap.rows), (8, 12));
+        assert_eq!((glyph.bitmap_left, glyph.bitmap_top), (0, 12));
+        // The red layer covers the whole box apart from its partial
+        // top scanline.
+        assert_eq!(bgra(&glyph.bitmap, 0, 0), [0, 0, 52, 52]);
+        assert_eq!(bgra(&glyph.bitmap, 3, 1), [0, 0, 255, 255]);
+        // The green layer overwrites it where it is opaque...
+        assert_eq!(bgra(&glyph.bitmap, 6, 3), [0, 255, 0, 255]);
+        // ...and blends 104/255 over the red at its left edge.
+        assert_eq!(bgra(&glyph.bitmap, 6, 1), [0, 104, 151, 255]);
+        // The second layer never reaches the rows above its box.
+        assert_eq!(bgra(&glyph.bitmap, 1, 1), [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn colr_v1_transform_moves_the_glyph_outline() {
+        let glyphs = [Vec::new(), rect_glyph(0, 0, 500, 700)];
+        let metrics = [(600, 0), (600, 0)];
+        // Translate by 100 design units: 100 * 67109 / 65536 = 102 in
+        // 26.6 device space (1.59 pixels).
+        let matrix = [65536, 0, 0, 65536, 100 << 16, 0];
+        let base = transform_paint(&glyph_paint(1, &solid_paint(0)), matrix);
+        let bytes = v1_font(&glyphs, &metrics, colr_v1_table(&base, &[]));
+        let font = open(&bytes);
+
+        let glyph = font.render_glyph(0, 16, 0).unwrap();
+        // The 8-pixel box now starts at x = 102: one pixel left of the
+        // new box is empty and the box gains a partial ninth column.
+        assert_eq!((glyph.bitmap.width, glyph.bitmap.rows), (9, 12));
+        assert_eq!((glyph.bitmap_left, glyph.bitmap_top), (1, 12));
+        assert_eq!(bgra(&glyph.bitmap, 3, 1), [0, 0, 255, 255]);
+        for column in [0u32, 8] {
+            let edge = bgra(&glyph.bitmap, 3, column);
+            assert!(edge[3] > 0 && edge[3] < 255, "column {column}: {edge:?}");
+            assert_eq!(edge, [0, 0, edge[3], edge[3]]);
+        }
+    }
+
+    #[test]
+    fn colr_v1_composite_applies_porter_duff() {
+        let glyphs = [
+            Vec::new(),
+            rect_glyph(0, 0, 500, 700),
+            rect_glyph(100, 100, 400, 400),
+        ];
+        let metrics = [(600, 0), (600, 0), (600, 100)];
+        let source = glyph_paint(1, &solid_paint(0));
+        let backdrop = glyph_paint(2, &solid_paint(1));
+        // `SrcIn`: keep the source only where the backdrop is opaque.
+        let base = composite_paint(&source, 5, &backdrop);
+        let bytes = v1_font(&glyphs, &metrics, colr_v1_table(&base, &[]));
+        let font = open(&bytes);
+
+        let glyph = font.render_glyph(0, 16, 0).unwrap();
+        assert_eq!((glyph.bitmap.width, glyph.bitmap.rows), (8, 12));
+        assert_eq!((glyph.bitmap_left, glyph.bitmap_top), (0, 12));
+        // Both operands cover the middle of the inner box: source wins.
+        assert_eq!(bgra(&glyph.bitmap, 8, 3), [0, 0, 255, 255]);
+        // The source outside the backdrop is clipped away.
+        assert_eq!(bgra(&glyph.bitmap, 0, 3), [0, 0, 0, 0]);
+        assert_eq!(bgra(&glyph.bitmap, 11, 3), [0, 0, 0, 0]);
+        assert_eq!(bgra(&glyph.bitmap, 3, 0), [0, 0, 0, 0]);
+        assert_eq!(bgra(&glyph.bitmap, 3, 7), [0, 0, 0, 0]);
+        assert_eq!(bgra(&glyph.bitmap, 3, 1), [0, 0, 0, 0]);
+        // A 104/255 backdrop edge scales both source color and alpha.
+        assert_eq!(bgra(&glyph.bitmap, 6, 1), [0, 0, 104, 104]);
+    }
+
+    #[test]
+    fn colr_v1_linear_gradient_interpolates_in_linear_light() {
+        let glyphs = [Vec::new(), rect_glyph(0, 0, 500, 700)];
+        let metrics = [(600, 0), (600, 0)];
+        // Red at 0, green at 500 units; p0p1 runs along +x, so the
+        // parameter is x/500.
+        let stops = color_line(0, &[(0, 0), (0x4000, 1)]);
+        let base = glyph_paint(1, &linear_gradient_paint(&stops));
+        let bytes = v1_font(&glyphs, &metrics, colr_v1_table(&base, &[]));
+        let font = open(&bytes);
+
+        let glyph = font.render_glyph(0, 16, 0).unwrap();
+        assert_eq!((glyph.bitmap.width, glyph.bitmap.rows), (8, 12));
+        assert_eq!((glyph.bitmap_left, glyph.bitmap_top), (0, 12));
+        // A gamma-space ramp would give [0, 16, 239]; linear-light
+        // interpolation of 1/16 and 15/16 gives 71 and 248.
+        assert_eq!(bgra(&glyph.bitmap, 3, 0), [0, 71, 248, 255]);
+        assert_eq!(bgra(&glyph.bitmap, 3, 7), [0, 248, 71, 255]);
+    }
+
+    #[test]
+    fn gradient_extend_modes_pad_repeat_and_reflect() {
+        let pad = extend_fill(PaintExtend::Pad);
+        let repeat = extend_fill(PaintExtend::Repeat);
+        let reflect = extend_fill(PaintExtend::Reflect);
+
+        // Pad clamps to the first and last stop.
+        assert_eq!(pad.color_at(-65536), pad.color_at(0));
+        assert_eq!(pad.color_at(3 * 65536), pad.color_at(65536));
+
+        // Repeat wraps on the stop interval; an exact endpoint stays
+        // on the last stop instead of wrapping to the first.
+        assert_eq!(repeat.color_at(65536 + 16384), pad.color_at(16384));
+        assert_eq!(repeat.color_at(-16384), pad.color_at(3 * 16384));
+        assert_eq!(repeat.color_at(65536), pad.color_at(65536));
+
+        // Reflect mirrors every other period.
+        assert_eq!(reflect.color_at(2 * 65536 + 16384), pad.color_at(16384));
+        assert_eq!(reflect.color_at(65536 + 32768), pad.color_at(32768));
+        assert_eq!(reflect.color_at(-32768), pad.color_at(32768));
+    }
+
     #[test]
     fn outlined_glyphs_render_the_grid_aligned_preset_box() {
         let bytes = color_font(&[rect_glyph(0, 0, 500, 700)], &[(600, 0)], &[]);
