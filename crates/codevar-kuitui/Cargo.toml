@@ -6,7 +6,7 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Kuitui: the Compose-inspired retained-mode UI framework of Codevar"
+description = "Kuitui: the retained-mode UI framework of Codevar"
 
 [lib]
 name = "codevar_kuitui"
