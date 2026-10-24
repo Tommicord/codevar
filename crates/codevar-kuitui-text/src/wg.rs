@@ -79,16 +79,16 @@ use crate::mesh::Index;
 const PAGE_FORMAT: wgt::TextureFormat = wgt::TextureFormat::R8Unorm;
 
 /// Byte size of the `text.vert` immediate block (`vec2 viewport`).
-const VIEWPORT_PUSH_BYTES: u32 = 8;
+const VIEWPORT_PUSH_BYTES: u32 = 0x8;
 
 /// Initial size of each staging buffer.
-const DEFAULT_STAGING_BYTES: u64 = 256 * 1024;
+const DEFAULT_STAGING_BYTES: u64 = 0x40000;
 
 /// Initial number of vertices the vertex buffer holds.
-const DEFAULT_VERTEX_CAPACITY: usize = 16 * 1024;
+const DEFAULT_VERTEX_CAPACITY: usize = 0x4000;
 
 /// Initial number of indices the index buffer holds.
-const DEFAULT_INDEX_CAPACITY: usize = 32 * 1024;
+const DEFAULT_INDEX_CAPACITY: usize = 0x8000;
 
 /// Usage of the vertex buffer: drawable and writable by a copy.
 const VERTEX_USAGE: wgt::BufferUses = wgt::BufferUses::VERTEX.union(wgt::BufferUses::COPY_DST);

@@ -28,7 +28,7 @@
 //! * the dirty signal tells a backend whether the text changed at all,
 //!   so an idle frame re-uploads no coverage and rebuilds no mesh.
 //! * the platform modules own the GPU objects and the upload/draw calls:
-//!   Vulkan in [`vulkan`] (native) and WebGPU in [`webgpu`] (wasm32).
+//!   Vulkan in [`vulkan`] (native) and WebGPU in [`wg`] (wasm32).
 //!
 //! The atlas never reads data back from the GPU. The CPU is the source of
 //! truth for coverage; the GPU receives dirty rectangles through a
@@ -44,7 +44,7 @@ pub mod mesh;
 /// Native Vulkan adapter: uploads atlas coverage and draws the indexed runs.
 ///
 /// The module only builds on targets that have Vulkan (everything except
-/// wasm32, which uses [`webgpu`] instead).
+/// wasm32, which uses [`wg`] instead).
 #[cfg(not(target_arch = "wasm32"))]
 pub mod vulkan;
 /// Browser WebGPU adapter: stages coverage and geometry through copies and
@@ -53,7 +53,7 @@ pub mod vulkan;
 /// The module only builds on wasm32, which has a WebGPU (and its WebGL2
 /// fallback) surface; every other target uses [`vulkan`] instead.
 #[cfg(target_arch = "wasm32")]
-pub mod webgpu;
+pub mod wg;
 
 pub use atlas::{
     AtlasConfig, AtlasStats, ColorTextAtlas, DirtyRect, GlyphKey, GlyphSlot, TextAtlas, TextError, TextFrame,
@@ -64,4 +64,4 @@ pub use mesh::{GlyphQuad, INDICES_PER_QUAD, Index, IndexedMesh, MeshBuilder, Mes
 #[cfg(not(target_arch = "wasm32"))]
 pub use vulkan::TextPipe;
 #[cfg(target_arch = "wasm32")]
-pub use webgpu::TextPipe;
+pub use wg::TextPipe;
