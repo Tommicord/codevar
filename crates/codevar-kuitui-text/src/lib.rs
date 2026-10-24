@@ -56,7 +56,8 @@ pub mod vulkan;
 pub mod webgpu;
 
 pub use atlas::{
-    AtlasConfig, AtlasStats, DirtyRect, GlyphKey, GlyphSlot, TextAtlas, TextError, TextFrame, TextVertex,
+    AtlasConfig, AtlasStats, ColorTextAtlas, DirtyRect, GlyphKey, GlyphSlot, TextAtlas, TextError, TextFrame,
+    TextVertex,
 };
 pub use dirty::{DirtySignal, coalesce};
 pub use mesh::{GlyphQuad, INDICES_PER_QUAD, Index, IndexedMesh, MeshBuilder, MeshRun, VERTICES_PER_QUAD};
