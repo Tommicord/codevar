@@ -43,11 +43,39 @@ use crate::font::{Font, ShapeError};
 /// supplies the raster and the advances; the frame's atlas receives the
 /// coverage and its mesh builder the quads.
 ///
+/// A color run has no color font here, so it is shaped through [`font`]'s
+/// outline pipeline like any other run. Use [`shape_list_with_color`] when
+/// the list contains runs that need the color pipeline.
+///
 /// # Errors
 ///
 /// The first [`ShapeError`] a run reports.
 pub fn shape_list(frame: &TextFrame, font: &Font, list: &DrawList) -> Result<(), ShapeError> {
     let mut shaper = TextShaper::new(frame, font);
+    shape_with(&mut shaper, list)
+}
+
+/// Shapes every text run of `list`, including color runs, into `frame`.
+///
+/// Coverage runs use `font`; color runs use `color_font`, whose COLR/CPAL
+/// layers or bitmap strikes produce the premultiplied BGRA glyphs of the
+/// frame's color atlas. The list is not drained.
+///
+/// # Errors
+///
+/// The first [`ShapeError`] a run reports.
+pub fn shape_list_with_color(
+    frame: &TextFrame,
+    font: &Font,
+    color_font: &Font,
+    list: &DrawList,
+) -> Result<(), ShapeError> {
+    let mut shaper = TextShaper::with_color_font(frame, font, color_font);
+    shape_with(&mut shaper, list)
+}
+
+/// Shapes `list` with an already configured shaper.
+fn shape_with(shaper: &mut TextShaper<'_>, list: &DrawList) -> Result<(), ShapeError> {
     for command in list.commands() {
         shaper.push_command(command);
         if let Some(error) = shaper.error() {
@@ -64,8 +92,10 @@ pub fn shape_list(frame: &TextFrame, font: &Font, list: &DrawList) -> Result<(),
 pub struct TextShaper<'a> {
     /// The frame the coverage and the quads go to.
     frame: &'a TextFrame,
-    /// The font the runs are rasterized with.
+    /// The font the coverage runs are rasterized with.
     font: &'a Font,
+    /// The font the color runs are rasterized with, if one was supplied.
+    color_font: Option<&'a Font>,
     /// The clip of the command being visited.
     clip: Option<Rect>,
     /// The first failure, kept because `DrawVisitor` cannot return one.
@@ -80,6 +110,20 @@ impl<'a> TextShaper<'a> {
         Self {
             frame,
             font,
+            color_font: None,
+            clip: None,
+            error: None,
+        }
+    }
+
+    /// Creates a shaper that draws color runs with `color_font`.
+    #[inline]
+    #[must_use]
+    pub const fn with_color_font(frame: &'a TextFrame, font: &'a Font, color_font: &'a Font) -> Self {
+        Self {
+            frame,
+            font,
+            color_font: Some(color_font),
             clip: None,
             error: None,
         }
@@ -111,6 +155,21 @@ impl DrawVisitor for TextShaper<'_> {
             self.error = Some(error);
         }
     }
+
+    fn color_text(&mut self, origin: Offset, text: &Rc<str>, style: &TextStyle) {
+        if self.error.is_some() {
+            return;
+        }
+        let result = match self.color_font {
+            Some(font) => font.shape_into_color(self.frame, origin, text, style, self.clip),
+            None => self
+                .font
+                .shape_into(self.frame, origin, text, style, self.clip),
+        };
+        if let Err(error) = result {
+            self.error = Some(error);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -126,14 +185,24 @@ mod tests {
         "/../../assets/tf/codevar.tf.space-mono.regular.ttf"
     );
 
+    const EMOJI_FONT: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../codevar-truetype-emoji-color/tests/resources/NotoColorEmoji-colr-v1-subset.ttf"
+    );
+
     fn font(ppem: u16) -> Font {
         let bytes = std::fs::read(FONT).unwrap();
         Font::from_bytes(bytes).unwrap().with_ppem(ppem)
     }
 
+    fn emoji_font(ppem: u16) -> Font {
+        let bytes = std::fs::read(EMOJI_FONT).unwrap();
+        Font::from_bytes(bytes).unwrap().with_ppem(ppem)
+    }
+
     fn frame() -> TextFrame {
         let atlas = TextAtlas::new(AtlasConfig::DEFAULT).unwrap();
-        let frame = TextFrame::new(atlas);
+        let frame = TextFrame::new(atlas).unwrap();
         frame.begin_frame();
         frame
     }
@@ -185,5 +254,46 @@ mod tests {
         shape_list(&frame, &font(24), &list).unwrap();
 
         assert_eq!(list.len(), 2, "the list is not drained");
+    }
+
+    #[test]
+    fn a_color_text_run_reaches_the_color_atlas() {
+        let mut list = DrawList::new();
+        list.color_text(Offset::new(0.0, 24.0), Rc::from("😀"), TextStyle::new(24.0));
+
+        let frame = frame();
+        shape_list_with_color(&frame, &font(24), &emoji_font(24), &list).unwrap();
+
+        assert!(frame.runs().is_empty(), "a color run is not coverage");
+        let runs = frame.color_runs();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].quad_count(), 1);
+        assert_eq!(frame.color_atlas().glyph_count(), 1);
+    }
+
+    #[test]
+    fn a_color_text_run_carries_the_command_clip() {
+        let clip = Rect::from_min_size(Offset::new(3.0, 4.0), 20.0, 20.0);
+        let mut list = DrawList::new();
+        list.push_clip(clip);
+        list.color_text(Offset::ZERO, Rc::from("😀"), TextStyle::new(24.0));
+        list.pop_clip();
+
+        let frame = frame();
+        shape_list_with_color(&frame, &font(24), &emoji_font(24), &list).unwrap();
+
+        assert_eq!(frame.color_runs()[0].clip, Some(clip));
+    }
+
+    #[test]
+    fn a_color_text_run_without_a_color_font_falls_back_to_coverage() {
+        let mut list = DrawList::new();
+        list.color_text(Offset::ZERO, Rc::from("Hi"), TextStyle::new(24.0));
+
+        let frame = frame();
+        shape_list(&frame, &font(24), &list).unwrap();
+
+        assert!(frame.color_runs().is_empty());
+        assert_eq!(frame.runs()[0].quad_count(), 2);
     }
 }
