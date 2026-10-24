@@ -46,11 +46,11 @@
 //! * push constant block — [`PushConstants`], the viewport size in
 //!   logical pixels;
 //! * fragment input location 0 — the interpolated `v_color`;
-//! * fragment output location 0 — the fragment colour.
+//! * fragment output location 0 — the fragment color.
 //!
-//! Because the colour is interpolated, the same program paints a flat
+//! Because the color is interpolated, the same program paints a flat
 //! fill, a line, a polygon and a linear gradient (the ends of an edge
-//! carry the gradient's end colours).
+//! carry the gradient's end colors).
 //!
 //! # The `text` program
 //!
@@ -80,7 +80,7 @@ use codevar_kuitui::geometry::Offset;
 pub struct UiVertex {
     /// The position in logical pixels, origin at the top-left.
     pub position: [f32; 2],
-    /// The non-premultiplied sRGB colour.
+    /// The non-premultiplied sRGB color.
     pub color: [f32; 4],
 }
 
@@ -95,7 +95,7 @@ impl UiVertex {
         Self { position, color }
     }
 
-    /// Creates a vertex from an offset and a colour.
+    /// Creates a vertex from an offset and a color.
     #[inline]
     #[must_use]
     pub const fn from_parts(position: Offset, color: Color) -> Self {
@@ -118,7 +118,7 @@ pub struct TextVertex {
     pub position: [f32; 2],
     /// The normalized atlas coordinates of the pixel.
     pub uv: [f32; 2],
-    /// The non-premultiplied sRGB colour of the run.
+    /// The non-premultiplied sRGB color of the run.
     pub color: [f32; 4],
 }
 
