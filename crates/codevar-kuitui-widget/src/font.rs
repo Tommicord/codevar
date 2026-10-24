@@ -50,6 +50,7 @@ use codevar_truetype_core::{
     Outline, PixelMode, Raster, RasterFlags, RasterParams, SizeMetrics, SlotInternal, TtError, Vector,
     div_fix, mul_fix,
 };
+use codevar_truetype_emoji_color::render::{ColorFont, RenderedGlyph};
 use codevar_truetype_glyf::load_glyph;
 use codevar_truetype_sfnt::SfntFont;
 use codevar_truetype_smooth::grays::GrayRaster;
@@ -361,7 +362,7 @@ impl Font {
     ///
     /// [`FontError::Open`], [`FontError::Load`], [`FontError::Raster`],
     /// [`FontError::Bitmap`] or [`FontError::AtlasFull`].
-    pub fn layout(&self, text: &str, style: &TextStyle) -> Result<GlyphRun, FontError> {
+    pub fn layout(&self, text: &str, style: &TextStyle) -> Result<GlyphRun<GlyphAtlas>, FontError> {
         let font = self.sfnt()?;
         let metrics = self.size_metrics();
         let mut slot = new_slot();
@@ -484,6 +485,180 @@ impl Font {
                 pen += advance + spacing;
             }
             Ok(())
+        })
+    }
+
+    /// Shapes a color text run into a shared frame.
+    ///
+    /// Uses the color font pipeline (strikes → COLR/CPAL → outline) to
+    /// rasterize each glyph as premultiplied BGRA, inserts it into the
+    /// frame's color atlas, and pushes quads with white vertex color so
+    /// the emoji's own colors are reproduced.
+    ///
+    /// # Errors
+    ///
+    /// * [`ShapeError::Font`] when the color font pipeline fails;
+    /// * [`ShapeError::Atlas`] when the shared color atlas cannot take a glyph.
+    pub fn shape_into_color(
+        &self,
+        frame: &TextFrame,
+        origin: Offset,
+        text: &str,
+        style: &TextStyle,
+        clip: Option<Rect>,
+    ) -> Result<(), ShapeError> {
+        let color_font = match self.color_font() {
+            Some(cf) => cf,
+            None => return Err(ShapeError::Font(FontError::Open(TtError::INVALID_TABLE))),
+        };
+        let spacing = (style.letter_spacing * 64.0) as i64;
+        let color = [1.0, 1.0, 1.0, 1.0]; // white so emoji colors show
+
+        // Use the underlying sfnt for glyph index mapping (same as gray path).
+        let sfnt = self.sfnt().map_err(ShapeError::Font)?;
+
+        frame.with_color(|atlas, mesh| -> Result<(), ShapeError> {
+            let mut pen: i64 = 0;
+            for character in text.chars() {
+                if character == '\n' {
+                    pen += spacing;
+                    continue;
+                }
+                let glyph_index = sfnt.char_index(u32::from(character));
+                let rendered = match color_font.render_char(character, self.ppem, 0) {
+                    Ok(r) => r,
+                    Err(TtError::INVALID_GLYPH_INDEX) => continue,
+                    Err(e) => return Err(ShapeError::Font(FontError::Open(e))),
+                };
+                let bitmap = &rendered.bitmap;
+                let width = bitmap.width;
+                let height = bitmap.rows;
+                let key = glyph_key(self.ppem, glyph_index);
+                if let Some(slot) = atlas
+                    .insert(key, width, height, bitmap.buffer.as_slice())
+                    .map_err(ShapeError::Atlas)?
+                {
+                    let position = [
+                        origin.x + fixed_pixels(pen) + rendered.bitmap_left as f32,
+                        origin.y - rendered.bitmap_top as f32,
+                    ];
+                    mesh.push(&AtlasQuad::from_slot(slot, position, color, clip));
+                }
+                pen += rendered.advance + spacing;
+            }
+            Ok(())
+        })
+    }
+
+    /// Opens a [`ColorFont`] for this face, if it has color tables.
+    ///
+    /// Returns `None` when the font has no `CPAL`/`COLR` or `CBLC`/`CBDT`
+    /// tables, or when they fail to parse (the `ColorFont::open` call
+    /// logs warnings and degrades to the outline).
+    pub fn color_font(&self) -> Option<ColorFont<'_>> {
+        let sfnt = self.sfnt().ok()?;
+        let color_font = ColorFont::open(sfnt);
+        if color_font.has_color() {
+            Some(color_font)
+        } else {
+            None
+        }
+    }
+
+    /// Rasterizes `character` using the color font pipeline.
+    ///
+    /// Returns `None` when the character has no glyph, the glyph is empty,
+    /// or the font lacks color tables. The returned bitmap is premultiplied
+    /// BGRA (`PixelMode::Bgra`), 4 bytes per pixel.
+    ///
+    /// # Errors
+    ///
+    /// Propagates errors from the color font pipeline.
+    pub fn rasterize_color(&self, character: char) -> Result<Option<RenderedGlyph>, FontError> {
+        let color_font = match self.color_font() {
+            Some(cf) => cf,
+            None => return Ok(None),
+        };
+        color_font
+            .render_char(character, self.ppem, 0)
+            .map(Some)
+            .or_else(|e| {
+                if matches!(e, TtError::INVALID_GLYPH_INDEX) {
+                    Ok(None)
+                } else {
+                    Err(FontError::Open(e))
+                }
+            })
+    }
+
+    /// Lays `text` out using the color font, returning a run with a BGRA atlas.
+    ///
+    /// This is the color counterpart of [`Font::layout`]. Each glyph is
+    /// rasterized through the color pipeline (strikes → COLR layers → outline)
+    /// and packed into a [`ColorableGlyphAtlas`]. The run's vertices carry
+    /// white as the vertex color so the emoji's own colors are reproduced.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Font::layout`], plus color font pipeline errors.
+    pub fn layout_color(
+        &self,
+        text: &str,
+        style: &TextStyle,
+    ) -> Result<GlyphRun<ColorableGlyphAtlas>, FontError> {
+        let color_font = match self.color_font() {
+            Some(cf) => cf,
+            None => return Err(FontError::Open(TtError::INVALID_TABLE)),
+        };
+        let mut atlas = ColorableGlyphAtlas::new(ATLAS_SIZE, ATLAS_SIZE);
+        let mut quads = Vec::new();
+        let mut pen: i64 = 0;
+        let spacing = (style.letter_spacing * 64.0) as i64;
+        let color = [1.0, 1.0, 1.0, 1.0]; // white so emoji colors show
+
+        for character in text.chars() {
+            if character == '\n' {
+                pen += spacing;
+                continue;
+            }
+            let rendered = match color_font.render_char(character, self.ppem, 0) {
+                Ok(r) => r,
+                Err(TtError::INVALID_GLYPH_INDEX) => {
+                    // Character not in font; skip but advance by a default amount?
+                    // For now, just skip.
+                    continue;
+                }
+                Err(e) => return Err(FontError::Open(e)),
+            };
+            let advance = rendered.advance;
+            let bitmap = &rendered.bitmap;
+            let width = bitmap.width;
+            let height = bitmap.rows;
+            if let Some(region) = atlas.insert(bitmap) {
+                let atlas_width = atlas.width() as f32;
+                let atlas_height = atlas.height() as f32;
+                quads.push(GlyphQuad {
+                    glyph_index: 0, // Not tracked for color runs
+                    x: fixed_pixels(pen) + rendered.bitmap_left as f32,
+                    y: -(rendered.bitmap_top as f32),
+                    width: width as f32,
+                    height: height as f32,
+                    uv_min: [region.x as f32 / atlas_width, region.y as f32 / atlas_height],
+                    uv_max: [
+                        (region.x + region.width) as f32 / atlas_width,
+                        (region.y + region.height) as f32 / atlas_height,
+                    ],
+                    color,
+                });
+            }
+            pen += advance + spacing;
+        }
+
+        Ok(GlyphRun {
+            quads,
+            atlas,
+            size: Size::new(fixed_pixels(pen), self.line_height()),
+            baseline: self.ascent(),
         })
     }
 }
@@ -678,7 +853,169 @@ impl GlyphAtlas {
     }
 }
 
-/// Where a glyph bitmap landed inside a [`GlyphAtlas`].
+/// An atlas for glyph bitmaps: stores packed bitmaps and returns
+/// the region where each glyph was placed.
+///
+/// Implementations differ in the pixel format they store (e.g. single-
+/// channel coverage or premultiplied BGRA).
+pub trait Atlas {
+    /// The pixel format of this atlas.
+    fn pixel_mode(&self) -> PixelMode;
+
+    /// The width of the atlas in pixels.
+    fn width(&self) -> u32;
+
+    /// The height of the atlas in pixels.
+    fn height(&self) -> u32;
+
+    /// The raw pixel buffer.
+    fn pixels(&self) -> &[u8];
+
+    /// Inserts a glyph bitmap and returns its region, or `None` if it
+    /// does not fit.
+    fn insert(&mut self, bitmap: &Bitmap) -> Option<AtlasRegion>;
+}
+
+/// A single-channel coverage atlas (gray).
+///
+/// This is the original `GlyphAtlas`, now implementing [`Atlas`].
+impl Atlas for GlyphAtlas {
+    #[inline]
+    fn pixel_mode(&self) -> PixelMode {
+        PixelMode::Gray
+    }
+
+    #[inline]
+    fn width(&self) -> u32 {
+        self.width
+    }
+
+    #[inline]
+    fn height(&self) -> u32 {
+        self.height
+    }
+
+    #[inline]
+    fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+
+    #[inline]
+    fn insert(&mut self, bitmap: &Bitmap) -> Option<AtlasRegion> {
+        self.insert(bitmap)
+    }
+}
+
+/// A BGRA atlas for color glyphs (emoji).
+///
+/// Stores premultiplied BGRA bitmaps (4 bytes per pixel), matching
+/// the output of [`codevar_truetype_emoji_color::render::ColorFont`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColorableGlyphAtlas {
+    /// The width of the atlas, in pixels.
+    width: u32,
+    /// The height of the atlas, in pixels.
+    height: u32,
+    /// The BGRA pixels, row-major, 4 bytes per pixel.
+    pixels: Vec<u8>,
+    /// The x position of the next free cell.
+    pen_x: u32,
+    /// The y position of the next free cell.
+    pen_y: u32,
+    /// The height of the shelf currently being filled.
+    shelf_height: u32,
+}
+
+impl ColorableGlyphAtlas {
+    /// Creates a zeroed atlas of `width` by `height` pixels.
+    ///
+    /// Each pixel occupies 4 bytes (BGRA), so the buffer size is
+    /// `width * height * 4`.
+    #[must_use]
+    pub fn new(width: u32, height: u32) -> Self {
+        let byte_len = (width as usize)
+            .saturating_mul(height as usize)
+            .saturating_mul(4);
+        Self {
+            width,
+            height,
+            pixels: alloc::vec![0u8; byte_len],
+            pen_x: 0,
+            pen_y: 0,
+            shelf_height: 0,
+        }
+    }
+}
+
+impl Atlas for ColorableGlyphAtlas {
+    #[inline]
+    fn pixel_mode(&self) -> PixelMode {
+        PixelMode::Bgra
+    }
+
+    #[inline]
+    fn width(&self) -> u32 {
+        self.width
+    }
+
+    #[inline]
+    fn height(&self) -> u32 {
+        self.height
+    }
+
+    #[inline]
+    fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+
+    fn insert(&mut self, bitmap: &Bitmap) -> Option<AtlasRegion> {
+        debug_assert_eq!(bitmap.pixel_mode, PixelMode::Bgra);
+        let width = bitmap.width;
+        let height = bitmap.rows;
+        if width == 0 || height == 0 || width > self.width || height > self.height {
+            return None;
+        }
+        if self.pen_x + width > self.width {
+            self.pen_x = 0;
+            self.pen_y += self.shelf_height + ATLAS_PADDING;
+            self.shelf_height = 0;
+        }
+        if self.pen_y + height > self.height {
+            return None;
+        }
+        let region = AtlasRegion {
+            x: self.pen_x,
+            y: self.pen_y,
+            width,
+            height,
+        };
+        let pitch = bitmap.pitch;
+        let src_stride = if pitch < 0 {
+            (-pitch) as usize
+        } else {
+            pitch as usize
+        };
+        for row in 0..height {
+            let src_offset = row as usize * src_stride;
+            if src_offset >= bitmap.buffer.len() {
+                break;
+            }
+            let src_end = (src_offset + width as usize * 4).min(bitmap.buffer.len());
+            let source = &bitmap.buffer[src_offset..src_end];
+            let dst_start = ((region.y + row) * self.width + region.x) as usize * 4;
+            let dst_end = dst_start + width as usize * 4;
+            if let Some(destination) = self.pixels.get_mut(dst_start..dst_end) {
+                let copy = (width as usize * 4).min(source.len());
+                destination[..copy].copy_from_slice(&source[..copy]);
+            }
+        }
+        self.pen_x += width + ATLAS_PADDING;
+        self.shelf_height = self.shelf_height.max(height);
+        Some(region)
+    }
+}
+
+/// Where a glyph bitmap landed inside a [`GlyphAtlas`] or [`ColorableGlyphAtlas`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct AtlasRegion {
     /// The left edge of the region, in pixels.
@@ -714,14 +1051,18 @@ pub struct GlyphQuad {
     pub color: [f32; 4],
 }
 
-/// A laid-out run of text: its glyph quads, its coverage atlas and its
+/// A laid-out run of text: its glyph quads, its atlas and its
 /// measured extent.
+///
+/// The atlas type parameter allows the run to carry either a gray
+/// [`GlyphAtlas`] or a color [`ColorableGlyphAtlas`], both implementing
+/// [`Atlas`].
 #[derive(Debug, Clone, PartialEq)]
-pub struct GlyphRun {
+pub struct GlyphRun<A: Atlas = GlyphAtlas> {
     /// The glyph quads, in reading order.
     pub quads: Vec<GlyphQuad>,
-    /// The coverage atlas the quads sample.
-    pub atlas: GlyphAtlas,
+    /// The atlas the quads sample.
+    pub atlas: A,
     /// The extent of the run; `width` is the advance, `height` the line
     /// height.
     pub size: Size,
@@ -729,7 +1070,7 @@ pub struct GlyphRun {
     pub baseline: f32,
 }
 
-impl GlyphRun {
+impl<A: Atlas> GlyphRun<A> {
     /// Builds the six vertices of every glyph quad.
     ///
     /// The vertices use the [`crate::shaders::TextVertex`] layout the
@@ -800,7 +1141,7 @@ fn rasterize_glyph(
     let mut params = RasterParams {
         target: &mut bitmap,
         source: &slot.outline,
-        flags: RasterFlags::AA,
+        flags: RasterFlags::AA | RasterFlags::HOT,
         gray_spans: None,
         user: None,
         clip_box: BBox::new(),
@@ -925,7 +1266,7 @@ mod tests {
         let style = TextStyle::new(24.0);
         let atlas = codevar_kuitui_text::TextAtlas::new(codevar_kuitui_text::AtlasConfig::DEFAULT)
             .expect("the default atlas config is valid");
-        let frame = codevar_kuitui_text::TextFrame::new(atlas);
+        let frame = codevar_kuitui_text::TextFrame::new(atlas).expect("valid atlas config creates frame");
         frame.begin_frame();
 
         let clip =

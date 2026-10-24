@@ -15,6 +15,7 @@ name = "codevar_kuitui_widget"
 codevar-kuitui = { workspace = true }
 codevar-kuitui-text = { workspace = true }
 codevar-truetype-core = { workspace = true }
+codevar-truetype-emoji-color = { workspace = true }
 codevar-truetype-glyf = { workspace = true }
 codevar-truetype-sfnt = { workspace = true }
 codevar-truetype-smooth = { workspace = true }
