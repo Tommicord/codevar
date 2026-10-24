@@ -589,8 +589,12 @@ pub struct LayerV1Iter<'a> {
     num_layers: u16,
     /// Current layer index.
     current: u16,
-    /// Base offset of this layer list's paint offsets within the table.
+    /// Offset of the paint offset array within the table.
     list_base: usize,
+    /// Offset of the enclosing `LayerList` within the table: the
+    /// stored paint offsets are relative to this position
+    /// (`Offset32` "from beginning of LayerList table").
+    layer_list_base: usize,
 }
 
 /// Color stop iterator for gradients (`FT_ColorStopIterator`).
@@ -929,7 +933,9 @@ impl<'a> ColrTable<'a> {
             return None;
         }
         // layer_list_offset is relative to start of LayerV1List.
-        let list_base = layer_list_offset as usize;
+        let list_base = self
+            .layers_v1_offset
+            .saturating_add(layer_list_offset as usize);
         if list_base + 4 > self.data.len() {
             return None;
         }
@@ -951,6 +957,7 @@ impl<'a> ColrTable<'a> {
             num_layers,
             current: 0,
             list_base: paint_offsets_start,
+            layer_list_base: list_base,
         })
     }
 
@@ -1044,6 +1051,7 @@ impl<'a> ColrTable<'a> {
             num_layers,
             current: 0,
             list_base,
+            layer_list_base: self.layers_v1_offset,
         };
         Ok(Paint::ColrLayers(ColrLayersPaint { layer_iter: iter }))
     }
@@ -1395,7 +1403,8 @@ impl<'a> ColrTable<'a> {
             let palette_index = reader.u16()?;
             let alpha = reader.i16()?;
             stops.push(ColorStop {
-                stop_offset: stop_offset << 16,
+                // F2Dot14 -> 16.16 is a shift by two, not sixteen.
+                stop_offset: stop_offset << 2,
                 color: ColorIndex { palette_index, alpha },
             });
             if read_variable {
@@ -1492,13 +1501,16 @@ impl<'a> Iterator for LayerV1Iter<'a> {
             return None;
         }
         let offset = self.list_base + (self.current as usize) * 4;
-        let paint_offset = u32::from_be_bytes(
+        let relative = u32::from_be_bytes(
             self.data
                 .get(offset..offset + 4)?
                 .try_into()
                 .unwrap_or([0, 0, 0, 0]),
         );
         self.current += 1;
+        // Stored offsets are relative to the LayerList; the rest of
+        // the parser works with absolute table offsets.
+        let paint_offset = relative.saturating_add(self.layer_list_base as u32);
         Some(OpaquePaint::new(paint_offset, false))
     }
 
