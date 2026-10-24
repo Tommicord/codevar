@@ -57,7 +57,7 @@ use codevar_truetype_sfnt::{
 };
 use codevar_truetype_smooth::grays::GrayRaster;
 
-use crate::colr::{COLOR_FOREGROUND, ColrTable, LayerIter, PaintExtend};
+use crate::colr::{COLOR_FOREGROUND, ColrTable, CompositeMode, LayerIter, PaintExtend};
 use crate::cpal::CpalTable;
 use crate::sbit::{SbitImage, SbitStrikes};
 
@@ -1052,6 +1052,553 @@ impl Canvas {
         }
         Ok(())
     }
+
+    /// `true` when the canvas holds no pixels.
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.bitmap.buffer.is_empty()
+    }
+
+    /// The canvas box as `(x_min, x_max, y_min, y_max)` in pixels, or
+    /// `None` when the canvas holds no pixels.
+    #[inline]
+    fn bounds(&self) -> Option<(i64, i64, i64, i64)> {
+        if self.bitmap.width == 0 || self.bitmap.rows == 0 {
+            return None;
+        }
+        let x_min = i64::from(self.left);
+        let x_max = x_min + i64::from(self.bitmap.width);
+        let y_max = i64::from(self.top);
+        let y_min = y_max - i64::from(self.bitmap.rows);
+        Some((x_min, x_max, y_min, y_max))
+    }
+
+    /// Hands the canvas's pixels and placement to the caller.
+    ///
+    /// An empty canvas becomes an empty BGRA bitmap so callers always
+    /// see a color bitmap, even when the paint graph painted nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`TtError::ARRAY_TOO_LARGE`] — allocating the empty bitmap
+    /// overflowed (it cannot for a `0 x 0` bitmap).
+    fn into_bgra(self) -> TtResult<(Bitmap, i32, i32)> {
+        if self.is_empty() {
+            let bitmap = Bitmap::new_sized(0, 0, PixelMode::Bgra, 256)?;
+            return Ok((bitmap, 0, 0));
+        }
+        Ok((self.bitmap, self.left, self.top))
+    }
+
+    /// Reads the premultiplied BGRA pixel covering device pixel
+    /// (`x`, `y`), or transparent black when it lies outside the
+    /// canvas.
+    #[inline]
+    fn pixel_at(&self, x: i64, y: i64) -> [u8; 4] {
+        let column = x - i64::from(self.left);
+        let row = i64::from(self.top) - 1 - y;
+        if column < 0 || row < 0 {
+            return [0; 4];
+        }
+        let (Ok(column), Ok(row)) = (u32::try_from(column), u32::try_from(row)) else {
+            return [0; 4];
+        };
+        let Some(row) = self.bitmap.row(row) else {
+            return [0; 4];
+        };
+        let start = usize::try_from(column)
+            .ok()
+            .and_then(|column| column.checked_mul(4))
+            .unwrap_or(usize::MAX);
+        let Some(pixel) = row.get(start..start.saturating_add(4)) else {
+            return [0; 4];
+        };
+        [pixel[0], pixel[1], pixel[2], pixel[3]]
+    }
+
+    /// Composites `source` over this canvas with `SrcOver`
+    /// (`PaintColrLayers`' layer combination).
+    ///
+    /// # Errors
+    ///
+    /// Forwarded from [`Canvas::composite`].
+    fn draw_over(&mut self, source: &Canvas) -> TtResult<()> {
+        if source.is_empty() {
+            return Ok(());
+        }
+        let backdrop = core::mem::replace(self, Canvas::empty());
+        self.composite(source, &backdrop, CompositeMode::SrcOver)
+    }
+
+    /// Fills `mask`'s pixels with `fill` and composites them over the
+    /// canvas with `SrcOver`.
+    ///
+    /// `mask` is a gray coverage bitmap whose box is (`left`, `top`);
+    /// gradients are sampled at each pixel center in device space.
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::ARRAY_TOO_LARGE`] — the box exceeds
+    ///   [`MAX_DIMENSION`].
+    /// * [`TtError::INVALID_ARGUMENT`] — a row slice is missing (an
+    ///   internal invariant).
+    fn fill_mask(&mut self, mask: &Bitmap, left: i32, top: i32, fill: &Fill) -> TtResult<()> {
+        self.resize(left, top, mask.width, mask.rows)?;
+        if mask.width == 0 || mask.rows == 0 || self.bitmap.buffer.is_empty() {
+            return Ok(());
+        }
+        let row_offset = i64::from(self.top) - i64::from(top);
+        let column_offset = i64::from(left) - i64::from(self.left);
+        for row in 0..mask.rows {
+            let source_row = mask.row(row).ok_or(TtError::INVALID_ARGUMENT)?;
+            let target_index =
+                u32::try_from(row_offset + i64::from(row)).map_err(|_| TtError::INVALID_ARGUMENT)?;
+            let target_row = self
+                .bitmap
+                .row_mut(target_index)
+                .ok_or(TtError::INVALID_ARGUMENT)?;
+            let device_y = i64::from(top) - 1 - i64::from(row);
+            for column in 0..mask.width {
+                let coverage = u32::from(source_row[column as usize]);
+                if coverage == 0 {
+                    continue;
+                }
+                let color = match fill {
+                    Fill::Solid(color) => *color,
+                    Fill::Gradient(gradient) => {
+                        let device_x = (i64::from(left) + i64::from(column)) * 64 + 32;
+                        let center_y = device_y * 64 + 32;
+                        match gradient.sample(device_x, center_y) {
+                            Some(color) => color,
+                            None => continue,
+                        }
+                    }
+                };
+                let source = [
+                    (u32::from(color[0]) * coverage / 255) as u8,
+                    (u32::from(color[1]) * coverage / 255) as u8,
+                    (u32::from(color[2]) * coverage / 255) as u8,
+                    (u32::from(color[3]) * coverage / 255) as u8,
+                ];
+                let target_column = usize::try_from(column_offset + i64::from(column))
+                    .map_err(|_| TtError::INVALID_ARGUMENT)?;
+                let target_start = target_column
+                    .checked_mul(4)
+                    .ok_or(TtError::INVALID_ARGUMENT)?;
+                let target_pixel = target_row
+                    .get_mut(target_start..target_start + 4)
+                    .ok_or(TtError::INVALID_ARGUMENT)?;
+                over_pixel(target_pixel, source);
+            }
+        }
+        Ok(())
+    }
+
+    /// Composites `source` against `backdrop` with `mode`, storing the
+    /// result in this (previously unused) canvas.
+    ///
+    /// The result covers the union of both boxes; a pixel outside one
+    /// operand reads as transparent black, which is what the W3C
+    /// compositing model specifies for an absent paint.
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::ARRAY_TOO_LARGE`] — the union exceeds
+    ///   [`MAX_DIMENSION`] or does not fit the canvas coordinates.
+    /// * [`TtError::INVALID_ARGUMENT`] — a row slice is missing (an
+    ///   internal invariant).
+    fn composite(&mut self, source: &Canvas, backdrop: &Canvas, mode: CompositeMode) -> TtResult<()> {
+        let (x_min, x_max, y_min, y_max) = match (source.bounds(), backdrop.bounds()) {
+            (Some(source_box), Some(backdrop_box)) => (
+                source_box.0.min(backdrop_box.0),
+                source_box.1.max(backdrop_box.1),
+                source_box.2.min(backdrop_box.2),
+                source_box.3.max(backdrop_box.3),
+            ),
+            (Some(bounds), None) | (None, Some(bounds)) => bounds,
+            (None, None) => return Ok(()),
+        };
+        let width = x_max - x_min;
+        let rows = y_max - y_min;
+        if width <= 0 || rows <= 0 || width > MAX_DIMENSION || rows > MAX_DIMENSION {
+            return Err(TtError::ARRAY_TOO_LARGE);
+        }
+        let width = u32::try_from(width).map_err(|_| TtError::ARRAY_TOO_LARGE)?;
+        let rows = u32::try_from(rows).map_err(|_| TtError::ARRAY_TOO_LARGE)?;
+        let left = i32::try_from(x_min).map_err(|_| TtError::ARRAY_TOO_LARGE)?;
+        let top = i32::try_from(y_max).map_err(|_| TtError::ARRAY_TOO_LARGE)?;
+
+        let mut bitmap = Bitmap::new_sized(rows, width, PixelMode::Bgra, 256)?;
+        for row in 0..rows {
+            let target_row = bitmap
+                .row_mut(row)
+                .ok_or(TtError::INVALID_ARGUMENT)?;
+            let y = i64::from(top) - 1 - i64::from(row);
+            for column in 0..width {
+                let x = i64::from(left) + i64::from(column);
+                let pixel = composite_pixel(source.pixel_at(x, y), backdrop.pixel_at(x, y), mode);
+                let start = usize::try_from(column)
+                    .map_err(|_| TtError::INVALID_ARGUMENT)?
+                    .checked_mul(4)
+                    .ok_or(TtError::INVALID_ARGUMENT)?;
+                let target = target_row
+                    .get_mut(start..start + 4)
+                    .ok_or(TtError::INVALID_ARGUMENT)?;
+                target.copy_from_slice(&pixel);
+            }
+        }
+        self.bitmap = bitmap;
+        self.left = left;
+        self.top = top;
+        Ok(())
+    }
+}
+
+/// Blends `source` over `target` with `SrcOver`, both premultiplied
+/// BGRA; `source` is already scaled by its coverage.
+#[inline]
+fn over_pixel(target: &mut [u8], source: [u8; 4]) {
+    let inverse = 255 - u32::from(source[3]);
+    for channel in 0..4 {
+        target[channel] =
+            ((u32::from(target[channel]) * inverse + 127) / 255 + u32::from(source[channel])) as u8;
+    }
+}
+
+/// A separable blend function of the W3C Compositing and Blending
+/// Level 1 model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BlendOp {
+    /// `B(Cb, Cs) = Cb * Cs`.
+    Multiply,
+    /// `B(Cb, Cs) = Cb + Cs - Cb * Cs`.
+    Screen,
+    /// `B(Cb, Cs) = HardLight(Cs, Cb)`.
+    Overlay,
+    /// `B(Cb, Cs) = min(Cb, Cs)`.
+    Darken,
+    /// `B(Cb, Cs) = max(Cb, Cs)`.
+    Lighten,
+    /// `B(Cb, Cs) = min(1, Cb / (1 - Cs))`.
+    ColorDodge,
+    /// `B(Cb, Cs) = 1 - min(1, (1 - Cb) / Cs)`.
+    ColorBurn,
+    /// `B(Cb, Cs) = Multiply(Cb, 2 Cs)` or `Screen(Cb, 2 Cs - 1)`.
+    HardLight,
+    /// The piecewise `D(Cb)` soft-light function.
+    SoftLight,
+    /// `B(Cb, Cs) = |Cb - Cs|`.
+    Difference,
+    /// `B(Cb, Cs) = Cb + Cs - 2 Cb Cs`.
+    Exclusion,
+}
+
+/// A non-separable blend function of the W3C model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HslOp {
+    /// `SetLum(SetSat(Cs, Sat(Cb)), Lum(Cb))`.
+    Hue,
+    /// `SetLum(SetSat(Cb, Sat(Cs)), Lum(Cb))`.
+    Saturation,
+    /// `SetLum(Cs, Lum(Cb))`.
+    Color,
+    /// `SetLum(Cb, Lum(Cs))`.
+    Luminosity,
+}
+
+/// Composites a premultiplied source pixel with a premultiplied
+/// backdrop pixel, returning the premultiplied result.
+fn composite_pixel(source: [u8; 4], backdrop: [u8; 4], mode: CompositeMode) -> [u8; 4] {
+    let source_alpha = u32::from(source[3]);
+    let backdrop_alpha = u32::from(backdrop[3]);
+    match mode {
+        CompositeMode::Clear => porter_duff(source, backdrop, 0, 0),
+        CompositeMode::Src => porter_duff(source, backdrop, 255, 0),
+        CompositeMode::Dest => porter_duff(source, backdrop, 0, 255),
+        CompositeMode::SrcOver => porter_duff(source, backdrop, 255, 255 - source_alpha),
+        CompositeMode::DestOver => porter_duff(source, backdrop, 255 - backdrop_alpha, 255),
+        CompositeMode::SrcIn => porter_duff(source, backdrop, backdrop_alpha, 0),
+        CompositeMode::DestIn => porter_duff(source, backdrop, 0, source_alpha),
+        CompositeMode::SrcOut => porter_duff(source, backdrop, 255 - backdrop_alpha, 0),
+        CompositeMode::DestOut => porter_duff(source, backdrop, 0, 255 - source_alpha),
+        CompositeMode::SrcAtop => porter_duff(source, backdrop, backdrop_alpha, 255 - source_alpha),
+        CompositeMode::DestAtop => porter_duff(source, backdrop, 255 - backdrop_alpha, source_alpha),
+        CompositeMode::Xor => porter_duff(source, backdrop, 255 - backdrop_alpha, 255 - source_alpha),
+        CompositeMode::Plus => plus(source, backdrop),
+        CompositeMode::Screen => blend_pixel(source, backdrop, BlendOp::Screen),
+        CompositeMode::Overlay => blend_pixel(source, backdrop, BlendOp::Overlay),
+        CompositeMode::Darken => blend_pixel(source, backdrop, BlendOp::Darken),
+        CompositeMode::Lighten => blend_pixel(source, backdrop, BlendOp::Lighten),
+        CompositeMode::ColorDodge => blend_pixel(source, backdrop, BlendOp::ColorDodge),
+        CompositeMode::ColorBurn => blend_pixel(source, backdrop, BlendOp::ColorBurn),
+        CompositeMode::HardLight => blend_pixel(source, backdrop, BlendOp::HardLight),
+        CompositeMode::SoftLight => blend_pixel(source, backdrop, BlendOp::SoftLight),
+        CompositeMode::Difference => blend_pixel(source, backdrop, BlendOp::Difference),
+        CompositeMode::Exclusion => blend_pixel(source, backdrop, BlendOp::Exclusion),
+        CompositeMode::Multiply => blend_pixel(source, backdrop, BlendOp::Multiply),
+        CompositeMode::HslHue => hsl_pixel(source, backdrop, HslOp::Hue),
+        CompositeMode::HslSaturation => hsl_pixel(source, backdrop, HslOp::Saturation),
+        CompositeMode::HslColor => hsl_pixel(source, backdrop, HslOp::Color),
+        CompositeMode::HslLuminosity => hsl_pixel(source, backdrop, HslOp::Luminosity),
+    }
+}
+
+/// The general Porter-Duff operator: `co = Cs * Fa + Cb * Fb` with
+/// factors in `0..=255`.
+fn porter_duff(source: [u8; 4], backdrop: [u8; 4], source_factor: u32, backdrop_factor: u32) -> [u8; 4] {
+    let alpha = (u32::from(source[3]) * source_factor + u32::from(backdrop[3]) * backdrop_factor + 127) / 255;
+    let mut pixel = [0u8; 4];
+    for channel in 0..3 {
+        let value = (u32::from(source[channel]) * source_factor
+            + u32::from(backdrop[channel]) * backdrop_factor
+            + 127)
+            / 255;
+        pixel[channel] = value.min(alpha) as u8;
+    }
+    pixel[3] = alpha as u8;
+    pixel
+}
+
+/// `Plus`: every premultiplied channel (alpha included) saturates at
+/// one.
+fn plus(source: [u8; 4], backdrop: [u8; 4]) -> [u8; 4] {
+    let mut pixel = [0u8; 4];
+    for channel in 0..4 {
+        pixel[channel] = source[channel].saturating_add(backdrop[channel]);
+    }
+    pixel
+}
+
+/// Applies a separable blend function and the W3C source-over blend
+/// formula.
+fn blend_pixel(source: [u8; 4], backdrop: [u8; 4], op: BlendOp) -> [u8; 4] {
+    if backdrop[3] == 0 {
+        return source;
+    }
+    if source[3] == 0 {
+        return backdrop;
+    }
+    let source_rgb = unpremultiply(source);
+    let backdrop_rgb = unpremultiply(backdrop);
+    let blended = [
+        blend_channel(backdrop_rgb[0], source_rgb[0], op),
+        blend_channel(backdrop_rgb[1], source_rgb[1], op),
+        blend_channel(backdrop_rgb[2], source_rgb[2], op),
+    ];
+    compose_blended(source, backdrop, blended)
+}
+
+/// Applies a non-separable (HSL) blend function and the W3C
+/// source-over blend formula.
+fn hsl_pixel(source: [u8; 4], backdrop: [u8; 4], op: HslOp) -> [u8; 4] {
+    if backdrop[3] == 0 {
+        return source;
+    }
+    if source[3] == 0 {
+        return backdrop;
+    }
+    let source_rgb = unpremultiply(source);
+    let backdrop_rgb = unpremultiply(backdrop);
+    let blended = hsl_blend(backdrop_rgb, source_rgb, op);
+    compose_blended(source, backdrop, blended)
+}
+
+/// The W3C blending step with its coefficients:
+/// `co = (1 - ab) Cs + (1 - as) Cb + as ab B(Cb, Cs)`.
+fn compose_blended(source: [u8; 4], backdrop: [u8; 4], blended: [u8; 3]) -> [u8; 4] {
+    let source_alpha = u32::from(source[3]);
+    let backdrop_alpha = u32::from(backdrop[3]);
+    let alpha = source_alpha + backdrop_alpha - (source_alpha * backdrop_alpha + 127) / 255;
+    let mut pixel = [0u8; 4];
+    for channel in 0..3 {
+        let blend = u32::from(blended[2 - channel]);
+        let numerator = u32::from(source[channel]) * (255 - backdrop_alpha)
+            + u32::from(backdrop[channel]) * (255 - source_alpha)
+            + (source_alpha * backdrop_alpha * blend + 127) / 255;
+        let value = (numerator + 127) / 255;
+        pixel[channel] = value.min(alpha) as u8;
+    }
+    pixel[3] = alpha as u8;
+    pixel
+}
+
+/// Evaluates one separable blend function on a single channel.
+fn blend_channel(backdrop: u8, source: u8, op: BlendOp) -> u8 {
+    let cb = u32::from(backdrop);
+    let cs = u32::from(source);
+    let value = match op {
+        BlendOp::Multiply => multiply_channel(cb, cs),
+        BlendOp::Screen => screen_channel(cb, cs),
+        BlendOp::Overlay => hard_light_channel(cs, cb),
+        BlendOp::Darken => cb.min(cs),
+        BlendOp::Lighten => cb.max(cs),
+        BlendOp::ColorDodge => {
+            if cb == 0 {
+                0
+            } else if cs == 255 {
+                255
+            } else {
+                (cb * 255 / (255 - cs)).min(255)
+            }
+        }
+        BlendOp::ColorBurn => {
+            if cb == 255 {
+                255
+            } else if cs == 0 {
+                0
+            } else {
+                255 - ((255 - cb) * 255 / cs).min(255)
+            }
+        }
+        BlendOp::HardLight => hard_light_channel(cb, cs),
+        BlendOp::SoftLight => return soft_light_channel(backdrop, source),
+        BlendOp::Difference => cb.abs_diff(cs),
+        BlendOp::Exclusion => (cb + cs).saturating_sub(2 * multiply_channel(cb, cs)),
+    };
+    value.min(255) as u8
+}
+
+/// `Multiply(Cb, Cs) = Cb * Cs`.
+#[inline]
+fn multiply_channel(backdrop: u32, source: u32) -> u32 {
+    (backdrop * source + 127) / 255
+}
+
+/// `Screen(Cb, Cs) = Cb + Cs - Cb * Cs`.
+#[inline]
+fn screen_channel(backdrop: u32, source: u32) -> u32 {
+    backdrop + source - multiply_channel(backdrop, source)
+}
+
+/// `HardLight(Cb, Cs)`: multiply for a dark source, screen otherwise.
+#[inline]
+fn hard_light_channel(backdrop: u32, source: u32) -> u32 {
+    if source <= 127 {
+        multiply_channel(backdrop, 2 * source)
+    } else {
+        screen_channel(backdrop, 2 * source - 255)
+    }
+}
+
+/// `SoftLight(Cb, Cs)` (W3C), including the `D(Cb)` helper.
+fn soft_light_channel(backdrop: u8, source: u8) -> u8 {
+    let cb = i64::from(backdrop);
+    let cs = i64::from(source);
+    let value = if cs <= 127 {
+        // Cb - (1 - 2 Cs) Cb (1 - Cb)
+        let scale = 255 - 2 * cs;
+        cb - (scale * cb * (255 - cb) + 32512) / 65025
+    } else {
+        // Cb + (2 Cs - 1) (D(Cb) - Cb)
+        let d = if cb <= 63 {
+            // ((16 Cb - 12) Cb + 4) Cb
+            (((16 * cb - 12 * 255) * cb + 4 * 255 * 255) * cb) / 65025
+        } else {
+            isqrt((255 * cb) as u128) as i64
+        };
+        cb + (2 * cs - 255) * (d - cb) / 255
+    };
+    value.clamp(0, 255) as u8
+}
+
+/// Converts a premultiplied BGRA pixel into unpremultiplied RGB.
+fn unpremultiply(pixel: [u8; 4]) -> [u8; 3] {
+    let alpha = u32::from(pixel[3]);
+    if alpha == 0 {
+        return [0; 3];
+    }
+    [
+        ((u32::from(pixel[2]) * 255 + alpha / 2) / alpha).min(255) as u8,
+        ((u32::from(pixel[1]) * 255 + alpha / 2) / alpha).min(255) as u8,
+        ((u32::from(pixel[0]) * 255 + alpha / 2) / alpha).min(255) as u8,
+    ]
+}
+
+/// Evaluates a non-separable blend function on unpremultiplied RGB.
+fn hsl_blend(backdrop: [u8; 3], source: [u8; 3], op: HslOp) -> [u8; 3] {
+    let backdrop = scale_rgb(backdrop);
+    let source = scale_rgb(source);
+    let blended = match op {
+        HslOp::Hue => set_lum(set_sat(source, saturation(backdrop)), luminance(backdrop)),
+        HslOp::Saturation => set_lum(set_sat(backdrop, saturation(source)), luminance(backdrop)),
+        HslOp::Color => set_lum(source, luminance(backdrop)),
+        HslOp::Luminosity => set_lum(backdrop, luminance(source)),
+    };
+    [
+        ((blended[0] + 500) / 1000).clamp(0, 255) as u8,
+        ((blended[1] + 500) / 1000).clamp(0, 255) as u8,
+        ((blended[2] + 500) / 1000).clamp(0, 255) as u8,
+    ]
+}
+
+/// Scales an RGB triplet to thousandths for the HSL float-free math.
+#[inline]
+fn scale_rgb(color: [u8; 3]) -> [i64; 3] {
+    [
+        i64::from(color[0]) * 1000,
+        i64::from(color[1]) * 1000,
+        i64::from(color[2]) * 1000,
+    ]
+}
+
+/// `Lum(C) = 0.3 R + 0.59 G + 0.11 B`.
+#[inline]
+fn luminance(color: [i64; 3]) -> i64 {
+    (30 * color[0] + 59 * color[1] + 11 * color[2] + 50) / 100
+}
+
+/// The largest channel minus the smallest (`Sat`).
+#[inline]
+fn saturation(color: [i64; 3]) -> i64 {
+    color[0].max(color[1]).max(color[2]) - color[0].min(color[1]).min(color[2])
+}
+
+/// W3C `ClipColor`: pulls an out-of-gamut triplet back while keeping
+/// its luminosity.
+fn clip_color(mut color: [i64; 3]) -> [i64; 3] {
+    let lum = luminance(color);
+    let low = color[0].min(color[1]).min(color[2]);
+    let high = color[0].max(color[1]).max(color[2]);
+    if low < 0 && lum > low {
+        for channel in &mut color {
+            *channel = lum + (*channel - lum) * lum / (lum - low);
+        }
+    }
+    if high > 255_000 && high > lum {
+        for channel in &mut color {
+            *channel = lum + (*channel - lum) * (255_000 - lum) / (high - lum);
+        }
+    }
+    color
+}
+
+/// W3C `SetLum`: shifts every channel so the luminosity becomes `lum`.
+#[inline]
+fn set_lum(color: [i64; 3], lum: i64) -> [i64; 3] {
+    let delta = lum - luminance(color);
+    clip_color([color[0] + delta, color[1] + delta, color[2] + delta])
+}
+
+/// W3C `SetSat`: rescales the channels so the spread becomes `sat`.
+fn set_sat(color: [i64; 3], sat: i64) -> [i64; 3] {
+    let high = color[0].max(color[1]).max(color[2]);
+    let low = color[0].min(color[1]).min(color[2]);
+    if high == low {
+        return [0; 3];
+    }
+    let middle = color[0] + color[1] + color[2] - high - low;
+    let scaled_middle = (middle - low) * sat / (high - low);
+    let mut result = [0i64; 3];
+    for index in 0..3 {
+        result[index] = if color[index] == high {
+            sat
+        } else if color[index] == low {
+            0
+        } else {
+            scaled_middle
+        };
+    }
+    result
 }
 
 /// Resolves a layer's `CPAL` entry to an unpremultiplied BGRA tuple
