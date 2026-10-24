@@ -25,10 +25,10 @@
 //! * **[`Composition`]:** a [`kuitui!`](codevar_kuitui::kuitui) tree of
 //!   widgets laid out at the window size. It records a [`DrawList`] whose
 //!   text runs carry a baseline origin.
-//! * **[`shape_list`]:** walks that list and rasterizes every text run with
-//!   a real [`Font`] into a shared [`TextFrame`] — coverage into the glyph
-//!   atlas, one indexed quad per glyph into the mesh. The list is left
-//!   intact for the geometry pipe.
+//! * **[`shape_list_with_color`]:** walks that list and rasterizes every text
+//!   run with a real [`Font`] into a shared [`TextFrame`] — coverage into the
+//!   glyph atlas, color emoji into the color atlas, one indexed quad per
+//!   glyph into the mesh. The list is left intact for the geometry pipe.
 //! * **[`UiPipe`] + [`TextPipe`]:** the compositor replays the polygon UI
 //!   pipe and then the text pipe; the mix pass folds the text layer over the
 //!   geometry. Both targets clear to the window background because the mix
@@ -57,7 +57,7 @@ use codevar_kuitui::geometry::{Offset, Rect, Size};
 use codevar_kuitui::paint::{CornerRadii, Paint};
 use codevar_kuitui::prelude::{Composition, FontMetrics, Theme, kuitui};
 use codevar_kuitui_text::{AtlasConfig, TextAtlas, TextFrame, TextPipe};
-use codevar_kuitui_widget::{Font, shape_list};
+use codevar_kuitui_widget::{Font, shape_list_with_color};
 use codevar_time_core::TimeDuration;
 use codevar_wayland::{
     BUFFER_DESTROY, BUFFER_PARAMS_ADD, BUFFER_PARAMS_CREATE_IMMED, BUFFER_PARAMS_DESTROY, BUFFER_RELEASE,
@@ -98,10 +98,15 @@ const BACKGROUND: [f32; 4] = [0.10, 0.11, 0.14, 1.0];
 const FONT_PPEM: u16 = 32;
 /// Space between the top of the window and the text baseline.
 const TOP_PADDING: f32 = 64.0;
-/// The bundled test font.
+/// The bundled test font (Space Mono for regular text).
 const FONT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../assets/tf/codevar.tf.space-mono.regular.ttf"
+);
+/// The color emoji font.
+const EMOJI_FONT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/examples/resources/NotoColorEmoji.ttf"
 );
 
 /// Every failure of the example is reported as a boxed error so `?` works for
@@ -345,7 +350,7 @@ fn run() -> ExampleResult<String> {
     };
     let pipeline = match PipelineContext::new(width as u32, height as u32, requested) {
         Ok(context) => context,
-        // The single-entry choice is only an optimisation: fall back to every
+        // The single-entry choice is only an optimization: fall back to every
         // modifier the compositor advertised if the driver cannot build the
         // image with it.
         Err(_) if requested.len() == 1 => PipelineContext::new(width as u32, height as u32, &modifiers)?,
@@ -357,6 +362,8 @@ fn run() -> ExampleResult<String> {
     // compositor folds together. The UI pipe is registered first so it is the
     // base of the mix.
     let font = Rc::new(Font::from_bytes(std::fs::read(FONT)?)?.with_ppem(FONT_PPEM));
+    // Load the color emoji font for color glyph rendering.
+    let emoji_font = Rc::new(Font::from_bytes(std::fs::read(EMOJI_FONT)?)?.with_ppem(FONT_PPEM));
     let metrics: Rc<dyn FontMetrics> = font.clone();
     let mut composition = Composition::new(Theme::dark().with_metrics(metrics));
     composition.set_content(|_composer| {
@@ -364,6 +371,8 @@ fn run() -> ExampleResult<String> {
             Column {
                 Spacer(height: TOP_PADDING)
                 Text("Hello World!", color: Color::WHITE)
+                Spacer(height: 16.0)
+                ColorableText("😀 🦀 🚀 🎉 💻")
             }
         }
     });
@@ -371,7 +380,7 @@ fn run() -> ExampleResult<String> {
     composition.layout(Size::new(width as f32, height as f32), true);
 
     let ui_frame = UiFrame::new();
-    let text_frame = TextFrame::new(TextAtlas::new(AtlasConfig::DEFAULT)?);
+    let text_frame = TextFrame::new(TextAtlas::new(AtlasConfig::DEFAULT)?)?;
     let mut compositor = Compositor::new(&pipeline);
     compositor.start()?;
     let mut ui_pipe = UiPipe::new(&pipeline, ui_frame.clone())?;
@@ -392,7 +401,11 @@ fn run() -> ExampleResult<String> {
             CornerRadii::ZERO,
             Paint::fill(Color::from_rgba8(26, 28, 36, 255)),
         );
-        shape_list(&text_frame, font.as_ref(), list)?;
+        shape_list_with_color(&text_frame, font.as_ref(), emoji_font.as_ref(), list)?;
+
+        // Mark the frame dirty so the color text is rendered on the first frame.
+        text_frame.mark_dirty();
+
         Ok(())
     })?;
 
@@ -443,8 +456,6 @@ fn run() -> ExampleResult<String> {
         }
         released.set(false);
 
-        // Queue the frame callback before the commit that triggers the
-        // repaint, exactly like the xdg_window example does.
         let frame = display.marshal_new_id(surface, SURFACE_FRAME, Vec::new())?;
         let frame_done = Rc::new(Cell::new(false));
         {
