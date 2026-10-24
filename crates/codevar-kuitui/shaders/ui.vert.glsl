@@ -5,9 +5,9 @@
 // Positions arrive in logical pixels with the origin at the top-left of
 // the render target. The push-constant viewport maps them to Vulkan's
 // clip space, whose +Y axis already points down, so the UI origin needs
-// no flip. Vertices carry their colour, which lets the same shader draw
+// no flip. Vertices carry their color, which lets the same shader draw
 // solid fills, lines and polygons, and a linear gradient when the two
-// ends of an edge carry the gradient's end colours.
+// ends of an edge carry the gradient's end colors.
 
 layout(location = 0) in vec2 in_position;
 layout(location = 1) in vec4 in_color;

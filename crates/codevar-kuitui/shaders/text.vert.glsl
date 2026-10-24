@@ -3,7 +3,7 @@
 // Glyph-quad vertex shader.
 //
 // Each glyph is a textured quad; the atlas coordinates are produced by
-// the font rasterizer and the colour is the run's text colour. Like the
+// the font rasterizer and the color is the run's text color. Like the
 // geometry shader, positions are logical pixels with a top-left origin.
 
 layout(location = 0) in vec2 in_position;
