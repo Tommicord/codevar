@@ -59,7 +59,7 @@ use codevar_gpu_vk::pipe_ctx::{PipeCtx, PipeFuture, PipeOutcome};
 use codevar_gpu_vk::pipeline::PipelineContext;
 use codevar_gpu_vk::ui::scissor_for;
 use codevar_kuitui::geometry::Rect;
-use codevar_kuitui::shaders::{TEXT_FRAG_SPIRV, TEXT_VERT_SPIRV};
+use codevar_kuitui::shaders::{TEXT_COLOR_FRAG_SPIRV, TEXT_FRAG_SPIRV, TEXT_VERT_SPIRV};
 
 use crate::atlas::{DirtyRect, TextFrame, TextVertex};
 use crate::dirty::coalesce;
@@ -71,17 +71,20 @@ use crate::mesh::Index;
 /// enough and the page costs a quarter of an RGBA one.
 const PAGE_FORMAT: vk::Format = vk::Format::R8_UNORM;
 
+/// Format of color atlas page images (premultiplied BGRA).
+const COLOR_PAGE_FORMAT: vk::Format = vk::Format::B8G8R8A8_UNORM;
+
 /// Byte size of the `text.vert` push-constant block (`vec2 viewport`).
-const VIEWPORT_PUSH_BYTES: u32 = 8;
+const VIEWPORT_PUSH_BYTES: u32 = 0x8;
 
 /// Initial size of the atlas staging buffer.
-const DEFAULT_STAGING_BYTES: u64 = 256 * 1024;
+const DEFAULT_STAGING_BYTES: u64 = 0x40000;
 
 /// Initial number of vertices the vertex buffer holds.
-const DEFAULT_VERTEX_CAPACITY: usize = 16 * 1024;
+const DEFAULT_VERTEX_CAPACITY: usize = 0x4000;
 
 /// Initial number of indices the index buffer holds.
-const DEFAULT_INDEX_CAPACITY: usize = 32 * 1024;
+const DEFAULT_INDEX_CAPACITY: usize = 0x8000;
 
 /// One run as the command buffer sees it: a slice of the shared vertex and
 /// index buffers plus the page and clip to bind before drawing it.
@@ -97,6 +100,8 @@ struct DrawRun {
     vertex_offset: i32,
     /// Clip to set as the scissor before the draw.
     clip: Option<Rect>,
+    /// Whether this run uses the color pipeline (true) or gray pipeline (false).
+    is_color: bool,
 }
 
 /// A host-visible, coherent buffer that grows but never shrinks.
@@ -243,18 +248,30 @@ pub struct TextPipe<'p> {
     descriptor_set_layout: vk::DescriptorSetLayout,
     /// Pool the per-page descriptor sets come from.
     descriptor_pool: vk::DescriptorPool,
-    /// The `text.vert`/`text.frag` graphics pipeline.
+    /// The `text.vert`/`text.frag` graphics pipeline (gray coverage).
     pipeline: vk::Pipeline,
+    /// The `text.vert`/`text_color.frag` graphics pipeline (color BGRA).
+    color_pipeline: vk::Pipeline,
+    /// Pipeline layout for the color pipeline (shared push range + set 0).
+    color_pipeline_layout: vk::PipelineLayout,
     /// Sampler shared by every page descriptor.
     sampler: vk::Sampler,
     /// R8 page images, created lazily in atlas page order.
     pages: Vec<PageTexture>,
-    /// Persistent host-visible vertex stream.
+    /// R8G8B8A8 color page images, created lazily in atlas page order.
+    color_pages: Vec<PageTexture>,
+    /// Persistent host-visible vertex stream (gray runs).
     vertices: MappedBuffer,
-    /// Persistent host-visible index stream.
+    /// Persistent host-visible index stream (gray runs).
     indices: MappedBuffer,
     /// Persistent host-visible staging buffer for coverage uploads.
     staging: MappedBuffer,
+    /// Persistent host-visible vertex stream (color runs).
+    color_vertices: MappedBuffer,
+    /// Persistent host-visible index stream (color runs).
+    color_indices: MappedBuffer,
+    /// Persistent host-visible staging buffer for color uploads.
+    color_staging: MappedBuffer,
     /// Scratch for the coalesced dirty rectangles, reused every frame.
     regions: Vec<DirtyRect>,
     /// Draw runs of the current mesh, reused every frame.
@@ -295,6 +312,10 @@ impl<'p> TextPipe<'p> {
         let vertices = MappedBuffer::new(context, vk::BufferUsageFlags::VERTEX_BUFFER, vertex_bytes)?;
         let indices = MappedBuffer::new(context, vk::BufferUsageFlags::INDEX_BUFFER, index_bytes)?;
         let staging = MappedBuffer::new(context, vk::BufferUsageFlags::TRANSFER_SRC, DEFAULT_STAGING_BYTES)?;
+        let color_vertices = MappedBuffer::new(context, vk::BufferUsageFlags::VERTEX_BUFFER, vertex_bytes)?;
+        let color_indices = MappedBuffer::new(context, vk::BufferUsageFlags::INDEX_BUFFER, index_bytes)?;
+        let color_staging =
+            MappedBuffer::new(context, vk::BufferUsageFlags::TRANSFER_SRC, DEFAULT_STAGING_BYTES)?;
 
         let mut pipe = Self {
             context,
@@ -304,11 +325,17 @@ impl<'p> TextPipe<'p> {
             descriptor_set_layout: vk::DescriptorSetLayout::null(),
             descriptor_pool: vk::DescriptorPool::null(),
             pipeline: vk::Pipeline::null(),
+            color_pipeline: vk::Pipeline::null(),
+            color_pipeline_layout: vk::PipelineLayout::null(),
             sampler: vk::Sampler::null(),
             pages: Vec::new(),
+            color_pages: Vec::new(),
             vertices,
             indices,
             staging,
+            color_vertices,
+            color_indices,
+            color_staging,
             regions: Vec::new(),
             draws: Vec::new(),
             clear: [0.0; 4],
@@ -316,10 +343,14 @@ impl<'p> TextPipe<'p> {
         };
         pipe.sampler = create_sampler(context.device())?;
         pipe.descriptor_set_layout = create_descriptor_set_layout(context.device())?;
-        pipe.descriptor_pool = create_descriptor_pool(context.device(), max_pages)?;
+        // Double the pool size to accommodate both gray and color pages.
+        pipe.descriptor_pool = create_descriptor_pool(context.device(), max_pages * 2)?;
         let (layout, pipeline) = create_text_pipeline(context, pipe.descriptor_set_layout)?;
         pipe.pipeline_layout = layout;
         pipe.pipeline = pipeline;
+        let (color_layout, color_pipeline) = create_color_pipeline(context, pipe.descriptor_set_layout)?;
+        pipe.color_pipeline_layout = color_layout;
+        pipe.color_pipeline = color_pipeline;
         Ok(pipe)
     }
 
@@ -374,6 +405,7 @@ impl TextPipe<'_> {
                 ensure_pages(
                     context,
                     &mut self.pages,
+                    &mut self.color_pages,
                     self.descriptor_pool,
                     self.descriptor_set_layout,
                     self.sampler,
@@ -465,6 +497,125 @@ impl TextPipe<'_> {
         Ok(())
     }
 
+    /// Uploads the color atlas rectangles written since the last frame.
+    fn upload_color_atlas(&mut self, ctx: &mut PipeCtx) -> Result<(), CompositorError> {
+        let context = self.context;
+        let device = ctx.device();
+        let command_buffer = ctx.command_buffer();
+
+        {
+            let atlas = self.frame.color_atlas();
+            if atlas.dirty_rects().is_empty() {
+                return Ok(());
+            }
+            let page_size = atlas.config().page_size;
+            coalesce(atlas.dirty_rects(), &mut self.regions);
+
+            let mut required = 0u64;
+            for region in &self.regions {
+                required = required.saturating_add(staged_bytes(*region) * 4); // 4 bytes per pixel for BGRA
+            }
+            self.color_staging.ensure(context, required)?;
+
+            let mut offset = 0u64;
+            for region in &self.regions {
+                let page = region.page;
+                ensure_pages(
+                    context,
+                    &mut self.pages,
+                    &mut self.color_pages,
+                    self.descriptor_pool,
+                    self.descriptor_set_layout,
+                    self.sampler,
+                    page,
+                    page_size,
+                )?;
+                let Some(pixels) = atlas.page_pixels(page) else {
+                    continue;
+                };
+                let image = self.color_pages[page as usize].image;
+                let old_layout = self.color_pages[page as usize].layout;
+                if old_layout != vk::ImageLayout::TRANSFER_DST_OPTIMAL {
+                    // SAFETY: `image` belongs to this pipe, the command buffer
+                    // is recording and the page is not an attachment.
+                    unsafe {
+                        record_image_barrier(
+                            device,
+                            command_buffer,
+                            image,
+                            old_layout,
+                            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        );
+                    }
+                }
+
+                let stride = align4(region.width) as usize * 4; // 4 bytes per pixel
+                let source_stride = page_size as usize * 4;
+                // SAFETY: `pixels` is the full `page_size * page_size * 4` page
+                // owned by the atlas, the staging buffer has room for this
+                // rectangle's padded rows and the mapping is writable.
+                unsafe {
+                    for row in 0..region.height as usize {
+                        let source = pixels
+                            .as_ptr()
+                            .add((region.y as usize + row) * source_stride + region.x as usize * 4);
+                        let destination = self
+                            .color_staging
+                            .mapped
+                            .add(offset as usize + row * stride);
+                        core::ptr::copy_nonoverlapping(source, destination, region.width as usize * 4);
+                    }
+                }
+
+                let copy = vk::BufferImageCopy::default()
+                    .buffer_offset(offset)
+                    .buffer_row_length(align4(region.width))
+                    .buffer_image_height(0)
+                    .image_subresource(vk::ImageSubresourceLayers {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        mip_level: 0,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+                    .image_offset(vk::Offset3D {
+                        x: region.x as i32,
+                        y: region.y as i32,
+                        z: 0,
+                    })
+                    .image_extent(vk::Extent3D {
+                        width: region.width,
+                        height: region.height,
+                        depth: 1,
+                    });
+                // SAFETY: the staging buffer holds this rectangle's rows at
+                // `offset`, the image is in `TRANSFER_DST_OPTIMAL` and the
+                // region lies inside the page.
+                unsafe {
+                    device.cmd_copy_buffer_to_image(
+                        command_buffer,
+                        self.color_staging.buffer,
+                        image,
+                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        core::slice::from_ref(&copy),
+                    );
+                    record_image_barrier(
+                        device,
+                        command_buffer,
+                        image,
+                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    );
+                }
+                self.color_pages[page as usize].layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+                offset = offset.saturating_add(staged_bytes(*region) * 4);
+            }
+        }
+
+        self.frame
+            .with_color(|atlas, _| atlas.clear_dirty());
+        Ok(())
+    }
+
     /// Rebuilds the shared vertex and index buffers from the frame's runs.
     fn upload_mesh(&mut self) -> Result<(), CompositorError> {
         self.draws.clear();
@@ -523,6 +674,72 @@ impl TextPipe<'_> {
                 index_count: indices.len() as u32,
                 vertex_offset: vertex_base as i32,
                 clip: run.clip,
+                is_color: false,
+            });
+            vertex_base += vertices.len();
+            index_base += indices.len();
+        }
+        Ok(())
+    }
+
+    /// Rebuilds the shared vertex and index buffers from the frame's color runs.
+    fn upload_color_mesh(&mut self) -> Result<(), CompositorError> {
+        let color_runs = self.frame.color_runs();
+        if color_runs.is_empty() {
+            return Ok(());
+        }
+
+        let mut vertex_total = 0usize;
+        let mut index_total = 0usize;
+        for run in color_runs.iter() {
+            vertex_total = vertex_total.saturating_add(run.mesh.vertices().len());
+            index_total = index_total.saturating_add(run.mesh.indices().len());
+        }
+        if vertex_total > i32::MAX as usize || index_total > u32::MAX as usize {
+            return Err(CompositorError::Internal(
+                "the color text mesh has more vertices or indices than a draw can address",
+            ));
+        }
+        self.color_vertices
+            .ensure(self.context, (vertex_total * size_of::<TextVertex>()) as u64)?;
+        self.color_indices
+            .ensure(self.context, (index_total * size_of::<Index>()) as u64)?;
+
+        let mut vertex_base = 0usize;
+        let mut index_base = 0usize;
+        for run in color_runs.iter() {
+            let vertices = run.mesh.vertices();
+            let indices = run.mesh.indices();
+            // SAFETY: the buffers were grown to hold every run's data, the
+            // mappings cover their whole allocation, and the source slices
+            // are distinct from the destinations.
+            unsafe {
+                if !vertices.is_empty() {
+                    core::ptr::copy_nonoverlapping(
+                        vertices.as_ptr().cast::<u8>(),
+                        self.color_vertices
+                            .mapped
+                            .add(vertex_base * size_of::<TextVertex>()),
+                        core::mem::size_of_val(vertices),
+                    );
+                }
+                if !indices.is_empty() {
+                    core::ptr::copy_nonoverlapping(
+                        indices.as_ptr().cast::<u8>(),
+                        self.color_indices
+                            .mapped
+                            .add(index_base * size_of::<Index>()),
+                        core::mem::size_of_val(indices),
+                    );
+                }
+            }
+            self.draws.push(DrawRun {
+                page: run.page,
+                first_index: index_base as u32,
+                index_count: indices.len() as u32,
+                vertex_offset: vertex_base as i32,
+                clip: run.clip,
+                is_color: true,
             });
             vertex_base += vertices.len();
             index_base += indices.len();
@@ -531,6 +748,7 @@ impl TextPipe<'_> {
     }
 
     /// Records one indexed draw per run inside the open rendering scope.
+    #[allow(clippy::collapsible_if, clippy::collapsible_else_if)]
     fn record_draws(&self, ctx: &mut PipeCtx) {
         if self.draws.is_empty() {
             return;
@@ -541,38 +759,97 @@ impl TextPipe<'_> {
         // opened by `begin_render`, the pipeline was built for the target
         // format and the bindings match its layout.
         unsafe {
-            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
-            let buffers = [self.vertices.buffer];
-            let offsets = [0_u64];
-            device.cmd_bind_vertex_buffers(command_buffer, 0, &buffers, &offsets);
-            device.cmd_bind_index_buffer(command_buffer, self.indices.buffer, 0, vk::IndexType::UINT32);
+            let mut current_pipeline = vk::Pipeline::null();
+            let mut current_layout = vk::PipelineLayout::null();
+            let mut current_pages: Option<&Vec<PageTexture>> = None;
 
             let viewport = [ctx.width() as f32, ctx.height() as f32];
             let bytes =
                 core::slice::from_raw_parts(viewport.as_ptr().cast::<u8>(), VIEWPORT_PUSH_BYTES as usize);
-            device.cmd_push_constants(
-                command_buffer,
-                self.pipeline_layout,
-                vk::ShaderStageFlags::VERTEX,
-                0,
-                bytes,
-            );
 
             let mut bound_page = u32::MAX;
             let mut bound_clip: Option<Option<Rect>> = None;
             for draw in &self.draws {
+                // Switch pipeline if needed
+                if draw.is_color {
+                    if current_pipeline != self.color_pipeline {
+                        current_pipeline = self.color_pipeline;
+                        current_layout = self.color_pipeline_layout;
+                        current_pages = Some(&self.color_pages);
+                        device.cmd_bind_pipeline(
+                            command_buffer,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            self.color_pipeline,
+                        );
+                        let buffers = [self.color_vertices.buffer];
+                        let offsets = [0_u64];
+                        device.cmd_bind_vertex_buffers(command_buffer, 0, &buffers, &offsets);
+                        device.cmd_bind_index_buffer(
+                            command_buffer,
+                            self.color_indices.buffer,
+                            0,
+                            vk::IndexType::UINT32,
+                        );
+                        device.cmd_push_constants(
+                            command_buffer,
+                            self.color_pipeline_layout,
+                            vk::ShaderStageFlags::VERTEX,
+                            0,
+                            bytes,
+                        );
+                        bound_page = u32::MAX; // Force descriptor rebind
+                    }
+                } else {
+                    if current_pipeline != self.pipeline {
+                        current_pipeline = self.pipeline;
+                        current_layout = self.pipeline_layout;
+                        current_pages = Some(&self.pages);
+                        device.cmd_bind_pipeline(
+                            command_buffer,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            self.pipeline,
+                        );
+                        let buffers = [self.vertices.buffer];
+                        let offsets = [0_u64];
+                        device.cmd_bind_vertex_buffers(command_buffer, 0, &buffers, &offsets);
+                        device.cmd_bind_index_buffer(
+                            command_buffer,
+                            self.indices.buffer,
+                            0,
+                            vk::IndexType::UINT32,
+                        );
+                        device.cmd_push_constants(
+                            command_buffer,
+                            self.pipeline_layout,
+                            vk::ShaderStageFlags::VERTEX,
+                            0,
+                            bytes,
+                        );
+                        bound_page = u32::MAX; // Force descriptor rebind
+                    }
+                }
+
                 if draw.page != bound_page {
                     bound_page = draw.page;
-                    if let Some(page) = self.pages.get(draw.page as usize) {
-                        let sets = [page.descriptor];
+                    let mut page_descriptor = None;
+                    if let Some(pages) = current_pages {
+                        if let Some(page) = pages.get(draw.page as usize) {
+                            page_descriptor = Some(page.descriptor);
+                        }
+                    }
+                    if let Some(descriptor) = page_descriptor {
+                        let sets = [descriptor];
                         device.cmd_bind_descriptor_sets(
                             command_buffer,
                             vk::PipelineBindPoint::GRAPHICS,
-                            self.pipeline_layout,
+                            current_layout,
                             0,
                             &sets,
                             &[],
                         );
+                    } else {
+                        // Page doesn't exist in the atlas; skip this draw.
+                        continue;
                     }
                 }
                 if bound_clip != Some(draw.clip) {
@@ -597,9 +874,45 @@ impl TextPipe<'_> {
     fn render(&mut self, ctx: &mut PipeCtx) -> Result<(), CompositorError> {
         let dirty = self.frame.is_dirty();
         let atlas_dirty = !self.frame.atlas().dirty_rects().is_empty();
-        if dirty || atlas_dirty {
+        let color_atlas_dirty = !self.frame.color_atlas().dirty_rects().is_empty();
+        if dirty || atlas_dirty || color_atlas_dirty {
+            // Ensure all pages referenced by the current frame's runs exist
+            // before uploading atlas data or mesh data. This prevents drawing
+            // with uninitialized descriptor sets.
+            let max_gray_page = self.max_page_index(self.frame.runs().iter().map(|r| r.page));
+            let max_color_page = self.max_page_index(self.frame.color_runs().iter().map(|r| r.page));
+            let page_size = self.frame.atlas().config().page_size;
+            if let Some(page) = max_gray_page {
+                ensure_pages(
+                    self.context,
+                    &mut self.pages,
+                    &mut self.color_pages,
+                    self.descriptor_pool,
+                    self.descriptor_set_layout,
+                    self.sampler,
+                    page,
+                    page_size,
+                )?;
+            }
+            if let Some(page) = max_color_page {
+                ensure_pages(
+                    self.context,
+                    &mut self.pages,
+                    &mut self.color_pages,
+                    self.descriptor_pool,
+                    self.descriptor_set_layout,
+                    self.sampler,
+                    page,
+                    page_size,
+                )?;
+            }
+
             self.upload_atlas(ctx)?;
+            if color_atlas_dirty {
+                self.upload_color_atlas(ctx)?;
+            }
             self.upload_mesh()?;
+            self.upload_color_mesh()?;
         }
         ctx.begin_render(0, Some(self.clear))?;
         self.record_draws(ctx);
@@ -608,6 +921,14 @@ impl TextPipe<'_> {
             self.frame.take_dirty();
         }
         Ok(())
+    }
+
+    /// Returns the maximum page index from an iterator of page indices.
+    fn max_page_index<I>(&self, pages: I) -> Option<u32>
+    where
+        I: Iterator<Item = u32>,
+    {
+        pages.max()
     }
 }
 
@@ -646,14 +967,25 @@ impl Drop for TextPipe<'_> {
             // the compositor waited for the frame that could reference it.
             unsafe { page.destroy(device) };
         }
+        for page in self.color_pages.drain(..) {
+            // SAFETY: the page was created by this pipe on this device and
+            // the compositor waited for the frame that could reference it.
+            unsafe { page.destroy(device) };
+        }
         // SAFETY: every handle was created by `new` on this device and is not
         // referenced by a submitted command buffer.
         unsafe {
             if self.pipeline != vk::Pipeline::null() {
                 device.destroy_pipeline(self.pipeline, None);
             }
+            if self.color_pipeline != vk::Pipeline::null() {
+                device.destroy_pipeline(self.color_pipeline, None);
+            }
             if self.pipeline_layout != vk::PipelineLayout::null() {
                 device.destroy_pipeline_layout(self.pipeline_layout, None);
+            }
+            if self.color_pipeline_layout != vk::PipelineLayout::null() {
+                device.destroy_pipeline_layout(self.color_pipeline_layout, None);
             }
             if self.descriptor_pool != vk::DescriptorPool::null() {
                 device.destroy_descriptor_pool(self.descriptor_pool, None);
@@ -821,6 +1153,168 @@ fn create_text_pipeline(
     }
 }
 
+/// Creates the `text.vert`/`text_color.frag` pipeline layout and pipeline.
+fn create_color_pipeline(
+    context: &PipelineContext,
+    set_layout: vk::DescriptorSetLayout,
+) -> Result<(vk::PipelineLayout, vk::Pipeline), CompositorError> {
+    let device = context.device();
+    let push_range = vk::PushConstantRange::default()
+        .stage_flags(vk::ShaderStageFlags::VERTEX)
+        .offset(0)
+        .size(VIEWPORT_PUSH_BYTES);
+    let set_layouts = [set_layout];
+    let layout_info = vk::PipelineLayoutCreateInfo::default()
+        .set_layouts(&set_layouts)
+        .push_constant_ranges(core::slice::from_ref(&push_range));
+    // SAFETY: the set layout and push range are well-formed and live for the
+    // call.
+    let pipeline_layout = unsafe { device.create_pipeline_layout(&layout_info, None) }
+        .map_err(CompositorError::PipelineLayoutCreate)?;
+
+    match build_color_pipeline(device, pipeline_layout) {
+        Ok(pipeline) => Ok((pipeline_layout, pipeline)),
+        Err(err) => {
+            // SAFETY: the layout was just created and owns no pipeline yet.
+            unsafe { device.destroy_pipeline_layout(pipeline_layout, None) };
+            Err(err)
+        }
+    }
+}
+
+/// Builds the color graphics pipeline from the shaders `codevar-kuitui` compiled.
+///
+/// Uses premultiplied blending (`ONE`/`ONE_MINUS_SRC_ALPHA`) so the color
+/// atlas texels, which carry premultiplied BGRA, composite correctly.
+fn build_color_pipeline(
+    device: &ash::Device,
+    pipeline_layout: vk::PipelineLayout,
+) -> Result<vk::Pipeline, CompositorError> {
+    let vertex_module = create_shader_module(device, TEXT_VERT_SPIRV)?;
+    let fragment_module = match create_shader_module(device, TEXT_COLOR_FRAG_SPIRV) {
+        Ok(module) => module,
+        Err(err) => {
+            // SAFETY: the vertex module was just created and is unused.
+            unsafe { device.destroy_shader_module(vertex_module, None) };
+            return Err(err);
+        }
+    };
+    let pipeline = build_color_graphics_pipeline(device, pipeline_layout, vertex_module, fragment_module);
+    // SAFETY: the modules are not needed once the pipeline exists.
+    unsafe {
+        device.destroy_shader_module(vertex_module, None);
+        device.destroy_shader_module(fragment_module, None);
+    }
+    pipeline
+}
+
+/// Builds the graphics pipeline described by the [`TextVertex`] layout with
+/// premultiplied alpha blending.
+fn build_color_graphics_pipeline(
+    device: &ash::Device,
+    pipeline_layout: vk::PipelineLayout,
+    vertex_module: vk::ShaderModule,
+    fragment_module: vk::ShaderModule,
+) -> Result<vk::Pipeline, CompositorError> {
+    let shader_stages = [
+        vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::VERTEX)
+            .module(vertex_module)
+            .name(c"main"),
+        vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::FRAGMENT)
+            .module(fragment_module)
+            .name(c"main"),
+    ];
+    let binding = vk::VertexInputBindingDescription::default()
+        .binding(0)
+        .stride(size_of::<TextVertex>() as u32)
+        .input_rate(vk::VertexInputRate::VERTEX);
+    let attributes = [
+        vk::VertexInputAttributeDescription {
+            location: 0,
+            binding: 0,
+            format: vk::Format::R32G32_SFLOAT,
+            offset: core::mem::offset_of!(TextVertex, position) as u32,
+        },
+        vk::VertexInputAttributeDescription {
+            location: 1,
+            binding: 0,
+            format: vk::Format::R32G32_SFLOAT,
+            offset: core::mem::offset_of!(TextVertex, uv) as u32,
+        },
+        vk::VertexInputAttributeDescription {
+            location: 2,
+            binding: 0,
+            format: vk::Format::R32G32B32A32_SFLOAT,
+            offset: core::mem::offset_of!(TextVertex, color) as u32,
+        },
+    ];
+    let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
+        .vertex_binding_descriptions(core::slice::from_ref(&binding))
+        .vertex_attribute_descriptions(&attributes);
+    let input_assembly =
+        vk::PipelineInputAssemblyStateCreateInfo::default().topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+    let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+        .viewport_count(1)
+        .scissor_count(1);
+    let rasterization = vk::PipelineRasterizationStateCreateInfo::default()
+        .polygon_mode(vk::PolygonMode::FILL)
+        .cull_mode(vk::CullModeFlags::NONE)
+        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+        .line_width(1.0);
+    let multisample =
+        vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(vk::SampleCountFlags::TYPE_1);
+    let blend_attachment = vk::PipelineColorBlendAttachmentState {
+        blend_enable: vk::TRUE,
+        src_color_blend_factor: vk::BlendFactor::ONE,
+        dst_color_blend_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+        color_blend_op: vk::BlendOp::ADD,
+        src_alpha_blend_factor: vk::BlendFactor::ONE,
+        dst_alpha_blend_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+        alpha_blend_op: vk::BlendOp::ADD,
+        color_write_mask: vk::ColorComponentFlags::R
+            | vk::ColorComponentFlags::G
+            | vk::ColorComponentFlags::B
+            | vk::ColorComponentFlags::A,
+    };
+    let blend_attachments = [blend_attachment];
+    let color_blend = vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
+    let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+    let dynamic_state = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+    let color_format = PipelineContext::color_format();
+    let mut rendering_info = vk::PipelineRenderingCreateInfo::default()
+        .color_attachment_formats(core::slice::from_ref(&color_format));
+    let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
+        .stages(&shader_stages)
+        .vertex_input_state(&vertex_input)
+        .input_assembly_state(&input_assembly)
+        .viewport_state(&viewport_state)
+        .rasterization_state(&rasterization)
+        .multisample_state(&multisample)
+        .color_blend_state(&color_blend)
+        .dynamic_state(&dynamic_state)
+        .layout(pipeline_layout)
+        .push_next(&mut rendering_info);
+    // SAFETY: every create-info is well-formed, the rendering info declares
+    // the single color attachment format of dynamic rendering, and both
+    // modules are alive for the call.
+    let pipelines = unsafe {
+        device.create_graphics_pipelines(
+            vk::PipelineCache::null(),
+            core::slice::from_ref(&pipeline_info),
+            None,
+        )
+    }
+    .map_err(|(_, err)| CompositorError::PipelineCreate(err))?;
+    pipelines
+        .first()
+        .copied()
+        .ok_or(CompositorError::Internal(
+            "the driver returned no color text pipeline",
+        ))
+}
+
 /// Builds the graphics pipeline from the shaders `codevar-kuitui` compiled.
 fn build_text_pipeline(
     device: &ash::Device,
@@ -958,9 +1452,11 @@ fn build_text_graphics_pipeline(
 }
 
 /// Creates the GPU textures for atlas pages `0..=page`.
+#[allow(clippy::too_many_arguments)]
 fn ensure_pages(
     context: &PipelineContext,
     pages: &mut Vec<PageTexture>,
+    color_pages: &mut Vec<PageTexture>,
     pool: vk::DescriptorPool,
     set_layout: vk::DescriptorSetLayout,
     sampler: vk::Sampler,
@@ -971,7 +1467,63 @@ fn ensure_pages(
         let texture = create_page_texture(context, pool, set_layout, sampler, page_size)?;
         pages.push(texture);
     }
+    while color_pages.len() <= page as usize {
+        let texture = create_color_page_texture(context, pool, set_layout, sampler, page_size)?;
+        color_pages.push(texture);
+    }
     Ok(())
+}
+
+/// Creates one R8G8B8A8 page image, its device memory, view and descriptor.
+fn create_color_page_texture(
+    context: &PipelineContext,
+    pool: vk::DescriptorPool,
+    set_layout: vk::DescriptorSetLayout,
+    sampler: vk::Sampler,
+    page_size: u32,
+) -> Result<PageTexture, CompositorError> {
+    let device = context.device();
+    let image = create_color_page_image(context, page_size)?;
+    let memory = match allocate_page_memory(context, image) {
+        Ok(memory) => memory,
+        Err(err) => {
+            // SAFETY: `image` is bound to nothing yet.
+            unsafe { device.destroy_image(image, None) };
+            return Err(err);
+        }
+    };
+    let view = match create_color_page_view(device, image) {
+        Ok(view) => view,
+        Err(err) => {
+            // SAFETY: both objects were just created and nothing references
+            // them.
+            unsafe {
+                device.free_memory(memory, None);
+                device.destroy_image(image, None);
+            }
+            return Err(err);
+        }
+    };
+    let descriptor = match allocate_color_page_descriptor(device, pool, set_layout, sampler, view) {
+        Ok(descriptor) => descriptor,
+        Err(err) => {
+            // SAFETY: the view, image and memory were just created and are not
+            // referenced by a submitted command buffer.
+            unsafe {
+                device.destroy_image_view(view, None);
+                device.free_memory(memory, None);
+                device.destroy_image(image, None);
+            }
+            return Err(err);
+        }
+    };
+    Ok(PageTexture {
+        image,
+        memory,
+        view,
+        descriptor,
+        layout: vk::ImageLayout::UNDEFINED,
+    })
 }
 
 /// Creates one R8 page image, its device memory, view and descriptor.
@@ -1105,6 +1657,79 @@ fn create_page_view(device: &ash::Device, image: vk::Image) -> Result<vk::ImageV
         });
     // SAFETY: the view matches the image's format and extent.
     unsafe { device.create_image_view(&info, None) }.map_err(CompositorError::ImageViewCreate)
+}
+
+/// Creates a `TYPE_2D` R8G8B8A8 view over a color page image.
+fn create_color_page_view(device: &ash::Device, image: vk::Image) -> Result<vk::ImageView, CompositorError> {
+    let info = vk::ImageViewCreateInfo::default()
+        .image(image)
+        .view_type(vk::ImageViewType::TYPE_2D)
+        .format(COLOR_PAGE_FORMAT)
+        .subresource_range(vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        });
+    // SAFETY: the view matches the image's format and extent.
+    unsafe { device.create_image_view(&info, None) }.map_err(CompositorError::ImageViewCreate)
+}
+
+/// Creates a `page_size` × `page_size` R8G8B8A8 image.
+fn create_color_page_image(context: &PipelineContext, page_size: u32) -> Result<vk::Image, CompositorError> {
+    let info = vk::ImageCreateInfo::default()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(COLOR_PAGE_FORMAT)
+        .extent(vk::Extent3D {
+            width: page_size,
+            height: page_size,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(vk::ImageTiling::OPTIMAL)
+        .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .initial_layout(vk::ImageLayout::UNDEFINED);
+    // SAFETY: a plain, well-formed image descriptor.
+    unsafe { context.device().create_image(&info, None) }.map_err(CompositorError::ImageCreate)
+}
+
+/// Allocates and writes the descriptor set that binds a color page view.
+fn allocate_color_page_descriptor(
+    device: &ash::Device,
+    pool: vk::DescriptorPool,
+    set_layout: vk::DescriptorSetLayout,
+    sampler: vk::Sampler,
+    view: vk::ImageView,
+) -> Result<vk::DescriptorSet, CompositorError> {
+    let layouts = [set_layout];
+    let info = vk::DescriptorSetAllocateInfo::default()
+        .descriptor_pool(pool)
+        .set_layouts(&layouts);
+    // SAFETY: the pool was created against this set layout and holds enough
+    // descriptors for one set per page.
+    let sets =
+        unsafe { device.allocate_descriptor_sets(&info) }.map_err(CompositorError::DescriptorSetAllocate)?;
+    let set = *sets.first().ok_or(CompositorError::Internal(
+        "the driver returned no color text descriptor set",
+    ))?;
+    let image_info = vk::DescriptorImageInfo::default()
+        .sampler(sampler)
+        .image_view(view)
+        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+    let write = vk::WriteDescriptorSet::default()
+        .dst_set(set)
+        .dst_binding(0)
+        .dst_array_element(0)
+        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+        .image_info(core::slice::from_ref(&image_info));
+    // SAFETY: the set is not referenced by a pending command buffer and the
+    // binding matches the set layout.
+    unsafe { device.update_descriptor_sets(core::slice::from_ref(&write), &[]) };
+    Ok(set)
 }
 
 /// Allocates and writes the descriptor set that binds a page view.
