@@ -2378,9 +2378,12 @@ mod tests {
     /// A `PaintTransform`; `matrix` is in stream order
     /// `[xx, yx, xy, yy, dx, dy]`.
     fn transform_paint(child: &[u8], matrix: [i32; 6]) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(28 + child.len());
+        // Format (1) + child Offset24 (3) + transform Offset24 (3),
+        // then the Affine2x3 record (24) and the child paint.
+        let mut bytes = Vec::with_capacity(31 + child.len());
         bytes.push(12);
-        push_u24(&mut bytes, 28);
+        push_u24(&mut bytes, 31);
+        push_u24(&mut bytes, 7);
         for value in matrix {
             bytes.extend_from_slice(&value.to_be_bytes());
         }

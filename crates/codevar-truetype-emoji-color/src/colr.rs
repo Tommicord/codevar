@@ -156,6 +156,7 @@ impl PaintFormat {
             10 => Some(Self::Glyph),
             11 => Some(Self::ColrGlyph),
             12 => Some(Self::Transform),
+            13 => Some(Self::Transform), // internal: PaintVarTransform
             14 => Some(Self::Translate),
             16 => Some(Self::Scale),
             17 => Some(Self::Scale), // internal: PaintScaleUniform
@@ -1182,22 +1183,33 @@ impl<'a> ColrTable<'a> {
     }
 
     fn read_transform(&self, reader: &mut Reader<'_>, paint_base: &'a [u8]) -> TtResult<Paint<'a>> {
-        // paint (Offset24) + affine (6 x int32)
-        if reader.remaining() < 3 + 24 {
+        // paint (Offset24) + transform (Offset24).  The affine record is
+        // not inline: both offsets are relative to the start of the
+        // PaintTransform table.
+        if reader.remaining() < 3 + 3 {
             return Err(TtError::INVALID_TABLE);
         }
         let paint_offset = reader.u24()?;
+        let transform_offset = reader.u24()?;
 
         let parent_offset = paint_base.as_ptr() as usize - self.data.as_ptr() as usize;
         let child_offset = parent_offset.wrapping_add(paint_offset as usize) as u32;
         let child_paint = OpaquePaint::new(child_offset, false);
 
-        let xx = reader.i32()?;
-        let yx = reader.i32()?;
-        let xy = reader.i32()?;
-        let yy = reader.i32()?;
-        let dx = reader.i32()?;
-        let dy = reader.i32()?;
+        let affine_offset = parent_offset
+            .checked_add(transform_offset as usize)
+            .ok_or(TtError::INVALID_TABLE)?;
+        let mut affine_reader = Reader::new(
+            self.data
+                .get(affine_offset..)
+                .ok_or(TtError::INVALID_TABLE)?,
+        );
+        let xx = affine_reader.i32()?;
+        let yx = affine_reader.i32()?;
+        let xy = affine_reader.i32()?;
+        let yy = affine_reader.i32()?;
+        let dx = affine_reader.i32()?;
+        let dy = affine_reader.i32()?;
 
         Ok(Paint::Transform(TransformPaint {
             paint: child_paint,
@@ -1834,6 +1846,7 @@ mod tests {
     #[test]
     fn v1_format_byte_parsing_accepts_internal_formats() {
         // Internal variable formats should be accepted and mapped to public formats
+        assert_eq!(PaintFormat::from_byte(13), Some(PaintFormat::Transform)); // VarTransform
         assert_eq!(PaintFormat::from_byte(17), Some(PaintFormat::Scale)); // VarScale
         assert_eq!(PaintFormat::from_byte(18), Some(PaintFormat::Scale)); // ScaleCenter
         assert_eq!(PaintFormat::from_byte(25), Some(PaintFormat::Rotate)); // VarRotate
@@ -1846,5 +1859,179 @@ mod tests {
         assert_eq!(PaintFormat::from_byte(0), None);
         assert_eq!(PaintFormat::from_byte(3), None);
         assert_eq!(PaintFormat::from_byte(255), None);
+    }
+
+    /// Builds a COLR v1 table whose base glyph `gid` points at `paint`,
+    /// placed at byte 44 (the first byte after the BaseGlyphV1List).
+    fn colr_v1_with_paint(gid: u16, paint: &[u8]) -> Vec<u8> {
+        let mut bytes = colr_v1_solid(gid, 10, 0, 0);
+        bytes.truncate(44);
+        bytes.extend_from_slice(paint);
+        bytes
+    }
+
+    /// Appends a big-endian 24-bit offset.
+    fn push_u24(bytes: &mut Vec<u8>, value: u32) {
+        bytes.extend_from_slice(&value.to_be_bytes()[1..4]);
+    }
+
+    #[test]
+    fn v1_transform_follows_the_transform_offset() {
+        // PaintTransform stores two Offset24s: the child paint and the
+        // Affine2x3 record. The affine is not inline; it must be read at
+        // `paint_start + transform_offset`. Fonts in the wild put the
+        // 24-byte record at +7 and the child paint after it at +31.
+        let affine: [i32; 6] = [1 << 16, 0, 2 << 16, 3 << 16, 4 << 16, 5 << 16];
+        let mut paint = Vec::new();
+        paint.push(12); // PaintTransform
+        push_u24(&mut paint, 31); // child paint at +31
+        push_u24(&mut paint, 7); // Affine2x3 at +7
+        for value in affine {
+            paint.extend_from_slice(&value.to_be_bytes());
+        }
+        paint.push(2); // PaintSolid child at +31
+        paint.extend_from_slice(&7u16.to_be_bytes()); // palette index
+        paint.extend_from_slice(&0x8000u16.to_be_bytes()); // alpha
+
+        let bytes = colr_v1_with_paint(10, &paint);
+        let colr = ColrTable::parse(&bytes).unwrap();
+        let opaque = colr
+            .root_paint(10, RootTransform::Exclude)
+            .unwrap();
+        let transform = match colr
+            .paint(opaque, RootTransform::Exclude)
+            .unwrap()
+        {
+            Paint::Transform(transform) => transform,
+            _ => panic!("expected Paint::Transform"),
+        };
+
+        // The wire order is [xx, yx, xy, yy, dx, dy]; the renderer wants
+        // the rows [xx, xy, dx] and [yx, yy, dy].
+        assert_eq!(transform.affine, [1 << 16, 2 << 16, 4 << 16, 0, 3 << 16, 5 << 16]);
+        assert_eq!(transform.paint.offset(), 44 + 31);
+        match colr
+            .paint(transform.paint, RootTransform::Exclude)
+            .unwrap()
+        {
+            Paint::Solid(solid) => assert_eq!(solid.color.palette_index, 7),
+            _ => panic!("expected the transform child to be a solid paint"),
+        }
+    }
+
+    #[test]
+    fn v1_transform_offsets_are_independent_of_record_order() {
+        // The child paint may precede the affine record. Here the child
+        // sits at +7 (right after the 7-byte header) and the affine at
+        // +12 (after the 5-byte solid child), which is only reachable if
+        // both offsets are honoured instead of assuming a fixed layout.
+        let mut paint = Vec::new();
+        paint.push(12); // PaintTransform
+        push_u24(&mut paint, 7); // child paint at +7
+        push_u24(&mut paint, 12); // Affine2x3 at +12
+        paint.push(2); // PaintSolid at +7
+        paint.extend_from_slice(&3u16.to_be_bytes()); // palette index
+        paint.extend_from_slice(&0x4000u16.to_be_bytes()); // alpha
+        for value in [0x0001_0000i32, 0, 0, 0x0001_0000, 0x0000_2000, 0x0000_3000] {
+            paint.extend_from_slice(&value.to_be_bytes());
+        }
+
+        let bytes = colr_v1_with_paint(10, &paint);
+        let colr = ColrTable::parse(&bytes).unwrap();
+        let opaque = colr
+            .root_paint(10, RootTransform::Exclude)
+            .unwrap();
+        let transform = match colr
+            .paint(opaque, RootTransform::Exclude)
+            .unwrap()
+        {
+            Paint::Transform(transform) => transform,
+            _ => panic!("expected Paint::Transform"),
+        };
+
+        assert_eq!(transform.paint.offset(), 44 + 7);
+        assert_eq!(
+            transform.affine,
+            [0x0001_0000, 0, 0x0000_2000, 0, 0x0001_0000, 0x0000_3000]
+        );
+    }
+
+    #[test]
+    fn v1_var_transform_reads_the_static_affine() {
+        // PaintVarTransform (format 13) points at a VarAffine2x3: the
+        // same six Fixed values followed by a varIndexBase. Without an
+        // ItemVariationStore the static values apply.
+        let mut paint = Vec::new();
+        paint.push(13); // PaintVarTransform
+        push_u24(&mut paint, 31); // child paint at +31
+        push_u24(&mut paint, 7); // VarAffine2x3 at +7
+        for value in [0x0001_0000i32, 0, 0, 0x0001_0000, 0x0000_1000, 0] {
+            paint.extend_from_slice(&value.to_be_bytes());
+        }
+        paint.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes()); // varIndexBase
+        paint.push(2); // PaintSolid child at +31
+        paint.extend_from_slice(&1u16.to_be_bytes());
+        paint.extend_from_slice(&0x7FFFu16.to_be_bytes());
+
+        let bytes = colr_v1_with_paint(10, &paint);
+        let colr = ColrTable::parse(&bytes).unwrap();
+        let opaque = colr
+            .root_paint(10, RootTransform::Exclude)
+            .unwrap();
+        let transform = match colr
+            .paint(opaque, RootTransform::Exclude)
+            .unwrap()
+        {
+            Paint::Transform(transform) => transform,
+            _ => panic!("expected Paint::Transform"),
+        };
+
+        assert_eq!(transform.affine, [0x0001_0000, 0, 0x0000_1000, 0, 0x0001_0000, 0]);
+    }
+
+    #[test]
+    fn v1_transform_rejects_truncated_or_out_of_bounds_records() {
+        // Header cut in the middle of the two Offset24 fields.
+        let mut paint = vec![12u8, 0, 0, 0, 0];
+        let bytes = colr_v1_with_paint(10, &paint);
+        let colr = ColrTable::parse(&bytes).unwrap();
+        let opaque = colr
+            .root_paint(10, RootTransform::Exclude)
+            .unwrap();
+        assert!(matches!(
+            colr.paint(opaque, RootTransform::Exclude),
+            Err(TtError::INVALID_TABLE)
+        ));
+
+        // Transform offset past the end of the table.
+        paint.clear();
+        paint.push(12);
+        push_u24(&mut paint, 7);
+        push_u24(&mut paint, 0x00FF_FFFF);
+        let bytes = colr_v1_with_paint(10, &paint);
+        let colr = ColrTable::parse(&bytes).unwrap();
+        let opaque = colr
+            .root_paint(10, RootTransform::Exclude)
+            .unwrap();
+        assert!(matches!(
+            colr.paint(opaque, RootTransform::Exclude),
+            Err(TtError::INVALID_TABLE)
+        ));
+
+        // Valid offsets but fewer than 24 bytes of affine data.
+        paint.clear();
+        paint.push(12);
+        push_u24(&mut paint, 7);
+        push_u24(&mut paint, 7);
+        paint.extend_from_slice(&[0u8; 8]);
+        let bytes = colr_v1_with_paint(10, &paint);
+        let colr = ColrTable::parse(&bytes).unwrap();
+        let opaque = colr
+            .root_paint(10, RootTransform::Exclude)
+            .unwrap();
+        assert!(matches!(
+            colr.paint(opaque, RootTransform::Exclude),
+            Err(TtError::INVALID_TABLE)
+        ));
     }
 }
