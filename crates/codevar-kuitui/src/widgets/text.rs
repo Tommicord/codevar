@@ -171,7 +171,7 @@ impl Widget for Text {
 mod tests {
     use super::*;
     use crate::node::Node;
-    use crate::paint::DrawOp;
+    use crate::paint::TextOp;
 
     #[test]
     fn a_text_measures_the_width_of_its_longest_line() {
@@ -202,7 +202,12 @@ mod tests {
         node.place(Rect::new(Offset::ZERO, Size::new(100.0, 100.0)));
         node.draw(&theme, &mut list);
         assert_eq!(list.len(), 3);
-        assert!(matches!(list.ops().next(), Some(DrawOp::Text { .. })));
+        let op = list
+            .ops()
+            .next()
+            .expect("a text run was recorded");
+        let any: &dyn core::any::Any = op;
+        assert!(any.downcast_ref::<TextOp>().is_some());
     }
 
     #[test]
@@ -224,9 +229,14 @@ mod tests {
         node.measure(&theme, Constraints::unbounded());
         node.place(Rect::new(Offset::ZERO, Size::new(100.0, 100.0)));
         node.draw(&theme, &mut list);
-        match list.ops().next() {
-            Some(DrawOp::Text { style, .. }) => assert_eq!(style.color, Color::RED),
-            other => panic!("expected a text, got {other:?}"),
-        }
+        let op = list
+            .ops()
+            .next()
+            .expect("a text run was recorded");
+        let any: &dyn core::any::Any = op;
+        let text = any
+            .downcast_ref::<TextOp>()
+            .expect("expected a text run");
+        assert_eq!(text.style.color, Color::RED);
     }
 }

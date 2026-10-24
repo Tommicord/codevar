@@ -35,7 +35,7 @@
 //!    the same *measure / place* split Jetpack Compose uses
 //!    ([`Widget::measure`], [`Widget::place`]).
 //! 3. **Painting** — the placed tree is recorded into a [`DrawList`],
-//!    a flat sequence of [`DrawOp`]s that a backend replays.
+//!    a flat sequence of [`Draw`]s that a backend replays.
 //!
 //! # Where Kuitui stands
 //!
@@ -96,7 +96,6 @@
 
 #![cfg_attr(not(test), no_std)]
 #![warn(missing_docs)]
-#![forbid(unsafe_code)]
 
 extern crate alloc;
 
@@ -132,7 +131,10 @@ pub use geometry::{Alignment, Constraints, EdgeInsets, Offset, Rect, Size};
 #[doc(hidden)]
 pub use macros::__private;
 pub use node::{Modifier, Node};
-pub use paint::{CornerRadii, DrawList, DrawOp, Paint};
+pub use paint::{
+    ClippedOps, CornerRadii, Draw, DrawCommand, DrawList, DrawVisitor, LineOp, Paint, PaintStyle, RectOp,
+    TextOp,
+};
 pub use state::{DirtyState, MutableState, State};
 pub use text::{FontMetrics, FontWeight, TextSpan, TextStyle};
 pub use theme::{Theme, ThemeMode, Typography};
@@ -155,7 +157,10 @@ pub mod prelude {
     pub use crate::geometry::{Alignment, Constraints, EdgeInsets, Horizontal, Offset, Rect, Size, Vertical};
     pub use crate::kuitui;
     pub use crate::node::{Modifier, Node};
-    pub use crate::paint::{CornerRadii, DrawList, DrawOp, Paint, PaintStyle};
+    pub use crate::paint::{
+        ClippedOps, CornerRadii, Draw, DrawCommand, DrawList, DrawVisitor, LineOp, Paint, PaintStyle, RectOp,
+        TextOp,
+    };
     pub use crate::state::{DirtyState, MutableState, State};
     pub use crate::text::{
         ApproximateFontMetrics, FontMetrics, FontWeight, TextAlign, TextContent, TextSpan, TextStyle,

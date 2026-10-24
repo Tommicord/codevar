@@ -573,11 +573,14 @@ mod tests {
         let mut square = Square { side: 4.0 };
         square.draw(&mut scope, Rect::from_min_size(Offset::ZERO, 4.0, 4.0));
         assert_eq!(list.len(), 1);
-        match list.ops().next() {
-            Some(crate::paint::DrawOp::Rect { rect, .. }) => {
-                assert_eq!(rect.origin, Offset::new(10.0, 20.0));
-            }
-            other => panic!("expected a rectangle, got {other:?}"),
-        }
+        let op = list
+            .ops()
+            .next()
+            .expect("a rectangle was recorded");
+        let any: &dyn core::any::Any = op;
+        let rect = any
+            .downcast_ref::<crate::paint::RectOp>()
+            .expect("expected a rectangle");
+        assert_eq!(rect.rect.origin, Offset::new(10.0, 20.0));
     }
 }

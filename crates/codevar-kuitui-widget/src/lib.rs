@@ -22,7 +22,7 @@
 //! `codevar-truetype-*` font stack.
 //!
 //! Kuitui is backend agnostic: a widget never talks to a graphics API,
-//! it records [`codevar_kuitui::paint::DrawOp`]s into the display list
+//! it records [`codevar_kuitui::paint::Draw`]s into the display list
 //! and a backend replays them. The widgets here follow that contract,
 //! and go one step further for the effects the current op set cannot
 //! express, by producing the geometry and atlases a richer backend

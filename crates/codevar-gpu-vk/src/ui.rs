@@ -25,18 +25,18 @@
 //!
 //! The vertex layout matches the `ui` shader pair compiled by
 //! `codevar-kuitui` (`ui.vert`/`ui.frag`): location 0 is the position in
-//! logical pixels and location 1 is the colour. The viewport mapping and
+//! logical pixels and location 1 is the color. The viewport mapping and
 //! the clip scissor are applied by the renderer, so the expansion stays a
 //! pure function of the display list and is unit-testable without a
 //! device.
 //!
 //! # Scope
 //!
-//! Geometry operations ([`DrawOp::Rect`] and [`DrawOp::Line`]) are
-//! expanded here. A [`DrawOp::Text`] run carries no glyph positions — it
-//! is shaped by the font backend, which owns the glyph atlas and the
-//! `text` shader — so it is counted but not expanded ([`UiGeometry::text_runs`]).
-//! Rounded corners are likewise not representable by the colour-only `ui`
+//! Geometry operations ([`RectOp`] and [`LineOp`]) are expanded here
+//! into vertices. A [`TextOp`] run carries no polygon geometry — it is
+//! drawn by the text pass, which owns the glyph atlas and the `text`
+//! shader — so this pass leaves it to the trait's default no-op.
+//! Rounded corners are likewise not representable by the color-only `ui`
 //! shader and are drawn square; both limits are recorded here rather than
 //! silently ignored.
 
@@ -49,7 +49,7 @@ use ash::vk;
 use libm::{ceilf, floorf};
 
 use codevar_kuitui::geometry::{Offset, Rect};
-use codevar_kuitui::paint::{DrawCommand, DrawList, DrawOp, Paint, PaintStyle};
+use codevar_kuitui::paint::{CornerRadii, DrawCommand, DrawList, DrawVisitor, Paint, PaintStyle};
 
 use crate::base::CompositorError;
 use crate::mix::shader_module;
@@ -58,7 +58,7 @@ use crate::pipe::PipeSource;
 use crate::pipe_ctx::{PipeCtx, PipeFuture, PipeOutcome};
 use crate::pipeline::{PipelineContext, find_memory_type};
 
-/// A position (in logical pixels) and colour of one UI vertex.
+/// A position (in logical pixels) and color of one UI vertex.
 ///
 /// The layout is the input of `ui.vert`: a `vec2` at location 0 and a
 /// `vec4` at location 1, packed without padding.
@@ -67,7 +67,7 @@ use crate::pipeline::{PipelineContext, find_memory_type};
 pub struct UiVertex {
     /// Position in logical pixels, top-left origin.
     pub position: [f32; 2],
-    /// Straight (non-premultiplied) RGBA colour.
+    /// Straight (non-premultiplied) RGBA color.
     pub color: [f32; 4],
 }
 
@@ -93,8 +93,6 @@ pub struct UiGeometry {
     vertices: Vec<UiVertex>,
     /// One span per geometry operation, in paint order.
     spans: Vec<DrawSpan>,
-    /// Number of text runs skipped because a font backend replays them.
-    text_runs: u32,
 }
 
 impl UiGeometry {
@@ -104,7 +102,6 @@ impl UiGeometry {
         Self {
             vertices: Vec::new(),
             spans: Vec::new(),
-            text_runs: 0,
         }
     }
 
@@ -112,7 +109,6 @@ impl UiGeometry {
     pub fn clear(&mut self) {
         self.vertices.clear();
         self.spans.clear();
-        self.text_runs = 0;
     }
 
     /// The triangle-list vertices, in paint order.
@@ -127,13 +123,6 @@ impl UiGeometry {
     #[must_use]
     pub fn spans(&self) -> &[DrawSpan] {
         &self.spans
-    }
-
-    /// Number of text runs skipped during the last expansion.
-    #[inline]
-    #[must_use]
-    pub const fn text_runs(&self) -> u32 {
-        self.text_runs
     }
 
     /// Whether the geometry holds no draw span.
@@ -156,13 +145,13 @@ impl UiGeometry {
     }
 
     /// Expands one command, appending its vertices and its span.
+    ///
+    /// The operation is replayed through [`DrawVisitor`]: dispatching on
+    /// its kind is the operation's job, not the backend's.
     pub fn push_command(&mut self, command: DrawCommand) {
         let first_vertex = self.vertices.len();
-        match &command.op {
-            DrawOp::Rect { rect, paint, .. } => self.push_rect(*rect, *paint),
-            DrawOp::Line { from, to, paint } => self.push_line(*from, *to, *paint),
-            DrawOp::Text { .. } => self.text_runs += 1,
-        }
+        let clip = command.clip;
+        command.op.visit(self);
         let vertex_count = self.vertices.len() - first_vertex;
         if vertex_count == 0 {
             return;
@@ -170,7 +159,7 @@ impl UiGeometry {
         self.spans.push(DrawSpan {
             first_vertex: first_vertex as u32,
             vertex_count: vertex_count as u32,
-            clip: command.clip,
+            clip,
         });
     }
 
@@ -284,7 +273,17 @@ impl UiGeometry {
     }
 }
 
-/// The straight RGBA vertex colour of a paint.
+impl DrawVisitor for UiGeometry {
+    fn rect(&mut self, rect: Rect, _radii: CornerRadii, paint: Paint) {
+        self.push_rect(rect, paint);
+    }
+
+    fn line(&mut self, from: Offset, to: Offset, paint: Paint) {
+        self.push_line(from, to, paint);
+    }
+}
+
+/// The straight RGBA vertex color of a paint.
 #[inline]
 fn vertex_color(paint: Paint) -> [f32; 4] {
     [
@@ -398,7 +397,7 @@ pub struct UiPipe<'p> {
     mapped: *mut UiVertex,
     /// Number of vertices `buffer` holds.
     capacity: usize,
-    /// Clear colour of the target at the start of the frame.
+    /// Clear color of the target at the start of the frame.
     clear: [f32; 4],
     /// Mix weight of the target in the frame.
     weight: f32,
@@ -480,7 +479,7 @@ impl<'p> UiPipe<'p> {
         &self.frame
     }
 
-    /// Sets the colour the target is cleared to at the start of a frame.
+    /// Sets the color the target is cleared to at the start of a frame.
     pub fn set_clear(&mut self, clear: [f32; 4]) {
         self.clear = clear;
     }
@@ -829,7 +828,7 @@ mod tests {
     use codevar_kuitui::paint::CornerRadii;
     use codevar_kuitui::text::TextStyle;
 
-    /// A black fill, the colour most tests do not care about.
+    /// A black fill, the color most tests do not care about.
     fn fill() -> Paint {
         Paint::fill(Color::BLACK)
     }
@@ -984,13 +983,13 @@ mod tests {
     }
 
     #[test]
-    fn a_text_run_is_counted_but_not_expanded() {
+    fn a_text_run_is_left_to_the_text_pass() {
         let mut list = DrawList::new();
         list.text(Offset::ZERO, Rc::from("hi"), TextStyle::default());
         let mut geometry = UiGeometry::new();
         geometry.expand(&mut list);
-        assert_eq!(geometry.text_runs(), 1);
         assert!(geometry.is_empty());
+        assert_eq!(geometry.vertices().len(), 0);
     }
 
     #[test]

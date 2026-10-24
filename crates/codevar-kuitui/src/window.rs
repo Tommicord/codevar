@@ -472,7 +472,7 @@ impl Widget for ResizeHandle {
 mod tests {
     use super::*;
     use crate::node::Node;
-    use crate::paint::{DrawList, DrawOp};
+    use crate::paint::{DrawList, RectOp, TextOp};
 
     #[test]
     fn a_title_bar_is_as_wide_as_the_window() {
@@ -492,8 +492,18 @@ mod tests {
         node.place(Rect::new(Offset::ZERO, Size::new(400.0, 32.0)));
         node.draw(&theme, &mut list);
         assert!(list.len() >= 2);
-        assert!(matches!(list.ops().next(), Some(DrawOp::Rect { .. })));
-        assert!(matches!(list.ops().nth(1), Some(DrawOp::Text { .. })));
+        let first = list
+            .ops()
+            .next()
+            .expect("a rectangle was recorded");
+        let first_any: &dyn core::any::Any = first;
+        assert!(first_any.downcast_ref::<RectOp>().is_some());
+        let second = list
+            .ops()
+            .nth(1)
+            .expect("a text run was recorded");
+        let second_any: &dyn core::any::Any = second;
+        assert!(second_any.downcast_ref::<TextOp>().is_some());
     }
 
     #[test]

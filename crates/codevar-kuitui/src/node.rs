@@ -588,7 +588,7 @@ impl Widget for Identified {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::paint::DrawOp;
+    use crate::paint::RectOp;
 
     /// A widget that fills the rectangle it is given.
     struct Filler;
@@ -645,10 +645,15 @@ mod tests {
         node.place(Rect::from_min_size(Offset::ZERO, 10.0, 10.0));
         node.draw(&theme, &mut list);
         assert_eq!(list.len(), 2);
-        match list.ops().next() {
-            Some(DrawOp::Rect { paint, .. }) => assert_eq!(paint.color, Color::RED),
-            other => panic!("expected a rectangle, got {other:?}"),
-        }
+        let op = list
+            .ops()
+            .next()
+            .expect("a rectangle was recorded");
+        let any: &dyn core::any::Any = op;
+        let rect = any
+            .downcast_ref::<RectOp>()
+            .expect("expected a rectangle");
+        assert_eq!(rect.paint.color, Color::RED);
     }
 
     #[test]

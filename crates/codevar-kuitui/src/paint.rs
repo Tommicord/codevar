@@ -27,9 +27,12 @@
 //! that applies to each of them already resolved. A backend therefore
 //! never has to model a clip stack.
 
+use alloc::boxed::Box;
 use alloc::collections::{VecDeque, vec_deque};
 use alloc::rc::Rc;
 use alloc::vec::Vec;
+use core::any::Any;
+use core::fmt;
 
 use crate::color::Color;
 use crate::geometry::{Offset, Rect};
@@ -135,35 +138,95 @@ impl Paint {
 }
 
 /// One drawing operation of a display list.
-#[derive(Debug, Clone, PartialEq)]
-pub enum DrawOp {
-    /// A rectangle, filled or outlined.
-    Rect {
-        /// The rectangle.
-        rect: Rect,
-        /// The radii of its corners.
-        radii: CornerRadii,
-        /// The paint it is drawn with.
-        paint: Paint,
-    },
-    /// A straight line.
-    Line {
-        /// The start of the line.
-        from: Offset,
-        /// The end of the line.
-        to: Offset,
-        /// The paint it is drawn with.
-        paint: Paint,
-    },
-    /// A run of text.
-    Text {
-        /// The baseline origin of the run.
-        origin: Offset,
-        /// The characters of the run.
-        text: Rc<str>,
-        /// The style of the run.
-        style: TextStyle,
-    },
+///
+/// A display list is *open*: kuitui stores boxed operations and never
+/// inspects them, and a backend replays them by *visiting* each one with
+/// a [`DrawVisitor`]. A new kind of primitive is therefore added by
+/// implementing this trait and pushing the value — neither kuitui nor
+/// the backends that do not care about it change.
+///
+/// The [`Any`] and [`fmt::Debug`] supertraits let a consumer identify
+/// and format an operation without the core having to name every kind.
+pub trait Draw: Any + fmt::Debug {
+    /// Dispatches this operation to the matching method of `visitor`.
+    fn visit(&self, visitor: &mut dyn DrawVisitor);
+}
+
+/// A consumer of the operations of a [`DrawList`].
+///
+/// A backend implements this trait to turn operations into its own
+/// drawing model — Vulkan vertices, WebGPU quads, an SVG stream. Every
+/// method has a default no-op implementation, so a backend that only
+/// supports some primitives overrides only those.
+pub trait DrawVisitor {
+    /// Visits a rectangle, filled or outlined.
+    fn rect(&mut self, rect: Rect, radii: CornerRadii, paint: Paint) {
+        let _ = (rect, radii, paint);
+    }
+
+    /// Visits a straight line.
+    fn line(&mut self, from: Offset, to: Offset, paint: Paint) {
+        let _ = (from, to, paint);
+    }
+
+    /// Visits a run of text.
+    fn text(&mut self, origin: Offset, text: &Rc<str>, style: &TextStyle) {
+        let _ = (origin, text, style);
+    }
+}
+
+/// A filled or outlined, possibly rounded, rectangle.
+#[derive(Debug)]
+pub struct RectOp {
+    /// The rectangle.
+    pub rect: Rect,
+    /// The radii of its corners.
+    pub radii: CornerRadii,
+    /// The paint it is drawn with.
+    pub paint: Paint,
+}
+
+impl Draw for RectOp {
+    #[inline]
+    fn visit(&self, visitor: &mut dyn DrawVisitor) {
+        visitor.rect(self.rect, self.radii, self.paint);
+    }
+}
+
+/// A straight line between two points.
+#[derive(Debug)]
+pub struct LineOp {
+    /// The start of the line.
+    pub from: Offset,
+    /// The end of the line.
+    pub to: Offset,
+    /// The paint it is drawn with.
+    pub paint: Paint,
+}
+
+impl Draw for LineOp {
+    #[inline]
+    fn visit(&self, visitor: &mut dyn DrawVisitor) {
+        visitor.line(self.from, self.to, self.paint);
+    }
+}
+
+/// A run of text: its baseline origin, its characters and its style.
+#[derive(Debug)]
+pub struct TextOp {
+    /// The baseline origin of the run.
+    pub origin: Offset,
+    /// The characters of the run.
+    pub text: Rc<str>,
+    /// The style of the run.
+    pub style: TextStyle,
+}
+
+impl Draw for TextOp {
+    #[inline]
+    fn visit(&self, visitor: &mut dyn DrawVisitor) {
+        visitor.text(self.origin, &self.text, &self.style);
+    }
 }
 
 /// One queued drawing operation together with the clip that was open
@@ -173,10 +236,10 @@ pub enum DrawOp {
 /// operation and its resolved clip travel together, so a consumer can
 /// never observe one without the other the way two parallel arrays
 /// would allow.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub struct DrawCommand {
     /// The operation to replay.
-    pub op: DrawOp,
+    pub op: Box<dyn Draw>,
     /// The clipping rectangle that applied when the operation was
     /// recorded; `None` means the whole surface.
     pub clip: Option<Rect>,
@@ -219,8 +282,8 @@ impl DrawList {
     }
 
     /// The operations of the queue, in paint order.
-    pub fn ops(&self) -> impl Iterator<Item = &DrawOp> + '_ {
-        self.commands.iter().map(|command| &command.op)
+    pub fn ops(&self) -> impl Iterator<Item = &dyn Draw> + '_ {
+        self.commands.iter().map(|command| &*command.op)
     }
 
     /// The commands of the queue, in paint order.
@@ -296,24 +359,33 @@ impl DrawList {
     }
 
     /// Enqueues an operation with the clip that is open right now.
-    pub fn push(&mut self, op: DrawOp) {
+    pub fn push(&mut self, op: impl Draw + 'static) {
+        self.push_boxed(Box::new(op));
+    }
+
+    /// Enqueues an already-boxed operation with the clip that is open
+    /// right now.
+    ///
+    /// This is the storage-level entry point for a consumer that already
+    /// holds a trait object; [`DrawList::push`] is the boxing shorthand.
+    pub fn push_boxed(&mut self, op: Box<dyn Draw>) {
         let clip = self.current_clip();
         self.commands.push_back(DrawCommand { op, clip });
     }
 
     /// Records a rectangle.
     pub fn rect(&mut self, rect: Rect, radii: CornerRadii, paint: Paint) {
-        self.push(DrawOp::Rect { rect, radii, paint });
+        self.push(RectOp { rect, radii, paint });
     }
 
     /// Records a line.
     pub fn line(&mut self, from: Offset, to: Offset, paint: Paint) {
-        self.push(DrawOp::Line { from, to, paint });
+        self.push(LineOp { from, to, paint });
     }
 
     /// Records a run of text.
     pub fn text(&mut self, origin: Offset, text: Rc<str>, style: TextStyle) {
-        self.push(DrawOp::Text { origin, text, style });
+        self.push(TextOp { origin, text, style });
     }
 
     /// The operations of the list together with the clipping rectangle
@@ -335,17 +407,25 @@ pub struct ClippedOps<'a> {
 }
 
 impl<'a> Iterator for ClippedOps<'a> {
-    type Item = (&'a DrawOp, Option<Rect>);
+    type Item = (&'a dyn Draw, Option<Rect>);
 
     fn next(&mut self) -> Option<Self::Item> {
         let command = self.commands.next()?;
-        Some((&command.op, command.clip))
+        Some((&*command.op, command.clip))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::any::Any;
+
+    /// Downcasts an operation to its concrete type, the test-side
+    /// counterpart of the `Draw` trait's openness.
+    fn as_op<T: Any>(op: &dyn Draw) -> Option<&T> {
+        let any: &dyn Any = op;
+        any.downcast_ref::<T>()
+    }
 
     #[test]
     fn a_filled_paint_has_no_stroke_width() {
@@ -374,8 +454,13 @@ mod tests {
             Paint::stroke(Color::WHITE, 1.0),
         );
         assert_eq!(list.len(), 2);
-        assert!(matches!(list.ops().next(), Some(DrawOp::Rect { .. })));
-        assert!(matches!(list.ops().nth(1), Some(DrawOp::Line { .. })));
+        let first = list
+            .ops()
+            .next()
+            .expect("a rectangle was recorded");
+        assert!(as_op::<RectOp>(first).is_some());
+        let second = list.ops().nth(1).expect("a line was recorded");
+        assert!(as_op::<LineOp>(second).is_some());
     }
 
     #[test]
@@ -391,28 +476,17 @@ mod tests {
             Offset::new(1.0, 1.0),
             Paint::stroke(Color::WHITE, 1.0),
         );
-        assert!(matches!(
-            list.peek_front(),
-            Some(DrawCommand {
-                op: DrawOp::Rect { .. },
-                ..
-            })
-        ));
-        assert!(matches!(
-            list.pop_front(),
-            Some(DrawCommand {
-                op: DrawOp::Rect { .. },
-                ..
-            })
-        ));
-        assert!(matches!(
-            list.pop_front(),
-            Some(DrawCommand {
-                op: DrawOp::Line { .. },
-                ..
-            })
-        ));
-        assert_eq!(list.pop_front(), None);
+        let front = list
+            .peek_front()
+            .expect("a rectangle is at the front");
+        assert!(as_op::<RectOp>(&*front.op).is_some());
+        let first = list
+            .pop_front()
+            .expect("a rectangle was recorded");
+        assert!(as_op::<RectOp>(&*first.op).is_some());
+        let second = list.pop_front().expect("a line was recorded");
+        assert!(as_op::<LineOp>(&*second.op).is_some());
+        assert!(list.pop_front().is_none());
         assert!(list.is_empty());
     }
 

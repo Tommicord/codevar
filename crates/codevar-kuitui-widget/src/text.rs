@@ -22,7 +22,7 @@
 //!
 //! It draws in two ways, and a backend chooses one:
 //!
-//! * [`Widget::draw`] records a [`DrawOp::Text`] op, which is all a
+//! * [`Widget::draw`] records a [`TextOp`] op, which is all a
 //!   backend that owns its own glyph atlas needs;
 //! * [`Text::layout`] returns the [`GlyphRun`] — quads plus the
 //!   single-channel coverage atlas — that the `text` shader program
@@ -31,6 +31,8 @@
 //!
 //! The widget is single-line: a `'\n'` in the text is not a line break,
 //! it is a character with no glyph. Use one `Text` per line.
+//!
+//! [`TextOp`]: codevar_kuitui::paint::TextOp
 
 use alloc::rc::Rc;
 
@@ -106,7 +108,7 @@ impl Text {
     /// Lays the line out as a glyph run.
     ///
     /// The run carries the rasterized coverage the `text` shader
-    /// samples; a backend that draws the [`DrawOp::Text`] op instead
+    /// samples; a backend that draws the [`TextOp`] op instead
     /// does not need it.
     ///
     /// # Errors
@@ -144,7 +146,7 @@ impl Widget for Text {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codevar_kuitui::paint::{DrawList, DrawOp};
+    use codevar_kuitui::paint::{DrawList, TextOp};
     use codevar_kuitui::theme::Theme;
 
     const FONT: &str = concat!(
@@ -212,13 +214,16 @@ mod tests {
         let mut scope = DrawScope::new(&mut list, &theme, Offset::ZERO);
         text.draw(&mut scope, Rect::from_min_size(Offset::ZERO, 100.0, 40.0));
         assert_eq!(list.len(), 1);
-        match list.ops().next() {
-            Some(DrawOp::Text { origin, style, .. }) => {
-                assert!(origin.y > 0.0);
-                assert_eq!(style.color, Color::RED);
-            }
-            other => panic!("expected text, got {other:?}"),
-        }
+        let op = list
+            .ops()
+            .next()
+            .expect("a text run was recorded");
+        let any: &dyn core::any::Any = op;
+        let text = any
+            .downcast_ref::<TextOp>()
+            .expect("expected text");
+        assert!(text.origin.y > 0.0);
+        assert_eq!(text.style.color, Color::RED);
     }
 
     #[test]

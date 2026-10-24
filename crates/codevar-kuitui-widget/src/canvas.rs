@@ -15,9 +15,9 @@
 
 //! A canvas that paints lines, rectangles, polygons and gradients.
 //!
-//! Kuitui's display list carries three primitives — [`DrawOp::Rect`],
-//! [`DrawOp::Line`] and [`DrawOp::Text`] — and a backend replays exactly
-//! those. This widget keeps a richer vocabulary ([`Shape`]) and
+//! Kuitui's display list replays a small set of primitives — a
+//! [`RectOp`], a [`LineOp`] and a [`TextOp`] — and a backend replays
+//! exactly those. This widget keeps a richer vocabulary ([`Shape`]) and
 //! *expands* every shape into the op set the list understands:
 //!
 //! * a [`Shape::Rect`] maps to one `Rect` op;
@@ -38,9 +38,9 @@
 //! carry the resolution-independent geometry the expanded ops throw
 //! away.
 //!
-//! [`DrawOp::Rect`]: codevar_kuitui::paint::DrawOp::Rect
-//! [`DrawOp::Line`]: codevar_kuitui::paint::DrawOp::Line
-//! [`DrawOp::Text`]: codevar_kuitui::paint::DrawOp::Text
+//! [`RectOp`]: codevar_kuitui::paint::RectOp
+//! [`LineOp`]: codevar_kuitui::paint::LineOp
+//! [`TextOp`]: codevar_kuitui::paint::TextOp
 
 use alloc::vec::Vec;
 
@@ -461,7 +461,7 @@ fn ceil_to_i32(value: f32) -> i32 {
 mod tests {
     use super::*;
     use codevar_kuitui::paint::DrawList;
-    use codevar_kuitui::paint::DrawOp;
+    use codevar_kuitui::paint::{LineOp, RectOp};
     use codevar_kuitui::theme::Theme;
 
     fn square() -> Vec<Offset> {
@@ -595,7 +595,8 @@ mod tests {
         canvas.draw(&mut scope, Rect::from_min_size(Offset::ZERO, 4.0, 4.0));
         assert_eq!(list.len(), 2);
         for op in list.ops() {
-            assert!(matches!(op, DrawOp::Rect { .. }));
+            let any: &dyn core::any::Any = op;
+            assert!(any.downcast_ref::<RectOp>().is_some());
         }
     }
 
@@ -612,7 +613,9 @@ mod tests {
         );
         let mut scope = DrawScope::new(&mut list, &theme, Offset::ZERO);
         canvas.draw(&mut scope, Rect::from_min_size(Offset::ZERO, 8.0, 4.0));
-        assert!(matches!(list.ops().next(), Some(DrawOp::Line { .. })));
+        let first = list.ops().next().expect("a line was recorded");
+        let any: &dyn core::any::Any = first;
+        assert!(any.downcast_ref::<LineOp>().is_some());
         assert_eq!(list.len(), 4);
     }
 }
