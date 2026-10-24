@@ -139,7 +139,7 @@ pub use state::{DirtyState, MutableState, State};
 pub use text::{FontMetrics, FontWeight, TextSpan, TextStyle};
 pub use theme::{Theme, ThemeMode, Typography};
 pub use widget::{DrawScope, EventScope, Key, MeasureScope, PlaceScope, Widget};
-pub use widgets::{Column, Frame, Row, Spacer, Stack, Text};
+pub use widgets::{ColorableText, Column, Frame, Row, Spacer, Stack, Text};
 pub use window::{ResizeEdge, ResizeHandle, TitleBar, WindowButton, WindowFrame};
 
 /// The traits and types a widget implementation usually needs.
@@ -167,6 +167,6 @@ pub mod prelude {
     };
     pub use crate::theme::{Theme, ThemeMode, Typography};
     pub use crate::widget::{Children, DrawScope, EventScope, Key, MeasureScope, PlaceScope, Widget};
-    pub use crate::widgets::{Column, Frame, Row, Spacer, Stack, Text};
+    pub use crate::widgets::{ColorableText, Column, Frame, Row, Spacer, Stack, Text};
     pub use crate::window::{ResizeEdge, ResizeHandle, TitleBar, WindowButton, WindowFrame};
 }

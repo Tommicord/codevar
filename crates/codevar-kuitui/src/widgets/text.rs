@@ -168,11 +168,103 @@ impl Widget for Text {
     }
 }
 
+/// Draws a single line of text whose glyphs carry their own color.
+///
+/// This is the color counterpart of [`Text`]: it is measured with the
+/// metrics of the theme like any other text, but records a
+/// [`ColorTextOp`](crate::paint::ColorTextOp) instead of a
+/// [`TextOp`](crate::paint::TextOp). A backend that owns a color font
+/// rasterizes the run through that font's COLR/CPAL layers or bitmap
+/// strikes, so the glyphs keep the colors the font gives them.
+///
+/// The font itself is supplied to the shaping pass, not to the widget,
+/// which is what keeps the core crate free of a font dependency.
+///
+/// The widget is single-line: a `'\n'` is not a line break, it is a
+/// character with no glyph. Use one `ColorableText` per line.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColorableText {
+    /// The characters of the line.
+    text: Rc<str>,
+    /// The style that replaces the body style of the theme.
+    style: Option<TextStyle>,
+    /// The color that replaces the color of the style.
+    color: Option<Color>,
+}
+
+impl ColorableText {
+    /// Creates a color text widget that draws `text`.
+    #[must_use]
+    pub fn new(text: impl AsRef<str>) -> Self {
+        Self {
+            text: Rc::from(text.as_ref()),
+            style: None,
+            color: None,
+        }
+    }
+
+    /// The line with the given style.
+    #[must_use]
+    pub fn style(mut self, style: TextStyle) -> Self {
+        self.style = Some(style);
+        self
+    }
+
+    /// The line with the given color.
+    ///
+    /// A color glyph paints the colors of the font. This color is the
+    /// fallback a backend uses when it draws the run through the
+    /// outline pipeline instead.
+    #[must_use]
+    pub fn color(mut self, color: Color) -> Self {
+        self.color = Some(color);
+        self
+    }
+
+    /// The characters of the line.
+    #[inline]
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// The style the line is drawn with.
+    fn resolved_style(&self, theme: &Theme) -> TextStyle {
+        let style = match &self.style {
+            Some(style) => style.clone(),
+            None => theme.typography.body.clone(),
+        };
+        match self.color {
+            Some(color) => style.with_color(color),
+            None => style.with_color(theme.colors.on_surface),
+        }
+    }
+}
+
+impl Widget for ColorableText {
+    fn measure(&mut self, scope: &mut MeasureScope<'_>, constraints: Constraints) -> Size {
+        let theme = scope.theme();
+        let style = self.resolved_style(theme);
+        let metrics = theme.metrics.as_ref();
+        constraints.enforce(Size::new(
+            metrics.advance(&self.text, &style),
+            metrics.line_height(&style),
+        ))
+    }
+
+    fn draw(&mut self, scope: &mut DrawScope<'_>, _bounds: Rect) {
+        let theme = scope.theme();
+        let style = self.resolved_style(theme);
+        let ascent = theme.metrics.as_ref().ascent(&style);
+        scope.draw_color_text(Offset::new(0.0, ascent), Rc::clone(&self.text), style);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::node::Node;
-    use crate::paint::TextOp;
+    use crate::paint::{ColorTextOp, TextOp};
 
     #[test]
     fn a_text_measures_the_width_of_its_longest_line() {
@@ -265,5 +357,56 @@ mod tests {
             .downcast_ref::<TextOp>()
             .expect("expected a text run");
         assert_eq!(text.style.color, Color::RED);
+    }
+
+    #[test]
+    fn a_colorable_text_measures_with_the_theme() {
+        let theme = Theme::light();
+        let mut node = Node::new(ColorableText::new("😀"));
+        let size = node.measure(&theme, Constraints::unbounded());
+        assert!(size.width > 0.0);
+        assert!(size.height > 0.0);
+    }
+
+    #[test]
+    fn a_colorable_text_draws_one_color_text_operation() {
+        let theme = Theme::light();
+        let mut list = crate::paint::DrawList::new();
+        let mut node = Node::new(ColorableText::new("😀").color(Color::RED));
+        node.measure(&theme, Constraints::unbounded());
+        node.place(Rect::new(Offset::ZERO, Size::new(100.0, 100.0)));
+        node.draw(&theme, &mut list);
+        assert_eq!(list.len(), 1);
+        let op = list
+            .ops()
+            .next()
+            .expect("a color text run was recorded");
+        let any: &dyn core::any::Any = op;
+        let text = any
+            .downcast_ref::<ColorTextOp>()
+            .expect("expected a color text run");
+        assert_eq!(&*text.text, "😀");
+        assert!(text.origin.y > 0.0);
+        assert_eq!(text.style.color, Color::RED);
+    }
+
+    #[test]
+    fn the_macro_builds_a_colorable_text() {
+        let theme = Theme::light();
+        let mut tree = crate::kuitui! {
+            Column {
+                ColorableText("😀")
+            }
+        };
+        tree.measure(&theme, Constraints::unbounded());
+        tree.place(Rect::new(Offset::ZERO, Size::new(100.0, 100.0)));
+        let mut list = crate::paint::DrawList::new();
+        tree.draw(&theme, &mut list);
+        let op = list
+            .ops()
+            .next()
+            .expect("a color text run was recorded");
+        let any: &dyn core::any::Any = op;
+        assert!(any.downcast_ref::<ColorTextOp>().is_some());
     }
 }
