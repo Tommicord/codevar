@@ -737,3 +737,151 @@ pub fn schedule_phases<P: SchedulePolicy>(
     kernel.run()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::policy::{Priority as PolicyPriority, RoundRobin, ShortestJobFirst};
+    use crate::task::Priority;
+
+    #[test]
+    fn round_robin_shares_the_core() {
+        let mut kernel = Kernel::new(RoundRobin, Config::new(2, 0));
+        kernel.spawn(Task::new("a", Priority::NORMAL, 4, 0));
+        kernel.spawn(Task::new("b", Priority::NORMAL, 4, 0));
+        let stats = kernel.run().expect("schedules");
+        assert_eq!(stats.completions, 2);
+        // Each task ran in two slices of two cycles, so at least three
+        // preemptions happened between them.
+        assert!(
+            stats.context_switches >= 3,
+            "switches: {}",
+            stats.context_switches
+        );
+        // Fairness: equal bursts finish together, so the two runtimes match.
+        let a = kernel.task(TaskId::new(0)).expect("exists");
+        let b = kernel.task(TaskId::new(1)).expect("exists");
+        assert_eq!(a.burst(), b.burst());
+    }
+
+    #[test]
+    fn timer_fires_exactly_once_per_quantum() {
+        let mut timer = Timer::new(3);
+        assert!(!timer.advance());
+        assert!(!timer.advance());
+        assert!(timer.advance());
+        assert_eq!(timer.fires(), 1);
+        assert_eq!(timer.remaining(), 0);
+        timer.arm();
+        assert_eq!(timer.remaining(), 3);
+    }
+
+    #[test]
+    fn context_switch_preserves_progress() {
+        // A large slice means one task runs to completion before the other,
+        // but the program counter still tracks the saved context.
+        let mut kernel = Kernel::new(RoundRobin, Config::new(100, 0));
+        kernel.spawn(Task::new("a", Priority::NORMAL, 3, 0));
+        kernel.spawn(Task::new("b", Priority::NORMAL, 2, 0));
+        let stats = kernel.run().expect("schedules");
+        assert_eq!(stats.completions, 2);
+        for task in kernel.tasks() {
+            assert_eq!(
+                task.context().program_counter,
+                task.burst(),
+                "{} did not finish its work",
+                task.name()
+            );
+        }
+    }
+
+    #[test]
+    fn priority_runs_the_urgent_task_first() {
+        let mut kernel = Kernel::new(PolicyPriority, Config::new(100, 0));
+        kernel.spawn(Task::new("background", Priority::LOWEST, 2, 0));
+        kernel.spawn(Task::new("system", Priority::HIGHEST, 2, 0));
+        kernel.run().expect("schedules");
+        // The high-priority task started first and finished no later.
+        let background = kernel.task(TaskId::new(0)).expect("exists");
+        let system = kernel.task(TaskId::new(1)).expect("exists");
+        assert!(system.completion() <= background.completion());
+    }
+
+    #[test]
+    fn shortest_job_first_minimizes_average_waiting() {
+        // Three tasks arrive together; SJF should order them 2, 4, 6.
+        let mut kernel = Kernel::new(ShortestJobFirst, Config::new(100, 0));
+        kernel.spawn(Task::new("long", Priority::NORMAL, 8, 0));
+        kernel.spawn(Task::new("short", Priority::NORMAL, 2, 0));
+        kernel.spawn(Task::new("medium", Priority::NORMAL, 4, 0));
+        let stats = kernel.run().expect("schedules");
+        // SJF: short(2) waits 0, medium(4) waits 2, long(8) waits 6 → 8/3.
+        assert_eq!(stats.waiting_total, 8);
+    }
+
+    #[test]
+    fn idle_when_nothing_has_arrived() {
+        let mut kernel = Kernel::new(RoundRobin, Config::new(4, 0));
+        kernel.spawn(Task::new("late", Priority::NORMAL, 2, 5));
+        let stats = kernel.run().expect("schedules");
+        // Five idle cycles before the task arrived.
+        assert_eq!(stats.idle_cycles, 5);
+        assert_eq!(stats.completions, 1);
+    }
+
+    #[test]
+    fn blocking_releases_the_core() {
+        let mut kernel = Kernel::new(RoundRobin, Config::new(100, 0));
+        let waiter = kernel.spawn(Task::new("waiter", Priority::NORMAL, 2, 0));
+        kernel.spawn(Task::new("worker", Priority::NORMAL, 2, 0));
+        // Let the waiter start, then block it on I/O for four cycles.
+        kernel.tick();
+        kernel.block(waiter, 4);
+        assert!(kernel.running().is_none());
+        assert_eq!(kernel.blocked(), &[waiter]);
+        let stats = kernel.run().expect("schedules");
+        assert_eq!(stats.completions, 2);
+    }
+
+    #[test]
+    fn zero_quantum_is_rejected() {
+        let mut kernel = Kernel::new(RoundRobin, Config::new(0, 0));
+        kernel.spawn(Task::new("a", Priority::NORMAL, 1, 0));
+        assert_eq!(kernel.run(), Err(KernelError::ZeroQuantum));
+    }
+
+    #[test]
+    fn empty_kernel_runs_immediately() {
+        let mut kernel = Kernel::new(RoundRobin, Config::default());
+        let stats = kernel.run().expect("schedules");
+        assert_eq!(stats.clock, 0);
+        assert_eq!(stats.completions, 0);
+    }
+
+    #[test]
+    fn zero_burst_never_takes_the_core() {
+        let mut kernel = Kernel::new(RoundRobin, Config::new(4, 0));
+        kernel.spawn(Task::new("empty", Priority::NORMAL, 0, 0));
+        let stats = kernel.run().expect("schedules");
+        assert_eq!(stats.busy_cycles, 0);
+        assert_eq!(stats.completions, 1);
+    }
+
+    #[test]
+    fn schedule_phases_runs_every_phase() {
+        let phases = [
+            Phase {
+                name: "heap",
+                priority: Priority::HIGHEST,
+                burst: 2,
+            },
+            Phase {
+                name: "window",
+                priority: Priority::NORMAL,
+                burst: 6,
+            },
+        ];
+        let stats = schedule_phases(&phases, RoundRobin, Config::new(4, 0)).expect("schedules");
+        assert_eq!(stats.completions, 2);
+        assert_eq!(stats.busy_cycles, 8);
+    }
+}
