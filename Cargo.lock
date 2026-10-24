@@ -408,6 +408,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-kuitui-text"
+version = "1.0.0"
+dependencies = [
+ "codevar-gpu-vk",
+ "codevar-gpu-wg",
+ "codevar-kuitui",
+]
+
+[[package]]
 name = "codevar-kuitui-widget"
 version = "1.0.0"
 dependencies = [

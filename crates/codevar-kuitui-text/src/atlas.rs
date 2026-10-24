@@ -32,15 +32,6 @@
 //! keyed by an opaque [`GlyphKey`] the UI derives from its font face,
 //! glyph id, pixel size and subpixel bin.
 //!
-//! The layout follows the designs proven by
-//! [glyphon](https://github.com/grovesNL/glyphon),
-//! [telar-renderer-text](https://docs.rs/telar-renderer-text/latest/src/telar_renderer_text/shaper/atlas.rs.html)
-//! and [ailloli](https://docs.rs/ailloli_ui_render_wgpu/latest/src/ailloli_ui_render_wgpu/text/text_atlas.rs.html):
-//! shelf packing with one texel of padding, a bounded number of
-//! single-channel pages, LRU page eviction that never frees a glyph of the
-//! frame being shaped, and dirty rectangles so only changed glyphs are
-//! uploaded.
-//!
 //! The vertex layout matches the `text` shader pair compiled by
 //! `codevar-kuitui`: location 0 is the position in logical pixels,
 //! location 1 the normalized atlas coordinate and location 2 the color.
@@ -58,13 +49,13 @@ use codevar_kuitui::geometry::Rect;
 ///
 /// Linear sampling reads a half-texel outside the glyph quad, so without
 /// the gap the edge of one glyph could blend with its neighbor.
-const GLYPH_PADDING: u32 = 1;
+const GLYPH_PADDING: u32 = 0x1;
 
 /// Largest side a page may have.
 ///
 /// The bound keeps `page_size * page_size` bytes in a range every target
 /// can address and matches the texture limits of the GPUs Codevar targets.
-const MAX_PAGE_SIZE: u32 = 16_384;
+const MAX_PAGE_SIZE: u32 = 0x4000;
 
 /// A position, atlas coordinate and color of one glyph vertex.
 ///
