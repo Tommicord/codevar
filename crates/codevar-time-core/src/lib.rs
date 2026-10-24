@@ -1246,22 +1246,16 @@ macro_rules! sum_durations {
         let mut total_nanos: u64 = 0;
 
         for entry in $iter {
-            total_secs = total_secs
-                .checked_add(entry.secs)
-                .expect("overflow in iter::sum over durations");
+            total_secs = total_secs.saturating_add(entry.secs);
             total_nanos = match total_nanos.checked_add(entry.nanos.as_inner() as u64) {
                 Some(n) => n,
                 None => {
-                    total_secs = total_secs
-                        .checked_add(total_nanos / NANOS_PER_SEC as u64)
-                        .expect("overflow in iter::sum over durations");
+                    total_secs = total_secs.saturating_add(total_nanos / NANOS_PER_SEC as u64);
                     (total_nanos % NANOS_PER_SEC as u64) + entry.nanos.as_inner() as u64
                 }
             };
         }
-        total_secs = total_secs
-            .checked_add(total_nanos / NANOS_PER_SEC as u64)
-            .expect("overflow in iter::sum over durations");
+        total_secs = total_secs.saturating_add(total_nanos / NANOS_PER_SEC as u64);
         total_nanos %= NANOS_PER_SEC as u64;
         TimeDuration::new(total_secs, total_nanos as u32)
     }};
