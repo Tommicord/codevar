@@ -17,11 +17,11 @@
 //! atlas and the shared frame the UI hands to the compositor.
 //!
 //! The backend is deliberately blind to fonts, shaping and widgets. The
-//! UI side turns text into two neutral products — a triangle list of
-//! [`TextVertex`]es and coverage bitmaps — and asks the [`TextAtlas`] for
-//! a place to put each bitmap. This module only defines that hand-over;
-//! uploading dirty regions and recording the `text.vert`/`text.frag` draw
-//! calls is the text pipe's job.
+//! UI side turns text into two neutral products — indexed glyph quads and
+//! coverage bitmaps — and asks the [`TextAtlas`] for a place to put each
+//! bitmap. This module only defines that hand-over; uploading dirty regions
+//! and recording the `text.vert`/`text.frag` draw calls is the text pipe's
+//! job.
 //!
 //! # Why the atlas is demand-driven
 //!
@@ -43,7 +43,7 @@ use alloc::vec::Vec;
 use core::cell::{Ref, RefCell};
 use core::fmt;
 
-use codevar_kuitui::geometry::Rect;
+use crate::mesh::{MeshBuilder, MeshRun};
 
 /// One texel of transparent padding kept between two glyphs.
 ///
@@ -569,50 +569,18 @@ impl TextAtlas {
     }
 }
 
-/// One shaped run of text: the glyph vertices, the atlas page they sample
-/// and the clip that applied when the run was recorded.
+/// A shared, single-threaded hand-over of an atlas and its indexed runs.
 ///
-/// A run samples exactly one page, so the pipe binds that page once and
-/// draws the whole run. Glyphs that land on different pages become
-/// separate runs.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TextRun {
-    /// Index of the atlas page `vertices` sample.
-    pub page: u32,
-    /// Six vertices per glyph quad, in paint order.
-    pub vertices: Vec<TextVertex>,
-    /// Clip resolved by the UI when the run was recorded; `None` means
-    /// the whole surface.
-    pub clip: Option<Rect>,
-}
-
-impl TextRun {
-    /// Creates a run from its page, vertices and clip.
-    #[must_use]
-    pub const fn new(page: u32, vertices: Vec<TextVertex>, clip: Option<Rect>) -> Self {
-        Self { page, vertices, clip }
-    }
-
-    /// Whether the run holds no vertex and would draw nothing.
-    #[inline]
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.vertices.is_empty()
-    }
-}
-
-/// A shared, single-threaded hand-over of an atlas and its shaped runs.
-///
-/// The UI calls [`TextFrame::begin_frame`] before shaping, inserts the
-/// glyphs it rasterizes through [`TextFrame::with`], and the text pipe
-/// drains the runs and uploads the dirty regions afterward. The handle is
+/// The UI calls [`TextFrame::begin_frame`] before shaping, rasterizes the
+/// glyphs it needs through [`TextFrame::with`], and the text pipe drains the
+/// indexed runs and uploads the dirty regions afterward. The handle is
 /// `Rc`-based because both sides live on the UI thread.
 #[derive(Debug, Clone)]
 pub struct TextFrame {
     /// The shared atlas.
     atlas: Rc<RefCell<TextAtlas>>,
-    /// The shared runs, in paint order.
-    runs: Rc<RefCell<Vec<TextRun>>>,
+    /// The shared run builder, in paint order.
+    mesh: Rc<RefCell<MeshBuilder>>,
 }
 
 impl TextFrame {
@@ -621,7 +589,7 @@ impl TextFrame {
     pub fn new(atlas: TextAtlas) -> Self {
         Self {
             atlas: Rc::new(RefCell::new(atlas)),
-            runs: Rc::new(RefCell::new(Vec::new())),
+            mesh: Rc::new(RefCell::new(MeshBuilder::new())),
         }
     }
 
@@ -631,14 +599,14 @@ impl TextFrame {
         self.atlas.borrow()
     }
 
-    /// Runs `record` with the atlas and the run list borrowed mutably.
+    /// Runs `record` with the atlas and the run builder borrowed mutably.
     ///
     /// This is the shaping entry point: a run inserts its glyphs into the
-    /// atlas and appends the vertices that reference the returned slots.
-    pub fn with<R>(&self, record: impl FnOnce(&mut TextAtlas, &mut Vec<TextRun>) -> R) -> R {
+    /// atlas and pushes the quads that reference the returned slots.
+    pub fn with<R>(&self, record: impl FnOnce(&mut TextAtlas, &mut MeshBuilder) -> R) -> R {
         let mut atlas = self.atlas.borrow_mut();
-        let mut runs = self.runs.borrow_mut();
-        record(&mut atlas, &mut runs)
+        let mut mesh = self.mesh.borrow_mut();
+        record(&mut atlas, &mut mesh)
     }
 
     /// Starts a shaping pass on the shared atlas.
@@ -646,10 +614,16 @@ impl TextFrame {
         self.atlas.borrow_mut().begin_frame();
     }
 
+    /// The indexed runs shaped this frame, in paint order.
+    #[must_use]
+    pub fn runs(&self) -> Ref<'_, [MeshRun]> {
+        Ref::map(self.mesh.borrow(), |mesh| mesh.runs())
+    }
+
     /// Whether the frame holds no run.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.runs.borrow().is_empty()
+        self.mesh.borrow().is_empty()
     }
 
     /// Empties the run list, keeping its allocation.
@@ -657,7 +631,7 @@ impl TextFrame {
     /// The atlas is intentionally left intact: its glyphs stay cached for
     /// the next frame, which is the point of a persistent atlas.
     pub fn clear(&self) {
-        self.runs.borrow_mut().clear();
+        self.mesh.borrow_mut().clear();
     }
 }
 
@@ -731,7 +705,6 @@ mod tests {
 
     use super::*;
     use alloc::vec;
-    use codevar_kuitui::geometry::Offset;
 
     const KEY_A: GlyphKey = GlyphKey::from_raw(1);
 
@@ -932,38 +905,33 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_hands_the_atlas_and_runs_to_the_pipe() {
+    fn a_frame_hands_the_atlas_and_indexed_runs_to_the_pipe() {
         let frame = TextFrame::new(small(8, 1));
         frame.begin_frame();
-        frame.with(|atlas, runs| {
+        frame.with(|atlas, mesh| {
             let slot = atlas
                 .insert(KEY_A, 1, 1, &cover(1, 1))
                 .unwrap()
                 .unwrap();
-            runs.push(TextRun::new(
-                slot.page,
-                vec![TextVertex {
-                    position: [1.0, 2.0],
-                    uv: slot.uv_min,
-                    color: [1.0; 4],
-                }],
+            mesh.push(&crate::mesh::GlyphQuad::from_slot(
+                slot,
+                [1.0, 2.0],
+                [1.0; 4],
                 None,
             ));
         });
 
         assert!(!frame.is_empty());
+        let runs = frame.runs();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].page, 0);
+        assert_eq!(runs[0].mesh.vertices().len(), 4);
+        assert_eq!(runs[0].mesh.indices().len(), 6);
+        drop(runs);
         assert_eq!(frame.atlas().glyph_count(), 1);
         frame.clear();
         assert!(frame.is_empty());
         assert_eq!(frame.atlas().glyph_count(), 1, "the cache survives");
-    }
-
-    #[test]
-    fn a_run_keeps_the_clip_it_was_recorded_with() {
-        let clip = Rect::from_min_size(Offset::new(3.0, 4.0), 10.0, 20.0);
-        let run = TextRun::new(0, vec![TextVertex::default()], Some(clip));
-        assert_eq!(run.clip, Some(clip));
-        assert!(!run.is_empty());
     }
 
     #[test]
