@@ -360,6 +360,8 @@ dependencies = [
  "codevar-env",
  "codevar-gpu-core",
  "codevar-kuitui",
+ "codevar-kuitui-text",
+ "codevar-kuitui-widget",
  "codevar-logger",
  "codevar-pathbuf",
  "codevar-time-core",

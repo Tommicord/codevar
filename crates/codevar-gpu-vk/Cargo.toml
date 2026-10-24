@@ -35,5 +35,12 @@ windows = { workspace = true, features = [
     "Win32_Devices_Properties",
 ] }
 
+# The examples drive the full text stack, which the library itself must not
+# depend on: the widget layer and the text renderer sit above this crate and
+# would otherwise form a dependency cycle.
+[dev-dependencies]
+codevar-kuitui-widget = { workspace = true }
+codevar-kuitui-text = { workspace = true }
+
 [lints]
 workspace = true
