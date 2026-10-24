@@ -425,8 +425,9 @@ impl<'p> Compositor<'p> {
         if count == 0 {
             return Ok(());
         }
+        const MAX_FRAMES: usize = 8;
         let sampler = resources.mix.sampler;
-        let mut image_infos: Vec<vk::DescriptorImageInfo> = Vec::with_capacity(count);
+        let mut image_infos: Vec<vk::DescriptorImageInfo> = Vec::with_capacity(MAX_FRAMES);
         for framebuffer in self.framebuffers.iter() {
             image_infos.push(
                 vk::DescriptorImageInfo::default()
@@ -434,6 +435,12 @@ impl<'p> Compositor<'p> {
                     .image_view(framebuffer.view)
                     .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
             );
+        }
+        // Alias the first framebuffer for all unused slots so every
+        // descriptor in the `u_frames[8]` array is populated.
+        let first = image_infos[0];
+        while image_infos.len() < MAX_FRAMES {
+            image_infos.push(first);
         }
         let writes = [vk::WriteDescriptorSet::default()
             .dst_set(resources.mix.descriptor_set)
@@ -509,6 +516,11 @@ impl<'p> Compositor<'p> {
             // The pipes left their targets in the attachment layout; the
             // mix shader samples them. A hidden frame skips this (the
             // layout pass already parked them in the sampled layout).
+            let images: Vec<vk::Image> = self
+                .framebuffers
+                .iter()
+                .map(|fb| fb.image)
+                .collect();
             for framebuffer in self.framebuffers.iter() {
                 record_image_transition(
                     device,
@@ -523,6 +535,11 @@ impl<'p> Compositor<'p> {
                         vk::AccessFlags::SHADER_READ,
                     ),
                 );
+            }
+            // Update layout tracking so the next frame's layout pass
+            // knows the framebuffers are now in the sampled layout.
+            for image in images {
+                self.set_layout(image, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
             }
         }
         // The pass clears the presentation target below, so its previous
