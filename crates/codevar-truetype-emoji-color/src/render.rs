@@ -31,7 +31,10 @@
 //!
 //! 1. the nearest `CBLC`/`CBDT` strike ([`SbitStrikes`]),
 //! 2. the `COLR` v0 layer list blended with `CPAL` colors,
-//! 3. the plain `glyf` outline through the smooth raster.
+//! 3. the `COLR` v1 paint graph (`PaintCtx` and friends: solid fills,
+//!    linear/radial/sweep gradients, transforms and Porter-Duff
+//!    compositing),
+//! 4. the plain `glyf` outline through the smooth raster.
 //!
 //! Every step falls through to the next one when it cannot produce a
 //! bitmap, so the pipeline always renders *something*.  The
@@ -39,16 +42,14 @@
 //!
 //! [`SbitStrikes`]: crate::sbit::SbitStrikes
 
-#![allow(dead_code)]
-
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use codevar_logger::log_warn;
 use codevar_truetype_core::{
-    BBox, Bitmap, Generic, GlyphFormat, GlyphLoader, GlyphMetrics, GlyphSlot, Library, LoadFlags, Matrix,
-    Outline, PixelMode, Pos, Raster, RasterFlags, RasterParams, SizeMetrics, SlotInternal, TtError, TtResult,
-    Vector, atan2, div_fix, mul_fix,
+    ANGLE_PI, BBox, Bitmap, Generic, GlyphFormat, GlyphLoader, GlyphMetrics, GlyphSlot, Library, LoadFlags,
+    Matrix, Outline, PixelMode, Pos, Raster, RasterFlags, RasterParams, SizeMetrics, SlotInternal, TtError,
+    TtResult, Vector, atan2, cos, div_fix, mul_fix, sin, tan,
 };
 use codevar_truetype_glyf::load_glyph;
 use codevar_truetype_sfnt::{
@@ -57,7 +58,10 @@ use codevar_truetype_sfnt::{
 };
 use codevar_truetype_smooth::grays::GrayRaster;
 
-use crate::colr::{COLOR_FOREGROUND, ColrTable, CompositeMode, LayerIter, PaintExtend};
+use crate::colr::{
+    COLOR_FOREGROUND, ColorIndex, ColorLine, ColorStop, ColrTable, CompositeMode, LayerIter, OpaquePaint,
+    Paint, PaintExtend, RootTransform,
+};
 use crate::cpal::CpalTable;
 use crate::sbit::{SbitImage, SbitStrikes};
 
@@ -189,7 +193,8 @@ impl<'a> ColorFont<'a> {
 
     /// Renders `gindex` at `ppem` pixels per em with `palette`'s
     /// colors, trying in order: the nearest `CBLC`/`CBDT` strike, the
-    /// `COLR` layer list, the plain outline.
+    /// `COLR` v0 layer list, the `COLR` v1 paint graph, the plain
+    /// outline.
     ///
     /// # Errors
     ///
@@ -255,6 +260,32 @@ impl<'a> ColorFont<'a> {
             }
         }
 
+        // 3b. `COLR` v1: evaluate the base glyph's paint graph.  A
+        //     graph that renders nothing still counts as a color
+        //     glyph, so an empty canvas is returned instead of the
+        //     outline.
+        if let Some(colr) = &self.colr
+            && let Some(cpal) = &self.cpal
+            && colr.version() == 1
+            && let Some(root) = colr.root_paint(gindex, RootTransform::Exclude)
+        {
+            match self.render_v1(colr, cpal, palette, &size, root) {
+                Ok((bitmap, bitmap_left, bitmap_top)) => {
+                    return Ok(RenderedGlyph {
+                        bitmap,
+                        bitmap_left,
+                        bitmap_top,
+                        advance,
+                        source_ppem: ppem,
+                    });
+                }
+                Err(error) => log_warn!(
+                    "ColorFont: rendering the COLR v1 paint graph failed for glyph {gindex}; \
+                     falling back to the outline: {error}"
+                ),
+            }
+        }
+
         // 4. The plain gray outline.
         let (bitmap, bitmap_left, bitmap_top) = render_outline(&mut slot)?;
         Ok(RenderedGlyph {
@@ -296,6 +327,38 @@ impl<'a> ColorFont<'a> {
         }
         let Canvas { bitmap, left, top } = canvas;
         Ok((bitmap, left, top))
+    }
+
+    /// Evaluates the `COLR` v1 paint graph of one base glyph
+    /// (`FT_Render_Glyph_Internal`'s `COLR` v1 branch).
+    ///
+    /// # Errors
+    ///
+    /// Forwarded from the paint parser, the glyph loader, the raster
+    /// or an invalid paint graph (out-of-range glyph reference,
+    /// invalid fill child, or a graph nested deeper than
+    /// [`MAX_PAINT_DEPTH`]).
+    fn render_v1(
+        &self,
+        colr: &ColrTable<'_>,
+        cpal: &CpalTable<'_>,
+        palette: u16,
+        size: &SizeMetrics,
+        root: OpaquePaint,
+    ) -> TtResult<(Bitmap, i32, i32)> {
+        let context = PaintCtx {
+            font: &self.font,
+            colr,
+            cpal,
+            palette,
+            palette_is_dark: cpal.is_dark_background(palette),
+            size,
+            num_glyphs: self.font.num_glyphs(),
+        };
+        let mut slot = new_slot();
+        let paint = context.resolve(root)?;
+        let canvas = context.render_paint(&paint, Affine::root(size), 0, &mut slot)?;
+        canvas.into_bgra()
     }
 
     /// Converts a decoded strike image to the requested size
@@ -821,6 +884,406 @@ fn stop_color(stop: &ResolvedStop) -> [u8; 4] {
     }
     color[3] = stop.alpha as u8;
     color
+}
+
+/// A `COLR` v1 paint evaluator: the font tables plus the active
+/// palette, size and glyph count shared by the recursive walker.
+struct PaintCtx<'a, 'b> {
+    /// The face the paint graph belongs to.
+    font: &'b SfntFont<'a>,
+    /// The parsed `COLR` table.
+    colr: &'b ColrTable<'a>,
+    /// The parsed `CPAL` table.
+    cpal: &'b CpalTable<'a>,
+    /// The selected palette.
+    palette: u16,
+    /// Whether the selected palette is meant for a dark background.
+    palette_is_dark: bool,
+    /// The size the glyph is rendered at.
+    size: &'b SizeMetrics,
+    /// The face's glyph count.
+    num_glyphs: u16,
+}
+
+impl<'a> PaintCtx<'a, '_> {
+    /// Resolves an opaque paint handle.
+    ///
+    /// # Errors
+    ///
+    /// Forwarded from [`ColrTable::paint`].
+    fn resolve(&self, opaque: OpaquePaint) -> TtResult<Paint<'a>> {
+        self.colr.paint(opaque, RootTransform::Exclude)
+    }
+
+    /// Resolves a color index to unpremultiplied BGRA, multiplying the
+    /// `COLR` alpha into the palette alpha.
+    ///
+    /// # Errors
+    ///
+    /// Forwarded from [`CpalTable::color`] for an out-of-range entry.
+    fn color(&self, index: ColorIndex) -> TtResult<[u8; 4]> {
+        let color = if index.palette_index == COLOR_FOREGROUND {
+            if self.palette_is_dark {
+                [255, 255, 255, 255]
+            } else {
+                [0, 0, 0, 255]
+            }
+        } else {
+            let color = self
+                .cpal
+                .color(self.palette, index.palette_index)?;
+            [color.blue, color.green, color.red, color.alpha]
+        };
+        // The spec clamps the F2Dot14 alpha to [0, 1].
+        let alpha = i32::from(index.alpha).clamp(0, 0x4000);
+        let alpha = (u32::from(color[3]) * alpha as u32 + 8192) / 0x4000;
+        Ok([color[0], color[1], color[2], alpha as u8])
+    }
+
+    /// Resolves a `PaintGlyph` child paint into a fill source.
+    ///
+    /// The OpenType specification restricts the child to a solid or a
+    /// gradient, optionally wrapped in transform paints; anything else
+    /// is a malformed paint graph.
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_TABLE`] — the child is not a fill paint or
+    ///   the graph is too deep.
+    /// * Forwarded from [`PaintCtx::color`].
+    fn resolve_fill(&self, paint: &Paint<'a>, transform: Affine, depth: u16) -> TtResult<Fill> {
+        if depth > MAX_PAINT_DEPTH {
+            return Err(TtError::INVALID_TABLE);
+        }
+        match paint {
+            Paint::Solid(solid) => Ok(Fill::Solid(premultiply(self.color(solid.color)?))),
+            Paint::LinearGradient(gradient) => Ok(Fill::Gradient(self.gradient(
+                &gradient.color_line,
+                GradientKind::Linear {
+                    p0: (i64::from(gradient.p0.0), i64::from(gradient.p0.1)),
+                    p1: (i64::from(gradient.p1.0), i64::from(gradient.p1.1)),
+                    p2: (i64::from(gradient.p2.0), i64::from(gradient.p2.1)),
+                },
+                transform,
+            )?)),
+            Paint::RadialGradient(gradient) => Ok(Fill::Gradient(self.gradient(
+                &gradient.color_line,
+                GradientKind::Radial {
+                    c0: (i64::from(gradient.c0.0), i64::from(gradient.c0.1)),
+                    r0: i64::from(gradient.r0),
+                    c1: (i64::from(gradient.c1.0), i64::from(gradient.c1.1)),
+                    r1: i64::from(gradient.r1),
+                },
+                transform,
+            )?)),
+            Paint::SweepGradient(gradient) => Ok(Fill::Gradient(self.gradient(
+                &gradient.color_line,
+                GradientKind::Sweep {
+                    center: (i64::from(gradient.center.0), i64::from(gradient.center.1)),
+                    start: angle_to_fixed(gradient.start_angle),
+                    end: angle_to_fixed(gradient.end_angle),
+                },
+                transform,
+            )?)),
+            Paint::Transform(transformed) => {
+                let child = self.resolve(transformed.paint)?;
+                self.resolve_fill(
+                    &child,
+                    transform.concat(affine_matrix(transformed.affine)),
+                    depth + 1,
+                )
+            }
+            Paint::Translate(translated) => {
+                let child = self.resolve(translated.paint)?;
+                let matrix = [
+                    FIXED_ONE,
+                    0,
+                    0,
+                    FIXED_ONE,
+                    i64::from(translated.dx),
+                    i64::from(translated.dy),
+                ];
+                self.resolve_fill(&child, transform.concat(matrix), depth + 1)
+            }
+            Paint::Scale(scaled) => {
+                let child = self.resolve(scaled.paint)?;
+                self.resolve_fill(&child, transform.concat(scale_matrix(*scaled)), depth + 1)
+            }
+            Paint::Rotate(rotated) => {
+                let child = self.resolve(rotated.paint)?;
+                self.resolve_fill(&child, transform.concat(rotate_matrix(*rotated)), depth + 1)
+            }
+            Paint::Skew(skewed) => {
+                let child = self.resolve(skewed.paint)?;
+                self.resolve_fill(&child, transform.concat(skew_matrix(*skewed)), depth + 1)
+            }
+            _ => Err(TtError::INVALID_TABLE),
+        }
+    }
+
+    /// Resolves a color line into linear-light premultiplied stops.
+    ///
+    /// # Errors
+    ///
+    /// Forwarded from [`PaintCtx::color`].
+    fn gradient(&self, line: &ColorLine, kind: GradientKind, transform: Affine) -> TtResult<GradientFill> {
+        let mut stops = Vec::with_capacity(line.stops.len());
+        for stop in &line.stops {
+            stops.push(self.resolved_stop(stop)?);
+        }
+        let first = stops.first().map_or(0, |stop| stop.offset);
+        let last = stops.last().map_or(0, |stop| stop.offset);
+        Ok(GradientFill {
+            stops,
+            extend: line.extend,
+            kind,
+            transform,
+            first,
+            last,
+        })
+    }
+
+    /// Linearizes and premultiplies one color stop.
+    ///
+    /// # Errors
+    ///
+    /// Forwarded from [`PaintCtx::color`].
+    fn resolved_stop(&self, stop: &ColorStop) -> TtResult<ResolvedStop> {
+        let color = self.color(stop.color)?;
+        let alpha = i64::from(color[3]);
+        let mut linear = [0i64; 3];
+        for channel in 0..3 {
+            linear[channel] = i64::from(srgb_to_linear(color[channel])) * alpha;
+        }
+        Ok(ResolvedStop {
+            offset: i64::from(stop.stop_offset),
+            alpha,
+            linear,
+        })
+    }
+
+    /// Rasterizes one paint graph node into a canvas.
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_TABLE`] — the graph is too deep.
+    /// * [`TtError::INVALID_GLYPH_INDEX`] — a paint references a glyph
+    ///   outside the face.
+    /// * Forwarded from the glyph loader, the raster and the fill
+    ///   resolution.
+    fn render_paint(
+        &self,
+        paint: &Paint<'a>,
+        transform: Affine,
+        depth: u16,
+        slot: &mut GlyphSlot,
+    ) -> TtResult<Canvas> {
+        if depth > MAX_PAINT_DEPTH {
+            return Err(TtError::INVALID_TABLE);
+        }
+        match paint {
+            Paint::Glyph(glyph) => self.render_glyph_paint(glyph, transform, depth, slot),
+            Paint::ColrLayers(layers) => {
+                let mut canvas = Canvas::empty();
+                for opaque in layers.layer_iter.clone() {
+                    let child = self.resolve(opaque)?;
+                    let layer = self.render_paint(&child, transform, depth + 1, slot)?;
+                    canvas.draw_over(&layer)?;
+                }
+                Ok(canvas)
+            }
+            Paint::ColrGlyph(glyph) => {
+                if u32::from(glyph.glyph_id) >= u32::from(self.num_glyphs) {
+                    return Err(TtError::INVALID_GLYPH_INDEX);
+                }
+                let root = self
+                    .colr
+                    .root_paint(u32::from(glyph.glyph_id), RootTransform::Exclude)
+                    .ok_or(TtError::INVALID_GLYPH_INDEX)?;
+                let child = self.resolve(root)?;
+                self.render_paint(&child, transform, depth + 1, slot)
+            }
+            Paint::Transform(transformed) => {
+                let child = self.resolve(transformed.paint)?;
+                self.render_paint(
+                    &child,
+                    transform.concat(affine_matrix(transformed.affine)),
+                    depth + 1,
+                    slot,
+                )
+            }
+            Paint::Translate(translated) => {
+                let child = self.resolve(translated.paint)?;
+                let matrix = [
+                    FIXED_ONE,
+                    0,
+                    0,
+                    FIXED_ONE,
+                    i64::from(translated.dx),
+                    i64::from(translated.dy),
+                ];
+                self.render_paint(&child, transform.concat(matrix), depth + 1, slot)
+            }
+            Paint::Scale(scaled) => {
+                let child = self.resolve(scaled.paint)?;
+                self.render_paint(&child, transform.concat(scale_matrix(*scaled)), depth + 1, slot)
+            }
+            Paint::Rotate(rotated) => {
+                let child = self.resolve(rotated.paint)?;
+                self.render_paint(&child, transform.concat(rotate_matrix(*rotated)), depth + 1, slot)
+            }
+            Paint::Skew(skewed) => {
+                let child = self.resolve(skewed.paint)?;
+                self.render_paint(&child, transform.concat(skew_matrix(*skewed)), depth + 1, slot)
+            }
+            // A paint without geometry contributes nothing on its own.
+            Paint::Solid(_)
+            | Paint::LinearGradient(_)
+            | Paint::RadialGradient(_)
+            | Paint::SweepGradient(_) => Ok(Canvas::empty()),
+            Paint::Composite(composite) => {
+                let backdrop_paint = self.resolve(composite.backdrop)?;
+                let backdrop = self.render_paint(&backdrop_paint, transform, depth + 1, slot)?;
+                let source_paint = self.resolve(composite.source)?;
+                let source = self.render_paint(&source_paint, transform, depth + 1, slot)?;
+                let mut canvas = Canvas::empty();
+                canvas.composite(&source, &backdrop, composite.mode)?;
+                Ok(canvas)
+            }
+        }
+    }
+
+    /// Rasterizes a `PaintGlyph`: loads the referenced outline, maps
+    /// it to device space and fills it with the child paint.
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_GLYPH_INDEX`] — the glyph is outside the
+    ///   face.
+    /// * Forwarded from the glyph loader, [`rasterize_outline`] and
+    ///   [`PaintCtx::resolve_fill`].
+    fn render_glyph_paint(
+        &self,
+        glyph: &crate::colr::GlyphPaint,
+        transform: Affine,
+        depth: u16,
+        slot: &mut GlyphSlot,
+    ) -> TtResult<Canvas> {
+        if u32::from(glyph.glyph_id) >= u32::from(self.num_glyphs) {
+            return Err(TtError::INVALID_GLYPH_INDEX);
+        }
+        let child = self.resolve(glyph.paint)?;
+        let fill = self.resolve_fill(&child, transform, depth + 1)?;
+        // `COLR` v1 fills bare outlines: load in design units so the
+        // paint transform is the only thing applied to the glyph.
+        load_glyph(
+            self.font,
+            slot,
+            self.size,
+            u32::from(glyph.glyph_id),
+            LoadFlags::NO_SCALE,
+        )?;
+        let mut outline = slot.outline.clone();
+        transform.transform_outline(&mut outline);
+        let (mask, left, top) = rasterize_outline(&mut outline)?;
+        let mut canvas = Canvas::empty();
+        if mask.width == 0 || mask.rows == 0 {
+            return Ok(canvas);
+        }
+        canvas.fill_mask(&mask, left, top, &fill)?;
+        Ok(canvas)
+    }
+}
+
+/// Premultiplies an unpremultiplied BGRA color.
+fn premultiply(color: [u8; 4]) -> [u8; 4] {
+    let alpha = u32::from(color[3]);
+    [
+        ((u32::from(color[0]) * alpha + 127) / 255) as u8,
+        ((u32::from(color[1]) * alpha + 127) / 255) as u8,
+        ((u32::from(color[2]) * alpha + 127) / 255) as u8,
+        color[3],
+    ]
+}
+
+/// Converts a parsed F2Dot14 value (stored as `raw << 16`) to 16.16.
+#[inline]
+fn f2dot14(value: i32) -> i64 {
+    i64::from(value) >> 14
+}
+
+/// Converts a parsed F2Dot14 angle in half-turns to 16.16 degrees.
+#[inline]
+fn angle_to_fixed(value: i32) -> i64 {
+    mul_wide(f2dot14(value), ANGLE_PI)
+}
+
+/// Builds the transform matrix of a `PaintTransform`.
+///
+/// The parser stores the record as `[xx, xy, dx, yx, yy, dy]`.
+fn affine_matrix(affine: [i32; 6]) -> [i64; 6] {
+    [
+        i64::from(affine[0]),
+        i64::from(affine[1]),
+        i64::from(affine[3]),
+        i64::from(affine[4]),
+        i64::from(affine[2]),
+        i64::from(affine[5]),
+    ]
+}
+
+/// Builds the transform matrix of a `PaintScale` (scaling about its
+/// center).
+fn scale_matrix(paint: crate::colr::ScalePaint) -> [i64; 6] {
+    let scale_x = f2dot14(paint.scale_x);
+    let scale_y = f2dot14(paint.scale_y);
+    let center_x = i64::from(paint.center_x);
+    let center_y = i64::from(paint.center_y);
+    [
+        scale_x,
+        0,
+        0,
+        scale_y,
+        center_x - mul_wide(scale_x, center_x),
+        center_y - mul_wide(scale_y, center_y),
+    ]
+}
+
+/// Builds the transform matrix of a `PaintRotate` (rotation about its
+/// center).
+fn rotate_matrix(paint: crate::colr::RotatePaint) -> [i64; 6] {
+    let angle = angle_to_fixed(paint.angle);
+    let cosine = cos(angle);
+    let sine = sin(angle);
+    let center_x = i64::from(paint.center_x);
+    let center_y = i64::from(paint.center_y);
+    [
+        cosine,
+        -sine,
+        sine,
+        cosine,
+        mul_wide(FIXED_ONE - cosine, center_x) + mul_wide(sine, center_y),
+        -mul_wide(sine, center_x) + mul_wide(FIXED_ONE - cosine, center_y),
+    ]
+}
+
+/// Builds the transform matrix of a `PaintSkew` (skew about its
+/// center).  The x skew angle rotates clockwise, matching HarfBuzz.
+fn skew_matrix(paint: crate::colr::SkewPaint) -> [i64; 6] {
+    let x_angle = angle_to_fixed(paint.x_skew_angle);
+    let y_angle = angle_to_fixed(paint.y_skew_angle);
+    let xy = tan(-x_angle);
+    let yx = tan(y_angle);
+    let center_x = i64::from(paint.center_x);
+    let center_y = i64::from(paint.center_y);
+    [
+        FIXED_ONE,
+        xy,
+        yx,
+        FIXED_ONE,
+        -mul_wide(xy, center_y),
+        -mul_wide(yx, center_x),
+    ]
 }
 
 /// The sRGB electro-optical transfer function, sampled at every
@@ -1637,7 +2100,25 @@ fn resolve_color(cpal: &CpalTable<'_>, palette: u16, entry: u16) -> TtResult<[u8
 ///   run out of memory instead).
 /// * Forwarded from the raster for a corrupt outline.
 fn render_outline(slot: &mut GlyphSlot) -> TtResult<(Bitmap, i32, i32)> {
-    let cbox = slot.outline.get_cbox();
+    rasterize_outline(&mut slot.outline)
+}
+
+/// Rasterizes `outline` (26.6 device coordinates) into a fresh gray
+/// bitmap, returning its box's left and top edges.
+///
+/// The outline is shifted so the box's top-left corner sits at the
+/// origin, rendered, and shifted back even when the raster fails.
+///
+/// # Errors
+///
+/// * [`TtError::RASTER_OVERFLOW`] — the box leaves FreeType's
+///   `0x7FFF` range or is inverted.
+/// * [`TtError::ARRAY_TOO_LARGE`] — the box exceeds this crate's
+///   [`MAX_DIMENSION`] guard (a deviation from FreeType, which would
+///   run out of memory instead).
+/// * Forwarded from the raster for a corrupt outline.
+fn rasterize_outline(outline: &mut Outline) -> TtResult<(Bitmap, i32, i32)> {
+    let cbox = outline.get_cbox();
     let left = cbox.x_min >> 6;
     let right = cbox.x_max.saturating_add(63) >> 6;
     let bottom = cbox.y_min >> 6;
@@ -1662,14 +2143,14 @@ fn render_outline(slot: &mut GlyphSlot) -> TtResult<(Bitmap, i32, i32)> {
     let x_shift = -64 * left;
     let y_shift = -64 * top + 64 * height;
     if x_shift != 0 || y_shift != 0 {
-        slot.outline.translate(x_shift, y_shift);
+        outline.translate(x_shift, y_shift);
     }
 
     let mut raster = GrayRaster::new();
     let rendered = {
         let mut params = RasterParams {
             target: &mut target,
-            source: &slot.outline,
+            source: outline,
             flags: RasterFlags::AA,
             gray_spans: None,
             user: None,
@@ -1679,7 +2160,7 @@ fn render_outline(slot: &mut GlyphSlot) -> TtResult<(Bitmap, i32, i32)> {
     };
 
     if x_shift != 0 || y_shift != 0 {
-        slot.outline.translate(-x_shift, -y_shift);
+        outline.translate(-x_shift, -y_shift);
     }
     rendered?;
     Ok((target, pixel_left, pixel_top))
