@@ -36,6 +36,7 @@ use codevar_ocl_abi::{ARG_SLOT, MAX_PARAMS, WorkItem};
 use codevar_ocl_ir::ir::{Module, ValueId};
 use codevar_ocl_ir::parse::parse;
 use codevar_ocl_native_codegen::interp::{Interp, Pointer, Value};
+use codevar_ocl_native_codegen::opt::{OptConfig, Optimizations};
 use codevar_ocl_native_codegen::pipeline::{CodegenOptions, compile_entry};
 use codevar_ocl_native_codegen_x86::target;
 
@@ -192,8 +193,10 @@ fn executable_page() -> *mut u8 {
 fn compiled() -> (Vec<f32>, Vec<u64>) {
     let module = module();
     let options = CodegenOptions {
-        optimize: false,
-        vectorize: false,
+        opt: OptConfig {
+            optimizations: Optimizations::NONE,
+            ..OptConfig::default()
+        },
         ..CodegenOptions::default()
     };
     let code = compile_entry(&module, &target(), &options, entry(&module)).expect("the kernel compiles");
