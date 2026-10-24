@@ -119,7 +119,7 @@ impl WorkItem {
     ///
     /// # Safety
     ///
-    /// Slot `index` must hold a buffer argument marshalled by the
+    /// Slot `index` must hold a buffer argument marshaled by the
     /// driver (its first `size_of::<usize>()` bytes are a valid
     /// pointer).
     #[must_use]
