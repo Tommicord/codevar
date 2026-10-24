@@ -16,7 +16,7 @@
 //! The WebGPU backend and compositor of Codevar.
 //!
 //! This crate mirrors [`codevar-gpu-vk`] primitive for primitive — the
-//! pipeline context, the offscreen colour targets, the pipe model, the
+//! pipeline context, the offscreen color targets, the pipe model, the
 //! fragment-shader mix pass and the renderer subsystem — but drives the
 //! browser graphics API through the raw, bounds-check-free `wgpu-hal`
 //! layer instead of `ash`.
@@ -39,6 +39,7 @@
 extern crate alloc;
 
 pub mod base;
+pub mod graphics;
 pub mod offscreen;
 pub mod pipe;
 pub mod pipe_ctx;
