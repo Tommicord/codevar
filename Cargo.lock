@@ -411,6 +411,7 @@ dependencies = [
 name = "codevar-kuitui-text"
 version = "1.0.0"
 dependencies = [
+ "ash",
  "codevar-gpu-vk",
  "codevar-gpu-wg",
  "codevar-kuitui",

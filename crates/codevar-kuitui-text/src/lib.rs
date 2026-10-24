@@ -26,7 +26,7 @@
 //!   vertices and six indices per glyph) so the GPU reuses two vertices
 //!   per glyph instead of describing two triangles.
 //! * the dirty signal tells a backend whether the text changed at all,
-//!   so an idle frame does not re-record or re-upload anything.
+//!   so an idle frame re-uploads no coverage and rebuilds no mesh.
 //! * the platform modules own the GPU objects and the upload/draw calls:
 //!   Vulkan in [`vulkan`] (native) and WebGPU in [`webgpu`] (wasm32).
 //!
@@ -41,9 +41,17 @@ extern crate alloc;
 pub mod atlas;
 pub mod dirty;
 pub mod mesh;
+/// Native Vulkan adapter: uploads atlas coverage and draws the indexed runs.
+///
+/// The module only builds on targets that have Vulkan (everything except
+/// wasm32, which uses [`webgpu`] instead).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod vulkan;
 
 pub use atlas::{
     AtlasConfig, AtlasStats, DirtyRect, GlyphKey, GlyphSlot, TextAtlas, TextError, TextFrame, TextVertex,
 };
 pub use dirty::{DirtySignal, coalesce};
 pub use mesh::{GlyphQuad, INDICES_PER_QUAD, Index, IndexedMesh, MeshBuilder, MeshRun, VERTICES_PER_QUAD};
+#[cfg(not(target_arch = "wasm32"))]
+pub use vulkan::TextPipe;
