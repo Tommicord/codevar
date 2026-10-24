@@ -670,7 +670,10 @@ mod imp {
     ///
     /// WebGL2 cannot bind a CPU-mapped buffer as a vertex or index buffer, so
     /// a pipe fills a `MAP_WRITE | COPY_SRC` staging buffer and copies it into
-    /// a `COPY_DST` buffer it then draws from.
+    /// a `COPY_DST` buffer it then draws from. Several spans may share one
+    /// staging buffer by giving each a distinct `staging_offset`; this backend
+    /// reads the staged bytes when the queue runs, so a later span must not
+    /// overwrite an earlier one.
     ///
     /// # Errors
     ///
@@ -679,19 +682,29 @@ mod imp {
     pub fn copy_buffer(
         encoder: &mut CommandEncoder,
         staging: &GpuBuffer,
+        staging_offset: u64,
         dst: &GpuBuffer,
+        dst_offset: u64,
         len: u64,
     ) -> Result<(), CompositorError> {
         if len == 0 {
             return Ok(());
         }
-        if len > staging.size() || len > dst.size() {
+        let source_end = staging_offset
+            .checked_add(len)
+            .ok_or(CompositorError::Internal("copy_buffer: source offset overflow"))?;
+        let destination_end = dst_offset
+            .checked_add(len)
+            .ok_or(CompositorError::Internal(
+                "copy_buffer: destination offset overflow",
+            ))?;
+        if source_end > staging.size() || destination_end > dst.size() {
             return Err(CompositorError::Internal("copy_buffer: copy leaves a buffer"));
         }
         let size = wgt::BufferSize::new(len).ok_or(CompositorError::Internal("copy_buffer: empty copy"))?;
         let copies = core::iter::once(BufferCopy {
-            src_offset: 0,
-            dst_offset: 0,
+            src_offset: staging_offset,
+            dst_offset,
             size,
         });
         // SAFETY: both buffers belong to this encoder's device, the copy
@@ -700,12 +713,26 @@ mod imp {
         Ok(())
     }
 
-    /// Records a copy of `texture`'s whole extent from `staging`.
+    /// A rectangular region of a texture, in texels.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct TextureRegion {
+        /// Left texel.
+        pub x: u32,
+        /// Top texel.
+        pub y: u32,
+        /// Width in texels.
+        pub width: u32,
+        /// Height in texels.
+        pub height: u32,
+    }
+
+    /// Records a copy of `region` of `texture` from `staging`.
     ///
-    /// `bytes_per_row` is the staging row stride and must be a multiple of
-    /// 256 (the WebGPU copy alignment); only the texture's width reaches it
-    /// from each row, so the caller pads the rows. `staging` must be a
-    /// `MAP_WRITE | COPY_SRC` buffer already filled with [`GpuBuffer::write`].
+    /// `bytes_per_row` is the staging row stride and should be a multiple of
+    /// 256 (the WebGPU copy alignment); only `region.width` bytes of each row
+    /// reach the texture, so the caller pads the rows. `staging` must be a
+    /// `MAP_WRITE | COPY_SRC` buffer already filled with [`GpuBuffer::write`],
+    /// with the region's rows at `staging_offset`.
     ///
     /// # Errors
     ///
@@ -713,38 +740,49 @@ mod imp {
     pub fn upload_texture(
         encoder: &mut CommandEncoder,
         staging: &GpuBuffer,
-        texture: &SampledTexture2D,
+        staging_offset: u64,
         bytes_per_row: u32,
+        texture: &SampledTexture2D,
+        region: TextureRegion,
     ) -> Result<(), CompositorError> {
-        let height = texture.height();
-        let needed = u64::from(bytes_per_row) * u64::from(height);
-        if needed > staging.size() {
+        if region.width == 0 || region.height == 0 {
+            return Ok(());
+        }
+        let needed = u64::from(bytes_per_row) * u64::from(region.height);
+        let end = staging_offset
+            .checked_add(needed)
+            .ok_or(CompositorError::Internal("upload_texture: offset overflow"))?;
+        if end > staging.size() {
             return Err(CompositorError::Internal(
                 "upload_texture: staging buffer too small",
             ));
         }
-        let region = BufferTextureCopy {
+        let copy = BufferTextureCopy {
             buffer_layout: wgt::TexelCopyBufferLayout {
-                offset: 0,
+                offset: staging_offset,
                 bytes_per_row: Some(bytes_per_row),
-                rows_per_image: Some(height),
+                rows_per_image: Some(region.height),
             },
             texture_base: TextureCopyBase {
                 mip_level: 0,
                 array_layer: 0,
-                origin: wgt::Origin3d::ZERO,
+                origin: wgt::Origin3d {
+                    x: region.x,
+                    y: region.y,
+                    z: 0,
+                },
                 aspect: FormatAspects::COLOR,
             },
             size: CopyExtent {
-                width: texture.width(),
-                height,
+                width: region.width,
+                height: region.height,
                 depth: 1,
             },
         };
         // SAFETY: the region fits the staging buffer (checked above) and the
         // texture's only mip level and layer; the encoder is recording.
         unsafe {
-            encoder.copy_buffer_to_texture(staging.raw(), texture.texture(), core::iter::once(region));
+            encoder.copy_buffer_to_texture(staging.raw(), texture.texture(), core::iter::once(copy));
         }
         Ok(())
     }
@@ -753,7 +791,7 @@ mod imp {
 #[cfg(target_arch = "wasm32")]
 pub use imp::{
     GpuBuffer, GraphicsPipeline, GraphicsPipelineDesc, SampledImage, SampledImageLayout, SampledTexture2D,
-    copy_buffer, create_sampler, create_shader_module, destroy_shader_module, upload_texture,
+    TextureRegion, copy_buffer, create_sampler, create_shader_module, destroy_shader_module, upload_texture,
 };
 
 #[cfg(test)]
