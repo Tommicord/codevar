@@ -40,9 +40,10 @@
 use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
-use core::cell::{Ref, RefCell};
+use core::cell::{Cell, Ref, RefCell};
 use core::fmt;
 
+use crate::dirty::DirtySignal;
 use crate::mesh::{MeshBuilder, MeshRun};
 
 /// One texel of transparent padding kept between two glyphs.
@@ -581,6 +582,8 @@ pub struct TextFrame {
     atlas: Rc<RefCell<TextAtlas>>,
     /// The shared run builder, in paint order.
     mesh: Rc<RefCell<MeshBuilder>>,
+    /// The producer-to-consumer dirty epoch.
+    signal: Rc<Cell<DirtySignal>>,
 }
 
 impl TextFrame {
@@ -590,6 +593,7 @@ impl TextFrame {
         Self {
             atlas: Rc::new(RefCell::new(atlas)),
             mesh: Rc::new(RefCell::new(MeshBuilder::new())),
+            signal: Rc::new(Cell::new(DirtySignal::new())),
         }
     }
 
@@ -624,6 +628,30 @@ impl TextFrame {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.mesh.borrow().is_empty()
+    }
+
+    /// Records that the text output changed and must be redrawn.
+    ///
+    /// The UI calls this when it edits its text; re-shaping identical text
+    /// leaves the signal clean, so a still frame is never re-recorded.
+    pub fn mark_dirty(&self) {
+        let mut signal = self.signal.get();
+        signal.mark();
+        self.signal.set(signal);
+    }
+
+    /// Whether a change has been recorded since the pipe last drew.
+    #[must_use]
+    pub fn is_dirty(&self) -> bool {
+        self.signal.get().is_dirty()
+    }
+
+    /// Clears the dirty signal and reports whether the pipe must redraw.
+    pub fn take_dirty(&self) -> bool {
+        let mut signal = self.signal.get();
+        let dirty = signal.take();
+        self.signal.set(signal);
+        dirty
     }
 
     /// Empties the run list, keeping its allocation.
@@ -932,6 +960,19 @@ mod tests {
         frame.clear();
         assert!(frame.is_empty());
         assert_eq!(frame.atlas().glyph_count(), 1, "the cache survives");
+    }
+
+    #[test]
+    fn a_frame_starts_dirty_and_goes_clean_once_taken() {
+        let frame = TextFrame::new(small(8, 1));
+        assert!(frame.is_dirty(), "the first frame must draw");
+        assert!(frame.take_dirty());
+        assert!(!frame.is_dirty());
+
+        frame.mark_dirty();
+        assert!(frame.is_dirty());
+        assert!(frame.take_dirty());
+        assert!(!frame.take_dirty(), "an idle frame reports clean");
     }
 
     #[test]

@@ -39,9 +39,11 @@
 extern crate alloc;
 
 pub mod atlas;
+pub mod dirty;
 pub mod mesh;
 
 pub use atlas::{
     AtlasConfig, AtlasStats, DirtyRect, GlyphKey, GlyphSlot, TextAtlas, TextError, TextFrame, TextVertex,
 };
+pub use dirty::{DirtySignal, coalesce};
 pub use mesh::{GlyphQuad, INDICES_PER_QUAD, Index, IndexedMesh, MeshBuilder, MeshRun, VERTICES_PER_QUAD};
