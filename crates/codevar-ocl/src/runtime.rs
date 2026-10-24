@@ -194,7 +194,7 @@ impl Runtime {
     }
 
     /// Publishes the built-in bare driver as the runtime's platform.
-    fn load_bare() -> Result<Self> {
+    pub fn load_bare() -> Result<Self> {
         let platform = bare::platform()?;
         Ok(Self {
             platforms: alloc::vec![platform],
