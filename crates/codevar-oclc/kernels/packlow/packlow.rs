@@ -54,7 +54,7 @@
 /// Folds one block into the 64-bit signature the shuffle table keys on.
 ///
 /// The recurrence matches the host implementation exactly, so a block
-/// packed on the host is recognised on the device and the other way round.
+/// packed on the host is recognized on the device and the other way round.
 #[kernel]
 fn block_signatures(
     data: *const uchar,
