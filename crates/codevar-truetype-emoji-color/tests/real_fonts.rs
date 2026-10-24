@@ -34,7 +34,7 @@ use codevar_truetype_sfnt::SfntFont;
 /// The real font shipped with the crate's tests.
 const FONT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/resources/NotoColorEmoji-colr-v1-subset.ttf"
+    "/tests/resources/NotoColorEmoji-colr-v1-subset.ttf"
 );
 
 /// The emoji the subset was built from.  Each one exercises a
