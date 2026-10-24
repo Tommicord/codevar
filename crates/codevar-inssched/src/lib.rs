@@ -50,7 +50,27 @@
 //! * [`desktop`] — wide, renaming, out-of-order cores (x86-64, aarch64, a
 //!   wider six-wide part).
 //!
+//! # Two levels of scheduling
+//!
+//! The crate schedules at two levels, and the layers compose:
+//!
+//! * **Instruction level** ([`asm`], [`dag`], [`sched`]) orders the
+//!   instructions *inside* one program, hiding latency on a stalled in-order
+//!   pipeline or relieving register pressure on a wide one.
+//! * **Program level** ([`task`], [`policy`], [`kernel`]) multiplexes many
+//!   programs on one core, the way an operating system does on a
+//!   uniprocessor: it hands the core out in time slices, lets an interval
+//!   [`Timer`] interrupt a slice, saves and restores a task's CPU context on a
+//!   switch, and picks the next task with a [`SchedulePolicy`]
+//!   ([`RoundRobin`], priority, or [`ShortestJobFirst`]).
+//!
+//! [`Task::burst_from_block`] is the seam: it schedules a task's straight-line
+//! program with the instruction layer and uses the resulting makespan as the
+//! CPU time the program-level kernel accounts for.
+//!
 //! # Example
+//!
+//! Ordering instructions within one program:
 //!
 //! ```rust
 //! use codevar_inssched::asm::{InstFlags, Instruction, Reg, Unit};
@@ -64,6 +84,21 @@
 //! let schedule = schedule_block(&[load, use_it], &bare::cortex_m(), &Latency)?;
 //! assert_eq!(schedule.cycles, vec![0, 2]); // the use waits for the load
 //! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! Multiplexing programs on one core with the program-level kernel:
+//!
+//! ```rust
+//! use codevar_inssched::kernel::{Config, Kernel};
+//! use codevar_inssched::policy::RoundRobin;
+//! use codevar_inssched::task::{Priority, Task};
+//!
+//! let mut kernel = Kernel::new(RoundRobin, Config::new(2, 0));
+//! kernel.spawn(Task::new("render", Priority::NORMAL, 6, 0));
+//! kernel.spawn(Task::new("compile", Priority::NORMAL, 6, 0));
+//! let stats = kernel.run()?;
+//! assert_eq!(stats.completions, 2);
+//! # Ok::<(), codevar_inssched::error::KernelError>(())
 //! ```
 //!
 //! # Performance
@@ -92,6 +127,7 @@ pub mod bare;
 pub mod dag;
 pub mod desktop;
 pub mod error;
+pub mod kernel;
 pub mod machine;
 pub mod policy;
 pub mod sched;
@@ -99,7 +135,8 @@ pub mod task;
 
 pub use asm::{InstFlags, Instruction, Reg, Unit};
 pub use dag::{SDep, SDepKind, SUnit, ScheduleDAG};
-pub use error::{BuildError, ScheduleError};
+pub use error::{BuildError, KernelError, ScheduleError};
+pub use kernel::{Config, Cpu, Kernel, Phase, Stats, Tick, Timer, schedule_phases};
 pub use machine::{Issue, Machine, UnitSpec};
 pub use policy::{RoundRobin, SchedulePolicy, ShortestJobFirst};
 pub use sched::{BlockSchedule, Latency, RegisterPressure, SchedStrategy, Slot, SourceOrder, schedule_block};
