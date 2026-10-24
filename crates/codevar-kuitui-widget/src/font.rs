@@ -526,6 +526,10 @@ impl FontMetrics for Font {
         Font::line_height(self)
     }
 
+    fn ascent(&self, _style: &TextStyle) -> f32 {
+        Font::ascent(self)
+    }
+
     fn advance(&self, text: &str, style: &TextStyle) -> f32 {
         let Ok(font) = self.sfnt() else {
             return 0.0;
