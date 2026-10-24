@@ -294,6 +294,50 @@ New Rust files must include the Apache 2.0 copyright header used elsewhere:
 - Use `#[inline]` on hot-path small functions
 - Avoid storing more than one `bool` inside structs, Use enums with custom BitOr overloads instead
 
+### CPU Utilization and Optimization
+
+Codevar runs on one core on many of its targets, so keeping that core busy —
+and knowing *why* it is not — matters as much as any GPU optimization. Use
+`codevar-inssched` for both levels of CPU scheduling rather than hand-rolling a
+queue or a priority loop.
+
+**Scheduling multiple tasks on one core (program level).** `codevar-inssched`
+exposes a program-level `Kernel` that multiplexes many tasks on a single core
+the way an operating system does on a uniprocessor: it hands the core out in
+time slices, lets a `Timer` interrupt a slice, saves and restores a task's CPU
+context on a switch, and chooses the next task with a `SchedulePolicy`.
+
+- Reach for `codevar_inssched::policy::RoundRobin` for fair, equal-share work,
+  `Priority` when critical system work must preempt background work, and
+  `ShortestJobFirst` when average waiting time is the metric that matters.
+- Model each unit of work as a `Task` with a realistic `burst`; derive that
+  burst from real code with `Task::burst_from_block` so the numbers track the
+  instruction schedule instead of guesses.
+- Call `Kernel::block` when a task waits on I/O instead of spinning. A busy
+  wait burns the slice the blocked task would have released.
+- Pick a `Config::quantum` that is a few times the context-switch cost: too
+  small and switch overhead dominates, too large and the core stops being fair.
+- Never busy-wait between tasks; if nothing is runnable, let the kernel idle or
+  block rather than spin.
+
+**Ordering instructions inside a task (instruction level).** Order each task's
+straight-line block before running it, so latency is hidden instead of stalled:
+
+- Use `codevar_inssched::sched::Latency` on stalled in-order cores (Cortex-M,
+  ARM7, RV32 embedded) to hoist work past load and multiply latency.
+- Use `RegisterPressure` on wide out-of-order cores (x86-64, aarch64), where
+  live-range pressure — not latency — is the binding constraint.
+- Use `SourceOrder` when scheduling is not known to help; it repairs stalls
+  without reordering.
+
+**Measure, do not guess.** `Kernel::run` returns `Stats`; read
+`cpu_utilization`, `idle_cycles`, `overhead_cycles`, `context_switches`, and
+`average_waiting` to find the bottleneck before tuning a quantum or a policy.
+High `idle_cycles` with runnable work means a scheduling bug, high
+`overhead_cycles` means the quantum is too small, and high `average_waiting`
+means the policy is starving a task. Profile CPU changes the same way GPU
+changes are profiled.
+
 ### Optimizing binary sizes
 
 - Use #![cfg_attr (not (test), no_std)] when adding new modules for reducing binary sizes
