@@ -149,6 +149,7 @@ impl Widget for Text {
         let style = self.resolved_style(theme);
         let metrics = theme.metrics.as_ref();
         let line_height = metrics.line_height(&style);
+        let ascent = metrics.ascent(&style);
         let mut y = bounds.top();
         for line in self.drawn_lines() {
             let width = metrics.advance(line, &style);
@@ -158,7 +159,7 @@ impl Widget for Text {
                 TextAlign::Right => bounds.left() + bounds.size.width - width,
             };
             scope.draw_text(
-                Offset::new(x - bounds.left(), y - bounds.top()),
+                Offset::new(x - bounds.left(), y - bounds.top() + ascent),
                 Rc::clone(line),
                 style.clone(),
             );
@@ -208,6 +209,32 @@ mod tests {
             .expect("a text run was recorded");
         let any: &dyn core::any::Any = op;
         assert!(any.downcast_ref::<TextOp>().is_some());
+    }
+
+    #[test]
+    fn a_text_run_is_recorded_at_its_baseline() {
+        let theme = Theme::light();
+        let mut list = crate::paint::DrawList::new();
+        let mut node = Node::new(Text::new("hello"));
+        node.measure(&theme, Constraints::unbounded());
+        node.place(Rect::new(Offset::ZERO, Size::new(100.0, 100.0)));
+        node.draw(&theme, &mut list);
+        let op = list
+            .ops()
+            .next()
+            .expect("a text run was recorded");
+        let any: &dyn core::any::Any = op;
+        let text = any
+            .downcast_ref::<TextOp>()
+            .expect("expected a text run");
+        assert!(
+            text.origin.y > 0.0,
+            "the baseline sits below the top of the line box"
+        );
+        assert!(
+            text.origin.y < theme.metrics.line_height(&text.style),
+            "the baseline stays inside the line box"
+        );
     }
 
     #[test]

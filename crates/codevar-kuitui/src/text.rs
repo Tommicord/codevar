@@ -251,6 +251,17 @@ pub trait FontMetrics {
     /// The distance between two baselines for `style`.
     fn line_height(&self, style: &TextStyle) -> f32;
 
+    /// The distance from the top of a line box to its baseline.
+    ///
+    /// A text run is recorded at its baseline, not at the top of its
+    /// line box, so the widget needs this to place the run. The default
+    /// puts the baseline at 80% of the em square, which is what the
+    /// [`ApproximateFontMetrics`] layout assumes; a metric backed by a
+    /// real font overrides it with the font's own ascent.
+    fn ascent(&self, style: &TextStyle) -> f32 {
+        style.font_size * 0.8
+    }
+
     /// The horizontal advance of `text` when drawn with `style`.
     fn advance(&self, text: &str, style: &TextStyle) -> f32;
 
@@ -332,6 +343,15 @@ mod tests {
         let normal = metrics.advance("codevar", &TextStyle::new(10.0));
         let bold = metrics.advance("codevar", &TextStyle::new(10.0).with_weight(FontWeight::Bold));
         assert!(bold > normal);
+    }
+
+    #[test]
+    fn the_default_ascent_leaves_room_for_the_descent() {
+        let metrics = ApproximateFontMetrics;
+        let style = TextStyle::new(10.0);
+        let ascent = metrics.ascent(&style);
+        assert!(ascent > 0.0);
+        assert!(ascent < metrics.line_height(&style));
     }
 
     #[test]
