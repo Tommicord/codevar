@@ -42,8 +42,9 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use codevar_kuitui::color::Color;
-use codevar_kuitui::geometry::Size;
+use codevar_kuitui::geometry::{Offset, Rect, Size};
 use codevar_kuitui::text::{FontMetrics, TextStyle};
+use codevar_kuitui_text::{GlyphKey, GlyphQuad as AtlasQuad, TextError, TextFrame};
 use codevar_truetype_core::{
     BBox, Bitmap, Generic, GlyphFormat, GlyphLoader, GlyphMetrics, GlyphSlot, Library, LoadFlags, Matrix,
     Outline, PixelMode, Raster, RasterFlags, RasterParams, SizeMetrics, SlotInternal, TtError, Vector,
@@ -90,6 +91,42 @@ impl core::fmt::Display for FontError {
 }
 
 impl core::error::Error for FontError {}
+
+/// Why a run could not be shaped into a [`TextFrame`].
+///
+/// Shaping advances the glyph pipeline and then asks the shared atlas for
+/// a slot, so it has two failure sources. Both are kept distinct so a
+/// caller can tell a bad font from a full atlas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShapeError {
+    /// The glyph pipeline could not open, load or rasterize a glyph.
+    Font(FontError),
+    /// The shared atlas rejected or could not place a glyph.
+    Atlas(TextError),
+}
+
+impl core::fmt::Display for ShapeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Font(error) => write!(f, "could not shape the text: {error}"),
+            Self::Atlas(error) => write!(f, "could not place the coverage: {error}"),
+        }
+    }
+}
+
+impl core::error::Error for ShapeError {}
+
+impl From<FontError> for ShapeError {
+    fn from(error: FontError) -> Self {
+        Self::Font(error)
+    }
+}
+
+impl From<TextError> for ShapeError {
+    fn from(error: TextError) -> Self {
+        Self::Atlas(error)
+    }
+}
 
 /// A font face: its bytes, its size and the metrics read from `head`
 /// and `hhea`.
@@ -376,6 +413,88 @@ impl Font {
             baseline: self.ascent(),
         })
     }
+
+    /// Lays `text` out into a shared [`TextFrame`].
+    ///
+    /// This is [`Font::layout`]'s counterpart for the renderer text stack.
+    /// Instead of building a private [`GlyphAtlas`], it rasterizes each
+    /// glyph, inserts its coverage into the frame's shared atlas and pushes
+    /// the quad that samples the slot the atlas returned. A backend that owns
+    /// the `text` pipeline drains the same frame, so the CPU stays the only
+    /// source of coverage and the GPU is never read back.
+    ///
+    /// `origin` is the baseline origin of the run and `clip` is the clip the
+    /// run was recorded with. As in [`Font::layout`], the size is the font's
+    /// own ppem, not `style.font_size`, so measurement and pixels agree.
+    ///
+    /// # Errors
+    ///
+    /// * [`ShapeError::Font`] as the glyph pipeline advances;
+    /// * [`ShapeError::Atlas`] when the shared atlas cannot take a glyph.
+    pub fn shape_into(
+        &self,
+        frame: &TextFrame,
+        origin: Offset,
+        text: &str,
+        style: &TextStyle,
+        clip: Option<Rect>,
+    ) -> Result<(), ShapeError> {
+        let font = self.sfnt().map_err(ShapeError::Font)?;
+        let metrics = self.size_metrics();
+        let mut slot = new_slot();
+        let mut raster = GrayRaster::new();
+        let spacing = (style.letter_spacing * 64.0) as i64;
+        let color = color_to_array(style.color);
+        let mut coverage = Vec::new();
+
+        frame.with(|atlas, mesh| -> Result<(), ShapeError> {
+            let mut pen: i64 = 0;
+            for character in text.chars() {
+                if character == '\n' {
+                    pen += spacing;
+                    continue;
+                }
+                let glyph_index = font.char_index(u32::from(character));
+                let advance = mul_fix(i64::from(font.advance_for_glyph(glyph_index)), self.scale);
+                if glyph_index != 0
+                    && let Some(bitmap) =
+                        rasterize_glyph(&font, &mut slot, &mut raster, &metrics, glyph_index)
+                            .map_err(ShapeError::Font)?
+                {
+                    let width = bitmap.bitmap.width;
+                    let height = bitmap.bitmap.rows;
+                    coverage.clear();
+                    for row in 0..height {
+                        if let Some(slice) = bitmap.bitmap.row(row) {
+                            coverage.extend_from_slice(slice);
+                        }
+                    }
+                    let key = glyph_key(self.ppem, glyph_index);
+                    if let Some(slot) = atlas
+                        .insert(key, width, height, &coverage)
+                        .map_err(ShapeError::Atlas)?
+                    {
+                        let position = [
+                            origin.x + fixed_pixels(pen) + bitmap.left as f32,
+                            origin.y - bitmap.top as f32,
+                        ];
+                        mesh.push(&AtlasQuad::from_slot(slot, position, color, clip));
+                    }
+                }
+                pen += advance + spacing;
+            }
+            Ok(())
+        })
+    }
+}
+
+/// The atlas key of a glyph: its pixels-per-em and its glyph index.
+///
+/// The rasterizer lays every glyph out at an integer pen, so two uses of the
+/// same glyph at the same size always share one bitmap and therefore one key.
+#[inline]
+fn glyph_key(ppem: u16, glyph_index: u32) -> GlyphKey {
+    GlyphKey::from_raw((u64::from(ppem) << 32) | u64::from(glyph_index))
 }
 
 /// Reads the `head`/`hhea` metrics [`Font`] caches for one face.
@@ -794,6 +913,39 @@ mod tests {
         assert!(run.size.width > 0.0);
         assert!(run.size.height > 0.0);
         assert!(run.atlas.pixels().iter().any(|value| *value > 0));
+    }
+
+    #[test]
+    fn shaping_a_run_fills_the_shared_atlas_and_mesh() {
+        let font = test_font(24);
+        let style = TextStyle::new(24.0);
+        let atlas = codevar_kuitui_text::TextAtlas::new(codevar_kuitui_text::AtlasConfig::DEFAULT)
+            .expect("the default atlas config is valid");
+        let frame = codevar_kuitui_text::TextFrame::new(atlas);
+        frame.begin_frame();
+
+        let clip =
+            codevar_kuitui::geometry::Rect::from_min_size(codevar_kuitui::geometry::Offset::ZERO, 64.0, 32.0);
+        font.shape_into(
+            &frame,
+            codevar_kuitui::geometry::Offset::ZERO,
+            "Hello",
+            &style,
+            Some(clip),
+        )
+        .expect("the run shapes");
+
+        assert!(!frame.is_empty(), "the run produced geometry");
+        let runs = frame.runs();
+        assert_eq!(runs.len(), 1, "one page, one clip, one run");
+        assert_eq!(runs[0].quad_count(), 5, "one quad per non-space glyph");
+        assert_eq!(runs[0].clip, Some(clip), "the run carries the command clip");
+        drop(runs);
+        assert_eq!(frame.atlas().glyph_count(), 4, "the repeated 'l' shares a glyph");
+        assert!(
+            frame.atlas().dirty_rects().len() >= 5,
+            "each placed glyph is a dirty rectangle to upload"
+        );
     }
 
     #[test]

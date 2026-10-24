@@ -13,6 +13,7 @@ name = "codevar_kuitui_widget"
 
 [dependencies]
 codevar-kuitui = { workspace = true }
+codevar-kuitui-text = { workspace = true }
 codevar-truetype-core = { workspace = true }
 codevar-truetype-glyf = { workspace = true }
 codevar-truetype-sfnt = { workspace = true }

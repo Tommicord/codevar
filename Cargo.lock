@@ -415,6 +415,9 @@ dependencies = [
  "codevar-gpu-vk",
  "codevar-gpu-wg",
  "codevar-kuitui",
+ "libm",
+ "wgpu-hal",
+ "wgpu-types",
 ]
 
 [[package]]
@@ -422,6 +425,7 @@ name = "codevar-kuitui-widget"
 version = "1.0.0"
 dependencies = [
  "codevar-kuitui",
+ "codevar-kuitui-text",
  "codevar-truetype-core",
  "codevar-truetype-glyf",
  "codevar-truetype-sfnt",
