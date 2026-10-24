@@ -132,8 +132,8 @@ pub use geometry::{Alignment, Constraints, EdgeInsets, Offset, Rect, Size};
 pub use macros::__private;
 pub use node::{Modifier, Node};
 pub use paint::{
-    ClippedOps, CornerRadii, Draw, DrawCommand, DrawList, DrawVisitor, LineOp, Paint, PaintStyle, RectOp,
-    TextOp,
+    ClippedOps, ColorTextOp, CornerRadii, Draw, DrawCommand, DrawList, DrawVisitor, LineOp, Paint,
+    PaintStyle, RectOp, TextOp,
 };
 pub use state::{DirtyState, MutableState, State};
 pub use text::{FontMetrics, FontWeight, TextSpan, TextStyle};
@@ -158,8 +158,8 @@ pub mod prelude {
     pub use crate::kuitui;
     pub use crate::node::{Modifier, Node};
     pub use crate::paint::{
-        ClippedOps, CornerRadii, Draw, DrawCommand, DrawList, DrawVisitor, LineOp, Paint, PaintStyle, RectOp,
-        TextOp,
+        ClippedOps, ColorTextOp, CornerRadii, Draw, DrawCommand, DrawList, DrawVisitor, LineOp, Paint,
+        PaintStyle, RectOp, TextOp,
     };
     pub use crate::state::{DirtyState, MutableState, State};
     pub use crate::text::{

@@ -405,6 +405,20 @@ impl<'a> DrawScope<'a> {
             .text(self.origin.add(origin), text, style);
     }
 
+    /// Draws a run of color text with its baseline origin at `origin`.
+    ///
+    /// A color run is rasterized through a color font by the backend,
+    /// so its glyphs keep the colors the font gives them.
+    pub fn draw_color_text(
+        &mut self,
+        origin: Offset,
+        text: alloc::rc::Rc<str>,
+        style: crate::text::TextStyle,
+    ) {
+        self.list
+            .color_text(self.origin.add(origin), text, style);
+    }
+
     /// Restricts the following operations to `rect`.
     ///
     /// The rectangle is relative to the widget being drawn.

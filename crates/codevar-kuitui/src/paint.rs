@@ -173,6 +173,17 @@ pub trait DrawVisitor {
     fn text(&mut self, origin: Offset, text: &Rc<str>, style: &TextStyle) {
         let _ = (origin, text, style);
     }
+
+    /// Visits a run of text whose glyphs carry their own color, usually
+    /// emoji.
+    ///
+    /// A backend that only knows how to draw single-channel coverage
+    /// ignores this by default. A backend with a color font pipeline —
+    /// `codevar-kuitui-widget`'s shaper — overrides it to rasterize the
+    /// run into the color atlas.
+    fn color_text(&mut self, origin: Offset, text: &Rc<str>, style: &TextStyle) {
+        let _ = (origin, text, style);
+    }
 }
 
 /// A filled or outlined, possibly rounded, rectangle.
@@ -226,6 +237,32 @@ impl Draw for TextOp {
     #[inline]
     fn visit(&self, visitor: &mut dyn DrawVisitor) {
         visitor.text(self.origin, &self.text, &self.style);
+    }
+}
+
+/// A run of text whose glyphs carry their own color, usually emoji.
+///
+/// The operation is the color counterpart of [`TextOp`]. It travels
+/// through the same display list, but a backend that draws it must
+/// rasterize the glyphs through a color font (COLR/CPAL or bitmap
+/// strikes) instead of the single-channel outline pipeline.
+#[derive(Debug)]
+pub struct ColorTextOp {
+    /// The baseline origin of the run.
+    pub origin: Offset,
+    /// The characters of the run.
+    pub text: Rc<str>,
+    /// The style of the run.
+    ///
+    /// The color of a color glyph comes from the font, so a backend
+    /// usually ignores [`TextStyle::color`] for this operation.
+    pub style: TextStyle,
+}
+
+impl Draw for ColorTextOp {
+    #[inline]
+    fn visit(&self, visitor: &mut dyn DrawVisitor) {
+        visitor.color_text(self.origin, &self.text, &self.style);
     }
 }
 
@@ -388,6 +425,11 @@ impl DrawList {
         self.push(TextOp { origin, text, style });
     }
 
+    /// Records a run of color text.
+    pub fn color_text(&mut self, origin: Offset, text: Rc<str>, style: TextStyle) {
+        self.push(ColorTextOp { origin, text, style });
+    }
+
     /// The operations of the list together with the clipping rectangle
     /// that applies to each of them.
     ///
@@ -539,6 +581,51 @@ mod tests {
         list.pop_clip();
         assert_eq!(list.clip_depth(), 0);
         assert_eq!(list.current_clip(), None);
+    }
+
+    #[test]
+    fn a_color_text_operation_carries_its_clip() {
+        let mut list = DrawList::new();
+        let clip = Rect::from_min_size(Offset::new(2.0, 3.0), 30.0, 30.0);
+        list.push_clip(clip);
+        list.color_text(Offset::new(1.0, 5.0), Rc::from("😀"), TextStyle::new(16.0));
+        list.pop_clip();
+
+        let command = list
+            .peek_front()
+            .expect("a color run was recorded");
+        assert_eq!(command.clip, Some(clip));
+        let op = as_op::<ColorTextOp>(&*command.op).expect("expected a color text op");
+        assert_eq!(&*op.text, "😀");
+        assert_eq!(op.origin, Offset::new(1.0, 5.0));
+    }
+
+    #[test]
+    fn a_color_text_operation_reaches_a_visitor() {
+        struct Recorder {
+            visited: bool,
+        }
+
+        impl DrawVisitor for Recorder {
+            fn color_text(&mut self, origin: Offset, text: &Rc<str>, style: &TextStyle) {
+                self.visited = true;
+                assert_eq!(origin, Offset::new(1.0, 2.0));
+                assert_eq!(&**text, "abc");
+                assert_eq!(style.color, Color::RED);
+            }
+        }
+
+        let mut list = DrawList::new();
+        list.color_text(
+            Offset::new(1.0, 2.0),
+            Rc::from("abc"),
+            TextStyle::new(12.0).with_color(Color::RED),
+        );
+        let mut recorder = Recorder { visited: false };
+        for op in list.ops() {
+            op.visit(&mut recorder);
+        }
+        assert!(recorder.visited);
     }
 
     #[test]
