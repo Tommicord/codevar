@@ -24,7 +24,7 @@
 //! # The pipe model
 //!
 //! Every contributor to a frame is a pipe whose renderer implements
-//! [`PipeOffscreen`]: it owns one or more offscreen colour targets and
+//! [`PipeOffscreen`]: it owns one or more offscreen color targets and
 //! reports a mix weight for each. The compositor collects those targets
 //! once per frame and folds them into the canvas with a fullscreen mix
 //! pass.

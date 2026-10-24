@@ -349,7 +349,7 @@ mod imp {
                 occlusion_query_set: None,
             };
             // SAFETY: the attachment view is alive for the whole pass and is
-            // a colour target of the pass's only attachment slot.
+            // a color target of the pass's only attachment slot.
             unsafe { self.encoder.begin_render_pass(&pass) }
                 .map_err(|err| CompositorError::graphics("begin_render_pass", err))?;
             // SAFETY: a render pass is recording.

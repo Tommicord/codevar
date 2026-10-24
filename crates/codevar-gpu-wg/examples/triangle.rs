@@ -189,7 +189,7 @@ mod web {
             };
 
             // SAFETY: both shader modules are live for the call, the layout
-            // outlives the pipeline, and the colour target matches the
+            // outlives the pipeline, and the color target matches the
             // configured surface format.
             let pipeline = unsafe {
                 device.create_render_pipeline(&RenderPipelineDescriptor {
@@ -310,7 +310,7 @@ mod web {
                 occlusion_query_set: None,
             };
             // SAFETY: the attachment view is alive for the whole pass and is
-            // a colour target of the pass's only attachment slot.
+            // a color target of the pass's only attachment slot.
             unsafe { self.encoder.begin_render_pass(&pass) }
                 .map_err(|error| failure("begin_render_pass", error))?;
 
@@ -327,7 +327,7 @@ mod web {
                 h: extent.height,
             };
             // SAFETY: a render pass is recording, the pipeline is compatible
-            // with the pass's only colour target, and the draw reads the
+            // with the pass's only color target, and the draw reads the
             // three vertices the vertex shader generates from `gl_VertexID`.
             unsafe {
                 self.encoder.set_viewport(&viewport, 0.0..1.0);

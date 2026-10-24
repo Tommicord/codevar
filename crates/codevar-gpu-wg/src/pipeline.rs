@@ -48,7 +48,7 @@ mod imp {
         NoAdapter,
         /// The adapter reports no capabilities for the canvas.
         NoSurfaceCapabilities,
-        /// The adapter supports no usable colour format.
+        /// The adapter supports no usable color format.
         NoSurfaceFormat,
         /// The logical device could not be opened.
         DeviceOpen(String),
