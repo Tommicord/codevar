@@ -1044,8 +1044,8 @@ impl PipelineContext {
         let ext_semaphore_fd = ash::khr::external_semaphore_fd::Device::new(&instance, &device);
         let compatible = compatible_modifiers(&instance, physical, modifiers)?;
         let image = create_target_image(&device, &mut cleanup, width, height, &compatible)?;
-        create_target_view(&device, &mut cleanup, image)?;
         let memory = allocate_target_memory(&instance, &device, physical, &mut cleanup, image)?;
+        create_target_view(&device, &mut cleanup, image)?;
         let dmabuf_fd = export_dmabuf_fd(&ext_memory_fd, memory)?;
         let (modifier, stride, offset) = query_plane_layout(&device, &ext_drm, image)?;
         let present_target = RenderTarget {
