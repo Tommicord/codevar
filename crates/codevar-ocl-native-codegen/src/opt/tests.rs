@@ -888,6 +888,40 @@ fn the_optimizer_handles_the_modules_the_front_end_produces() {
 }
 
 #[test]
+fn the_optimization_sets_combine_with_bit_or() {
+    use crate::opt::{Optimization, Optimizations};
+
+    let set = Optimizations::O1 | Optimization::Inlineable;
+    assert!(set.has(Optimization::Mem2Reg));
+    assert!(set.has(Optimization::Inlineable));
+    assert!(!set.has(Optimization::Vectorizable));
+    assert!(!Optimizations::O0.has(Optimization::Mem2Reg));
+    assert_eq!(Optimizations::from_level(3), Some(Optimizations::O3));
+    assert_eq!(Optimizations::from_level(4), None);
+}
+
+#[test]
+fn every_optimization_level_leaves_the_module_verifiable() {
+    use crate::opt::{OptConfig, Optimizations, optimize};
+
+    for level in [
+        Optimizations::O0,
+        Optimizations::O1,
+        Optimizations::O2,
+        Optimizations::O3,
+    ] {
+        let mut module = codevar_ocl_ir::lower::lower_source(SOURCES[5]).expect("the source lowers");
+        verify(&module).expect("the lowered module verifies");
+        let config = OptConfig {
+            optimizations: level,
+            ..OptConfig::default()
+        };
+        optimize(&mut module, &config).expect("the pipeline runs");
+        verify(&module).expect("the optimized module verifies");
+    }
+}
+
+#[test]
 fn the_optimizer_promotes_the_slots_the_front_end_creates() {
     let source = SOURCES[5];
     let mut module = codevar_ocl_ir::lower::lower_source(source).expect("the source lowers");

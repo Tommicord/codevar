@@ -34,32 +34,18 @@ use codevar_ocl_ir::ir::{Module, ValueId};
 use codevar_ocl_ir::verify::verify;
 
 use crate::error::Result;
-use crate::opt::OptConfig;
+use crate::opt::{OptConfig, Optimization};
 use crate::target::NativeTarget;
 use crate::vecz::VectorConfig;
 
 /// How the pipeline compiles a module.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CodegenOptions {
-    /// Whether the optimizer runs.
-    pub optimize: bool,
-    /// Whether the vectorizer runs.
-    pub vectorize: bool,
-    /// The optimizer's settings.
+    /// The optimizer's settings, including which optimizations run and
+    /// whether the vectorizer does.
     pub opt: OptConfig,
     /// The vectorizer's settings.
     pub vector: VectorConfig,
-}
-
-impl Default for CodegenOptions {
-    fn default() -> Self {
-        Self {
-            optimize: true,
-            vectorize: true,
-            opt: OptConfig::default(),
-            vector: VectorConfig::default(),
-        }
-    }
 }
 
 /// The machine code of a compiled kernel.
@@ -134,11 +120,12 @@ pub fn compile_entry(
 ) -> Result<CompiledCode> {
     verify(module)?;
     let mut module = module.clone();
-    if options.optimize {
+    let optimizations = options.opt.optimizations;
+    if !optimizations.is_empty() {
         crate::opt::optimize(&mut module, &options.opt)?;
         verify(&module)?;
     }
-    if options.vectorize {
+    if optimizations.has(Optimization::Vectorizable) {
         crate::vecz::vectorize(&mut module, &options.vector)?;
         verify(&module)?;
     }
