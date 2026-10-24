@@ -93,10 +93,14 @@ pub mod dag;
 pub mod desktop;
 pub mod error;
 pub mod machine;
+pub mod policy;
 pub mod sched;
+pub mod task;
 
 pub use asm::{InstFlags, Instruction, Reg, Unit};
 pub use dag::{SDep, SDepKind, SUnit, ScheduleDAG};
 pub use error::{BuildError, ScheduleError};
 pub use machine::{Issue, Machine, UnitSpec};
+pub use policy::{RoundRobin, SchedulePolicy, ShortestJobFirst};
 pub use sched::{BlockSchedule, Latency, RegisterPressure, SchedStrategy, Slot, SourceOrder, schedule_block};
+pub use task::{Context, Priority, Task, TaskId, TaskState};
