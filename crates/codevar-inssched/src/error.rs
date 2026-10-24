@@ -80,3 +80,33 @@ impl fmt::Display for BuildError {
 }
 
 impl core::error::Error for BuildError {}
+
+/// Why a program-level schedule could not complete.
+///
+/// The [`Kernel`](crate::kernel::Kernel) explores only legal schedules, so a
+/// returned error always describes an invalid *configuration* or a task that
+/// can never finish — never a valid schedule that merely took long.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum KernelError {
+    /// The time slice was configured as zero cycles.
+    ///
+    /// A zero quantum would let the timer fire before any work runs, so the
+    /// kernel rejects it up front rather than spinning.
+    ZeroQuantum,
+    /// The kernel hit its progress guard with a task still unfinished.
+    ///
+    /// Reported when the simulated clock exceeds every legal bound, which
+    /// indicates a task whose work can never be discharged.
+    Stalled,
+}
+
+impl fmt::Display for KernelError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ZeroQuantum => f.write_str("the time slice (quantum) must be at least one cycle"),
+            Self::Stalled => f.write_str("the kernel made no progress with a task still runnable"),
+        }
+    }
+}
+
+impl core::error::Error for KernelError {}
