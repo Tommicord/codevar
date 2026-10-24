@@ -20,7 +20,7 @@
 //! that the output *is* machine code — it holds instructions, its
 //! entry point lies inside it, and it carries no absolute address.
 
-use codevar_ocl_tc::{Error, compile_source, find_entry, kernel_names, lower};
+use codevar_ocl_tc::{Error, OptLevel, compile_source, compile_source_at, find_entry, kernel_names, lower};
 
 /// A kernel with a loop and a work-item query.
 const KERNEL: &str = "\
@@ -104,4 +104,23 @@ fn the_compiled_code_is_machine_code() {
         "the code holds an absolute address: {:02X?}",
         code.bytes()
     );
+}
+
+#[test]
+fn every_optimization_level_compiles_the_kernel() {
+    for level in [OptLevel::O0, OptLevel::O1, OptLevel::O2, OptLevel::O3] {
+        let code = match compile_source_at(KERNEL, "scale", level) {
+            Ok(code) => code,
+            Err(error) => panic!("the kernel compiles at {level:?}: {error}"),
+        };
+        assert!(!code.bytes().is_empty(), "no code was produced at {level:?}");
+    }
+}
+
+#[test]
+fn an_optimization_level_is_named_by_its_digit() {
+    assert_eq!(OptLevel::from_digit(b'0'), Some(OptLevel::O0));
+    assert_eq!(OptLevel::from_digit(b'3'), Some(OptLevel::O3));
+    assert_eq!(OptLevel::from_digit(b'4'), None);
+    assert_eq!(OptLevel::O3.digit(), b'3');
 }
