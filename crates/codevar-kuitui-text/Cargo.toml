@@ -23,6 +23,9 @@ codevar-gpu-vk = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 codevar-gpu-wg = { workspace = true }
+libm = { workspace = true }
+wgpu-hal = { workspace = true, features = ["gles"] }
+wgpu-types = { workspace = true }
 
 [lints]
 workspace = true

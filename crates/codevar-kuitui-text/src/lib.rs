@@ -47,6 +47,13 @@ pub mod mesh;
 /// wasm32, which uses [`webgpu`] instead).
 #[cfg(not(target_arch = "wasm32"))]
 pub mod vulkan;
+/// Browser WebGPU adapter: stages coverage and geometry through copies and
+/// draws the indexed runs.
+///
+/// The module only builds on wasm32, which has a WebGPU (and its WebGL2
+/// fallback) surface; every other target uses [`vulkan`] instead.
+#[cfg(target_arch = "wasm32")]
+pub mod webgpu;
 
 pub use atlas::{
     AtlasConfig, AtlasStats, DirtyRect, GlyphKey, GlyphSlot, TextAtlas, TextError, TextFrame, TextVertex,
@@ -55,3 +62,5 @@ pub use dirty::{DirtySignal, coalesce};
 pub use mesh::{GlyphQuad, INDICES_PER_QUAD, Index, IndexedMesh, MeshBuilder, MeshRun, VERTICES_PER_QUAD};
 #[cfg(not(target_arch = "wasm32"))]
 pub use vulkan::TextPipe;
+#[cfg(target_arch = "wasm32")]
+pub use webgpu::TextPipe;
