@@ -157,6 +157,22 @@ impl<'a> Reader<'a> {
         let bytes = self.take(4)?;
         Ok(i32::from_be_bytes(bytes.try_into().unwrap_or([0, 0, 0, 0])))
     }
+
+    /// Reads a big-endian `u32` from 3 bytes (24-bit).
+    ///
+    /// # Errors
+    ///
+    /// * [`TtError::INVALID_TABLE`] — fewer than three bytes remain.
+    pub(crate) fn u24(&mut self) -> TtResult<u32> {
+        let bytes = self.take(3)?;
+        Ok(((bytes[0] as u32) << 16) | ((bytes[1] as u32) << 8) | (bytes[2] as u32))
+    }
+
+    /// Returns the number of bytes remaining.
+    #[inline]
+    pub(crate) const fn remaining(&self) -> usize {
+        self.data.len() - self.pos
+    }
 }
 
 /// Reads a big-endian `u16` at `offset` without a cursor.
@@ -191,6 +207,27 @@ pub(crate) fn read_u32_at(data: &[u8], offset: usize) -> TtResult<u32> {
         )
         .ok_or(TtError::INVALID_TABLE)?;
     Ok(u32::from_be_bytes(bytes.try_into().unwrap_or([0, 0, 0, 0])))
+}
+
+/// Reads a big-endian `u32` from a 3-byte (24-bit) value at `offset` without a cursor.
+///
+/// The value is stored as 3 bytes in big-endian format (24 bits).
+///
+/// # Errors
+///
+/// * [`TtError::INVALID_TABLE`] — the three bytes are out of range.
+#[allow(dead_code)]
+pub(crate) fn read_u24_at(data: &[u8], offset: usize) -> TtResult<u32> {
+    let bytes = data
+        .get(
+            offset
+                ..offset
+                    .checked_add(3)
+                    .ok_or(TtError::INVALID_TABLE)?,
+        )
+        .ok_or(TtError::INVALID_TABLE)?;
+    let bytes = bytes.try_into().unwrap_or([0, 0, 0]);
+    Ok((bytes[0] as u32) << 16 | (bytes[1] as u32) << 8 | bytes[2] as u32)
 }
 
 #[cfg(test)]
