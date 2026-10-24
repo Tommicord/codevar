@@ -429,6 +429,7 @@ dependencies = [
  "codevar-kuitui",
  "codevar-kuitui-text",
  "codevar-truetype-core",
+ "codevar-truetype-emoji-color",
  "codevar-truetype-glyf",
  "codevar-truetype-sfnt",
  "codevar-truetype-smooth",
