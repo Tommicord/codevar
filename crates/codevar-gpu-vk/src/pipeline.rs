@@ -36,6 +36,7 @@
 //! ICD driver threads may still run is unsafe, and every real
 //! application keeps it mapped for its process lifetime.
 
+use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -44,6 +45,9 @@ use core::fmt;
 
 use ash::vk;
 use codevar_wayland::DRM_FORMAT_XRGB8888;
+
+/// Validation layer name for debug builds.
+const VALIDATION_LAYER: &CStr = c"VK_LAYER_KHRONOS_validation";
 
 /// Vulkan format of the render target: memory-layout counterpart of
 /// `DRM_FORMAT_XRGB8888` (bytes `B, G, R, X` per pixel in memory).
@@ -544,9 +548,19 @@ pub(crate) fn create_instance(entry: &ash::Entry) -> Result<ash::Instance, Pipel
         .engine_name(c"codevar")
         .engine_version(1)
         .api_version(vk::API_VERSION_1_3);
-    // No instance extensions: rendering is fully offscreen and the
-    // Wayland/dmabuf layer lives outside Vulkan.
-    let instance_info = vk::InstanceCreateInfo::default().application_info(&app_info);
+    let instance_info = {
+        #[cfg(debug_assertions)]
+        {
+            let layers = Box::leak(Box::new([VALIDATION_LAYER.as_ptr()]));
+            vk::InstanceCreateInfo::default()
+                .application_info(&app_info)
+                .enabled_layer_names(layers)
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            vk::InstanceCreateInfo::default().application_info(&app_info)
+        }
+    };
     // SAFETY: `app_info` outlives `instance_info`; both are well-formed.
     unsafe { entry.create_instance(&instance_info, None) }.map_err(PipelineError::InstanceCreate)
 }
