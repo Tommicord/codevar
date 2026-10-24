@@ -39,6 +39,8 @@
 //!
 //! [`SbitStrikes`]: crate::sbit::SbitStrikes
 
+#![allow(dead_code)]
+
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -46,7 +48,7 @@ use codevar_logger::log_warn;
 use codevar_truetype_core::{
     BBox, Bitmap, Generic, GlyphFormat, GlyphLoader, GlyphMetrics, GlyphSlot, Library, LoadFlags, Matrix,
     Outline, PixelMode, Pos, Raster, RasterFlags, RasterParams, SizeMetrics, SlotInternal, TtError, TtResult,
-    Vector, div_fix, mul_fix,
+    Vector, atan2, div_fix, mul_fix,
 };
 use codevar_truetype_glyf::load_glyph;
 use codevar_truetype_sfnt::{
@@ -55,7 +57,7 @@ use codevar_truetype_sfnt::{
 };
 use codevar_truetype_smooth::grays::GrayRaster;
 
-use crate::colr::{COLOR_FOREGROUND, ColrTable, LayerIter};
+use crate::colr::{COLOR_FOREGROUND, ColrTable, LayerIter, PaintExtend};
 use crate::cpal::CpalTable;
 use crate::sbit::{SbitImage, SbitStrikes};
 
@@ -346,6 +348,546 @@ impl<'a> ColorFont<'a> {
             source_ppem: ppem,
         })
     }
+}
+
+/// The deepest `COLR` v1 paint nesting this renderer follows.
+///
+/// `PaintColorGlyph` can reference any base glyph, including one that
+/// (directly or indirectly) contains the reference itself; the bound
+/// turns such a cycle into a recoverable error.
+const MAX_PAINT_DEPTH: u16 = 64;
+
+/// 16.16 fixed-point one.
+const FIXED_ONE: i64 = 0x1_0000;
+
+/// One full turn in 16.16 degrees ([`ANGLE_PI`] is 180 degrees).
+const FIXED_TURN: i64 = 360 << 16;
+
+/// Saturates an `i128` into `i64`.
+#[inline]
+fn clamp_i64(value: i128) -> i64 {
+    if value > i128::from(i64::MAX) {
+        i64::MAX
+    } else if value < i128::from(i64::MIN) {
+        i64::MIN
+    } else {
+        value as i64
+    }
+}
+
+/// 16.16 x 16.16 -> 16.16 with a wide intermediate (unlike
+/// [`mul_fix`], which truncates its operands to 32 bits first).
+#[inline]
+fn mul_wide(a: i64, b: i64) -> i64 {
+    clamp_i64(((i128::from(a) * i128::from(b)) + 0x8000) >> 16)
+}
+
+/// A design-space to device-space affine transform.
+///
+/// The linear part is 16.16 and maps 16.16 design coordinates to 26.6
+/// device coordinates: `x_device = (x_design * xx + y_design * xy) /
+/// 2^32 + tx`.  The translation is already in 26.6 device units.
+/// Font-unit (integer) positions use [`Affine::apply_int`], which is
+/// the same mapping with the design coordinate shifted left 16 bits.
+#[derive(Clone, Copy, Debug)]
+struct Affine {
+    /// Horizontal scale (16.16).
+    xx: i64,
+    /// Horizontal shear (16.16).
+    xy: i64,
+    /// Vertical shear (16.16).
+    yx: i64,
+    /// Vertical scale (16.16).
+    yy: i64,
+    /// Horizontal translation in 26.6 device pixels.
+    tx: i64,
+    /// Vertical translation in 26.6 device pixels.
+    ty: i64,
+}
+
+impl Affine {
+    /// The root transform for `size`: font design units to 26.6
+    /// device pixels (`FT_Set_Transform`'s scale component).
+    #[inline]
+    fn root(size: &SizeMetrics) -> Self {
+        Affine {
+            xx: size.x_scale,
+            xy: 0,
+            yx: 0,
+            yy: size.y_scale,
+            tx: 0,
+            ty: 0,
+        }
+    }
+
+    /// `true` for the identity transform.
+    #[inline]
+    fn is_identity(self) -> bool {
+        self.xx == FIXED_ONE
+            && self.xy == 0
+            && self.yx == 0
+            && self.yy == FIXED_ONE
+            && self.tx == 0
+            && self.ty == 0
+    }
+
+    /// Composes a child transform in front of `self`.
+    ///
+    /// `matrix` is `[xx, xy, yx, yy, dx, dy]` with a 16.16 linear part
+    /// and a 16.16 design-space translation.  The result maps the
+    /// child's design coordinates through `matrix` and then through
+    /// `self`.
+    fn concat(self, matrix: [i64; 6]) -> Self {
+        let [xx, xy, yx, yy, dx, dy] = matrix;
+        // `apply_f16` already maps the child translation through this
+        // transform and adds this transform's own translation.
+        let (tx, ty) = self.apply_f16(dx, dy);
+        Affine {
+            xx: mul_wide(self.xx, xx) + mul_wide(self.xy, yx),
+            xy: mul_wide(self.xx, xy) + mul_wide(self.xy, yy),
+            yx: mul_wide(self.yx, xx) + mul_wide(self.yy, yx),
+            yy: mul_wide(self.yx, xy) + mul_wide(self.yy, yy),
+            tx,
+            ty,
+        }
+    }
+
+    /// Maps a 16.16 design point to 26.6 device coordinates.
+    #[inline]
+    fn apply_f16(self, x: i64, y: i64) -> (i64, i64) {
+        let x = i128::from(x);
+        let y = i128::from(y);
+        (
+            clamp_i64(((x * i128::from(self.xx) + y * i128::from(self.xy)) >> 32) + i128::from(self.tx)),
+            clamp_i64(((x * i128::from(self.yx) + y * i128::from(self.yy)) >> 32) + i128::from(self.ty)),
+        )
+    }
+
+    /// Maps an integer design-unit point to 26.6 device coordinates.
+    #[inline]
+    fn apply_int(self, x: i64, y: i64) -> (i64, i64) {
+        (
+            clamp_i64(
+                i128::from(mul_wide(x, self.xx)) + i128::from(mul_wide(y, self.xy)) + i128::from(self.tx),
+            ),
+            clamp_i64(
+                i128::from(mul_wide(x, self.yx)) + i128::from(mul_wide(y, self.yy)) + i128::from(self.ty),
+            ),
+        )
+    }
+
+    /// Applies the transform to every outline point.
+    fn transform_outline(self, outline: &mut Outline) {
+        if self.is_identity() {
+            return;
+        }
+        for point in &mut outline.points {
+            let (x, y) = self.apply_int(point.x, point.y);
+            point.x = x;
+            point.y = y;
+        }
+    }
+
+    /// Maps a 26.6 device point back to 16.16 design coordinates.
+    ///
+    /// Returns `None` for a singular transform.
+    fn invert(self, device_x: i64, device_y: i64) -> Option<(i64, i64)> {
+        let det = i128::from(self.xx) * i128::from(self.yy) - i128::from(self.xy) * i128::from(self.yx);
+        if det == 0 {
+            return None;
+        }
+        let ux = i128::from(device_x) - i128::from(self.tx);
+        let uy = i128::from(device_y) - i128::from(self.ty);
+        let fx = ((ux * i128::from(self.yy) - uy * i128::from(self.xy)) << 32) / det;
+        let fy = ((uy * i128::from(self.xx) - ux * i128::from(self.yx)) << 32) / det;
+        Some((clamp_i64(fx), clamp_i64(fy)))
+    }
+}
+
+/// A fill source resolved from a `PaintGlyph` child paint.
+enum Fill {
+    /// A premultiplied BGRA color.
+    Solid([u8; 4]),
+    /// A gradient evaluated in the fill's design space.
+    Gradient(GradientFill),
+}
+
+/// One color stop with its color linearized and premultiplied
+/// (per the CPAL "Interpolation of colors" requirements).
+#[derive(Clone, Copy, Debug)]
+struct ResolvedStop {
+    /// Stop position in 16.16 of the color line.
+    offset: i64,
+    /// Stop alpha in `0..=255`.
+    alpha: i64,
+    /// Linear-light premultiplied channels in B, G, R order; each
+    /// value is `linear(0..=65536) * alpha`.
+    linear: [i64; 3],
+}
+
+/// The geometry of one gradient.
+#[derive(Clone, Copy, Debug)]
+enum GradientKind {
+    /// `PaintLinearGradient`.
+    Linear {
+        /// Start point (16.16 design units).
+        p0: (i64, i64),
+        /// End point (16.16 design units).
+        p1: (i64, i64),
+        /// Rotation point (16.16 design units).
+        p2: (i64, i64),
+    },
+    /// `PaintRadialGradient`.
+    Radial {
+        /// Start circle center (16.16 design units).
+        c0: (i64, i64),
+        /// Start radius (16.16 design units).
+        r0: i64,
+        /// End circle center (16.16 design units).
+        c1: (i64, i64),
+        /// End radius (16.16 design units).
+        r1: i64,
+    },
+    /// `PaintSweepGradient`.
+    Sweep {
+        /// Center point (16.16 design units).
+        center: (i64, i64),
+        /// Start angle in 16.16 degrees.
+        start: i64,
+        /// End angle in 16.16 degrees.
+        end: i64,
+    },
+}
+
+/// A gradient fill with its color line resolved and its geometry
+/// expressed in the design space of the paint graph.
+struct GradientFill {
+    /// The resolved color stops, in font order.
+    stops: Vec<ResolvedStop>,
+    /// How colors extend outside the stop interval.
+    extend: PaintExtend,
+    /// The gradient geometry.
+    kind: GradientKind,
+    /// Design-to-device mapping used to sample the gradient.
+    transform: Affine,
+    /// Offset of the first stop (16.16).
+    first: i64,
+    /// Offset of the last stop (16.16).
+    last: i64,
+}
+
+impl GradientFill {
+    /// Samples the gradient at one 26.6 device point.
+    ///
+    /// Returns `None` when the point is not painted (the geometry is
+    /// degenerate or the radial cone does not cover it).
+    fn sample(&self, device_x: i64, device_y: i64) -> Option<[u8; 4]> {
+        let (x, y) = self.transform.invert(device_x, device_y)?;
+        let t = match self.kind {
+            GradientKind::Linear { p0, p1, p2 } => linear_parameter(p0, p1, p2, (x, y))?,
+            GradientKind::Radial { c0, r0, c1, r1 } => radial_parameter(c0, r0, c1, r1, (x, y))?,
+            GradientKind::Sweep { center, start, end } => {
+                sweep_parameter(center, start, end, (x, y), self.extend)?
+            }
+        };
+        self.color_at(t)
+    }
+
+    /// Resolves the color at color-line position `t` (16.16), applying
+    /// the extend mode and interpolating between adjacent stops.
+    fn color_at(&self, t: i64) -> Option<[u8; 4]> {
+        let last = *self.stops.last()?;
+        if self.last <= self.first {
+            return Some(stop_color(&last));
+        }
+        let t = match self.extend {
+            PaintExtend::Pad => t.clamp(self.first, self.last),
+            PaintExtend::Repeat => {
+                if t == self.last {
+                    self.last
+                } else {
+                    let span = self.last - self.first;
+                    let mut position = (t - self.first) % span;
+                    if position < 0 {
+                        position += span;
+                    }
+                    self.first + position
+                }
+            }
+            PaintExtend::Reflect => {
+                let span = self.last - self.first;
+                let period = span.saturating_mul(2);
+                let mut position = (t - self.first) % period;
+                if position < 0 {
+                    position += period;
+                }
+                if position > span {
+                    position = period - position;
+                }
+                self.first + position
+            }
+        };
+
+        if t <= self.first {
+            // The spec resolves a duplicate offset to the last stop at
+            // or above it.
+            let mut chosen = 0usize;
+            for (index, stop) in self.stops.iter().enumerate() {
+                if stop.offset != self.first {
+                    break;
+                }
+                chosen = index;
+            }
+            return self.stops.get(chosen).map(stop_color);
+        }
+        if t >= self.last {
+            return Some(stop_color(&last));
+        }
+        for index in 1..self.stops.len() {
+            let upper = &self.stops[index];
+            if t < upper.offset {
+                let lower = &self.stops[index - 1];
+                let span = upper.offset - lower.offset;
+                if span <= 0 {
+                    continue;
+                }
+                let factor = clamp_i64((i128::from(t - lower.offset) << 16) / i128::from(span));
+                return Some(interpolate_stop(lower, upper, factor));
+            }
+        }
+        Some(stop_color(&last))
+    }
+}
+
+/// Computes the linear-gradient parameter for design point `q`
+/// (16.16 units): the position of the line through `q` parallel to
+/// `p0p2` where it crosses `p0p1`.
+fn linear_parameter(p0: (i64, i64), p1: (i64, i64), p2: (i64, i64), q: (i64, i64)) -> Option<i64> {
+    if p0 == p1 || p0 == p2 {
+        return None;
+    }
+    let dx = i128::from(p1.0) - i128::from(p0.0);
+    let dy = i128::from(p1.1) - i128::from(p0.1);
+    let rx = i128::from(p2.0) - i128::from(p0.0);
+    let ry = i128::from(p2.1) - i128::from(p0.1);
+    let denominator = dx * ry - dy * rx;
+    if denominator == 0 {
+        return None;
+    }
+    let qx = i128::from(q.0) - i128::from(p0.0);
+    let qy = i128::from(q.1) - i128::from(p0.1);
+    let numerator = qx * ry - qy * rx;
+    Some(clamp_i64((numerator << 16) / denominator))
+}
+
+/// Integer square root of `value`.
+fn isqrt(value: u128) -> u128 {
+    if value < 2 {
+        return value;
+    }
+    let mut guess = value;
+    let mut next = guess.div_ceil(2);
+    while next < guess {
+        guess = next;
+        next = (guess + value / guess) / 2;
+    }
+    guess
+}
+
+/// Computes the radial-gradient parameter for design point `q`
+/// following the WHATWG canvas algorithm: of the circles that pass
+/// through `q`, the one with the largest `ω` and a positive radius
+/// wins.
+fn radial_parameter(c0: (i64, i64), r0: i64, c1: (i64, i64), r1: i64, q: (i64, i64)) -> Option<i64> {
+    let dcx = i128::from(c1.0) - i128::from(c0.0);
+    let dcy = i128::from(c1.1) - i128::from(c0.1);
+    let dr = i128::from(r1) - i128::from(r0);
+    let px = i128::from(q.0) - i128::from(c0.0);
+    let py = i128::from(q.1) - i128::from(c0.1);
+
+    let a = dcx * dcx + dcy * dcy - dr * dr;
+    let b = -2 * (px * dcx + py * dcy + i128::from(r0) * dr);
+    let c = px * px + py * py - i128::from(r0) * i128::from(r0);
+
+    let (numerator, denominator) = if a == 0 {
+        // |c1 - c0| == |r1 - r0|: the equation degenerates to
+        // `b * ω + c = 0`.  `b == 0` leaves either no solution or
+        // every ω a solution, neither of which names a color.
+        if b == 0 {
+            return None;
+        }
+        // The root must describe a circle with a positive radius:
+        // `r(ω) * b == r0 * b - c * dr` must share the sign of `b`.
+        let radius = i128::from(r0) * b - c * dr;
+        if radius == 0 || (radius > 0) != (b > 0) {
+            return None;
+        }
+        (-c, b)
+    } else {
+        let discriminant = b * b - 4 * a * c;
+        if discriminant < 0 {
+            return None;
+        }
+        let root = i128::try_from(isqrt(discriminant as u128)).unwrap_or(i128::MAX);
+        let denominator = 2 * a;
+        let lower = -b - root;
+        let upper = -b + root;
+
+        // `r(ω) = r0 + (n / denominator) * dr` is positive exactly
+        // when `r0 * denominator + n * dr` has the sign of
+        // `denominator`.
+        let lower_radius = i128::from(r0) * denominator + lower * dr;
+        let upper_radius = i128::from(r0) * denominator + upper * dr;
+        let lower_valid = lower_radius != 0 && (lower_radius > 0) == (denominator > 0);
+        let upper_valid = upper_radius != 0 && (upper_radius > 0) == (denominator > 0);
+
+        match (lower_valid, upper_valid) {
+            (true, true) => {
+                // Largest ω = largest numerator over a positive
+                // denominator, smallest over a negative one.
+                if denominator > 0 {
+                    (upper, denominator)
+                } else {
+                    (lower, denominator)
+                }
+            }
+            (true, false) => (lower, denominator),
+            (false, true) => (upper, denominator),
+            (false, false) => return None,
+        }
+    };
+
+    Some(clamp_i64((numerator << 16) / denominator))
+}
+
+/// Computes the sweep-gradient parameter for design point `q`.
+///
+/// Offsets grow from `start` to `end` in the direction implied by
+/// their order; a point's angle is unwrapped into the same revolution.
+fn sweep_parameter(
+    center: (i64, i64),
+    start: i64,
+    end: i64,
+    q: (i64, i64),
+    extend: PaintExtend,
+) -> Option<i64> {
+    if start == end {
+        return match extend {
+            PaintExtend::Pad => Some(0),
+            PaintExtend::Repeat | PaintExtend::Reflect => None,
+        };
+    }
+    let angle = atan2(q.0 - center.0, q.1 - center.1);
+    let span = end - start;
+    let mut delta = angle - start;
+    if span > 0 {
+        delta = delta.rem_euclid(FIXED_TURN);
+    } else {
+        delta = -((-delta).rem_euclid(FIXED_TURN));
+    }
+    Some(clamp_i64((i128::from(delta) << 16) / i128::from(span)))
+}
+
+/// Converts a premultiplied linear-light pair of stops into a
+/// premultiplied BGRA pixel, un-premultiplying before re-applying the
+/// sRGB transfer function.
+fn interpolate_stop(lower: &ResolvedStop, upper: &ResolvedStop, factor: i64) -> [u8; 4] {
+    let inverse = FIXED_ONE - factor;
+    let alpha = (lower.alpha * inverse + upper.alpha * factor) / FIXED_ONE;
+    if alpha <= 0 {
+        return [0, 0, 0, 0];
+    }
+    let mut color = [0u8; 4];
+    for (channel, target) in color[..3].iter_mut().enumerate() {
+        let linear = (lower.linear[channel] * inverse + upper.linear[channel] * factor) / FIXED_ONE;
+        let linear = linear / alpha;
+        let byte = linear_to_srgb(linear.clamp(0, 65536) as u32);
+        *target = ((i64::from(byte) * alpha + 127) / 255) as u8;
+    }
+    color[3] = alpha as u8;
+    color
+}
+
+/// Converts one resolved stop into a premultiplied BGRA pixel.
+fn stop_color(stop: &ResolvedStop) -> [u8; 4] {
+    if stop.alpha <= 0 {
+        return [0, 0, 0, 0];
+    }
+    let mut color = [0u8; 4];
+    for (channel, target) in color[..3].iter_mut().enumerate() {
+        let linear = (stop.linear[channel] / stop.alpha).clamp(0, 65536) as u32;
+        let byte = linear_to_srgb(linear);
+        *target = ((i64::from(byte) * stop.alpha + 127) / 255) as u8;
+    }
+    color[3] = stop.alpha as u8;
+    color
+}
+
+/// The sRGB electro-optical transfer function, sampled at every
+/// 8-bit input and scaled to 16.16.
+const SRGB_TO_LINEAR: [u32; 256] = [
+    0, 20, 40, 60, 80, 99, 119, 139, 159, 179, 199, 219, 241, 264, 288, 313, 340, 367, 396, 427, 458, 491,
+    526, 562, 599, 637, 677, 718, 761, 805, 851, 898, 947, 997, 1048, 1101, 1156, 1212, 1270, 1330, 1391,
+    1453, 1517, 1583, 1651, 1720, 1791, 1863, 1937, 2013, 2090, 2170, 2250, 2333, 2418, 2504, 2592, 2681,
+    2773, 2866, 2961, 3058, 3157, 3258, 3360, 3464, 3570, 3678, 3788, 3900, 4014, 4129, 4247, 4366, 4488,
+    4611, 4736, 4864, 4993, 5124, 5257, 5392, 5530, 5669, 5810, 5953, 6099, 6246, 6395, 6547, 6701, 6856,
+    7014, 7174, 7336, 7500, 7666, 7834, 8004, 8177, 8352, 8529, 8708, 8889, 9072, 9258, 9446, 9636, 9828,
+    10022, 10219, 10418, 10619, 10822, 11028, 11236, 11446, 11658, 11873, 12090, 12309, 12531, 12754, 12981,
+    13209, 13440, 13673, 13909, 14147, 14387, 14629, 14874, 15122, 15372, 15624, 15878, 16135, 16394, 16656,
+    16920, 17187, 17456, 17727, 18001, 18278, 18556, 18838, 19121, 19408, 19696, 19988, 20281, 20578, 20876,
+    21178, 21481, 21788, 22096, 22408, 22722, 23038, 23357, 23679, 24003, 24329, 24659, 24991, 25325, 25662,
+    26002, 26344, 26689, 27036, 27387, 27739, 28095, 28453, 28813, 29177, 29543, 29911, 30283, 30657, 31033,
+    31413, 31795, 32180, 32567, 32957, 33350, 33746, 34144, 34545, 34949, 35355, 35765, 36177, 36591, 37009,
+    37429, 37852, 38278, 38707, 39138, 39572, 40009, 40449, 40892, 41337, 41786, 42237, 42691, 43147, 43607,
+    44069, 44534, 45003, 45474, 45947, 46424, 46904, 47386, 47871, 48360, 48851, 49345, 49842, 50342, 50844,
+    51350, 51859, 52370, 52884, 53402, 53922, 54445, 54972, 55501, 56033, 56568, 57106, 57647, 58191, 58738,
+    59288, 59841, 60397, 60956, 61518, 62083, 62651, 63222, 63796, 64373, 64953, 65536,
+];
+
+/// Upper bounds for [`linear_to_srgb`]: `LINEAR_THRESHOLDS[i]` is the
+/// smallest linear value that rounds to byte `i + 1`.
+const LINEAR_THRESHOLDS: [u32; 255] = [
+    10, 30, 50, 70, 89, 109, 129, 149, 169, 189, 209, 230, 252, 276, 300, 326, 353, 381, 411, 442, 474, 508,
+    544, 580, 618, 657, 697, 739, 783, 828, 874, 922, 972, 1022, 1074, 1128, 1184, 1241, 1300, 1360, 1422,
+    1485, 1550, 1617, 1685, 1755, 1827, 1900, 1975, 2051, 2130, 2210, 2291, 2375, 2461, 2548, 2636, 2727,
+    2819, 2913, 3009, 3107, 3207, 3309, 3412, 3517, 3624, 3733, 3844, 3957, 4071, 4188, 4306, 4427, 4549,
+    4673, 4800, 4928, 5058, 5190, 5324, 5461, 5599, 5739, 5881, 6026, 6172, 6320, 6471, 6624, 6778, 6935,
+    7094, 7255, 7418, 7583, 7750, 7919, 8090, 8264, 8440, 8618, 8798, 8980, 9165, 9352, 9541, 9732, 9925,
+    10120, 10318, 10518, 10720, 10925, 11132, 11341, 11552, 11765, 11981, 12199, 12420, 12642, 12867, 13095,
+    13324, 13556, 13791, 14028, 14267, 14508, 14751, 14998, 15247, 15498, 15751, 16006, 16264, 16525, 16788,
+    17053, 17321, 17591, 17864, 18139, 18417, 18697, 18979, 19264, 19552, 19842, 20134, 20429, 20727, 21027,
+    21329, 21634, 21942, 22252, 22565, 22880, 23197, 23518, 23841, 24166, 24494, 24825, 25158, 25493, 25832,
+    26173, 26516, 26862, 27211, 27563, 27917, 28274, 28633, 28995, 29360, 29727, 30097, 30470, 30845, 31223,
+    31604, 31987, 32373, 32762, 33153, 33548, 33945, 34344, 34747, 35152, 35560, 35971, 36384, 36800, 37219,
+    37640, 38065, 38492, 38922, 39355, 39790, 40229, 40670, 41114, 41561, 42011, 42464, 42919, 43377, 43838,
+    44301, 44768, 45238, 45710, 46185, 46664, 47145, 47628, 48115, 48605, 49098, 49593, 50092, 50593, 51097,
+    51604, 52114, 52627, 53143, 53662, 54183, 54708, 55236, 55767, 56300, 56837, 57376, 57919, 58464, 59013,
+    59564, 60119, 60676, 61237, 61800, 62367, 62936, 63509, 64084, 64663, 65244,
+];
+
+/// Linearizes one 8-bit sRGB channel (result in 16.16).
+#[inline]
+fn srgb_to_linear(value: u8) -> u32 {
+    SRGB_TO_LINEAR[value as usize]
+}
+
+/// Applies the inverse sRGB transfer function to a linear 16.16
+/// channel (values above one clamp to 255).
+fn linear_to_srgb(value: u32) -> u8 {
+    if value >= FIXED_ONE as u32 {
+        return 255;
+    }
+    let mut low = 0usize;
+    let mut high = LINEAR_THRESHOLDS.len();
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if value < LINEAR_THRESHOLDS[middle] {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    low as u8
 }
 
 /// The composited BGRA canvas of the layer loop
