@@ -36,9 +36,11 @@ extern crate alloc;
 pub mod canvas;
 pub mod font;
 pub mod shaders;
+pub mod shape;
 pub mod text;
 
 pub use canvas::{Canvas, LinearGradient, ScanlineSpan, Shape};
 pub use font::{AtlasRegion, Font, FontError, GlyphAtlas, GlyphQuad, GlyphRun, RasterGlyph, ShapeError};
 pub use shaders::{PushConstants, TextVertex, UiVertex};
+pub use shape::{TextShaper, shape_list};
 pub use text::Text;
