@@ -1,0 +1,29 @@
+[package]
+name = "codevar-kuitui-control-windows"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Win32 Raw Input backend for codevar-kuitui-control"
+
+[lib]
+name = "codevar_kuitui_control_windows"
+
+[dependencies]
+codevar-kuitui-control = { workspace = true }
+codevar-logger = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_UI_Input",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[lints]
+workspace = true
