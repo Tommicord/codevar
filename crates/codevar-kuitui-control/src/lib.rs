@@ -67,3 +67,7 @@
 #![forbid(unsafe_code)]
 
 extern crate alloc;
+
+pub mod class;
+
+pub use class::{ClassSet, DeviceCapability, DeviceClass};
