@@ -25,6 +25,7 @@ codevar-ocl-ir = { workspace = true }
 codevar-ocl-asm = { workspace = true }
 codevar-ocl-tc = { workspace = true }
 codevar-logger = { workspace = true }
+codevar-inssched = { workspace = true }
 codevar-target = { workspace = true }
 codevar-tlsf-alloc = { workspace = true }
 codevar-pathbuf = { workspace = true }

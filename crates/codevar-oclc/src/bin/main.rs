@@ -70,6 +70,13 @@ use codevar_oclc::driver;
 #[cfg(all(not(test), unix))]
 use codevar_tlsf_alloc::LockedGrowableTlsf;
 
+#[cfg(not(test))]
+use codevar_inssched::kernel::{Config, Phase, schedule_phases};
+#[cfg(not(test))]
+use codevar_inssched::policy::RoundRobin;
+#[cfg(not(test))]
+use codevar_inssched::task::Priority;
+
 // The vector table and `Reset` stub of the bare-metal image.
 //
 // On any other target this expands to nothing, so the hosted build keeps its
@@ -91,6 +98,47 @@ fn init_heap() {
     if registered.is_err() {
         codevar_logger::log_error!("heap region rejected by the allocator, cannot continue");
         codevar_target::halt();
+    }
+}
+
+/// Runs the compiler's single-core boot sequence through the program-level
+/// scheduler.
+///
+/// The compiler has one core to work with, so its startup work — the argument
+/// scan, the process hooks, and the driver itself — is handed to the
+/// instruction scheduler's program-level [`Kernel`] as time-sliced tasks. The
+/// resulting schedule is logged; the driver then runs normally. This is where
+/// the scheduler is wired into the binary's entry point.
+///
+/// [`Kernel`]: codevar_inssched::kernel::Kernel
+#[cfg(not(test))]
+fn schedule_boot() {
+    const PHASES: [Phase<'static>; 3] = [
+        Phase {
+            name: "args",
+            priority: Priority::HIGHEST,
+            burst: 1,
+        },
+        Phase {
+            name: "hooks",
+            priority: Priority::HIGHEST,
+            burst: 2,
+        },
+        Phase {
+            name: "driver",
+            priority: Priority::NORMAL,
+            burst: 12,
+        },
+    ];
+    match schedule_phases(&PHASES, RoundRobin, Config::new(4, 1)) {
+        Ok(stats) => codevar_logger::log_debug!(
+            "boot schedule: {} phases on one core in {} cycles ({} switches, {:.0}% busy)",
+            stats.completions,
+            stats.clock,
+            stats.context_switches,
+            stats.cpu_utilization() * 100.0
+        ),
+        Err(error) => codevar_logger::log_warn!("boot schedule failed: {error}"),
     }
 }
 
@@ -124,6 +172,7 @@ pub unsafe extern "C" fn main(
         Ok(()) => {}
         Err(error) => codevar_logger::log_warn!("failed to install signal handler: {error}"),
     }
+    schedule_boot();
     driver::run(&args).code()
 }
 
@@ -144,6 +193,7 @@ pub extern "C" fn _start() -> ! {
     if let Err(error) = codevar_sig_handler::install() {
         codevar_logger::log_warn!("failed to install signal handler: {error}");
     }
+    schedule_boot();
     let _ = driver::run(&[]);
     codevar_target::halt()
 }
