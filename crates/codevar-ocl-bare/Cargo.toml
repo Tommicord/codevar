@@ -29,11 +29,17 @@ libm = { workspace = true }
 libc = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 codevar-rt = { workspace = true }
 codevar-tlsf-alloc = { workspace = true }
 codevar-ocl-ir = { workspace = true }
 codevar-ocl-abi = { workspace = true }
 codevar-ocl-asm = { workspace = true }
+# Benchmark-only: the host runtime is compared against the bare back ends in
+# `benches/execution_paths.rs`. It depends on this crate, but Cargo permits a
+# dev-dependency cycle because dev-dependencies of `codevar-ocl` do not
+# propagate back into the library graph.
+codevar-ocl = { workspace = true }
 
 # The build script needs `codevar-rt`'s linker-script helpers, which are `std`
 # only (build scripts are `std` programs); resolver 2 keeps the feature out of
