@@ -19,8 +19,8 @@
 //! A Wredit document is an array of packed 32-bit *raw* elements.
 //! Bits `0..28` hold the code point ([`CHAR_MASK`]) and bits `28..32`
 //! hold an element *type* ([`TYPE_MASK`], shifted by [`SHIFT_TYPE`]).
-//! Two types are meaningful to the flush layer: [`T_COMMON`] for an
-//! ordinary committed character and [`T_MERGE`] for an element that
+//! Two types are meaningful to the flush layer: [`COMMON_MASK`] for an
+//! ordinary committed character and [`MERGE_MASK`] for an element that
 //! overwrites the raw element that follows it when the staged run is
 //! committed (see [`crate::edit::flush`]).
 //!
@@ -51,11 +51,11 @@ pub const TYPE_MASK: u32 = 0xF;
 pub const CHAR_MASK: u32 = 0xFF_FFFF;
 
 /// Element type: an ordinary committed character.
-pub const T_COMMON: u32 = 0xE;
+pub const COMMON_MASK: u32 = 0xE;
 
 /// Element type: on flush, overwrites the raw element that follows
 /// the insertion point instead of inserting a new element.
-pub const T_MERGE: u32 = 0xD;
+pub const MERGE_MASK: u32 = 0xD;
 
 /// Unknown (unset) document encoding.
 pub const ENC_UNKNOWN: u16 = 0x0;
@@ -79,11 +79,11 @@ pub const NAME_LEN: usize = 0xFF;
 /// # Examples
 ///
 /// ```
-/// use codevar_wredit::edit::{T_COMMON, make_packed, packed_char, packed_type};
+/// use codevar_wredit::edit::{COMMON_MASK, make_packed, packed_char, packed_type};
 ///
-/// let element = make_packed(b'a' as u32, T_COMMON);
+/// let element = make_packed(b'a' as u32, COMMON_MASK);
 /// assert_eq!(packed_char(element), b'a' as u32);
-/// assert_eq!(packed_type(element), T_COMMON);
+/// assert_eq!(packed_type(element), COMMON_MASK);
 /// ```
 #[must_use]
 #[inline]
@@ -381,14 +381,14 @@ mod tests {
 
     #[test]
     fn packed_helpers_roundtrip_and_truncate() {
-        let element = make_packed(0x1F_600, T_MERGE);
+        let element = make_packed(0x1F_600, MERGE_MASK);
         assert_eq!(packed_char(element), 0x1F_600);
-        assert_eq!(packed_type(element), T_MERGE);
+        assert_eq!(packed_type(element), MERGE_MASK);
         // High bits of both fields are truncated, never shifted into
         // each other: only the low 24 bits of the character survive.
-        let truncated = make_packed(0xFF_FFFF + 7, 0xF_F + T_COMMON);
+        let truncated = make_packed(0xFF_FFFF + 7, 0xF_F + COMMON_MASK);
         assert_eq!(packed_char(truncated), 6);
-        assert_eq!(packed_type(truncated), (0xF_F + T_COMMON) & TYPE_MASK);
+        assert_eq!(packed_type(truncated), (0xF_F + COMMON_MASK) & TYPE_MASK);
     }
 
     #[test]

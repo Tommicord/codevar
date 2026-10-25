@@ -22,7 +22,7 @@
 
 use codevar_logger::log_error;
 
-use super::base::{T_MERGE, make_packed, packed_char, packed_type};
+use super::base::{MERGE_MASK, make_packed, packed_char, packed_type};
 use super::scan;
 use super::shared_gap::{SLOT_CURSOR_BITS, SLOT_MAX_BASE, SLOT_MAX_SIZE};
 use super::traits::{
@@ -132,7 +132,7 @@ where
     }
 
     fn v_space(&self) -> usize {
-        self.base.vspace
+        self.base.headroom
     }
 
     fn shared_gaps(&self) -> &super::shared_gap::SharedGapTable<SHARED_GAP_SLOTS> {
@@ -454,7 +454,7 @@ where
         let inserted = new_length - old_length;
         self.base.raw_length = new_length;
         self.base.raw_mut().set_count(new_length);
-        self.base.vspace = self.base.raw_ref().allocated();
+        self.base.headroom = self.base.raw_ref().allocated();
         // Inserting text without a newline keeps every row start, so
         // the sparse index can shift with the text instead of being
         // invalidated and rebuilt on the next row query.
@@ -466,7 +466,7 @@ where
         // effect is not known here; mark the hint unknown instead.
         let has_merge = values
             .iter()
-            .any(|value| packed_type(Into::<u32>::into(*value)) == T_MERGE);
+            .any(|value| packed_type(Into::<u32>::into(*value)) == MERGE_MASK);
         let rows = self.base.rows.get();
         if has_merge {
             self.base.rows.set(0);
@@ -528,7 +528,7 @@ where
             raw.set_count(new_length);
             self.base.raw_length = new_length;
         }
-        self.base.vspace = self.base.raw_ref().allocated();
+        self.base.headroom = self.base.raw_ref().allocated();
         self.base.shift_cursors(start, count, true);
         self.base.shift_gap_bases(start, count, true);
         self.base.shift_shared_bases(start, count, true);
@@ -921,7 +921,7 @@ where
         }
         // The merge element consumes the committed element that
         // follows the insertion point when the run is flushed.
-        let merge = Raw::from(make_packed(packed_char(Into::<u32>::into(value)), T_MERGE));
+        let merge = Raw::from(make_packed(packed_char(Into::<u32>::into(value)), MERGE_MASK));
         self.stage_private(id, merge, position)?;
         Ok(self.move_caret_to(id, position.saturating_add(1)))
     }
@@ -1217,7 +1217,7 @@ where
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::edit::base::{T_COMMON, make_packed};
+    use crate::edit::base::{COMMON_MASK, make_packed};
     use crate::edit::traits::{
         TextEditableBufferQuery, TextEditableCursor, TextEditableDelete, TextEditableOverwrite,
         TextEditablePut, TextEditableReplace, TextEditableSelection,
@@ -1231,7 +1231,7 @@ pub(crate) mod tests {
 
     /// Packs a plain committed character.
     pub(crate) fn plain(character: impl Into<u32>) -> u32 {
-        make_packed(character.into(), T_COMMON)
+        make_packed(character.into(), COMMON_MASK)
     }
 
     /// A stream with one active cursor at the document start.
@@ -1423,7 +1423,7 @@ pub(crate) mod tests {
         assert_eq!(stream.raw_slice(0, 1), Some(&[plain('q')][..]));
         assert_eq!(stream.raw_slice(1, 0), None);
         assert_eq!(stream.raw_slice(0, 9), None);
-        assert_eq!(stream.type_at(0), Some(T_COMMON));
+        assert_eq!(stream.type_at(0), Some(COMMON_MASK));
         assert_eq!(stream.char_at(5), None);
         assert_eq!(stream.line_width_at(0), Some(1));
     }

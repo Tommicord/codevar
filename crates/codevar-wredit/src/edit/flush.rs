@@ -18,7 +18,7 @@
 //! Edits accumulate in private gaps and shared gap regions; the
 //! functions here commit them into the raw buffer in a single block
 //! move per flush. [`flush_stream_write_scalar`] walks the staged
-//! stream and resolves [`T_MERGE`] elements: a merge element
+//! stream and resolves [`MERGE_MASK`] elements: a merge element
 //! overwrites the committed element that follows the insertion point
 //! (an overwrite edit) instead of growing the document. A stream with
 //! no merge element is committed as one block move; streams that mix
@@ -34,7 +34,7 @@ use core::mem::MaybeUninit;
 
 use codevar_logger::log_error;
 
-use super::base::{T_COMMON, T_MERGE, WritableAlignedPtr, make_packed, packed_char, packed_type};
+use super::base::{COMMON_MASK, MERGE_MASK, WritableAlignedPtr, make_packed, packed_char, packed_type};
 use super::writable::{MAX_GAPS, SHARED_GAP_SLOTS, StreamWritable, WritableEvent};
 use crate::arch::{memcpy, memmove};
 
@@ -114,12 +114,12 @@ pub(crate) fn write_bytes_to_raw<Raw: Copy>(
 }
 
 /// Commits the staged stream `values` into the raw document at `at`,
-/// resolving [`T_MERGE`] elements on the way.
+/// resolving [`MERGE_MASK`] elements on the way.
 ///
 /// Resolution rules:
 ///
-/// * a [`T_COMMON`] (or unknown-type) element is inserted as-is;
-/// * a [`T_MERGE`] element overwrites the committed element at the
+/// * a [`COMMON_MASK`] (or unknown-type) element is inserted as-is;
+/// * a [`MERGE_MASK`] element overwrites the committed element at the
 ///   current stream position when one exists (the overwrite semantics
 ///   behind [`super::traits::TextEditableOverwrite`]), otherwise it
 ///   is inserted as a plain element.
@@ -156,7 +156,7 @@ pub(crate) fn flush_stream_write_scalar<Raw: Copy + Into<u32> + From<u32>>(
     // 64-element chunk.
     let has_merge = values
         .iter()
-        .any(|value| packed_type(Into::<u32>::into(*value)) == T_MERGE);
+        .any(|value| packed_type(Into::<u32>::into(*value)) == MERGE_MASK);
     if !has_merge {
         let elem = core::mem::size_of::<Raw>();
         let base = raw.as_mut_ptr().cast::<u8>();
@@ -197,7 +197,7 @@ pub(crate) fn flush_stream_write_scalar<Raw: Copy + Into<u32> + From<u32>>(
 
     for &value in values {
         let element_type = packed_type(Into::<u32>::into(value));
-        if element_type == T_MERGE {
+        if element_type == MERGE_MASK {
             // Settle the pending plain run first, then overwrite or
             // insert the merge element at the stream position.
             // Safety: `ptr` is the live buffer, `stream <= length`
@@ -210,7 +210,7 @@ pub(crate) fn flush_stream_write_scalar<Raw: Copy + Into<u32> + From<u32>>(
             unsafe {
                 ptr.add(stream).write(Raw::from(make_packed(
                     packed_char(Into::<u32>::into(value)),
-                    T_COMMON,
+                    COMMON_MASK,
                 )));
             }
             if stream < length {
@@ -383,7 +383,7 @@ where
         let mut has_merge = false;
         for value in staged_values {
             let word: u32 = (*value).into();
-            if packed_type(word) == T_MERGE {
+            if packed_type(word) == MERGE_MASK {
                 has_merge = true;
             }
             if packed_char(word) == u32::from(b'\n') {
@@ -408,7 +408,7 @@ where
         let committed = new_length - old_length;
         self.base.raw_length = new_length;
         self.base.raw_mut().set_count(new_length);
-        self.base.vspace = self.base.raw_ref().allocated();
+        self.base.headroom = self.base.raw_ref().allocated();
         let rows = self.base.rows.get();
         match layout {
             LineLayout::Merge => self.base.rows.set(0),
@@ -488,7 +488,7 @@ where
                 for (index, element) in slice.iter().enumerate() {
                     let value = Raw::from(*element);
                     let word: u32 = value.into();
-                    if packed_type(word) == T_MERGE {
+                    if packed_type(word) == MERGE_MASK {
                         has_merge = true;
                     }
                     if packed_char(word) == u32::from(b'\n') {
@@ -512,7 +512,7 @@ where
             committed_total = committed_total.saturating_add(committed);
             offset += take;
         }
-        self.base.vspace = self.base.raw_ref().allocated();
+        self.base.headroom = self.base.raw_ref().allocated();
         let layout = if has_merge {
             LineLayout::Merge
         } else if newlines != 0 {
@@ -652,17 +652,17 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::{flush_stream_write_scalar, write_bytes_to_raw};
-    use crate::edit::base::{T_COMMON, T_MERGE, WritableAlignedPtr, make_packed};
+    use crate::edit::base::{COMMON_MASK, MERGE_MASK, WritableAlignedPtr, make_packed};
 
     // Justification: `unwrap` in tests is permitted by the project
     // lint configuration (`allow-unwrap-in-tests`).
 
     fn plain(character: impl Into<u32>) -> u32 {
-        make_packed(character.into(), T_COMMON)
+        make_packed(character.into(), COMMON_MASK)
     }
 
     fn merge(character: impl Into<u32>) -> u32 {
-        make_packed(character.into(), T_MERGE)
+        make_packed(character.into(), MERGE_MASK)
     }
 
     #[test]

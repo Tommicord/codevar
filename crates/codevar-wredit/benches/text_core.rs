@@ -39,7 +39,7 @@ use std::hint::black_box;
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 use codevar_wredit::edit::{
-    Cursor, StreamWritable, T_COMMON, TextEditableBufferQuery, TextEditableCursor, TextEditableDelete,
+    COMMON_MASK, Cursor, StreamWritable, TextEditableBufferQuery, TextEditableCursor, TextEditableDelete,
     TextEditableOverwrite, TextEditablePut, TextEditableReplace, Writable, make_packed,
 };
 
@@ -55,7 +55,7 @@ type Stream = StreamWritable<u32, u32, GAP_SIZE>;
 /// Packs an ASCII character as a committed document element.
 #[inline]
 fn plain(character: u32) -> u32 {
-    make_packed(character, T_COMMON)
+    make_packed(character, COMMON_MASK)
 }
 
 /// Deterministic xorshift generator, so every run sees identical input

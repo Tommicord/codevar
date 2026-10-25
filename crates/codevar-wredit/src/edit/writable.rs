@@ -578,7 +578,7 @@ pub struct BaseWritable<Raw: Copy, Buf: Copy, const GAP_SIZE: usize> {
     /// exact; a merge marks it unknown until the next anchor build.
     pub(crate) rows: Cell<usize>,
     /// Committed capacity head-room (mirrors `raw.allocated()`).
-    pub(crate) vspace: usize,
+    pub(crate) headroom: usize,
     /// Document encoding, one of the `ENC_*` constants.
     pub(crate) encoding: u16,
     /// Lazily allocated sparse row anchors for jumps outside the L1
@@ -609,7 +609,7 @@ impl<Raw: Copy, Buf: Copy, const GAP_SIZE: usize> BaseWritable<Raw, Buf, GAP_SIZ
             flags: 0,
             raw_length: 0,
             rows: Cell::new(1),
-            vspace: 0,
+            headroom: 0,
             encoding: ENC_UNKNOWN,
             line_anchors: UnsafeCell::new(None),
         }
@@ -629,7 +629,7 @@ impl<Raw: Copy, Buf: Copy, const GAP_SIZE: usize> BaseWritable<Raw, Buf, GAP_SIZ
             if raw.ensure_capacity(capacity).is_err() {
                 log_error!("wredit: initial raw capacity allocation failed");
             }
-            writable.vspace = raw.allocated();
+            writable.headroom = raw.allocated();
         }
         writable
     }
@@ -1184,7 +1184,7 @@ impl<Raw: Copy, Buf: Copy, const GAP_SIZE: usize> Default for StreamWritable<Raw
 #[cfg(test)]
 mod tests {
     use super::{BaseWritable, MAX_CURSORS, MAX_GAPS, WritableEvent, WritableGapPtr, WritableGaps};
-    use crate::edit::base::{T_COMMON, make_packed};
+    use crate::edit::base::{COMMON_MASK, make_packed};
     use crate::edit::writable::WritableGap;
 
     // Justification: `unwrap` in tests is permitted by the project
@@ -1207,12 +1207,12 @@ mod tests {
         let mut gap: WritableGap<u32, 4> = WritableGap::at(10);
         assert_eq!(gap.base(), 10);
         assert!(gap.is_empty());
-        assert!(gap.push(make_packed(1, T_COMMON)));
-        assert!(gap.push(make_packed(2, T_COMMON)));
+        assert!(gap.push(make_packed(1, COMMON_MASK)));
+        assert!(gap.push(make_packed(2, COMMON_MASK)));
         assert_eq!(gap.staged(), 2);
         // The staged content is readable through `content`.
         let staged = unsafe { core::slice::from_raw_parts(gap.content(), gap.staged()) };
-        assert_eq!(staged[1], make_packed(2, T_COMMON));
+        assert_eq!(staged[1], make_packed(2, COMMON_MASK));
         gap.clear();
         assert!(gap.is_empty());
     }
@@ -1254,7 +1254,7 @@ mod tests {
         assert_eq!(base.raw_ref().count(), 0);
         assert_eq!(base.raw_length, 0);
         assert_eq!(base.logical_length(), 0);
-        assert_eq!(base.vspace, 0);
+        assert_eq!(base.headroom, 0);
         assert_eq!(base.active_cursor_id, 0);
         assert_eq!(base.encoding, crate::edit::base::ENC_UNKNOWN);
     }
@@ -1263,7 +1263,7 @@ mod tests {
     fn with_capacity_grows_the_raw_buffer_only() {
         let base: BaseWritable<u32, u32, 32> = BaseWritable::with_capacity(100);
         assert!(base.raw_ref().allocated() >= 100);
-        assert_eq!(base.vspace, base.raw_ref().allocated());
+        assert_eq!(base.headroom, base.raw_ref().allocated());
         // The staging arena stays unallocated.
         assert_eq!(unsafe { &*base.buffer.get() }.allocated(), 0);
     }

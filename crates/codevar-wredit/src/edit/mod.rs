@@ -34,8 +34,9 @@ pub mod traits;
 pub mod writable;
 
 pub use base::{
-    CHAR_MASK, ENC_SINGLE_BYTE, ENC_UNKNOWN, ENC_UTF8, ENC_UTF16BE, ENC_UTF16LE, NAME_LEN, SHIFT_TYPE,
-    T_COMMON, T_MERGE, TYPE_MASK, WritableAlignedPtr, WritableGapSize, make_packed, packed_char, packed_type,
+    CHAR_MASK, COMMON_MASK, ENC_SINGLE_BYTE, ENC_UNKNOWN, ENC_UTF8, ENC_UTF16BE, ENC_UTF16LE, MERGE_MASK,
+    NAME_LEN, SHIFT_TYPE, TYPE_MASK, WritableAlignedPtr, WritableGapSize, make_packed, packed_char,
+    packed_type,
 };
 pub use cursor::{BidiIndex, Cursor};
 pub use search::{PackedSource, find_all, replace_all};
