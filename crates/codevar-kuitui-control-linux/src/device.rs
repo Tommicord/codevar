@@ -90,7 +90,6 @@ const fn eviocgid() -> libc::c_ulong {
 /// A device node that belongs to the class being opened.
 pub(crate) struct OpenDevice {
     /// The non-blocking read descriptor the task polls.
-    #[allow(dead_code)] // Read by the task layer, which is wired in separately.
     pub fd: Fd,
     /// The description published to subscribers.
     pub info: DeviceInfo,

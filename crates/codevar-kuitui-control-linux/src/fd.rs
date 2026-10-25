@@ -42,7 +42,6 @@ impl Fd {
     }
 
     /// Reads into `buffer`.
-    #[allow(dead_code)] // Used by the task layer, which is wired in separately.
     pub(crate) fn read(&self, buffer: &mut [u8]) -> Result<usize, SysError> {
         // SAFETY: `buffer` is valid for writes of its full length and the
         // descriptor is open for as long as `self` lives.
@@ -106,7 +105,6 @@ pub(crate) fn check_int(value: c_int, operation: &'static str) -> Result<c_int, 
 }
 
 /// Checks a call that returns a byte count or `-1`.
-#[allow(dead_code)] // Used by the task layer, which is wired in separately.
 pub(crate) fn ssize(value: libc::ssize_t, operation: &'static str) -> Result<usize, SysError> {
     if value < 0 {
         Err(SysError::last(operation))
