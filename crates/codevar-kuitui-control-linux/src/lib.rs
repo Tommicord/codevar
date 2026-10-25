@@ -15,39 +15,50 @@
 
 //! Linux input backend for `codevar-kuitui-control`.
 //!
-//! The backend reads `/dev/input/event*` through evdev. The worker is
-//! created the first time a class is opened and stopped when the class is
-//! unregistered.
+//! The backend reads `/dev/input/event*` directly through evdev. Each class
+//! owns one worker thread and one `epoll` set, so opening the pointer never
+//! touches a keyboard node and releasing a class joins its worker before
+//! returning.
+//!
+//! This backend does not go through the XDG desktop portal. The portal's
+//! RemoteDesktop interface is the *implementation* side of a remote-desktop
+//! session: it injects events into a compositor instead of delivering the
+//! events of local hardware. Reading evdev is the facility a client uses for
+//! local input, and it is also what the browser and compositor paths reduce
+//! to.
 
 #![warn(missing_docs)]
+
+mod device;
 
 use codevar_kuitui_control::{Backend, ControlError, DeviceClass, DeviceInfo, EventSink};
 
 /// Linux evdev input backend.
 #[derive(Default)]
-pub struct LinuxBackend {
-    /// Classes whose devices are open.
-    registered: codevar_kuitui_control::ClassSet,
-}
+pub struct LinuxBackend;
 
 impl LinuxBackend {
     /// Creates a backend that has opened no devices.
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub const fn new() -> Self {
+        Self
     }
 }
 
 impl Backend for LinuxBackend {
     fn start(&mut self, class: DeviceClass, _sink: EventSink) -> Result<(), ControlError> {
-        let _ = class;
         Err(ControlError::Unsupported(class))
     }
 
     fn stop(&mut self, _class: DeviceClass) {}
 
     fn devices(&self) -> Vec<DeviceInfo> {
-        let _ = self.registered;
-        Vec::new()
+        match device::scan(None) {
+            Ok(devices) => devices,
+            Err(error) => {
+                codevar_logger::log_warn!("input: could not enumerate evdev devices: {error}");
+                Vec::new()
+            }
+        }
     }
 }
