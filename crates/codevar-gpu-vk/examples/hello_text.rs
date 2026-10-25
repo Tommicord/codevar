@@ -372,7 +372,7 @@ fn run() -> ExampleResult<String> {
                 Spacer(height: TOP_PADDING)
                 Text("Hello World!", color: Color::WHITE)
                 Spacer(height: 16.0)
-                ColorableText("😀 🦀 🚀 🎉 💻")
+                ColorableText("Hello 😀 🦀 🚀 🎉 💻")
             }
         }
     });
