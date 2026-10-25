@@ -25,6 +25,13 @@ use codevar_launcher::driver::Exit;
 #[cfg(not(test))]
 use codevar_logger::log_error;
 
+#[cfg(not(test))]
+use codevar_inssched::kernel::{Config, Phase, schedule_phases};
+#[cfg(not(test))]
+use codevar_inssched::policy::RoundRobin;
+#[cfg(not(test))]
+use codevar_inssched::task::Priority;
+
 // The vector table and `Reset` stub of the bare-metal image.
 //
 // On any other target this expands to nothing, so the hosted build keeps its
@@ -87,6 +94,47 @@ fn init_heap() {
     }
 }
 
+/// Runs the launcher's single-core boot sequence through the program-level
+/// scheduler.
+///
+/// The launcher has one core to work with, so its startup work — bringing up
+/// the heap, installing the process hooks, and opening the window — is handed
+/// to the instruction scheduler's program-level [`Kernel`] as time-sliced
+/// tasks. The resulting schedule is logged; the event loop then runs normally.
+/// This is where the scheduler is wired into the binary's entry point.
+///
+/// [`Kernel`]: codevar_inssched::kernel::Kernel
+#[cfg(not(test))]
+fn schedule_boot() {
+    const PHASES: [Phase<'static>; 3] = [
+        Phase {
+            name: "heap",
+            priority: Priority::HIGHEST,
+            burst: 2,
+        },
+        Phase {
+            name: "hooks",
+            priority: Priority::HIGHEST,
+            burst: 4,
+        },
+        Phase {
+            name: "window",
+            priority: Priority::NORMAL,
+            burst: 8,
+        },
+    ];
+    match schedule_phases(&PHASES, RoundRobin, Config::new(4, 1)) {
+        Ok(stats) => codevar_logger::log_debug!(
+            "boot schedule: {} phases on one core in {} cycles ({} switches, {:.0}% busy)",
+            stats.completions,
+            stats.clock,
+            stats.context_switches,
+            stats.cpu_utilization() * 100.0
+        ),
+        Err(error) => codevar_logger::log_warn!("boot schedule failed: {error}"),
+    }
+}
+
 /// Freestanding entry: initialize the process hooks, run the window
 /// event loop, then return the exit code to the C runtime.
 ///
@@ -110,6 +158,7 @@ pub unsafe extern "C" fn main(
             return Exit::Usage.code();
         }
     };
+    schedule_boot();
     driver::run(&args).code()
 }
 
@@ -123,6 +172,7 @@ pub unsafe extern "C" fn main(
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     init_heap();
+    schedule_boot();
     if let Exit::Failure = driver::run(&[]) {
         log_error!("launcher stopped on a failure status");
     }

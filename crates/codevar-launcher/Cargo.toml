@@ -15,12 +15,13 @@ codevar-tlsf-alloc = { workspace = true }
 codevar-cli-parse = { workspace = true }
 codevar-time-core = { workspace = true }
 codevar-base = { workspace = true }
-codevar-gpu-core = { workspace = true }
+codevar-gpu-vk = { workspace = true }
 codevar-wayland = { workspace = true }
 codevar-sig-module-base = { workspace = true }
 codevar-sig-handler = { workspace = true }
 codevar-env = { workspace = true }
 codevar-logger = { workspace = true }
+codevar-inssched = { workspace = true }
 codevar-target = { workspace = true }
 codevar-rt = { workspace = true }
 
