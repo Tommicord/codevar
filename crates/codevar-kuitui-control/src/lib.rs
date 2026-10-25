@@ -46,6 +46,20 @@
 //!   runtime dependency; [`Subscription::poll_next`] is the primitive and
 //!   [`Subscription::next`] is the async convenience.
 //!
+//! ```
+//! # use codevar_kuitui_control::{ClassSet, Control, DeviceClass, Publisher};
+//! # fn example<B: codevar_kuitui_control::Backend>(
+//! #     backend: B,
+//! # ) -> Result<(), codevar_kuitui_control::ControlError> {
+//! let mut control = Control::new(backend);
+//! let mut keys = control.open(DeviceClass::Keyboard)?;
+//! // The class is now registered; opens of other classes cost nothing.
+//! let mut all = control.subscribe(ClassSet::KEYBOARD | ClassSet::POINTER, 64)?;
+//! # let _ = (&mut keys, &mut all);
+//! # Ok::<(), codevar_kuitui_control::ControlError>(())
+//! # }
+//! ```
+//!
 //! # Backends
 //!
 //! Backends live in sibling crates so a target only compiles the operating
@@ -68,15 +82,18 @@
 
 extern crate alloc;
 
+pub mod backend;
 pub mod class;
+pub mod control;
 pub mod device;
 pub mod error;
 pub mod event;
-#[allow(dead_code)] // the publish side is used by the control layer
 mod hub;
 pub mod stream;
 
+pub use backend::{Backend, EventSink};
 pub use class::{ClassSet, DeviceCapability, DeviceClass};
+pub use control::Control;
 pub use device::{DeviceId, DeviceInfo};
 pub use error::ControlError;
 pub use event::{
