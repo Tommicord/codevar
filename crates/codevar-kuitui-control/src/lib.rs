@@ -71,7 +71,12 @@ extern crate alloc;
 pub mod class;
 pub mod device;
 pub mod error;
+pub mod event;
 
 pub use class::{ClassSet, DeviceCapability, DeviceClass};
 pub use device::{DeviceId, DeviceInfo};
 pub use error::ControlError;
+pub use event::{
+    AudioEvent, AudioFormat, Event, GamepadEvent, InputEvent, KeyCode, KeyEvent, KeyState, Modifiers, Point,
+    PointerButton, PointerEvent, SampleFormat, TextEvent, Timestamp,
+};
