@@ -43,3 +43,6 @@ pub use handler::{KEYBOARD, KeyTransition, KeyboardBinding, KeyboardHandler};
 pub use modifiers::KeyboardModifiers;
 pub use snapshot::KeyboardSnapshot;
 pub use state::KeyboardState;
+
+#[cfg(test)]
+mod tests;
