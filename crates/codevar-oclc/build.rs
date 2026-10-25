@@ -88,11 +88,21 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use codevar_ocl_sar::{ColorChoice, DeclKind, analyze, emit_stderr};
+use codevar_ocl_tc::{OptLevel, TargetCode};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 
 /// Environment variable overriding the default `kernels/` source directory.
 const KERNEL_DIR_ENV: &str = "CV_KERNEL_DIR";
+
+/// Environment variable Cargo sets to the profile being built.
+const PROFILE_ENV: &str = "PROFILE";
+
+/// Environment variable holding the space-separated rustc flags.
+const RUSTFLAGS_ENV: &str = "RUSTFLAGS";
+
+/// Environment variable holding the same flags, unit-separated.
+const ENCODED_RUSTFLAGS_ENV: &str = "CARGO_ENCODED_RUSTFLAGS";
 
 /// File extension of OpenCL dialect sources (matched case-insensitively).
 const KERNEL_EXTENSION: &str = "rs";
@@ -396,6 +406,8 @@ fn generate() -> Result<(), BuildFailure> {
         None => manifest_dir.join("kernels"),
     };
     cargo_directive(&format!("cargo:rerun-if-env-changed={KERNEL_DIR_ENV}"));
+    cargo_directive(&format!("cargo:rerun-if-env-changed={RUSTFLAGS_ENV}"));
+    cargo_directive(&format!("cargo:rerun-if-env-changed={ENCODED_RUSTFLAGS_ENV}"));
     cargo_directive(&format!("cargo:rerun-if-changed={}", kernel_dir.display()));
     let sources = discover(&kernel_dir)?;
     if sources.is_empty() {
@@ -404,6 +416,16 @@ fn generate() -> Result<(), BuildFailure> {
             kernel_dir.display()
         ));
         return write_bindings(&out_dir, &[]);
+    }
+
+    let code = target_code();
+    if code != TargetCode::Baseline {
+        cargo_warning(&format!(
+            "codevar-oclc: compiling kernels at target code '{}' (from the RUSTFLAGS \
+             target-feature) and optimization level '-O{}'",
+            code.name(),
+            optimization_level().digit() as char
+        ));
     }
 
     let mut prefixes: BTreeMap<String, PathBuf> = BTreeMap::new();
@@ -683,6 +705,11 @@ fn compile(source: KernelSource, out_dir: &Path) -> Result<CompiledKernel, Build
 /// a cross build keeps the SPIR-V path and says so with a warning.  A
 /// kernel the native back end cannot express is skipped with a warning
 /// as well: the kernel is valid, the back end is simply not there yet.
+///
+/// The code is compiled at the level [`optimization_level`] picks for the
+/// Cargo profile and for the instruction-set extensions [`target_code`]
+/// reads from the rustc `target-feature` flags, so a kernel uses the same
+/// vector instructions as the rest of the build.
 fn compile_native(
     module: &codevar_ocl_ir::ir::Module,
     entry_points: &[String],
@@ -700,25 +727,26 @@ fn compile_native(
         ));
         return Ok(Vec::new());
     }
-    let target = match codevar_ocl_tc::host_target() {
+    let target = match codevar_ocl_tc::host_target_with(target_code()) {
         Ok(target) => target,
         Err(error) => {
             cargo_warning(&format!(
-                "{}: no native back end for this architecture ({error}); \
+                "{}: the native back end is unavailable ({error}); \
                  the SPIR-V image is embedded instead",
                 source.file_name
             ));
             return Ok(Vec::new());
         }
     };
+    let level = optimization_level();
     let mut compiled = Vec::with_capacity(entry_points.len());
     for name in entry_points {
-        let code = match codevar_ocl_tc::compile_module_for(target.as_target(), module, name) {
+        let code = match codevar_ocl_tc::compile_module_for_at(target.as_target(), module, name, level) {
             Ok(code) => code,
             Err(error) => {
                 cargo_warning(&format!(
                     "{}: the kernel `{name}` has no native machine code ({error}); \
-                     it is embedded as SPIR-V only",
+                         it is embedded as SPIR-V only",
                     source.file_name
                 ));
                 continue;
@@ -755,6 +783,113 @@ fn native_target_matches_host() -> bool {
         (Ok(target), Ok(host)) => architecture(&target) == architecture(&host),
         _ => false,
     }
+}
+
+/// The optimization level the kernel machine code is compiled at.
+///
+/// A release build gets the aggressive level ([`OptLevel::O3`]); every
+/// other profile, including the debug build a developer iterates with,
+/// gets no optimization ([`OptLevel::O0`]), so the kernel code costs the
+/// same to produce as the rest of the debug build.
+fn optimization_level() -> OptLevel {
+    match std::env::var(PROFILE_ENV).as_deref() {
+        Ok("release") => OptLevel::O3,
+        _ => OptLevel::O0,
+    }
+}
+
+/// The instruction-set extensions the kernel machine code is compiled
+/// with, derived from the `target-feature` flags rustc is invoked with.
+///
+/// The flags describe the capabilities of the machine the crate is built
+/// for, so compiling the kernels at the same code makes them use the same
+/// vector instructions as the surrounding Rust code.  The widest
+/// extension whose feature is enabled wins; a build that enables none
+/// compiles the kernels at the baseline.
+fn target_code() -> TargetCode {
+    let features = enabled_target_features();
+    for (feature, code) in [
+        ("avx512vbmi2", TargetCode::Avx512Vbmi2),
+        ("avx512vbmi", TargetCode::Avx512Vbmi),
+        ("avx512ifma", TargetCode::Avx512Ifma),
+        ("avx512f", TargetCode::Avx512),
+        ("avx2", TargetCode::Avx2),
+        ("avx", TargetCode::Avx),
+    ] {
+        if features.iter().any(|enabled| enabled == feature) {
+            return code;
+        }
+    }
+    TargetCode::Baseline
+}
+
+/// Every feature the `target-feature` flags enable, in the order named.
+fn enabled_target_features() -> Vec<String> {
+    let mut enabled: Vec<String> = Vec::new();
+    for token in rustc_flag_tokens() {
+        let value = token
+            .strip_prefix("-Ctarget-feature=")
+            .or_else(|| token.strip_prefix("--codegen=target-feature="));
+        if let Some(value) = value {
+            apply_target_features(&mut enabled, value);
+        }
+    }
+    enabled
+}
+
+/// Applies one `target-feature` value (`+avx2,-avx512f`) to `enabled`, so
+/// a later `-feature` removes an earlier `+feature`.
+fn apply_target_features(enabled: &mut Vec<String>, value: &str) {
+    for entry in value.split(',') {
+        if let Some(name) = entry.strip_prefix('+') {
+            if !name.is_empty() && !enabled.iter().any(|feature| feature == name) {
+                enabled.push(String::from(name));
+            }
+        } else if let Some(name) = entry.strip_prefix('-') {
+            enabled.retain(|feature| feature != name);
+        }
+    }
+}
+
+/// The rustc command-line flags the crate is built with.
+///
+/// Cargo exports them as `CARGO_ENCODED_RUSTFLAGS` (unit-separated) and
+/// `RUSTFLAGS` (space-separated); the encoded form is preferred because a
+/// flag value can never be split on a space inside it.  A `-C` (or
+/// `--codegen`) and its value are joined, so every flag is one token.
+fn rustc_flag_tokens() -> Vec<String> {
+    let raw: Vec<String> = match std::env::var(ENCODED_RUSTFLAGS_ENV) {
+        Ok(encoded) if !encoded.is_empty() => encoded
+            .split('\u{1f}')
+            .map(String::from)
+            .collect(),
+        _ => std::env::var(RUSTFLAGS_ENV)
+            .map(|flags| {
+                flags
+                    .split_whitespace()
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
+    let mut merged = Vec::with_capacity(raw.len());
+    let mut tokens = raw.into_iter();
+    while let Some(token) = tokens.next() {
+        match token.as_str() {
+            "-C" => {
+                if let Some(value) = tokens.next() {
+                    merged.push(format!("-C{value}"));
+                }
+            }
+            "--codegen" => {
+                if let Some(value) = tokens.next() {
+                    merged.push(format!("--codegen={value}"));
+                }
+            }
+            _ => merged.push(token),
+        }
+    }
+    merged
 }
 
 /// The artifact file name staged in `OUT_DIR` for `stem` (`wredit_block`
