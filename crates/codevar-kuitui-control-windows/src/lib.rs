@@ -15,10 +15,21 @@
 
 //! Windows input backend for `codevar-kuitui-control`.
 //!
-//! The backend listens through Win32 Raw Input on a message-only window that
-//! runs on its own thread.
+//! The backend listens through Win32 Raw Input on a message-only window. It
+//! owns no thread: the caller pumps its own message loop and asks the backend
+//! to decode the records that arrived since the previous call.
 
+#![cfg_attr(not(test), no_std)]
 #![warn(missing_docs)]
+
+extern crate alloc;
+
+#[cfg_attr(not(windows), allow(dead_code))]
+mod decode;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod keymap;
+
+use alloc::vec::Vec;
 
 use codevar_kuitui_control::{Backend, ControlError, DeviceClass, DeviceInfo, EventSink};
 
