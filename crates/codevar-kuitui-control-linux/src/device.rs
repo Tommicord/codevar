@@ -87,6 +87,15 @@ const fn eviocgid() -> libc::c_ulong {
     ioc(IOC_READ, b'E', 0x02, size_of::<libc::input_id>())
 }
 
+/// A device node that belongs to the class being opened.
+pub(crate) struct OpenDevice {
+    /// The non-blocking read descriptor the task polls.
+    #[allow(dead_code)] // Read by the task layer, which is wired in separately.
+    pub fd: Fd,
+    /// The description published to subscribers.
+    pub info: DeviceInfo,
+}
+
 /// A bitmap returned by `EVIOCGBIT`.
 struct Bits(Vec<u8>);
 
@@ -120,7 +129,7 @@ impl Bits {
     }
 }
 
-/// Opens one node of [`INPUT_DIR`] with the flags the backend needs.
+/// Opens one node of [`INPUT_DIR`] with the flags the task needs.
 fn open_node(name: &[u8]) -> Result<Fd, SysError> {
     let mut path = Vec::with_capacity(INPUT_DIR.len() + 1 + name.len() + 1);
     path.extend_from_slice(INPUT_DIR.as_bytes());
@@ -217,23 +226,22 @@ fn classify(fd: &Fd) -> Option<(DeviceClass, DeviceCapability)> {
 }
 
 /// Describes one node, or `None` when it is not of `wanted`.
-fn describe(fd: &Fd, wanted: Option<DeviceClass>) -> Option<DeviceInfo> {
-    let (class, capabilities) = classify(fd)?;
+fn describe(fd: Fd, wanted: Option<DeviceClass>) -> Option<OpenDevice> {
+    let (class, capabilities) = classify(&fd)?;
     if wanted.is_some_and(|wanted| wanted != class) {
         return None;
     }
-    let name = read_name(fd);
-    let ids = read_ids(fd);
-    let id = DeviceId::new(read_device_number(fd));
-    Some(
-        DeviceInfo::new(id, class, name)
-            .with_ids(ids.vendor, ids.product)
-            .with_capabilities(capabilities),
-    )
+    let name = read_name(&fd);
+    let ids = read_ids(&fd);
+    let id = DeviceId::new(read_device_number(&fd));
+    let info = DeviceInfo::new(id, class, name)
+        .with_ids(ids.vendor, ids.product)
+        .with_capabilities(capabilities);
+    Some(OpenDevice { fd, info })
 }
 
 /// Opens every node of `wanted`, or every node when it is `None`.
-pub(crate) fn scan(wanted: Option<DeviceClass>) -> Result<Vec<DeviceInfo>, ControlError> {
+pub(crate) fn scan(wanted: Option<DeviceClass>) -> Result<Vec<OpenDevice>, ControlError> {
     // SAFETY: the literal is NUL-terminated.
     let directory = unsafe { libc::opendir(c"/dev/input".as_ptr()) };
     if directory.is_null() {
@@ -262,7 +270,7 @@ pub(crate) fn scan(wanted: Option<DeviceClass>) -> Result<Vec<DeviceInfo>, Contr
             continue;
         }
         match open_node(name) {
-            Ok(fd) => devices.extend(describe(&fd, wanted)),
+            Ok(fd) => devices.extend(describe(fd, wanted)),
             Err(error) if error.permission_denied() => denied += 1,
             Err(error) => codevar_logger::log_debug!(
                 "input: skipping {INPUT_DIR}/{}: {error}",

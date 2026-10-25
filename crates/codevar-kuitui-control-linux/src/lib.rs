@@ -61,7 +61,10 @@ impl Backend for LinuxBackend {
 
     fn devices(&self) -> Vec<DeviceInfo> {
         match device::scan(None) {
-            Ok(devices) => devices,
+            Ok(devices) => devices
+                .into_iter()
+                .map(|device| device.info)
+                .collect(),
             Err(error) => {
                 log_warn!("input: could not enumerate evdev devices: {error}");
                 Vec::new()
