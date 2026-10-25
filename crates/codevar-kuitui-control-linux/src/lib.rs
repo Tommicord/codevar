@@ -15,10 +15,10 @@
 
 //! Linux input backend for `codevar-kuitui-control`.
 //!
-//! The backend reads `/dev/input/event*` directly through evdev. Each class
-//! owns one worker thread and one `epoll` set, so opening the pointer never
-//! touches a keyboard node and releasing a class joins its worker before
-//! returning.
+//! The backend reads `/dev/input/event*` directly through evdev. A node is
+//! opened read-only and non-blocking, then classified from its capability
+//! bitmaps, so a caller learns which classes exist without opening a node of
+//! another class.
 //!
 //! This backend does not go through the XDG desktop portal. The portal's
 //! RemoteDesktop interface is the *implementation* side of a remote-desktop
@@ -27,11 +27,18 @@
 //! local input, and it is also what the browser and compositor paths reduce
 //! to.
 
+#![cfg_attr(not(test), no_std)]
 #![warn(missing_docs)]
 
+extern crate alloc;
+
 mod device;
+mod fd;
+
+use alloc::vec::Vec;
 
 use codevar_kuitui_control::{Backend, ControlError, DeviceClass, DeviceInfo, EventSink};
+use codevar_logger::log_warn;
 
 /// Linux evdev input backend.
 #[derive(Default)]
@@ -56,9 +63,22 @@ impl Backend for LinuxBackend {
         match device::scan(None) {
             Ok(devices) => devices,
             Err(error) => {
-                codevar_logger::log_warn!("input: could not enumerate evdev devices: {error}");
+                log_warn!("input: could not enumerate evdev devices: {error}");
                 Vec::new()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use codevar_kuitui_control::Backend;
+
+    use super::LinuxBackend;
+
+    #[test]
+    fn enumeration_never_panics_in_a_headless_environment() {
+        let backend = LinuxBackend::new();
+        let _ = backend.devices();
     }
 }

@@ -20,14 +20,15 @@
 //! belongs to, so a caller that opens the pointer class never opens a
 //! keyboard node.
 
-use std::ffi::CString;
-use std::fs;
-use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::ffi::{CStr, c_char, c_void};
+use core::mem::MaybeUninit;
 
 use codevar_kuitui_control::{ControlError, DeviceCapability, DeviceClass, DeviceId, DeviceInfo};
+
+use crate::fd::{Fd, SysError, check_int};
 
 /// Directory that holds the evdev character devices.
 pub(crate) const INPUT_DIR: &str = "/dev/input";
@@ -91,11 +92,17 @@ struct Bits(Vec<u8>);
 
 impl Bits {
     /// Reads one bitmap from `fd`, or `None` when the kernel rejects it.
-    fn read(fd: &OwnedFd, event_type: u16, len: usize) -> Option<Self> {
+    fn read(fd: &Fd, event_type: u16, len: usize) -> Option<Self> {
         let mut bytes = vec![0u8; len];
         // SAFETY: `bytes` is valid for writes of `len` bytes and the request
         // encodes exactly that length, so the kernel cannot write past it.
-        let result = unsafe { libc::ioctl(fd.as_raw_fd(), eviocgbit(event_type, len), bytes.as_mut_ptr()) };
+        let result = unsafe {
+            libc::ioctl(
+                fd.raw(),
+                eviocgbit(event_type, len),
+                bytes.as_mut_ptr().cast::<c_void>(),
+            )
+        };
         (result >= 0).then_some(Self(bytes))
     }
 
@@ -113,27 +120,37 @@ impl Bits {
     }
 }
 
-/// Opens a node with the flags the worker needs.
-fn open_node(path: &Path) -> io::Result<OwnedFd> {
-    let path = CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
-    // SAFETY: `path` is a valid NUL-terminated string and the return value is
-    // checked before it is turned into an `OwnedFd`.
-    let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK | libc::O_CLOEXEC) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: `fd` is a freshly opened descriptor that no other value owns.
-    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+/// Opens one node of [`INPUT_DIR`] with the flags the backend needs.
+fn open_node(name: &[u8]) -> Result<Fd, SysError> {
+    let mut path = Vec::with_capacity(INPUT_DIR.len() + 1 + name.len() + 1);
+    path.extend_from_slice(INPUT_DIR.as_bytes());
+    path.push(b'/');
+    path.extend_from_slice(name);
+    path.push(0);
+    // SAFETY: `path` ends in a NUL byte and stays alive for the call.
+    let fd = unsafe {
+        libc::open(
+            path.as_ptr().cast::<c_char>(),
+            libc::O_RDONLY | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
+    };
+    // SAFETY: `open` returned a new descriptor that no other value owns.
+    check_int(fd, "open").map(Fd::from_raw)
 }
 
 /// Reads the NUL-terminated device name.
-fn read_name(fd: &OwnedFd) -> String {
+fn read_name(fd: &Fd) -> String {
     const NAME_LEN: usize = 256;
     let mut bytes = [0u8; NAME_LEN];
     // SAFETY: the buffer is `NAME_LEN` bytes and the request encodes that
     // length, so the kernel copies at most the buffer size.
-    let result = unsafe { libc::ioctl(fd.as_raw_fd(), eviocgname(NAME_LEN), bytes.as_mut_ptr()) };
+    let result = unsafe {
+        libc::ioctl(
+            fd.raw(),
+            eviocgname(NAME_LEN),
+            bytes.as_mut_ptr().cast::<c_void>(),
+        )
+    };
     if result < 0 {
         return String::new();
     }
@@ -145,7 +162,7 @@ fn read_name(fd: &OwnedFd) -> String {
 }
 
 /// Reads the bus, vendor and product identifiers.
-fn read_ids(fd: &OwnedFd) -> libc::input_id {
+fn read_ids(fd: &Fd) -> libc::input_id {
     let mut ids = libc::input_id {
         bustype: 0,
         vendor: 0,
@@ -154,16 +171,22 @@ fn read_ids(fd: &OwnedFd) -> libc::input_id {
     };
     // SAFETY: `ids` is a live, properly aligned `input_id` and the request
     // size matches `size_of::<input_id>()`.
-    let _ = unsafe { libc::ioctl(fd.as_raw_fd(), eviocgid(), &mut ids) };
+    let _ = unsafe {
+        libc::ioctl(
+            fd.raw(),
+            eviocgid(),
+            (&mut ids as *mut libc::input_id).cast::<c_void>(),
+        )
+    };
     ids
 }
 
 /// Returns the device number, which stays stable while the node is connected.
-fn read_device_number(fd: &OwnedFd) -> u64 {
-    let mut stat = core::mem::MaybeUninit::<libc::stat>::uninit();
+fn read_device_number(fd: &Fd) -> u64 {
+    let mut stat = MaybeUninit::<libc::stat>::uninit();
     // SAFETY: `stat` points to writable memory of the right type and `fd` is
     // an open descriptor.
-    let result = unsafe { libc::fstat(fd.as_raw_fd(), stat.as_mut_ptr()) };
+    let result = unsafe { libc::fstat(fd.raw(), stat.as_mut_ptr()) };
     if result != 0 {
         return 0;
     }
@@ -173,7 +196,7 @@ fn read_device_number(fd: &OwnedFd) -> u64 {
 }
 
 /// Decides the class and the capability set of a node.
-fn classify(fd: &OwnedFd) -> Option<(DeviceClass, DeviceCapability)> {
+fn classify(fd: &Fd) -> Option<(DeviceClass, DeviceCapability)> {
     let events = Bits::read(fd, 0, EV_MAX as usize / 8 + 1)?;
     let keys = Bits::read(fd, EV_KEY, KEY_MAX as usize / 8 + 1)?;
 
@@ -194,7 +217,7 @@ fn classify(fd: &OwnedFd) -> Option<(DeviceClass, DeviceCapability)> {
 }
 
 /// Describes one node, or `None` when it is not of `wanted`.
-fn describe(fd: &OwnedFd, wanted: Option<DeviceClass>) -> Option<DeviceInfo> {
+fn describe(fd: &Fd, wanted: Option<DeviceClass>) -> Option<DeviceInfo> {
     let (class, capabilities) = classify(fd)?;
     if wanted.is_some_and(|wanted| wanted != class) {
         return None;
@@ -211,29 +234,44 @@ fn describe(fd: &OwnedFd, wanted: Option<DeviceClass>) -> Option<DeviceInfo> {
 
 /// Opens every node of `wanted`, or every node when it is `None`.
 pub(crate) fn scan(wanted: Option<DeviceClass>) -> Result<Vec<DeviceInfo>, ControlError> {
-    let entries = match fs::read_dir(INPUT_DIR) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
-            return Err(ControlError::permission_denied(INPUT_DIR));
-        }
-        Err(error) => return Err(ControlError::backend(error)),
-    };
+    // SAFETY: the literal is NUL-terminated.
+    let directory = unsafe { libc::opendir(c"/dev/input".as_ptr()) };
+    if directory.is_null() {
+        let error = SysError::last("opendir");
+        return if error.is(libc::ENOENT) {
+            Ok(Vec::new())
+        } else if error.permission_denied() {
+            Err(ControlError::permission_denied(INPUT_DIR))
+        } else {
+            Err(ControlError::backend(error))
+        };
+    }
 
     let mut devices = Vec::new();
     let mut denied = 0usize;
-    for entry in entries.flatten() {
-        if !entry.file_name().as_bytes().starts_with(b"event") {
+    loop {
+        // SAFETY: `directory` is open; `readdir` returns either null or a
+        // pointer to an entry that stays valid until the next call.
+        let entry = unsafe { libc::readdir(directory) };
+        if entry.is_null() {
+            break;
+        }
+        // SAFETY: `entry` is non-null and its `d_name` is NUL-terminated.
+        let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+        if !name.starts_with(b"event") {
             continue;
         }
-        match open_node(&entry.path()) {
+        match open_node(name) {
             Ok(fd) => devices.extend(describe(&fd, wanted)),
-            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => denied += 1,
-            Err(error) => {
-                codevar_logger::log_debug!("input: skipping {}: {error}", entry.path().display());
-            }
+            Err(error) if error.permission_denied() => denied += 1,
+            Err(error) => codevar_logger::log_debug!(
+                "input: skipping {INPUT_DIR}/{}: {error}",
+                core::str::from_utf8(name).unwrap_or("?")
+            ),
         }
     }
+    // SAFETY: `directory` is open and no longer used.
+    unsafe { libc::closedir(directory) };
 
     if devices.is_empty() && denied > 0 {
         return Err(ControlError::permission_denied(INPUT_DIR));
@@ -243,7 +281,7 @@ pub(crate) fn scan(wanted: Option<DeviceClass>) -> Result<Vec<DeviceInfo>, Contr
 
 #[cfg(test)]
 mod tests {
-    use super::{Bits, EV_ABS, EV_KEY, REL_WHEEL, ioc};
+    use super::{Bits, EV_KEY, REL_WHEEL, ioc};
 
     #[test]
     fn ioctl_requests_match_the_kernel_encoding() {
@@ -267,7 +305,7 @@ mod tests {
 
     #[test]
     fn constants_match_linux_input_h() {
-        assert_eq!(EV_ABS, 0x03);
+        assert_eq!(super::EV_ABS, 0x03);
         assert_eq!(REL_WHEEL, 0x08);
     }
 }
