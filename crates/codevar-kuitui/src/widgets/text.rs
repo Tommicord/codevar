@@ -184,8 +184,12 @@ impl Widget for Text {
 /// character with no glyph. Use one `ColorableText` per line.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ColorableText {
-    /// The characters of the line.
-    text: Rc<str>,
+    /// The content of the text.
+    content: TextContent,
+    /// The lines of the content, split once when the content changed.
+    lines: Vec<Rc<str>>,
+    /// The maximum number of lines to draw.
+    max_lines: Option<u32>,
     /// The style that replaces the body style of the theme.
     style: Option<TextStyle>,
     /// The color that replaces the color of the style.
@@ -196,10 +200,14 @@ impl ColorableText {
     /// Creates a color text widget that draws `text`.
     #[must_use]
     pub fn new(text: impl AsRef<str>) -> Self {
+        let content = TextContent::new(text);
+        let lines = content.lines();
         Self {
-            text: Rc::from(text.as_ref()),
+            content,
+            lines,
             style: None,
             color: None,
+            max_lines: None,
         }
     }
 
@@ -207,6 +215,13 @@ impl ColorableText {
     #[must_use]
     pub fn style(mut self, style: TextStyle) -> Self {
         self.style = Some(style);
+        self
+    }
+
+    /// The text with the given horizontal alignment.
+    #[must_use]
+    pub fn align(mut self, align: TextAlign) -> Self {
+        self.content.align = align;
         self
     }
 
@@ -221,11 +236,19 @@ impl ColorableText {
         self
     }
 
-    /// The characters of the line.
+    /// The content of the text.
     #[inline]
     #[must_use]
-    pub fn text(&self) -> &str {
-        &self.text
+    pub const fn content(&self) -> &TextContent {
+        &self.content
+    }
+
+    /// The lines the text draws.
+    fn drawn_lines(&self) -> &[Rc<str>] {
+        match self.max_lines {
+            Some(max) if (max as usize) < self.lines.len() => &self.lines[..max as usize],
+            _ => &self.lines,
+        }
     }
 
     /// The style the line is drawn with.
@@ -246,17 +269,36 @@ impl Widget for ColorableText {
         let theme = scope.theme();
         let style = self.resolved_style(theme);
         let metrics = theme.metrics.as_ref();
-        constraints.enforce(Size::new(
-            metrics.advance(&self.text, &style),
-            metrics.line_height(&style),
-        ))
+        let lines = self.drawn_lines();
+        let mut width = 0.0_f32;
+        for line in lines {
+            width = width.max(metrics.advance(line, &style));
+        }
+        let height = metrics.line_height(&style) * lines.len() as f32;
+        constraints.enforce(Size::new(width, height))
     }
 
-    fn draw(&mut self, scope: &mut DrawScope<'_>, _bounds: Rect) {
+    fn draw(&mut self, scope: &mut DrawScope<'_>, bounds: Rect) {
         let theme = scope.theme();
         let style = self.resolved_style(theme);
-        let ascent = theme.metrics.as_ref().ascent(&style);
-        scope.draw_color_text(Offset::new(0.0, ascent), Rc::clone(&self.text), style);
+        let metrics = theme.metrics.as_ref();
+        let line_height = metrics.line_height(&style);
+        let ascent = metrics.ascent(&style);
+        let mut y = bounds.top();
+        for line in self.drawn_lines() {
+            let width = metrics.advance(line, &style);
+            let x = match self.content.align {
+                TextAlign::Left => bounds.left(),
+                TextAlign::Center => bounds.left() + (bounds.size.width - width) * 0.5,
+                TextAlign::Right => bounds.left() + bounds.size.width - width,
+            };
+            scope.draw_color_text(
+                Offset::new(x - bounds.left(), y - bounds.top() + ascent),
+                Rc::clone(line),
+                style.clone(),
+            );
+            y += line_height;
+        }
     }
 }
 
