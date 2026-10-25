@@ -59,7 +59,9 @@ pub fn shape_list(frame: &TextFrame, font: &Font, list: &DrawList) -> Result<(),
 ///
 /// Coverage runs use `font`; color runs use `color_font`, whose COLR/CPAL
 /// layers or bitmap strikes produce the premultiplied BGRA glyphs of the
-/// frame's color atlas. The list is not drained.
+/// frame's color atlas. A character `color_font` has no glyph for is
+/// shaped through `font` into the coverage atlas, so a color run that
+/// mixes text and emoji keeps both. The list is not drained.
 ///
 /// # Errors
 ///
@@ -161,7 +163,7 @@ impl DrawVisitor for TextShaper<'_> {
             return;
         }
         let result = match self.color_font {
-            Some(font) => font.shape_into_color(self.frame, origin, text, style, self.clip),
+            Some(font) => font.shape_into_color(self.frame, self.font, origin, text, style, self.clip),
             None => self
                 .font
                 .shape_into(self.frame, origin, text, style, self.clip),
@@ -269,6 +271,41 @@ mod tests {
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].quad_count(), 1);
         assert_eq!(frame.color_atlas().glyph_count(), 1);
+    }
+
+    #[test]
+    fn a_mixed_color_run_shapes_text_and_emoji_into_both_atlases() {
+        let mut list = DrawList::new();
+        list.color_text(Offset::new(0.0, 24.0), Rc::from("Hi 😀"), TextStyle::new(24.0));
+
+        let frame = frame();
+        shape_list_with_color(&frame, &font(24), &emoji_font(24), &list).unwrap();
+
+        let runs = frame.runs();
+        assert_eq!(runs.len(), 1, "the text glyphs form one coverage run");
+        assert_eq!(runs[0].quad_count(), 2, "H and i come from the text font");
+        drop(runs);
+        assert_eq!(frame.atlas().glyph_count(), 2);
+        let color_runs = frame.color_runs();
+        assert_eq!(color_runs.len(), 1);
+        assert_eq!(color_runs[0].quad_count(), 1, "the emoji stays in color");
+        drop(color_runs);
+        assert_eq!(frame.color_atlas().glyph_count(), 1);
+    }
+
+    #[test]
+    fn a_color_run_of_plain_text_falls_back_to_coverage() {
+        let mut list = DrawList::new();
+        list.color_text(Offset::new(0.0, 24.0), Rc::from("Hi"), TextStyle::new(24.0));
+
+        let frame = frame();
+        shape_list_with_color(&frame, &font(24), &emoji_font(24), &list).unwrap();
+
+        assert!(
+            frame.color_runs().is_empty(),
+            "the color face has no glyph for either character"
+        );
+        assert_eq!(frame.runs()[0].quad_count(), 2);
     }
 
     #[test]

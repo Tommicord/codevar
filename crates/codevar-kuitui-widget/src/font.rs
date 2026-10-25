@@ -495,13 +495,19 @@ impl Font {
     /// frame's color atlas, and pushes quads with white vertex color so
     /// the emoji's own colors are reproduced.
     ///
+    /// A character the color face has no glyph for — every letter, when
+    /// the color face is an emoji font — is shaped through `text_font`
+    /// into the frame's coverage atlas at the same pen, so a mixed run
+    /// keeps both its emoji and its text.
+    ///
     /// # Errors
     ///
-    /// * [`ShapeError::Font`] when the color font pipeline fails;
-    /// * [`ShapeError::Atlas`] when the shared color atlas cannot take a glyph.
+    /// * [`ShapeError::Font`] when the color or the text font pipeline fails;
+    /// * [`ShapeError::Atlas`] when either shared atlas cannot take a glyph.
     pub fn shape_into_color(
         &self,
         frame: &TextFrame,
+        text_font: &Font,
         origin: Offset,
         text: &str,
         style: &TextStyle,
@@ -513,9 +519,17 @@ impl Font {
         };
         let spacing = (style.letter_spacing * 64.0) as i64;
         let color = [1.0, 1.0, 1.0, 1.0]; // white so emoji colors show
+        let text_color = color_to_array(style.color);
 
         // Use the underlying sfnt for glyph index mapping (same as gray path).
         let sfnt = self.sfnt().map_err(ShapeError::Font)?;
+        // The coverage pipeline of the text face, for the characters the
+        // color face does not cover.
+        let text_sfnt = text_font.sfnt().map_err(ShapeError::Font)?;
+        let text_metrics = text_font.size_metrics();
+        let mut slot = new_slot();
+        let mut raster = GrayRaster::new();
+        let mut coverage = Vec::new();
 
         frame.with_color(|atlas, mesh| -> Result<(), ShapeError> {
             let mut pen: i64 = 0;
@@ -524,12 +538,53 @@ impl Font {
                     pen += spacing;
                     continue;
                 }
-                let glyph_index = sfnt.char_index(u32::from(character));
                 let rendered = match color_font.render_char(character, self.ppem, 0) {
-                    Ok(r) => r,
-                    Err(TtError::INVALID_GLYPH_INDEX) => continue,
-                    Err(e) => return Err(ShapeError::Font(FontError::Open(e))),
+                    Ok(rendered) => rendered,
+                    Err(TtError::INVALID_GLYPH_INDEX) => {
+                        // The color face has no glyph for this character:
+                        // rasterize it with the text face's coverage instead.
+                        let glyph_index = text_sfnt.char_index(u32::from(character));
+                        let advance = mul_fix(
+                            i64::from(text_sfnt.advance_for_glyph(glyph_index)),
+                            text_font.scale,
+                        );
+                        if glyph_index != 0
+                            && let Some(bitmap) = rasterize_glyph(
+                                &text_sfnt,
+                                &mut slot,
+                                &mut raster,
+                                &text_metrics,
+                                glyph_index,
+                            )
+                            .map_err(ShapeError::Font)?
+                        {
+                            coverage.clear();
+                            for row in 0..bitmap.bitmap.rows {
+                                if let Some(row) = bitmap.bitmap.row(row) {
+                                    coverage.extend_from_slice(row);
+                                }
+                            }
+                            let key = glyph_key(text_font.ppem, glyph_index);
+                            frame.with(|text_atlas, text_mesh| -> Result<(), ShapeError> {
+                                if let Some(slot) = text_atlas
+                                    .insert(key, bitmap.bitmap.width, bitmap.bitmap.rows, &coverage)
+                                    .map_err(ShapeError::Atlas)?
+                                {
+                                    let position = [
+                                        origin.x + fixed_pixels(pen) + bitmap.left as f32,
+                                        origin.y - bitmap.top as f32,
+                                    ];
+                                    text_mesh.push(&AtlasQuad::from_slot(slot, position, text_color, clip));
+                                }
+                                Ok(())
+                            })?;
+                        }
+                        pen += advance + spacing;
+                        continue;
+                    }
+                    Err(error) => return Err(ShapeError::Font(FontError::Open(error))),
                 };
+                let glyph_index = sfnt.char_index(u32::from(character));
                 let bitmap = &rendered.bitmap;
                 let width = bitmap.width;
                 let height = bitmap.rows;
