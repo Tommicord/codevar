@@ -59,6 +59,7 @@ members = [
     "crates/codevar-kuitui-control",
     "crates/codevar-kuitui-control-linux",
     "crates/codevar-kuitui-control-windows",
+    "crates/codevar-kuitui-control-macos",
 ]
 resolver = "2"
 
@@ -165,6 +166,7 @@ codevar-kuitui-widget = { path = "crates/codevar-kuitui-widget" }
 codevar-kuitui-control = { path = "crates/codevar-kuitui-control" }
 codevar-kuitui-control-linux = { path = "crates/codevar-kuitui-control-linux" }
 codevar-kuitui-control-windows = { path = "crates/codevar-kuitui-control-windows" }
+codevar-kuitui-control-macos = { path = "crates/codevar-kuitui-control-macos" }
 codevar-logger = { path = "crates/codevar-logger" }
 codevar-console-util = { path = "crates/codevar-console-util" }
 codevar-io = { path = "crates/codevar-io" }

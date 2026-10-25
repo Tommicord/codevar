@@ -427,6 +427,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-kuitui-control-macos"
+version = "1.0.0"
+dependencies = [
+ "codevar-kuitui-control",
+ "codevar-logger",
+]
+
+[[package]]
 name = "codevar-kuitui-control-windows"
 version = "1.0.0"
 dependencies = [
