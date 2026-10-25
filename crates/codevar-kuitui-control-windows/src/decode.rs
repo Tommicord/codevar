@@ -137,6 +137,11 @@ impl DeviceState {
         }
     }
 
+    /// The device this state belongs to.
+    pub(crate) fn id(&self) -> DeviceId {
+        self.id
+    }
+
     /// Applies one keyboard record and emits its event.
     pub(crate) fn key(&mut self, record: KeyRecord, emit: &mut impl FnMut(InputEvent)) {
         let state = if record.flags & RI_KEY_BREAK != 0 {
