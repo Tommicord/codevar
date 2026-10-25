@@ -72,6 +72,9 @@ pub mod class;
 pub mod device;
 pub mod error;
 pub mod event;
+#[allow(dead_code)] // the publish side is used by the control layer
+mod hub;
+pub mod stream;
 
 pub use class::{ClassSet, DeviceCapability, DeviceClass};
 pub use device::{DeviceId, DeviceInfo};
@@ -80,3 +83,4 @@ pub use event::{
     AudioEvent, AudioFormat, Event, GamepadEvent, InputEvent, KeyCode, KeyEvent, KeyState, Modifiers, Point,
     PointerButton, PointerEvent, SampleFormat, TextEvent, Timestamp,
 };
+pub use stream::{DEFAULT_CAPACITY, Publisher, Subscription};
