@@ -33,9 +33,13 @@
 //! [`is_pressed`](KeyboardState::is_pressed) load one atomic and are cheap
 //! enough for a per-frame query.
 
+mod handler;
 mod keys;
 mod modifiers;
+mod snapshot;
 mod state;
 
+pub use handler::{KEYBOARD, KeyTransition, KeyboardBinding, KeyboardHandler};
 pub use modifiers::KeyboardModifiers;
+pub use snapshot::KeyboardSnapshot;
 pub use state::KeyboardState;
