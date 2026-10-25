@@ -103,6 +103,7 @@ pub mod color;
 pub mod compose;
 pub mod event;
 pub mod geometry;
+pub mod input;
 mod macros;
 pub mod node;
 pub mod paint;
