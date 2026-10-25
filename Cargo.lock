@@ -418,6 +418,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-kuitui-control-linux"
+version = "1.0.0"
+dependencies = [
+ "codevar-kuitui-control",
+ "codevar-logger",
+ "libc",
+]
+
+[[package]]
 name = "codevar-kuitui-text"
 version = "1.0.0"
 dependencies = [

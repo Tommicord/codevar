@@ -57,6 +57,7 @@ members = [
     "crates/codevar-ocl-bare",
     "crates/codevar-inssched",
     "crates/codevar-kuitui-control",
+    "crates/codevar-kuitui-control-linux",
 ]
 resolver = "2"
 
@@ -161,6 +162,7 @@ codevar-kuitui = { path = "crates/codevar-kuitui" }
 codevar-kuitui-text = { path = "crates/codevar-kuitui-text" }
 codevar-kuitui-widget = { path = "crates/codevar-kuitui-widget" }
 codevar-kuitui-control = { path = "crates/codevar-kuitui-control" }
+codevar-kuitui-control-linux = { path = "crates/codevar-kuitui-control-linux" }
 codevar-logger = { path = "crates/codevar-logger" }
 codevar-console-util = { path = "crates/codevar-console-util" }
 codevar-io = { path = "crates/codevar-io" }
