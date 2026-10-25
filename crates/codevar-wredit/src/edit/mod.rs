@@ -28,7 +28,6 @@ pub mod cursor;
 pub mod flush;
 mod ops;
 mod scan;
-mod search;
 pub mod shared_gap;
 pub mod traits;
 pub mod writable;
@@ -39,7 +38,6 @@ pub use base::{
     packed_type,
 };
 pub use cursor::{BidiIndex, Cursor};
-pub use search::{PackedSource, find_all, replace_all};
 pub use shared_gap::{SharedGapSlot, SharedGapTable};
 pub use traits::{
     TextEditableBufferQuery, TextEditableCursor, TextEditableDelete, TextEditableGap, TextEditableOverwrite,
