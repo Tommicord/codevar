@@ -22,6 +22,11 @@
 //! against the queue's device and executes on the SMP claim loop — with a
 //! real secondary-core worker thread in one test.
 
+// Integration test crate: AGENTS.md permits expect()/unwrap() in tests,
+// but clippy.toml's allow-expect-in-tests only exempts `#[test]` bodies,
+// not the fixtures shared by them.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use core::ffi::c_void;
 use std::borrow::Cow;
 use std::sync::{Once, OnceLock};

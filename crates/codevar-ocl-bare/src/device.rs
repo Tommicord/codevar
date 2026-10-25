@@ -103,6 +103,7 @@ impl DeviceInfo {
     /// quarter of global memory, three work-item dimensions bounded by the
     /// work-group cap, and the crate's version/profile strings.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub const fn new(
         name: &'static str,
         vendor: &'static str,

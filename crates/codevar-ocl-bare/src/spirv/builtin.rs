@@ -194,13 +194,6 @@ pub(crate) fn ext_inst_arity(inst: u32) -> Option<u32> {
     })
 }
 
-/// Whether `inst` is an `OpenCL.std` instruction this driver executes.
-#[must_use]
-#[inline]
-pub(crate) fn ext_inst_supported(inst: u32) -> bool {
-    ext_inst_arity(inst).is_some()
-}
-
 /// A linkage-imported function the interpreter implements directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ImportFn {

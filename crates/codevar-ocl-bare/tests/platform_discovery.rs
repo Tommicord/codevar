@@ -21,6 +21,11 @@
 //! AMP peer, with a two-kernel registry — enough to exercise every
 //! discovery path the embedded profile exposes.
 
+// Integration test crate: AGENTS.md permits expect()/unwrap() in tests,
+// but clippy.toml's allow-expect-in-tests only exempts `#[test]` bodies,
+// not the fixtures shared by them.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use core::ffi::c_void;
 use std::borrow::Cow;
 use std::sync::OnceLock;

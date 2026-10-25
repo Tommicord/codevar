@@ -74,7 +74,10 @@ pub(crate) enum Type {
     },
     /// `OpTypeFunction`.
     Function {
-        /// Return type.
+        /// Return type. The interpreter calls kernels through their
+        /// entry point rather than by type, so it keeps the declared
+        /// return type without reading it back.
+        #[allow(dead_code)]
         ret: u32,
         /// Parameter types.
         params: Vec<u32>,
@@ -102,10 +105,7 @@ impl Layout {
         if align == 0 {
             return value;
         }
-        value
-            .div_ceil(align)
-            .checked_mul(align)
-            .unwrap_or(u32::MAX)
+        value.div_ceil(align).saturating_mul(align)
     }
 }
 
@@ -325,7 +325,13 @@ pub(crate) fn lanes_any(types: &[Type], ty: u32, decorations: &LayoutDecorations
     lanes_at(types, ty, decorations, 0)
 }
 
-fn lanes_at(types: &[Type], ty: u32, decorations: &LayoutDecorations, depth: u32) -> Result<u32> {
+/// Lane count of `ty`, recursing into its members.
+///
+/// The layout decorations do not affect the lane count — a decoration
+/// changes the *memory* layout, not the register representation — so they
+/// are only threaded through to keep the recursion uniform with
+/// [`layout_at`].
+fn lanes_at(types: &[Type], ty: u32, _decorations: &LayoutDecorations, depth: u32) -> Result<u32> {
     if depth >= MAX_LAYOUT_DEPTH {
         return Err(Error::InvalidBinary);
     }
@@ -335,17 +341,17 @@ fn lanes_at(types: &[Type], ty: u32, decorations: &LayoutDecorations, depth: u32
     let count = match entry {
         Type::Void | Type::Function { .. } | Type::Unsupported => return Err(Error::InvalidBinary),
         Type::Bool | Type::Int { .. } | Type::Float { .. } | Type::Pointer { .. } => 1,
-        Type::Vector { elem, len } => lanes_at(types, *elem, decorations, depth + 1)?
+        Type::Vector { elem, len } => lanes_at(types, *elem, _decorations, depth + 1)?
             .checked_mul(u32::from(*len))
             .ok_or(Error::InvalidBinary)?,
-        Type::Array { elem, len } => lanes_at(types, *elem, decorations, depth + 1)?
+        Type::Array { elem, len } => lanes_at(types, *elem, _decorations, depth + 1)?
             .checked_mul(*len)
             .ok_or(Error::InvalidBinary)?,
         Type::Struct { fields } => {
             let mut total = 0u32;
             for field in fields {
                 total = total
-                    .checked_add(lanes_at(types, *field, decorations, depth + 1)?)
+                    .checked_add(lanes_at(types, *field, _decorations, depth + 1)?)
                     .ok_or(Error::InvalidBinary)?;
             }
             total
@@ -789,8 +795,8 @@ mod tests {
         assert_eq!(layout(&image, 1, &none), Err(Error::InvalidBinary));
         // Too deep.
         let mut deep = vec![Type::Unsupported; 80];
-        for i in 1..79 {
-            deep[i] = Type::Struct {
+        for (i, slot) in deep.iter_mut().enumerate().take(79).skip(1) {
+            *slot = Type::Struct {
                 fields: vec![i as u32 + 1],
             };
         }

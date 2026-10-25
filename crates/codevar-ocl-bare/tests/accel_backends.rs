@@ -26,15 +26,20 @@
 //! test drains its device before releasing the guard, leaving the register
 //! block in its reset state for whoever runs next.
 
+// Integration test crate: AGENTS.md permits expect()/unwrap() in tests,
+// but clippy.toml's allow-expect-in-tests only exempts `#[test]` bodies,
+// not the fixtures shared by them.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use core::ffi::c_void;
 use std::borrow::Cow;
 use std::sync::{Once, OnceLock};
 
 use codevar_ocl_bare::api::{
     clCreateBuffer, clCreateCommandQueue, clCreateContext, clCreateKernel, clCreateProgramWithBuiltInKernels,
-    clEnqueueNDRangeKernel, clEnqueueReadBuffer, clEnqueueWriteBuffer, clFinish, clFlush, clGetDeviceIDs,
-    clGetEventInfo, clGetPlatformIDs, clReleaseCommandQueue, clReleaseContext, clReleaseEvent,
-    clReleaseKernel, clReleaseMemObject, clReleaseProgram, clSetKernelArg,
+    clEnqueueNDRangeKernel, clEnqueueReadBuffer, clFinish, clFlush, clGetDeviceIDs, clGetEventInfo,
+    clGetPlatformIDs, clReleaseCommandQueue, clReleaseContext, clReleaseEvent, clReleaseKernel,
+    clReleaseMemObject, clReleaseProgram, clSetKernelArg,
 };
 use codevar_ocl_bare::sys::{
     self, CommandQueueHandle, ContextHandle, DeviceHandle, EventHandle, KernelHandle, MemHandle,
@@ -147,12 +152,12 @@ fn serial_guard() -> std::sync::MutexGuard<'static, ()> {
 
 fn amp_device() -> &'static AmpDevice {
     ensure_init();
-    *AMP.get().expect("amp registered")
+    AMP.get().expect("amp registered")
 }
 
 fn accel_device() -> &'static AccelDevice {
     ensure_init();
-    *ACC.get().expect("accel registered")
+    ACC.get().expect("accel registered")
 }
 
 /// Both platform devices in registration order: AMP first, accelerator
@@ -287,22 +292,6 @@ fn read_buffer(queue: CommandQueueHandle, buffer: MemHandle, out: &mut [u8]) -> 
             0,
             out.len(),
             out.as_mut_ptr().cast(),
-            0,
-            core::ptr::null(),
-            core::ptr::null_mut(),
-        )
-    }
-}
-
-fn write_buffer(queue: CommandQueueHandle, buffer: MemHandle, data: &[u8]) -> i32 {
-    unsafe {
-        clEnqueueWriteBuffer(
-            queue,
-            buffer,
-            sys::BLOCKING,
-            0,
-            data.len(),
-            data.as_ptr().cast(),
             0,
             core::ptr::null(),
             core::ptr::null_mut(),

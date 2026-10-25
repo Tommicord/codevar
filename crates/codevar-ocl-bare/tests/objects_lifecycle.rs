@@ -105,8 +105,10 @@ static AMP_INFO: DeviceInfo = DeviceInfo::new(
 fn ensure_init() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        let smp = SmpDevice::new(SMP_INFO.clone(), 2).unwrap();
-        let amp = AmpDevice::simulated(AMP_INFO.clone(), ServiceMode::Cooperative).unwrap();
+        let smp =
+            SmpDevice::new(SMP_INFO.clone(), 2).unwrap_or_else(|_| panic!("SMP device creation failed"));
+        let amp = AmpDevice::simulated(AMP_INFO.clone(), ServiceMode::Cooperative)
+            .unwrap_or_else(|_| panic!("AMP device creation failed"));
         let devices: &'static [&'static dyn Device] =
             Box::leak(vec![smp as &dyn Device, amp as &dyn Device].into_boxed_slice());
         init(PlatformConfig {
@@ -115,7 +117,7 @@ fn ensure_init() {
             modules: MODULES,
             devices,
         })
-        .expect("board registers");
+        .unwrap_or_else(|_| panic!("board registers"));
     });
 }
 
@@ -189,7 +191,7 @@ fn query_scalar(query: impl Fn(usize, *mut c_void, *mut usize) -> i32) -> Vec<u8
 
 fn query_string(query: impl Fn(usize, *mut c_void, *mut usize) -> i32) -> String {
     let bytes = query_scalar(query);
-    let text = String::from_utf8(bytes).expect("info strings are UTF-8");
+    let text = String::from_utf8(bytes).unwrap_or_else(|_| panic!("info strings are UTF-8"));
     text.trim_end_matches('\0').to_string()
 }
 
@@ -205,7 +207,7 @@ fn query_usize(query: impl Fn(usize, *mut c_void, *mut usize) -> i32) -> usize {
         bytes
             .as_slice()
             .try_into()
-            .expect("one native usize"),
+            .unwrap_or_else(|_| panic!("one native usize")),
     )
 }
 
@@ -298,7 +300,11 @@ fn context_lifecycle_and_info_round_trip() {
     assert_eq!(list.len(), 2 * width);
     for (index, device) in devices.iter().enumerate() {
         let chunk = &list[index * width..(index + 1) * width];
-        let value = usize::from_ne_bytes(chunk.try_into().expect("one native usize"));
+        let value = usize::from_ne_bytes(
+            chunk
+                .try_into()
+                .unwrap_or_else(|_| panic!("one native usize")),
+        );
         assert_eq!(value, device.as_raw() as usize);
     }
 
@@ -665,7 +671,7 @@ fn buffer_commands_copy_data_and_drive_events() {
         )
     };
     assert_eq!(code, sys::INVALID_EVENT_WAIT_LIST);
-    let mut stale = EventHandle::from_raw(core::ptr::null_mut());
+    let stale = EventHandle::from_raw(core::ptr::null_mut());
     let code = unsafe {
         clEnqueueReadBuffer(
             queue,
@@ -830,7 +836,7 @@ fn programs_bind_the_registry_and_track_reference_counts() {
 
     // No online compiler exists: source programs are refused outright,
     // but only after the context and the string list validate.
-    let source = b"kernel void ghost() {}\0";
+    let source = c"kernel void ghost() {}";
     let strings = [source.as_ptr().cast::<core::ffi::c_char>()];
     let mut errcode = sys::SUCCESS;
     let program =
@@ -844,7 +850,7 @@ fn programs_bind_the_registry_and_track_reference_counts() {
     assert_eq!(errcode, sys::INVALID_VALUE);
 
     // Built-in programs resolve their names against the registry.
-    let names = b"fill;nop\0";
+    let names = c"fill;nop";
     let mut errcode = sys::SUCCESS;
     let program = unsafe {
         clCreateProgramWithBuiltInKernels(context, 1, devices.as_ptr(), names.as_ptr().cast(), &mut errcode)
@@ -918,7 +924,7 @@ fn programs_bind_the_registry_and_track_reference_counts() {
             context,
             1,
             devices.as_ptr(),
-            b"ghost\0".as_ptr().cast(),
+            c"ghost".as_ptr().cast(),
             &mut errcode,
         )
     };
@@ -926,7 +932,7 @@ fn programs_bind_the_registry_and_track_reference_counts() {
     assert_eq!(errcode, sys::INVALID_KERNEL_NAME);
     let mut errcode = sys::SUCCESS;
     let bad = unsafe {
-        clCreateProgramWithBuiltInKernels(context, 1, devices.as_ptr(), b"\0".as_ptr().cast(), &mut errcode)
+        clCreateProgramWithBuiltInKernels(context, 1, devices.as_ptr(), c"".as_ptr().cast(), &mut errcode)
     };
     assert!(bad.is_null());
     assert_eq!(errcode, sys::INVALID_VALUE);
@@ -946,7 +952,7 @@ fn programs_bind_the_registry_and_track_reference_counts() {
     assert_eq!(program_refs(program), 1);
 
     let mut errcode = sys::SUCCESS;
-    let kernel = unsafe { clCreateKernel(program, b"fill\0".as_ptr().cast(), &mut errcode) };
+    let kernel = unsafe { clCreateKernel(program, c"fill".as_ptr().cast(), &mut errcode) };
     assert_eq!(errcode, sys::SUCCESS);
     assert!(!kernel.is_null());
     assert_eq!(program_refs(program), 2);
@@ -1028,7 +1034,7 @@ fn programs_bind_the_registry_and_track_reference_counts() {
 
     // Unknown kernel names and handles fail creation.
     let mut errcode = sys::SUCCESS;
-    let bad = unsafe { clCreateKernel(program, b"ghost\0".as_ptr().cast(), &mut errcode) };
+    let bad = unsafe { clCreateKernel(program, c"ghost".as_ptr().cast(), &mut errcode) };
     assert!(bad.is_null());
     assert_eq!(errcode, sys::INVALID_KERNEL_NAME);
     let mut errcode = sys::SUCCESS;
@@ -1039,7 +1045,7 @@ fn programs_bind_the_registry_and_track_reference_counts() {
     let bad = unsafe {
         clCreateKernel(
             ProgramHandle::from_raw(core::ptr::null_mut()),
-            b"fill\0".as_ptr().cast(),
+            c"fill".as_ptr().cast(),
             &mut errcode,
         )
     };

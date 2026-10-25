@@ -225,14 +225,6 @@ impl Context {
         &self.devices
     }
 
-    /// Validates that `device` belongs to this context — `clCreateQueue`
-    /// and friends require it.
-    pub(crate) fn has_device(&self, device: &DeviceObject) -> bool {
-        self.devices
-            .iter()
-            .any(|entry| core::ptr::eq(*entry, device))
-    }
-
     /// Number of devices (`CL_CONTEXT_NUM_DEVICES`).
     pub(crate) fn num_devices(&self) -> usize {
         self.devices.len()
@@ -459,7 +451,9 @@ pub struct Program {
     options: spin::Mutex<String>,
     /// Keeps the SPIR-V module alive: `KernelDef::binding` points at
     /// entries owned by this box, so the box must outlive every kernel
-    /// made from the program.
+    /// made from the program. It is never read — dropping it is the
+    /// whole point.
+    #[allow(dead_code)]
     module: Option<Box<crate::spirv::SpirvModule>>,
 }
 
@@ -683,8 +677,8 @@ impl Kernel {
         // SAFETY: the OpenCL single-host contract — no concurrent
         // `set_arg` while a marshal is in flight.
         let args = unsafe { &*self.args.get() };
-        for index in 0..self.def.kinds.len() {
-            match &args[index] {
+        for (index, arg) in args.iter().enumerate().take(self.def.kinds.len()) {
+            match arg {
                 ArgValue::Unset => return Err(Error::MissingKernelArg),
                 ArgValue::Buffer(buffer) => {
                     // SAFETY: retained while bound (see `set_arg`), so the

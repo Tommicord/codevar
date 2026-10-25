@@ -96,7 +96,7 @@ impl KernelDef {
 }
 
 /// A group of kernels registered under one module name — normally one per
-/// original OpenCL source file (`wredit/block.cl` → `"wredit/block"`).
+/// original OpenCL source file (`wredit/block.rs` → `"wredit/block"`).
 #[derive(Debug)]
 pub struct KernelModule {
     /// Module identifier; informational, shown in diagnostics.

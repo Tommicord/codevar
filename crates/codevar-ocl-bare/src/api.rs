@@ -2201,7 +2201,7 @@ mod tests {
                 ContextHandle::from_raw(NULL32),
                 1,
                 core::ptr::null(),
-                b"kernel\0".as_ptr().cast(),
+                c"kernel".as_ptr().cast(),
                 &mut errcode,
             )
         };
@@ -2227,7 +2227,7 @@ mod tests {
         let handle = unsafe {
             clCreateKernel(
                 ProgramHandle::from_raw(NULL32),
-                b"k\0".as_ptr().cast(),
+                c"k".as_ptr().cast(),
                 &mut errcode,
             )
         };

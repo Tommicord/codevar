@@ -559,12 +559,10 @@ fn check_region(ctx: &Ctx<'_>, item: &Item, storage: u32, addr: usize, size: u32
 fn walk_lanes(m: &SpirvModule, start_ty: u32, literals: &[u32]) -> Result<(u32, u32)> {
     let mut ty = start_ty;
     let mut offset = 0u32;
-    let mut depth = 0u32;
-    for &literal in literals {
-        if depth >= MAX_WALK_DEPTH {
+    for (depth, &literal) in literals.iter().enumerate() {
+        if depth >= MAX_WALK_DEPTH as usize {
             return Err(Error::InvalidBinary);
         }
-        depth += 1;
         match m
             .types
             .get(ty as usize)
@@ -779,7 +777,7 @@ fn eval_int2(inst: u32, a: u64, b: u64, width: u16) -> Result<u64> {
     let x = a & m;
     let y = b & m;
     Ok(match inst {
-        ops::OCL_S_ABS_DIFF => (sext(a, width) as i64).abs_diff(sext(b, width) as i64) as u64 & m,
+        ops::OCL_S_ABS_DIFF => (sext(a, width) as i64).abs_diff(sext(b, width) as i64) & m,
         ops::OCL_U_ABS_DIFF => x.abs_diff(y),
         ops::OCL_S_ADD_SAT => s_add_sat(a, b, width),
         ops::OCL_U_ADD_SAT => u_add_sat(a, b, width),
@@ -1260,7 +1258,7 @@ fn eval_float3(inst: u32, a: u64, b: u64, c: u64, width: u16) -> Result<u64> {
 /// degenerate edge range folding to zero instead of dividing by zero.
 #[inline]
 fn smooth_step32(e0: f32, e1: f32, x: f32) -> f32 {
-    if !(e0 < e1) {
+    if e0 >= e1 {
         return 0.0;
     }
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
@@ -1270,7 +1268,7 @@ fn smooth_step32(e0: f32, e1: f32, x: f32) -> f32 {
 /// See [`smooth_step32`].
 #[inline]
 fn smooth_step64(e0: f64, e1: f64, x: f64) -> f64 {
-    if !(e0 < e1) {
+    if e0 >= e1 {
         return 0.0;
     }
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
@@ -1352,23 +1350,23 @@ fn ext_inst(ctx: &Ctx<'_>, item: &mut Item, scratch: &mut Scratch, words: &[u32]
             };
             let arg_width = float_width(elem_of(m, arg_ty[0])?)?;
             let out = &mut scratch.windows[0];
-            for lane in 0..n {
-                let value = match arg_width {
-                    32 => i64::from(libm::ilogbf(f32::from_bits(out[lane] as u32))),
-                    64 => i64::from(libm::ilogb(f64::from_bits(out[lane]))),
+            for value in out.iter_mut().take(n) {
+                *value = match arg_width {
+                    32 => i64::from(libm::ilogbf(f32::from_bits(*value as u32))),
+                    64 => i64::from(libm::ilogb(f64::from_bits(*value))),
                     _ => return Err(Error::InvalidBinary),
-                };
-                out[lane] = value as u64 & mask(width);
+                } as u64
+                    & mask(width);
             }
         }
         ops::OCL_SIGN => {
             require_same(arg_ty[0], ty)?;
             let width = float_width(elem_of(m, ty)?)?;
             let out = &mut scratch.windows[0];
-            for lane in 0..n {
-                out[lane] = match width {
-                    32 => u64::from(sign32(f32::from_bits(out[lane] as u32)).to_bits()),
-                    64 => sign64(f64::from_bits(out[lane])).to_bits(),
+            for value in out.iter_mut().take(n) {
+                *value = match width {
+                    32 => u64::from(sign32(f32::from_bits(*value as u32)).to_bits()),
+                    64 => sign64(f64::from_bits(*value)).to_bits(),
                     _ => return Err(Error::InvalidBinary),
                 };
             }
@@ -1410,8 +1408,8 @@ fn ext_inst(ctx: &Ctx<'_>, item: &mut Item, scratch: &mut Scratch, words: &[u32]
             let sum = norm_sum(&scratch.windows[0], count, width)?;
             let len = libm::sqrt(sum);
             let out = &mut scratch.windows[0];
-            for lane in 0..n {
-                out[lane] = float_bits(width, to_f64(out[lane], width) / len);
+            for value in out.iter_mut().take(n) {
+                *value = float_bits(width, to_f64(*value, width) / len);
             }
         }
         ops::OCL_CROSS => {
@@ -1429,8 +1427,8 @@ fn ext_inst(ctx: &Ctx<'_>, item: &mut Item, scratch: &mut Scratch, words: &[u32]
             cross[1] = to_f64(a[2], width) * to_f64(b[0], width) - to_f64(a[0], width) * to_f64(b[2], width);
             cross[2] = to_f64(a[0], width) * to_f64(b[1], width) - to_f64(a[1], width) * to_f64(b[0], width);
             let out = &mut scratch.windows[0];
-            for lane in 0..n {
-                out[lane] = if lane < 3 {
+            for (lane, value) in out.iter_mut().enumerate().take(n) {
+                *value = if lane < 3 {
                     float_bits(width, cross[lane])
                 } else {
                     float_bits(width, 0.0)
@@ -1552,11 +1550,11 @@ fn ext_inst(ctx: &Ctx<'_>, item: &mut Item, scratch: &mut Scratch, words: &[u32]
             let mut results = [0u64; LANES];
             match elem {
                 Elem::Float { .. } => {
-                    for lane in 0..n {
+                    for (lane, result) in results.iter_mut().enumerate().take(n) {
                         let a = scratch.windows[0][lane];
                         let b = scratch.windows[1][lane];
                         let c = scratch.windows[2][lane];
-                        results[lane] = match arity {
+                        *result = match arity {
                             1 => eval_float1(inst, a, width)?,
                             2 => eval_float2(inst, a, b, width)?,
                             3 => eval_float3(inst, a, b, c, width)?,
@@ -1565,11 +1563,11 @@ fn ext_inst(ctx: &Ctx<'_>, item: &mut Item, scratch: &mut Scratch, words: &[u32]
                     }
                 }
                 Elem::Int { width, .. } => {
-                    for lane in 0..n {
+                    for (lane, result) in results.iter_mut().enumerate().take(n) {
                         let a = scratch.windows[0][lane];
                         let b = scratch.windows[1][lane];
                         let c = scratch.windows[2][lane];
-                        results[lane] = match arity {
+                        *result = match arity {
                             1 => eval_int1(inst, a, width)?,
                             2 => eval_int2(inst, a, b, width)?,
                             3 => eval_int3(inst, a, b, c, width)?,
@@ -1736,12 +1734,10 @@ fn walk_indices(
     indices: &[u32],
 ) -> Result<(usize, u32)> {
     let mut current = ty;
-    let mut depth = 0u32;
-    for &index in indices {
-        if depth >= MAX_WALK_DEPTH {
+    for (depth, &index) in indices.iter().enumerate() {
+        if depth >= MAX_WALK_DEPTH as usize {
             return Err(Error::InvalidBinary);
         }
-        depth += 1;
         let step = match m
             .types
             .get(current as usize)
@@ -1774,7 +1770,7 @@ fn walk_indices(
                 let field = *fields
                     .get(position as usize)
                     .ok_or(Error::InvalidBinary)?;
-                let key = (u64::from(current) << 32) | u64::from(position);
+                let key = (u64::from(current) << 32) | position as u64;
                 let found = m
                     .struct_off
                     .binary_search_by_key(&key, |entry| entry.0)
@@ -1985,7 +1981,7 @@ fn f_to_s(value: f64, width: u16) -> u64 {
     if value.is_nan() {
         return 0;
     }
-    let shift = if width >= 64 { 0 } else { 64 - width };
+    let shift = 64u16.saturating_sub(width);
     let min = (i64::MIN >> shift) as f64;
     let max = (i64::MAX >> shift) as f64;
     let clamped = value.clamp(min, max);
@@ -2505,13 +2501,35 @@ fn step(ctx: &Ctx<'_>, item: &mut Item, scratch: &mut Scratch) -> Result<()> {
             let id = *words.get(1).ok_or(Error::InvalidBinary)?;
             let a = *words.get(2).ok_or(Error::InvalidBinary)?;
             let b = *words.get(3).ok_or(Error::InvalidBinary)?;
-            binary_lanes(opcode, id, a, b, m, item, scratch, eval_arith)?;
+            binary_lanes(
+                BinaryLanesParams {
+                    opcode,
+                    id,
+                    first: a,
+                    second: b,
+                },
+                m,
+                item,
+                scratch,
+                eval_arith,
+            )?;
         }
         ops::OP_I_EQUAL..=ops::OP_F_ORD_GREATER_THAN_EQUAL => {
             let id = *words.get(1).ok_or(Error::InvalidBinary)?;
             let a = *words.get(2).ok_or(Error::InvalidBinary)?;
             let b = *words.get(3).ok_or(Error::InvalidBinary)?;
-            binary_lanes(opcode, id, a, b, m, item, scratch, eval_compare)?;
+            binary_lanes(
+                BinaryLanesParams {
+                    opcode,
+                    id,
+                    first: a,
+                    second: b,
+                },
+                m,
+                item,
+                scratch,
+                eval_compare,
+            )?;
         }
         ops::OP_SHIFT_RIGHT_LOGICAL
         | ops::OP_SHIFT_RIGHT_ARITHMETIC
@@ -2522,7 +2540,18 @@ fn step(ctx: &Ctx<'_>, item: &mut Item, scratch: &mut Scratch) -> Result<()> {
             let id = *words.get(1).ok_or(Error::InvalidBinary)?;
             let a = *words.get(2).ok_or(Error::InvalidBinary)?;
             let b = *words.get(3).ok_or(Error::InvalidBinary)?;
-            binary_lanes(opcode, id, a, b, m, item, scratch, eval_arith)?;
+            binary_lanes(
+                BinaryLanesParams {
+                    opcode,
+                    id,
+                    first: a,
+                    second: b,
+                },
+                m,
+                item,
+                scratch,
+                eval_arith,
+            )?;
         }
         ops::OP_CONVERT_F_TO_U => {
             let id = *words.get(1).ok_or(Error::InvalidBinary)?;
@@ -2611,17 +2640,53 @@ where
     write_value(m, &mut item.regs, id, &scratch.windows[0])
 }
 
-/// Applies `f` lane by lane to one binary instruction.
-///
-/// # Errors
-///
-/// [`Error::InvalidBinary`] for an unknown result id, a lane count above
-/// [`LANES`] or a rejection from `f`.
-fn binary_lanes<F>(
+/// Context for binary lane operations to reduce argument count.
+struct BinaryLanesCtx<'a, 'b, 'c> {
+    m: &'a SpirvModule,
+    item: &'b mut Item,
+    scratch: &'c mut Scratch,
+}
+
+impl<'a, 'b, 'c> BinaryLanesCtx<'a, 'b, 'c> {
+    fn new(m: &'a SpirvModule, item: &'b mut Item, scratch: &'c mut Scratch) -> Self {
+        Self { m, item, scratch }
+    }
+
+    fn read_first(&mut self, first: u32) -> Result<()> {
+        read_value(self.m, &self.item.regs, first, &mut self.scratch.windows[0]).map(drop)
+    }
+
+    fn read_second(&mut self, second: u32) -> Result<()> {
+        read_value(self.m, &self.item.regs, second, &mut self.scratch.windows[1]).map(drop)
+    }
+
+    fn write_result(&mut self, id: u32) -> Result<()> {
+        write_value(self.m, &mut self.item.regs, id, &self.scratch.windows[0])
+    }
+
+    fn apply<F>(&mut self, total: usize, elem: Elem, opcode: u16, f: F) -> Result<()>
+    where
+        F: Fn(u16, Elem, u64, u64) -> Result<u64>,
+    {
+        for lane in 0..total {
+            let a = self.scratch.windows[0][lane];
+            let b = self.scratch.windows[1][lane];
+            self.scratch.windows[0][lane] = f(opcode, elem, a, b)?;
+        }
+        Ok(())
+    }
+}
+
+/// Parameters for a binary lanes operation.
+struct BinaryLanesParams {
     opcode: u16,
     id: u32,
     first: u32,
     second: u32,
+}
+
+fn binary_lanes<F>(
+    params: BinaryLanesParams,
     m: &SpirvModule,
     item: &mut Item,
     scratch: &mut Scratch,
@@ -2630,22 +2695,16 @@ fn binary_lanes<F>(
 where
     F: Fn(u16, Elem, u64, u64) -> Result<u64>,
 {
-    // The element comes from the *operand*, not the result: arithmetic
-    // shares one type across both, but a comparison's result is `%bool`
-    // while its width, signedness and floatness live on the operands.
-    let elem = elem_of(m, value_ty(m, first)?)?;
-    let total = types::lanes(&m.types, value_ty(m, id)?, &m.decor)? as usize;
+    let ctx = &mut BinaryLanesCtx::new(m, item, scratch);
+    let elem = elem_of(m, value_ty(m, params.first)?)?;
+    let total = types::lanes(&m.types, value_ty(m, params.id)?, &m.decor)? as usize;
     if total > LANES {
         return Err(Error::InvalidBinary);
     }
-    read_value(m, &item.regs, first, &mut scratch.windows[0])?;
-    read_value(m, &item.regs, second, &mut scratch.windows[1])?;
-    for lane in 0..total {
-        let a = scratch.windows[0][lane];
-        let b = scratch.windows[1][lane];
-        scratch.windows[0][lane] = f(opcode, elem, a, b)?;
-    }
-    write_value(m, &mut item.regs, id, &scratch.windows[0])
+    ctx.read_first(params.first)?;
+    ctx.read_second(params.second)?;
+    ctx.apply(total, elem, params.opcode, f)?;
+    ctx.write_result(params.id)
 }
 
 /// Saturating float-to-integer conversion, one lane at a time.
@@ -3098,12 +3157,12 @@ fn resolve_group(ctx: &Ctx<'_>, items: &mut [Item], park: Park) -> Result<()> {
             let mut column = [0u64; LANES];
             match aux {
                 ops::GROUP_OP_REDUCE => {
-                    for lane in 0..n {
+                    for (lane, column_lane) in column.iter_mut().enumerate().take(n) {
                         let mut acc = group_identity(opcode, elem)?;
                         for item in 0..items.len() {
                             acc = group_fold(opcode, acc, contributions[item * n + lane], elem)?;
                         }
-                        column[lane] = acc;
+                        *column_lane = acc;
                     }
                     for item in items.iter_mut() {
                         let lanes = item
@@ -3115,13 +3174,18 @@ fn resolve_group(ctx: &Ctx<'_>, items: &mut [Item], park: Park) -> Result<()> {
                 }
                 ops::GROUP_OP_INCLUSIVE_SCAN => {
                     let mut acc = [0u64; LANES];
-                    for lane in 0..n {
-                        acc[lane] = group_identity(opcode, elem)?;
+                    for (_lane, acc_lane) in acc.iter_mut().enumerate().take(n) {
+                        *acc_lane = group_identity(opcode, elem)?;
                     }
                     for item in 0..items.len() {
-                        for lane in 0..n {
-                            acc[lane] = group_fold(opcode, acc[lane], contributions[item * n + lane], elem)?;
-                            column[lane] = acc[lane];
+                        for (lane, (acc_lane, column_lane)) in acc
+                            .iter_mut()
+                            .zip(column.iter_mut())
+                            .enumerate()
+                            .take(n)
+                        {
+                            *acc_lane = group_fold(opcode, *acc_lane, contributions[item * n + lane], elem)?;
+                            *column_lane = *acc_lane;
                         }
                         let row = items
                             .get_mut(item)
@@ -3134,9 +3198,14 @@ fn resolve_group(ctx: &Ctx<'_>, items: &mut [Item], park: Park) -> Result<()> {
                 }
                 ops::GROUP_OP_EXCLUSIVE_SCAN => {
                     let mut acc = [0u64; LANES];
-                    for lane in 0..n {
-                        acc[lane] = group_identity(opcode, elem)?;
-                        column[lane] = acc[lane];
+                    for (_lane, (acc_lane, column_lane)) in acc
+                        .iter_mut()
+                        .zip(column.iter_mut())
+                        .enumerate()
+                        .take(n)
+                    {
+                        *acc_lane = group_identity(opcode, elem)?;
+                        *column_lane = *acc_lane;
                     }
                     for item in 0..items.len() {
                         let row = items
@@ -3146,9 +3215,14 @@ fn resolve_group(ctx: &Ctx<'_>, items: &mut [Item], park: Park) -> Result<()> {
                             .get_mut(result_off..result_off + n)
                             .ok_or(Error::InvalidBinary)?;
                         row.copy_from_slice(&column[..n]);
-                        for lane in 0..n {
-                            acc[lane] = group_fold(opcode, acc[lane], contributions[item * n + lane], elem)?;
-                            column[lane] = acc[lane];
+                        for (lane, (acc_lane, column_lane)) in acc
+                            .iter_mut()
+                            .zip(column.iter_mut())
+                            .enumerate()
+                            .take(n)
+                        {
+                            *acc_lane = group_fold(opcode, *acc_lane, contributions[item * n + lane], elem)?;
+                            *column_lane = *acc_lane;
                         }
                     }
                 }
@@ -3482,7 +3556,7 @@ pub(crate) fn execute_group(launch: &Launch<'_>, group: [u32; 3]) -> Result<()> 
         if axis >= dims as usize {
             global[axis] = 1;
         }
-        if local[axis] == 0 || global[axis] == 0 || global[axis] % local[axis] != 0 {
+        if local[axis] == 0 || global[axis] == 0 || !global[axis].is_multiple_of(local[axis]) {
             return Err(Error::InvalidLaunch);
         }
         let end = u64::from(offset[axis]) + u64::from(global[axis]);
@@ -3509,7 +3583,7 @@ pub(crate) fn execute_group(launch: &Launch<'_>, group: [u32; 3]) -> Result<()> 
     if per_item > MAX_ITEM_BUDGET
         || item_count
             .checked_mul(per_item)
-            .map_or(true, |total| total > MAX_COLLECTIVE_BUDGET)
+            .is_none_or(|total| total > MAX_COLLECTIVE_BUDGET)
     {
         return Err(Error::OutOfResources);
     }

@@ -55,21 +55,6 @@ impl Instr {
         // created this instruction.
         &words[start..end]
     }
-
-    /// The operand word at `index`, or `None` when out of range.
-    #[must_use]
-    #[inline]
-    pub(crate) fn word(self, words: &[u32], index: usize) -> Option<u32> {
-        self.words(words).get(index).copied()
-    }
-
-    /// The `<id>` at operand `index`, validated below the module bound.
-    #[must_use]
-    #[inline]
-    pub(crate) fn id(self, words: &[u32], index: usize, bound: u32) -> Option<u32> {
-        let value = self.word(words, index)?;
-        ((1..bound).contains(&value)).then_some(value)
-    }
 }
 
 /// The validated header of a module.

@@ -19,6 +19,11 @@
 //! interpreter back end. The test covers the whole compiler → driver →
 //! execution chain, plus the surrounding error surface of binary loading.
 
+// Integration test crate: AGENTS.md permits expect()/unwrap() in tests,
+// but clippy.toml's allow-expect-in-tests only exempts `#[test]` bodies,
+// not the fixtures shared by them.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use core::ffi::c_void;
 use std::sync::{Once, OnceLock};
 
@@ -33,7 +38,7 @@ use codevar_ocl_bare::sys::{
     self, CommandQueueHandle, ContextHandle, DeviceHandle, EventHandle, KernelHandle, MemHandle,
     ProgramHandle,
 };
-use codevar_ocl_bare::{ArgKind, Device, DeviceInfo, PlatformConfig, ServiceMode, init};
+use codevar_ocl_bare::{Device, DeviceInfo, PlatformConfig, ServiceMode, init};
 
 const VECTOR_ADD: &str = "\
 #[kernel]
@@ -255,11 +260,6 @@ fn read_buffer(queue: CommandQueueHandle, buffer: MemHandle, out: &mut [u8]) -> 
     }
 }
 
-fn bytes_mut(words: &mut [u32]) -> &mut [u8] {
-    // SAFETY: no padding in i32/u32.
-    unsafe { core::slice::from_raw_parts_mut(words.as_mut_ptr().cast::<u8>(), words.len() * 4) }
-}
-
 fn event_status(event: EventHandle) -> i32 {
     let mut size = 0usize;
     let code = unsafe {
@@ -424,7 +424,6 @@ fn dialect_binary_produces_a_program_that_executes_end_to_end() {
     set_buffer_arg(kernel, 2, buffer_out);
     set_scalar_arg(kernel, 3, count as u32);
 
-    let global = [count];
     let mut event = EventHandle::from_raw(core::ptr::null_mut());
     assert_eq!(enqueue_1d(queue, kernel, count, &mut event), sys::SUCCESS);
     assert_eq!(event_status(event), sys::COMPLETE);
@@ -575,16 +574,14 @@ fn binary_creation_errors_report_exact_codes() {
     assert_eq!(errcode, sys::INVALID_DEVICE);
 
     let mut errcode = sys::SUCCESS;
-    let program = unsafe {
-        clCreateProgramWithBuiltInKernels(context, 1, &devices[0], b"fill\0".as_ptr().cast(), &mut errcode)
-    };
+    let program =
+        unsafe { clCreateProgramWithBuiltInKernels(context, 1, &devices[0], c"fill".as_ptr(), &mut errcode) };
     assert!(program.is_null());
     assert_eq!(errcode, sys::INVALID_KERNEL_NAME);
 
     let mut errcode = sys::SUCCESS;
-    let bad_program = unsafe {
-        clCreateProgramWithBuiltInKernels(context, 1, &devices[0], b"\0".as_ptr().cast(), &mut errcode)
-    };
+    let bad_program =
+        unsafe { clCreateProgramWithBuiltInKernels(context, 1, &devices[0], c"".as_ptr(), &mut errcode) };
     assert!(bad_program.is_null());
     assert_eq!(errcode, sys::INVALID_VALUE);
 

@@ -60,6 +60,11 @@ const MAX_ITEM_ARENA: u32 = 4096;
 /// Byte budget of the work-group shared arena (`local` variables).
 const MAX_GROUP_ARENA: u32 = 65_536;
 
+/// The interpreter's type-shape tables: the byte size of every declared
+/// type, the stride of every array, and the sorted `(type, member)`
+/// offsets an access chain binary-searches.
+type TypeIndexes = (Vec<u32>, Vec<u32>, Vec<(u64, u32)>);
+
 /// Lane budget of the module-wide constant pool.
 const MAX_CONST_WORDS: usize = 16_384;
 
@@ -72,7 +77,7 @@ const SWAPPED_MAGIC: u32 = decode::MAGIC.swap_bytes();
 ///
 /// `ty == 0` marks the slot as never defined (id 0 is never valid).
 /// A void function-call result keeps a real type with `lanes == 0`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ValueSlot {
     /// The value's type id.
     pub ty: u32,
@@ -82,31 +87,15 @@ pub(crate) struct ValueSlot {
     pub lanes: u32,
 }
 
-impl Default for ValueSlot {
-    fn default() -> Self {
-        Self {
-            ty: 0,
-            off: 0,
-            lanes: 0,
-        }
-    }
-}
-
 /// A constant: where its lanes live in the pool, and how many there are.
 ///
 /// `count == 0` marks the id as not a constant.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ConstSlot {
     /// First lane of the constant in the pool.
     pub off: u32,
     /// Number of pooled lanes (`0` when the id is not a constant).
     pub count: u32,
-}
-
-impl Default for ConstSlot {
-    fn default() -> Self {
-        Self { off: 0, count: 0 }
-    }
 }
 
 /// One function of the module: signature, body shape and call graph.
@@ -183,7 +172,9 @@ pub(crate) struct SpirvModule {
     pub words: Vec<u32>,
     /// Instruction stream (offsets into `words`).
     pub instrs: Vec<Instr>,
-    /// The `<id>` bound.
+    /// The `<id>` bound. The loader sizes every per-id table by it; the
+    /// module keeps it so the loaded shape can be inspected.
+    #[allow(dead_code)]
     pub bound: u32,
     /// Type table by id (`Unsupported` = never declared).
     pub types: Vec<Type>,
@@ -330,7 +321,7 @@ unsafe extern "C" fn spirv_stub(_item: *mut WorkItem) {}
 ///   construct outside this driver's subset.
 /// * [`Error::OutOfMemory`] — a table reservation failed.
 pub(crate) fn load(bytes: &[u8]) -> Result<Box<SpirvModule>> {
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err(Error::InvalidBinary);
     }
     let count = bytes.len() / 4;
@@ -1569,7 +1560,7 @@ impl Loader {
 
     /// `OpSwitch`: an integer selector plus `(literal, label)` pairs.
     fn switch(&mut self, ops: &[u32]) -> Result<()> {
-        if ops.len() < 2 || ops.len() % 2 != 0 {
+        if ops.len() < 2 || !ops.len().is_multiple_of(2) {
             return Err(Error::InvalidBinary);
         }
         let selector = self.ref_at(ops, 0)?;
@@ -1647,7 +1638,7 @@ impl Loader {
     /// `OpPhi`: records operands/parents for the deferred check (a phi
     /// may textually forward-reference the latch value it merges).
     fn phi(&mut self, ops: &[u32]) -> Result<()> {
-        if ops.len() < 4 || ops.len() % 2 != 0 {
+        if ops.len() < 4 || !ops.len().is_multiple_of(2) {
             return Err(Error::InvalidBinary);
         }
         let ty = self.ref_at(ops, 0)?;
@@ -2608,7 +2599,7 @@ impl Loader {
     /// # Errors
     ///
     /// [`Error::OutOfMemory`] for a table reservation.
-    fn build_indexes(&self) -> Result<(Vec<u32>, Vec<u32>, Vec<(u64, u32)>)> {
+    fn build_indexes(&self) -> Result<TypeIndexes> {
         let mut ty_size = table(self.bound as usize, 0u32)?;
         let mut ty_stride = table(self.bound as usize, 0u32)?;
         let mut struct_off: Vec<(u64, u32)> = Vec::new();
@@ -2621,19 +2612,19 @@ impl Loader {
                 continue;
             }
             ty_size[id as usize] = types::size_of(&self.types, id, &self.decor).unwrap_or(0);
-            if let Type::Array { len, .. } = entry {
-                if *len != 0 {
-                    ty_stride[id as usize] = ty_size[id as usize] / *len;
-                }
+            if let Type::Array { len, .. } = entry
+                && *len != 0
+            {
+                ty_stride[id as usize] = ty_size[id as usize] / *len;
             }
-            if matches!(entry, Type::Struct { .. }) {
-                if let Ok(offsets) = types::member_offsets(&self.types, id, &self.decor) {
-                    struct_off
-                        .try_reserve(offsets.len())
-                        .map_err(|_| Error::OutOfMemory)?;
-                    for (member, offset) in offsets {
-                        struct_off.push(((u64::from(id) << 32) | u64::from(member), offset));
-                    }
+            if matches!(entry, Type::Struct { .. })
+                && let Ok(offsets) = types::member_offsets(&self.types, id, &self.decor)
+            {
+                struct_off
+                    .try_reserve(offsets.len())
+                    .map_err(|_| Error::OutOfMemory)?;
+                for (member, offset) in offsets {
+                    struct_off.push(((u64::from(id) << 32) | u64::from(member), offset));
                 }
             }
         }
@@ -2812,7 +2803,7 @@ OpFunctionEnd
         assert_eq!(module.group_arena, 0);
 
         // Shape tables and module flags.
-        assert!(module.ty_size.iter().any(|&size| size == 4));
+        assert!(module.ty_size.contains(&4));
         assert!(module.ty_stride.iter().all(|&stride| stride == 0));
         assert!(module.struct_off.is_empty());
         assert!(module.decor.member_offsets.is_empty());
