@@ -410,6 +410,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-kuitui-control"
+version = "1.0.0"
+dependencies = [
+ "codevar-logger",
+ "spin 0.12.3",
+]
+
+[[package]]
 name = "codevar-kuitui-text"
 version = "1.0.0"
 dependencies = [

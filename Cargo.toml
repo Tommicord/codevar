@@ -56,6 +56,7 @@ members = [
     "crates/codevar-ocl-tc",
     "crates/codevar-ocl-bare",
     "crates/codevar-inssched",
+    "crates/codevar-kuitui-control",
 ]
 resolver = "2"
 
@@ -159,6 +160,7 @@ codevar-gpu-wg = { path = "crates/codevar-gpu-wg" }
 codevar-kuitui = { path = "crates/codevar-kuitui" }
 codevar-kuitui-text = { path = "crates/codevar-kuitui-text" }
 codevar-kuitui-widget = { path = "crates/codevar-kuitui-widget" }
+codevar-kuitui-control = { path = "crates/codevar-kuitui-control" }
 codevar-logger = { path = "crates/codevar-logger" }
 codevar-console-util = { path = "crates/codevar-console-util" }
 codevar-io = { path = "crates/codevar-io" }
