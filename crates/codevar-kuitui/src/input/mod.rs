@@ -56,9 +56,14 @@
 //! Every one of them extends [`Input`], the base trait that receives events
 //! which carry no device-specific state (text, gamepads, device changes).
 
-use codevar_kuitui_control::{InputEvent, Timestamp};
+use codevar_kuitui_control::InputEvent;
+pub use codevar_kuitui_control::{DeviceId, KeyCode, KeyState, Timestamp};
 
 use crate::event::EventResult;
+
+pub mod keyboard;
+
+pub use keyboard::{KeyboardModifiers, KeyboardState};
 
 /// A widget that consumes normalized input.
 ///
