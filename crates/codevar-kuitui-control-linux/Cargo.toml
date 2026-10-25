@@ -12,6 +12,7 @@ description = "Linux evdev backend for codevar-kuitui-control"
 name = "codevar_kuitui_control_linux"
 
 [dependencies]
+codevar-inssched = { workspace = true }
 codevar-kuitui-control = { workspace = true }
 codevar-logger = { workspace = true }
 libc = { workspace = true }

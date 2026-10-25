@@ -421,6 +421,7 @@ dependencies = [
 name = "codevar-kuitui-control-linux"
 version = "1.0.0"
 dependencies = [
+ "codevar-inssched",
  "codevar-kuitui-control",
  "codevar-logger",
  "libc",
