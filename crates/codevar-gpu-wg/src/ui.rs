@@ -57,22 +57,26 @@ use codevar_kuitui::effect::Effect;
 use codevar_kuitui::geometry::{Offset, Rect};
 use codevar_kuitui::paint::{CornerRadii, DrawCommand, DrawList, DrawVisitor, Paint, PaintStyle};
 
+#[cfg(target_arch = "wasm32")]
+pub use crate::ui::pipe::UiPipe;
+
 /// Default number of vertices a `UiPipe` vertex buffer can hold.
 pub const DEFAULT_VERTEX_CAPACITY: usize = 64 * 1024;
 
 // The immediate blocks below are pushed by `UiPipe`, which exists on
-// `wasm32` only, so they are compiled there.
+// `wasm32` only, so they are compiled there and under `test`, where the host
+// checks their layout against the shader.
 
 /// Byte size of the `ui.vert` immediate block (`vec2 viewport`).
 #[cfg(target_arch = "wasm32")]
 const VIEWPORT_PUSH_BYTES: u32 = 8;
 
 /// Byte size of the `ui_effect` immediate block.
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
 const EFFECT_PUSH_BYTES: u32 = core::mem::size_of::<EffectParams>() as u32;
 
 /// Number of 32-bit words in the `ui_effect` immediate block.
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
 const EFFECT_PUSH_WORDS: usize = (EFFECT_PUSH_BYTES / 4) as usize;
 
 /// A position (in logical pixels) and color of one UI vertex.
@@ -340,7 +344,7 @@ fn channels(color: Color) -> [f32; 4] {
 /// cannot silently hand the shader a rotated pixel grid.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
 struct EffectParams {
     /// The color at the start of the ramp; unread when the ramp bit is
     /// clear, because then the fragment keeps the vertex color.
@@ -368,7 +372,7 @@ struct EffectParams {
     kinds: u32,
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
 impl EffectParams {
     /// The block as the 32-bit words `CommandEncoder::set_immediates` takes.
     ///
@@ -406,7 +410,7 @@ impl EffectParams {
 /// which an [`Effect`] keeps consistent with its own gradient by construction;
 /// without a ramp the colors are transparent and the axis collapses on the
 /// center of the layer.
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
 fn effect_params(effect: &Effect, viewport: [f32; 2]) -> EffectParams {
     let center = effect.bounds.center();
     let center = [center.x, center.y];
@@ -521,3 +525,9 @@ impl UiFrame {
         self.list.borrow().is_empty()
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+mod pipe;
+
+#[cfg(test)]
+mod tests;
