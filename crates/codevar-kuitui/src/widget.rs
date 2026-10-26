@@ -431,6 +431,24 @@ impl<'a> DrawScope<'a> {
     pub fn pop_clip(&mut self) {
         self.list.pop_clip();
     }
+
+    /// Opens a layer: the following operations are rasterized with
+    /// `effect`.
+    ///
+    /// The bounds of an effect are given in the coordinate space of the
+    /// widget being drawn and translated the same way every other
+    /// operation of the scope is, so a widget can describe its own
+    /// rectangle without knowing where the framework placed it.
+    pub fn push_effect(&mut self, effect: crate::effect::Effect) {
+        let bounds = Rect::new(self.origin.add(effect.bounds.origin), effect.bounds.size);
+        self.list
+            .push_effect(crate::effect::Effect { bounds, ..effect });
+    }
+
+    /// Ends the innermost layer.
+    pub fn pop_effect(&mut self) {
+        self.list.pop_effect();
+    }
 }
 
 /// The scope of an event dispatch.

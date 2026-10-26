@@ -35,6 +35,7 @@ use core::any::Any;
 use core::fmt;
 
 use crate::color::Color;
+use crate::effect::Effect;
 use crate::geometry::{Offset, Rect};
 use crate::text::TextStyle;
 
@@ -280,6 +281,13 @@ pub struct DrawCommand {
     /// The clipping rectangle that applied when the operation was
     /// recorded; `None` means the whole surface.
     pub clip: Option<Rect>,
+    /// The layer effect that applied when the operation was recorded;
+    /// `None` means the operation is rasterized as recorded.
+    ///
+    /// The effect is carried by value, resolved when the operation was
+    /// pushed, so a consumer never has to model an effect stack of its
+    /// own — the same reason [`Self::clip`] is resolved.
+    pub effect: Option<Effect>,
 }
 
 /// The FIFO queue of drawing operations of one frame.
@@ -300,6 +308,8 @@ pub struct DrawList {
     commands: VecDeque<DrawCommand>,
     /// The rectangles of the open clips.
     clips: Vec<Rect>,
+    /// The effects of the open layers.
+    effects: Vec<Effect>,
 }
 
 impl DrawList {
@@ -309,6 +319,7 @@ impl DrawList {
         Self {
             commands: VecDeque::new(),
             clips: Vec::new(),
+            effects: Vec::new(),
         }
     }
 
@@ -316,6 +327,7 @@ impl DrawList {
     pub fn clear(&mut self) {
         self.commands.clear();
         self.clips.clear();
+        self.effects.clear();
     }
 
     /// The operations of the queue, in paint order.
@@ -395,19 +407,56 @@ impl DrawList {
         self.clips.pop();
     }
 
+    /// The number of layers that are currently open.
+    #[must_use]
+    pub fn layer_depth(&self) -> usize {
+        self.effects.len()
+    }
+
+    /// The layer effect that applies to the operations recorded from now
+    /// on.
+    ///
+    /// Without an open layer an operation is rasterized exactly as
+    /// recorded.
+    #[must_use]
+    pub fn current_effect(&self) -> Option<Effect> {
+        self.effects.last().copied()
+    }
+
+    /// Opens a layer: the following operations are rasterized with
+    /// `effect`.
+    ///
+    /// Layers do not compose the way clips do. A rectangle blurred
+    /// inside a rectangle that is already blurred is not a shape a
+    /// single shader evaluation describes, so the innermost effect is
+    /// the one the operations carry.
+    pub fn push_effect(&mut self, effect: Effect) {
+        self.effects.push(effect);
+    }
+
+    /// Ends the innermost layer.
+    ///
+    /// Popping more layers than were pushed is a no-op, for the same
+    /// reason [`DrawList::pop_clip`] is.
+    pub fn pop_effect(&mut self) {
+        self.effects.pop();
+    }
+
     /// Enqueues an operation with the clip that is open right now.
     pub fn push(&mut self, op: impl Draw + 'static) {
         self.push_boxed(Box::new(op));
     }
 
-    /// Enqueues an already-boxed operation with the clip that is open
-    /// right now.
+    /// Enqueues an already-boxed operation with the clip and the layer
+    /// effect that are open right now.
     ///
     /// This is the storage-level entry point for a consumer that already
     /// holds a trait object; [`DrawList::push`] is the boxing shorthand.
     pub fn push_boxed(&mut self, op: Box<dyn Draw>) {
         let clip = self.current_clip();
-        self.commands.push_back(DrawCommand { op, clip });
+        let effect = self.current_effect();
+        self.commands
+            .push_back(DrawCommand { op, clip, effect });
     }
 
     /// Records a rectangle.
