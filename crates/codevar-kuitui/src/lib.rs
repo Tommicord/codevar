@@ -102,6 +102,7 @@ extern crate alloc;
 pub mod color;
 pub mod compose;
 pub mod driver;
+pub mod effect;
 pub mod event;
 pub mod geometry;
 pub mod input;
@@ -129,6 +130,7 @@ pub mod window;
 pub use color::{Color, ColorScheme};
 pub use compose::{Composer, Composition, Recomposition};
 pub use driver::{FrameDriver, FrameReport};
+pub use effect::{Effect, EffectKinds, Gradient, InteractionSource, InteractionState};
 pub use event::{Event, EventResult, KeyEvent, PointerButton, PointerEvent, PointerEventKind};
 pub use geometry::{Alignment, Constraints, EdgeInsets, Offset, Rect, Size};
 #[doc(hidden)]
@@ -153,6 +155,7 @@ pub use window::{ResizeEdge, ResizeHandle, TitleBar, WindowButton, WindowFrame};
 pub mod prelude {
     pub use crate::color::{Color, ColorScheme};
     pub use crate::compose::{Composer, Composition, Recomposition};
+    pub use crate::effect::{Effect, EffectKinds, Gradient, InteractionSource, InteractionState};
     pub use crate::event::{
         Event, EventResult, KeyEvent, Modifiers, PointerButton, PointerButtons, PointerEvent,
         PointerEventKind,
