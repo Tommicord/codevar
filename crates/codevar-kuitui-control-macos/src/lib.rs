@@ -15,10 +15,22 @@
 
 //! macOS input backend for `codevar-kuitui-control`.
 //!
-//! The backend installs a CoreGraphics event tap on a worker thread. The tap
-//! is listen-only: input continues to reach the focused application.
+//! The backend installs a listen-only CoreGraphics event tap, so input keeps
+//! reaching the focused application. It owns no thread: the tap lives on the
+//! run loop of the thread that first opens a stream, and that thread continues
+//! to pump its own run loop.
 
+#![cfg_attr(not(test), no_std)]
 #![warn(missing_docs)]
+
+extern crate alloc;
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod decode;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod keymap;
+
+use alloc::vec::Vec;
 
 use codevar_kuitui_control::{Backend, ControlError, DeviceClass, DeviceInfo, EventSink};
 
