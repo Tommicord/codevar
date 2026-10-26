@@ -47,3 +47,6 @@ mod state;
 pub use handler::{MouseBinding, MouseHandler, POINTER, PointerPhase, PointerUpdate};
 pub use snapshot::PointerSnapshot;
 pub use state::{PointerButtons, PointerState};
+
+#[cfg(test)]
+mod tests;
