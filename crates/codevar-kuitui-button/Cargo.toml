@@ -1,0 +1,20 @@
+[package]
+name = "codevar-kuitui-button"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Material-style buttons and the modifier decorations of the Kuitui framework"
+
+[lib]
+name = "codevar_kuitui_button"
+
+[dependencies]
+libm = { workspace = true }
+codevar-kuitui = { workspace = true }
+codevar-kuitui-widget = { workspace = true }
+
+[lints]
+workspace = true

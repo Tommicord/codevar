@@ -20,6 +20,7 @@ members = [
     "crates/codevar-gpu-vk",
     "crates/codevar-gpu-wg",
     "crates/codevar-kuitui",
+    "crates/codevar-kuitui-button",
     "crates/codevar-kuitui-text",
     "crates/codevar-kuitui-widget",
     "crates/codevar-logger",
