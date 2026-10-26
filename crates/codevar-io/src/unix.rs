@@ -136,6 +136,25 @@ impl Default for Stderr {
     }
 }
 
+/// This thread's `errno` value.
+///
+/// Apple and FreeBSD expose it through `__error`; the other Unix targets use
+/// `__errno_location`.
+fn errno() -> c_int {
+    #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
+    // SAFETY: `__error` returns a pointer to this thread's `errno`, which is
+    // always valid for the calling thread.
+    unsafe {
+        *libc::__error()
+    }
+    #[cfg(not(any(target_vendor = "apple", target_os = "freebsd")))]
+    // SAFETY: `__errno_location` returns a pointer to this thread's `errno`,
+    // which is always valid for the calling thread.
+    unsafe {
+        *libc::__errno_location()
+    }
+}
+
 /// File descriptor wrapper for safe reading/writing.
 struct FileDesc {
     fd: i32,
@@ -154,7 +173,7 @@ impl FileDesc {
     fn read(&self, buf: &mut [u8]) -> Result<usize, crate::ErrorKind> {
         let ret = unsafe { libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
         if ret < 0 {
-            let errno = unsafe { *libc::__errno_location() };
+            let errno = errno();
             Err(Self::errno_to_errorkind(errno))
         } else {
             Ok(ret as usize)
@@ -165,7 +184,7 @@ impl FileDesc {
     fn write(&self, buf: &[u8]) -> Result<usize, crate::ErrorKind> {
         let ret = unsafe { libc::write(self.fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
         if ret < 0 {
-            let errno = unsafe { *libc::__errno_location() };
+            let errno = errno();
             Err(Self::errno_to_errorkind(errno))
         } else {
             Ok(ret as usize)
