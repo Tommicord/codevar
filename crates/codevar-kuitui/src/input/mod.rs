@@ -62,11 +62,13 @@ pub use codevar_kuitui_control::{DeviceId, KeyCode, KeyState, Timestamp};
 use crate::event::EventResult;
 
 pub mod keyboard;
+pub mod mouse;
 
 pub use keyboard::{
     KEYBOARD, KeyTransition, KeyboardBinding, KeyboardHandler, KeyboardModifiers, KeyboardSnapshot,
     KeyboardState,
 };
+pub use mouse::{BoundId, VertexBounds};
 
 /// A widget that consumes normalized input.
 ///
