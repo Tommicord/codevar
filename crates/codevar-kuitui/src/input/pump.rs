@@ -34,18 +34,18 @@
 //! # Contract
 //!
 //! The pump grants demand in batches, so a consumer that stops calling
-//! [`pump`](Self::pump) applies backpressure by construction: the queue fills,
+//! [`pump`](InputPump::pump) applies backpressure by construction: the queue fills,
 //! then the backend starts dropping and reports [`ControlError::Lagged`], and
 //! the pump records the loss instead of growing memory.
 //!
 //! A frame runs in this order:
 //!
-//! 1. [`pump`](Self::pump) or [`poll_pump`](Self::poll_pump) — the states move
+//! 1. [`pump`](InputPump::pump) or [`poll_pump`](InputPump::poll_pump) — the states move
 //!    and the frame's events are staged.
-//! 2. [`finish_frame`](Self::finish_frame) — the staged events become the frame
+//! 2. [`finish_frame`](InputPump::finish_frame) — the staged events become the frame
 //!    handlers read, and the pointer accumulators are folded into the returned
 //!    [`PointerSnapshot`].
-//! 3. [`frame`](Self::frame) — the tree walk hands the frame to each widget
+//! 3. [`frame`](InputPump::frame) — the tree walk hands the frame to each widget
 //!    that implements a handler trait.
 //!
 //! Steps 1 and 2 belong to the application, before it composes; step 3 belongs
