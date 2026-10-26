@@ -47,3 +47,4 @@ pub mod pipeline;
 pub mod platform;
 pub mod renderer;
 pub mod types;
+pub mod ui;

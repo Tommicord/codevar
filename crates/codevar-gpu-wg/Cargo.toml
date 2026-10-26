@@ -13,6 +13,7 @@ name = "codevar_gpu_wg"
 
 [dependencies]
 codevar-gpu-core = { workspace = true }
+codevar-kuitui = { workspace = true }
 libm = { workspace = true }
 # `wgpu-types` is pure vocabulary: the surface, texture and color types the
 # backend names in its public API. It carries no system dependency, so it is
