@@ -718,3 +718,206 @@ mod x86 {
             .fold(0.0f64, |sum, &lane| sum + f64::from(lane))
     }
 }
+#[cfg(test)]
+mod tests {
+    use libm::sqrt;
+
+    use codevar_kuitui_control::{AudioFormat, SampleFormat};
+
+    use super::{AudioLevels, I16_SCALE};
+
+    fn layout(sample_rate: u32, channels: u16, sample_format: SampleFormat) -> AudioFormat {
+        AudioFormat {
+            sample_rate,
+            channels,
+            sample_format,
+        }
+    }
+
+    /// A deterministic sample source, so a failure is reproducible.
+    struct Noise(u64);
+
+    impl Noise {
+        fn new(seed: u64) -> Self {
+            Self(seed | 1)
+        }
+    }
+
+    impl Iterator for Noise {
+        type Item = i16;
+
+        fn next(&mut self) -> Option<i16> {
+            // A 64-bit xorshift; the top bits of the state are the strongest,
+            // so the sample comes from there.
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            Some((self.0 >> 40) as i16)
+        }
+    }
+
+    /// The reference the accelerated paths are measured against.
+    fn reference(samples: &[i16]) -> AudioLevels {
+        let mut sum_sq = 0.0f64;
+        let mut peak = 0.0f32;
+        let mut clipped = 0u32;
+        let mut crossings = 0u32;
+        let mut previous: Option<bool> = None;
+        for &raw in samples {
+            let sample = f32::from(raw) * I16_SCALE;
+            sum_sq += f64::from(sample) * f64::from(sample);
+            let magnitude = if sample < 0.0 { -sample } else { sample };
+            if magnitude > peak {
+                peak = magnitude;
+            }
+            clipped += u32::from(raw == i16::MIN || raw == i16::MAX);
+            let negative = sample < 0.0;
+            if let Some(was) = previous {
+                crossings += u32::from(negative != was);
+            }
+            previous = Some(negative);
+        }
+        AudioLevels {
+            rms: sqrt(sum_sq / samples.len() as f64) as f32,
+            peak,
+            clipped,
+            samples: samples.len() as u32,
+            crossings,
+        }
+    }
+
+    fn levels_of(samples: &[i16], rate: u32) -> AudioLevels {
+        let mut data = Vec::with_capacity(samples.len() * 2);
+        for &raw in samples {
+            data.extend_from_slice(&raw.to_le_bytes());
+        }
+        AudioLevels::analyze(layout(rate, 1, SampleFormat::I16), &data)
+    }
+
+    #[test]
+    fn an_empty_block_is_silent() {
+        assert_eq!(
+            AudioLevels::analyze(layout(48_000, 1, SampleFormat::I16), &[]),
+            AudioLevels::SILENT
+        );
+        assert_eq!(AudioLevels::default(), AudioLevels::SILENT);
+    }
+
+    #[test]
+    fn a_block_longer_than_the_flush_window_matches_the_reference() {
+        // 1000 samples is not a whole number of 8- or 16-sample vectors, so
+        // the tail path is taken as well.
+        let samples: Vec<i16> = Noise::new(0x5eed).take(1_000).collect();
+        let measured = levels_of(&samples, 48_000);
+        let expected = reference(&samples);
+        assert_eq!(measured.peak, expected.peak);
+        assert_eq!(measured.samples, expected.samples);
+        assert_eq!(measured.clipped, expected.clipped);
+        assert_eq!(measured.crossings, expected.crossings);
+        let drift = (measured.rms - expected.rms).abs() / expected.rms;
+        assert!(
+            drift < 1e-5,
+            "rms drift {drift} with {measured:?} against {expected:?}"
+        );
+    }
+
+    #[test]
+    fn a_short_block_measured_without_a_whole_vector_still_counts() {
+        let samples: Vec<i16> = Noise::new(0x1234).take(7).collect();
+        assert_eq!(levels_of(&samples, 8_000), reference(&samples));
+    }
+
+    #[test]
+    fn full_scale_counts_once_for_each_extreme() {
+        let samples = [i16::MIN, 1_000, i16::MAX, 0, i16::MAX];
+        let measured = levels_of(&samples, 48_000);
+        assert_eq!(measured.clipped, 3);
+        assert!(measured.is_clipping());
+        assert_eq!(measured.peak, 1.0);
+        assert_eq!(measured.peak_dbfs(), 0.0);
+    }
+
+    #[test]
+    fn a_non_finite_float_sample_reads_as_zero() {
+        let mut data = Vec::new();
+        for sample in [0.5f32, f32::NAN, f32::NEG_INFINITY, -0.25, 1.0] {
+            data.extend_from_slice(&sample.to_le_bytes());
+        }
+        let measured = AudioLevels::analyze(layout(16_000, 1, SampleFormat::F32), &data);
+        assert_eq!(measured.samples, 5);
+        assert_eq!(measured.peak, 1.0);
+        // Only the last sample reaches full scale: the infinite one is gone
+        // before the comparison.
+        assert_eq!(measured.clipped, 1);
+        assert!(measured.rms.is_finite());
+        assert_eq!(
+            measured.zero_crossings_per_second(layout(16_000, 1, SampleFormat::F32)),
+            Some(6_400.0)
+        );
+    }
+
+    #[test]
+    fn an_eight_bit_block_is_biased_by_half_a_scale() {
+        let measured = AudioLevels::analyze(layout(8_000, 1, SampleFormat::U8), &[128, 0, 255, 128, 64]);
+        assert_eq!(measured.samples, 5);
+        assert_eq!(measured.peak, 1.0);
+        assert_eq!(measured.clipped, 2);
+        // Zero, the two full-scale ends and the half-scale dip alternate
+        // three times across the block.
+        assert_eq!(measured.crossings, 3);
+    }
+
+    #[test]
+    fn the_duration_and_the_crossing_rate_follow_the_sample_rate() {
+        let samples: Vec<i16> = Noise::new(0xabcd).take(480).collect();
+        let loud = levels_of(&samples, 48_000);
+        let quiet = levels_of(&samples, 8_000);
+        assert_eq!(
+            loud.duration_micros(layout(48_000, 1, SampleFormat::I16)),
+            Some(10_000)
+        );
+        assert_eq!(
+            quiet.duration_micros(layout(8_000, 1, SampleFormat::I16)),
+            Some(60_000)
+        );
+        // The same samples at six times the rate cross six times as often.
+        let fast = loud.zero_crossings_per_second(layout(48_000, 1, SampleFormat::I16));
+        let slow = quiet.zero_crossings_per_second(layout(8_000, 1, SampleFormat::I16));
+        assert!(
+            fast.is_some_and(|rate| slow.is_some_and(|other| (rate - other * 6.0).abs() < 1.0)),
+            "{fast:?} against {slow:?}"
+        );
+    }
+
+    #[test]
+    fn stereo_samples_count_frames_not_samples() {
+        let samples: Vec<i16> = Noise::new(0x77).take(64).collect();
+        let measured = levels_of(&samples, 48_000);
+        let stereo = layout(48_000, 2, SampleFormat::I16);
+        assert_eq!(measured.frames(stereo), Some(32));
+        assert_eq!(measured.frames(layout(48_000, 0, SampleFormat::I16)), None);
+        assert_eq!(measured.duration_micros(stereo), Some(666));
+    }
+
+    #[test]
+    fn a_square_wave_reports_its_real_crossing_rate() {
+        let samples = [-1_000i16, 1_000, -1_000, 1_000, -1_000, 1_000, -1_000, 1_000];
+        let measured = levels_of(&samples, 8_000);
+        let format = layout(8_000, 1, SampleFormat::I16);
+        assert_eq!(measured.crossings, 7);
+        assert_eq!(measured.duration_micros(format), Some(1_000));
+        assert_eq!(measured.zero_crossings_per_second(format), Some(7_000.0));
+    }
+
+    #[test]
+    fn a_format_without_a_rate_or_a_channel_has_no_time() {
+        let samples = [-1_000i16, 1_000];
+        let measured = levels_of(&samples, 8_000);
+        assert_eq!(measured.duration_micros(layout(0, 1, SampleFormat::I16)), None);
+        assert_eq!(measured.frames(layout(8_000, 0, SampleFormat::I16)), None);
+        assert_eq!(
+            measured.zero_crossings_per_second(layout(8_000, 0, SampleFormat::I16)),
+            None
+        );
+    }
+}
