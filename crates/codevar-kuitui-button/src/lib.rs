@@ -52,10 +52,12 @@
 extern crate alloc;
 
 pub mod button;
+pub mod canvas;
 pub mod defaults;
 pub mod state;
 pub mod text;
 
 pub use button::{Button, ButtonChrome, Click, button_node};
+pub use canvas::Concrete;
 pub use state::{BorderStroke, ButtonColors, ButtonElevation, ButtonFlags, ButtonPalette};
 pub use text::{ColorableTextButton, Label, LabelText, TextButton};
