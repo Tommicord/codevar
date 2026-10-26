@@ -36,9 +36,16 @@
 //! into vertices. A [`TextOp`] run carries no polygon geometry — it is
 //! drawn by the text pass, which owns the glyph atlas and the `text`
 //! shader — so this pass leaves it to the trait's default no-op.
-//! Rounded corners are likewise not representable by the color-only `ui`
-//! shader and are drawn square; both limits are recorded here rather than
+//! Rounded corners are not representable by the color-only `ui` shader
+//! and are drawn square; both limits are recorded here rather than
 //! silently ignored.
+//!
+//! A command that carries an [`Effect`] is the exception: the span keeps
+//! the effect, the renderer binds the `ui_effect` program for it, and the
+//! rectangle is expanded to the coverage of the layer so the blurred halo
+//! has fragments to shade. The corner radii travel inside the effect, so
+//! the same span draws them from the signed distance instead of the
+//! vertex grid.
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;
@@ -48,6 +55,8 @@ use core::cell::RefCell;
 use ash::vk;
 use libm::{ceilf, floorf};
 
+use codevar_kuitui::color::Color;
+use codevar_kuitui::effect::Effect;
 use codevar_kuitui::geometry::{Offset, Rect};
 use codevar_kuitui::paint::{CornerRadii, DrawCommand, DrawList, DrawVisitor, Paint, PaintStyle};
 
@@ -81,6 +90,9 @@ pub struct DrawSpan {
     /// Clip resolved by kuitui when the operation was recorded; `None`
     /// means the whole surface.
     pub clip: Option<Rect>,
+    /// Layer effect resolved by kuitui when the operation was recorded;
+    /// `None` means the plain `ui` program draws the span.
+    pub effect: Option<Effect>,
 }
 
 /// The triangle list and draw spans of one replayed display list.
@@ -93,6 +105,9 @@ pub struct UiGeometry {
     vertices: Vec<UiVertex>,
     /// One span per geometry operation, in paint order.
     spans: Vec<DrawSpan>,
+    /// The effect of the command being expanded, which decides how wide a
+    /// quad a rectangle needs.
+    effect: Option<Effect>,
 }
 
 impl UiGeometry {
@@ -102,6 +117,7 @@ impl UiGeometry {
         Self {
             vertices: Vec::new(),
             spans: Vec::new(),
+            effect: None,
         }
     }
 
@@ -109,6 +125,7 @@ impl UiGeometry {
     pub fn clear(&mut self) {
         self.vertices.clear();
         self.spans.clear();
+        self.effect = None;
     }
 
     /// The triangle-list vertices, in paint order.
@@ -147,11 +164,16 @@ impl UiGeometry {
     /// Expands one command, appending its vertices and its span.
     ///
     /// The operation is replayed through [`DrawVisitor`]: dispatching on
-    /// its kind is the operation's job, not the backend's.
+    /// its kind is the operation's job, not the backend's. The effect of
+    /// the command is open while the visitor runs, so a rectangle knows
+    /// how wide a quad the shader needs.
     pub fn push_command(&mut self, command: DrawCommand) {
         let first_vertex = self.vertices.len();
         let clip = command.clip;
+        let effect = command.effect;
+        self.effect = effect;
         command.op.visit(self);
+        self.effect = None;
         let vertex_count = self.vertices.len() - first_vertex;
         if vertex_count == 0 {
             return;
@@ -160,6 +182,7 @@ impl UiGeometry {
             first_vertex: first_vertex as u32,
             vertex_count: vertex_count as u32,
             clip,
+            effect,
         });
     }
 
@@ -168,6 +191,13 @@ impl UiGeometry {
         let color = vertex_color(paint);
         let width = paint.stroke_width();
         if width <= 0.0 || matches!(paint.style, PaintStyle::Fill) {
+            // The effect program shades from the signed distance of the
+            // layer, so a blurred or rotated layer needs the fragments of
+            // its halo, not only its rectangle.
+            let rect = match self.effect {
+                Some(effect) => rect.union(effect.coverage()),
+                None => rect,
+            };
             self.push_quad(
                 Offset::new(rect.left(), rect.top()),
                 Offset::new(rect.right(), rect.top()),
@@ -286,12 +316,13 @@ impl DrawVisitor for UiGeometry {
 /// The straight RGBA vertex color of a paint.
 #[inline]
 fn vertex_color(paint: Paint) -> [f32; 4] {
-    [
-        paint.color.red,
-        paint.color.green,
-        paint.color.blue,
-        paint.color.alpha,
-    ]
+    channels(paint.color)
+}
+
+/// The RGBA components of a color, in the order the shaders read them.
+#[inline]
+fn channels(color: Color) -> [f32; 4] {
+    [color.red, color.green, color.blue, color.alpha]
 }
 
 /// Default number of vertices a [`UiPipe`] vertex buffer can hold.
@@ -299,6 +330,85 @@ pub const DEFAULT_VERTEX_CAPACITY: usize = 64 * 1024;
 
 /// Byte size of the `ui.vert` push-constant block (`vec2 viewport`).
 const VIEWPORT_PUSH_BYTES: u32 = 8;
+
+/// Byte size of the `ui_effect` push-constant block.
+const EFFECT_PUSH_BYTES: u32 = core::mem::size_of::<EffectParams>() as u32;
+
+/// The push constants of the `ui_effect` shader pair.
+///
+/// The field order is the `PushConstants` block of
+/// `ui_effect.vert.glsl` and `ui_effect.frag.glsl`; `glslc` lays its
+/// members out at offsets 0, 16, 32, 40, 48, 56, 64, 72, 80, 96 and 100,
+/// and a test pins every offset so reordering a field cannot silently hand
+/// the shader a rotated pixel grid.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct EffectParams {
+    /// The color at the start of the ramp; unread when the ramp bit is
+    /// clear, because then the fragment keeps the vertex color.
+    color_from: [f32; 4],
+    /// The color at the end of the ramp.
+    color_to: [f32; 4],
+    /// Size of the render target, the viewport mapping of the vertex
+    /// stage.
+    viewport: [f32; 2],
+    /// Top-left of the layer rectangle.
+    origin: [f32; 2],
+    /// Size of the layer rectangle.
+    size: [f32; 2],
+    /// The point of the layer that carries `color_from`.
+    axis_start: [f32; 2],
+    /// The point of the layer that carries `color_to`.
+    axis_end: [f32; 2],
+    /// The blur sigma and the pixelate grid, in logical pixels.
+    blur_pixel: [f32; 2],
+    /// The corner radii: top-left, top-right, bottom-right, bottom-left.
+    radii: [f32; 4],
+    /// The rotation of the layer around its center, in radians.
+    rotation: f32,
+    /// The [`codevar_kuitui::effect::EffectKinds`] bits the fragment
+    /// stage tests.
+    kinds: u32,
+}
+
+/// The parameters that rasterize `effect` over a `viewport` surface.
+///
+/// The two ramp colors and the axis are read only when the ramp bit is
+/// set, which an [`Effect`] keeps consistent with its own gradient by
+/// construction; without a ramp the colors are transparent and the axis
+/// collapses on the center of the layer.
+fn effect_params(effect: &Effect, viewport: [f32; 2]) -> EffectParams {
+    let center = effect.bounds.center();
+    let center = [center.x, center.y];
+    let (axis_start, axis_end, color_from, color_to) = match effect.gradient {
+        Some(gradient) => (
+            [gradient.start.x, gradient.start.y],
+            [gradient.end.x, gradient.end.y],
+            channels(gradient.from),
+            channels(gradient.to),
+        ),
+        None => (center, center, [0.0; 4], [0.0; 4]),
+    };
+    let radii = effect.radii;
+    EffectParams {
+        color_from,
+        color_to,
+        viewport,
+        origin: [effect.bounds.left(), effect.bounds.top()],
+        size: [effect.bounds.size.width, effect.bounds.size.height],
+        axis_start,
+        axis_end,
+        blur_pixel: [effect.blur, effect.pixel],
+        radii: [
+            radii.top_left,
+            radii.top_right,
+            radii.bottom_right,
+            radii.bottom_left,
+        ],
+        rotation: effect.rotation,
+        kinds: u32::from(effect.kinds.bits()),
+    }
+}
 
 /// A shared, single-threaded handle to the display list a [`UiPipe`]
 /// replays.
@@ -369,10 +479,12 @@ pub fn scissor_for(clip: Option<Rect>, width: u32, height: u32) -> vk::Rect2D {
 /// A compositor pipe that replays a [`UiFrame`] into an offscreen target.
 ///
 /// The pipe owns the target the mix pass folds into the presentation
-/// image, the `ui.vert`/`ui.frag` pipeline and a host-visible vertex
-/// buffer that is refilled every frame. [`PipeSource::pipe_entry`] drains
-/// the frame's FIFO queue, expands it with [`UiGeometry`], uploads the
-/// vertices and records one scissor-clipped draw per command.
+/// image, the `ui.vert`/`ui.frag` pipeline, the `ui_effect` pipeline that
+/// rasterizes a layer effect, and a host-visible vertex buffer that is
+/// refilled every frame. [`PipeSource::pipe_entry`] drains the frame's FIFO
+/// queue, expands it with [`UiGeometry`], uploads the vertices and records
+/// one scissor-clipped draw per command, binding the effect program for
+/// the spans that carry one.
 ///
 /// Register it with [`Compositor::add_pipe`](crate::compositor::Compositor::add_pipe)
 /// and keep the [`UiFrame`] to record subsequent frames.
@@ -389,6 +501,10 @@ pub struct UiPipe<'p> {
     pipeline_layout: vk::PipelineLayout,
     /// The `ui.vert`/`ui.frag` graphics pipeline.
     pipeline: vk::Pipeline,
+    /// Pipeline layout: the `ui_effect` push-constant range.
+    effect_pipeline_layout: vk::PipelineLayout,
+    /// The `ui_effect.vert`/`ui_effect.frag` graphics pipeline.
+    effect_pipeline: vk::Pipeline,
     /// Host-visible vertex buffer.
     buffer: vk::Buffer,
     /// Memory bound to `buffer`.
@@ -442,8 +558,8 @@ impl<'p> UiPipe<'p> {
             PipelineContext::color_format(),
         )?;
         let (buffer, memory, mapped) = create_vertex_buffer(context, capacity)?;
-        let (pipeline_layout, pipeline) = match create_ui_pipeline(context) {
-            Ok(pair) => pair,
+        let pipes = match create_ui_pipes(context) {
+            Ok(pipes) => pipes,
             Err(err) => {
                 // SAFETY: the buffer and its mapping were just created by
                 // `create_vertex_buffer` and are not referenced by any
@@ -461,8 +577,10 @@ impl<'p> UiPipe<'p> {
             geometry: UiGeometry::new(),
             target,
             device,
-            pipeline_layout,
-            pipeline,
+            pipeline_layout: pipes.layout,
+            pipeline: pipes.pipeline,
+            effect_pipeline_layout: pipes.effect_layout,
+            effect_pipeline: pipes.effect_pipeline,
             buffer,
             memory,
             mapped,
@@ -517,6 +635,10 @@ impl<'p> UiPipe<'p> {
     }
 
     /// Records the draw calls of one frame inside the open rendering scope.
+    ///
+    /// The two programs share the vertex buffer, so a frame walks its spans
+    /// in paint order and binds the effect program only for the spans that
+    /// carry an effect.
     fn record(&self, ctx: &mut PipeCtx) {
         if self.geometry.is_empty() {
             return;
@@ -524,27 +646,70 @@ impl<'p> UiPipe<'p> {
         let device = ctx.device();
         let command_buffer = ctx.command_buffer();
         // SAFETY: `record` runs inside the dynamic-rendering scope opened
-        // by `begin_render`, the pipeline was created for the target
-        // format, and the vertex binding matches the pipeline layout.
+        // by `begin_render`, both pipelines were created for the target
+        // format, and the vertex binding matches the input layout of both.
         unsafe {
-            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
             let buffers = [self.buffer];
             let offsets = [0_u64];
             device.cmd_bind_vertex_buffers(command_buffer, 0, &buffers, &offsets);
 
             let viewport = [ctx.width() as f32, ctx.height() as f32];
-            let bytes =
+            let viewport_bytes =
                 core::slice::from_raw_parts(viewport.as_ptr().cast::<u8>(), VIEWPORT_PUSH_BYTES as usize);
+            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
             device.cmd_push_constants(
                 command_buffer,
                 self.pipeline_layout,
                 vk::ShaderStageFlags::VERTEX,
                 0,
-                bytes,
+                viewport_bytes,
             );
 
             let mut current: Option<Rect> = None;
+            let mut on_effect = false;
             for span in self.geometry.spans() {
+                let wants_effect = span.effect.is_some();
+                if wants_effect != on_effect {
+                    on_effect = wants_effect;
+                    // The blocks of the two layouts overlap, and a push
+                    // only carries the bytes of the range it names, so a
+                    // switch always re-pushes what the new pipeline reads.
+                    current = None;
+                    if wants_effect {
+                        device.cmd_bind_pipeline(
+                            command_buffer,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            self.effect_pipeline,
+                        );
+                    } else {
+                        device.cmd_bind_pipeline(
+                            command_buffer,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            self.pipeline,
+                        );
+                        device.cmd_push_constants(
+                            command_buffer,
+                            self.pipeline_layout,
+                            vk::ShaderStageFlags::VERTEX,
+                            0,
+                            viewport_bytes,
+                        );
+                    }
+                }
+                if let Some(effect) = span.effect {
+                    let params = effect_params(&effect, viewport);
+                    let bytes = core::slice::from_raw_parts(
+                        core::ptr::from_ref(&params).cast::<u8>(),
+                        EFFECT_PUSH_BYTES as usize,
+                    );
+                    device.cmd_push_constants(
+                        command_buffer,
+                        self.effect_pipeline_layout,
+                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        bytes,
+                    );
+                }
                 if span.clip != current {
                     current = span.clip;
                     let scissor = scissor_for(span.clip, ctx.width(), ctx.height());
@@ -600,26 +765,106 @@ impl Drop for UiPipe<'_> {
             self.device.destroy_pipeline(self.pipeline, None);
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);
+            self.device
+                .destroy_pipeline(self.effect_pipeline, None);
+            self.device
+                .destroy_pipeline_layout(self.effect_pipeline_layout, None);
         }
     }
 }
 
-/// Creates the `ui.vert`/`ui.frag` pipeline layout and pipeline.
-fn create_ui_pipeline(
+/// The pipeline handles a [`UiPipe`] owns, created together.
+struct UiPipelines {
+    /// Layout of the plain `ui` program.
+    layout: vk::PipelineLayout,
+    /// The plain `ui` program.
+    pipeline: vk::Pipeline,
+    /// Layout of the `ui_effect` program.
+    effect_layout: vk::PipelineLayout,
+    /// The `ui_effect` program.
+    effect_pipeline: vk::Pipeline,
+}
+
+/// Creates both UI programs.
+///
+/// A frame needs both: the plain program draws every span without an
+/// effect and the effect program draws the ones with it, so a pipe that
+/// cannot make one cannot draw the frame.
+fn create_ui_pipes(context: &PipelineContext) -> Result<UiPipelines, CompositorError> {
+    let device = context.device();
+    let (layout, pipeline) = create_ui_program(context)?;
+    let (effect_layout, effect_pipeline) = match create_effect_program(context) {
+        Ok(pair) => pair,
+        Err(err) => {
+            // SAFETY: neither plain handle is referenced by a command
+            // buffer; the pipe that would own them was never built.
+            unsafe {
+                device.destroy_pipeline(pipeline, None);
+                device.destroy_pipeline_layout(layout, None);
+            }
+            return Err(err);
+        }
+    };
+    Ok(UiPipelines {
+        layout,
+        pipeline,
+        effect_layout,
+        effect_pipeline,
+    })
+}
+
+/// Creates the layout and pipeline of the `ui.vert`/`ui.frag` program.
+fn create_ui_program(
     context: &PipelineContext,
+) -> Result<(vk::PipelineLayout, vk::Pipeline), CompositorError> {
+    create_program(
+        context,
+        vk::ShaderStageFlags::VERTEX,
+        VIEWPORT_PUSH_BYTES,
+        codevar_kuitui::shaders::UI_VERT_SPIRV,
+        codevar_kuitui::shaders::UI_FRAG_SPIRV,
+    )
+}
+
+/// Creates the layout and pipeline of the `ui_effect` program.
+fn create_effect_program(
+    context: &PipelineContext,
+) -> Result<(vk::PipelineLayout, vk::Pipeline), CompositorError> {
+    create_program(
+        context,
+        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+        EFFECT_PUSH_BYTES,
+        codevar_kuitui::shaders::UI_EFFECT_VERT_SPIRV,
+        codevar_kuitui::shaders::UI_EFFECT_FRAG_SPIRV,
+    )
+}
+
+/// Creates a pipeline layout holding one `size`-byte push-constant block
+/// visible to `stages`, and the graphics pipeline of the shader pair that
+/// reads it.
+///
+/// Both programs share the [`UiVertex`] input layout, the triangle-list
+/// topology and the straight-alpha blend, so they differ only by their
+/// shaders and by the stage flags of their block.
+fn create_program(
+    context: &PipelineContext,
+    stages: vk::ShaderStageFlags,
+    size: u32,
+    vertex_spirv: &[u8],
+    fragment_spirv: &[u8],
 ) -> Result<(vk::PipelineLayout, vk::Pipeline), CompositorError> {
     let device = context.device();
     let push_range = vk::PushConstantRange::default()
-        .stage_flags(vk::ShaderStageFlags::VERTEX)
+        .stage_flags(stages)
         .offset(0)
-        .size(VIEWPORT_PUSH_BYTES);
+        .size(size);
     let push_ranges = [push_range];
     let layout_info = vk::PipelineLayoutCreateInfo::default().push_constant_ranges(&push_ranges);
     // SAFETY: the push range is well-formed and lives for the call.
     let pipeline_layout = unsafe { device.create_pipeline_layout(&layout_info, None) }
         .map_err(CompositorError::PipelineLayoutCreate)?;
 
-    match create_ui_graphics_pipeline(device, pipeline_layout) {
+    match create_graphics_pipeline(device, pipeline_layout, vertex_spirv, fragment_spirv) {
         Ok(pipeline) => Ok((pipeline_layout, pipeline)),
         Err(err) => {
             // SAFETY: the layout was just created and owns no pipeline yet.
@@ -629,13 +874,15 @@ fn create_ui_pipeline(
     }
 }
 
-/// Builds the graphics pipeline from the shaders `codevar-kuitui` compiled.
-fn create_ui_graphics_pipeline(
+/// Builds a graphics pipeline from two embedded SPIR-V images.
+fn create_graphics_pipeline(
     device: &ash::Device,
     pipeline_layout: vk::PipelineLayout,
+    vertex_spirv: &[u8],
+    fragment_spirv: &[u8],
 ) -> Result<vk::Pipeline, CompositorError> {
-    let vertex_module = shader_module(device, codevar_kuitui::shaders::UI_VERT_SPIRV)?;
-    let fragment_module = match shader_module(device, codevar_kuitui::shaders::UI_FRAG_SPIRV) {
+    let vertex_module = shader_module(device, vertex_spirv)?;
+    let fragment_module = match shader_module(device, fragment_spirv) {
         Ok(module) => module,
         Err(err) => {
             // SAFETY: the vertex module was just created and is unused.
@@ -825,6 +1072,7 @@ mod tests {
     use super::*;
     use alloc::rc::Rc;
     use codevar_kuitui::color::Color;
+    use codevar_kuitui::effect::{EffectKinds, Gradient};
     use codevar_kuitui::paint::CornerRadii;
     use codevar_kuitui::text::TextStyle;
 
@@ -850,6 +1098,7 @@ mod tests {
         assert_eq!(span.first_vertex, 0);
         assert_eq!(span.vertex_count, 6);
         assert_eq!(span.clip, None);
+        assert_eq!(span.effect, None, "a plain record needs no effect program");
 
         let first = geometry.vertices()[0];
         assert_eq!(first.position, [4.0, 8.0]);
@@ -911,6 +1160,94 @@ mod tests {
         geometry.expand(&mut list);
         assert_eq!(geometry.spans()[0].clip, Some(clip));
         assert_eq!(geometry.spans()[1].clip, None);
+    }
+
+    #[test]
+    fn an_effect_span_keeps_the_layer_and_widens_its_quad() {
+        let bounds = Rect::from_min_size(Offset::new(10.0, 10.0), 40.0, 20.0);
+        let effect = Effect::new(bounds).blur(6.0, CornerRadii::uniform(3.0));
+        let mut list = DrawList::new();
+        list.push_effect(effect);
+        list.rect(bounds, CornerRadii::uniform(3.0), fill());
+        list.pop_effect();
+
+        let mut geometry = UiGeometry::new();
+        geometry.expand(&mut list);
+
+        let span = geometry.spans()[0];
+        assert_eq!(span.effect, Some(effect));
+        // Three sigmas of a six-pixel blur reach 18 pixels past every
+        // edge, and the shader needs those fragments to draw the halo.
+        assert_eq!(geometry.vertices()[0].position, [-8.0, -8.0]);
+        assert_eq!(geometry.vertices()[1].position, [68.0, -8.0]);
+    }
+
+    #[test]
+    fn the_effect_block_keeps_the_shader_offsets() {
+        assert_eq!(EFFECT_PUSH_BYTES, 104);
+        assert_eq!(core::mem::offset_of!(EffectParams, color_from), 0);
+        assert_eq!(core::mem::offset_of!(EffectParams, color_to), 16);
+        assert_eq!(core::mem::offset_of!(EffectParams, viewport), 32);
+        assert_eq!(core::mem::offset_of!(EffectParams, origin), 40);
+        assert_eq!(core::mem::offset_of!(EffectParams, size), 48);
+        assert_eq!(core::mem::offset_of!(EffectParams, axis_start), 56);
+        assert_eq!(core::mem::offset_of!(EffectParams, axis_end), 64);
+        assert_eq!(core::mem::offset_of!(EffectParams, blur_pixel), 72);
+        assert_eq!(core::mem::offset_of!(EffectParams, radii), 80);
+        assert_eq!(core::mem::offset_of!(EffectParams, rotation), 96);
+        assert_eq!(core::mem::offset_of!(EffectParams, kinds), 100);
+    }
+
+    #[test]
+    fn the_kind_bits_are_the_ones_the_shader_tests() {
+        // `ui_effect.frag.glsl` names these KIND_BLUR, KIND_PIXELATE,
+        // KIND_ROTATE and KIND_GRADIENT; the two sides meet in the push
+        // constants and nothing else checks them.
+        assert_eq!(EffectKinds::BLUR.bits(), 1);
+        assert_eq!(EffectKinds::PIXELATE.bits(), 2);
+        assert_eq!(EffectKinds::ROTATE.bits(), 4);
+        assert_eq!(EffectKinds::GRADIENT.bits(), 8);
+    }
+
+    #[test]
+    fn the_effect_parameters_carry_the_ramp_and_the_grid() {
+        let bounds = Rect::from_min_size(Offset::new(4.0, 6.0), 40.0, 20.0);
+        let gradient = Gradient::new(
+            Offset::new(4.0, 16.0),
+            Offset::new(44.0, 16.0),
+            Color::RED,
+            Color::BLUE,
+        );
+        let effect = Effect::new(bounds)
+            .pixelate(5.0)
+            .rotate(0.5)
+            .gradient(gradient, CornerRadii::uniform(2.0));
+
+        let params = effect_params(&effect, [800.0, 600.0]);
+        assert_eq!(params.viewport, [800.0, 600.0]);
+        assert_eq!(params.origin, [4.0, 6.0]);
+        assert_eq!(params.size, [40.0, 20.0]);
+        assert_eq!(params.axis_start, [4.0, 16.0]);
+        assert_eq!(params.axis_end, [44.0, 16.0]);
+        assert_eq!(params.color_from, channels(Color::RED));
+        assert_eq!(params.color_to, channels(Color::BLUE));
+        assert_eq!(params.blur_pixel, [0.0, 5.0]);
+        assert_eq!(params.rotation, 0.5);
+        assert_eq!(params.radii, [2.0, 2.0, 2.0, 2.0]);
+        assert_eq!(params.kinds, 2 | 4 | 8);
+    }
+
+    #[test]
+    fn a_layer_without_a_ramp_collapses_its_axis() {
+        let bounds = Rect::from_min_size(Offset::new(2.0, 2.0), 20.0, 10.0);
+        let effect = Effect::new(bounds).blur(3.0, CornerRadii::ZERO);
+
+        let params = effect_params(&effect, [100.0, 100.0]);
+        let center = [12.0, 7.0];
+        assert_eq!(params.axis_start, center);
+        assert_eq!(params.axis_end, center);
+        assert_eq!(params.blur_pixel, [3.0, 0.0]);
+        assert_eq!(params.kinds, 1);
     }
 
     #[test]
