@@ -1,0 +1,24 @@
+[package]
+name = "codevar-truetype-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "codevar_truetype_core"
+
+[features]
+default = []
+
+[dependencies]
+codevar-base = { workspace = true }
+codevar-io = { workspace = true }
+codevar-logger = { workspace = true }
+libm = { workspace = true }
+spin = { workspace = true }
+
+[lints]
+workspace = true

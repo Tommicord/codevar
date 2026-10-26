@@ -1,0 +1,43 @@
+# syntax=docker/dockerfile:1
+
+# Windows executables, cross-compiled from Linux with MinGW-w64
+# (`*-pc-windows-gnu` targets). Produces `codevar.exe` and
+# `codevar-oclc.exe`.
+#
+#   docker build -f docker/Dockerfile.windows \
+#       --build-arg WINDOWS_TARGET=i686-pc-windows-gnu \
+#       --target artifacts --output type=local,dest=dist/windows-i686 .
+#
+# MSVC targets cannot be built from Linux (they need the Windows SDK and
+# link.exe); use a Windows host with the MSVC toolchain for those.
+# `docker/build.sh windows` runs the GNU matrix.
+
+ARG RUST_VERSION=1.93
+FROM rust:${RUST_VERSION}-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc-mingw-w64-x86-64 \
+    gcc-mingw-w64-i686 \
+ && rm -rf /var/lib/apt/lists/*
+
+ARG WINDOWS_TARGET=x86_64-pc-windows-gnu
+ENV WINDOWS_TARGET=${WINDOWS_TARGET}
+
+RUN rustup target add x86_64-pc-windows-gnu i686-pc-windows-gnu
+
+ENV CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc \
+    CARGO_TARGET_I686_PC_WINDOWS_GNU_LINKER=i686-w64-mingw32-gcc
+
+WORKDIR /build
+COPY . .
+
+RUN --mount=type=cache,id=cargo-registry-windows,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=cargo-git-windows,target=/usr/local/cargo/git \
+    --mount=type=cache,id=cargo-target-windows,target=/build/target \
+    cargo build --locked --release --target "${WINDOWS_TARGET}" \
+        -p codevar-launcher -p codevar-oclc \
+ && mkdir -p /out \
+ && cp "target/${WINDOWS_TARGET}/release/"codevar*.exe /out/
+
+FROM scratch AS artifacts
+COPY --from=builder /out/ /

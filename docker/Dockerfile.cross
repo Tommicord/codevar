@@ -1,0 +1,37 @@
+# syntax=docker/dockerfile:1
+
+# Tier-3 hosted targets via the cross-rs toolchain images (FreeBSD, NetBSD,
+# Hermit, ...). CROSS_TARGET selects the Rust target triple and CROSS_IMAGE
+# the matching cross toolchain image; both must name the same target.
+#
+#   docker build -f docker/Dockerfile.cross \
+#       --build-arg CROSS_TARGET=aarch64-unknown-freebsd \
+#       --build-arg CROSS_IMAGE=ghcr.io/cross-rs/aarch64-unknown-freebsd:0.2.5 \
+#       --target artifacts --output type=local,dest=dist/freebsd-arm64 .
+#
+# Supported images: https://github.com/cross-rs/cross#supported-targets
+# `docker/build.sh freebsd|netbsd|hermit` runs the pinned defaults.
+
+ARG CROSS_TARGET=x86_64-unknown-freebsd
+ARG CROSS_VERSION=0.2.5
+FROM ghcr.io/cross-rs/${CROSS_TARGET}:${CROSS_VERSION} AS builder
+
+ARG CROSS_TARGET=x86_64-unknown-freebsd
+ENV CROSS_TARGET=${CROSS_TARGET}
+
+WORKDIR /build
+COPY . .
+
+# cross images use CARGO_HOME=/cargo and bake the per-target linker config
+# into /cargo/config.toml, so the cache mounts shadow only registry and git.
+RUN --mount=type=cache,id=cargo-registry-cross,target=/cargo/registry \
+    --mount=type=cache,id=cargo-git-cross,target=/cargo/git \
+    --mount=type=cache,id=cargo-target-cross,target=/build/target \
+    cargo build --locked --release --target "${CROSS_TARGET}" \
+        -p codevar-launcher -p codevar-oclc \
+ && mkdir -p /out \
+ && cp "target/${CROSS_TARGET}/release/codevar" /out/codevar \
+ && cp "target/${CROSS_TARGET}/release/codevar-oclc" /out/codevar-oclc
+
+FROM scratch AS artifacts
+COPY --from=builder /out/ /

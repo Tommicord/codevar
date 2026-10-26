@@ -1,0 +1,45 @@
+[package]
+name = "codevar-gpu-wg"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "WebGPU backend and compositor of the Codevar graphics stack"
+
+[lib]
+name = "codevar_gpu_wg"
+
+[dependencies]
+codevar-gpu-core = { workspace = true }
+libm = { workspace = true }
+# `wgpu-types` is pure vocabulary: the surface, texture and color types the
+# backend names in its public API. It carries no system dependency, so it is
+# available on every target (the wasm-only graphics calls are not).
+wgpu-types = { workspace = true }
+
+# The web backend exists only on wasm32: the browser is the only place a
+# WebGPU (and its WebGL2 fallback) surface can be created. On every other
+# target the crate compiles its platform stub instead, so the workspace
+# still builds and links without the graphics stack.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu-hal = { workspace = true, features = ["gles"] }
+web-sys = { workspace = true, features = [
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+    "HtmlElement",
+    "Node",
+    "OffscreenCanvas",
+    "Window",
+] }
+
+# The example draws through `wgpu-hal` directly and needs the bindings the
+# library only uses internally (`Closure`, `JsCast`, the `wasm_bindgen`
+# attribute). They are only reachable from a browser build.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen = { workspace = true }
+
+[lints]
+workspace = true

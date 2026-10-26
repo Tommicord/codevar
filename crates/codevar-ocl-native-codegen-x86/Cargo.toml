@@ -1,0 +1,24 @@
+[package]
+name = "codevar-ocl-native-codegen-x86"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "x86-64 back end of the Codevar OpenCL native code generator"
+
+[lib]
+name = "codevar_ocl_native_codegen_x86"
+
+[dependencies]
+codevar-ocl-native-codegen = { workspace = true }
+codevar-ocl-abi = { workspace = true }
+codevar-logger = { workspace = true }
+
+[dev-dependencies]
+libc = { workspace = true }
+codevar-ocl-ir = { workspace = true }
+
+[lints]
+workspace = true

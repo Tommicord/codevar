@@ -1,0 +1,242 @@
+[workspace]
+members = [
+    "crates/codevar-base",
+    "crates/codevar-tlsf-alloc",
+    "crates/codevar-mergen",
+    "crates/codevar-shake",
+    "crates/codevar-textlike-encode",
+    "crates/codevar-tls",
+    "crates/codevar-pretty-unwind",
+    "crates/codevar-unwinding",
+    "crates/codevar-sig-handler",
+    "crates/codevar-sig-module-base",
+    "crates/codevar-wredit",
+    "crates/codevar-packlow",
+    "crates/codevar-wsocket",
+    "crates/codevar-launcher",
+    "crates/codevar-wayland",
+    "crates/codevar-xdg-portal",
+    "crates/codevar-gpu-core",
+    "crates/codevar-gpu-vk",
+    "crates/codevar-gpu-wg",
+    "crates/codevar-kuitui",
+    "crates/codevar-kuitui-text",
+    "crates/codevar-kuitui-widget",
+    "crates/codevar-logger",
+    "crates/codevar-dbus",
+    "crates/codevar-time-util",
+    "crates/codevar-console-util",
+    "crates/codevar-env",
+    "crates/codevar-io",
+    "crates/codevar-target",
+    "crates/codevar-rt",
+    "crates/codevar-truetype-core",
+    "crates/codevar-truetype-emoji-color",
+    "crates/codevar-truetype-gzip",
+    "crates/codevar-truetype-smooth",
+    "crates/codevar-truetype-sfnt",
+    "crates/codevar-truetype-psnames",
+    "crates/codevar-truetype-pshinter",
+    "crates/codevar-truetype-autofit",
+    "crates/codevar-truetype-glyf",
+    "crates/codevar-cli-parse",
+    "crates/codevar-ocl-lex",
+    "crates/codevar-oclc",
+    "crates/codevar-ocl-parse",
+    "crates/codevar-ocl-sar",
+    "crates/codevar-ocl-ir",
+    "crates/codevar-ocl-cubin",
+    "crates/codevar-ocl-asm",
+    "crates/codevar-ocl",
+    "crates/codevar-ocl-abi",
+    "crates/codevar-ocl-native-codegen",
+    "crates/codevar-ocl-native-codegen-x86",
+    "crates/codevar-ocl-native-codegen-thumbv7m",
+    "crates/codevar-ocl-native-codegen-aarch64",
+    "crates/codevar-ocl-tc",
+    "crates/codevar-ocl-bare",
+    "crates/codevar-inssched",
+    "crates/codevar-kuitui-control",
+    "crates/codevar-kuitui-control-linux",
+    "crates/codevar-kuitui-control-windows",
+    "crates/codevar-kuitui-control-macos",
+    "crates/codevar-kuitui-control-wasm",
+]
+resolver = "2"
+
+[workspace.package]
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.93.0"
+authors = ["Tommicord"]
+license = "Apache-2.0"
+repository = "https://github.com/Tommicord/codevar"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+
+[workspace.dependencies]
+cc = "1.2"
+proc-macro2 = { version = "1.0", default-features = false }
+quote = { version = "1.0", default-features = false }
+ash = { version = "0.38", default-features = false }
+libc = { version = "0.2", default-features = false }
+cfg-if = "1.0.5"
+cargo-ndk = "4.1.2"
+sha1 = { version = "0.10", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+webpki-roots = { version = "1", default-features = false }
+arc-swap = { version = "1.7", default-features = false }
+heapless = { version = "0.9.3", default-features = false }
+windows-link = "0.100.0"
+wgpu-hal = { version = "30.0.1", default-features = false }
+wgpu-types = { version = "30.0.1", default-features = false }
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+web-sys = "0.3"
+spin = { version = "0.12.3", default-features = false, features = ["once", "mutex", "rwlock", "barrier", "lazy", "spin_mutex"] }
+hkdf = { version = "0.12", default-features = false }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Console", "Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader"] }
+hmac = { version = "0.12", default-features = false }
+bytes = { version = "1.12.1", default-features = false }
+const_format = { version = "0.2.36", features = ["fmt"], default-features = false }
+rustc-demangle = "0.1"
+p256 = { version = "0.13", features = ["ecdsa", "ecdh", "pkcs8", "pem"], default-features = false }
+p384 = { version = "0.13", features = ["ecdsa", "ecdh", "pkcs8", "pem"], default-features = false }
+x25519-dalek = { version = "2", features = ["static_secrets"], default-features = false }
+rsa = { version = "0.9", features = ["sha2", "pem"], default-features = false }
+ed25519-dalek = { version = "2.1", features = ["pkcs8", "pem", "rand_core"], default-features = false }
+ecdsa = { version = "0.16", features = ["der"], default-features = false }
+elliptic-curve = { version = "0.13", features = ["pkcs8", "sec1"], default-features = false }
+pkcs8 = { version = "0.10", features = ["pem"], default-features = false }
+sec1 = { version = "0.7", features = ["pem", "der"], default-features = false }
+defmt = { version = "0.3" }
+x509-parser = { version = "0.17", default-features = false, features = ["verify"] }
+nom = { version = "7.1.3", default-features = false, features = ["alloc"] }
+minimal-lexical = { version = "0.2.1", default-features = false, features = ["alloc"] }
+thiserror = { version = "2.0", default-features = false }
+time = { version = "0.3", default-features = false, features = ["alloc"] }
+displaydoc = { version = "0.2", default-features = false }
+data-encoding = { version = "2.11", default-features = false, features = ["alloc"] }
+num-bigint = { version = "0.4", default-features = false, features = ["alloc"] }
+num-integer = { version = "0.1", default-features = false, features = ["alloc"] }
+rand = { version = "0.8", default-features = false, features = ["alloc"] }
+asn1-rs = { version = "0.7", default-features = false, features = ["alloc"] }
+shlex = { version = "2.0", default-features = false }
+semver = { version = "1.0", default-features = false, features = ["alloc"] }
+getrandom = { version = "0.2", default-features = false }
+rand_core = { version = "0.6", default-features = false }
+bsize = "0.3"
+count-digits = "0.5.1"
+subtle = { version = "2.6", default-features = false }
+unicode-ident = { version = "1.0.24", default-features = false }
+deranged = { version = "0.5.2", default-features = false }
+num-conv = { version = "0.2.2", default-features = false }
+libm = "0.2"
+powerfmt = { version = "0.2.0", default-features = false }
+zeroize = { version = "1.8", features = ["derive"], default-features = false }
+gettid = "0.1.4"
+pem = { version = "3", default-features = false }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+codevar-dbus = { path = "crates/codevar-dbus" }
+codevar-mergen = { path = "crates/codevar-mergen" }
+codevar-shake = { path = "crates/codevar-shake" }
+codevar-base = { path = "crates/codevar-base" }
+codevar-tlsf-alloc = { path = "crates/codevar-tlsf-alloc" }
+codevar-textlike-encode = { path = "crates/codevar-textlike-encode" }
+codevar-tls = { path = "crates/codevar-tls" }
+codevar-wayland = { path = "crates/codevar-wayland" }
+codevar-time-util = { path = "crates/codevar-time-util" }
+codevar-time-core = { path = "crates/codevar-time-core" }
+codevar-wredit = { path = "crates/codevar-wredit" }
+codevar-packlow = { path = "crates/codevar-packlow" }
+codevar-wsocket = { path = "crates/codevar-wsocket" }
+codevar-sig-handler = { path = "crates/codevar-sig-handler" }
+codevar-sig-module-base = { path = "crates/codevar-sig-module-base" }
+codevar-unwinding = { path = "crates/codevar-unwinding" }
+codevar-pretty-unwind = { path = "crates/codevar-pretty-unwind" }
+codevar-xdg-portal = { path = "crates/codevar-xdg-portal" }
+codevar-gpu-core = { path = "crates/codevar-gpu-core" }
+codevar-gpu-vk = { path = "crates/codevar-gpu-vk" }
+codevar-gpu-wg = { path = "crates/codevar-gpu-wg" }
+codevar-kuitui = { path = "crates/codevar-kuitui" }
+codevar-kuitui-text = { path = "crates/codevar-kuitui-text" }
+codevar-kuitui-widget = { path = "crates/codevar-kuitui-widget" }
+codevar-kuitui-control = { path = "crates/codevar-kuitui-control" }
+codevar-kuitui-control-linux = { path = "crates/codevar-kuitui-control-linux" }
+codevar-kuitui-control-windows = { path = "crates/codevar-kuitui-control-windows" }
+codevar-kuitui-control-macos = { path = "crates/codevar-kuitui-control-macos" }
+codevar-kuitui-control-wasm = { path = "crates/codevar-kuitui-control-wasm" }
+codevar-logger = { path = "crates/codevar-logger" }
+codevar-console-util = { path = "crates/codevar-console-util" }
+codevar-io = { path = "crates/codevar-io" }
+codevar-env = { path = "crates/codevar-env" }
+codevar-pathbuf = { path = "crates/codevar-pathbuf" }
+codevar-target = { path = "crates/codevar-target" }
+codevar-rt = { path = "crates/codevar-rt" }
+codevar-truetype-core = { path = "crates/codevar-truetype-core" }
+codevar-truetype-emoji-color = { path = "crates/codevar-truetype-emoji-color" }
+codevar-truetype-gzip = { path = "crates/codevar-truetype-gzip" }
+codevar-truetype-smooth = { path = "crates/codevar-truetype-smooth" }
+codevar-truetype-sfnt = { path = "crates/codevar-truetype-sfnt" }
+codevar-truetype-psnames = { path = "crates/codevar-truetype-psnames" }
+codevar-truetype-pshinter = { path = "crates/codevar-truetype-pshinter" }
+codevar-truetype-autofit = { path = "crates/codevar-truetype-autofit" }
+codevar-truetype-glyf = { path = "crates/codevar-truetype-glyf" }
+codevar-ocl-lex = { path = "crates/codevar-ocl-lex" }
+codevar-cli-parse = { path = "crates/codevar-cli-parse" }
+codevar-oclc = { path = "crates/codevar-oclc" }
+codevar-ocl-parse = { path = "crates/codevar-ocl-parse" }
+codevar-ocl-sar = { path = "crates/codevar-ocl-sar" }
+codevar-ocl-ir = { path = "crates/codevar-ocl-ir" }
+codevar-ocl-asm = { path = "crates/codevar-ocl-asm" }
+codevar-ocl-cubin = { path = "crates/codevar-ocl-cubin" }
+codevar-ocl-abi = { path = "crates/codevar-ocl-abi" }
+codevar-ocl-native-codegen = { path = "crates/codevar-ocl-native-codegen" }
+codevar-ocl-native-codegen-x86 = { path = "crates/codevar-ocl-native-codegen-x86" }
+codevar-ocl-native-codegen-thumbv7m = { path = "crates/codevar-ocl-native-codegen-thumbv7m" }
+codevar-ocl-native-codegen-aarch64 = { path = "crates/codevar-ocl-native-codegen-aarch64" }
+codevar-ocl-tc = { path = "crates/codevar-ocl-tc" }
+codevar-ocl-bare = { path = "crates/codevar-ocl-bare" }
+codevar-ocl = { path = "crates/codevar-ocl" }
+codevar-inssched = { path = "crates/codevar-inssched" }
+
+[profile.dev]
+opt-level = 0
+lto = false
+debug = true
+codegen-units = 8
+panic = "abort"
+strip = "none"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+overflow-checks = false
+debug-assertions = false
+
+[profile.bench]
+inherits = "release"
+# Benchmarks measure speed, not binary size: the release profile's
+# `opt-level = "z"` would otherwise distort every result.
+opt-level = 3
+# Thin LTO keeps cross-crate inlining without the very long fat-LTO
+# link of the (large) criterion dependency tree.
+lto = "thin"
+debug = true
+
+[profile.dist]
+inherits = "release"
+strip = true
+lto = "fat"
+codegen-units = 1
+opt-level = "z"
+panic = "abort"

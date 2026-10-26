@@ -1,0 +1,46 @@
+[package]
+name = "codevar-gpu-vk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Vulkan backend and compositor of the Codevar graphics stack"
+
+[lib]
+name = "codevar_gpu_vk"
+
+[dependencies]
+ash = { workspace = true }
+libc = { workspace = true }
+spin = { workspace = true }
+libm = { workspace = true }
+codevar-gpu-core = { workspace = true }
+codevar-base = { workspace = true }
+codevar-wayland = { workspace = true }
+codevar-kuitui = { workspace = true }
+codevar-logger = { workspace = true }
+codevar-console-util = { workspace = true }
+codevar-time-core = { workspace = true }
+codevar-env = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+codevar-pathbuf = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-link = { workspace = true }
+windows = { workspace = true, features = [
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Devices_Properties",
+] }
+
+# The examples drive the full text stack, which the library itself must not
+# depend on: the widget layer and the text renderer sit above this crate and
+# would otherwise form a dependency cycle.
+[dev-dependencies]
+codevar-kuitui-widget = { workspace = true }
+codevar-kuitui-text = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,9 @@
+[ndk]
+path = "$ENV{ANDROID_NDK_ROOT}"
+
+[android]
+platform = 29
+build_targets = ["aarch64-linux-android", "armv7-linux-androideabi", "x86_64-linux-android"]
+
+[libc]
+static = true

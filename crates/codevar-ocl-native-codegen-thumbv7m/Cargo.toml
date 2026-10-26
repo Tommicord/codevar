@@ -1,0 +1,23 @@
+[package]
+name = "codevar-ocl-native-codegen-thumbv7m"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ARMv7-M (Thumb-2) back end of the Codevar OpenCL native code generator"
+
+[lib]
+name = "codevar_ocl_native_codegen_thumbv7m"
+
+[dependencies]
+codevar-ocl-native-codegen = { workspace = true }
+codevar-ocl-abi = { workspace = true }
+codevar-logger = { workspace = true }
+
+[dev-dependencies]
+codevar-ocl-native-codegen = { workspace = true }
+
+[lints]
+workspace = true

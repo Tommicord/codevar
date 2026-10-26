@@ -1,0 +1,15 @@
+[package]
+name = "codevar-target"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Target platform services: the seam between portable code and the host"
+
+[dependencies]
+libc = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,22 @@
+[package]
+name = "codevar-truetype-sfnt"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "codevar_truetype_sfnt"
+
+[dependencies]
+bytes = { workspace = true, default-features = false }
+spin = { workspace = true }
+codevar-logger = { workspace = true }
+codevar-truetype-core = { workspace = true }
+codevar-truetype-gzip = { workspace = true }
+codevar-truetype-psnames = { workspace = true }
+
+[lints]
+workspace = true

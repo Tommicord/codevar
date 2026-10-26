@@ -1,0 +1,31 @@
+[package]
+name = "codevar-kuitui-text"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Glyph atlas and text renderer for the Kuitui UI framework"
+
+[lib]
+name = "codevar_kuitui_text"
+
+[dependencies]
+codevar-kuitui = { workspace = true }
+
+# The renderer has one adapter per graphics backend. Only the backend that
+# can build on the current target is pulled in: Vulkan (ash) does not build
+# on wasm32, and the WebGPU backend only exists on wasm32.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ash = { workspace = true }
+codevar-gpu-vk = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+codevar-gpu-wg = { workspace = true }
+libm = { workspace = true }
+wgpu-hal = { workspace = true, features = ["gles"] }
+wgpu-types = { workspace = true }
+
+[lints]
+workspace = true

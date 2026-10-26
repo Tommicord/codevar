@@ -1,0 +1,28 @@
+[package]
+name = "codevar-console-util"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+wasm = []
+
+[lib]
+name = "codevar_console_util"
+
+[dependencies]
+libc = { workspace = true }
+heapless = { workspace = true }
+codevar-textlike-encode = { workspace = true }
+codevar-env = { workspace = true }
+codevar-io = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Console"] }
+
+[lints]
+workspace = true

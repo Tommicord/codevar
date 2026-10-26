@@ -1,0 +1,22 @@
+[package]
+name = "codevar-rt"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bare-metal runtime: vector table, reset stub and memory initialization for Cortex-M targets"
+
+[features]
+# Enables the `build` module: the linker-script helpers that a binary's
+# `build.rs` calls. Build scripts are `std` programs, so the module is `std`
+# only, and Cargo keeps build-dependency features out of the target graph
+# (resolver 2) — a `thumbv7m-none-eabi` build never sees it.
+std = []
+
+[dependencies]
+codevar-target = { workspace = true }
+
+[lints]
+workspace = true

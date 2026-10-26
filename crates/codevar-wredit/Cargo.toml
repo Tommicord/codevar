@@ -1,0 +1,41 @@
+[package]
+name = "codevar-wredit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "codevar_wredit"
+
+[dependencies]
+spin = { workspace = true }
+codevar-base = { workspace = true }
+codevar-logger = { workspace = true }
+codevar-textlike-encode = { workspace = true }
+codevar-ocl = { workspace = true }
+codevar-oclc = { workspace = true }
+codevar-gpu-core = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[build-dependencies]
+cc = { workspace = true }
+
+[[bench]]
+name = "text_core"
+harness = false
+
+[[bench]]
+name = "primitives"
+harness = false
+
+[[bench]]
+name = "hot"
+harness = false
+
+[lints]
+workspace = true

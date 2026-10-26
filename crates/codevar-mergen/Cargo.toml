@@ -1,0 +1,28 @@
+[package]
+name = "codevar-mergen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "codevar_mergen"
+
+[dependencies]
+codevar-shake = { workspace = true }
+cfg-if = { workspace = true }
+
+# `codevar-base` supplies the pinned CPU feature probe (`cpuid`), but its
+# transitive dependency `codevar-time-core` does not build for
+# `wasm32-unknown-unknown`. On `wasm32` the SIMD dispatch answers from
+# `cfg(target_feature)` only.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+codevar-base = { workspace = true }
+
+[target.'cfg(all(unix, not(target_arch = "wasm32")))'.dependencies]
+libc = { workspace = true }
+
+[lints]
+workspace = true

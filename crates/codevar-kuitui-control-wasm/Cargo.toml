@@ -1,0 +1,38 @@
+[package]
+name = "codevar-kuitui-control-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "DOM event backend for codevar-kuitui-control"
+
+[lib]
+name = "codevar_kuitui_control_wasm"
+
+[dependencies]
+codevar-kuitui-control = { workspace = true }
+codevar-logger = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { workspace = true }
+js-sys = { workspace = true }
+web-sys = { workspace = true, features = [
+    "AddEventListenerOptions",
+    "Document",
+    "DomRect",
+    "Event",
+    "EventTarget",
+    "Gamepad",
+    "GamepadEvent",
+    "KeyboardEvent",
+    "MouseEvent",
+    "Navigator",
+    "PointerEvent",
+    "Window",
+    "WheelEvent",
+] }
+
+[lints]
+workspace = true

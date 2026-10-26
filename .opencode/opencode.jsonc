@@ -1,0 +1,43 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  // AGENTS.md is auto-discovered by OpenCode. It is listed explicitly so the
+  // contract also reaches harnesses that only read the `instructions` list.
+  "instructions": ["AGENTS.md"],
+
+  // Parallel agents each work in their own worktree so their changes cannot
+  // collide. `worktree_create(name: "...")` lands under `.lane/trees/<name>`.
+  "worktree": {
+    "directory": ".lane/trees"
+  },
+
+  // Keep the tree rustfmt-clean after every edit, so `cargo fmt --check`
+  // never fails in CI and diffs carry signal only. `--edition 2024` is
+  // required: rustfmt defaults to 2015 and the workspace uses edition 2024.
+  // rustfmt walks up from the file and picks up the root `.rustfmt.toml`.
+  "formatter": {
+    "rustfmt": {
+      "command": ["rustfmt", "--edition", "2024", "$FILE"],
+      "extensions": [".rs"]
+    }
+  },
+
+  "permissions": [
+    // Publishing is the human's call, never the agent's.
+    { "action": "shell", "resource": "git push", "effect": "deny" },
+    { "action": "shell", "resource": "git push *", "effect": "deny" },
+
+    // Destructive history operations need explicit approval.
+    { "action": "shell", "resource": "git reset --hard *", "effect": "ask" },
+    { "action": "shell", "resource": "git clean *", "effect": "ask" },
+    { "action": "shell", "resource": "git rebase *", "effect": "ask" },
+    { "action": "shell", "resource": "git checkout -- *", "effect": "ask" },
+
+    // Skills are the intended way to load project-specific procedures.
+    { "action": "skill", "resource": "*", "effect": "allow" },
+
+    // Committing is expected: AGENTS.md "Commit discipline" requires
+    // incremental checkpoints. Publishing stays denied above.
+    { "action": "shell", "resource": "git commit*", "effect": "allow" }
+  ]
+}

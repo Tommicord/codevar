@@ -1,0 +1,21 @@
+[package]
+name = "codevar-gpu-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Backend-neutral GPU platform traits shared by the Codevar graphics backends"
+
+[lib]
+name = "codevar_gpu_core"
+
+[dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-link = { workspace = true }
+
+[lints]
+workspace = true
