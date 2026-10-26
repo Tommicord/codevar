@@ -61,10 +61,13 @@ pub use codevar_kuitui_control::{DeviceId, KeyCode, KeyState, PointerButton, Tim
 
 use crate::event::EventResult;
 
+pub mod bridge;
 pub mod keyboard;
 pub mod mouse;
 pub mod pointer;
 pub mod pump;
+
+pub use bridge::{ToTreeEvent, bridge_frame};
 
 pub use keyboard::{
     KEYBOARD, KeyTransition, KeyboardBinding, KeyboardHandler, KeyboardModifiers, KeyboardSnapshot,
