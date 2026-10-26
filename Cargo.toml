@@ -163,6 +163,7 @@ codevar-gpu-core = { path = "crates/codevar-gpu-core" }
 codevar-gpu-vk = { path = "crates/codevar-gpu-vk" }
 codevar-gpu-wg = { path = "crates/codevar-gpu-wg" }
 codevar-kuitui = { path = "crates/codevar-kuitui" }
+codevar-kuitui-button = { path = "crates/codevar-kuitui-button" }
 codevar-kuitui-text = { path = "crates/codevar-kuitui-text" }
 codevar-kuitui-widget = { path = "crates/codevar-kuitui-widget" }
 codevar-kuitui-control = { path = "crates/codevar-kuitui-control" }

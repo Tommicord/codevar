@@ -24,6 +24,7 @@ codevar-logger = { workspace = true }
 codevar-console-util = { workspace = true }
 codevar-time-core = { workspace = true }
 codevar-env = { workspace = true }
+codevar-inssched = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 codevar-pathbuf = { workspace = true }
@@ -41,6 +42,7 @@ windows = { workspace = true, features = [
 [dev-dependencies]
 codevar-kuitui-widget = { workspace = true }
 codevar-kuitui-text = { workspace = true }
+codevar-kuitui-button = { workspace = true }
 
 [lints]
 workspace = true
