@@ -70,10 +70,7 @@ pub use keyboard::{
     KEYBOARD, KeyTransition, KeyboardBinding, KeyboardHandler, KeyboardModifiers, KeyboardSnapshot,
     KeyboardState,
 };
-pub use microphone::{
-    AudioLevels, MICROPHONE, MicrophoneBinding, MicrophoneHandler, MicrophoneSnapshot, MicrophoneState,
-    MicrophoneUpdate,
-};
+pub use microphone::AudioLevels;
 pub use mouse::{BoundId, GeometryCache, GeometryIndex, Hit, VertexBounds};
 pub use pointer::{
     MouseBinding, MouseHandler, POINTER, PointerButtons, PointerPhase, PointerSnapshot, PointerState,
