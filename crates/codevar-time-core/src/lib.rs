@@ -91,7 +91,9 @@ mod sys {
         };
         // SAFETY: `ts` is a live, correctly aligned `timespec` for the
         // duration of the call, and `clock_id` is passed through unchanged.
-        let rc = unsafe { libc::clock_gettime(clock_id, &mut ts) };
+        // `clockid_t` is `u32` on Apple platforms and `i32` elsewhere, so the
+        // cast is required to keep both targets compiling.
+        let rc = unsafe { libc::clock_gettime(clock_id as libc::clockid_t, &mut ts) };
         if rc != 0 {
             return Err(TimeError::SyscallError(rc));
         }
