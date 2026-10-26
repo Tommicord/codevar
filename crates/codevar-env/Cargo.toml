@@ -19,7 +19,7 @@ libc = { workspace = true }
 codevar-pathbuf = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = ["Win32_Foundation"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Environment"] }
 
 [lints]
 workspace = true

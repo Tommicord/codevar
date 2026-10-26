@@ -48,8 +48,11 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
+#[cfg(any(unix, target_os = "macos"))]
 use alloc::ffi::CString;
 use alloc::string::String;
+#[cfg(windows)]
+use alloc::vec::Vec;
 use codevar_pathbuf::PathBuilder;
 
 /// Reads an environment variable using platform-specific APIs.
@@ -85,17 +88,21 @@ pub fn env_var(key: &str) -> Option<String> {
     #[cfg(windows)]
     {
         let wide_key = encode_utf16(key);
-        let size = unsafe { GetEnvironmentVariableW(&wide_key, None as *mut u16, 0) };
+        let name = windows::core::PCWSTR::from_raw(wide_key.as_ptr());
+        // SAFETY: `name` is a NUL-terminated UTF-16 string; a null buffer asks
+        // the API for the required length.
+        let size = unsafe { GetEnvironmentVariableW(name, None) };
         if size == 0 {
             return None;
         }
-        let mut buf: Vec<u16> = Vec::with_capacity(size as usize);
-        let result = unsafe { GetEnvironmentVariableW(&wide_key, buf.as_mut_ptr(), size) };
+        let mut buf: Vec<u16> = alloc::vec![0; size as usize];
+        // SAFETY: `name` is NUL-terminated and `buf` is writable for `size`
+        // code units.
+        let result = unsafe { GetEnvironmentVariableW(name, Some(buf.as_mut_slice())) };
         if result == 0 {
             return None;
         }
-        let len = unsafe { result as usize };
-        buf.set_len(len);
+        buf.truncate(result as usize);
         String::from_utf16(&buf).ok()
     }
     #[cfg(not(any(unix, target_os = "macos", windows)))]
@@ -117,7 +124,7 @@ fn encode_utf16(s: &str) -> Vec<u16> {
 
 /// Windows `GetEnvironmentVariableW` import.
 #[cfg(windows)]
-use windows::Win32::System::Threading::GetEnvironmentVariableW;
+use windows::Win32::System::Environment::GetEnvironmentVariableW;
 
 /// Leak a `String` to obtain a `&'static str`.
 #[inline]
