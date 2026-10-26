@@ -443,6 +443,3 @@ impl Button for ColorableTextButton {
         alloc::vec![self.button.label_node::<ColorableText>()]
     }
 }
-
-#[cfg(test)]
-mod tests;

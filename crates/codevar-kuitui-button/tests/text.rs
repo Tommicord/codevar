@@ -15,9 +15,10 @@
 
 //! Behavior of the label and of the two text buttons.
 
-use super::*;
-use codevar_kuitui::text::TextSpan;
+use codevar_kuitui::prelude::*;
 use codevar_kuitui::{DrawList, DrawVisitor, Offset, TextStyle};
+use codevar_kuitui_button::*;
+use std::rc::Rc;
 
 /// The runs a display list draws, in the order it recorded them.
 #[derive(Default)]
@@ -117,7 +118,7 @@ fn the_label_rebuilds_when_the_theme_changes() {
 #[test]
 fn every_span_of_the_content_reaches_the_label() {
     let theme = Theme::light();
-    let content = TextContent::from_spans(alloc::vec![TextSpan::new("Save"), TextSpan::new(" as draft"),]);
+    let content = TextContent::from_spans(vec![TextSpan::new("Save"), TextSpan::new(" as draft")]);
     let mut node = label(content, ButtonFlags::STANDARD);
     assert_eq!(runs_in(&mut node, &theme).drawn(), "Save as draft");
 }

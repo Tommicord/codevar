@@ -415,6 +415,3 @@ fn paint_rounded(scope: &mut DrawScope<'_>, rect: Rect, radii: CornerRadii, colo
     scope.fill_rounded_rect(rect, radii, color);
     scope.pop_effect();
 }
-
-#[cfg(test)]
-mod tests;

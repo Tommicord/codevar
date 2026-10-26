@@ -15,11 +15,14 @@
 
 //! Behavior of the [`Button`] trait and of the chrome it builds.
 
-use super::*;
 use codevar_kuitui::{
-    Composition, DrawList, DrawVisitor, EffectKinds, Paint, PointerEvent, Row, Text, TextStyle, Theme,
+    ColorScheme, Composition, Constraints, CornerRadii, DrawList, DrawVisitor, Effect, EffectKinds, Event,
+    InteractionSource, InteractionState, Node, Offset, Paint, PointerEvent, PointerEventKind, Rect, Row,
+    Size, Text, TextStyle, Theme,
 };
+use codevar_kuitui_button::*;
 use core::cell::Cell;
+use std::rc::Rc;
 
 /// The button of the tests: it counts the clicks it answers.
 struct TestButton {
@@ -176,7 +179,7 @@ fn recorded(node: &mut Node, theme: &Theme, size: Size) -> Vec<(Option<Effect>, 
 /// release outside the button be told apart from one inside it.
 fn composed(button: TestButton, size: Size) -> Composition<'static> {
     let mut composition = Composition::new(Theme::light());
-    composition.set_content(move |_| Node::new(Row::new()).with_children(alloc::vec![button.node()]));
+    composition.set_content(move |_| Node::new(Row::new()).with_children(vec![button.node()]));
     composition.recompose(true);
     composition.layout(size, true);
     composition
@@ -409,11 +412,7 @@ fn a_focusable_button_takes_the_focus_on_press() {
     let mut composition = composed(button, size);
     composition.handle_event(&pointer(PointerEventKind::Down, Offset::new(10.0, 10.0)));
     let focused: Vec<usize> = Vec::from(composition.focus().unwrap_or_default());
-    assert_eq!(
-        focused,
-        alloc::vec![0],
-        "the button is the first child of the row"
-    );
+    assert_eq!(focused, vec![0], "the button is the first child of the row");
     assert!(
         source.state().contains(InteractionState::FOCUSED),
         "the focus is reported to the source"
