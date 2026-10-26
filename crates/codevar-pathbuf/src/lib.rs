@@ -1029,6 +1029,8 @@ mod unix {
 /// Windows implementation using the Win32 API.
 #[cfg(windows)]
 mod windows {
+    #![allow(non_snake_case)]
+
     use super::*;
     use alloc::vec;
     use core::ffi::c_void;
@@ -1131,14 +1133,6 @@ mod windows {
                     code: code as i32,
                 });
             }
-            if bytes.len() + read as usize > MAX_FILE_SIZE {
-                // SAFETY: the handle is valid and will be closed.
-                unsafe { CloseHandle(handle) };
-                return Err(PathError::Io {
-                    op: "ReadFile",
-                    code: 0,
-                });
-            }
             bytes.extend_from_slice(&buffer[..read as usize]);
         }
         Ok(bytes)
@@ -1199,7 +1193,7 @@ mod windows {
         let mut offset = 0usize;
         while offset < bytes.len() {
             let mut written = 0u32;
-            let chunk = (bytes.len() - offset).min(usize::from(u32::MAX));
+            let chunk = (bytes.len() - offset).min(u32::MAX as usize);
             // SAFETY: `handle` is valid, `bytes[offset..]` is readable.
             let ok = unsafe {
                 WriteFile(
@@ -1226,8 +1220,8 @@ mod windows {
     }
 
     fn to_utf16(s: &str) -> Vec<u16> {
-        let mut out: Vec<u16> = Vec::with_capacity(s.len());
-        encode_utf16::encode_utf16(s.as_bytes(), &mut out);
+        let mut out: Vec<u16> = Vec::with_capacity(s.len() + 1);
+        out.extend(s.encode_utf16());
         out.push(0);
         out
     }
