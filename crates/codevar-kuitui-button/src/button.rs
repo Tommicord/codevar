@@ -337,7 +337,9 @@ impl Widget for ButtonChrome {
         for index in 0..count {
             let size = scope.child_size(index);
             let y = top + (row_height - size.height) * 0.5;
-            scope.place_child(index, Offset::new(x - bounds.left(), y - bounds.top()));
+            // The scope adds the origin of the widget, so the offset is the
+            // position of the child in the coordinate space of the chrome.
+            scope.place_child(index, Offset::new(x, y));
             x += size.width + self.spacing;
         }
     }
