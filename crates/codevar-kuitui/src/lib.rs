@@ -101,6 +101,7 @@ extern crate alloc;
 
 pub mod color;
 pub mod compose;
+pub mod driver;
 pub mod event;
 pub mod geometry;
 pub mod input;
@@ -127,6 +128,7 @@ pub mod window;
 
 pub use color::{Color, ColorScheme};
 pub use compose::{Composer, Composition, Recomposition};
+pub use driver::{FrameDriver, FrameReport};
 pub use event::{Event, EventResult, KeyEvent, PointerButton, PointerEvent, PointerEventKind};
 pub use geometry::{Alignment, Constraints, EdgeInsets, Offset, Rect, Size};
 #[doc(hidden)]
