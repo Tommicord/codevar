@@ -58,6 +58,11 @@ pub const DISABLED_CONTAINER_ALPHA: f32 = 0.12;
 /// The alpha of the `on` color a disabled content is drawn with.
 pub const DISABLED_CONTENT_ALPHA: f32 = 0.38;
 
+/// The alpha of the outline a disabled button keeps: the outline of a
+/// disabled outlined button is the `outline` role at twelve percent, the
+/// same fraction its container is drawn with.
+pub const DISABLED_OUTLINE_ALPHA: f32 = 0.12;
+
 /// The color of the silhouette a button's shadow is drawn with.
 pub const SHADOW_COLOR: Color = Color::BLACK.with_alpha(0.35);
 
