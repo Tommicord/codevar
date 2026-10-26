@@ -43,5 +43,7 @@
 //! per-frame pick costs one hash pass and 64 lookups.
 
 mod bounds;
+mod index;
 
 pub use bounds::{BoundId, VertexBounds};
+pub use index::{GRID_CELLS, GRID_SIDE, GeometryIndex, Hit, MAX_BOUNDS};

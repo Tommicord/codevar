@@ -68,7 +68,7 @@ pub use keyboard::{
     KEYBOARD, KeyTransition, KeyboardBinding, KeyboardHandler, KeyboardModifiers, KeyboardSnapshot,
     KeyboardState,
 };
-pub use mouse::{BoundId, VertexBounds};
+pub use mouse::{BoundId, GeometryIndex, Hit, VertexBounds};
 
 /// A widget that consumes normalized input.
 ///
