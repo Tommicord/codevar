@@ -85,7 +85,12 @@ enum ModifierOp {
         height: Option<f32>,
     },
     /// Paints a background behind the widget.
-    Background(Color),
+    Background {
+        /// The color of the container.
+        color: Color,
+        /// The radii of the corners of the container.
+        radii: CornerRadii,
+    },
     /// Paints a border around the widget.
     Border {
         /// The color of the border.
@@ -171,7 +176,23 @@ impl Modifier {
     /// Paints `color` behind the widget.
     #[must_use]
     pub fn background(mut self, color: Color) -> Self {
-        self.ops.push(ModifierOp::Background(color));
+        self.ops.push(ModifierOp::Background {
+            color,
+            radii: CornerRadii::ZERO,
+        });
+        self
+    }
+
+    /// Paints `color` behind the widget, with a rounded container.
+    ///
+    /// The corners are asked of the backend that replays the layer: the
+    /// container becomes an effect layer whose signed distance rounds it,
+    /// and the recorded rectangle keeps the color for a backend that
+    /// draws a plain fill.
+    #[must_use]
+    pub fn rounded_background(mut self, color: Color, radii: CornerRadii) -> Self {
+        self.ops
+            .push(ModifierOp::Background { color, radii });
         self
     }
 
@@ -412,7 +433,7 @@ impl Modifier {
     /// The background of the widget, if any.
     fn background_color(&self) -> Option<Color> {
         self.ops.iter().rev().find_map(|op| match op {
-            ModifierOp::Background(color) => Some(*color),
+            ModifierOp::Background { color, .. } => Some(*color),
             _ => None,
         })
     }
@@ -435,12 +456,17 @@ impl Modifier {
 
     /// The radii of the container of the node, from the op that asks
     /// for a rounded one.
+    ///
+    /// An op that asks for no rounding does not answer: a background
+    /// added after a blur keeps the corners the blur asked for.
     fn container_radii(&self) -> CornerRadii {
         self.ops
             .iter()
             .rev()
             .find_map(|op| match op {
-                ModifierOp::Blur { radii, .. } | ModifierOp::Gradient { radii, .. } => Some(*radii),
+                ModifierOp::Blur { radii, .. }
+                | ModifierOp::Gradient { radii, .. }
+                | ModifierOp::Background { radii, .. } => (*radii != CornerRadii::ZERO).then_some(*radii),
                 _ => None,
             })
             .unwrap_or(CornerRadii::ZERO)
@@ -485,6 +511,7 @@ impl Modifier {
                 ModifierOp::Pixelate(pixel) => effect.pixelate(pixel),
                 ModifierOp::Rotate(radians) => effect.rotate(radians),
                 ModifierOp::Gradient { gradient, radii } => effect.gradient(gradient, radii),
+                ModifierOp::Background { radii, .. } if radii != CornerRadii::ZERO => effect.shape(radii),
                 _ => effect,
             };
         }
@@ -1115,6 +1142,44 @@ mod tests {
             .downcast_ref::<RectOp>()
             .expect("expected a rectangle");
         assert_eq!(rect.paint.color, Color::RED);
+    }
+
+    #[test]
+    fn a_rounded_background_opens_a_layer_for_its_corners() {
+        let theme = Theme::light();
+        let radii = CornerRadii::uniform(4.0);
+        let bounds = Rect::from_min_size(Offset::ZERO, 10.0, 10.0);
+        let mut node = Node::new(Filler).modifier(Modifier::none().rounded_background(Color::RED, radii));
+        node.measure(&theme, Constraints::unbounded());
+        node.place(bounds);
+        let mut list = DrawList::new();
+        node.draw(&theme, &mut list);
+        let command = list
+            .commands()
+            .next()
+            .expect("the container was recorded");
+        let effect = command
+            .effect
+            .expect("rounded corners are a request to the backend");
+        assert!(effect.kinds.is_empty(), "the layer only rounds");
+        assert_eq!(effect.radii, radii);
+        assert_eq!(effect.bounds, bounds);
+        assert_eq!(effect.coverage(), bounds);
+    }
+
+    #[test]
+    fn a_square_background_needs_no_layer() {
+        let theme = Theme::light();
+        let mut node = Node::new(Filler).modifier(Modifier::none().background(Color::RED));
+        node.measure(&theme, Constraints::unbounded());
+        node.place(Rect::from_min_size(Offset::ZERO, 10.0, 10.0));
+        let mut list = DrawList::new();
+        node.draw(&theme, &mut list);
+        let command = list
+            .commands()
+            .next()
+            .expect("the container was recorded");
+        assert_eq!(command.effect, None, "a square fill is already exact");
     }
 
     #[test]

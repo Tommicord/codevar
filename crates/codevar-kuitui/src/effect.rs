@@ -236,10 +236,30 @@ impl Effect {
     }
 
     /// Whether the effect asks the backend for anything at all.
+    ///
+    /// Rounded corners count: an identity effect is one a plain
+    /// rectangle would be drawn exactly like.
     #[inline]
     #[must_use]
     pub const fn is_identity(&self) -> bool {
+        let radii = self.radii;
         self.kinds.is_empty()
+            && radii.top_left == 0.0
+            && radii.top_right == 0.0
+            && radii.bottom_right == 0.0
+            && radii.bottom_left == 0.0
+    }
+
+    /// The rectangle with rounded corners and no other effect.
+    ///
+    /// A backend that replays the layer rounds the corners from the
+    /// signed distance; a backend that does not draws the recorded
+    /// rectangle square, which is what it did before corners existed.
+    #[inline]
+    #[must_use]
+    pub const fn shape(mut self, radii: CornerRadii) -> Self {
+        self.radii = radii;
+        self
     }
 
     /// The rectangle blurred by `sigma` logical pixels.
@@ -517,5 +537,19 @@ mod tests {
         let effect = Effect::new(bounds);
         assert!(effect.is_identity());
         assert_eq!(effect.coverage(), bounds);
+    }
+
+    #[test]
+    fn rounded_corners_are_an_effect_of_their_own() {
+        let bounds = Rect::from_min_size(Offset::ZERO, 20.0, 10.0);
+        let effect = Effect::new(bounds).shape(CornerRadii::uniform(3.0));
+        assert!(!effect.is_identity(), "a plain fill has no corners");
+        assert!(effect.kinds.is_empty(), "a corner is not a kind");
+        assert_eq!(effect.coverage(), bounds, "rounding only removes area");
+        assert!(
+            Effect::new(bounds)
+                .shape(CornerRadii::ZERO)
+                .is_identity()
+        );
     }
 }
