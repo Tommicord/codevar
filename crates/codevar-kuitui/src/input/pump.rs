@@ -540,3 +540,397 @@ fn merge_motion(pointers: &mut [PointerUpdate], update: PointerUpdate) -> bool {
         _ => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::boxed::Box;
+    use alloc::string::String;
+    use std::sync::{Arc, Mutex};
+
+    use codevar_kuitui_control::{
+        ControlError, DeviceClass, DeviceId, DeviceInfo, EventSink, InputEvent, KeyCode, KeyEvent, KeyState,
+        Modifiers, Point, PointerButton, PointerEvent, TextEvent, Timestamp,
+    };
+
+    use super::*;
+    use crate::geometry::Offset;
+
+    /// A backend that only publishes: every class it starts hands the same hub
+    /// to the control, so one stored sink reaches the pump's subscription.
+    #[derive(Clone, Default)]
+    struct TestBackend {
+        state: Arc<Mutex<TestState>>,
+    }
+
+    #[derive(Default)]
+    struct TestState {
+        sink: Option<EventSink>,
+        started: Vec<DeviceClass>,
+    }
+
+    impl TestBackend {
+        fn publish(&self, event: InputEvent) {
+            let sink = self.state.lock().unwrap().sink.clone();
+            if let Some(sink) = sink {
+                sink.emit(event);
+            }
+        }
+
+        fn kill(&self, error: ControlError) {
+            let sink = self.state.lock().unwrap().sink.clone();
+            if let Some(sink) = sink {
+                sink.fail(error);
+            }
+        }
+
+        fn started(&self) -> Vec<DeviceClass> {
+            self.state.lock().unwrap().started.clone()
+        }
+    }
+
+    impl Backend for TestBackend {
+        fn start(&mut self, class: DeviceClass, sink: EventSink) -> Result<(), ControlError> {
+            let mut state = self.state.lock().unwrap();
+            if state.sink.is_none() {
+                state.sink = Some(sink);
+            }
+            state.started.push(class);
+            Ok(())
+        }
+
+        fn stop(&mut self, class: DeviceClass) {
+            self.state
+                .lock()
+                .unwrap()
+                .started
+                .retain(|c| *c != class);
+        }
+
+        fn devices(&self) -> Vec<DeviceInfo> {
+            Vec::new()
+        }
+    }
+
+    /// A pump writing states that outlive the test, as a handler's binding
+    /// requires, plus the backend that feeds it. The control is returned alive
+    /// because dropping it ends every stream.
+    fn harness(capacity: usize) -> (TestBackend, Control<TestBackend>, InputPump<'static>) {
+        let backend = TestBackend::default();
+        let mut control = Control::new(backend.clone());
+        let subscription = control
+            .open_many_with_capacity(ClassSet::KEYBOARD | ClassSet::POINTER, capacity)
+            .unwrap();
+        let keyboard = Box::leak(Box::new(KeyboardState::new()));
+        let pointer = Box::leak(Box::new(PointerState::new()));
+        (
+            backend,
+            control,
+            InputPump::new(subscription, keyboard, pointer, capacity),
+        )
+    }
+
+    fn key(value: u32) -> InputEvent {
+        InputEvent::Key(KeyEvent {
+            device: DeviceId::new(7),
+            code: KeyCode::Native(value),
+            state: KeyState::Pressed,
+            modifiers: Modifiers::NONE,
+        })
+    }
+
+    fn motion(delta: Point) -> InputEvent {
+        InputEvent::Pointer(PointerEvent::Motion {
+            position: None,
+            delta: Some(delta),
+        })
+    }
+
+    fn move_to(position: Point) -> InputEvent {
+        InputEvent::Pointer(PointerEvent::Motion {
+            position: Some(position),
+            delta: None,
+        })
+    }
+
+    fn press() -> InputEvent {
+        InputEvent::Pointer(PointerEvent::Button {
+            button: PointerButton::Primary,
+            state: KeyState::Pressed,
+            position: None,
+            modifiers: Modifiers::NONE,
+        })
+    }
+
+    fn text(value: &str) -> InputEvent {
+        InputEvent::Text(TextEvent {
+            device: DeviceId::new(7),
+            text: String::from(value),
+        })
+    }
+
+    #[test]
+    fn opening_the_pump_starts_both_classes_and_writes_both_states() {
+        let backend = TestBackend::default();
+        let mut control = Control::new(backend.clone());
+        let keyboard = Box::leak(Box::new(KeyboardState::new()));
+        let pointer = Box::leak(Box::new(PointerState::new()));
+        let mut pump = InputPump::open_with_capacity(&mut control, keyboard, pointer, 8).unwrap();
+        assert_eq!(
+            backend.started(),
+            vec![DeviceClass::Keyboard, DeviceClass::Pointer]
+        );
+
+        backend.publish(key(65));
+        backend.publish(move_to(Point::new(3.0, 4.0)));
+        backend.publish(text("hi"));
+        let report = pump.pump();
+        assert_eq!(report.delivered, 3);
+        assert!(keyboard.is_pressed(KeyCode::Native(65)));
+        assert_eq!(pointer.position(), Some(Offset::new(3.0, 4.0)));
+
+        pump.finish_frame();
+        let frame = pump.frame();
+        assert_eq!(frame.keys().len(), 1);
+        assert_eq!(frame.pointers().len(), 1);
+        assert_eq!(frame.events().len(), 1);
+        assert_eq!(frame.len(), 3);
+    }
+
+    #[test]
+    fn consecutive_motions_become_one_update_with_the_summed_delta() {
+        let (backend, _control, mut pump) = harness(8);
+        backend.publish(motion(Point::new(1.0, 0.0)));
+        backend.publish(motion(Point::new(2.0, 1.0)));
+        backend.publish(motion(Point::new(4.0, 1.0)));
+        let report = pump.pump();
+        assert_eq!(report.delivered, 3);
+        assert_eq!(report.coalesced, 2);
+
+        let snapshot = pump.finish_frame();
+        let pointers = pump.frame().pointers();
+        assert_eq!(pointers.len(), 1);
+        assert_eq!(pointers[0].phase, PointerPhase::Motion);
+        assert_eq!(pointers[0].delta, Offset::new(7.0, 2.0));
+        assert_eq!(snapshot.delta, Offset::new(7.0, 2.0));
+    }
+
+    #[test]
+    fn a_button_between_motions_keeps_both_motions_visible() {
+        let (backend, _control, mut pump) = harness(8);
+        backend.publish(motion(Point::new(1.0, 1.0)));
+        backend.publish(press());
+        backend.publish(motion(Point::new(1.0, 1.0)));
+        assert_eq!(pump.pump().delivered, 3);
+
+        pump.finish_frame();
+        let phases: Vec<PointerPhase> = pump
+            .frame()
+            .pointers()
+            .iter()
+            .map(|update| update.phase)
+            .collect();
+        assert_eq!(
+            phases,
+            [PointerPhase::Motion, PointerPhase::Button, PointerPhase::Motion].to_vec()
+        );
+    }
+
+    #[test]
+    fn an_empty_drain_parks_the_task_instead_of_spinning() {
+        let (backend, _control, mut pump) = harness(8);
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(matches!(pump.poll_pump(&mut context), Poll::Pending));
+
+        backend.publish(key(65));
+        match pump.poll_pump(&mut context) {
+            Poll::Ready(report) => assert_eq!(report.delivered, 1),
+            Poll::Pending => panic!("the pump parked while an event was queued"),
+        }
+        assert!(matches!(pump.poll_pump(&mut context), Poll::Pending));
+    }
+
+    #[test]
+    fn a_full_queue_reports_the_loss_and_stays_live() {
+        let (backend, _control, mut pump) = harness(2);
+        for value in 0..4 {
+            backend.publish(key(value));
+        }
+        let report = pump.pump();
+        assert_eq!(report.delivered, 2);
+        assert_eq!(report.dropped, 2);
+        assert!(!report.closed);
+        assert_eq!(pump.dropped(), 2);
+        assert!(pump.failure().is_none());
+        assert!(!pump.is_closed());
+    }
+
+    #[test]
+    fn a_terminal_error_ends_the_stream_and_is_recorded() {
+        let (backend, _control, mut pump) = harness(4);
+        backend.publish(key(65));
+        backend.kill(ControlError::Unsupported(DeviceClass::Pointer));
+
+        let report = pump.pump();
+        assert_eq!(report.delivered, 1);
+        assert!(report.closed);
+        assert_eq!(
+            pump.failure(),
+            Some(&ControlError::Unsupported(DeviceClass::Pointer))
+        );
+        assert!(pump.is_closed());
+        assert!(pump.pump().closed);
+    }
+
+    #[test]
+    fn a_replenished_batch_keeps_delivering_beyond_the_prefetch() {
+        let (backend, _control, mut pump) = harness(2);
+        let mut delivered = 0;
+        for value in 0..10 {
+            backend.publish(key(value));
+            delivered += pump.pump().delivered;
+        }
+        assert_eq!(delivered, 10);
+        assert_eq!(pump.dropped(), 0);
+    }
+
+    #[test]
+    fn a_frame_is_delivered_once() {
+        let (backend, _control, mut pump) = harness(8);
+        backend.publish(key(65));
+        pump.pump();
+        pump.finish_frame();
+        assert_eq!(pump.frame().keys().len(), 1);
+
+        pump.finish_frame();
+        assert!(pump.frame().is_empty());
+    }
+
+    #[test]
+    fn the_frame_stops_at_the_first_consumed_event() {
+        let (backend, _control, mut pump) = harness(8);
+        let keyboard = Box::leak(Box::new(KeyboardState::new()));
+        let pointer = Box::leak(Box::new(PointerState::new()));
+        backend.publish(key(65));
+        backend.publish(key(66));
+        pump.pump();
+        pump.finish_frame();
+
+        let mut widget = Counting::new(keyboard, pointer).with_key_limit(1);
+        assert!(
+            pump.frame()
+                .deliver_keys_to(&mut widget)
+                .is_consumed()
+        );
+        assert_eq!(widget.keys, 1);
+    }
+
+    #[test]
+    fn the_whole_frame_reaches_a_handler_of_every_capability() {
+        let (backend, _control, mut pump) = harness(8);
+        let keyboard = Box::leak(Box::new(KeyboardState::new()));
+        let pointer = Box::leak(Box::new(PointerState::new()));
+        backend.publish(key(65));
+        backend.publish(motion(Point::new(1.0, 1.0)));
+        backend.publish(text("hi"));
+        pump.pump();
+        pump.finish_frame();
+
+        let mut widget = Counting::new(keyboard, pointer);
+        assert!(!pump.frame().deliver_to(&mut widget).is_consumed());
+        assert_eq!((widget.keys, widget.pointers, widget.events), (1, 1, 1));
+    }
+
+    #[test]
+    fn cancelling_the_pump_closes_it_without_losing_the_states() {
+        let (backend, _control, mut pump) = harness(8);
+        let keyboard = pump.keyboard();
+        backend.publish(key(65));
+        assert_eq!(pump.pump().delivered, 1);
+        pump.finish_frame();
+
+        pump.cancel();
+        assert!(pump.is_closed());
+        assert!(pump.pump().closed);
+        assert!(pump.frame().is_empty());
+        assert!(keyboard.is_pressed(KeyCode::Native(65)));
+    }
+
+    /// A widget that counts what the frame gave it.
+    struct Counting {
+        keyboard: &'static KeyboardState,
+        pointer: &'static PointerState,
+        keys: u32,
+        pointers: u32,
+        events: u32,
+        key_limit: Option<u32>,
+    }
+
+    impl Counting {
+        fn new(keyboard: &'static KeyboardState, pointer: &'static PointerState) -> Self {
+            Self {
+                keyboard,
+                pointer,
+                keys: 0,
+                pointers: 0,
+                events: 0,
+                key_limit: None,
+            }
+        }
+
+        fn with_key_limit(mut self, limit: u32) -> Self {
+            self.key_limit = Some(limit);
+            self
+        }
+    }
+
+    impl Input for Counting {
+        fn on_input(&mut self, _event: &InputEvent, _timestamp: Timestamp) -> EventResult {
+            self.events += 1;
+            EventResult::Ignored
+        }
+    }
+
+    impl KeyboardHandler for Counting {
+        fn keyboard(&self) -> &'static KeyboardState {
+            self.keyboard
+        }
+
+        fn on_key(&mut self, _transition: &KeyTransition) -> EventResult {
+            self.keys += 1;
+            if self
+                .key_limit
+                .is_some_and(|limit| self.keys >= limit)
+            {
+                return EventResult::Consumed;
+            }
+            EventResult::Ignored
+        }
+    }
+
+    impl MouseHandler for Counting {
+        fn pointer(&self) -> &'static PointerState {
+            self.pointer
+        }
+
+        fn on_pointer(&mut self, _update: &PointerUpdate) -> EventResult {
+            self.pointers += 1;
+            EventResult::Ignored
+        }
+    }
+
+    #[test]
+    fn the_states_a_handler_binds_to_are_the_ones_the_pump_writes() {
+        let (backend, _control, mut pump) = harness(8);
+        let keyboard = pump.keyboard();
+        let pointer = pump.pointer();
+        backend.publish(move_to(Point::new(2.0, 3.0)));
+        backend.publish(key(65));
+        pump.pump();
+
+        assert!(std::ptr::eq(keyboard, pump.keyboard()));
+        assert!(std::ptr::eq(pointer, pump.pointer()));
+        assert_eq!(pointer.position(), Some(Offset::new(2.0, 3.0)));
+        assert!(keyboard.is_pressed(KeyCode::Native(65)));
+        assert_eq!(keyboard.snapshot().last_pressed, Some(KeyCode::Native(65)));
+    }
+}
