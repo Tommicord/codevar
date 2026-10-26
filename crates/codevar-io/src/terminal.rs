@@ -162,32 +162,22 @@ mod hermit_impls {
 mod windows_impls {
     use super::IsTerminal;
     use crate::{Stderr, Stdin, Stdout};
-    use windows_sys::Win32::{
-        Foundation::{HANDLE, INVALID_HANDLE_VALUE},
+    use windows::Win32::{
+        Foundation::{HANDLE, MAX_PATH},
         Storage::FileSystem::{FILE_TYPE_PIPE, FileNameInfo, GetFileInformationByHandleEx, GetFileType},
-        System::Console::GetConsoleMode,
+        System::Console::{
+            CONSOLE_MODE, GetConsoleMode, GetStdHandle, STD_ERROR_HANDLE, STD_HANDLE, STD_INPUT_HANDLE,
+            STD_OUTPUT_HANDLE,
+        },
     };
 
-    const STD_INPUT_HANDLE: u32 = 0xFFFFFFF6;
-    const STD_OUTPUT_HANDLE: u32 = 0xFFFFFFF5;
-    const STD_ERROR_HANDLE: u32 = 0xFFFFFFF4;
-
-    unsafe extern "system" {
-        fn GetStdHandle(n_std_handle: u32) -> *mut core::ffi::c_void;
+    fn get_handle(handle_id: STD_HANDLE) -> Option<HANDLE> {
+        unsafe { GetStdHandle(handle_id) }.ok()
     }
 
-    fn get_handle(handle_id: u32) -> Option<*mut core::ffi::c_void> {
-        let handle = unsafe { GetStdHandle(handle_id) };
-        if handle.is_null() || handle as isize == INVALID_HANDLE_VALUE {
-            None
-        } else {
-            Some(handle)
-        }
-    }
-
-    fn is_console(handle: *mut core::ffi::c_void) -> bool {
-        let mut mode = 0;
-        unsafe { GetConsoleMode(handle, &mut mode) != 0 }
+    fn is_console(handle: HANDLE) -> bool {
+        let mut mode = CONSOLE_MODE(0);
+        unsafe { GetConsoleMode(handle, &mut mode) }.is_ok()
     }
 
     fn msys_tty_on(handle: HANDLE) -> bool {
@@ -196,8 +186,8 @@ mod windows_impls {
             return false;
         }
 
-        /// Mirrors windows_sys::Win32::Storage::FileSystem::FILE_NAME_INFO, giving
-        /// it a fixed length that we can stack allocate
+        /// Mirrors Win32's `FILE_NAME_INFO`, giving it a fixed length that we
+        /// can stack allocate.
         #[repr(C)]
         #[allow(non_snake_case)]
         struct FILE_NAME_INFO {
@@ -208,7 +198,8 @@ mod windows_impls {
             FileNameLength: 0,
             FileName: [0; MAX_PATH as usize],
         };
-        // Safety: buffer length is fixed.
+        // Safety: the buffer length matches the size passed to the call, and
+        // the structure is repr(C) with the layout the API documents.
         let res = unsafe {
             GetFileInformationByHandleEx(
                 handle,
@@ -217,7 +208,7 @@ mod windows_impls {
                 core::mem::size_of::<FILE_NAME_INFO>() as u32,
             )
         };
-        if res == 0 {
+        if res.is_err() {
             return false;
         }
 
@@ -263,17 +254,7 @@ mod windows_impls {
         #[inline]
         fn is_terminal(&self) -> bool {
             get_handle(STD_ERROR_HANDLE)
-                .map(|h| {
-                    is_console(h) || {
-                        // Check for MSYS/Cygwin pty
-                        let mut mode = 0;
-                        if unsafe { GetConsoleMode(h, &mut mode) } == 0 {
-                            msys_tty_on(h as HANDLE)
-                        } else {
-                            false
-                        }
-                    }
-                })
+                .map(|handle| is_console(handle) || msys_tty_on(handle))
                 .unwrap_or(false)
         }
     }
@@ -388,7 +369,7 @@ pub fn is_terminal<T: IsTerminal>(stream: T) -> bool {
     stream.is_terminal()
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_family = "unix", not(target_os = "wasi")))]
 mod tests {
     use super::IsTerminal;
 

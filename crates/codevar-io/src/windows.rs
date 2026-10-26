@@ -35,6 +35,9 @@ const CP_UTF8: u32 = 65001;
 const MB_ERR_INVALID_CHARS: u32 = 0x0008;
 const WC_ERR_INVALID_CHARS: u32 = 0x0008;
 
+/// Largest block, in bytes, converted in one pass through the console.
+const MAX_BUFFER_SIZE: usize = 8192;
+
 unsafe extern "system" {
     fn GetStdHandle(n_std_handle: u32) -> *mut c_void;
     fn GetConsoleMode(h_console_handle: *mut c_void, lp_mode: *mut u32) -> i32;
@@ -125,6 +128,7 @@ unsafe impl Send for WriteMode {}
 unsafe impl Sync for WriteMode {}
 
 /// Simple spinlock for synchronization
+#[derive(Debug)]
 struct SpinLock {
     locked: AtomicBool,
 }
@@ -142,6 +146,7 @@ impl SpinLock {
         }
     }
 
+    #[cfg(test)]
     fn try_lock(&self) -> bool {
         !self.locked.swap(true, Ordering::Acquire)
     }
@@ -152,6 +157,7 @@ impl SpinLock {
 }
 
 /// Lock guard for SpinLock
+#[derive(Debug)]
 struct SpinLockGuard<'a> {
     lock: &'a SpinLock,
 }
@@ -184,14 +190,17 @@ pub struct Stdin {
 /// A locked reference to the [`Stdin`] handle.
 #[derive(Debug)]
 pub struct StdinLock<'a> {
+    inner: &'a mut Stdin,
     _guard: SpinLockGuard<'a>,
 }
 
 impl StdinLock<'static> {
     /// Creates a new lock on the global stdin
     fn new() -> Self {
+        let guard = SpinLockGuard::new(&STDIN_LOCK);
         Self {
-            _guard: SpinLockGuard::new(&STDIN_LOCK),
+            inner: get_stdin_instance(),
+            _guard: guard,
         }
     }
 }
@@ -211,10 +220,11 @@ pub struct StdoutLock<'a> {
 }
 
 impl StdoutLock<'static> {
-    fn new(stdout: &'static mut Stdout) -> Self {
+    fn new() -> Self {
+        let guard = SpinLockGuard::new(&STDOUT_LOCK);
         Self {
-            inner: stdout,
-            _guard: SpinLockGuard::new(&STDOUT_LOCK),
+            inner: get_stdout_instance(),
+            _guard: guard,
         }
     }
 }
@@ -234,10 +244,11 @@ pub struct StderrLock<'a> {
 }
 
 impl StderrLock<'static> {
-    fn new(stderr: &'static mut Stderr) -> Self {
+    fn new() -> Self {
+        let guard = SpinLockGuard::new(&STDERR_LOCK);
         Self {
-            inner: stderr,
-            _guard: SpinLockGuard::new(&STDERR_LOCK),
+            inner: get_stderr_instance(),
+            _guard: guard,
         }
     }
 }
@@ -246,35 +257,21 @@ static mut STDERR_INSTANCE: Option<Stderr> = None;
 static mut STDIN_INSTANCE: Option<Stdin> = None;
 
 fn get_stdout_instance() -> &'static mut Stdout {
-    unsafe {
-        if STDOUT_INSTANCE.is_none() {
-            STDOUT_INSTANCE = Some(Stdout::new());
-        }
-        STDOUT_INSTANCE
-            .as_mut()
-            .expect("STDOUT_INSTANCE should be initialized")
-    }
+    // SAFETY: the caller holds the stdout spinlock, so no other reference to
+    // the slot exists while this one is alive.
+    unsafe { (*core::ptr::addr_of_mut!(STDOUT_INSTANCE)).get_or_insert_with(Stdout::new) }
 }
 
 fn get_stderr_instance() -> &'static mut Stderr {
-    unsafe {
-        if STDERR_INSTANCE.is_none() {
-            STDERR_INSTANCE = Some(Stderr::new());
-        }
-        STDERR_INSTANCE
-            .as_mut()
-            .expect("STDERR_INSTANCE should be initialized")
-    }
+    // SAFETY: the caller holds the stderr spinlock, so no other reference to
+    // the slot exists while this one is alive.
+    unsafe { (*core::ptr::addr_of_mut!(STDERR_INSTANCE)).get_or_insert_with(Stderr::new) }
 }
-fn get_stdin_instance() -> &'static mut Stderr {
-    unsafe {
-        if STDIN_INSTANCE.is_none() {
-            STDIN_INSTANCE = Some(Stdin::new());
-        }
-        STDIN_INSTANCE
-            .as_mut()
-            .expect("STDERR_INSTANCE should be initialized")
-    }
+
+fn get_stdin_instance() -> &'static mut Stdin {
+    // SAFETY: the caller holds the stdin spinlock, so no other reference to
+    // the slot exists while this one is alive.
+    unsafe { (*core::ptr::addr_of_mut!(STDIN_INSTANCE)).get_or_insert_with(Stdin::new) }
 }
 
 impl Stdin {
@@ -290,6 +287,12 @@ impl Stdin {
     }
 }
 
+impl Default for Stdin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Stdout {
     pub const fn new() -> Stdout {
         Stdout {
@@ -299,12 +302,18 @@ impl Stdout {
     }
 
     pub fn lock(&self) -> StdoutLock<'static> {
-        StdoutLock::new(get_stdout_instance())
+        StdoutLock::new()
     }
 
     /// Forgets the cached stream state, so the next write re-queries the OS.
     pub fn refresh(&mut self) {
         self.write_mode = None;
+    }
+}
+
+impl Default for Stdout {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -317,11 +326,17 @@ impl Stderr {
     }
 
     pub fn lock(&self) -> StderrLock<'static> {
-        StderrLock::new(get_stderr_instance())
+        StderrLock::new()
     }
 
     pub fn refresh(&mut self) {
         self.write_mode = None;
+    }
+}
+
+impl Default for Stderr {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -416,7 +431,7 @@ fn write_console_utf16(
         incomplete_utf8.len = 0;
         match s {
             Ok(s) => {
-                let written = write_valid_utf8_to_console(handle, s)?;
+                write_valid_utf8_to_console(handle, s)?;
                 return Ok(1);
             }
             Err(_) => return Err(ErrorKind::InvalidData),
@@ -435,7 +450,10 @@ fn write_console_utf16(
                 return Err(ErrorKind::InvalidData);
             }
         }
-        Err(e) => core::str::from_utf8(&data[..e.valid_up_to()]).unwrap(),
+        Err(e) => match core::str::from_utf8(&data[..e.valid_up_to()]) {
+            Ok(s) => s,
+            Err(_) => return Err(ErrorKind::InvalidData),
+        },
     };
     write_valid_utf8_to_console(handle, utf8)
 }
@@ -508,14 +526,26 @@ fn read_u16s(
         dw_ctrl_wakeup_mask: CTRL_Z_MASK,
         dw_control_key_state: 0,
     };
+    let mut start = 0;
+    if *surrogate != 0 {
+        // The previous read ended on a high surrogate; the low half the console
+        // returns now completes it, so the pair stays in one block.
+        if let Some(slot) = buf.first_mut() {
+            slot.write(*surrogate);
+            *surrogate = 0;
+            start = 1;
+        }
+    }
     let mut amount = 0;
     loop {
         unsafe { SetLastError(0) };
+        // SAFETY: `start` is at most `buf.len()`, so the pointer stays inside
+        // the buffer and the length covers only the remaining units.
         let ret = unsafe {
             ReadConsoleW(
                 handle,
-                buf.as_mut_ptr() as *mut c_void,
-                buf.len() as u32,
+                buf.as_mut_ptr().add(start).cast::<c_void>(),
+                (buf.len() - start) as u32,
                 &mut amount,
                 &input_control as *const _ as *mut c_void,
             )
@@ -532,10 +562,22 @@ fn read_u16s(
         break;
     }
 
-    if amount > 0 && unsafe { buf[amount as usize - 1].assume_init() } == CTRL_Z {
-        amount -= 1;
+    let mut read = start + amount as usize;
+    if read > start && unsafe { buf[read - 1].assume_init() } == CTRL_Z {
+        read -= 1;
     }
-    Ok(amount as usize)
+    if read > start && is_high_surrogate(unsafe { buf[read - 1].assume_init() }) {
+        // The low surrogate did not arrive in this read; keep the high half so
+        // the next call can pair it instead of converting a lone surrogate.
+        *surrogate = unsafe { buf[read - 1].assume_init() };
+        read -= 1;
+    }
+    Ok(read)
+}
+
+/// Whether `unit` is a UTF-16 high surrogate.
+fn is_high_surrogate(unit: u16) -> bool {
+    (0xD800..=0xDBFF).contains(&unit)
 }
 
 /// Convert UTF-16 to UTF-8
@@ -610,8 +652,6 @@ impl ErrorType for StderrLock<'_> {
     type Error = ErrorKind;
 }
 
-fn handle_read() {}
-
 impl Read for Stdin {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
         let handle = get_handle(STD_INPUT_HANDLE)?;
@@ -637,7 +677,7 @@ impl Read for Stdin {
         } else {
             let mut utf16_buf = [MaybeUninit::new(0); MAX_BUFFER_SIZE / 2];
             let amount = core::cmp::min(buf.len() / 3, utf16_buf.len());
-            let read = read_u16s(handle, &mut utf16_buf, &mut self.surrogate)?;
+            let read = read_u16s(handle, &mut utf16_buf[..amount], &mut self.surrogate)?;
             match utf16_to_utf8(
                 unsafe { core::slice::from_raw_parts(utf16_buf.as_ptr() as *const u16, read) },
                 buf,
@@ -667,13 +707,11 @@ impl Read for Stdin {
 
 impl Read for StdinLock<'_> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        let stdin = STDIN_INSTANCE.lock();
-        (*stdin).read(buf)
+        self.inner.read(buf)
     }
 
     fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), ReadExactError<Self::Error>> {
-        let stdin = STDIN_INSTANCE.lock();
-        (*stdin).read_exact(buf)
+        self.inner.read_exact(buf)
     }
 }
 
@@ -760,13 +798,9 @@ impl Write for StderrLock<'_> {
 }
 
 /// Check if an error is a "bad file descriptor" error.
-pub fn is_ebadf(err: &ErrorKind) -> bool {
+#[cfg(test)]
+fn is_ebadf(err: &ErrorKind) -> bool {
     *err == ErrorKind::NotFound
-}
-
-/// Returns a writer suitable for panic output.
-pub fn panic_output() -> impl Write<Error = ErrorKind> {
-    Stderr::new()
 }
 
 #[cfg(test)]
@@ -838,7 +872,7 @@ mod tests {
 
     #[test]
     fn test_write_mode() {
-        let handle = 0x1 as *mut c_void;
+        let handle = core::ptr::NonNull::<c_void>::dangling().as_ptr();
         let mode = WriteMode::Passthrough(handle);
         assert!(matches!(mode, WriteMode::Passthrough(h) if h == handle));
 
