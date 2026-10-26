@@ -57,18 +57,20 @@
 //! which carry no device-specific state (text, gamepads, device changes).
 
 use codevar_kuitui_control::InputEvent;
-pub use codevar_kuitui_control::{DeviceId, KeyCode, KeyState, Timestamp};
+pub use codevar_kuitui_control::{DeviceId, KeyCode, KeyState, PointerButton, Timestamp};
 
 use crate::event::EventResult;
 
 pub mod keyboard;
 pub mod mouse;
+pub mod pointer;
 
 pub use keyboard::{
     KEYBOARD, KeyTransition, KeyboardBinding, KeyboardHandler, KeyboardModifiers, KeyboardSnapshot,
     KeyboardState,
 };
 pub use mouse::{BoundId, GeometryCache, GeometryIndex, Hit, VertexBounds};
+pub use pointer::{PointerButtons, PointerState};
 
 /// A widget that consumes normalized input.
 ///
