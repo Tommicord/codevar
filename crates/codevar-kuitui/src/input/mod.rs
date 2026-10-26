@@ -70,7 +70,10 @@ pub use keyboard::{
     KeyboardState,
 };
 pub use mouse::{BoundId, GeometryCache, GeometryIndex, Hit, VertexBounds};
-pub use pointer::{PointerButtons, PointerSnapshot, PointerState};
+pub use pointer::{
+    MouseBinding, MouseHandler, POINTER, PointerButtons, PointerPhase, PointerSnapshot, PointerState,
+    PointerUpdate,
+};
 
 /// A widget that consumes normalized input.
 ///

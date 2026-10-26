@@ -40,8 +40,10 @@
 //! [`GeometryIndex`]: crate::input::mouse::GeometryIndex
 //! [`GeometryCache`]: crate::input::mouse::GeometryCache
 
+mod handler;
 mod snapshot;
 mod state;
 
+pub use handler::{MouseBinding, MouseHandler, POINTER, PointerPhase, PointerUpdate};
 pub use snapshot::PointerSnapshot;
 pub use state::{PointerButtons, PointerState};
