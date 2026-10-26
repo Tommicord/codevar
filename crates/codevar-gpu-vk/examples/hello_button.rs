@@ -29,7 +29,9 @@
 //!   content padding and a `Modifier` that sizes, aligns and ramps its
 //!   background. The second is a [`ColorableTextButton`] whose label keeps
 //!   the colors of the emoji font and whose modifier outlines and clips the
-//!   box instead of painting it.
+//!   box instead of painting it. The third implements [`Button`] by hand and
+//!   decorates itself with a [`Concrete`] canvas, which draws its own shapes
+//!   behind the container.
 //! * **GPU decorations:** each button draws its rounded container, its
 //!   state layer and its ambient shadow through effect layers, so the
 //!   `ui_effect` program runs for them — the corner distance field, the
@@ -41,9 +43,9 @@
 //!   mix pass blends the layers with a per-pipe weight, not per-pixel alpha.
 //!
 //! The example binds no `wl_seat`, so nothing moves the pointer states.
-//! One of the buttons starts from an [`InteractionSource`] that already
-//! holds `HOVERED`, which is how the state layer of the chrome becomes
-//! visible in a static frame.
+//! Two of the buttons start from an [`InteractionSource`] that already holds
+//! `HOVERED` or `PRESSED | SELECTED`, which is how the state layer and the
+//! selected container of the chrome become visible in a static frame.
 //!
 //! Run it inside a Wayland session:
 //!
@@ -62,15 +64,15 @@ use codevar_kuitui::color::Color;
 use codevar_kuitui::geometry::{Offset, Rect, Size};
 use codevar_kuitui::paint::{CornerRadii, Paint};
 use codevar_kuitui::prelude::{
-    Alignment, Column, Composition, EdgeInsets, FontMetrics, Gradient, InteractionSource, InteractionState,
-    Modifier, Node, Spacer, Theme,
+    Alignment, ColorableText, Column, Composition, EdgeInsets, FontMetrics, Gradient, InteractionSource,
+    InteractionState, Modifier, Node, Spacer, Theme,
 };
 use codevar_kuitui_button::{
     BorderStroke, Button, ButtonColors, ButtonElevation, ButtonFlags, ButtonPalette, Click,
-    ColorableTextButton, TextButton,
+    ColorableTextButton, Concrete, TextButton,
 };
 use codevar_kuitui_text::{AtlasConfig, TextAtlas, TextFrame, TextPipe};
-use codevar_kuitui_widget::{Font, shape_list_with_color};
+use codevar_kuitui_widget::{Font, LinearGradient, shape_list_with_color};
 use codevar_time_core::TimeDuration;
 use codevar_wayland::{
     BUFFER_DESTROY, BUFFER_PARAMS_ADD, BUFFER_PARAMS_CREATE_IMMED, BUFFER_PARAMS_DESTROY, BUFFER_RELEASE,
@@ -119,6 +121,8 @@ const SHAPE: CornerRadii = CornerRadii::uniform(18.0);
 const WIDE_WIDTH: f32 = 420.0;
 /// Height of the decorated button, which its `Modifier` forces on it.
 const WIDE_HEIGHT: f32 = 84.0;
+/// Height of the canvas-backed button, whose decoration draws behind it.
+const CANVAS_HEIGHT: f32 = 96.0;
 /// The container color of the fixed palette of the first button.
 const CONTAINER: Color = Color::rgb(0.247, 0.322, 0.710);
 /// The content color of that palette.
@@ -413,6 +417,7 @@ fn run() -> ExampleResult<String> {
     // transient state is ever set — which is exactly what makes the state layer
     // and the ambient shadow of the chrome legible in a static frame.
     let hovered = InteractionSource::with_state(InteractionState::HOVERED);
+    let pressed = InteractionSource::with_state(InteractionState::PRESSED | InteractionState::SELECTED);
     let mut composition = Composition::new(Theme::dark().with_metrics(metrics));
     composition.set_content(move |_composer| {
         Node::new(
@@ -424,6 +429,7 @@ fn run() -> ExampleResult<String> {
             Node::new(Spacer::new().height(TOP_PADDING)),
             full_button(Rc::clone(&greeting), hovered.clone()),
             emoji_button(Rc::clone(&greeting)),
+            concrete_button(Rc::clone(&greeting), pressed.clone()),
         ])
     });
     composition.recompose(true);
@@ -625,6 +631,106 @@ fn emoji_button(greeting: Click) -> Node {
                 .clip(),
         )
         .node()
+}
+
+/// The canvas-backed button, which answers the trait by hand instead of
+/// wrapping a label in one of the two text buttons.
+///
+/// [`Concrete`] is the decoration the example cannot write as a shape of its
+/// own: the banded gradient, the inner outline and the diagonal are recorded
+/// by the canvas behind the container, and the pixel grid the modifier names
+/// is the fragment shader's, over the whole node box.
+fn concrete_button(greeting: Click, source: InteractionSource) -> Node {
+    GlowButton::new(move || greeting(), source).node()
+}
+
+/// A button whose parameters are the ones the trait's defaults do not pick.
+struct GlowButton {
+    /// The handler a release inside the button calls.
+    handler: Click,
+    /// The states the chrome resolves its colors from.
+    source: InteractionSource,
+    /// The shapes painted behind the container.
+    decoration: Concrete,
+}
+
+impl GlowButton {
+    /// The button that calls `on_click` and carries the decoration canvas.
+    fn new(on_click: impl Fn() + 'static, source: InteractionSource) -> Self {
+        let box_size = Size::new(WIDE_WIDTH, CANVAS_HEIGHT);
+        let decoration = Concrete::with_size(box_size).drawn(|canvas| {
+            canvas.gradient(
+                Rect::new(Offset::ZERO, box_size),
+                LinearGradient::new(
+                    Offset::ZERO,
+                    Offset::new(WIDE_WIDTH, 0.0),
+                    Color::rgb(0.121, 0.725, 0.690),
+                    Color::rgb(0.051, 0.278, 0.631),
+                ),
+                32,
+            );
+            canvas.stroke_rect(
+                Rect::new(
+                    Offset::new(6.0, 6.0),
+                    Size::new(WIDE_WIDTH - 12.0, CANVAS_HEIGHT - 12.0),
+                ),
+                CornerRadii::uniform(26.0),
+                OUTLINE,
+                2.0,
+            );
+            canvas.line(Offset::ZERO, Offset::new(WIDE_WIDTH, CANVAS_HEIGHT), OUTLINE, 1.0);
+        });
+        Self {
+            handler: Rc::new(on_click),
+            source,
+            decoration,
+        }
+    }
+}
+
+impl Button for GlowButton {
+    fn on_click(&self) -> &Click {
+        &self.handler
+    }
+
+    fn interaction_source(&self) -> InteractionSource {
+        self.source.clone()
+    }
+
+    fn content(&self) -> Vec<Node> {
+        vec![Node::new(ColorableText::new("Concrete 🎉 💻"))]
+    }
+
+    fn modifier(&self) -> Modifier {
+        self.decoration
+            .modifier()
+            .size(Some(WIDE_WIDTH), Some(CANVAS_HEIGHT))
+            .pixelate(6.0)
+    }
+
+    fn flags(&self) -> ButtonFlags {
+        ButtonFlags::ALL
+    }
+
+    fn shape(&self) -> CornerRadii {
+        CornerRadii::uniform(10.0)
+    }
+
+    fn colors(&self) -> ButtonPalette {
+        ButtonPalette::role_of(ButtonColors::tonal)
+    }
+
+    fn elevation(&self) -> Option<ButtonElevation> {
+        Some(ButtonElevation::elevated())
+    }
+
+    fn border(&self) -> Option<BorderStroke> {
+        Some(BorderStroke::new(2.0, OUTLINE))
+    }
+
+    fn content_padding(&self) -> EdgeInsets {
+        EdgeInsets::symmetric(24.0, 10.0)
+    }
 }
 
 /// Raw `zwp_linux_dmabuf_feedback_v1` payload, accumulated until `done`.
