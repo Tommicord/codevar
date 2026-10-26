@@ -20,6 +20,7 @@ name = "codevar_kuitui"
 
 [dependencies]
 libm = { workspace = true }
+codevar-base = { workspace = true }
 codevar-logger = { workspace = true }
 codevar-kuitui-control = { workspace = true }
 codevar-ocl = { workspace = true, optional = true }
