@@ -14,7 +14,8 @@
 // permissions and limitations under the License.
 
 // Compositor mix pass: folds an array of offscreen framebuffers into the
-// presentation target with `mix()`. Every fragment invocation runs this
+// presentation target, each one over the result of the previous ones and
+// scaled by its mix weight. Every fragment invocation runs this
 // independently, so the whole framebuffer array is blended in parallel.
 #version 450
 
@@ -51,7 +52,16 @@ void main() {
     // `u_pc.count` is a push constant, so the index below is dynamically
     // uniform and `u_frames` needs no `nonuniform` decoration.
     for (uint i = 1u; i < u_pc.count; ++i) {
-        color = mix(color, texture(u_frames[i], v_uv), mix_weight(i));
+        // Every pipe after the first is composited over the result, with
+        // the mix weight as its opacity and the source alpha as its
+        // coverage. The color of a pipe that cleared to transparent is
+        // premultiplied by the atlas blend, so the text layer only covers
+        // the pixels it drew; an opaque pipe keeps the crossfade the
+        // weights used to express.
+        vec4 top = texture(u_frames[i], v_uv);
+        float weight = mix_weight(i);
+        float coverage = clamp(top.a * weight, 0.0, 1.0);
+        color = top * weight + color * (1.0 - coverage);
     }
     o_color = color;
 }

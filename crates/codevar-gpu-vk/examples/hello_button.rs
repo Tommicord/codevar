@@ -58,11 +58,11 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use codevar_gpu_vk::base::{Compositor, block_on};
-use codevar_gpu_vk::pipeline::{OwnedFd, PipelineContext};
+use codevar_gpu_vk::pipeline::{OwnedFd, PipelineContext, RenderTarget};
 use codevar_gpu_vk::ui::{UiFrame, UiPipe};
 use codevar_kuitui::color::Color;
 use codevar_kuitui::geometry::{Offset, Rect, Size};
-use codevar_kuitui::paint::{CornerRadii, Paint};
+use codevar_kuitui::paint::CornerRadii;
 use codevar_kuitui::prelude::{
     Alignment, ColorableText, Column, Composition, EdgeInsets, FontMetrics, Gradient, InteractionSource,
     InteractionState, Modifier, Node, Spacer, Theme,
@@ -107,8 +107,12 @@ const RELEASE_TIMEOUT: Duration = Duration::from_millis(500);
 const GPU_SYNC_TIMEOUT_MS: i32 = 5_000;
 /// Largest format table the example is willing to allocate.
 const MAX_FORMAT_TABLE_BYTES: usize = 1 << 20;
-/// The window background, shared by the two pipes.
+/// The window background; the UI pipe clears to it, so it is the base layer
+/// the text pipe composites over.
 const BACKGROUND: [f32; 4] = [0.10, 0.11, 0.14, 1.0];
+/// The clear color of the text pipe: transparent, so the glyphs land on the
+/// UI layer instead of replacing it.
+const TEXT_CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
 /// Pixels per em the glyphs are rasterized at.
 const FONT_PPEM: u16 = 32;
 /// Space between the top of the window and the first button.
@@ -443,20 +447,16 @@ fn run() -> ExampleResult<String> {
     ui_pipe.set_clear(BACKGROUND);
     compositor.add_pipe(ui_pipe)?;
     let mut text_pipe = TextPipe::new(&pipeline, text_frame.clone())?;
-    text_pipe.set_clear(BACKGROUND);
+    text_pipe.set_clear(TEXT_CLEAR);
     compositor.add_pipe(text_pipe)?;
 
-    // Record the first frame: the tree into the UI list, a background for the
-    // UI pipe, and every text run into the shared atlas and mesh. The text pipe
-    // replays that mesh for the rest of the run, so nothing below re-shapes.
+    // Record the first frame: the tree into the UI list and every text run
+    // into the shared atlas and mesh. The background is the UI pipe's clear,
+    // so nothing is recorded over the buttons. The text pipe replays that
+    // mesh for the rest of the run, so nothing below re-shapes.
     text_frame.begin_frame();
     ui_frame.with(|list| -> ExampleResult<()> {
         composition.render(list);
-        list.rect(
-            Rect::new(Offset::ZERO, Size::new(width as f32, height as f32)),
-            CornerRadii::ZERO,
-            Paint::fill(Color::from_rgba8(26, 28, 36, 255)),
-        );
         shape_list_with_color(&text_frame, font.as_ref(), emoji_font.as_ref(), list)?;
 
         // Mark the frame dirty so the color text is rendered on the first frame.
@@ -504,6 +504,10 @@ fn run() -> ExampleResult<String> {
         })?;
     }
     let mut frames = 0u32;
+    // `HELLO_BUTTON_DUMP=<path>` writes the first presented frame as a binary
+    // PPM, so a session whose compositor keeps the window behind another one
+    // can still be inspected pixel by pixel.
+    let dump_path = std::env::var("HELLO_BUTTON_DUMP").ok();
     while frames < FRAME_BUDGET && !closed.get() && Instant::now() < deadline {
         // Never rewrite a buffer the compositor may still be reading.
         let release_deadline = Instant::now() + RELEASE_TIMEOUT;
@@ -527,6 +531,11 @@ fn run() -> ExampleResult<String> {
         let sync_file = block_on(compositor.composite_frame(None))?;
         wait_for_gpu(&sync_file)?;
         drop(sync_file);
+        if frames == 0
+            && let Some(path) = dump_path.as_deref()
+        {
+            dump_target(target, path)?;
+        }
 
         display.marshal_request(
             surface,
@@ -589,9 +598,9 @@ fn run() -> ExampleResult<String> {
 ///
 /// The palette is a fixed one instead of a theme role because a fixed
 /// palette is the only way the state layer of the example is a color the
-/// reader can point at. Its `Modifier` sizes and centers the node, and the
-/// ramp it names is the `ui_effect` program's gradient over the outer box,
-/// behind the container the chrome paints.
+/// reader can point at. Its `Modifier` forces the size of the node — the
+/// column centers it — and the ramp it names is the `ui_effect` program's
+/// gradient over the outer box, behind the container the chrome paints.
 fn full_button(greeting: Click, source: InteractionSource) -> Node {
     TextButton::new(move || greeting(), "Hello, World!")
         .flags(ButtonFlags::ALL)
@@ -606,7 +615,6 @@ fn full_button(greeting: Click, source: InteractionSource) -> Node {
         .modifier(
             Modifier::none()
                 .size(Some(WIDE_WIDTH), Some(WIDE_HEIGHT))
-                .align(Alignment::CENTER)
                 .gradient(RAMP, SHAPE),
         )
         .node()
@@ -887,5 +895,54 @@ fn wait_for_gpu(sync_file: &OwnedFd) -> ExampleResult<()> {
     if ready <= 0 {
         return Err(format!("timed out waiting for the GPU ({GPU_SYNC_TIMEOUT_MS} ms)").into());
     }
+    Ok(())
+}
+
+/// Writes the presented dma-buf of `target` to `path` as a binary PPM.
+///
+/// The pixels are the ones the compositor receives, which makes the dump the
+/// only way to look at a frame from a session whose screenshot tools cannot
+/// reach the window. The caller must have waited for the GPU, so the mapping
+/// reads a finished frame.
+fn dump_target(target: &RenderTarget, path: &str) -> ExampleResult<()> {
+    let width = target.width as usize;
+    let height = target.height as usize;
+    let stride = target.stride as usize;
+    let length = stride * height;
+    // SAFETY: `dmabuf_fd` is the exported plane 0 of the live render target
+    // and stays open for the duration of the mapping, which is unmapped below
+    // before this function returns. The mapping starts at offset 0 (a
+    // page-aligned boundary) and is `stride * height` bytes long, the extent
+    // the pipeline created the image with.
+    let mapped = unsafe {
+        libc::mmap(
+            core::ptr::null_mut(),
+            length,
+            libc::PROT_READ,
+            libc::MAP_SHARED,
+            target.dmabuf_fd.as_raw(),
+            0,
+        )
+    };
+    if mapped == libc::MAP_FAILED {
+        return Err(format!("could not map the dma-buf: {}", std::io::Error::last_os_error()).into());
+    }
+    let base = mapped.cast::<u8>();
+    let mut ppm = Vec::with_capacity(15 + width * height * 3);
+    ppm.extend_from_slice(format!("P6\n{width} {height}\n255\n").as_bytes());
+    for row in 0..height {
+        // SAFETY: `row < height`, and the mapping holds `stride * height`
+        // bytes past the plane offset, so this row lies inside it.
+        let pixels = unsafe {
+            core::slice::from_raw_parts(base.add(target.offset as usize + row * stride), width * 4)
+        };
+        for pixel in pixels.chunks_exact(4) {
+            // `DRM_FORMAT_XRGB8888` is B, G, R, X in little-endian memory.
+            ppm.extend_from_slice(&[pixel[2], pixel[1], pixel[0]]);
+        }
+    }
+    // SAFETY: `mapped` is the mapping created above and `length` is its size.
+    unsafe { libc::munmap(mapped, length) };
+    std::fs::write(path, ppm)?;
     Ok(())
 }
