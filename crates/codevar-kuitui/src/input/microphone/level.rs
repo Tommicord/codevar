@@ -190,6 +190,14 @@ fn measure(format: SampleFormat, data: &[u8]) -> Measure {
                     return measure;
                 }
             }
+            #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+            {
+                use codevar_base::cpuid::{Feature, has};
+
+                if has(Feature::Simd128) {
+                    return wasm::f32(data);
+                }
+            }
             scalar::f32(data)
         }
     }
@@ -718,6 +726,72 @@ mod x86 {
             .fold(0.0f64, |sum, &lane| sum + f64::from(lane))
     }
 }
+/// The WebAssembly simd128 kernel for the `F32` format.
+///
+/// The `I16` format stays with the reference: simd128 has no widening
+/// conversion from a 16-bit lane to a 32-bit lane, so a vector path would
+/// spend more on sign extension than it saves on the squares.
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+mod wasm {
+    use core::arch::wasm32::{
+        f32x4_add, f32x4_eq, f32x4_extract_lane, f32x4_ge, f32x4_max, f32x4_mul, f32x4_splat, f32x4_sub,
+        i8x16_bitmask, i32x4_shuffle, v128, v128_and, v128_load,
+    };
+
+    use super::{FLUSH_SAMPLES, Measure, scalar};
+
+    /// Measures a block of 32-bit floating point samples, four per lane.
+    pub(super) fn f32(data: &[u8]) -> Measure {
+        let body_len = data.len() - data.len() % 16;
+        let (body, tail) = data.split_at(body_len);
+        let mut measure = Measure::empty();
+        let zero = f32x4_splat(0.0);
+        let one = f32x4_splat(1.0);
+        let mut squares = zero;
+        let mut peak = zero;
+        let mut since = 0usize;
+        for chunk in body.chunks(16) {
+            // SAFETY: `chunk` is one whole 16-byte slice of `data`, so the
+            // unaligned load stays inside the block; every other value here
+            // is a register vector that is never read back as memory.
+            let raw = unsafe { v128_load(chunk.as_ptr().cast::<v128>()) };
+            // A finite sample minus itself is a zero, so an equality test
+            // against zero is true exactly for the finite lanes.
+            let sample = v128_and(raw, f32x4_eq(f32x4_sub(raw, raw), zero));
+            squares = f32x4_add(squares, f32x4_mul(sample, sample));
+            let magnitude = f32x4_max(f32x4_sub(zero, sample), sample);
+            peak = f32x4_max(peak, magnitude);
+            // One true lane sets four bytes of the mask, so one bit per group
+            // of four is the lane's verdict.
+            measure.clipped += (i8x16_bitmask(f32x4_ge(magnitude, one)) & 0x1111).count_ones();
+            measure.samples += 4;
+            since += 4;
+            if since >= FLUSH_SAMPLES {
+                measure.sum_sq += total(squares);
+                squares = zero;
+                since = 0;
+            }
+        }
+        measure.sum_sq += total(squares);
+        measure.peak = maximum(peak);
+        measure.merge(scalar::f32(tail));
+        measure
+    }
+
+    /// The total of the four lanes, in `f64`.
+    fn total(value: v128) -> f64 {
+        let pair = f32x4_add(value, i32x4_shuffle::<2, 3, 0, 1>(value, value));
+        let all = f32x4_add(pair, i32x4_shuffle::<1, 0, 1, 0>(pair, pair));
+        f64::from(f32x4_extract_lane::<0>(all))
+    }
+
+    /// The largest of the four lanes.
+    fn maximum(value: v128) -> f32 {
+        let pair = f32x4_max(value, i32x4_shuffle::<2, 3, 0, 1>(value, value));
+        f32x4_extract_lane::<0>(f32x4_max(pair, i32x4_shuffle::<1, 0, 1, 0>(pair, pair)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use libm::sqrt;
