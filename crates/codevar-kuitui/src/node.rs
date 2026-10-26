@@ -35,8 +35,9 @@ use alloc::rc::Rc;
 use alloc::vec::Vec;
 
 use crate::color::Color;
-use crate::event::{Event, EventResult};
-use crate::geometry::{Constraints, EdgeInsets, Offset, Rect, Size};
+use crate::effect::{Effect, Gradient, InteractionSource, InteractionState};
+use crate::event::{Event, EventResult, PointerEventKind};
+use crate::geometry::{Alignment, Constraints, EdgeInsets, Offset, Rect, Size};
 use crate::paint::{CornerRadii, DrawList, Paint};
 use crate::theme::Theme;
 use crate::widget::{Children, DrawScope, EventScope, Key, MeasureScope, PlaceScope, Widget};
@@ -55,6 +56,21 @@ pub struct Modifier {
 
 /// The handler a [`Modifier::clickable`] modifier calls.
 pub type ClickHandler = Rc<dyn Fn(&Event) -> EventResult>;
+
+/// The handler a [`Modifier::selectable`] modifier calls when the
+/// choice of the widget flips.
+///
+/// The `bool` the handler receives is the state *after* the flip, so a
+/// handler that only reports what happened never has to read the
+/// [`InteractionSource`] back.
+pub type SelectHandler = Rc<dyn Fn(&Event, bool) -> EventResult>;
+
+/// The closure a [`Modifier::concrete`] modifier draws with.
+///
+/// The closure gets the same scope a widget gets, in the coordinate
+/// space of the node it decorates, which is what lets a canvas widget
+/// paint a node from the outside.
+pub type ConcreteDraw = Rc<dyn Fn(&mut DrawScope<'_>, Rect)>;
 
 /// One operation of a [`Modifier`].
 #[derive(Clone)]
@@ -81,8 +97,44 @@ enum ModifierOp {
     },
     /// Clips the widget to its own rectangle.
     Clip,
+    /// Positions the widget inside the space its padding leaves.
+    Align(Alignment),
+    /// Paints the container of the node with a ramp between two colors.
+    Gradient {
+        /// The ramp the container is painted with.
+        gradient: Gradient,
+        /// The radii of the corners of the container.
+        radii: CornerRadii,
+    },
+    /// Blurs the silhouette of the container.
+    Blur {
+        /// The standard deviation of the blur, in logical pixels.
+        radius: f32,
+        /// The radii of the corners of the container.
+        radii: CornerRadii,
+    },
+    /// Evaluates the container fill on a coarse grid.
+    Pixelate(f32),
+    /// Rotates the container around its center.
+    Rotate(f32),
+    /// Paints the node with a closure instead of a fixed primitive.
+    Concrete(ConcreteDraw),
     /// Handles the events that reach the widget.
-    Clickable(ClickHandler),
+    Clickable {
+        /// The handler the events are offered to.
+        handler: ClickHandler,
+        /// The states the press is reported to, if the caller has one.
+        source: Option<InteractionSource>,
+    },
+    /// Reports the pointer states of the widget to a source.
+    Hoverable(InteractionSource),
+    /// Flips the choice of the widget on a release inside it.
+    Selectable {
+        /// The states the choice is kept in.
+        source: InteractionSource,
+        /// The handler the flip is reported to.
+        handler: SelectHandler,
+    },
 }
 
 impl core::fmt::Debug for Modifier {
@@ -149,6 +201,69 @@ impl Modifier {
         self
     }
 
+    /// Positions the widget inside the space its padding leaves.
+    ///
+    /// A widget measured smaller than its parent is by default given
+    /// the whole padded rectangle; `align` gives it the rectangle of
+    /// its own size, placed where the [`Alignment`] asks for it, which
+    /// is what Compose's `Modifier.align` does inside a `Box`.
+    #[must_use]
+    pub fn align(mut self, alignment: Alignment) -> Self {
+        self.ops.push(ModifierOp::Align(alignment));
+        self
+    }
+
+    /// Paints the container of the node with `gradient`.
+    ///
+    /// The ramp is rasterized by the backend from the geometry of the
+    /// layer, the way every other effect is, and the rectangle is
+    /// recorded with the leading color of the ramp so a backend that
+    /// ignores effects still draws the container.
+    #[must_use]
+    pub fn gradient(mut self, gradient: Gradient, radii: CornerRadii) -> Self {
+        self.ops
+            .push(ModifierOp::Gradient { gradient, radii });
+        self
+    }
+
+    /// Blurs the silhouette of the container by `sigma` logical pixels.
+    ///
+    /// The blur is the analytic falloff of the rounded box, so its cost
+    /// does not grow with `sigma`: the backend evaluates one distance
+    /// per fragment whatever the radius.
+    #[must_use]
+    pub fn blur(mut self, sigma: f32, radii: CornerRadii) -> Self {
+        self.ops
+            .push(ModifierOp::Blur { radius: sigma, radii });
+        self
+    }
+
+    /// Evaluates the container fill on a grid of `pixel`-sized blocks.
+    #[must_use]
+    pub fn pixelate(mut self, pixel: f32) -> Self {
+        self.ops.push(ModifierOp::Pixelate(pixel));
+        self
+    }
+
+    /// Rotates the container around its center by `radians`.
+    #[must_use]
+    pub fn rotate(mut self, radians: f32) -> Self {
+        self.ops.push(ModifierOp::Rotate(radians));
+        self
+    }
+
+    /// Paints the node by running `draw` after its background.
+    ///
+    /// This is the escape hatch of the modifier chain: anything a
+    /// [`DrawScope`] can record becomes the decoration of the node
+    /// without a new operation being added to the framework, which is
+    /// how a canvas widget paints a node it does not own.
+    #[must_use]
+    pub fn concrete(mut self, draw: impl Fn(&mut DrawScope<'_>, Rect) + 'static) -> Self {
+        self.ops.push(ModifierOp::Concrete(Rc::new(draw)));
+        self
+    }
+
     /// Handles the events that reach the widget.
     ///
     /// The handler is called with the event after the children and the
@@ -157,8 +272,60 @@ impl Modifier {
     /// further.
     #[must_use]
     pub fn clickable(mut self, handler: impl Fn(&Event) -> EventResult + 'static) -> Self {
-        self.ops
-            .push(ModifierOp::Clickable(Rc::new(handler)));
+        self.ops.push(ModifierOp::Clickable {
+            handler: Rc::new(handler),
+            source: None,
+        });
+        self
+    }
+
+    /// Handles the events that reach the widget and reports the press to
+    /// `source`.
+    ///
+    /// The source carries [`InteractionState::PRESSED`] while a button
+    /// is held inside the node, which is what lets a widget pick the
+    /// colors of its pressed state without owning the pointer logic.
+    #[must_use]
+    pub fn clickable_with(
+        mut self,
+        source: InteractionSource,
+        handler: impl Fn(&Event) -> EventResult + 'static,
+    ) -> Self {
+        self.ops.push(ModifierOp::Clickable {
+            handler: Rc::new(handler),
+            source: Some(source),
+        });
+        self
+    }
+
+    /// Reports the pointer states of the widget to `source`.
+    ///
+    /// The source carries [`InteractionState::HOVERED`] while the
+    /// pointer is inside the node and [`InteractionState::PRESSED`]
+    /// while a button is held in it. Hovering never consumes an event:
+    /// the pointer moves for the widgets below too.
+    #[must_use]
+    pub fn hoverable(mut self, source: InteractionSource) -> Self {
+        self.ops.push(ModifierOp::Hoverable(source));
+        self
+    }
+
+    /// Flips the choice of the widget when a button is released inside
+    /// it, and reports the flip to `handler`.
+    ///
+    /// The choice is [`InteractionState::SELECTED`] in `source`, so the
+    /// widget and the application that owns the source agree on what is
+    /// selected without the widget owning a flag of its own.
+    #[must_use]
+    pub fn selectable(
+        mut self,
+        source: InteractionSource,
+        handler: impl Fn(&Event, bool) -> EventResult + 'static,
+    ) -> Self {
+        self.ops.push(ModifierOp::Selectable {
+            source,
+            handler: Rc::new(handler),
+        });
         self
     }
 
@@ -232,17 +399,57 @@ impl Modifier {
             .any(|op| matches!(op, ModifierOp::Clip))
     }
 
-    /// Whether the modifier handles the events of the widget.
-    fn is_clickable(&self) -> bool {
-        self.ops
-            .iter()
-            .any(|op| matches!(op, ModifierOp::Clickable(_)))
+    /// Whether the modifier reacts to the events of the widget.
+    fn interacts(&self) -> bool {
+        self.ops.iter().any(|op| {
+            matches!(
+                op,
+                ModifierOp::Clickable { .. } | ModifierOp::Hoverable(_) | ModifierOp::Selectable { .. }
+            )
+        })
     }
 
     /// The background of the widget, if any.
     fn background_color(&self) -> Option<Color> {
         self.ops.iter().rev().find_map(|op| match op {
             ModifierOp::Background(color) => Some(*color),
+            _ => None,
+        })
+    }
+
+    /// The color the container of the node is recorded with.
+    ///
+    /// A gradient container is recorded with the leading color of its
+    /// ramp: a backend that replays the layer evaluates the ramp itself,
+    /// and a backend that does not still draws a filled container.
+    fn container_color(&self) -> Option<Color> {
+        let gradient = self.ops.iter().rev().find_map(|op| match op {
+            ModifierOp::Gradient { gradient, .. } => Some(*gradient),
+            _ => None,
+        });
+        match (gradient, self.background_color()) {
+            (Some(gradient), _) => Some(gradient.from),
+            (None, color) => color,
+        }
+    }
+
+    /// The radii of the container of the node, from the op that asks
+    /// for a rounded one.
+    fn container_radii(&self) -> CornerRadii {
+        self.ops
+            .iter()
+            .rev()
+            .find_map(|op| match op {
+                ModifierOp::Blur { radii, .. } | ModifierOp::Gradient { radii, .. } => Some(*radii),
+                _ => None,
+            })
+            .unwrap_or(CornerRadii::ZERO)
+    }
+
+    /// The alignment the widget is placed with, if any.
+    fn alignment(&self) -> Option<Alignment> {
+        self.ops.iter().rev().find_map(|op| match op {
+            ModifierOp::Align(alignment) => Some(*alignment),
             _ => None,
         })
     }
@@ -258,10 +465,123 @@ impl Modifier {
     /// The click handler of the widget, if any.
     fn click_handler(&self) -> Option<ClickHandler> {
         self.ops.iter().rev().find_map(|op| match op {
-            ModifierOp::Clickable(handler) => Some(Rc::clone(handler)),
+            ModifierOp::Clickable { handler, .. } => Some(Rc::clone(handler)),
             _ => None,
         })
     }
+
+    /// The layer effect the container of the node is rasterized with.
+    ///
+    /// The effect describes the *container*, not the content: it is
+    /// evaluated from the geometry of the node rectangle, so a blurred
+    /// node draws a blurred container under text that stays crisp.
+    /// `None` means the container needs no shader and is drawn as a
+    /// plain rectangle.
+    fn effect(&self, bounds: Rect) -> Option<Effect> {
+        let mut effect = Effect::new(bounds);
+        for op in &self.ops {
+            effect = match *op {
+                ModifierOp::Blur { radius, radii } => effect.blur(radius, radii),
+                ModifierOp::Pixelate(pixel) => effect.pixelate(pixel),
+                ModifierOp::Rotate(radians) => effect.rotate(radians),
+                ModifierOp::Gradient { gradient, radii } => effect.gradient(gradient, radii),
+                _ => effect,
+            };
+        }
+        (!effect.is_identity()).then_some(effect)
+    }
+
+    /// Runs the custom-draw operations of the modifier, in the order
+    /// they were added.
+    fn draw_concrete(&self, scope: &mut DrawScope<'_>, bounds: Rect) {
+        for op in &self.ops {
+            if let ModifierOp::Concrete(draw) = op {
+                draw(scope, bounds);
+            }
+        }
+    }
+
+    /// Reports the pointer to the interaction sources of the modifier.
+    ///
+    /// Reporting never consumes: the same move is a hover for this node
+    /// and a hover for the node under it.
+    fn track_interaction(&self, bounds: Rect, event: &Event) {
+        for op in &self.ops {
+            let source = match op {
+                ModifierOp::Hoverable(source) => source,
+                ModifierOp::Clickable {
+                    source: Some(source), ..
+                } => source,
+                _ => continue,
+            };
+            report_pointer(source, bounds, event);
+        }
+    }
+
+    /// Flips the choice of the widget when the event releases a button
+    /// inside it.
+    fn select(&self, bounds: Rect, event: &Event) -> Option<EventResult> {
+        if !released_inside(bounds, event) {
+            return None;
+        }
+        self.ops.iter().rev().find_map(|op| match op {
+            ModifierOp::Selectable { source, handler } => {
+                let selected = !source
+                    .state()
+                    .contains(InteractionState::SELECTED);
+                if selected {
+                    source.set(InteractionState::SELECTED);
+                } else {
+                    source.clear(InteractionState::SELECTED);
+                }
+                Some(handler(event, selected))
+            }
+            _ => None,
+        })
+    }
+}
+
+/// Applies one pointer event to the states of `source`.
+///
+/// The pointer is tested against `bounds` because the tree reports the
+/// position in window coordinates, and a move that leaves a node is the
+/// event that clears its hover — no enter or leave event is required,
+/// which is what lets the same rule work on a backend that coalesces
+/// motion and on one that does not.
+fn report_pointer(source: &InteractionSource, bounds: Rect, event: &Event) {
+    let Event::Pointer(pointer) = event else {
+        return;
+    };
+    let inside = bounds.contains(pointer.position);
+    match pointer.kind {
+        PointerEventKind::Move | PointerEventKind::Enter | PointerEventKind::Leave => {
+            if inside {
+                source.set(InteractionState::HOVERED);
+            } else {
+                source.clear(InteractionState::HOVERED | InteractionState::PRESSED);
+            }
+        }
+        PointerEventKind::Down => {
+            if inside {
+                source.set(InteractionState::HOVERED | InteractionState::PRESSED);
+            }
+        }
+        PointerEventKind::Up => {
+            source.clear(InteractionState::PRESSED);
+            if !inside {
+                source.clear(InteractionState::HOVERED);
+            }
+        }
+        PointerEventKind::Cancel => {
+            source.clear(InteractionState::HOVERED | InteractionState::PRESSED);
+        }
+    }
+}
+
+/// Whether `event` releases a button inside `bounds`.
+fn released_inside(bounds: Rect, event: &Event) -> bool {
+    matches!(event, Event::Pointer(pointer)
+        if pointer.kind == PointerEventKind::Up && bounds.contains(pointer.position))
 }
 
 /// A node of the widget tree.
@@ -278,6 +598,9 @@ pub struct Node {
     modifier: Modifier,
     /// The size the node was measured at.
     pub(crate) size: Size,
+    /// The size the widget itself reported, before the modifier grew
+    /// it with its padding.
+    measured: Size,
     /// The rectangle the node was placed in.
     pub(crate) bounds: Rect,
 }
@@ -291,6 +614,7 @@ impl Node {
             children: Vec::new(),
             modifier: Modifier::none(),
             size: Size::ZERO,
+            measured: Size::ZERO,
             bounds: Rect::ZERO,
         }
     }
@@ -306,6 +630,7 @@ impl Node {
             children: Vec::new(),
             modifier: Modifier::none(),
             size: Size::ZERO,
+            measured: Size::ZERO,
             bounds: Rect::ZERO,
         }
     }
@@ -390,7 +715,7 @@ impl Node {
     /// Whether the node reacts to pointer events.
     #[must_use]
     pub fn hit_testable(&self) -> bool {
-        self.widget.hit_testable() || self.modifier.is_clickable()
+        self.widget.hit_testable() || self.modifier.interacts()
     }
 
     /// Measures the node inside `constraints`.
@@ -404,9 +729,31 @@ impl Node {
             let mut scope = MeasureScope::new(theme, children);
             widget.measure(&mut scope, inner)
         };
+        self.measured = measured;
         let size = self.modifier.outer_size(measured);
         self.size = size;
         size
+    }
+
+    /// The rectangle the widget is given inside `bounds`.
+    ///
+    /// The padding of the modifier takes the space it asks for; when the
+    /// modifier also aligns the widget, the widget is given the rectangle
+    /// it measured instead of the whole padded space, placed where the
+    /// alignment asks for it.
+    fn content_rect(&self, bounds: Rect) -> Rect {
+        let inner = self.modifier.inner_bounds(bounds);
+        let Some(alignment) = self.modifier.alignment() else {
+            return inner;
+        };
+        let size = self.measured.min(inner.size);
+        Rect::new(
+            Offset::new(
+                alignment.align_x(inner.origin, inner.size.width, size.width),
+                alignment.align_y(inner.origin, inner.size.height, size.height),
+            ),
+            size,
+        )
     }
 
     /// Places the node inside `bounds`.
@@ -415,7 +762,7 @@ impl Node {
     /// application that drives the tree by hand may call it too.
     pub fn place(&mut self, bounds: Rect) {
         self.bounds = bounds;
-        let inner = self.modifier.inner_bounds(bounds);
+        let inner = self.content_rect(bounds);
         {
             let Node { widget, children, .. } = self;
             let mut scope = PlaceScope::new(children, inner.origin);
@@ -433,9 +780,22 @@ impl Node {
     /// application that drives the tree by hand may call it too.
     pub fn draw(&mut self, theme: &Theme, list: &mut DrawList) {
         let bounds = self.bounds;
-        let inner = self.modifier.inner_bounds(bounds);
-        if let Some(color) = self.modifier.background_color() {
+        let inner = self.content_rect(bounds);
+        let container = self.modifier.container_color();
+        let effect = self.modifier.effect(bounds);
+        if let (Some(effect), Some(color)) = (effect, container) {
+            // The container is the layer: a backend with the effect
+            // program rasterizes the rounded box from its geometry, and
+            // the recorded color is what a backend without one draws.
+            list.push_effect(effect);
+            list.rect(bounds, self.modifier.container_radii(), Paint::fill(color));
+            list.pop_effect();
+        } else if let Some(color) = container {
             list.rect(bounds, CornerRadii::ZERO, Paint::fill(color));
+        }
+        {
+            let mut scope = DrawScope::new(&mut *list, theme, inner.origin);
+            self.modifier.draw_concrete(&mut scope, inner);
         }
         let clipped = self.modifier.clips();
         if clipped {
@@ -491,11 +851,16 @@ pub(crate) fn dispatch_event(
         }
     }
     let handler = node.modifier.click_handler();
+    node.modifier
+        .track_interaction(node.bounds, event);
     let Node { widget, children, .. } = node;
     let mut scope = EventScope::new(children, theme, path.clone(), focus);
     let result = widget.on_event(&mut scope, event);
     drop(scope);
     if result.is_consumed() {
+        return result;
+    }
+    if let Some(result) = node.modifier.select(node.bounds, event) {
         return result;
     }
     if let Some(handler) = handler {
@@ -588,7 +953,10 @@ impl Widget for Identified {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::effect::EffectKinds;
+    use crate::event::PointerEvent;
     use crate::paint::RectOp;
+    use core::cell::Cell;
 
     /// A widget that fills the rectangle it is given.
     struct Filler;
@@ -678,5 +1046,190 @@ mod tests {
     fn an_unnamed_node_is_identified_by_its_position() {
         let node = Node::new(Filler);
         assert_eq!(node.effective_key(3), Key::Index(3));
+    }
+
+    #[test]
+    fn an_aligned_widget_keeps_the_size_it_measured() {
+        let theme = Theme::light();
+        let mut node = Node::new(Local).modifier(Modifier::none().align(Alignment::CENTER));
+        node.measure(&theme, Constraints::unbounded());
+        node.place(Rect::from_min_size(Offset::ZERO, 40.0, 40.0));
+        let mut list = DrawList::new();
+        node.draw(&theme, &mut list);
+        let op = list
+            .ops()
+            .next()
+            .expect("the widget filled its rectangle");
+        let any: &dyn core::any::Any = op;
+        let rect = any
+            .downcast_ref::<RectOp>()
+            .expect("expected a rectangle");
+        assert_eq!(
+            rect.rect,
+            Rect::from_min_size(Offset::new(15.0, 15.0), 10.0, 10.0)
+        );
+    }
+
+    /// A widget that fills the rectangle it is given, recording it in
+    /// its own coordinate space the way [`DrawScope`] asks for.
+    struct Local;
+
+    impl Widget for Local {
+        fn measure(&mut self, _scope: &mut MeasureScope<'_>, constraints: Constraints) -> Size {
+            constraints.enforce(Size::new(10.0, 10.0))
+        }
+
+        fn draw(&mut self, scope: &mut DrawScope<'_>, bounds: Rect) {
+            scope.fill_rect(
+                Rect::from_min_size(Offset::ZERO, bounds.size.width, bounds.size.height),
+                Color::BLUE,
+            );
+        }
+    }
+
+    #[test]
+    fn a_gradient_container_is_recorded_with_the_leading_color() {
+        let theme = Theme::light();
+        let gradient = Gradient::horizontal(
+            Rect::from_min_size(Offset::ZERO, 10.0, 10.0),
+            Color::RED,
+            Color::BLUE,
+        );
+        let mut node =
+            Node::new(Filler).modifier(Modifier::none().gradient(gradient, CornerRadii::uniform(4.0)));
+        node.measure(&theme, Constraints::unbounded());
+        node.place(Rect::from_min_size(Offset::ZERO, 10.0, 10.0));
+        let mut list = DrawList::new();
+        node.draw(&theme, &mut list);
+        let command = list
+            .commands()
+            .next()
+            .expect("the container was recorded");
+        let effect = command
+            .effect
+            .expect("the command carries the layer");
+        assert!(effect.kinds.contains(EffectKinds::GRADIENT));
+        assert_eq!(effect.radii, CornerRadii::uniform(4.0));
+        let any: &dyn core::any::Any = &*command.op;
+        let rect = any
+            .downcast_ref::<RectOp>()
+            .expect("expected a rectangle");
+        assert_eq!(rect.paint.color, Color::RED);
+    }
+
+    #[test]
+    fn a_blurred_container_carries_its_radius_and_grows_the_layer() {
+        let bounds = Rect::from_min_size(Offset::ZERO, 30.0, 20.0);
+        let effect = Effect::new(bounds).blur(6.0, CornerRadii::uniform(2.0));
+        assert!(effect.kinds.contains(EffectKinds::BLUR));
+        assert_eq!(effect.coverage().size, Size::new(66.0, 56.0));
+    }
+
+    #[test]
+    fn a_concrete_modifier_draws_before_the_widget() {
+        let theme = Theme::light();
+        let mut list = DrawList::new();
+        let mut node = Node::new(Filler).modifier(Modifier::none().concrete(|scope, bounds| {
+            scope.fill_rect(
+                Rect::from_min_size(Offset::ZERO, bounds.size.width, 2.0),
+                Color::GREEN,
+            );
+        }));
+        node.measure(&theme, Constraints::unbounded());
+        node.place(Rect::from_min_size(Offset::ZERO, 10.0, 10.0));
+        node.draw(&theme, &mut list);
+        assert_eq!(list.len(), 2);
+        let first = list
+            .commands()
+            .next()
+            .expect("the modifier drew first");
+        let any: &dyn core::any::Any = &*first.op;
+        let rect = any
+            .downcast_ref::<RectOp>()
+            .expect("expected a rectangle");
+        assert_eq!(rect.paint.color, Color::GREEN);
+    }
+
+    #[test]
+    fn a_hoverable_modifier_reports_the_pointer_states() {
+        let theme = Theme::light();
+        let source = InteractionSource::new();
+        let mut node = Node::new(Filler).modifier(Modifier::none().hoverable(source.clone()));
+        node.measure(&theme, Constraints::unbounded());
+        node.place(Rect::from_min_size(Offset::ZERO, 10.0, 10.0));
+        let mut focus = None;
+        let mut path = Vec::new();
+        dispatch_event(
+            &mut node,
+            &theme,
+            &mut path,
+            &mut focus,
+            &Event::Pointer(PointerEvent::new(PointerEventKind::Move, Offset::new(5.0, 5.0))),
+        );
+        assert!(source.state().contains(InteractionState::HOVERED));
+        dispatch_event(
+            &mut node,
+            &theme,
+            &mut path,
+            &mut focus,
+            &Event::Pointer(PointerEvent::new(PointerEventKind::Move, Offset::new(50.0, 50.0))),
+        );
+        assert!(!source.state().contains(InteractionState::HOVERED));
+    }
+
+    #[test]
+    fn a_selectable_modifier_flips_the_choice_on_release() {
+        let theme = Theme::light();
+        let source = InteractionSource::new();
+        let seen = Rc::new(Cell::new(None));
+        let reported = Rc::clone(&seen);
+        let mut node = Node::new(Filler).modifier(Modifier::none().selectable(
+            source.clone(),
+            move |_event, selected| {
+                reported.replace(Some(selected));
+                EventResult::Consumed
+            },
+        ));
+        node.measure(&theme, Constraints::unbounded());
+        node.place(Rect::from_min_size(Offset::ZERO, 10.0, 10.0));
+        let mut focus = None;
+        let mut path = Vec::new();
+        let release = Event::Pointer(PointerEvent::new(PointerEventKind::Up, Offset::new(5.0, 5.0)));
+        let result = dispatch_event(&mut node, &theme, &mut path, &mut focus, &release);
+        assert!(result.is_consumed());
+        assert_eq!(seen.get(), Some(true));
+        assert!(
+            source
+                .state()
+                .contains(InteractionState::SELECTED)
+        );
+        dispatch_event(&mut node, &theme, &mut path, &mut focus, &release);
+        assert_eq!(seen.get(), Some(false));
+        assert!(
+            !source
+                .state()
+                .contains(InteractionState::SELECTED)
+        );
+    }
+
+    #[test]
+    fn a_press_is_reported_to_the_source_of_a_clickable_modifier() {
+        let theme = Theme::light();
+        let source = InteractionSource::new();
+        let mut node = Node::new(Filler)
+            .modifier(Modifier::none().clickable_with(source.clone(), |_| EventResult::Ignored));
+        node.measure(&theme, Constraints::unbounded());
+        node.place(Rect::from_min_size(Offset::ZERO, 10.0, 10.0));
+        assert!(node.hit_testable(), "the node takes part in the hit test");
+        let mut focus = None;
+        let mut path = Vec::new();
+        dispatch_event(
+            &mut node,
+            &theme,
+            &mut path,
+            &mut focus,
+            &Event::Pointer(PointerEvent::new(PointerEventKind::Down, Offset::new(5.0, 5.0))),
+        );
+        assert!(source.state().contains(InteractionState::PRESSED));
     }
 }
