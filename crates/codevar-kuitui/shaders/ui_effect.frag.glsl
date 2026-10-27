@@ -14,7 +14,10 @@
 //   the plain UI program;
 // * pixelate quantizes the sample point of the fill, which turns the
 //   ramp into the mosaic of its own colors;
-// * gradient evaluates the ramp between the two endpoints of the axis.
+// * gradient evaluates the ramp between the two endpoints of the axis;
+// * stroke subtracts the box inset by its own width from the box, which
+//   is how an outlined rectangle follows its own corners instead of
+//   being drawn as four straight edges.
 //
 // The corner radius is chosen per quadrant, which is exact as long as
 // the radii do not overlap along an edge — the same bound the layout
@@ -35,6 +38,7 @@ layout(push_constant) uniform PushConstants {
     vec4 radii;
     float rotation;
     uint kinds;
+    float stroke;
 } pc;
 
 layout(location = 0) out vec4 out_color;
@@ -43,6 +47,7 @@ const uint KIND_BLUR = 1u;
 const uint KIND_PIXELATE = 2u;
 const uint KIND_ROTATE = 4u;
 const uint KIND_GRADIENT = 8u;
+const uint KIND_STROKE = 16u;
 
 /// The distance to the rounded box of half-size `b` and corner radius
 /// `r`, negative inside.
@@ -73,6 +78,19 @@ float erfc_approx(float x) {
     return x < 0.0 ? 2.0 - positive : positive;
 }
 
+/// The coverage the edge at signed distance `dist` asks for.
+///
+/// With a positive `sigma` the edge is the analytic falloff of a Gaussian of
+/// that standard deviation, whose cost does not grow with the radius; without
+/// one, the edge is the antialiased step of the box.
+float edge_coverage(float dist, float sigma) {
+    if (sigma > 0.0) {
+        return clamp(0.5 * erfc_approx(dist / sigma), 0.0, 1.0);
+    }
+    float aa = max(fwidth(dist), 1e-5);
+    return clamp(0.5 - dist / aa, 0.0, 1.0);
+}
+
 void main() {
     vec2 center = pc.origin + pc.size * 0.5;
     vec2 half_size = pc.size * 0.5;
@@ -90,13 +108,19 @@ void main() {
     float radius = mix(top, bottom, step(0.0, p.y));
     float dist = sd_round_box(p, half_size, radius);
 
-    float coverage;
+    float sigma = 0.0;
     if ((pc.kinds & KIND_BLUR) != 0u && pc.blur_pixel.x > 0.0) {
-        float sigma = pc.blur_pixel.x * 1.4142135;
-        coverage = clamp(0.5 * erfc_approx(dist / sigma), 0.0, 1.0);
-    } else {
-        float aa = max(fwidth(dist), 1e-5);
-        coverage = clamp(0.5 - dist / aa, 0.0, 1.0);
+        sigma = pc.blur_pixel.x * 1.4142135;
+    }
+    float coverage = edge_coverage(dist, sigma);
+    if ((pc.kinds & KIND_STROKE) != 0u && pc.stroke > 0.0) {
+        // The outline is the box minus the box inset by its own width, so
+        // it follows whatever corners the layer already carries. The width
+        // is clamped to half the smaller axis the same way the geometry
+        // expansion clamps a stroke, so a band never inverts the inner box.
+        float width = min(pc.stroke, min(half_size.x, half_size.y));
+        float inner = sd_round_box(p, half_size - vec2(width), max(radius - width, 0.0));
+        coverage = clamp(coverage - edge_coverage(inner, sigma), 0.0, 1.0);
     }
 
     vec2 fill = p;
