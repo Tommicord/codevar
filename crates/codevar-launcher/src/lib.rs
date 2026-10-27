@@ -17,6 +17,8 @@
 #![cfg_attr(not(test), no_std)]
 extern crate alloc;
 pub mod driver;
+#[cfg(target_os = "linux")]
+pub mod present;
 pub mod wnd;
 #[cfg(unix)]
 mod wnd_linux;

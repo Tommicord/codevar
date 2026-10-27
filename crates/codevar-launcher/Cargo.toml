@@ -16,6 +16,7 @@ codevar-cli-parse = { workspace = true }
 codevar-time-core = { workspace = true }
 codevar-base = { workspace = true }
 codevar-gpu-vk = { workspace = true }
+codevar-kuitui = { workspace = true }
 codevar-wayland = { workspace = true }
 codevar-sig-module-base = { workspace = true }
 codevar-sig-handler = { workspace = true }
