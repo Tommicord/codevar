@@ -44,7 +44,11 @@
 //! layer so a blurred halo has fragments to shade. The corner radii travel
 //! inside the effect, so the same span draws them from the signed distance
 //! instead of the vertex grid, and an outline of a rounded rectangle
-//! follows those corners rather than being cut as four straight edges.
+//! follows those corners rather than being cut as four straight edges. A
+//! clip that names corners is expanded the same way, as the layer of the
+//! span when the operation carries none; where it does, the layer of the
+//! operation wins, because one span is cut by one box and the clip falls
+//! back to its scissor rectangle.
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;
@@ -89,7 +93,13 @@ pub struct DrawSpan {
     /// Clip resolved by kuitui when the operation was recorded; `None`
     /// means the whole surface.
     pub clip: Option<Rect>,
-    /// Layer effect resolved by kuitui when the operation was recorded;
+    /// Layer rasterizing the span: the effect the command carried, or the
+    /// rounded box its clip asked for when the operation had none.
+    ///
+    /// A scissor only knows rectangles, so the corners of a clip travel to
+    /// the signed-distance program the same way the corners of a rectangle
+    /// do. A span cannot be cut by two boxes, so where the operation has an
+    /// effect of its own that layer wins and the clip stays a rectangle.
     /// `None` means the plain `ui` program draws the span.
     pub effect: Option<Effect>,
 }
@@ -183,7 +193,7 @@ impl UiGeometry {
             first_vertex: first_vertex as u32,
             vertex_count: vertex_count as u32,
             clip,
-            effect,
+            effect: effect.or_else(|| rounded_clip(clip, command.clip_radii)),
         });
     }
 
@@ -355,6 +365,18 @@ impl DrawVisitor for UiGeometry {
 #[inline]
 fn vertex_color(paint: Paint) -> [f32; 4] {
     channels(paint.color)
+}
+
+/// The layer that cuts a span to the rounded box its clip named.
+///
+/// Sharp corners, or a clip that never left the surface, need no program:
+/// the scissor of the span already is the rectangle.
+#[inline]
+fn rounded_clip(clip: Option<Rect>, radii: CornerRadii) -> Option<Effect> {
+    if radii.is_zero() {
+        return None;
+    }
+    clip.map(|rect| Effect::new(rect).shape(radii))
 }
 
 /// The RGBA components of a color, in the order the shaders read them.
@@ -1203,6 +1225,55 @@ mod tests {
         geometry.expand(&mut list);
         assert_eq!(geometry.spans()[0].clip, Some(clip));
         assert_eq!(geometry.spans()[1].clip, None);
+        assert_eq!(
+            geometry.spans()[0].effect,
+            None,
+            "a rectangular clip is a scissor, not a layer"
+        );
+    }
+
+    #[test]
+    fn a_rounded_clip_becomes_the_layer_that_cuts_the_span() {
+        let mut list = DrawList::new();
+        let clip = Rect::from_min_size(Offset::ZERO, 40.0, 20.0);
+        let radii = CornerRadii::uniform(8.0);
+        list.push_rounded_clip(clip, radii);
+        // A canvas that paints the whole node box is the shape a square
+        // scissor leaves behind: the rounding has to reach the program.
+        list.rect(clip, CornerRadii::ZERO, fill());
+        list.pop_clip();
+
+        let mut geometry = UiGeometry::new();
+        geometry.expand(&mut list);
+
+        let span = geometry.spans()[0];
+        assert_eq!(span.clip, Some(clip));
+        assert_eq!(span.effect, Some(Effect::new(clip).shape(radii)));
+    }
+
+    #[test]
+    fn the_layer_of_an_operation_is_the_box_that_cuts_the_span() {
+        let mut list = DrawList::new();
+        let clip = Rect::from_min_size(Offset::ZERO, 40.0, 20.0);
+        let bounds = Rect::from_min_size(Offset::new(10.0, 10.0), 20.0, 10.0);
+        list.push_rounded_clip(clip, CornerRadii::uniform(8.0));
+        list.push_effect(Effect::new(bounds).blur(4.0, CornerRadii::ZERO));
+        list.rect(bounds, CornerRadii::ZERO, fill());
+        list.pop_effect();
+        list.pop_clip();
+
+        let mut geometry = UiGeometry::new();
+        geometry.expand(&mut list);
+
+        // One span is cut by one box: the halo of the operation keeps the
+        // program and its clip is honored as the rectangle it is inside.
+        let span = geometry.spans()[0];
+        assert_eq!(span.clip, Some(clip));
+        assert!(
+            span.effect
+                .is_some_and(|effect| effect.kinds.contains(EffectKinds::BLUR)),
+            "the layer of the operation survives the rounding of the clip"
+        );
     }
 
     #[test]
