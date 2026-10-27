@@ -36,19 +36,21 @@ use core::cell::{Cell, RefCell};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use crate::wnd::{Window, WndBackend, WndBackendId, WndConfig, WndError, WndEvent, WndSize};
+use crate::wnd::{Window, WndBackend, WndBackendId, WndConfig, WndError, WndEvent, WndImage, WndSize};
 use codevar_env::env_var;
 use codevar_logger::log_warn;
 use codevar_time_core::TimeDuration;
 use codevar_wayland::{
-    BUFFER_DESTROY, COMPOSITOR_CREATE_SURFACE, COMPOSITOR_INTERFACE, DMABUF_DESTROY, DMABUF_INTERFACE,
+    BUFFER_DESTROY, BUFFER_PARAMS_ADD, BUFFER_PARAMS_CREATE_IMMED, BUFFER_PARAMS_DESTROY, BUFFER_RELEASE,
+    COMPOSITOR_CREATE_SURFACE, COMPOSITOR_INTERFACE, DMABUF_CREATE_PARAMS, DMABUF_DESTROY, DMABUF_INTERFACE,
     DMABUF_MODIFIER, DRM_FORMAT_XRGB8888, SHM_CREATE_POOL, SHM_FORMAT_XRGB8888, SHM_INTERFACE,
     SHM_POOL_CREATE_BUFFER, SHM_POOL_DESTROY, SURFACE_ATTACH, SURFACE_COMMIT, SURFACE_DAMAGE,
-    SURFACE_DESTROY, WlArgument, WlClientDisplay, WlError, WlInterface, WlProxyId, WlRegistryEvent, WlResult,
-    WlTransport, WlUnixTransport, XDG_SURFACE_ACK_CONFIGURE, XDG_SURFACE_CONFIGURE, XDG_SURFACE_DESTROY,
-    XDG_SURFACE_GET_TOPLEVEL, XDG_SURFACE_SET_WINDOW_GEOMETRY, XDG_TOPLEVEL_CLOSE, XDG_TOPLEVEL_CONFIGURE,
-    XDG_TOPLEVEL_DESTROY, XDG_TOPLEVEL_SET_APP_ID, XDG_TOPLEVEL_SET_TITLE, XDG_WM_BASE_GET_XDG_SURFACE,
-    XDG_WM_BASE_INTERFACE, XDG_WM_BASE_PING, XDG_WM_BASE_PONG,
+    SURFACE_DESTROY, SURFACE_FRAME, WlArgument, WlClientDisplay, WlError, WlInterface, WlProxyId,
+    WlRegistryEvent, WlResult, WlTransport, WlUnixTransport, XDG_SURFACE_ACK_CONFIGURE,
+    XDG_SURFACE_CONFIGURE, XDG_SURFACE_DESTROY, XDG_SURFACE_GET_TOPLEVEL, XDG_SURFACE_SET_WINDOW_GEOMETRY,
+    XDG_TOPLEVEL_CLOSE, XDG_TOPLEVEL_CONFIGURE, XDG_TOPLEVEL_DESTROY, XDG_TOPLEVEL_SET_APP_ID,
+    XDG_TOPLEVEL_SET_TITLE, XDG_WM_BASE_GET_XDG_SURFACE, XDG_WM_BASE_INTERFACE, XDG_WM_BASE_PING,
+    XDG_WM_BASE_PONG,
 };
 
 /// Dispatch slice used while waiting for compositor answers.
@@ -59,6 +61,8 @@ const SYNC_SLICES: u32 = 0x100;
 const CONFIGURE_SLICES: u32 = 0x100;
 /// Largest `wl_shm` pool the window will ask for (1 GiB).
 const MAX_POOL_BYTES: usize = 1 << 30;
+/// Largest number of present slots a caller may address.
+const MAX_PRESENT_SLOTS: usize = 4;
 /// Background color of the initial buffer, as BGRA bytes.
 const BACKGROUND: [u8; 4] = [0x24, 0x1e, 0x1e, 0xff];
 
@@ -71,6 +75,14 @@ struct Dmabuf {
     proxy: WlProxyId,
     /// Modifiers the compositor accepts for `DRM_FORMAT_XRGB8888`.
     modifiers: Vec<u64>,
+}
+
+/// A `wl_buffer` built from one dma-buf image.
+struct PresentBuffer {
+    /// The `wl_buffer` the compositor releases after reading it.
+    proxy: WlProxyId,
+    /// Set when the compositor sent `wl_buffer.release`.
+    released: Rc<Cell<bool>>,
 }
 
 /// Protocol state shared between the window and its event listeners.
@@ -88,6 +100,11 @@ struct WndSignals {
     pending_size: Cell<(i32, i32)>,
     /// Number of pings answered.
     pings: Cell<u32>,
+    /// Number of frame callbacks answered since the last poll.
+    frames: Cell<u32>,
+    /// Whether the frame callback of [`WaylandWindow::pending_frame`]
+    /// was answered.
+    frame_answered: Cell<bool>,
 }
 
 /// A shared memory pool mapped into this process.
@@ -252,6 +269,10 @@ pub struct WaylandWindow<T: WlTransport> {
     toplevel: WlProxyId,
     /// The dma-buf global, absent when the compositor offers none.
     dmabuf: Option<Dmabuf>,
+    /// The `wl_buffer` of each present slot, built on first use.
+    buffers: Vec<Option<PresentBuffer>>,
+    /// The `wl_surface.frame` callback awaiting its done event.
+    pending_frame: Option<WlProxyId>,
     pool: ShmPool,
     buffer: WlProxyId,
     width: i32,
@@ -386,6 +407,8 @@ impl<T: WlTransport> WaylandWindow<T> {
             xdg_surface,
             toplevel,
             dmabuf,
+            buffers: Vec::new(),
+            pending_frame: None,
             pool,
             buffer,
             width,
@@ -412,6 +435,7 @@ impl<T: WlTransport> WaylandWindow<T> {
             return Ok(0);
         }
         let events = self.display.dispatch(timeout)?;
+        self.retire_frame_callback();
         self.ack_pending()?;
         Ok(events)
     }
@@ -432,6 +456,163 @@ impl<T: WlTransport> WaylandWindow<T> {
     /// Destroys the window; later [`Self::pump`] calls do nothing.
     pub fn close(&mut self) {
         self.teardown();
+    }
+
+    /// Returns `true` when the compositor released buffer `slot`.
+    fn slot_free(&self, slot: u32) -> bool {
+        self.buffers
+            .get(slot as usize)
+            .and_then(Option::as_ref)
+            .is_none_or(|buffer| buffer.released.get())
+    }
+
+    /// Builds the `wl_buffer` of plane 0 of `image`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the marshalling error when the compositor connection
+    /// refused the requests.
+    fn create_buffer(&mut self, dmabuf: WlProxyId, image: &WndImage) -> WlResult<PresentBuffer> {
+        let params = self
+            .display
+            .marshal_new_id(dmabuf, DMABUF_CREATE_PARAMS, Vec::new())?;
+        self.display.marshal_request(
+            params,
+            BUFFER_PARAMS_ADD,
+            vec![
+                WlArgument::Fd(image.fd),
+                WlArgument::Uint(0),
+                WlArgument::Uint(image.offset),
+                WlArgument::Uint(image.stride),
+                WlArgument::Uint((image.modifier >> 32) as u32),
+                WlArgument::Uint(image.modifier as u32),
+            ],
+        )?;
+        let proxy = self.display.marshal_new_id(
+            params,
+            BUFFER_PARAMS_CREATE_IMMED,
+            vec![
+                WlArgument::Int(image.width),
+                WlArgument::Int(image.height),
+                WlArgument::Uint(image.drm_format),
+                WlArgument::Uint(0),
+            ],
+        )?;
+        self.display
+            .marshal_request(params, BUFFER_PARAMS_DESTROY, Vec::new())?;
+        // A buffer nobody attached yet is writable.
+        let released = Rc::new(Cell::new(true));
+        {
+            let released = Rc::clone(&released);
+            self.display
+                .add_listener(proxy, move |_, opcode, _| {
+                    if opcode == BUFFER_RELEASE {
+                        released.set(true);
+                    }
+                    0
+                })?;
+        }
+        Ok(PresentBuffer { proxy, released })
+    }
+
+    /// Attaches `image` through buffer `slot`, damages it and commits.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WlError::Unsupported`] when the compositor has no
+    /// linux-dmabuf global, [`WlError::InvalidArgument`] for a slot
+    /// outside `0..MAX_PRESENT_SLOTS`, and the transport error when the
+    /// requests could not be queued.
+    fn present_image(&mut self, slot: u32, image: &WndImage) -> WlResult<()> {
+        if self.torn_down {
+            return Ok(());
+        }
+        let Some(dmabuf) = self.dmabuf.as_ref().map(|dmabuf| dmabuf.proxy) else {
+            return Err(WlError::unsupported(
+                "the compositor did not announce zwp_linux_dmabuf_v1",
+            ));
+        };
+        let index = slot as usize;
+        if index >= MAX_PRESENT_SLOTS {
+            return Err(WlError::invalid_argument(format!(
+                "present slot {slot} is outside 0..{MAX_PRESENT_SLOTS}"
+            )));
+        }
+        if self.buffers.len() <= index {
+            self.buffers.resize_with(index + 1, || None);
+        }
+        let buffer = match self.buffers[index].as_ref() {
+            Some(buffer) => buffer.proxy,
+            None => {
+                let created = self.create_buffer(dmabuf, image)?;
+                let proxy = created.proxy;
+                self.buffers[index] = Some(created);
+                proxy
+            }
+        };
+        self.display.marshal_request(
+            self.surface,
+            SURFACE_ATTACH,
+            vec![
+                WlArgument::Object(buffer.id()),
+                WlArgument::Int(0),
+                WlArgument::Int(0),
+            ],
+        )?;
+        self.display.marshal_request(
+            self.surface,
+            SURFACE_DAMAGE,
+            vec![
+                WlArgument::Int(0),
+                WlArgument::Int(0),
+                WlArgument::Int(image.width),
+                WlArgument::Int(image.height),
+            ],
+        )?;
+        self.display
+            .marshal_request(self.surface, SURFACE_COMMIT, Vec::new())?;
+        if let Some(buffer) = self.buffers[index].as_ref() {
+            buffer.released.set(false);
+        }
+        self.mapped = true;
+        flush_lenient(&mut self.display)
+    }
+
+    /// Requests the next `wl_surface.frame` callback, if none is pending.
+    ///
+    /// # Errors
+    ///
+    /// Returns the marshalling error when the request could not be
+    /// queued.
+    fn request_next_frame(&mut self) -> WlResult<()> {
+        if self.torn_down || self.pending_frame.is_some() {
+            return Ok(());
+        }
+        let frame = self
+            .display
+            .marshal_new_id(self.surface, SURFACE_FRAME, Vec::new())?;
+        let signals = Rc::clone(&self.signals);
+        self.display
+            .add_callback_listener(frame, move |_, _| {
+                signals
+                    .frames
+                    .set(signals.frames.get().saturating_add(1));
+                signals.frame_answered.set(true);
+                0
+            })?;
+        self.pending_frame = Some(frame);
+        flush_lenient(&mut self.display)
+    }
+
+    /// Releases the frame callback once the compositor answered it.
+    fn retire_frame_callback(&mut self) {
+        if !self.signals.frame_answered.get() {
+            return;
+        }
+        self.signals.frame_answered.set(false);
+        if let Some(frame) = self.pending_frame.take() {
+            let _ = self.display.proxy_destroy(frame);
+        }
     }
 
     /// Acknowledges the newest configure and applies the proposed size.
@@ -501,10 +682,17 @@ impl<T: WlTransport> WaylandWindow<T> {
             return;
         }
         self.torn_down = true;
+        if let Some(frame) = self.pending_frame.take() {
+            let _ = self.display.proxy_destroy(frame);
+        }
         self.destroy(self.toplevel, XDG_TOPLEVEL_DESTROY);
         self.destroy(self.xdg_surface, XDG_SURFACE_DESTROY);
         self.destroy(self.surface, SURFACE_DESTROY);
         self.destroy(self.buffer, BUFFER_DESTROY);
+        let buffers = core::mem::take(&mut self.buffers);
+        for buffer in buffers.into_iter().flatten() {
+            self.destroy(buffer.proxy, BUFFER_DESTROY);
+        }
         self.destroy(self.pool.proxy, SHM_POOL_DESTROY);
         if let Some(dmabuf) = self.dmabuf.take() {
             self.destroy(dmabuf.proxy, DMABUF_DESTROY);
@@ -613,6 +801,18 @@ impl<T: WlTransport> Window for WaylandWindow<T> {
             .map_or(&[], |dmabuf| dmabuf.modifiers.as_slice())
     }
 
+    fn present(&mut self, slot: u32, image: &WndImage) -> Result<(), WndError> {
+        WaylandWindow::present_image(self, slot, image).map_err(WndError::from)
+    }
+
+    fn buffer_free(&self, slot: u32) -> bool {
+        WaylandWindow::slot_free(self, slot)
+    }
+
+    fn request_frame(&mut self) -> Result<(), WndError> {
+        WaylandWindow::request_next_frame(self).map_err(WndError::from)
+    }
+
     fn set_title(&mut self, title: &str) -> Result<(), WndError> {
         if self.torn_down {
             return Ok(());
@@ -635,6 +835,10 @@ impl<T: WlTransport> Window for WaylandWindow<T> {
         let was_open = WaylandWindow::is_open(self);
         let before = WaylandWindow::size(self);
         let events = WaylandWindow::pump(self, timeout).map_err(WndError::from)?;
+        let frames = self.signals.frames.replace(0);
+        for _ in 0..frames {
+            sink(WndEvent::RedrawRequested);
+        }
         if was_open && !WaylandWindow::is_open(self) {
             sink(WndEvent::CloseRequested);
         }
