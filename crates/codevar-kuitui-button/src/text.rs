@@ -19,8 +19,8 @@
 //! only job is to draw a label with the content color of the button.
 //! Kuitui has no implicit local to hand that color down, so the label is
 //! a widget of its own — [`Label`] — which resolves the content color
-//! from the palette and the flags of the button and paints the text with
-//! it.
+//! from the palette, the flags and the selection of the button and paints
+//! the text with it.
 //!
 //! The label wraps either of the two text widgets of the framework:
 //! [`codevar_kuitui::Text`] for the ordinary run, and
@@ -35,7 +35,7 @@ use alloc::vec::Vec;
 use codevar_kuitui::text::TextContent;
 use codevar_kuitui::{
     Color, ColorScheme, ColorableText, Constraints, CornerRadii, DrawScope, EdgeInsets, InteractionSource,
-    MeasureScope, Modifier, Node, Rect, Size, Text, Theme, Widget,
+    InteractionState, MeasureScope, Modifier, Node, Rect, Size, Text, Theme, Widget,
 };
 
 use crate::button::{Button, Click};
@@ -71,8 +71,10 @@ impl LabelText for ColorableText {
 /// `on_surface` because a button tints its own content — the primary on a
 /// filled button, the disabled content on one that answers nothing.
 /// Material keeps the content color constant under the transient states,
-/// so only the flags and the theme can change it; the label rebuilds the
-/// widget it wraps when either of them does, and never on a hover.
+/// so the theme, the flags and — when the label is given the button's
+/// [`InteractionSource`] — the selection are what can change it; the
+/// label rebuilds the widget it wraps when one of them does, and never on
+/// a hover.
 #[derive(Debug, Clone)]
 pub struct Label<W: LabelText> {
     /// The text of the label.
@@ -81,6 +83,9 @@ pub struct Label<W: LabelText> {
     palette: ButtonPalette,
     /// What the button does.
     flags: ButtonFlags,
+    /// The states of the button, or `None` for a label that never shows
+    /// a selection.
+    source: Option<InteractionSource>,
     /// The widget the label paints.
     widget: Option<W>,
     /// The color `widget` was built for.
@@ -95,9 +100,22 @@ impl<W: LabelText> Label<W> {
             content,
             palette,
             flags,
+            source: None,
             widget: None,
             painted: None,
         }
+    }
+
+    /// The label that shows the selected content color while `source`
+    /// holds [`InteractionState::SELECTED`].
+    ///
+    /// A selected button moves to a different container, and the content
+    /// has to move to the color of that container with it, so a label
+    /// built for a toggle button reads the states the chrome reads.
+    #[must_use]
+    pub fn source(mut self, source: InteractionSource) -> Self {
+        self.source = Some(source);
+        self
     }
 
     /// The text of the label.
@@ -109,9 +127,13 @@ impl<W: LabelText> Label<W> {
     /// The content color the label draws with in `scheme`.
     #[must_use]
     pub fn color(&self, scheme: &ColorScheme) -> Color {
+        let state = self
+            .source
+            .as_ref()
+            .map_or(InteractionState::NONE, InteractionSource::state);
         self.palette
             .resolve(scheme)
-            .content_for(self.flags)
+            .content_for(state, self.flags)
     }
 
     /// The wrapped widget, rebuilt when the theme changed the color.
@@ -257,7 +279,7 @@ impl TextButton {
 
     /// The label of this button, drawn with its own colors.
     fn label_node<W: LabelText>(&self) -> Node {
-        Node::new(Label::<W>::new(self.label.clone(), self.palette, self.flags))
+        Node::new(Label::<W>::new(self.label.clone(), self.palette, self.flags).source(self.source.clone()))
     }
 }
 

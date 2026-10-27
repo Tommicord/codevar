@@ -129,6 +129,8 @@ pub struct ButtonColors {
     pub content: Color,
     /// The container while the button is selected.
     pub selected_container: Color,
+    /// The content while the button is selected.
+    pub selected_content: Color,
     /// The container when [`ButtonFlags::ENABLED`] is clear.
     pub disabled_container: Color,
     /// The content when [`ButtonFlags::ENABLED`] is clear.
@@ -143,7 +145,10 @@ impl ButtonColors {
     ///
     /// The disabled colors follow Material 3: the container becomes the
     /// state layer at 12 percent and the content keeps its own color at
-    /// 38 percent alpha.
+    /// 38 percent alpha. A button that selects keeps both colors until
+    /// [`ButtonColors::with_selected`] or [`ButtonColors::with_selected_content`]
+    /// says otherwise, because a role without a selection has no
+    /// selected state to draw.
     #[inline]
     #[must_use]
     pub const fn layered(container: Color, content: Color, state_layer: Color) -> Self {
@@ -151,6 +156,7 @@ impl ButtonColors {
             container,
             content,
             selected_container: container,
+            selected_content: content,
             disabled_container: state_layer.with_alpha(defaults::DISABLED_CONTAINER_ALPHA),
             disabled_content: content.with_alpha(defaults::DISABLED_CONTENT_ALPHA),
             state_layer,
@@ -158,10 +164,30 @@ impl ButtonColors {
     }
 
     /// The colors with the container of a selected button replaced.
+    ///
+    /// The content keeps its color, which is only legible while the two
+    /// still contrast; [`ButtonColors::with_selected_content`] is the
+    /// variant for a selected container that needs its own `on_*` role.
     #[inline]
     #[must_use]
     pub const fn with_selected(mut self, container: Color) -> Self {
         self.selected_container = container;
+        self
+    }
+
+    /// The colors with both the container and the content of a selected
+    /// button replaced.
+    ///
+    /// A selection is not a transient state — Material 3 swaps the
+    /// container for a different role color, and the content has to
+    /// follow it into the `on_*` color of that role or the label of the
+    /// selected button is drawn in the color of the container it no
+    /// longer has.
+    #[inline]
+    #[must_use]
+    pub const fn with_selected_content(mut self, container: Color, content: Color) -> Self {
+        self.selected_container = container;
+        self.selected_content = content;
         self
     }
 
@@ -171,7 +197,7 @@ impl ButtonColors {
     #[must_use]
     pub const fn filled(scheme: &ColorScheme) -> Self {
         Self::layered(scheme.primary, scheme.on_primary, scheme.on_surface)
-            .with_selected(scheme.primary_container)
+            .with_selected_content(scheme.primary_container, scheme.on_primary_container)
     }
 
     /// The tonal button of `scheme`: the primary container role.
@@ -183,7 +209,7 @@ impl ButtonColors {
             scheme.on_primary_container,
             scheme.on_surface,
         )
-        .with_selected(scheme.secondary)
+        .with_selected_content(scheme.secondary, scheme.on_secondary)
     }
 
     /// The outlined button of `scheme`: no container at all, so only the
@@ -192,7 +218,7 @@ impl ButtonColors {
     #[must_use]
     pub const fn outlined(scheme: &ColorScheme) -> Self {
         Self::layered(Color::TRANSPARENT, scheme.on_surface, scheme.on_surface)
-            .with_selected(scheme.surface_variant)
+            .with_selected_content(scheme.surface_variant, scheme.on_surface_variant)
     }
 
     /// The text button of `scheme`: no container, the primary color as
@@ -242,18 +268,22 @@ impl ButtonColors {
         self.state_layer.with_alpha(alpha)
     }
 
-    /// The content color `flags` ask for.
+    /// The content color `state` and `flags` ask for.
     ///
-    /// The transient states never change the content: Material 3 keeps
-    /// the content color and tints the container under it.
+    /// Only the selection changes the content, because only it changes
+    /// the container under the content; the transient states keep the
+    /// content color and tint the container, which is what Material 3
+    /// prescribes and what keeps a hover from flickering the label.
     #[inline]
     #[must_use]
-    pub fn content_for(&self, flags: ButtonFlags) -> Color {
-        if flags.contains(ButtonFlags::ENABLED) {
-            self.content
-        } else {
-            self.disabled_content
+    pub fn content_for(&self, state: InteractionState, flags: ButtonFlags) -> Color {
+        if !flags.contains(ButtonFlags::ENABLED) {
+            return self.disabled_content;
         }
+        if flags.contains(ButtonFlags::SELECTABLE) && state.contains(InteractionState::SELECTED) {
+            return self.selected_content;
+        }
+        self.content
     }
 }
 
@@ -458,7 +488,7 @@ mod tests {
         let disabled = ButtonFlags::HOVERABLE;
         assert_eq!(colors.container_for(state, disabled), colors.disabled_container);
         assert_eq!(colors.overlay_for(state, disabled), Color::TRANSPARENT);
-        assert_eq!(colors.content_for(disabled), colors.disabled_content);
+        assert_eq!(colors.content_for(state, disabled), colors.disabled_content);
     }
 
     #[test]
@@ -483,6 +513,51 @@ mod tests {
         );
         let toggle = ButtonFlags::STANDARD | ButtonFlags::SELECTABLE;
         assert_eq!(colors.container_for(selected, toggle), Color::RED);
+    }
+
+    #[test]
+    fn a_selected_button_keeps_the_content_of_the_rest_until_told() {
+        let colors = ButtonColors::layered(Color::WHITE, Color::BLACK, Color::rgb(0.5, 0.5, 0.5))
+            .with_selected(Color::RED);
+        let toggle = ButtonFlags::STANDARD | ButtonFlags::SELECTABLE;
+        assert_eq!(
+            colors.content_for(InteractionState::SELECTED, toggle),
+            colors.content,
+            "a container of its own does not imply a content of its own"
+        );
+    }
+
+    #[test]
+    fn the_selected_content_follows_the_selected_container() {
+        let colors = ButtonColors::layered(Color::WHITE, Color::BLACK, Color::rgb(0.5, 0.5, 0.5))
+            .with_selected_content(Color::RED, Color::BLUE);
+        let toggle = ButtonFlags::STANDARD | ButtonFlags::SELECTABLE;
+        assert_eq!(
+            colors.container_for(InteractionState::SELECTED, toggle),
+            Color::RED
+        );
+        assert_eq!(
+            colors.content_for(InteractionState::SELECTED, toggle),
+            Color::BLUE
+        );
+        assert_eq!(
+            colors.content_for(InteractionState::NONE, toggle),
+            Color::BLACK,
+            "the rest of the states keep the content of the role"
+        );
+    }
+
+    #[test]
+    fn each_role_selects_the_content_of_the_container_it_moves_to() {
+        let filled = ButtonColors::filled(&SCHEME);
+        assert_eq!(filled.selected_container, SCHEME.primary_container);
+        assert_eq!(filled.selected_content, SCHEME.on_primary_container);
+        let tonal = ButtonColors::tonal(&SCHEME);
+        assert_eq!(tonal.selected_container, SCHEME.secondary);
+        assert_eq!(tonal.selected_content, SCHEME.on_secondary);
+        let outlined = ButtonColors::outlined(&SCHEME);
+        assert_eq!(outlined.selected_container, SCHEME.surface_variant);
+        assert_eq!(outlined.selected_content, SCHEME.on_surface_variant);
     }
 
     #[test]

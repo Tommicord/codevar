@@ -78,7 +78,7 @@ fn the_label_paints_the_content_color_of_its_palette() {
     assert_eq!(drawn.plain.len(), 1);
     assert_eq!(
         drawn.plain[0].1.color,
-        ButtonColors::text(&theme.colors).content_for(ButtonFlags::STANDARD),
+        ButtonColors::text(&theme.colors).content_for(InteractionState::NONE, ButtonFlags::STANDARD),
         "the label takes the content color the button resolved"
     );
 }
@@ -91,12 +91,56 @@ fn a_disabled_button_dims_its_label() {
     let drawn = runs_in(&mut node, &theme);
     assert_eq!(
         drawn.plain[0].1.color,
-        ButtonColors::text(&theme.colors).content_for(flags),
+        ButtonColors::text(&theme.colors).content_for(InteractionState::NONE, flags),
         "a button that answers nothing draws the disabled content"
     );
     assert_ne!(
         drawn.plain[0].1.color,
-        ButtonColors::text(&theme.colors).content_for(ButtonFlags::STANDARD)
+        ButtonColors::text(&theme.colors).content_for(InteractionState::NONE, ButtonFlags::STANDARD)
+    );
+}
+
+#[test]
+fn a_hover_never_changes_the_color_of_the_label() {
+    let theme = Theme::light();
+    let source = InteractionSource::with_state(InteractionState::HOVERED);
+    let mut node = Node::new(
+        Label::<Text>::new(
+            TextContent::new("Save"),
+            ButtonPalette::role_of(ButtonColors::filled),
+            ButtonFlags::STANDARD,
+        )
+        .source(source),
+    );
+    assert_eq!(
+        runs_in(&mut node, &theme).plain[0].1.color,
+        ButtonColors::filled(&theme.colors).content
+    );
+}
+
+#[test]
+fn a_selected_toggle_paints_the_content_of_its_selected_container() {
+    let theme = Theme::light();
+    let colors = ButtonColors::tonal(&theme.colors);
+    let toggle = ButtonFlags::STANDARD | ButtonFlags::SELECTABLE;
+    let source = InteractionSource::with_state(InteractionState::SELECTED);
+    let mut rest = Node::new(Label::<Text>::new(
+        TextContent::new("Save"),
+        ButtonPalette::fixed(colors),
+        toggle,
+    ));
+    let mut selected = Node::new(
+        Label::<Text>::new(TextContent::new("Save"), ButtonPalette::fixed(colors), toggle).source(source),
+    );
+    assert_eq!(
+        runs_in(&mut selected, &theme).plain[0].1.color,
+        colors.selected_content,
+        "the label moves to the on-color of the container the selection chose"
+    );
+    assert_eq!(
+        runs_in(&mut rest, &theme).plain[0].1.color,
+        colors.content,
+        "a label without a source never shows the selected content"
     );
 }
 
@@ -111,7 +155,7 @@ fn the_label_rebuilds_when_the_theme_changes() {
     );
     assert_eq!(
         dark.plain[0].1.color,
-        ButtonColors::text(&Theme::dark().colors).content_for(ButtonFlags::STANDARD)
+        ButtonColors::text(&Theme::dark().colors).content_for(InteractionState::NONE, ButtonFlags::STANDARD)
     );
 }
 
