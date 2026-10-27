@@ -42,12 +42,16 @@
 //! elements are compared and the node is updated in place, with `Rc` identity
 //! deciding whether there is anything to update at all.
 //!
-//! # Flags
+//! # Flags and lanes
 //!
-//! Completion is also where flags move upwards. A child's flags and lanes are
-//! merged into its parent's subtree bookkeeping, so the commit phase can skip
-//! a whole subtree with one test and the scheduler can find pending work
-//! without touching every fiber.
+//! Completion is also where flags and lanes move upwards. The union over the
+//! children replaces the parent's `child_lanes` and joins its `subtree_flags`,
+//! the way React's `bubbleProperties` does, so the commit phase can skip a
+//! whole subtree with one flag test and the scheduler can find pending work
+//! without touching every fiber. The lanes a component could not apply are
+//! left on its fiber by [`RenderCtx`]; bubbling is what carries them to the
+//! root, where `finishedWork.lanes | finishedWork.child_lanes` is the work the
+//! next render has to cover.
 
 #![allow(dead_code)]
 
@@ -106,7 +110,12 @@ impl<'a, H: Host> WorkLoop<'a, H> {
 
     /// Renders one fiber and returns the child to work on next, if any.
     fn begin_work(&mut self, fiber: FiberId) -> Option<FiberId> {
-        let tag = self.arena.get(fiber)?.tag;
+        let node = self.arena.get_mut(fiber)?;
+        // The lanes copied from the committed alternate describe the work the
+        // last render found. Beginning the fiber finds that work again: only a
+        // skipped update marks a lane from here on.
+        node.lanes = Lanes::NONE;
+        let tag = node.tag;
         match tag {
             FiberTag::Component => self.render_component(fiber),
             FiberTag::Fragment => self.render_fragment(fiber),
@@ -135,12 +144,14 @@ impl<'a, H: Host> WorkLoop<'a, H> {
             .get_mut(fiber)
             .map(|fiber| mem::take(&mut fiber.effects))
             .unwrap_or_default();
+        let mut lanes = Lanes::NONE;
         let element = {
             let mut ctx = RenderCtx::new(
                 fiber,
                 &mut hooks,
                 &mut effects,
                 self.render_lanes,
+                &mut lanes,
                 Rc::clone(&self.mailbox),
                 &mut *self.ids,
             );
@@ -159,6 +170,7 @@ impl<'a, H: Host> WorkLoop<'a, H> {
             current.hooks = hooks;
             current.effects = effects;
             current.flags.insert(flags);
+            current.lanes.insert(lanes);
         }
         self.reconcile(fiber, &[element]);
         self.arena.get(fiber)?.first_child
@@ -196,19 +208,6 @@ impl<'a, H: Host> WorkLoop<'a, H> {
         let mut current = fiber;
         loop {
             self.complete(current);
-            let parent = self
-                .arena
-                .get(current)
-                .and_then(|fiber| fiber.parent);
-            if let Some(parent) = parent
-                && let Some(fiber) = self.arena.get(current)
-            {
-                let flags = fiber.flags | fiber.subtree_flags;
-                let lanes = fiber.lanes | fiber.child_lanes;
-                if let Some(parent) = self.arena.get_mut(parent) {
-                    parent.merge_child(flags, lanes);
-                }
-            }
             if let Some(sibling) = self
                 .arena
                 .get(current)
@@ -219,7 +218,39 @@ impl<'a, H: Host> WorkLoop<'a, H> {
             if current == root {
                 return None;
             }
-            current = parent?;
+            current = self
+                .arena
+                .get(current)
+                .and_then(|fiber| fiber.parent)?;
+        }
+    }
+
+    /// Bubbles the flags and lanes of the children into `fiber`.
+    ///
+    /// `child_lanes` is overwritten rather than merged: every child of the
+    /// fiber is complete when this runs, so the union over the children is the
+    /// complete set of lanes below the node for this render. Keeping the lanes
+    /// copied from the committed alternate would carry a lane that was already
+    /// rendered into every later render.
+    fn bubble(&mut self, fiber: FiberId) {
+        let Some(node) = self.arena.get(fiber) else {
+            return;
+        };
+        let mut child = node.first_child;
+        let mut flags = Flags::NONE;
+        let mut lanes = Lanes::NONE;
+        while let Some(current) = child {
+            let Some(node) = self.arena.get(current) else {
+                break;
+            };
+            flags.insert(node.flags);
+            flags.insert(node.subtree_flags);
+            lanes.insert(node.lanes.union(node.child_lanes));
+            child = node.sibling;
+        }
+        if let Some(node) = self.arena.get_mut(fiber) {
+            node.subtree_flags.insert(flags);
+            node.child_lanes = lanes;
         }
     }
 
@@ -260,6 +291,7 @@ impl<'a, H: Host> WorkLoop<'a, H> {
             work.memoized = payload;
             work.flags.insert(flags);
         }
+        self.bubble(fiber);
     }
 }
 
@@ -420,6 +452,54 @@ mod tests {
         value.set(2);
         harness.render(element);
         assert_eq!(harness.host.nodes[0].element, (0, 2));
+    }
+
+    #[test]
+    fn a_skipped_update_marks_the_fiber_and_the_root() {
+        let mut harness = Harness::new();
+        let state = Rc::new(RefCell::new(None::<State<u16>>));
+        let handle = Rc::clone(&state);
+        let element = Element::component(move |ctx| {
+            let value = ctx.use_state(|| 1_u16);
+            *handle.borrow_mut() = Some(value.clone());
+            Element::host((0, *value.get()))
+        });
+        harness.render(element.clone());
+        let Some(value) = state.borrow().clone() else {
+            return;
+        };
+
+        // The default render cannot cover the transition update: the host keeps
+        // the rendered value and the lane reaches the root through the bubble.
+        value.set_with_lane(Lanes::TRANSITION, 7);
+        harness.render(element.clone());
+        assert_eq!(harness.host.nodes[0].element, (0, 1));
+        let Some(component) = harness.child(harness.root) else {
+            return;
+        };
+        assert!(
+            harness
+                .arena
+                .get(component)
+                .is_some_and(|fiber| fiber.lanes.contains(Lanes::TRANSITION))
+        );
+        assert!(
+            harness
+                .arena
+                .get(harness.root)
+                .is_some_and(|fiber| fiber.child_lanes.contains(Lanes::TRANSITION))
+        );
+
+        // The transition render applies the update and leaves no lane behind.
+        harness.lanes = Lanes::TRANSITION;
+        harness.render(element);
+        assert_eq!(harness.host.nodes[0].element, (0, 7));
+        assert!(
+            harness
+                .arena
+                .get(harness.root)
+                .is_some_and(|fiber| fiber.child_lanes.is_empty())
+        );
     }
 
     #[test]

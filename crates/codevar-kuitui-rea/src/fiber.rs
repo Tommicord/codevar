@@ -305,15 +305,6 @@ impl<H: Host> Fiber<H> {
         }
     }
 
-    /// Adds a child's flags and lanes to this node's subtree bookkeeping.
-    ///
-    /// The complete pass calls this once per child. A commit phase can then
-    /// skip a whole subtree with one flag test.
-    pub(crate) fn merge_child(&mut self, flags: Flags, lanes: Lanes) {
-        self.subtree_flags.insert(flags);
-        self.child_lanes.insert(lanes);
-    }
-
     /// Records a child that must be removed from the host.
     pub(crate) fn delete_child(&mut self, child: FiberId) {
         self.flags.insert(Flags::CHILD_DELETION);
@@ -541,21 +532,6 @@ mod tests {
         assert_eq!(work.lanes, Lanes::SYNC);
         assert_eq!(work.state_node, Some(TestNode(3)));
         assert!(matches!(work.pending, Payload::None));
-    }
-
-    #[test]
-    fn merging_a_child_bubbles_flags_and_lanes() {
-        let mut fiber = fiber(FiberTag::Host);
-        fiber.merge_child(Flags::UPDATE, Lanes::SYNC);
-        fiber.merge_child(Flags::PLACEMENT | Flags::PASSIVE, Lanes::DEFAULT);
-        assert!(fiber.subtree_flags.contains(Flags::UPDATE));
-        assert!(fiber.subtree_flags.contains(Flags::PLACEMENT));
-        assert!(fiber.subtree_flags.contains(Flags::PASSIVE));
-        assert!(
-            fiber
-                .child_lanes
-                .contains(Lanes::SYNC | Lanes::DEFAULT)
-        );
     }
 
     #[test]

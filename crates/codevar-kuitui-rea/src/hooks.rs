@@ -35,22 +35,24 @@
 //!
 //! An update is `(lane, action)`. The action is either a value or a function
 //! of the previous value. Functions are stored as `Fn` rather than `FnOnce`
-//! so an interrupted render can replay them without losing the update, and
-//! updates are only removed from the queue when the tree commits — the
-//! committed alternate is the one that advances the queue.
+//! so a skipped update can be replayed by a later render without losing it,
+//! and an applied update leaves the queue when a render applies it.
 //!
-//! A render stops at the first queued update whose lane is not part of the
-//! render, leaving it and everything after it for a later render. React
-//! rebases such an update and keeps processing; stopping is simpler and never
-//! applies an update out of order.
+//! A render applies every update whose lane is part of the render's lanes and
+//! *rebases* the rest, the way React's `updateReducer` does. The updates a
+//! render skipped stay in a base queue with their lanes, together with a copy
+//! of every update it applied after the skip; the copy has no lane, so a later
+//! render replays the chunk in source order no matter which lanes it covers.
+//! The skipped lane is also recorded on the fiber, which is what makes the
+//! root render that lane again.
 //!
 //! # Equality
 //!
 //! When the queue is empty, [`State::set`] and [`State::update`] compute the
-//! next value immediately. If it equals the last committed value, the update
+//! next value immediately. If it equals the last rendered value, the update
 //! is queued with no lane and the root is not woken: the render would produce
 //! the same tree. The comparison is only sound while the queue is empty,
-//! because only then is the committed value the base of the update.
+//! because only then is the last rendered value the base of the update.
 
 // The work loop that drives these hooks lands in the next increment.
 #![allow(dead_code)]
@@ -82,17 +84,42 @@ enum UpdateAction<T> {
 
 /// One queued update of a state hook.
 struct Update {
-    /// The lane the update arrived on. [`Lanes::NONE`] marks an eagerly
-    /// discarded update: it is kept for rebasing but never wakes the root.
+    /// The lane the update arrived on. [`Lanes::NONE`] marks an update that
+    /// must be replayed by the next render whatever its lanes are: it was
+    /// either queued by the eager comparison, which already knows it changes
+    /// nothing, or rebased on top of a skipped update.
     lane: Lanes,
     /// An `UpdateAction<T>`, type-erased until the render knows `T`.
-    action: Box<dyn Any>,
+    ///
+    /// The action is shared rather than moved so a rebase can copy the update
+    /// without copying the closure.
+    action: Rc<dyn Any>,
+}
+
+impl Update {
+    /// The copy a render keeps when it applied the update on top of a skipped
+    /// one.
+    ///
+    /// The copy keeps the action but drops the lane: React replays it in the
+    /// next render regardless of which lanes that render covers, because the
+    /// skipped update it was applied to has to be replayed first.
+    fn rebased(&self) -> Self {
+        Self {
+            lane: Lanes::NONE,
+            action: Rc::clone(&self.action),
+        }
+    }
 }
 
 /// The queue shared by the alternates of a fiber.
 pub(crate) struct UpdateQueue {
-    /// The updates not committed yet.
-    updates: Vec<Update>,
+    /// The updates queued since the last render.
+    pending: Vec<Update>,
+    /// The updates a render skipped, in source order, followed by the rebased
+    /// copies of the updates it applied after the first skip.
+    base: Vec<Update>,
+    /// The value the base queue applies to.
+    base_state: Option<Rc<dyn Any>>,
     /// The fiber of the current tree that owns the queue, or `None` when the
     /// fiber that created it is gone.
     ///
@@ -103,7 +130,7 @@ pub(crate) struct UpdateQueue {
     /// updates it already holds but no longer wakes the root, which is what
     /// React does when it finds no path from the fiber back to a root.
     owner: Cell<Option<FiberId>>,
-    /// The last committed value, as `Rc<T>`.
+    /// The last rendered value, as `Rc<T>`.
     last_rendered: Option<Rc<dyn Any>>,
 }
 
@@ -111,6 +138,11 @@ impl UpdateQueue {
     /// The fiber that currently owns the queue, if it is still attached.
     pub(crate) fn owner(&self) -> Option<FiberId> {
         self.owner.get()
+    }
+
+    /// Whether no render has work left in the queue.
+    fn is_empty(&self) -> bool {
+        self.pending.is_empty() && self.base.is_empty()
     }
 }
 
@@ -215,13 +247,13 @@ impl<T: PartialEq + 'static> State<T> {
         self.enqueue(lane, UpdateAction::Apply(Rc::new(update)));
     }
 
-    /// The committed value, when the queue is empty.
+    /// The last rendered value, when the queue is empty.
     ///
-    /// Outside that case the eager computation is skipped: the committed value
-    /// is not the base the update would apply to.
+    /// Outside that case the eager computation is skipped: the last rendered
+    /// value is not the base the update would apply to.
     fn current_value(&self) -> Option<Rc<T>> {
         let queue = self.queue.borrow();
-        if !queue.updates.is_empty() {
+        if !queue.is_empty() {
             return None;
         }
         queue
@@ -234,9 +266,9 @@ impl<T: PartialEq + 'static> State<T> {
     /// Queues an action and wakes the root when the lane is not empty.
     fn enqueue(&self, lane: Lanes, action: UpdateAction<T>) {
         let mut queue = self.queue.borrow_mut();
-        queue.updates.push(Update {
+        queue.pending.push(Update {
             lane,
-            action: Box::new(action),
+            action: Rc::new(action),
         });
         let attached = queue.owner.get().is_some();
         drop(queue);
@@ -323,18 +355,14 @@ pub(crate) struct HookList {
 impl HookList {
     /// Makes the rendered state the committed state.
     ///
-    /// Removes the updates the render applied, remembers the value for the
-    /// eager comparison and starts the next render from the new value.
+    /// The applied updates already left the queue during the render, so the
+    /// only thing left to commit is the value the eager comparison starts
+    /// from.
     pub(crate) fn commit(&mut self) {
         for slot in &mut self.slots {
-            let Some(queue) = &slot.queue else {
-                continue;
-            };
-            let mut queue = queue.borrow_mut();
-            let applied = slot.consumed.min(queue.updates.len());
-            queue.updates.drain(..applied);
-            slot.consumed = 0;
-            queue.last_rendered = slot.value.clone();
+            if let Some(queue) = &slot.queue {
+                queue.borrow_mut().last_rendered = slot.value.clone();
+            }
         }
     }
 
@@ -398,8 +426,6 @@ struct HookSlot {
     deps: Option<Rc<dyn Any>>,
     /// The update queue of a state hook, shared by both alternates.
     queue: Option<Rc<RefCell<UpdateQueue>>>,
-    /// How many updates of the queue this alternate applied.
-    consumed: usize,
     /// The effect of an effect hook, if it must run.
     effect: Option<EffectRecord>,
 }
@@ -421,11 +447,23 @@ pub struct RenderCtx<'a> {
     effects: &'a mut Vec<EffectRecord>,
     /// The lanes this render was started for.
     render_lanes: Lanes,
+    /// The lanes this render could not apply, for the fiber to record.
+    ///
+    /// A state hook that skipped an update adds its lane here; the work loop
+    /// copies the set onto the fiber so the root knows a later render has to
+    /// cover it.
+    lanes: &'a mut Lanes,
     /// The root's mailbox.
     mailbox: MailboxHandle,
     /// The counter of `use_id`.
     ids: &'a mut u64,
     /// Whether a state hook applied an update.
+    ///
+    /// React marks the fiber only when the resulting value differs from the
+    /// one this alternate rendered. Comparing the values would need a
+    /// `PartialEq` bound on every state type, so the engine records that an
+    /// update ran; the difference only matters to the bailout that arrives
+    /// with `bailoutOnAlreadyFinishedWork`.
     did_update: bool,
 }
 
@@ -436,6 +474,7 @@ impl<'a> RenderCtx<'a> {
         hooks: &'a mut HookList,
         effects: &'a mut Vec<EffectRecord>,
         render_lanes: Lanes,
+        lanes: &'a mut Lanes,
         mailbox: MailboxHandle,
         ids: &'a mut u64,
     ) -> Self {
@@ -445,6 +484,7 @@ impl<'a> RenderCtx<'a> {
             cursor: 0,
             effects,
             render_lanes,
+            lanes,
             mailbox,
             ids,
             did_update: false,
@@ -480,30 +520,15 @@ impl<'a> RenderCtx<'a> {
             && let Some(queue) = &slot.queue
         {
             let queue = Rc::clone(queue);
-            let mut value = Rc::clone(current);
-            queue.borrow_mut().owner.set(Some(self.fiber));
-            let mut applied = slot.consumed;
-            {
-                let queue = queue.borrow();
-                while applied < queue.updates.len() {
-                    let update = &queue.updates[applied];
-                    if !update.lane.is_subset_of(self.render_lanes) {
-                        break;
-                    }
-                    if let Some(action) = update.action.downcast_ref::<UpdateAction<T>>() {
-                        value = match action {
-                            UpdateAction::Set(next) => Rc::clone(next),
-                            UpdateAction::Apply(apply) => Rc::new(apply(&value)),
-                        };
-                    }
-                    applied += 1;
-                }
-            }
-            if applied > slot.consumed {
-                self.did_update = true;
-                slot.consumed = applied;
-                slot.value = Some(Rc::new(Rc::clone(&value)) as Rc<dyn Any>);
-            }
+            let value = {
+                let mut queue = queue.borrow_mut();
+                queue.owner.set(Some(self.fiber));
+                let (value, applied) =
+                    Self::replay::<T>(&mut queue, Rc::clone(current), self.render_lanes, self.lanes);
+                self.did_update |= applied;
+                value
+            };
+            slot.value = Some(Rc::new(Rc::clone(&value)) as Rc<dyn Any>);
             return State {
                 value,
                 queue,
@@ -513,18 +538,76 @@ impl<'a> RenderCtx<'a> {
 
         let value = Rc::new(init());
         let queue = Rc::new(RefCell::new(UpdateQueue {
-            updates: Vec::new(),
+            pending: Vec::new(),
+            base: Vec::new(),
+            base_state: Some(Rc::new(Rc::clone(&value)) as Rc<dyn Any>),
             owner: Cell::new(Some(self.fiber)),
             last_rendered: Some(Rc::new(Rc::clone(&value)) as Rc<dyn Any>),
         }));
         slot.value = Some(Rc::new(Rc::clone(&value)) as Rc<dyn Any>);
         slot.queue = Some(Rc::clone(&queue));
-        slot.consumed = 0;
         State {
             value,
             queue,
             mailbox: Rc::clone(&self.mailbox),
         }
+    }
+
+    /// Replays the update queue of a state hook for one render.
+    ///
+    /// Returns the value this render reads and whether it applied an update.
+    /// The base queue the previous render left is replayed first, then the
+    /// updates queued since. An update outside the render's lanes goes back
+    /// into the base queue with its lane, and its lane is added to `skipped`;
+    /// every update applied after such a skip is copied into the base queue
+    /// without a lane, so the next render replays the tail in source order on
+    /// top of the skipped update. The committed alternate's value is the base
+    /// when the queue has none, which only happens for a queue created before
+    /// the base state existed.
+    fn replay<T: 'static>(
+        queue: &mut UpdateQueue,
+        current: Rc<T>,
+        render_lanes: Lanes,
+        skipped: &mut Lanes,
+    ) -> (Rc<T>, bool) {
+        let mut updates = mem::take(&mut queue.base);
+        updates.append(&mut queue.pending);
+        let had_updates = !updates.is_empty();
+        let mut value = queue
+            .base_state
+            .as_deref()
+            .and_then(|state| state.downcast_ref::<Rc<T>>())
+            .map_or(current, Rc::clone);
+        let mut base = Vec::new();
+        let mut base_state = None;
+        let mut applied = false;
+        for update in updates {
+            if !update.lane.is_subset_of(render_lanes) {
+                if base_state.is_none() {
+                    base_state = Some(Rc::clone(&value));
+                }
+                skipped.insert(update.lane);
+                base.push(update);
+                continue;
+            }
+            if base_state.is_some() {
+                base.push(update.rebased());
+            }
+            if let Some(action) = update.action.downcast_ref::<UpdateAction<T>>() {
+                value = match action {
+                    UpdateAction::Set(next) => Rc::clone(next),
+                    UpdateAction::Apply(apply) => Rc::new(apply(&value)),
+                };
+                applied = true;
+            }
+        }
+        let base_state = base_state.unwrap_or_else(|| Rc::clone(&value));
+        queue.base = base;
+        queue.base_state = Some(Rc::new(base_state) as Rc<dyn Any>);
+        if had_updates {
+            queue.last_rendered = Some(Rc::new(Rc::clone(&value)) as Rc<dyn Any>);
+        }
+        (value, applied)
     }
 
     /// Returns a cell that keeps its value across renders.
@@ -670,6 +753,7 @@ mod tests {
         mailbox: MailboxHandle,
         ids: u64,
         lanes: Lanes,
+        skipped: Lanes,
     }
 
     impl Harness {
@@ -681,6 +765,7 @@ mod tests {
                 mailbox: mailbox(),
                 ids: 0,
                 lanes: Lanes::DEFAULT,
+                skipped: Lanes::NONE,
             }
         }
 
@@ -689,11 +774,13 @@ mod tests {
             // turns a dispatch into pending lanes.
             self.mailbox.borrow_mut().drain();
             self.effects.clear();
+            self.skipped = Lanes::NONE;
             let mut ctx = RenderCtx::new(
                 self.fiber,
                 &mut self.hooks,
                 &mut self.effects,
                 self.lanes,
+                &mut self.skipped,
                 Rc::clone(&self.mailbox),
                 &mut self.ids,
             );
@@ -757,6 +844,33 @@ mod tests {
     }
 
     #[test]
+    fn an_update_applied_after_a_skip_is_rebased() {
+        let mut harness = Harness::new();
+        let state = harness.render(|ctx| ctx.use_state(|| 1_u32));
+        harness.commit();
+        state.update_with_lane(Lanes::TRANSITION, |value| value + 10);
+        state.update_with_lane(Lanes::DEFAULT, |value| value * 2);
+
+        // The default render skips the transition update, applies the one
+        // queued after it, and records the lane it could not cover.
+        let state = harness.render(|ctx| ctx.use_state(|| 0_u32));
+        assert_eq!(*state.get(), 2);
+        assert!(harness.skipped.contains(Lanes::TRANSITION));
+
+        // Another default render replays the same chunk from the same base:
+        // the rebased copy is idempotent instead of being applied twice.
+        let state = harness.render(|ctx| ctx.use_state(|| 0_u32));
+        assert_eq!(*state.get(), 2);
+
+        // The transition render replays the skipped update and then the
+        // default update, in the order they were dispatched.
+        harness.lanes = Lanes::TRANSITION;
+        let state = harness.render(|ctx| ctx.use_state(|| 0_u32));
+        assert_eq!(*state.get(), 22);
+        assert!(harness.skipped.is_empty());
+    }
+
+    #[test]
     fn a_functional_update_is_replayable() {
         let mut harness = Harness::new();
         let state = harness.render(|ctx| ctx.use_state(|| 1_u32));
@@ -768,11 +882,13 @@ mod tests {
         let mut effects = Vec::new();
         let mut ids = harness.ids;
         let read = |hooks: &mut HookList, effects: &mut Vec<EffectRecord>, ids: &mut u64| {
+            let mut skipped = Lanes::NONE;
             let mut ctx = RenderCtx::new(
                 harness.fiber,
                 hooks,
                 effects,
                 Lanes::DEFAULT,
+                &mut skipped,
                 Rc::clone(&harness.mailbox),
                 ids,
             );
@@ -914,7 +1030,7 @@ mod tests {
     }
 
     #[test]
-    fn commit_drops_applied_updates_and_advances_the_eager_base() {
+    fn an_applied_update_leaves_the_queue_and_advances_the_eager_base() {
         let mut harness = Harness::new();
         let state = harness.render(|ctx| ctx.use_state(|| 0_u32));
         state.set(1);
