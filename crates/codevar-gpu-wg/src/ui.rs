@@ -370,6 +370,9 @@ struct EffectParams {
     /// The [`codevar_kuitui::effect::EffectKinds`] bits the fragment stage
     /// tests.
     kinds: u32,
+    /// The width of the outline, in logical pixels; unread when the stroke
+    /// bit is clear, because then the fragment keeps the whole rounded box.
+    stroke: f32,
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
@@ -400,6 +403,7 @@ impl EffectParams {
         }
         words[at] = self.rotation.to_bits();
         words[at + 1] = self.kinds;
+        words[at + 2] = self.stroke.to_bits();
         words
     }
 }
@@ -441,6 +445,7 @@ fn effect_params(effect: &Effect, viewport: [f32; 2]) -> EffectParams {
         ],
         rotation: effect.rotation,
         kinds: u32::from(effect.kinds.bits()),
+        stroke: effect.stroke,
     }
 }
 

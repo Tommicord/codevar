@@ -221,8 +221,8 @@ fn expanding_clears_the_previous_frame() {
 fn the_effect_block_keeps_the_shader_offsets() {
     // The same block `ui_effect.vert.glsl` declares and the Vulkan backend
     // pushes; the words the WebGPU pipe sends are cut from these offsets.
-    assert_eq!(EFFECT_PUSH_BYTES, 104);
-    assert_eq!(EFFECT_PUSH_WORDS, 26);
+    assert_eq!(EFFECT_PUSH_BYTES, 108);
+    assert_eq!(EFFECT_PUSH_WORDS, 27);
     assert_eq!(core::mem::offset_of!(EffectParams, color_from), 0);
     assert_eq!(core::mem::offset_of!(EffectParams, color_to), 16);
     assert_eq!(core::mem::offset_of!(EffectParams, viewport), 32);
@@ -234,6 +234,7 @@ fn the_effect_block_keeps_the_shader_offsets() {
     assert_eq!(core::mem::offset_of!(EffectParams, radii), 80);
     assert_eq!(core::mem::offset_of!(EffectParams, rotation), 96);
     assert_eq!(core::mem::offset_of!(EffectParams, kinds), 100);
+    assert_eq!(core::mem::offset_of!(EffectParams, stroke), 104);
 }
 
 #[test]
@@ -265,17 +266,34 @@ fn the_effect_words_are_the_field_bit_patterns() {
     }
     assert_eq!(words[24], 0.5f32.to_bits(), "the rotation");
     assert_eq!(words[25], 1 | 4, "the blur and rotate kind bits");
+    assert_eq!(
+        words[26],
+        0.0f32.to_bits(),
+        "a layer without an outline pushes no width"
+    );
 }
 
 #[test]
 fn the_kind_bits_are_the_ones_the_shader_tests() {
     // `ui_effect.frag.glsl` names these KIND_BLUR, KIND_PIXELATE,
-    // KIND_ROTATE and KIND_GRADIENT; the two sides meet in the immediate
-    // block and nothing else checks them.
+    // KIND_ROTATE, KIND_GRADIENT and KIND_STROKE; the two sides meet in
+    // the immediate block and nothing else checks them.
     assert_eq!(EffectKinds::BLUR.bits(), 1);
     assert_eq!(EffectKinds::PIXELATE.bits(), 2);
     assert_eq!(EffectKinds::ROTATE.bits(), 4);
     assert_eq!(EffectKinds::GRADIENT.bits(), 8);
+    assert_eq!(EffectKinds::STROKE.bits(), 16);
+}
+
+#[test]
+fn an_outline_sends_its_width_as_the_last_word() {
+    let bounds = Rect::from_min_size(Offset::ZERO, 30.0, 12.0);
+    let effect = Effect::new(bounds).stroke(2.5);
+
+    let params = effect_params(&effect, [64.0, 64.0]);
+    assert_eq!(params.stroke, 2.5);
+    assert_eq!(params.kinds, 16);
+    assert_eq!(params.words()[26], 2.5f32.to_bits());
 }
 
 #[test]
