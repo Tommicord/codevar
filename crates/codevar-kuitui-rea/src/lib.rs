@@ -53,9 +53,10 @@
 //!
 //! # Status
 //!
-//! The crate is being built bottom-up. The lane model is complete; the fiber
-//! arena, hooks, reconciler and work loop follow. Until they land, this crate
-//! only exposes [`lane`].
+//! The crate is being built bottom-up. The lane model, the host boundary and
+//! the fiber arena are in place; hooks, reconciliation, the work loop and the
+//! commit phase follow. Until the root lands, the public surface is
+//! [`lane`], [`Host`], [`Key`] and [`Props`].
 //!
 //! # References
 //!
@@ -74,4 +75,8 @@ extern crate alloc;
 
 pub mod lane;
 
+mod fiber;
+mod host;
+
+pub use host::{Host, Key, Props, props, props_ref};
 pub use lane::{LANE_COUNT, Lanes, SchedulerPriority};
