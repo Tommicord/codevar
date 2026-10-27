@@ -805,20 +805,37 @@ impl Node {
     ///
     /// The framework calls this for every node of the tree; an
     /// application that drives the tree by hand may call it too.
+    ///
+    /// The paint order is the container of the modifier chain, the
+    /// background of the widget, the decorations of the chain, the
+    /// content of the widget, the children and last the border of the
+    /// chain, so a decoration sits above the container it decorates and
+    /// below the content it shares the node with.
     pub fn draw(&mut self, theme: &Theme, list: &mut DrawList) {
         let bounds = self.bounds;
         let inner = self.content_rect(bounds);
         let container = self.modifier.container_color();
+        let radii = self.modifier.container_radii();
         let effect = self.modifier.effect(bounds);
         if let (Some(effect), Some(color)) = (effect, container) {
             // The container is the layer: a backend with the effect
             // program rasterizes the rounded box from its geometry, and
             // the recorded color is what a backend without one draws.
             list.push_effect(effect);
-            list.rect(bounds, self.modifier.container_radii(), Paint::fill(color));
+            list.rect(bounds, radii, Paint::fill(color));
             list.pop_effect();
         } else if let Some(color) = container {
-            list.rect(bounds, CornerRadii::ZERO, Paint::fill(color));
+            list.rect(bounds, radii, Paint::fill(color));
+        }
+        {
+            // The widget paints its own container before the decorations
+            // of the chain run, so an opaque container no longer hides
+            // the canvas a `concrete` modifier draws over it.
+            let Node {
+                widget, children: _, ..
+            } = self;
+            let mut scope = DrawScope::new(&mut *list, theme, inner.origin);
+            widget.draw_background(&mut scope, inner);
         }
         {
             let mut scope = DrawScope::new(&mut *list, theme, inner.origin);
@@ -995,6 +1012,28 @@ mod tests {
 
         fn draw(&mut self, scope: &mut DrawScope<'_>, bounds: Rect) {
             scope.fill_rect(bounds, Color::BLUE);
+        }
+    }
+
+    /// A widget that fills its box in the background pass, the way the
+    /// chrome of a button does, and paints its content in the content
+    /// pass.
+    struct Layered;
+
+    impl Widget for Layered {
+        fn measure(&mut self, _scope: &mut MeasureScope<'_>, constraints: Constraints) -> Size {
+            constraints.enforce(Size::new(10.0, 10.0))
+        }
+
+        fn draw_background(&mut self, scope: &mut DrawScope<'_>, bounds: Rect) {
+            scope.fill_rect(bounds, Color::RED);
+        }
+
+        fn draw(&mut self, scope: &mut DrawScope<'_>, bounds: Rect) {
+            scope.fill_rect(
+                Rect::from_min_size(Offset::ZERO, 2.0, bounds.size.height),
+                Color::BLUE,
+            );
         }
     }
 
@@ -1213,6 +1252,36 @@ mod tests {
             .downcast_ref::<RectOp>()
             .expect("expected a rectangle");
         assert_eq!(rect.paint.color, Color::GREEN);
+    }
+
+    #[test]
+    fn a_widget_background_paints_under_the_decorations_of_the_chain() {
+        let theme = Theme::light();
+        let mut list = DrawList::new();
+        let mut node = Node::new(Layered).modifier(Modifier::none().concrete(|scope, bounds| {
+            scope.fill_rect(
+                Rect::from_min_size(Offset::ZERO, bounds.size.width, 2.0),
+                Color::GREEN,
+            );
+        }));
+        node.measure(&theme, Constraints::unbounded());
+        node.place(Rect::from_min_size(Offset::ZERO, 10.0, 10.0));
+        node.draw(&theme, &mut list);
+
+        // The decoration has to sit between the two passes of the widget,
+        // or an opaque container would record it under itself and a
+        // backend would draw a canvas no one can see.
+        let painted = list
+            .commands()
+            .map(|command| {
+                let any: &dyn core::any::Any = &*command.op;
+                any.downcast_ref::<RectOp>()
+                    .expect("every pass records a rectangle")
+                    .paint
+                    .color
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(painted, [Color::RED, Color::GREEN, Color::BLUE]);
     }
 
     #[test]

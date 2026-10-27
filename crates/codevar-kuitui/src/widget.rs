@@ -123,6 +123,22 @@ pub trait Widget {
         let _ = (scope, bounds);
     }
 
+    /// Paints the parts of the widget that sit behind the decorations
+    /// of the modifier chain.
+    ///
+    /// A widget that paints its own container — a button that fills its
+    /// box before its label — has to do it here, because the framework
+    /// runs the decorations named by the chain,
+    /// [`crate::node::Modifier::concrete`] above all, between this hook
+    /// and [`Widget::draw`]. A container painted in [`Widget::draw`] is
+    /// opaque and hides them.
+    ///
+    /// The default implementation paints nothing, which is right for a
+    /// widget that only draws content.
+    fn draw_background(&mut self, scope: &mut DrawScope<'_>, bounds: Rect) {
+        let _ = (scope, bounds);
+    }
+
     /// Paints the widget inside `bounds`.
     ///
     /// `bounds` is the rectangle the widget was given by its parent,
