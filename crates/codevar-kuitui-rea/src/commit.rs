@@ -97,6 +97,9 @@ impl<'a, H: Host> Commit<'a, H> {
                 && node.tag == FiberTag::Component
             {
                 node.hooks.commit();
+                // The swap made this fiber the current one, so a dispatch that
+                // outlives the render must name it from now on.
+                node.hooks.reset_owners(fiber);
             }
             self.create_effects(fiber, EffectTag::Layout);
         }
@@ -221,6 +224,10 @@ impl<'a, H: Host> Commit<'a, H> {
         }
 
         if let Some(node) = self.arena.get(fiber) {
+            // Detach first: a cleanup is user code and may still hold a state
+            // handle, and an update from it must not name a fiber that is about
+            // to leave the arena.
+            node.hooks.detach();
             node.hooks.destroy_effects();
         }
         if let (Some(parent), Some(child)) = (host_parent, own) {

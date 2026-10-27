@@ -93,31 +93,49 @@ struct Update {
 pub(crate) struct UpdateQueue {
     /// The updates not committed yet.
     updates: Vec<Update>,
-    /// The fiber of the current tree that owns the queue.
+    /// The fiber of the current tree that owns the queue, or `None` when the
+    /// fiber that created it is gone.
     ///
     /// A dispatch closure outlives the render that created it, so it cannot
     /// capture a fiber id: the id of the current tree changes when alternates
-    /// swap. The owner is refreshed by every render and by the commit.
-    owner: Cell<FiberId>,
+    /// swap. The owner is refreshed by every render and by the commit, and the
+    /// commit detaches it when the fiber unmounts. A detached queue keeps the
+    /// updates it already holds but no longer wakes the root, which is what
+    /// React does when it finds no path from the fiber back to a root.
+    owner: Cell<Option<FiberId>>,
     /// The last committed value, as `Rc<T>`.
     last_rendered: Option<Rc<dyn Any>>,
 }
 
+impl UpdateQueue {
+    /// The fiber that currently owns the queue, if it is still attached.
+    pub(crate) fn owner(&self) -> Option<FiberId> {
+        self.owner.get()
+    }
+}
+
+/// A shared handle to one update queue.
+pub(crate) type QueueHandle = Rc<RefCell<UpdateQueue>>;
+
 /// The signal a dispatch raises for the root.
 #[derive(Default)]
 pub(crate) struct Mailbox {
-    /// Fibers waiting for a render, with the lanes of their updates.
-    updates: Vec<(FiberId, Lanes)>,
+    /// The queues waiting for a render, with the lanes of their updates.
+    ///
+    /// The queue, not the fiber, is what a dispatch can name: the fiber id of
+    /// the current tree changes when alternates swap, while the queue is
+    /// shared by both alternates and knows which fiber owns it right now.
+    updates: Vec<(QueueHandle, Lanes)>,
 }
 
 impl Mailbox {
-    /// Records that `fiber` has work on `lanes`.
-    pub(crate) fn signal(&mut self, fiber: FiberId, lanes: Lanes) {
-        self.updates.push((fiber, lanes));
+    /// Records that the owner of `queue` has work on `lanes`.
+    pub(crate) fn signal(&mut self, queue: QueueHandle, lanes: Lanes) {
+        self.updates.push((queue, lanes));
     }
 
     /// Takes the work collected since the last drain.
-    pub(crate) fn drain(&mut self) -> Vec<(FiberId, Lanes)> {
+    pub(crate) fn drain(&mut self) -> Vec<(QueueHandle, Lanes)> {
         mem::take(&mut self.updates)
     }
 
@@ -145,7 +163,7 @@ pub struct State<T> {
     /// The value this render reads.
     value: Rc<T>,
     /// The queue of the creating hook.
-    queue: Rc<RefCell<UpdateQueue>>,
+    queue: QueueHandle,
     /// The root's mailbox.
     mailbox: MailboxHandle,
 }
@@ -215,16 +233,17 @@ impl<T: PartialEq + 'static> State<T> {
 
     /// Queues an action and wakes the root when the lane is not empty.
     fn enqueue(&self, lane: Lanes, action: UpdateAction<T>) {
-        let owner = {
-            let mut queue = self.queue.borrow_mut();
-            queue.updates.push(Update {
-                lane,
-                action: Box::new(action),
-            });
-            queue.owner.get()
-        };
-        if !lane.is_empty() {
-            self.mailbox.borrow_mut().signal(owner, lane);
+        let mut queue = self.queue.borrow_mut();
+        queue.updates.push(Update {
+            lane,
+            action: Box::new(action),
+        });
+        let attached = queue.owner.get().is_some();
+        drop(queue);
+        if attached && !lane.is_empty() {
+            self.mailbox
+                .borrow_mut()
+                .signal(Rc::clone(&self.queue), lane);
         }
     }
 }
@@ -323,7 +342,20 @@ impl HookList {
     pub(crate) fn reset_owners(&self, owner: FiberId) {
         for slot in &self.slots {
             if let Some(queue) = &slot.queue {
-                queue.borrow_mut().owner.set(owner);
+                queue.borrow_mut().owner.set(Some(owner));
+            }
+        }
+    }
+
+    /// Detaches every queue of the fiber.
+    ///
+    /// The commit calls this when the fiber is removed. The state handles the
+    /// component handed out may still be alive, but an update through them
+    /// would name a fiber that no longer exists, so they stop waking the root.
+    pub(crate) fn detach(&self) {
+        for slot in &self.slots {
+            if let Some(queue) = &slot.queue {
+                queue.borrow_mut().owner.set(None);
             }
         }
     }
@@ -449,7 +481,7 @@ impl<'a> RenderCtx<'a> {
         {
             let queue = Rc::clone(queue);
             let mut value = Rc::clone(current);
-            queue.borrow_mut().owner.set(self.fiber);
+            queue.borrow_mut().owner.set(Some(self.fiber));
             let mut applied = slot.consumed;
             {
                 let queue = queue.borrow();
@@ -482,7 +514,7 @@ impl<'a> RenderCtx<'a> {
         let value = Rc::new(init());
         let queue = Rc::new(RefCell::new(UpdateQueue {
             updates: Vec::new(),
-            owner: Cell::new(self.fiber),
+            owner: Cell::new(Some(self.fiber)),
             last_rendered: Some(Rc::new(Rc::clone(&value)) as Rc<dyn Any>),
         }));
         slot.value = Some(Rc::new(Rc::clone(&value)) as Rc<dyn Any>);
@@ -890,6 +922,30 @@ mod tests {
         assert_eq!(*state.get(), 1);
         harness.commit();
         state.set(1);
+        assert_eq!(harness.signals(), 0);
+    }
+
+    #[test]
+    fn a_dispatch_names_the_queue_that_owns_the_fiber() {
+        let mut harness = Harness::new();
+        let state = harness.render(|ctx| ctx.use_state(|| 1_u32));
+        state.set(2);
+        let signals = harness.mailbox.borrow_mut().drain();
+        assert_eq!(signals.len(), 1);
+        let Some((queue, lanes)) = signals.first() else {
+            return;
+        };
+        assert_eq!(queue.borrow().owner(), Some(harness.fiber));
+        assert!(lanes.contains(Lanes::DEFAULT));
+    }
+
+    #[test]
+    fn a_detached_state_does_not_wake_the_root() {
+        let mut harness = Harness::new();
+        let state = harness.render(|ctx| ctx.use_state(|| 1_u32));
+        harness.commit();
+        harness.hooks.detach();
+        state.set(2);
         assert_eq!(harness.signals(), 0);
     }
 
