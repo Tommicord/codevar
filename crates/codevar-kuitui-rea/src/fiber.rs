@@ -50,8 +50,9 @@ use core::any::TypeId;
 use core::fmt;
 use core::ops::{BitAnd, BitOr, Not};
 
+use crate::element::{ComponentFn, Element};
 use crate::hooks::{EffectRecord, HookList};
-use crate::host::{Host, Key, Props};
+use crate::host::{Host, Key};
 use crate::lane::Lanes;
 
 /// Bookkeeping the commit phase needs, attached to a fiber.
@@ -157,23 +158,26 @@ impl fmt::Debug for Flags {
 /// The payload is shared with the element that produced it, so starting a
 /// work-in-progress node never copies a host description or a prop bag.
 pub(crate) enum Payload<H: Host> {
-    /// A node with no content of its own, such as the root or a fragment.
+    /// A node with no content of its own, such as the root.
     None,
-    /// The props of a component.
-    Component(Props),
+    /// The render function of a component.
+    Component(Rc<ComponentFn<H>>),
     /// A host element, shared with the committed tree until it changes.
     Host(Rc<H::Element>),
     /// The content of a text node.
     Text(Rc<str>),
+    /// The children a fragment describes.
+    Fragment(Rc<[Element<H>]>),
 }
 
 impl<H: Host> Clone for Payload<H> {
     fn clone(&self) -> Self {
         match self {
             Self::None => Self::None,
-            Self::Component(props) => Self::Component(Rc::clone(props)),
+            Self::Component(render) => Self::Component(Rc::clone(render)),
             Self::Host(element) => Self::Host(Rc::clone(element)),
             Self::Text(text) => Self::Text(Rc::clone(text)),
+            Self::Fragment(children) => Self::Fragment(Rc::clone(children)),
         }
     }
 }
@@ -420,7 +424,6 @@ impl<H: Host> Arena<H> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::props;
 
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     struct TestNode(u32);
@@ -464,6 +467,10 @@ mod tests {
         Fiber::new(tag)
     }
 
+    fn component_payload() -> Payload<TestHost> {
+        Payload::Component(Rc::new(|_| Element::empty()))
+    }
+
     #[test]
     fn allocation_recycles_freed_slots() {
         let mut arena = arena();
@@ -500,7 +507,7 @@ mod tests {
         let mut arena = arena();
         let mut current = fiber(FiberTag::Component);
         current.element_type = Some(TypeId::of::<u32>());
-        current.pending = Payload::Component(props(1_u32));
+        current.pending = component_payload();
         current.memoized = current.pending.clone();
         current.flags = Flags::UPDATE | Flags::PLACEMENT;
         current.deletions.push(FiberId(7));

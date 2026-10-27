@@ -54,10 +54,10 @@
 //! # Status
 //!
 //! The crate is being built bottom-up. The lane model, the host boundary, the
-//! fiber arena and the hook model are in place; the element vocabulary,
+//! fiber arena, the hook model and the element vocabulary are in place;
 //! reconciliation, the work loop and the commit phase follow. Until the root
-//! lands, the public surface is [`lane`], [`Host`], [`Key`], [`Props`],
-//! [`RenderCtx`], [`State`] and [`Cleanup`].
+//! lands, the public surface is [`lane`], [`element`], [`Host`], [`Key`],
+//! [`Props`], [`RenderCtx`], [`State`] and [`Cleanup`].
 //!
 //! # References
 //!
@@ -74,12 +74,14 @@
 
 extern crate alloc;
 
+pub mod element;
 pub mod lane;
 
 mod fiber;
 mod hooks;
 mod host;
 
+pub use element::Element;
 pub use hooks::{Cleanup, RenderCtx, State};
 pub use host::{Host, Key, Props, props, props_ref};
 pub use lane::{LANE_COUNT, Lanes, SchedulerPriority};
