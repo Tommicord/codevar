@@ -403,6 +403,33 @@ fn a_toggle_flips_its_selection_and_clicks() {
 }
 
 #[test]
+fn a_selected_toggle_paints_the_container_and_the_label_of_the_same_state() {
+    let theme = Theme::light();
+    let colors = ButtonColors::tonal(&theme.colors);
+    let source = InteractionSource::new();
+    let mut node = TextButton::new(|| {}, "Bold")
+        .flags(ButtonFlags::STANDARD | ButtonFlags::SELECTABLE)
+        .colors(ButtonPalette::fixed(colors))
+        .interaction_source(source.clone())
+        .node();
+    let size = Size::new(120.0, 40.0);
+    let (resting, rest_label) = replay(&mut node, &theme, size, |r| {
+        (r.rects[0].2.color, r.runs[0].1.color)
+    });
+    assert_eq!(resting, colors.container);
+    assert_eq!(rest_label, colors.content);
+    source.set(InteractionState::SELECTED);
+    let (selected, label) = replay(&mut node, &theme, size, |r| {
+        (r.rects[0].2.color, r.runs[0].1.color)
+    });
+    assert_eq!(selected, colors.selected_container);
+    assert_eq!(
+        label, colors.selected_content,
+        "the label follows the container into the on-color of the role it took"
+    );
+}
+
+#[test]
 fn a_focusable_button_takes_the_focus_on_press() {
     let size = Size::new(240.0, 80.0);
     let button = TestButton::new()
