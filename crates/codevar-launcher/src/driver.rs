@@ -54,13 +54,19 @@ impl Exit {
     }
 }
 
-/// Opens the launcher window and polls it until it closes.
+/// Opens the launcher window and runs it until it closes.
 ///
-/// Drains the events once per frame and stops when the user or the
-/// compositor asked the window to close. Transient open and poll
-/// failures are retried through [`retry_transient`]; once a permanent
-/// error surfaces or the retry budget is spent, the loop ends with
-/// [`Exit::Failure`] instead of exiting the process itself.
+/// On Linux the window first tries the GPU present path of
+/// [`crate::present::run`], which renders the launcher shell into a
+/// dma-buf the compositor imports. A window that cannot present
+/// dma-buf images, or whose Vulkan pipeline cannot be built, falls back
+/// to [`plain_loop`], which keeps the backend's own shared-memory
+/// output and merely drains events.
+///
+/// Transient open and poll failures are retried through
+/// [`retry_transient`]; once a permanent error surfaces or the retry
+/// budget is spent, the loop ends with [`Exit::Failure`] instead of
+/// exiting the process itself.
 fn loop_handler() -> Exit {
     let mut window = match open_window(&WndConfig::default()) {
         Ok(window) => window,
@@ -69,13 +75,26 @@ fn loop_handler() -> Exit {
             return Exit::Failure;
         }
     };
+    #[cfg(target_os = "linux")]
+    if let Some(exit) = crate::present::run(window.as_mut()) {
+        return exit;
+    }
+    plain_loop(window.as_mut())
+}
+
+/// Drains the window events once per frame until it closes.
+///
+/// This is the fallback for a window without a GPU presentation path:
+/// the backend keeps its own buffer on screen, so the loop only has to
+/// answer the compositor and stop on close.
+fn plain_loop(window: &mut dyn Window) -> Exit {
     let mut on_event = |event: WndEvent| match event {
         WndEvent::CloseRequested => log_info!("wnd close requested"),
         WndEvent::Resized(size) => log_info!("wnd resized to {}", size),
         WndEvent::RedrawRequested => log_debug!("wnd redraw requested"),
     };
     while window.is_open() {
-        if let Err(error) = poll_window(window.as_mut(), &mut on_event) {
+        if let Err(error) = poll_window(window, &mut on_event) {
             log_error!("wnd loop gave up on polling: {}", error);
             window.close();
             return Exit::Failure;
