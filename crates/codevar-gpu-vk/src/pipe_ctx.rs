@@ -18,7 +18,6 @@
 //! opened with [`PipeCtx::begin_render`].
 
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 use ash::vk;
 use core::future::Future;
 use core::pin::Pin;
@@ -77,6 +76,13 @@ pub struct PipeEnv {
 /// [`PipelineContext`](crate::pipeline::PipelineContext) that outlives every pipe and hands a pointer to
 /// it through [`PipeEnv`], which keeps the self-referential pipe futures
 /// borrow-checkable at the cost of one documented lifetime erasure.
+///
+/// The framebuffer snapshot is likewise borrowed rather than copied:
+/// [`PipeCtx::framebuffers`] points into `Compositor::framebuffers`, which
+/// the compositor only rebuilds after every context built from it has
+/// been dropped. The struct is therefore `!Send` and `!Sync` by
+/// construction (it holds raw pointers), and must never outlive the
+/// compositor that built it.
 pub struct PipeCtx {
     /// Logical device of the owning pipeline; valid for `'p`.
     device: *const ash::Device,
@@ -93,8 +99,11 @@ pub struct PipeCtx {
     /// Global index of this pipe's first framebuffer inside
     /// [`PipeCtx::framebuffers`].
     base: usize,
-    /// Snapshot of the frame's framebuffers.
-    framebuffers: Vec<OffscreenFramebuffer>,
+    /// Start of the frame's framebuffer snapshot; borrowed from the
+    /// compositor's `framebuffers` list, which outlives this context.
+    framebuffers: *const OffscreenFramebuffer,
+    /// Number of elements in the snapshot behind [`PipeCtx::framebuffers`].
+    framebuffer_len: usize,
 }
 
 impl PipeCtx {
@@ -121,7 +130,8 @@ impl PipeCtx {
             format,
             frame_index,
             base,
-            framebuffers: framebuffers.to_vec(),
+            framebuffers: framebuffers.as_ptr(),
+            framebuffer_len: framebuffers.len(),
         }
     }
 
@@ -190,16 +200,23 @@ impl PipeCtx {
     #[inline]
     #[must_use]
     pub fn framebuffer_count(&self) -> usize {
-        self.framebuffers.len()
+        self.framebuffer_len
     }
 
     /// The pipe-local framebuffer at `local_index` (its global slot is
     /// [`PipeCtx::base`] + `local_index`).
     #[must_use]
     pub fn framebuffer(&self, local_index: usize) -> Option<OffscreenFramebuffer> {
-        self.framebuffers
-            .get(self.base + local_index)
-            .copied()
+        let index = self.base.checked_add(local_index)?;
+        if index >= self.framebuffer_len {
+            return None;
+        }
+        // SAFETY: `index < framebuffer_len`, so it addresses an element of
+        // the snapshot that `framebuffers` points to. That snapshot lives
+        // in `Compositor::framebuffers` and outlives every context built
+        // from it: the compositor drops its active contexts before
+        // rebuilding the list.
+        Some(unsafe { *self.framebuffers.add(index) })
     }
 
     /// Opens a dynamic-rendering scope on the pipe-local framebuffer at
@@ -300,5 +317,85 @@ impl PipeCtx {
             self.device()
                 .cmd_end_rendering(self.command_buffer)
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Framebuffer lookup over the borrowed snapshot.
+    //!
+    //! The snapshot is a plain slice with no device behind it, which is
+    //! enough: `framebuffer` never dereferences the device handle.
+
+    use super::*;
+
+    /// A context over `snapshot` whose pipe starts at `base`.
+    fn context(snapshot: &[OffscreenFramebuffer], base: usize) -> PipeCtx {
+        PipeCtx::new(
+            core::ptr::null(),
+            vk::CommandBuffer::null(),
+            64,
+            64,
+            vk::Format::UNDEFINED,
+            0,
+            base,
+            snapshot,
+        )
+    }
+
+    /// An empty framebuffer tagged by its width.
+    fn target(width: u32) -> OffscreenFramebuffer {
+        OffscreenFramebuffer {
+            width,
+            ..OffscreenFramebuffer::EMPTY
+        }
+    }
+
+    #[test]
+    fn a_context_reads_only_its_own_slice_of_the_snapshot() {
+        let snapshot = [target(1), target(2), target(3)];
+        let ctx = context(&snapshot, 1);
+
+        assert_eq!(ctx.framebuffer_count(), 3);
+        assert_eq!(
+            ctx.framebuffer(0)
+                .map(|framebuffer| framebuffer.width),
+            Some(2)
+        );
+        assert_eq!(
+            ctx.framebuffer(1)
+                .map(|framebuffer| framebuffer.width),
+            Some(3)
+        );
+        assert_eq!(
+            ctx.framebuffer(2)
+                .map(|framebuffer| framebuffer.width),
+            None,
+            "an index past the snapshot is out of range"
+        );
+    }
+
+    #[test]
+    fn an_empty_snapshot_reports_no_framebuffer() {
+        let ctx = context(&[], 0);
+
+        assert_eq!(ctx.framebuffer_count(), 0);
+        assert_eq!(
+            ctx.framebuffer(0)
+                .map(|framebuffer| framebuffer.width),
+            None
+        );
+    }
+
+    #[test]
+    fn an_overflowing_global_index_is_out_of_range() {
+        let snapshot = [target(1)];
+        let ctx = context(&snapshot, usize::MAX);
+
+        assert_eq!(
+            ctx.framebuffer(1)
+                .map(|framebuffer| framebuffer.width),
+            None
+        );
     }
 }

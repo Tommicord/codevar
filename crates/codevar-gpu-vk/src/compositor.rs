@@ -532,6 +532,9 @@ impl<'p> Compositor<'p> {
 
     /// Rebuilds the framebuffer snapshot and mix weights from the queue.
     fn recollect(&mut self) {
+        // Contexts hold a raw pointer into `framebuffers`, so they must be
+        // dropped before the list is rebuilt.
+        self.active.clear();
         self.framebuffers.clear();
         self.weights.clear();
         self.bases = self
