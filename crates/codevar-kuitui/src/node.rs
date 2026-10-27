@@ -260,6 +260,11 @@ impl Modifier {
     }
 
     /// Evaluates the container fill on a grid of `pixel`-sized blocks.
+    ///
+    /// The grid quantizes where the fill is *sampled*, not what it is, so
+    /// it shows on the ramp of a [`Modifier::gradient`] and not on a flat
+    /// color: every block of a solid container reads the same color, and
+    /// the mosaic is invisible.
     #[must_use]
     pub fn pixelate(mut self, pixel: f32) -> Self {
         self.ops.push(ModifierOp::Pixelate(pixel));
