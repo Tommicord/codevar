@@ -160,8 +160,9 @@ pub trait Button {
     }
 }
 
-/// Builds the node of `button`: the chrome, its content and the
-/// modifier that tracks the pointer.
+/// Builds the node of `button`: the chrome, its content and the modifier
+/// that tracks the pointer and, for a button with corners, cuts the painting
+/// of the node to the shape of its container.
 ///
 /// A free function so that it answers to a `&dyn Button` too, whose own
 /// [`Button::node`] cannot be reached without a sized `Self`.
@@ -202,6 +203,17 @@ pub fn button_node<B: Button + ?Sized>(button: &B) -> Node {
             });
         }
     }
+    // A canvas that paints the whole node box cannot know the shape of the
+    // button it decorates, so its square corners would cover the rounding
+    // of the container. The node clips its own painting to that shape; with
+    // square corners there is nothing to cut, and the content keeps the free
+    // overflow a rectangular button has always had.
+    let shape = button.shape();
+    let modifier = if shape.is_zero() {
+        modifier
+    } else {
+        modifier.clip_rounded(shape)
+    };
     Node::new(chrome)
         .with_children(button.content())
         .modifier(modifier)

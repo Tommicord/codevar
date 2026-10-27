@@ -186,6 +186,78 @@ fn a_gradient_of_the_canvas_paints_its_bands() {
 }
 
 #[test]
+fn the_canvas_of_a_rounded_button_is_cut_to_its_shape() {
+    let theme = Theme::light();
+    let scheme = ColorScheme::light();
+    let size = Size::new(120.0, 40.0);
+    let shape = CornerRadii::uniform(10.0);
+    let bounds = Rect::new(Offset::ZERO, size);
+    let mut node = TextButton::new(|| {}, "Save")
+        .colors(ButtonPalette::fixed(ButtonColors::filled(&scheme)))
+        .shape(shape)
+        .modifier(
+            Concrete::with_size(size)
+                .drawn(|canvas| {
+                    canvas.fill_rect(Rect::from_min_size(Offset::ZERO, 120.0, 40.0), GREEN);
+                })
+                .modifier(),
+        )
+        .node();
+    node.measure(&theme, Constraints::tight(size));
+    node.place(bounds);
+    let mut list = DrawList::new();
+    node.draw(&theme, &mut list);
+    let mut recorded = Vec::new();
+    for command in list.commands() {
+        let mut recorder = Painted::default();
+        command.op.visit(&mut recorder);
+        for (rect, color) in recorder.fills {
+            recorded.push((color, rect, command.clip, command.clip_radii));
+        }
+    }
+
+    // The container keeps its own corners and the canvas, which cannot know
+    // the shape of the button it decorates, is cut to them by the clip.
+    assert_eq!(
+        recorded,
+        [
+            (scheme.primary, bounds, None, CornerRadii::ZERO),
+            (GREEN, bounds, Some(bounds), shape),
+        ],
+        "the canvas is recorded inside the rounded clip of the button"
+    );
+}
+
+#[test]
+fn a_square_button_clips_nothing() {
+    let theme = Theme::light();
+    let size = Size::new(120.0, 40.0);
+    let bounds = Rect::new(Offset::ZERO, size);
+    let mut node = TextButton::new(|| {}, "Save")
+        .shape(CornerRadii::ZERO)
+        .modifier(
+            Concrete::with_size(size)
+                .drawn(|canvas| {
+                    canvas.fill_rect(Rect::from_min_size(Offset::ZERO, 120.0, 40.0), GREEN);
+                })
+                .modifier(),
+        )
+        .node();
+    node.measure(&theme, Constraints::tight(size));
+    node.place(bounds);
+    let mut list = DrawList::new();
+    node.draw(&theme, &mut list);
+
+    // Rounding nothing is not the same as clipping: a button that never had
+    // corners keeps the free overflow its content always had.
+    assert!(
+        list.commands()
+            .all(|command| command.clip.is_none() && command.clip_radii.is_zero()),
+        "a square button records no clip"
+    );
+}
+
+#[test]
 fn the_decoration_draws_over_the_container_of_a_button() {
     let size = Size::new(120.0, 40.0);
     let scheme = ColorScheme::light();
