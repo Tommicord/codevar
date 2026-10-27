@@ -98,8 +98,12 @@ impl<'a, H: Host> WorkLoop<'a, H> {
     }
 
     /// Renders the whole tree below `root`.
+    ///
+    /// The root is begun like every other fiber, so it is also completed when
+    /// it has no child left — which is what replaces the lanes and flags the
+    /// work-in-progress copy inherited from the committed tree.
     pub(crate) fn run(&mut self, root: FiberId) {
-        let mut next = self.begin_work(root);
+        let mut next = Some(root);
         while let Some(fiber) = next {
             next = match self.begin_work(fiber) {
                 Some(child) => Some(child),

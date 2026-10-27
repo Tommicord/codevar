@@ -56,10 +56,13 @@
 //!
 //! The crate is being built bottom-up. The lane model, the host boundary, the
 //! fiber arena, the hook model, the element vocabulary, keyed reconciliation,
-//! the begin/complete work pass and the commit phases are in place; the root
-//! that drives them follows. Until the root lands, the public surface is
-//! [`lane`], [`element`], [`Host`], [`Key`], [`Props`], [`RenderCtx`],
-//! [`State`] and [`Cleanup`].
+//! the begin/complete work pass, the commit phases and the root that drives
+//! them are in place. The public surface is [`lane`], [`element`], [`Host`],
+//! [`Key`], [`Props`], [`RenderCtx`], [`State`], [`Cleanup`] and [`Root`].
+//!
+//! The root is synchronous: it renders every pending lane before it returns.
+//! It has no bailout, time slicing, suspension or starvation protection yet;
+//! those are the next increments.
 //!
 //! # References
 //!
@@ -84,9 +87,11 @@ mod fiber;
 mod hooks;
 mod host;
 mod reconcile;
+mod root;
 mod work;
 
 pub use element::Element;
 pub use hooks::{Cleanup, RenderCtx, State};
 pub use host::{Host, Key, Props, props, props_ref};
 pub use lane::{LANE_COUNT, Lanes, SchedulerPriority};
+pub use root::Root;
