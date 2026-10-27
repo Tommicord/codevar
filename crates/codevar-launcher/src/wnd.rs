@@ -94,6 +94,30 @@ impl core::fmt::Display for WndSize {
     }
 }
 
+/// One shared-memory image a window can present, as a dma-buf.
+///
+/// The fields are exactly the plane-0 values `zwp_linux_dmabuf_v1`
+/// expects, so a caller hands over what its render target exported
+/// without reinterpreting anything. The descriptor stays owned by the
+/// caller: presenting duplicates it onto the compositor connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WndImage {
+    /// The dma-buf descriptor of plane 0.
+    pub fd: core::ffi::c_int,
+    /// DRM fourcc of the pixels (`DRM_FORMAT_XRGB8888`).
+    pub drm_format: u32,
+    /// DRM format modifier the image was created with.
+    pub modifier: u64,
+    /// Bytes between two rows of plane 0.
+    pub stride: u32,
+    /// Byte offset of plane 0 inside the dma-buf.
+    pub offset: u32,
+    /// Image width in pixels.
+    pub width: i32,
+    /// Image height in pixels.
+    pub height: i32,
+}
+
 /// Description of the window the launcher wants to open.
 ///
 /// The compositor may override [`Self::size`]; the opened window
@@ -269,6 +293,60 @@ pub trait Window {
     #[must_use]
     fn size(&self) -> WndSize;
 
+    /// Returns the DRM format modifiers the window's presentation path
+    /// accepts for `DRM_FORMAT_XRGB8888` dma-buf images.
+    ///
+    /// An empty slice means the backend presents nothing but its own
+    /// shared-memory buffer, so callers must not build a render target
+    /// for it.
+    #[must_use]
+    fn dmabuf_modifiers(&self) -> &[u64] {
+        &[]
+    }
+
+    /// Presents `image` through `slot` and commits it to the display.
+    ///
+    /// The window keeps one `wl_buffer` per slot, so a caller that
+    /// renders into several images must alternate them. The window
+    /// reports when a slot becomes writable again through
+    /// [`Self::buffer_free`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WndError::Unsupported`] when the backend cannot present
+    /// dma-buf images, and a classified error when the request could not
+    /// be queued on the connection.
+    fn present(&mut self, slot: u32, image: &WndImage) -> Result<(), WndError> {
+        let _ = (slot, image);
+        Err(WndError::Unsupported(String::from(
+            "the window backend cannot present dma-buf images",
+        )))
+    }
+
+    /// Returns `true` when the compositor released buffer `slot`, so the
+    /// caller may render into that image again.
+    ///
+    /// A slot that was never presented is free.
+    #[must_use]
+    fn buffer_free(&self, slot: u32) -> bool {
+        let _ = slot;
+        true
+    }
+
+    /// Asks the compositor to report the next display refresh through
+    /// [`WndEvent::RedrawRequested`].
+    ///
+    /// The callback is a pacing hint: a compositor may only deliver it
+    /// while the window is visible, so callers that need a bounded
+    /// latency must keep polling on a timer as well.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified error when the request could not be queued.
+    fn request_frame(&mut self) -> Result<(), WndError> {
+        Ok(())
+    }
+
     /// Sets the title shown in the window decorations.
     ///
     /// Reports success without sending anything once the window has
@@ -388,6 +466,37 @@ pub fn open(config: &WndConfig) -> Result<Box<dyn Window>, WndError> {
 mod tests {
     use super::*;
 
+    /// A backend that keeps to the default presentation methods.
+    struct PlainWindow;
+
+    impl Window for PlainWindow {
+        fn backend(&self) -> WndBackendId {
+            WndBackendId::Wayland
+        }
+
+        fn is_open(&self) -> bool {
+            true
+        }
+
+        fn close(&mut self) {}
+
+        fn size(&self) -> WndSize {
+            WndSize::new(16, 16)
+        }
+
+        fn set_title(&mut self, _title: &str) -> Result<(), WndError> {
+            Ok(())
+        }
+
+        fn poll(
+            &mut self,
+            _timeout: Option<TimeDuration>,
+            _sink: &mut dyn FnMut(WndEvent),
+        ) -> Result<usize, WndError> {
+            Ok(0)
+        }
+    }
+
     #[test]
     fn default_config_is_the_codevar_toplevel() {
         let config = WndConfig::default();
@@ -473,6 +582,24 @@ mod tests {
         ] {
             assert!(!permanent.is_transient(), "{permanent} is final");
         }
+    }
+
+    #[test]
+    fn a_backend_without_dmabuf_refuses_images_and_keeps_slots_free() {
+        let mut window = PlainWindow;
+        assert!(window.dmabuf_modifiers().is_empty());
+        let image = WndImage {
+            fd: 3,
+            drm_format: 0x3432_5258,
+            modifier: 0,
+            stride: 64,
+            offset: 0,
+            width: 16,
+            height: 16,
+        };
+        assert!(matches!(window.present(0, &image), Err(WndError::Unsupported(_))));
+        assert!(window.buffer_free(0));
+        assert!(window.request_frame().is_ok());
     }
 
     #[test]
