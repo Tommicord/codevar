@@ -43,9 +43,10 @@
 //!    list of a fiber survives a render, and its update queues are shared with
 //!    the work-in-progress clone, exactly as React shares them between a fiber
 //!    and its alternate.
-//! 4. **Reconciliation** — children are matched by key and type in one pass
-//!    over a hash map, which keeps the diff linear in the number of children
-//!    and preserves identity when a list is reordered.
+//! 4. **Reconciliation** — children are matched by key and type, first in
+//!    order and then through a map keyed by key or position, which keeps the
+//!    diff linear in the number of children and preserves identity when a
+//!    list is reordered.
 //! 5. **Commit** — the finished tree is applied to the host in three phases
 //!    (mutation, layout effects, passive effects). Mutation is the only phase
 //!    allowed to change the host tree; the root swaps its current tree between
@@ -54,10 +55,10 @@
 //! # Status
 //!
 //! The crate is being built bottom-up. The lane model, the host boundary, the
-//! fiber arena, the hook model and the element vocabulary are in place;
-//! reconciliation, the work loop and the commit phase follow. Until the root
-//! lands, the public surface is [`lane`], [`element`], [`Host`], [`Key`],
-//! [`Props`], [`RenderCtx`], [`State`] and [`Cleanup`].
+//! fiber arena, the hook model, the element vocabulary and keyed
+//! reconciliation are in place; the work loop, the root and the commit phase
+//! follow. Until the root lands, the public surface is [`lane`], [`element`],
+//! [`Host`], [`Key`], [`Props`], [`RenderCtx`], [`State`] and [`Cleanup`].
 //!
 //! # References
 //!
@@ -80,6 +81,7 @@ pub mod lane;
 mod fiber;
 mod hooks;
 mod host;
+mod reconcile;
 
 pub use element::Element;
 pub use hooks::{Cleanup, RenderCtx, State};

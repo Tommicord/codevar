@@ -278,8 +278,10 @@ impl<H: Host> Fiber<H> {
     ///
     /// The committed payload is copied into both the pending and the memoized
     /// slot, so a node whose parent bails out keeps rendering what is on
-    /// screen. The per-render bookkeeping starts empty: the commit flags and
-    /// the deletions belong to the render that is about to start.
+    /// screen. The per-render bookkeeping starts empty: the commit flags, the
+    /// deletions and the sibling link belong to the render that is about to
+    /// start. Inheriting the old sibling would splice the committed list into
+    /// the new one, so reconciliation relinks the children from scratch.
     pub(crate) fn work_in_progress(current: &Self) -> Self {
         Self {
             tag: current.tag,
@@ -289,7 +291,7 @@ impl<H: Host> Fiber<H> {
             memoized: current.memoized.clone(),
             parent: current.parent,
             first_child: current.first_child,
-            sibling: current.sibling,
+            sibling: None,
             index: current.index,
             state_node: current.state_node,
             hooks: current.hooks.clone(),
