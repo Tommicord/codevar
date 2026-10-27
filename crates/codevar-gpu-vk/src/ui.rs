@@ -53,7 +53,7 @@
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 
 use ash::vk;
 use libm::{ceilf, floorf};
@@ -496,6 +496,8 @@ fn effect_params(effect: &Effect, viewport: [f32; 2]) -> EffectParams {
 pub struct UiFrame {
     /// The shared queue.
     list: Rc<RefCell<DrawList>>,
+    /// Recordings this queue received, shared by every clone.
+    revision: Rc<Cell<u64>>,
 }
 
 impl UiFrame {
@@ -504,6 +506,7 @@ impl UiFrame {
     pub fn new() -> Self {
         Self {
             list: Rc::new(RefCell::new(DrawList::new())),
+            revision: Rc::new(Cell::new(0)),
         }
     }
 
@@ -513,7 +516,21 @@ impl UiFrame {
     /// same queue from its pipe, and the two borrows never overlap because
     /// the frame is fully recorded before it is composited.
     pub fn with<R>(&self, record: impl FnOnce(&mut DrawList) -> R) -> R {
-        record(&mut self.list.borrow_mut())
+        let result = record(&mut self.list.borrow_mut());
+        self.revision
+            .set(self.revision.get().wrapping_add(1));
+        result
+    }
+
+    /// Number of times the queue was recorded into.
+    ///
+    /// A renderer compares it with the revision it last replayed, so a
+    /// frame the UI did not re-record skips the CPU replay and the vertex
+    /// upload; see [`UiPipe`].
+    #[inline]
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision.get()
     }
 
     /// Whether the queue holds no command.
@@ -566,6 +583,8 @@ pub fn scissor_for(clip: Option<Rect>, width: u32, height: u32) -> vk::Rect2D {
 pub struct UiPipe<'p> {
     /// The shared display list, drained once per frame.
     frame: UiFrame,
+    /// Revision of `frame` the geometry below was expanded from.
+    revision: u64,
     /// CPU-side replay scratch, reused every frame.
     geometry: UiGeometry,
     /// The offscreen target the pipe renders into.
@@ -649,6 +668,10 @@ impl<'p> UiPipe<'p> {
         };
         Ok(Self {
             frame,
+            // Zero is the revision of a frame nobody recorded into; a
+            // pre-recorded frame differs and is replayed on the first
+            // composite.
+            revision: 0,
             geometry: UiGeometry::new(),
             target,
             device,
@@ -682,10 +705,23 @@ impl<'p> UiPipe<'p> {
         self.weight = weight;
     }
 
-    /// Drains the shared queue into the CPU replay scratch.
-    fn expand_frame(&mut self) {
-        let mut list = self.frame.list.borrow_mut();
-        self.geometry.expand(&mut list);
+    /// Drains the shared queue into the CPU replay scratch when the frame
+    /// was recorded since the last replay.
+    ///
+    /// Returns `false` when nothing changed: the geometry and the vertex
+    /// buffer still hold the previous replay, and the recorder draws it
+    /// again without touching either.
+    fn expand_frame(&mut self) -> bool {
+        let revision = self.frame.revision();
+        if revision == self.revision {
+            return false;
+        }
+        {
+            let mut list = self.frame.list.borrow_mut();
+            self.geometry.expand(&mut list);
+        }
+        self.revision = revision;
+        true
     }
 
     /// Copies the current geometry into the mapped vertex buffer.
@@ -799,8 +835,9 @@ impl<'p> UiPipe<'p> {
 impl PipeSource for UiPipe<'_> {
     fn pipe_entry<'a>(renderer: &'a mut Self, ctx: &'a mut PipeCtx) -> PipeFuture<'a> {
         Box::pin(async move {
-            renderer.expand_frame();
-            renderer.upload()?;
+            if renderer.expand_frame() {
+                renderer.upload()?;
+            }
             ctx.begin_render(0, Some(renderer.clear))?;
             renderer.record(ctx);
             ctx.end_render();
@@ -1592,5 +1629,24 @@ mod tests {
         frame.with(|list| geometry.expand(list));
         assert_eq!(geometry.spans().len(), 1);
         assert!(frame.is_empty(), "the renderer consumed the queue");
+    }
+
+    #[test]
+    fn a_recording_bumps_the_revision_of_every_clone() {
+        let frame = UiFrame::new();
+        let observer = frame.clone();
+        assert_eq!(observer.revision(), 0, "a new frame starts unrecorded");
+
+        frame.with(|list| {
+            list.rect(
+                Rect::from_min_size(Offset::ZERO, 4.0, 4.0),
+                CornerRadii::ZERO,
+                Paint::fill(Color::BLACK),
+            );
+        });
+        assert_eq!(observer.revision(), 1);
+
+        observer.with(|_| {});
+        assert_eq!(frame.revision(), 2, "the clones share one counter");
     }
 }
