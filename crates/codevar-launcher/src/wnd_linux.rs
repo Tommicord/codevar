@@ -81,6 +81,11 @@ struct Dmabuf {
 struct PresentBuffer {
     /// The `wl_buffer` the compositor releases after reading it.
     proxy: WlProxyId,
+    /// The image the buffer was built from.
+    ///
+    /// A `wl_buffer` wraps one exact image, so a slot whose image changed
+    /// (a resize exported a new dma-buf) must be rebuilt, not re-attached.
+    image: WndImage,
     /// Set when the compositor sent `wl_buffer.release`.
     released: Rc<Cell<bool>>,
 }
@@ -512,7 +517,11 @@ impl<T: WlTransport> WaylandWindow<T> {
                     0
                 })?;
         }
-        Ok(PresentBuffer { proxy, released })
+        Ok(PresentBuffer {
+            proxy,
+            image: *image,
+            released,
+        })
     }
 
     /// Attaches `image` through buffer `slot`, damages it and commits.
@@ -541,20 +550,22 @@ impl<T: WlTransport> WaylandWindow<T> {
         if self.buffers.len() <= index {
             self.buffers.resize_with(index + 1, || None);
         }
-        let buffer = match self.buffers[index].as_ref() {
-            Some(buffer) => buffer.proxy,
-            None => {
-                let created = self.create_buffer(dmabuf, image)?;
-                let proxy = created.proxy;
-                self.buffers[index] = Some(created);
-                proxy
+        let buffer = match self.buffers[index].take() {
+            Some(cached) if cached.image == *image => cached,
+            stale => {
+                if let Some(stale) = stale {
+                    self.destroy(stale.proxy, BUFFER_DESTROY);
+                }
+                self.create_buffer(dmabuf, image)?
             }
         };
+        let proxy = buffer.proxy;
+        self.buffers[index] = Some(buffer);
         self.display.marshal_request(
             self.surface,
             SURFACE_ATTACH,
             vec![
-                WlArgument::Object(buffer.id()),
+                WlArgument::Object(proxy.id()),
                 WlArgument::Int(0),
                 WlArgument::Int(0),
             ],
