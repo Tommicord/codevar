@@ -141,9 +141,10 @@ impl Concrete {
     /// The modifier operation this decoration adds to a node.
     ///
     /// The framework paints a concrete operation after the container of
-    /// the modifier chain and before the widget of the node, so the
-    /// shapes sit behind the content — and behind the container of a
-    /// button, which its own widget paints.
+    /// the modifier chain and the background pass of the widget and
+    /// before the content of the node, so the shapes sit over every
+    /// container — the one of the chain and the opaque one a button's
+    /// own widget paints in its background pass — and under the label.
     #[must_use]
     pub fn modifier(&self) -> Modifier {
         let canvas = Rc::clone(&self.canvas);

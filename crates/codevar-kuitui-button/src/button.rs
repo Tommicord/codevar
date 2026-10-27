@@ -213,6 +213,12 @@ pub fn button_node<B: Button + ?Sized>(button: &B) -> Node {
 /// The widget owns the content padding because Compose measures a button
 /// around its content: the padding is inside the container, so the
 /// widget that draws the container is the one that has to know it.
+///
+/// Everything the chrome paints belongs to the background pass of the
+/// node, because the container is opaque: painted in `draw` it would
+/// cover the decoration a [`Modifier::concrete`] canvas draws over the
+/// node and the ramp a [`Modifier::gradient`] names for it, which is
+/// what made a decorated button look undecorated.
 #[derive(Debug, Clone)]
 pub struct ButtonChrome {
     /// The colors of the container and the content.
@@ -344,7 +350,7 @@ impl Widget for ButtonChrome {
         }
     }
 
-    fn draw(&mut self, scope: &mut DrawScope<'_>, bounds: Rect) {
+    fn draw_background(&mut self, scope: &mut DrawScope<'_>, bounds: Rect) {
         let colors = self.palette.resolve(&scope.theme().colors);
         let state = self.source.state();
         let container = Rect::new(Offset::ZERO, bounds.size);

@@ -186,7 +186,7 @@ fn a_gradient_of_the_canvas_paints_its_bands() {
 }
 
 #[test]
-fn the_decoration_draws_under_the_container_of_a_button() {
+fn the_decoration_draws_over_the_container_of_a_button() {
     let size = Size::new(120.0, 40.0);
     let scheme = ColorScheme::light();
     let modifier = Concrete::with_size(size)
@@ -207,10 +207,13 @@ fn the_decoration_draws_under_the_container_of_a_button() {
     for command in list.commands() {
         command.op.visit(&mut recorder);
     }
+    // The chrome paints in the background pass of the node and the canvas
+    // in the decoration pass that follows it, so the decoration is the one
+    // a reader sees: a container painted over it hid every canvas.
     assert_eq!(recorder.fills.len(), 2, "the container and its canvas");
+    assert_eq!(recorder.fills[0].1, scheme.primary);
     assert_eq!(
-        recorder.fills[0].1, GREEN,
-        "the concrete operation paints before the chrome of the button"
+        recorder.fills[1].1, GREEN,
+        "the concrete operation paints over the chrome of the button"
     );
-    assert_eq!(recorder.fills[1].1, scheme.primary);
 }
