@@ -266,17 +266,17 @@ pub(crate) struct EffectRecord {
 }
 
 impl EffectRecord {
-    /// Runs the previous cleanup, then the effect, and keeps the new cleanup.
-    pub(crate) fn run(&self) {
-        let destroy = self.destroy.borrow_mut().take();
-        if let Some(destroy) = destroy {
-            destroy();
-        }
+    /// Runs the effect and keeps its cleanup as the current one.
+    ///
+    /// The cleanup of the previous run is not called here: the commit runs it
+    /// in the mutation phase for a layout effect and in the passive unmount
+    /// pass for a passive one, before any effect of the same tag is created.
+    pub(crate) fn create(&self) {
         let cleanup = (self.create)();
         *self.destroy.borrow_mut() = cleanup;
     }
 
-    /// Runs the cleanup without rerunning the effect.
+    /// Runs the cleanup of the previous run, if there is one.
     pub(crate) fn unmount(&self) {
         let destroy = self.destroy.borrow_mut().take();
         if let Some(destroy) = destroy {
@@ -855,7 +855,8 @@ mod tests {
             })
         });
         assert_eq!(harness.effects.len(), 1);
-        harness.effects[0].run();
+        harness.effects[0].unmount();
+        harness.effects[0].create();
         assert_eq!(cleaned.get(), 0);
 
         let second = Rc::clone(&cleaned);
@@ -866,7 +867,8 @@ mod tests {
             })
         });
         assert_eq!(harness.effects.len(), 1);
-        harness.effects[0].run();
+        harness.effects[0].unmount();
+        harness.effects[0].create();
         assert_eq!(cleaned.get(), 1);
     }
 
