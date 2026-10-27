@@ -36,12 +36,20 @@
 //! A component that renders nothing returns [`Element::empty`]. The
 //! reconciler skips empty elements entirely: they never get a fiber, and they
 //! do not shift the position of their siblings.
+//!
+//! # No widgets here
+//!
+//! The engine knows structure and nothing else. It never names a widget, a
+//! label, a button or a renderer: a leaf is whatever [`Host::Element`] is, and
+//! only the host that defines it can say how two leaves match, how one is
+//! created and how it is updated. Even a text run is a host element, because
+//! the host's text widget carries the font, the color and the layout that the
+//! engine must not see. Adding a widget therefore never changes this crate.
 
 // The reconciler that reads these descriptions lands in the next increment.
 #![allow(dead_code)]
 
 use alloc::rc::Rc;
-use alloc::string::String;
 use core::any::TypeId;
 
 use crate::hooks::RenderCtx;
@@ -66,9 +74,7 @@ pub struct Element<H: Host> {
 pub(crate) enum Kind<H: Host> {
     /// Renders nothing.
     Empty,
-    /// A text run.
-    Text(Rc<str>),
-    /// A host element.
+    /// An opaque host element.
     Host(Rc<H::Element>),
     /// A component, with the identity that decides whether a fiber can be
     /// reused when the parent renders again.
@@ -92,16 +98,11 @@ impl<H: Host> Element<H> {
         }
     }
 
-    /// A text run.
-    #[must_use]
-    pub fn text(text: impl Into<String>) -> Self {
-        Self {
-            key: None,
-            kind: Kind::Text(Rc::from(text.into())),
-        }
-    }
-
-    /// A host element.
+    /// An opaque host element.
+    ///
+    /// The engine never looks inside it. The host decides what can appear
+    /// here: a widget, a text run, an image, or a whole subtree it renders
+    /// itself.
     #[must_use]
     pub fn host(element: H::Element) -> Self {
         Self {
@@ -178,7 +179,6 @@ impl<H: Host> Clone for Element<H> {
     fn clone(&self) -> Self {
         let kind = match &self.kind {
             Kind::Empty => Kind::Empty,
-            Kind::Text(text) => Kind::Text(Rc::clone(text)),
             Kind::Host(element) => Kind::Host(Rc::clone(element)),
             Kind::Component { render, type_id } => Kind::Component {
                 render: Rc::clone(render),
@@ -216,12 +216,6 @@ mod tests {
 
         fn update(&mut self, _node: TestNode, _element: &u32) {}
 
-        fn create_text(&mut self, _text: &str) -> TestNode {
-            TestNode(0)
-        }
-
-        fn update_text(&mut self, _node: TestNode, _text: &str) {}
-
         fn insert_before(&mut self, _parent: TestNode, _child: TestNode, _anchor: Option<TestNode>) {}
 
         fn remove(&mut self, _parent: TestNode, _child: TestNode) {}
@@ -233,7 +227,7 @@ mod tests {
 
     #[test]
     fn an_unkeyed_element_has_no_key() {
-        let element: Element<TestHost> = Element::text("hello");
+        let element: Element<TestHost> = Element::host(3);
         assert_eq!(element.key(), None);
         assert!(!element.is_empty());
     }
@@ -271,18 +265,18 @@ mod tests {
     #[test]
     fn different_component_expressions_differ() {
         let first = panel();
-        let second: Element<TestHost> = Element::component(|_| Element::text("other"));
+        let second: Element<TestHost> = Element::component(|_| Element::host(9));
         assert_ne!(first.component_type(), second.component_type());
     }
 
     #[test]
     fn a_fragment_keeps_its_children_in_order() {
-        let fragment: Element<TestHost> = Element::fragment([Element::text("a"), Element::host(2)]);
+        let fragment: Element<TestHost> = Element::fragment([Element::host(1), Element::host(2)]);
         let Kind::Fragment(children) = fragment.kind() else {
             return;
         };
         assert_eq!(children.len(), 2);
-        assert!(matches!(children[0].kind(), Kind::Text(text) if &**text == "a"));
+        assert!(matches!(children[0].kind(), Kind::Host(element) if **element == 1));
         assert!(matches!(children[1].kind(), Kind::Host(element) if **element == 2));
     }
 }

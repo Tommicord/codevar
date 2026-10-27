@@ -30,9 +30,9 @@
 //! # Ownership
 //!
 //! The host owns its nodes. Rea only stores the [`Host::Node`] handle in the
-//! fiber and passes it back verbatim. A node is created by [`Host::create`] or
-//! [`Host::create_text`] and lives until the commit phase removes it with
-//! [`Host::remove`]; rea never drops a node on its own.
+//! fiber and passes it back verbatim. A node is created by [`Host::create`] and
+//! lives until the commit phase removes it with [`Host::remove`]; rea never
+//! drops a node on its own.
 //!
 //! # Children
 //!
@@ -129,14 +129,20 @@ impl fmt::Display for Key {
 /// and its modifiers, a paragraph, an image — and `Node` is the handle the
 /// host uses to address what it created.
 ///
+/// # Hosts and widgets
+///
+/// The trait says nothing about widgets. It has no method for a label, a
+/// button, an image or a text run, and this crate never names one: everything
+/// a host shows travels through [`Element`](Host::Element), which the engine
+/// treats as opaque. Adding a widget to a host never changes this crate.
+///
 /// # Implementor contract
 ///
-/// * [`create`](Host::create) and [`create_text`](Host::create_text) return a
-///   node with no children. The commit phase attaches the children itself, in
-///   order, with [`insert_before`](Host::insert_before).
-/// * [`update`](Host::update) and [`update_text`](Host::update_text) change
-///   only the node itself. They are allowed to replace the node's content, but
-///   not to reorder or remove its children.
+/// * [`create`](Host::create) returns a node with no children. The commit
+///   phase attaches the children itself, in order, with
+///   [`insert_before`](Host::insert_before).
+/// * [`update`](Host::update) changes only the node itself. It is allowed to
+///   replace the node's content, but not to reorder or remove its children.
 /// * [`element_matches`](Host::element_matches) decides whether an existing
 ///   node of type `old` can be reused for `new`. It must compare the *kind* of
 ///   the element, never its props: two text labels with different strings are
@@ -170,12 +176,6 @@ pub trait Host {
     ///
     /// The node keeps its children; the commit phase reconciles them itself.
     fn update(&mut self, node: Self::Node, element: &Self::Element);
-
-    /// Creates a text node, without children.
-    fn create_text(&mut self, text: &str) -> Self::Node;
-
-    /// Replaces the content of the text node `node`.
-    fn update_text(&mut self, node: Self::Node, text: &str);
 
     /// Inserts `child` under `parent` before `anchor`, or appends it.
     ///

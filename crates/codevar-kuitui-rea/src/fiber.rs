@@ -164,8 +164,6 @@ pub(crate) enum Payload<H: Host> {
     Component(Rc<ComponentFn<H>>),
     /// A host element, shared with the committed tree until it changes.
     Host(Rc<H::Element>),
-    /// The content of a text node.
-    Text(Rc<str>),
     /// The children a fragment describes.
     Fragment(Rc<[Element<H>]>),
 }
@@ -176,7 +174,6 @@ impl<H: Host> Clone for Payload<H> {
             Self::None => Self::None,
             Self::Component(render) => Self::Component(Rc::clone(render)),
             Self::Host(element) => Self::Host(Rc::clone(element)),
-            Self::Text(text) => Self::Text(Rc::clone(text)),
             Self::Fragment(children) => Self::Fragment(Rc::clone(children)),
         }
     }
@@ -191,8 +188,6 @@ pub(crate) enum FiberTag {
     Component,
     /// A host element.
     Host,
-    /// A text node.
-    Text,
     /// A transparent node around a list of children.
     Fragment,
 }
@@ -447,13 +442,6 @@ mod tests {
 
         fn update(&mut self, _node: TestNode, _element: &u32) {}
 
-        fn create_text(&mut self, text: &str) -> TestNode {
-            self.nodes.push(text.len() as u32);
-            TestNode(self.nodes.len() as u32)
-        }
-
-        fn update_text(&mut self, _node: TestNode, _text: &str) {}
-
         fn insert_before(&mut self, _parent: TestNode, _child: TestNode, _anchor: Option<TestNode>) {}
 
         fn remove(&mut self, _parent: TestNode, _child: TestNode) {}
@@ -479,10 +467,10 @@ mod tests {
         assert_eq!(arena.len(), 2);
         assert!(arena.take(first).is_some());
         assert_eq!(arena.len(), 1);
-        let third = arena.alloc(fiber(FiberTag::Text));
+        let third = arena.alloc(fiber(FiberTag::Fragment));
         assert_eq!(third, first);
         assert_eq!(arena.len(), 2);
-        assert_eq!(arena.get(third).map(|fiber| fiber.tag), Some(FiberTag::Text));
+        assert_eq!(arena.get(third).map(|fiber| fiber.tag), Some(FiberTag::Fragment));
     }
 
     #[test]
@@ -533,7 +521,7 @@ mod tests {
     fn work_in_progress_copies_children_and_lanes() {
         let mut arena = arena();
         let mut current = fiber(FiberTag::Host);
-        let child = arena.alloc(fiber(FiberTag::Text));
+        let child = arena.alloc(fiber(FiberTag::Host));
         current.first_child = Some(child);
         current.child_lanes = Lanes::DEFAULT;
         current.lanes = Lanes::SYNC;
@@ -578,10 +566,10 @@ mod tests {
 
     #[test]
     fn a_payload_is_shared_between_alternates() {
-        let text: Rc<str> = Rc::from("hello");
-        let payload: Payload<TestHost> = Payload::Text(Rc::clone(&text));
+        let element: Rc<u32> = Rc::new(7);
+        let payload: Payload<TestHost> = Payload::Host(Rc::clone(&element));
         let clone = payload.clone();
-        let (Payload::Text(a), Payload::Text(b)) = (payload, clone) else {
+        let (Payload::Host(a), Payload::Host(b)) = (payload, clone) else {
             return;
         };
         assert!(Rc::ptr_eq(&a, &b));
