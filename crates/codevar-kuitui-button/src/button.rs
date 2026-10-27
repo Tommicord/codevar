@@ -311,11 +311,13 @@ impl Widget for ButtonChrome {
     fn measure(&mut self, scope: &mut MeasureScope<'_>, constraints: Constraints) -> Size {
         let padding = self.padding;
         let max_width = (constraints.max_width - padding.horizontal()).max(0.0);
-        let max_height = (constraints.max_height - padding.vertical()).max(0.0);
         // The content is measured loose, like the Box Compose wraps a
         // button's content in: a wide container stretches the button,
-        // not the label inside it.
-        let inner = Constraints::new(0.0, max_width, 0.0, max_height);
+        // not the label inside it. The height stays unbounded so a run
+        // taller than the padded area reports its whole line box — a
+        // clamped measurement hides the overflow from `place`, which
+        // then gives the run the size of the area and top-aligns it.
+        let inner = Constraints::new(0.0, max_width, 0.0, f32::INFINITY);
         let mut width = 0.0_f32;
         let mut height = 0.0_f32;
         let count = scope.child_count();
@@ -349,9 +351,12 @@ impl Widget for ButtonChrome {
         // The row of content is centered in the padded area and every
         // child is centered in the row, which is Compose's
         // `spacedBy(8.dp, CenterHorizontally)` inside a box aligned to
-        // its center.
-        let mut x = area.left() + (area.size.width - row_width).max(0.0) * 0.5;
-        let top = area.top() + (area.size.height - row_height).max(0.0) * 0.5;
+        // its center. A row wider or taller than the area overflows it
+        // on both sides: clamping the offset to zero would top-align an
+        // oversized run against the padding and push its ink below the
+        // center of the container.
+        let mut x = area.left() + (area.size.width - row_width) * 0.5;
+        let top = area.top() + (area.size.height - row_height) * 0.5;
         for index in 0..count {
             let size = scope.child_size(index);
             let y = top + (row_height - size.height) * 0.5;
@@ -434,4 +439,60 @@ fn paint_rounded(scope: &mut DrawScope<'_>, rect: Rect, radii: CornerRadii, colo
     scope.push_effect(effect);
     scope.fill_rounded_rect(rect, radii, color);
     scope.pop_effect();
+}
+
+#[cfg(test)]
+mod tests {
+    use codevar_kuitui::{
+        Constraints, EdgeInsets, InteractionSource, Modifier, Node, Offset, Rect, Size, Text, Theme,
+    };
+
+    use super::{ButtonChrome, ButtonColors, ButtonFlags, ButtonPalette, CornerRadii};
+
+    /// The chrome of a button with no decoration and `padding`.
+    fn chrome(padding: EdgeInsets) -> ButtonChrome {
+        ButtonChrome::new(
+            ButtonPalette::role_of(ButtonColors::filled),
+            ButtonFlags::STANDARD,
+            CornerRadii::ZERO,
+            None,
+            None,
+            padding,
+            InteractionSource::new(),
+        )
+    }
+
+    #[test]
+    fn a_label_taller_than_the_content_area_is_centered_vertically() {
+        let theme = Theme::light();
+        let mut node = Node::new(chrome(EdgeInsets::symmetric(0.0, 10.0)))
+            .with_children([Node::new(Text::new("x")).modifier(Modifier::none().size(None, Some(60.0)))]);
+        let measured = node.measure(&theme, Constraints::new(0.0, 320.0, 0.0, 64.0));
+        assert_eq!(measured.height, 64.0);
+        assert_eq!(
+            node.children()[0].size().height,
+            60.0,
+            "the content reports its whole box instead of the area it is given"
+        );
+        node.place(Rect::new(Offset::ZERO, Size::new(320.0, 64.0)));
+        let center = node.children()[0].bounds().center();
+        assert!(
+            (center.y - 32.0).abs() < 1e-4,
+            "an overflowing label centers on the container, not on the padding"
+        );
+    }
+
+    #[test]
+    fn a_row_wider_than_the_content_area_is_centered_horizontally() {
+        let theme = Theme::light();
+        let mut node = Node::new(chrome(EdgeInsets::ZERO))
+            .with_children([Node::new(Text::new("x")).modifier(Modifier::none().size(Some(400.0), None))]);
+        node.measure(&theme, Constraints::unbounded());
+        node.place(Rect::new(Offset::ZERO, Size::new(320.0, 64.0)));
+        let center = node.children()[0].bounds().center();
+        assert!(
+            (center.x - 160.0).abs() < 1e-4,
+            "an overflowing row centers on the container, not on its left edge"
+        );
+    }
 }
