@@ -215,6 +215,10 @@ impl<T: PartialEq + 'static> State<T> {
     }
 
     /// Replaces the value on `lane`.
+    ///
+    /// `lane` is the identity of the update, so it is a single lane, the way a
+    /// React update carries one `Lane` and not a mask: a render covers the
+    /// update only when the lane is a subset of the lanes it renders.
     pub fn set_with_lane(&self, lane: Lanes, value: T) {
         if let Some(current) = self.current_value() {
             let next = Rc::new(value);
@@ -234,6 +238,8 @@ impl<T: PartialEq + 'static> State<T> {
     }
 
     /// Computes the new value from the previous one on `lane`.
+    ///
+    /// `lane` is a single lane, as in [`State::set_with_lane`].
     pub fn update_with_lane(&self, lane: Lanes, update: impl Fn(&T) -> T + 'static) {
         if let Some(current) = self.current_value() {
             let next = Rc::new(update(&current));

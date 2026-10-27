@@ -38,10 +38,14 @@
 //! | 23 | [`Lanes::OFFSCREEN`] | a hidden subtree |
 //! | 24 | [`Lanes::DEFERRED`] | `use_deferred_value` |
 //!
-//! A group is *atomic*: when any lane of a group is pending, the scheduler
-//! returns the whole group. Work inside one group (two transition updates, for
-//! example) must be committed together, otherwise two halves of one visual
-//! change could be painted in different frames.
+//! Some lanes are *entangled*: the scheduler returns the whole group when any
+//! lane of it is pending, because the lanes must be rendered and committed
+//! together. The sync-update lanes (sync, continuous input and default) share
+//! a commit so two halves of one visual change cannot be painted in different
+//! frames; the retry lanes and the transition-deferred lanes are entangled the
+//! same way. The ten transition-update lanes are not: each one identifies a
+//! different transition, so the scheduler picks the most urgent one and leaves
+//! the rest pending ([`Lanes::render_lanes`]).
 //!
 //! # Interruption
 //!
@@ -121,6 +125,20 @@ impl Lanes {
     /// gesture work. A render that includes one of them is not time sliced.
     pub const BLOCKING: Self =
         Self(Self::SYNC.0 | Self::INPUT_CONTINUOUS.0 | Self::DEFAULT.0 | Self::GESTURE.0);
+
+    /// The lanes whose work is synchronous from the caller's point of view:
+    /// sync, continuous input and default.
+    ///
+    /// A commit that covers one of them flushes its passive effects before it
+    /// returns, so an update a discrete event caused is observable when the
+    /// handler finishes.
+    pub const SYNC_UPDATE: Self = Self(Self::SYNC.0 | Self::INPUT_CONTINUOUS.0 | Self::DEFAULT.0);
+
+    /// Every lane except the speculative ones: idle, offscreen and deferred.
+    ///
+    /// The root always picks from this set first. Idle work waits until no
+    /// other lane is pending, even when the other work is not able to finish.
+    pub const NON_IDLE: Self = Self(Self::ALL.0 & !(Self::IDLE.0 | Self::OFFSCREEN.0 | Self::DEFERRED.0));
 
     /// Builds a lane set, dropping bits outside [`LANE_COUNT`].
     #[must_use]
@@ -208,38 +226,35 @@ impl Lanes {
         }
     }
 
-    /// The atomic group that contains the most urgent lane of the set.
+    /// The lanes a render should cover when the scheduler picks this set.
     ///
-    /// The whole group is returned, not just the highest bit, because work
-    /// inside one group must be rendered and committed together. An empty set
-    /// returns [`Lanes::NONE`].
+    /// This is React's `getHighestPriorityLanes`. The sync-update lanes come
+    /// back as the whole pending subset, and so do the retry lanes and the
+    /// transition-deferred lanes, because every lane of those groups must be
+    /// rendered and committed together. A transition-update lane comes back
+    /// alone: each of the ten lanes is a different transition, so the others
+    /// stay pending and get a render of their own. A gesture, idle or offscreen
+    /// lane comes back alone, and a deferred lane — which is only ever
+    /// scheduled entangled with another lane — yields [`Lanes::NONE`].
     #[must_use]
-    pub const fn select_group(self) -> Self {
+    pub const fn render_lanes(self) -> Self {
+        let sync = Self(self.0 & Self::SYNC_UPDATE.0);
+        if !sync.is_empty() {
+            return sync;
+        }
         let highest = self.highest().0;
         if highest == 0 {
             Self::NONE
-        } else if highest == Self::SYNC.0 {
-            Self::SYNC
-        } else if highest == Self::INPUT_CONTINUOUS.0 {
-            Self::INPUT_CONTINUOUS
-        } else if highest == Self::DEFAULT.0 {
-            Self::DEFAULT
-        } else if highest == Self::GESTURE.0 {
-            Self::GESTURE
         } else if (highest & Self::TRANSITION_UPDATE_LANES.0) != 0 {
-            Self::TRANSITION_UPDATE_LANES
+            Self(highest)
         } else if (highest & Self::TRANSITION_DEFERRED_LANES.0) != 0 {
-            Self::TRANSITION_DEFERRED_LANES
+            Self(self.0 & Self::TRANSITION_DEFERRED_LANES.0)
         } else if (highest & Self::RETRY.0) != 0 {
-            Self::RETRY
-        } else if highest == Self::IDLE.0 {
-            Self::IDLE
-        } else if highest == Self::OFFSCREEN.0 {
-            Self::OFFSCREEN
+            Self(self.0 & Self::RETRY.0)
         } else if highest == Self::DEFERRED.0 {
-            Self::DEFERRED
-        } else {
             Self::NONE
+        } else {
+            Self(highest)
         }
     }
 
@@ -267,20 +282,23 @@ impl Lanes {
     }
 
     /// The scheduler priority of the most urgent lane.
+    ///
+    /// A set that holds several lanes at most holds entangled ones, so reading
+    /// the most urgent lane is enough; this is what React does when it maps a
+    /// lane set to an event priority.
     #[must_use]
     pub const fn scheduler_priority(self) -> SchedulerPriority {
-        let group = self.select_group();
-        if group.0 == Self::SYNC.0 {
+        let highest = self.highest().0;
+        if highest == Self::SYNC.0 {
             SchedulerPriority::Immediate
-        } else if group.0 == Self::INPUT_CONTINUOUS.0 {
+        } else if highest == Self::INPUT_CONTINUOUS.0 {
             SchedulerPriority::UserBlocking
-        } else if group.0 == Self::DEFAULT.0
-            || group.0 == Self::GESTURE.0
-            || group.0 == Self::TRANSITION_UPDATE_LANES.0
-            || group.0 == Self::TRANSITION_DEFERRED_LANES.0
+        } else if highest == Self::DEFAULT.0
+            || highest == Self::GESTURE.0
+            || (highest & (Self::TRANSITION_UPDATE_LANES.0 | Self::TRANSITION_DEFERRED_LANES.0)) != 0
         {
             SchedulerPriority::Normal
-        } else if group.0 == Self::RETRY.0 {
+        } else if (highest & Self::RETRY.0) != 0 {
             SchedulerPriority::Low
         } else {
             SchedulerPriority::Idle
@@ -294,13 +312,12 @@ impl Lanes {
     /// stream of urgent updates starving a transition.
     #[must_use]
     pub const fn expiration_delay(self) -> Option<u64> {
-        let group = self.select_group();
-        if group.0 == Self::SYNC.0 || group.0 == Self::INPUT_CONTINUOUS.0 || group.0 == Self::GESTURE.0 {
+        let highest = self.highest().0;
+        if highest == Self::SYNC.0 || highest == Self::INPUT_CONTINUOUS.0 || highest == Self::GESTURE.0 {
             Some(250)
-        } else if group.0 == Self::DEFAULT.0
-            || group.0 == Self::TRANSITION_UPDATE_LANES.0
-            || group.0 == Self::TRANSITION_DEFERRED_LANES.0
-            || group.0 == Self::RETRY.0
+        } else if highest == Self::DEFAULT.0
+            || (highest & (Self::TRANSITION_UPDATE_LANES.0 | Self::TRANSITION_DEFERRED_LANES.0)) != 0
+            || (highest & Self::RETRY.0) != 0
         {
             Some(5_000)
         } else {
@@ -427,22 +444,57 @@ mod tests {
     }
 
     #[test]
-    fn a_group_is_returned_as_a_whole() {
-        let lane = Lanes::TRANSITION_UPDATE_LANES.highest();
-        assert_eq!(lane.select_group(), Lanes::TRANSITION_UPDATE_LANES);
+    fn the_render_lanes_follow_the_most_urgent_group() {
+        let updates = Lanes::TRANSITION_UPDATE_LANES;
+        // Each transition-update lane is a transition of its own, so only the
+        // most urgent one is rendered now.
+        assert_eq!(updates.render_lanes(), updates.highest());
+        assert_eq!(
+            Lanes::TRANSITION_DEFERRED_LANES.render_lanes(),
+            Lanes::TRANSITION_DEFERRED_LANES
+        );
+        assert_eq!(Lanes::RETRY.render_lanes(), Lanes::RETRY);
 
-        let lane = Lanes::TRANSITION_DEFERRED_LANES.highest();
-        assert_eq!(lane.select_group(), Lanes::TRANSITION_DEFERRED_LANES);
-
-        let lane = Lanes::RETRY.highest();
-        assert_eq!(lane.select_group(), Lanes::RETRY);
+        // The sync-update lanes are entangled: the render covers every pending
+        // lane of the group, not only the most urgent one.
+        assert_eq!(
+            (Lanes::SYNC | Lanes::DEFAULT).render_lanes(),
+            Lanes::SYNC | Lanes::DEFAULT
+        );
+        assert_eq!(
+            (Lanes::INPUT_CONTINUOUS | Lanes::DEFAULT).render_lanes(),
+            Lanes::INPUT_CONTINUOUS | Lanes::DEFAULT
+        );
 
         assert_eq!(
-            (Lanes::IDLE | Lanes::TRANSITION).select_group(),
-            Lanes::TRANSITION_UPDATE_LANES
+            (Lanes::IDLE | Lanes::TRANSITION).render_lanes(),
+            updates.highest()
         );
-        assert_eq!((Lanes::SYNC | Lanes::TRANSITION).select_group(), Lanes::SYNC);
-        assert_eq!(Lanes::NONE.select_group(), Lanes::NONE);
+        assert_eq!((Lanes::SYNC | Lanes::TRANSITION).render_lanes(), Lanes::SYNC);
+        assert_eq!(Lanes::GESTURE.render_lanes(), Lanes::GESTURE);
+        assert_eq!(Lanes::DEFERRED.render_lanes(), Lanes::NONE);
+        assert_eq!(Lanes::NONE.render_lanes(), Lanes::NONE);
+    }
+
+    #[test]
+    fn the_sync_update_group_covers_input_and_default() {
+        assert_eq!(
+            Lanes::SYNC_UPDATE,
+            Lanes::SYNC | Lanes::INPUT_CONTINUOUS | Lanes::DEFAULT
+        );
+        assert!(!Lanes::SYNC_UPDATE.intersects(Lanes::GESTURE));
+    }
+
+    #[test]
+    fn non_idle_excludes_the_speculative_lanes() {
+        assert!(!Lanes::NON_IDLE.intersects(Lanes::IDLE | Lanes::OFFSCREEN | Lanes::DEFERRED));
+        assert!(
+            Lanes::NON_IDLE.contains(Lanes::SYNC_UPDATE | Lanes::TRANSITION | Lanes::RETRY | Lanes::GESTURE)
+        );
+        assert_eq!(
+            Lanes::NON_IDLE | Lanes::IDLE | Lanes::OFFSCREEN | Lanes::DEFERRED,
+            Lanes::ALL
+        );
     }
 
     #[test]
