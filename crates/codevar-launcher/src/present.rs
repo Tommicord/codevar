@@ -90,6 +90,7 @@ const EDGE: f32 = 16.0;
 pub fn run(window: &mut dyn Window) -> Option<Exit> {
     let modifiers = window.dmabuf_modifiers().to_vec();
     if modifiers.is_empty() {
+        log_info!("the window offers no dma-buf layouts; keeping the shared-memory surface");
         return None;
     }
     let mut started = false;

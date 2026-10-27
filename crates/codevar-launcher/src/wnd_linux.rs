@@ -38,7 +38,7 @@ use alloc::vec::Vec;
 
 use crate::wnd::{Window, WndBackend, WndBackendId, WndConfig, WndError, WndEvent, WndImage, WndSize};
 use codevar_env::env_var;
-use codevar_logger::log_warn;
+use codevar_logger::{log_debug, log_warn};
 use codevar_time_core::TimeDuration;
 use codevar_wayland::{
     BUFFER_DESTROY, BUFFER_PARAMS_ADD, BUFFER_PARAMS_CREATE_IMMED, BUFFER_PARAMS_DESTROY, BUFFER_RELEASE,
@@ -1008,6 +1008,7 @@ fn bind_dmabuf<T: WlTransport>(
     globals: &Globals,
 ) -> Result<Option<Dmabuf>, WndError> {
     let Some((name, version)) = find_global(globals, DMABUF_INTERFACE.name) else {
+        log_debug!("the compositor did not announce {}", DMABUF_INTERFACE.name);
         return Ok(None);
     };
     let proxy = display.registry_bind(registry, name, &DMABUF_INTERFACE, version.min(3))?;
