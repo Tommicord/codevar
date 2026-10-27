@@ -34,11 +34,14 @@
 //! Geometry operations ([`RectOp`] and [`LineOp`]) are expanded into vertices;
 //! a [`TextOp`] run carries no polygon geometry and is drawn by the text pass
 //! of `codevar-kuitui-text`, so it is left to the visitor's default no-op.
-//! Rounded corners are not representable by the color-only `ui` shader and are
-//! drawn square; a command that carries an [`Effect`] is the exception — the
-//! span keeps the effect, the pipe binds the `ui_effect` program for it, and
-//! the rectangle is widened to the coverage of the layer so the blurred halo
-//! has fragments to shade.
+//! Rounded corners are not representable by the color-only `ui` shader and
+//! a command that carries an [`Effect`] is the exception — the span keeps
+//! the effect, the pipe binds the `ui_effect` program for it, and the
+//! rectangle is widened to the coverage of the layer so the blurred halo
+//! has fragments to shade. A rounded rectangle joins it: it is expanded as
+//! a layer of that program instead of being drawn square, so its corners
+//! and its outline come from the same signed distance the Vulkan backend
+//! cuts them from.
 //!
 //! # Target
 //!
@@ -181,10 +184,12 @@ impl UiGeometry {
     pub fn push_command(&mut self, command: DrawCommand) {
         let first_vertex = self.vertices.len();
         let clip = command.clip;
-        let effect = command.effect;
-        self.effect = effect;
+        self.effect = command.effect;
         command.op.visit(self);
-        self.effect = None;
+        // The visitor sees the open layer and may replace it: a rounded
+        // rectangle asks the signed-distance program to cut its corners,
+        // so the layer the span carries is the one the visitor left.
+        let effect = self.effect.take();
         let vertex_count = self.vertices.len() - first_vertex;
         if vertex_count == 0 {
             return;
@@ -197,7 +202,12 @@ impl UiGeometry {
         });
     }
 
-    /// Expands a rectangle: a filled quad, or four quads for an outline.
+    /// Expands a rectangle with the flat program: a filled quad, or four
+    /// quads for an outline.
+    ///
+    /// The corners of the operation are sharp; a rounded rectangle goes
+    /// through [`UiGeometry::push_rounded_rect`], which asks the signed
+    /// distance of the layer to cut them.
     fn push_rect(&mut self, rect: Rect, paint: Paint) {
         let color = vertex_color(paint);
         let width = paint.stroke_width();
@@ -254,6 +264,34 @@ impl UiGeometry {
             Offset::new(right, top + width),
             Offset::new(right, bottom - width),
             Offset::new(right - width, bottom - width),
+            color,
+        );
+    }
+
+    /// Expands a rounded rectangle through the signed-distance program.
+    ///
+    /// A curve is a property of the rasterization, not of the geometry, so
+    /// the operation is one quad the layer cuts: the corners come from
+    /// `radii` and an outline from the stroke width of the paint, which
+    /// `ui_effect.frag.glsl` subtracts as the band between the box and the
+    /// box inset by that width. A layer the command already carries keeps
+    /// its own bounds and its blur, rotation or ramp; the radii of the
+    /// operation are what the recorded rectangle asked for.
+    fn push_rounded_rect(&mut self, rect: Rect, radii: CornerRadii, paint: Paint) {
+        let color = vertex_color(paint);
+        let width = paint.stroke_width();
+        let layer = self
+            .effect
+            .unwrap_or_else(|| Effect::new(rect))
+            .shape(radii);
+        let layer = if width > 0.0 { layer.stroke(width) } else { layer };
+        self.effect = Some(layer);
+        let rect = rect.union(layer.coverage());
+        self.push_quad(
+            Offset::new(rect.left(), rect.top()),
+            Offset::new(rect.right(), rect.top()),
+            Offset::new(rect.right(), rect.bottom()),
+            Offset::new(rect.left(), rect.bottom()),
             color,
         );
     }
@@ -315,8 +353,12 @@ impl UiGeometry {
 }
 
 impl DrawVisitor for UiGeometry {
-    fn rect(&mut self, rect: Rect, _radii: CornerRadii, paint: Paint) {
-        self.push_rect(rect, paint);
+    fn rect(&mut self, rect: Rect, radii: CornerRadii, paint: Paint) {
+        if radii.is_zero() {
+            self.push_rect(rect, paint);
+        } else {
+            self.push_rounded_rect(rect, radii, paint);
+        }
     }
 
     fn line(&mut self, from: Offset, to: Offset, paint: Paint) {

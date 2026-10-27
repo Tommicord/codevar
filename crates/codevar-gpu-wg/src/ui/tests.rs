@@ -119,6 +119,42 @@ fn an_effect_span_keeps_the_layer_and_widens_its_quad() {
 }
 
 #[test]
+fn a_rounded_rectangle_is_cut_by_the_effect_program() {
+    let bounds = Rect::from_min_size(Offset::new(10.0, 10.0), 40.0, 20.0);
+    let radii = CornerRadii::uniform(8.0);
+    let mut list = DrawList::new();
+    list.rect(bounds, radii, fill());
+
+    let mut geometry = UiGeometry::new();
+    geometry.expand(&mut list);
+
+    // The corners are a property of the rasterization, so the operation
+    // is one quad and a layer that carries nothing but its rounding.
+    let span = geometry.spans()[0];
+    assert_eq!(span.vertex_count, 6);
+    assert_eq!(span.effect, Some(Effect::new(bounds).shape(radii)));
+    assert_eq!(geometry.vertices()[0].position, [10.0, 10.0]);
+}
+
+#[test]
+fn a_rounded_outline_is_a_ring_instead_of_four_edges() {
+    let bounds = Rect::from_min_size(Offset::ZERO, 30.0, 12.0);
+    let radii = CornerRadii::uniform(6.0);
+    let mut list = DrawList::new();
+    list.rect(bounds, radii, Paint::stroke(Color::WHITE, 2.0));
+
+    let mut geometry = UiGeometry::new();
+    geometry.expand(&mut list);
+
+    assert_eq!(geometry.spans().len(), 1);
+    assert_eq!(geometry.spans()[0].vertex_count, 6, "one quad");
+    assert_eq!(
+        geometry.spans()[0].effect,
+        Some(Effect::new(bounds).shape(radii).stroke(2.0))
+    );
+}
+
+#[test]
 fn an_outlined_rectangle_expands_to_four_edges() {
     let mut list = DrawList::new();
     list.rect(
