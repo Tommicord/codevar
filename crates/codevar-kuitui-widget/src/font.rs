@@ -490,15 +490,20 @@ impl Font {
 
     /// Shapes a color text run into a shared frame.
     ///
-    /// Uses the color font pipeline (strikes → COLR/CPAL → outline) to
-    /// rasterize each glyph as premultiplied BGRA, inserts it into the
-    /// frame's color atlas, and pushes quads with white vertex color so
-    /// the emoji's own colors are reproduced.
+    /// `text_font` is the face the run was laid out with and therefore
+    /// the primary one: a character it covers is shaped into the
+    /// frame's coverage atlas at its advance, whatever the color face
+    /// holds. The color face is the fallback — a character the text
+    /// face lacks (an emoji, when the text face is a text font) is
+    /// rasterized by the color pipeline (strikes → COLR/CPAL → outline)
+    /// as premultiplied BGRA, inserted into the frame's color atlas and
+    /// pushed with white vertex color so the glyph keeps its own
+    /// colors. A run that mixes both keeps both.
     ///
-    /// A character the color face has no glyph for — every letter, when
-    /// the color face is an emoji font — is shaped through `text_font`
-    /// into the frame's coverage atlas at the same pen, so a mixed run
-    /// keeps both its emoji and its text.
+    /// The precedence is not cosmetic: an emoji face usually has its
+    /// own, much wider space, so drawing the spaces of a run through it
+    /// made the drawn run wider than the width the layout was measured
+    /// with and slid the run out of the box it was centered in.
     ///
     /// # Errors
     ///
@@ -538,47 +543,51 @@ impl Font {
                     pen += spacing;
                     continue;
                 }
+                // The text face is primary: its advance is the one the
+                // layout measured, so a character it covers stays in the
+                // coverage atlas even when the color face also has a
+                // glyph for it.
+                let text_glyph = text_sfnt.char_index(u32::from(character));
+                if text_glyph != 0 {
+                    let advance = mul_fix(
+                        i64::from(text_sfnt.advance_for_glyph(text_glyph)),
+                        text_font.scale,
+                    );
+                    if let Some(bitmap) =
+                        rasterize_glyph(&text_sfnt, &mut slot, &mut raster, &text_metrics, text_glyph)
+                            .map_err(ShapeError::Font)?
+                    {
+                        coverage.clear();
+                        for row in 0..bitmap.bitmap.rows {
+                            if let Some(row) = bitmap.bitmap.row(row) {
+                                coverage.extend_from_slice(row);
+                            }
+                        }
+                        let key = glyph_key(text_font.ppem, text_glyph);
+                        frame.with(|text_atlas, text_mesh| -> Result<(), ShapeError> {
+                            if let Some(slot) = text_atlas
+                                .insert(key, bitmap.bitmap.width, bitmap.bitmap.rows, &coverage)
+                                .map_err(ShapeError::Atlas)?
+                            {
+                                let position = [
+                                    origin.x + fixed_pixels(pen) + bitmap.left as f32,
+                                    origin.y - bitmap.top as f32,
+                                ];
+                                text_mesh.push(&AtlasQuad::from_slot(slot, position, text_color, clip));
+                            }
+                            Ok(())
+                        })?;
+                    }
+                    pen += advance + spacing;
+                    continue;
+                }
                 let rendered = match color_font.render_char(character, self.ppem, 0) {
                     Ok(rendered) => rendered,
                     Err(TtError::INVALID_GLYPH_INDEX) => {
-                        // The color face has no glyph for this character:
-                        // rasterize it with the text face's coverage instead.
-                        let glyph_index = text_sfnt.char_index(u32::from(character));
-                        let advance = mul_fix(
-                            i64::from(text_sfnt.advance_for_glyph(glyph_index)),
-                            text_font.scale,
-                        );
-                        if glyph_index != 0
-                            && let Some(bitmap) = rasterize_glyph(
-                                &text_sfnt,
-                                &mut slot,
-                                &mut raster,
-                                &text_metrics,
-                                glyph_index,
-                            )
-                            .map_err(ShapeError::Font)?
-                        {
-                            coverage.clear();
-                            for row in 0..bitmap.bitmap.rows {
-                                if let Some(row) = bitmap.bitmap.row(row) {
-                                    coverage.extend_from_slice(row);
-                                }
-                            }
-                            let key = glyph_key(text_font.ppem, glyph_index);
-                            frame.with(|text_atlas, text_mesh| -> Result<(), ShapeError> {
-                                if let Some(slot) = text_atlas
-                                    .insert(key, bitmap.bitmap.width, bitmap.bitmap.rows, &coverage)
-                                    .map_err(ShapeError::Atlas)?
-                                {
-                                    let position = [
-                                        origin.x + fixed_pixels(pen) + bitmap.left as f32,
-                                        origin.y - bitmap.top as f32,
-                                    ];
-                                    text_mesh.push(&AtlasQuad::from_slot(slot, position, text_color, clip));
-                                }
-                                Ok(())
-                            })?;
-                        }
+                        // Neither face covers the character: the text
+                        // face's `.notdef` keeps the pen moving exactly
+                        // as the layout measured it.
+                        let advance = mul_fix(i64::from(text_sfnt.advance_for_glyph(0)), text_font.scale);
                         pen += advance + spacing;
                         continue;
                     }
@@ -773,6 +782,81 @@ impl FontMetrics for Font {
             }
             let glyph_index = font.char_index(u32::from(character));
             pen += mul_fix(i64::from(font.advance_for_glyph(glyph_index)), self.scale) + spacing;
+        }
+        fixed_pixels(pen)
+    }
+}
+
+/// The metrics of a text face with a color face as its fallback.
+///
+/// [`Font::shape_into_color`] shapes a character through the text face
+/// when the text face has a glyph for it and through the color face
+/// otherwise, so the advance of a mixed run belongs to neither face
+/// alone. This type answers [`FontMetrics`] with that same rule — the
+/// line box from the text face, the advance of each character from the
+/// face that will draw it — so a run is measured the way it is drawn.
+///
+/// Measuring a color run with the text face alone reserves the `.notdef`
+/// width for every emoji and the run is drawn wider than its box, which
+/// is what pushed a centered label off center. An application that
+/// shapes color runs installs these metrics on its theme in place of
+/// the text face alone.
+#[derive(Debug, Clone)]
+pub struct ColorFontMetrics {
+    /// The face the layout is measured with, and the primary face of
+    /// the shaping.
+    text: Font,
+    /// The face whose glyphs replace the characters `text` lacks.
+    color: Font,
+}
+
+impl ColorFontMetrics {
+    /// The metrics of `text`, falling back to `color`.
+    #[must_use]
+    pub const fn new(text: Font, color: Font) -> Self {
+        Self { text, color }
+    }
+}
+
+impl FontMetrics for ColorFontMetrics {
+    fn line_height(&self, _style: &TextStyle) -> f32 {
+        Font::line_height(&self.text)
+    }
+
+    fn ascent(&self, _style: &TextStyle) -> f32 {
+        Font::ascent(&self.text)
+    }
+
+    fn advance(&self, text: &str, style: &TextStyle) -> f32 {
+        let Ok(text_face) = self.text.sfnt() else {
+            return 0.0;
+        };
+        let color_face = self.color.sfnt().ok();
+        let notdef = mul_fix(i64::from(text_face.advance_for_glyph(0)), self.text.scale);
+        let spacing = (style.letter_spacing * 64.0) as i64;
+        let mut pen: i64 = 0;
+        for character in text.chars() {
+            if character == '\n' {
+                pen += spacing;
+                continue;
+            }
+            let text_glyph = text_face.char_index(u32::from(character));
+            let advance = if text_glyph != 0 {
+                mul_fix(
+                    i64::from(text_face.advance_for_glyph(text_glyph)),
+                    self.text.scale,
+                )
+            } else if let Some(face) = color_face.as_ref() {
+                let color_glyph = face.char_index(u32::from(character));
+                if color_glyph != 0 {
+                    mul_fix(i64::from(face.advance_for_glyph(color_glyph)), self.color.scale)
+                } else {
+                    notdef
+                }
+            } else {
+                notdef
+            };
+            pen += advance + spacing;
         }
         fixed_pixels(pen)
     }
@@ -1258,8 +1342,18 @@ mod tests {
         "/../../assets/tf/codevar.tf.space-mono.regular.ttf"
     );
 
+    const EMOJI_FONT: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../codevar-truetype-emoji-color/tests/resources/NotoColorEmoji-colr-v1-subset.ttf"
+    );
+
     fn test_font(ppem: u16) -> Font {
         let bytes = std::fs::read(FONT).unwrap();
+        Font::from_bytes(bytes).unwrap().with_ppem(ppem)
+    }
+
+    fn emoji_font(ppem: u16) -> Font {
+        let bytes = std::fs::read(EMOJI_FONT).unwrap();
         Font::from_bytes(bytes).unwrap().with_ppem(ppem)
     }
 
@@ -1391,5 +1485,31 @@ mod tests {
     fn an_unknown_face_index_is_an_error() {
         let font = test_font(16);
         assert!(font.with_face_index(9).is_err());
+    }
+
+    #[test]
+    fn the_color_metrics_advance_a_mixed_run_with_the_face_that_draws_it() {
+        let text = test_font(24);
+        let emoji = emoji_font(24);
+        let metrics = ColorFontMetrics::new(text.clone(), emoji.clone());
+        let style = TextStyle::new(24.0);
+
+        let mixed = metrics.advance("Hi 😀", &style);
+        let expected = text.advance("Hi ", &style) + emoji.advance("😀", &style);
+        assert!((mixed - expected).abs() < 0.05, "{mixed} should be {expected}");
+        assert!(
+            mixed > text.advance("Hi 😀", &style),
+            "the emoji advances with the color face, not with the text face's notdef"
+        );
+    }
+
+    #[test]
+    fn the_color_metrics_take_their_line_box_from_the_text_face() {
+        let text = test_font(24);
+        let emoji = emoji_font(24);
+        let metrics = ColorFontMetrics::new(text.clone(), emoji);
+        let style = TextStyle::new(24.0);
+        assert_eq!(metrics.line_height(&style), Font::line_height(&text));
+        assert_eq!(metrics.ascent(&style), Font::ascent(&text));
     }
 }

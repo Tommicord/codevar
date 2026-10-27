@@ -57,11 +57,16 @@ pub fn shape_list(frame: &TextFrame, font: &Font, list: &DrawList) -> Result<(),
 
 /// Shapes every text run of `list`, including color runs, into `frame`.
 ///
-/// Coverage runs use `font`; color runs use `color_font`, whose COLR/CPAL
+/// Coverage runs use `font`. A color run is shaped through `font` for
+/// every character it covers — the primary face is also the one the
+/// layout was measured with — and through `color_font`, whose COLR/CPAL
 /// layers or bitmap strikes produce the premultiplied BGRA glyphs of the
-/// frame's color atlas. A character `color_font` has no glyph for is
-/// shaped through `font` into the coverage atlas, so a color run that
-/// mixes text and emoji keeps both. The list is not drained.
+/// frame's color atlas, for the characters `font` lacks. A run that mixes
+/// text and emoji therefore keeps both, and its drawn width stays the
+/// width the layout reserved for it. The list is not drained.
+///
+/// The matching [`FontMetrics`](codevar_kuitui::text::FontMetrics) for
+/// such a run is [`crate::ColorFontMetrics`].
 ///
 /// # Errors
 ///
