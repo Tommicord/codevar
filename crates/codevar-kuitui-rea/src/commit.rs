@@ -474,6 +474,23 @@ mod tests {
     }
 
     #[test]
+    fn a_host_element_places_its_children_inside_its_node() {
+        let mut harness = Harness::new();
+        harness.render(Element::host(1).children([Element::host(2), Element::host(3)]));
+        let outer = harness.children().to_vec();
+        assert_eq!(outer.len(), 1);
+        assert_eq!(harness.host.element(outer[0]), Some(1));
+        let inner = harness.host.children(outer[0]).to_vec();
+        assert_eq!(
+            inner
+                .iter()
+                .map(|node| harness.host.element(*node))
+                .collect::<Vec<_>>(),
+            [Some(2), Some(3)]
+        );
+    }
+
+    #[test]
     fn a_reorder_moves_the_nodes_instead_of_recreating_them() {
         let mut harness = Harness::new();
         harness.render(Element::fragment([

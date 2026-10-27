@@ -45,6 +45,12 @@
 //! created and how it is updated. Even a text run is a host element, because
 //! the host's text widget carries the font, the color and the layout that the
 //! engine must not see. Adding a widget therefore never changes this crate.
+//!
+//! A host element may also carry the elements it arranges — the children of a
+//! column, a row or a frame. The children belong to the description, not to a
+//! component: the reconciler diffs them against the children of the host fiber
+//! when it reaches the host, exactly as it diffs the children of a fragment,
+//! so a host node keeps the fibers and nodes below it across a re-render.
 
 // The reconciler that reads these descriptions lands in the next increment.
 #![allow(dead_code)]
@@ -70,12 +76,24 @@ pub struct Element<H: Host> {
     kind: Kind<H>,
 }
 
+/// A host element together with the element children it arranges.
+///
+/// The description of the node itself is what the host matches and updates;
+/// the children are reconciled into the host's fiber, so the host node keeps
+/// them from one render to the next.
+pub(crate) struct HostNode<H: Host> {
+    /// The host's description of the node.
+    pub(crate) element: Rc<H::Element>,
+    /// The elements the node arranges.
+    pub(crate) children: Rc<[Element<H>]>,
+}
+
 /// What an element describes.
 pub(crate) enum Kind<H: Host> {
     /// Renders nothing.
     Empty,
-    /// An opaque host element.
-    Host(Rc<H::Element>),
+    /// An opaque host element and the children it arranges.
+    Host(Rc<HostNode<H>>),
     /// A component, with the identity that decides whether a fiber can be
     /// reused when the parent renders again.
     Component {
@@ -107,8 +125,29 @@ impl<H: Host> Element<H> {
     pub fn host(element: H::Element) -> Self {
         Self {
             key: None,
-            kind: Kind::Host(Rc::new(element)),
+            kind: Kind::Host(Rc::new(HostNode {
+                element: Rc::new(element),
+                children: Rc::from([]),
+            })),
         }
+    }
+
+    /// Gives a host element the children it arranges.
+    ///
+    /// The children are elements of their own, reconciled into the host's
+    /// fiber when the host is reached. Only a host element arranges children
+    /// this way: a component describes its children by rendering them, and a
+    /// fragment takes its children in [`Element::fragment`], so the call is
+    /// ignored on any other kind.
+    #[must_use]
+    pub fn children(mut self, children: impl IntoIterator<Item = Self>) -> Self {
+        if let Kind::Host(node) = &self.kind {
+            self.kind = Kind::Host(Rc::new(HostNode {
+                element: Rc::clone(&node.element),
+                children: children.into_iter().collect(),
+            }));
+        }
+        self
     }
 
     /// A component.
@@ -179,7 +218,7 @@ impl<H: Host> Clone for Element<H> {
     fn clone(&self) -> Self {
         let kind = match &self.kind {
             Kind::Empty => Kind::Empty,
-            Kind::Host(element) => Kind::Host(Rc::clone(element)),
+            Kind::Host(node) => Kind::Host(Rc::clone(node)),
             Kind::Component { render, type_id } => Kind::Component {
                 render: Rc::clone(render),
                 type_id: *type_id,
@@ -252,6 +291,37 @@ mod tests {
             return;
         };
         assert!(Rc::ptr_eq(a, b));
+        assert_eq!(*a.element, 7);
+    }
+
+    #[test]
+    fn a_host_element_keeps_the_children_it_is_given() {
+        let element: Element<TestHost> =
+            Element::host(1).children([Element::host(2), Element::host(3).keyed("b")]);
+        let Kind::Host(node) = element.kind() else {
+            return;
+        };
+        assert_eq!(node.children.len(), 2);
+        assert!(matches!(node.children[0].kind(), Kind::Host(child) if *child.element == 2));
+        assert_eq!(node.children[1].key().map(Key::as_str), Some("b"));
+    }
+
+    #[test]
+    fn adding_children_leaves_the_original_element_alone() {
+        let original: Element<TestHost> = Element::host(4);
+        let parent = original.clone().children([Element::host(5)]);
+        let (Kind::Host(a), Kind::Host(b)) = (original.kind(), parent.kind()) else {
+            return;
+        };
+        assert!(a.children.is_empty());
+        assert_eq!(b.children.len(), 1);
+        assert!(Rc::ptr_eq(&a.element, &b.element));
+    }
+
+    #[test]
+    fn a_component_ignores_children_it_cannot_arrange() {
+        let element: Element<TestHost> = panel().children([Element::host(1)]);
+        assert!(element.component_type().is_some());
     }
 
     #[test]
@@ -276,7 +346,7 @@ mod tests {
             return;
         };
         assert_eq!(children.len(), 2);
-        assert!(matches!(children[0].kind(), Kind::Host(element) if **element == 1));
-        assert!(matches!(children[1].kind(), Kind::Host(element) if **element == 2));
+        assert!(matches!(children[0].kind(), Kind::Host(element) if *element.element == 1));
+        assert!(matches!(children[1].kind(), Kind::Host(element) if *element.element == 2));
     }
 }

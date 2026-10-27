@@ -71,6 +71,45 @@ pub(crate) fn reconcile_children<H: Host>(
     current_first: Option<FiberId>,
     children: &[Element<H>],
 ) -> Option<FiberId> {
+    let first = diff(host, arena, parent, current_first, children);
+    // A host element arranges the elements it carries. React diffs them from
+    // `beginWork` when it reaches the host fiber; the fiber is already linked
+    // here, so the diff runs now, at the same point of the render, and the
+    // recursion covers the host children of the host children.
+    let mut child = first;
+    for element in children
+        .iter()
+        .filter(|element| !element.is_empty())
+    {
+        let Some(current) = child else {
+            break;
+        };
+        child = arena.get(current).and_then(|fiber| fiber.sibling);
+        if let Kind::Host(node) = element.kind() {
+            let old_first = committed_first_child(arena, current);
+            reconcile_children(host, arena, current, old_first, &node.children);
+        }
+    }
+    first
+}
+
+/// The first child of the committed half of a fiber.
+fn committed_first_child<H: Host>(arena: &Arena<H>, fiber: FiberId) -> Option<FiberId> {
+    arena
+        .get(fiber)
+        .and_then(|fiber| fiber.alternate)
+        .and_then(|alternate| arena.get(alternate))
+        .and_then(|fiber| fiber.first_child)
+}
+
+/// Diffs `children` and links them under `parent`.
+fn diff<H: Host>(
+    host: &H,
+    arena: &mut Arena<H>,
+    parent: FiberId,
+    current_first: Option<FiberId>,
+    children: &[Element<H>],
+) -> Option<FiberId> {
     let mut layout = Layout::default();
     let mut old = current_first;
     let mut position = 0;
@@ -220,7 +259,7 @@ fn collect<H: Host>(arena: &Arena<H>, mut old: Option<FiberId>) -> BTreeMap<Matc
 fn same_type<H: Host>(host: &H, fiber: &Fiber<H>, element: &Element<H>) -> bool {
     match (fiber.tag, element.kind()) {
         (FiberTag::Host, Kind::Host(new)) => match &fiber.memoized {
-            Payload::Host(old) => host.element_matches(old, new),
+            Payload::Host(old) => host.element_matches(old, &new.element),
             _ => false,
         },
         (FiberTag::Component, Kind::Component { type_id, .. }) => fiber.element_type == Some(*type_id),
@@ -233,7 +272,7 @@ fn same_type<H: Host>(host: &H, fiber: &Fiber<H>, element: &Element<H>) -> bool 
 fn payload_of<H: Host>(element: &Element<H>) -> Payload<H> {
     match element.kind() {
         Kind::Empty => Payload::None,
-        Kind::Host(host) => Payload::Host(Rc::clone(host)),
+        Kind::Host(node) => Payload::Host(Rc::clone(&node.element)),
         Kind::Component { render, .. } => Payload::Component(Rc::clone(render)),
         Kind::Fragment(children) => Payload::Fragment(Rc::clone(children)),
     }
@@ -543,6 +582,77 @@ mod tests {
         };
         assert_eq!(fiber.tag, FiberTag::Fragment);
         assert!(matches!(&fiber.pending, Payload::Fragment(children) if children.len() == 2));
+    }
+
+    fn container(nested: alloc::vec::Vec<TestElement>) -> TestElement {
+        Element::host((0, 0)).children(nested)
+    }
+
+    #[test]
+    fn a_host_element_arranges_the_children_it_carries() {
+        let (arena, parent) = mount(&[container(alloc::vec![leaf(1), leaf(2)])]);
+        let hosts = children(&arena, parent);
+        assert_eq!(hosts.len(), 1);
+        let nested = children(&arena, hosts[0]);
+        assert_eq!(nested.len(), 2);
+        for id in nested {
+            assert_eq!(arena.get(id).and_then(|fiber| fiber.parent), Some(hosts[0]));
+        }
+    }
+
+    #[test]
+    fn host_children_keep_their_fibers_across_a_reorder() {
+        let (mut arena, parent) = mount(&[container(alloc::vec![keyed(1, "a"), keyed(1, "b"),])]);
+        let host = children(&arena, parent)[0];
+        let old = children(&arena, host);
+
+        let first = render(
+            &mut arena,
+            parent,
+            &[container(alloc::vec![keyed(1, "b"), keyed(1, "a")])],
+        );
+        let new_host = chain(&arena, first)[0];
+        assert_eq!(
+            arena
+                .get(new_host)
+                .and_then(|fiber| fiber.alternate),
+            Some(host)
+        );
+        let reordered = children(&arena, new_host);
+        assert_eq!(reordered.len(), 2);
+        assert_eq!(
+            arena
+                .get(reordered[0])
+                .and_then(|fiber| fiber.alternate),
+            Some(old[1])
+        );
+        assert_eq!(
+            arena
+                .get(reordered[1])
+                .and_then(|fiber| fiber.alternate),
+            Some(old[0])
+        );
+        assert!(
+            arena
+                .get(reordered[1])
+                .is_some_and(|fiber| fiber.flags.contains(Flags::PLACEMENT))
+        );
+    }
+
+    #[test]
+    fn a_host_element_that_loses_its_children_reports_them() {
+        let (mut arena, parent) = mount(&[container(alloc::vec![leaf(1), leaf(2)])]);
+        let host = children(&arena, parent)[0];
+        let old = children(&arena, host);
+
+        let first = render(&mut arena, parent, &[container(alloc::vec![])]);
+        let new_host = chain(&arena, first)[0];
+        assert!(
+            arena
+                .get(new_host)
+                .is_some_and(|fiber| fiber.deletions == old)
+        );
+        assert!(children(&arena, new_host).is_empty());
     }
 
     #[test]
