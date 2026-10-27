@@ -150,6 +150,10 @@ fn session(window: &mut dyn Window, modifiers: &[u64], started: &mut bool) -> Re
     *started = true;
     log_info!("presenting {}x{} dma-buf frames", image.width, image.height);
 
+    // The shell is static: record it once and let the pipe replay its
+    // cached geometry, so a refresh only re-records the draw calls.
+    ui_frame.with(|list| paint(list, size));
+
     let mut changes = Changes::default();
     let mut dirty = true;
     loop {
@@ -178,7 +182,6 @@ fn session(window: &mut dyn Window, modifiers: &[u64], started: &mut bool) -> Re
             return Ok(SessionEnd::Resized);
         }
 
-        ui_frame.with(|list| paint(list, size));
         let sync_file = block_on(compositor.composite_frame(None))
             .map_err(|error| frame_error(window, format!("compositing failed: {error}")))?;
         let waited = wait_for_gpu(window, &sync_file, &mut changes);
