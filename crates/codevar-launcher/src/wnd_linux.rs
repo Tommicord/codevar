@@ -41,8 +41,9 @@ use codevar_env::env_var;
 use codevar_logger::log_warn;
 use codevar_time_core::TimeDuration;
 use codevar_wayland::{
-    BUFFER_DESTROY, COMPOSITOR_CREATE_SURFACE, COMPOSITOR_INTERFACE, SHM_CREATE_POOL, SHM_FORMAT_XRGB8888,
-    SHM_INTERFACE, SHM_POOL_CREATE_BUFFER, SHM_POOL_DESTROY, SURFACE_ATTACH, SURFACE_COMMIT, SURFACE_DAMAGE,
+    BUFFER_DESTROY, COMPOSITOR_CREATE_SURFACE, COMPOSITOR_INTERFACE, DMABUF_DESTROY, DMABUF_INTERFACE,
+    DMABUF_MODIFIER, DRM_FORMAT_XRGB8888, SHM_CREATE_POOL, SHM_FORMAT_XRGB8888, SHM_INTERFACE,
+    SHM_POOL_CREATE_BUFFER, SHM_POOL_DESTROY, SURFACE_ATTACH, SURFACE_COMMIT, SURFACE_DAMAGE,
     SURFACE_DESTROY, WlArgument, WlClientDisplay, WlError, WlInterface, WlProxyId, WlRegistryEvent, WlResult,
     WlTransport, WlUnixTransport, XDG_SURFACE_ACK_CONFIGURE, XDG_SURFACE_CONFIGURE, XDG_SURFACE_DESTROY,
     XDG_SURFACE_GET_TOPLEVEL, XDG_SURFACE_SET_WINDOW_GEOMETRY, XDG_TOPLEVEL_CLOSE, XDG_TOPLEVEL_CONFIGURE,
@@ -63,6 +64,14 @@ const BACKGROUND: [u8; 4] = [0x24, 0x1e, 0x1e, 0xff];
 
 /// Registry announcements as `(name, interface, version)` tuples.
 type Globals = Rc<RefCell<alloc::vec::Vec<(u32, String, u32)>>>;
+
+/// The `zwp_linux_dmabuf_v1` global a window presents through.
+struct Dmabuf {
+    /// The bound `zwp_linux_dmabuf_v1` proxy.
+    proxy: WlProxyId,
+    /// Modifiers the compositor accepts for `DRM_FORMAT_XRGB8888`.
+    modifiers: Vec<u64>,
+}
 
 /// Protocol state shared between the window and its event listeners.
 ///
@@ -241,6 +250,8 @@ pub struct WaylandWindow<T: WlTransport> {
     surface: WlProxyId,
     xdg_surface: WlProxyId,
     toplevel: WlProxyId,
+    /// The dma-buf global, absent when the compositor offers none.
+    dmabuf: Option<Dmabuf>,
     pool: ShmPool,
     buffer: WlProxyId,
     width: i32,
@@ -289,6 +300,7 @@ impl<T: WlTransport> WaylandWindow<T> {
         let compositor = bind(&mut display, registry, &globals, &COMPOSITOR_INTERFACE)?;
         let shm = bind(&mut display, registry, &globals, &SHM_INTERFACE)?;
         let wm_base = bind(&mut display, registry, &globals, &XDG_WM_BASE_INTERFACE)?;
+        let dmabuf = bind_dmabuf(&mut display, registry, &globals)?;
 
         let signals = Rc::new(WndSignals::default());
         install_ping_listener(&mut display, wm_base, &signals)?;
@@ -373,6 +385,7 @@ impl<T: WlTransport> WaylandWindow<T> {
             surface,
             xdg_surface,
             toplevel,
+            dmabuf,
             pool,
             buffer,
             width,
@@ -493,6 +506,9 @@ impl<T: WlTransport> WaylandWindow<T> {
         self.destroy(self.surface, SURFACE_DESTROY);
         self.destroy(self.buffer, BUFFER_DESTROY);
         self.destroy(self.pool.proxy, SHM_POOL_DESTROY);
+        if let Some(dmabuf) = self.dmabuf.take() {
+            self.destroy(dmabuf.proxy, DMABUF_DESTROY);
+        }
         let _ = flush_lenient(&mut self.display);
     }
 
@@ -589,6 +605,12 @@ impl<T: WlTransport> Window for WaylandWindow<T> {
 
     fn size(&self) -> WndSize {
         WaylandWindow::size(self)
+    }
+
+    fn dmabuf_modifiers(&self) -> &[u64] {
+        self.dmabuf
+            .as_ref()
+            .map_or(&[], |dmabuf| dmabuf.modifiers.as_slice())
     }
 
     fn set_title(&mut self, title: &str) -> Result<(), WndError> {
@@ -738,13 +760,93 @@ fn bind<T: WlTransport>(
     globals: &Globals,
     interface: &'static WlInterface,
 ) -> WlResult<WlProxyId> {
-    let (name, version) = globals
-        .borrow()
-        .iter()
-        .find(|(_, announced, _)| announced == interface.name)
-        .map(|(name, _, version)| (*name, *version))
+    let (name, version) = find_global(globals, interface.name)
         .ok_or_else(|| WlError::Unsupported(format!("the compositor did not announce {}", interface.name)))?;
     display.registry_bind(registry, name, interface, version.min(interface.version))
+}
+
+/// Returns the registry name and version of `interface`, when announced.
+fn find_global(globals: &Globals, interface: &str) -> Option<(u32, u32)> {
+    globals
+        .borrow()
+        .iter()
+        .find(|(_, announced, _)| announced == interface)
+        .map(|(name, _, version)| (*name, *version))
+}
+
+/// Binds `zwp_linux_dmabuf_v1` and collects the layouts it advertises.
+///
+/// A compositor that does not announce the global yields `None`, and the
+/// window keeps presenting its shared-memory buffer only.
+///
+/// The binding stays at version 3 on purpose: that is the last version
+/// whose `format`/`modifier` events carry the layout list directly.
+/// Newer versions answer exclusively through feedback objects, which
+/// describe the same list in a form this window does not need.
+///
+/// # Errors
+///
+/// Returns the bind, listener or round-trip error of the connection.
+fn bind_dmabuf<T: WlTransport>(
+    display: &mut WlClientDisplay<T>,
+    registry: WlProxyId,
+    globals: &Globals,
+) -> Result<Option<Dmabuf>, WndError> {
+    let Some((name, version)) = find_global(globals, DMABUF_INTERFACE.name) else {
+        return Ok(None);
+    };
+    let proxy = display.registry_bind(registry, name, &DMABUF_INTERFACE, version.min(3))?;
+    let announced = Rc::new(RefCell::new(Vec::new()));
+    {
+        let announced = Rc::clone(&announced);
+        display.add_listener(proxy, move |_, opcode, args| {
+            if opcode == DMABUF_MODIFIER
+                && let (
+                    Some(WlArgument::Uint(format)),
+                    Some(WlArgument::Uint(high)),
+                    Some(WlArgument::Uint(low)),
+                ) = (args.first(), args.get(1), args.get(2))
+                && let Some(modifier) = announced_modifier(*format, *high, *low)
+            {
+                let mut modifiers = announced.borrow_mut();
+                if !modifiers.contains(&modifier) {
+                    modifiers.push(modifier);
+                }
+            }
+            0
+        })?;
+    }
+    // The compositor sends one `format`/`modifier` pair per layout right
+    // after the bind; the round trip collects all of them before the
+    // caller asks for the list.
+    bounded_roundtrip(display)?;
+    let modifiers = usable_modifiers(announced.take());
+    Ok(Some(Dmabuf { proxy, modifiers }))
+}
+
+/// Normalizes the modifier a `zwp_linux_dmabuf_v1.modifier` event carries.
+///
+/// Returns `None` for a format the window does not render.
+fn announced_modifier(format: u32, high: u32, low: u32) -> Option<u64> {
+    if format != DRM_FORMAT_XRGB8888 {
+        return None;
+    }
+    let modifier = (u64::from(high) << 32) | u64::from(low);
+    // `DRM_FORMAT_MOD_INVALID` asks for implicit tiling, which Vulkan
+    // cannot create an image for; an explicit linear layout is the
+    // portable fallback.
+    Some(if modifier == u64::MAX { 0 } else { modifier })
+}
+
+/// Returns the modifier list to create the render target with.
+///
+/// A compositor bound below version 3 sends no modifier events at all;
+/// the explicit linear layout is the one every driver supports.
+fn usable_modifiers(mut announced: Vec<u64>) -> Vec<u64> {
+    if announced.is_empty() {
+        announced.push(0);
+    }
+    announced
 }
 
 /// Writes buffered requests, tolerating a partially accepted buffer.
@@ -801,6 +903,29 @@ fn marshal_retry<T: WlTransport>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_implicit_modifier_becomes_the_explicit_linear_layout() {
+        assert_eq!(
+            announced_modifier(DRM_FORMAT_XRGB8888, u32::MAX, u32::MAX),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn only_xrgb8888_modifiers_are_kept() {
+        assert_eq!(
+            announced_modifier(DRM_FORMAT_XRGB8888, 0x01, 0x0203),
+            Some(0x0000_0001_0000_0203)
+        );
+        assert_eq!(announced_modifier(0x3432_4247, 0x01, 0x0203), None);
+    }
+
+    #[test]
+    fn a_compositor_without_modifier_events_gets_the_linear_layout() {
+        assert_eq!(usable_modifiers(Vec::new()), [0]);
+        assert_eq!(usable_modifiers(alloc::vec![0, 1 << 40]), [0, 1 << 40]);
+    }
 
     #[test]
     fn wayland_errors_classify_into_distinct_wnd_error_kinds() {
