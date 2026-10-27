@@ -23,6 +23,7 @@ members = [
     "crates/codevar-kuitui-button",
     "crates/codevar-kuitui-text",
     "crates/codevar-kuitui-widget",
+    "crates/codevar-kuitui-rea",
     "crates/codevar-logger",
     "crates/codevar-dbus",
     "crates/codevar-time-util",
@@ -166,6 +167,7 @@ codevar-kuitui = { path = "crates/codevar-kuitui" }
 codevar-kuitui-button = { path = "crates/codevar-kuitui-button" }
 codevar-kuitui-text = { path = "crates/codevar-kuitui-text" }
 codevar-kuitui-widget = { path = "crates/codevar-kuitui-widget" }
+codevar-kuitui-rea = { path = "crates/codevar-kuitui-rea" }
 codevar-kuitui-control = { path = "crates/codevar-kuitui-control" }
 codevar-kuitui-control-linux = { path = "crates/codevar-kuitui-control-linux" }
 codevar-kuitui-control-windows = { path = "crates/codevar-kuitui-control-windows" }
