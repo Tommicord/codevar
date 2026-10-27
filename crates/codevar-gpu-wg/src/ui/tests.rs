@@ -123,6 +123,27 @@ fn a_rounded_clip_becomes_the_layer_that_cuts_the_span() {
 }
 
 #[test]
+fn a_layer_painting_the_whole_clip_takes_its_corners() {
+    let mut list = DrawList::new();
+    let clip = Rect::from_min_size(Offset::ZERO, 40.0, 20.0);
+    let radii = CornerRadii::uniform(8.0);
+    let ramp = Gradient::horizontal(clip, Color::BLACK, Color::WHITE);
+    list.push_rounded_clip(clip, radii);
+    list.push_effect(Effect::new(clip).gradient(ramp, CornerRadii::ZERO));
+    list.rect(clip, CornerRadii::ZERO, fill());
+    list.pop_effect();
+    list.pop_clip();
+
+    let mut geometry = UiGeometry::new();
+    geometry.expand(&mut list);
+
+    // The ramp of a canvas covers the whole box it decorates, so the
+    // corners of the clip are its own corners and nothing moves.
+    let span = geometry.spans()[0];
+    assert_eq!(span.effect, Some(Effect::new(clip).gradient(ramp, radii)));
+}
+
+#[test]
 fn the_layer_of_an_operation_is_the_box_that_cuts_the_span() {
     let mut list = DrawList::new();
     let clip = Rect::from_min_size(Offset::ZERO, 40.0, 20.0);

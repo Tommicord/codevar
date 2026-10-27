@@ -42,9 +42,9 @@
 //! a layer of that program instead of being drawn square, so its corners
 //! and its outline come from the same signed distance the Vulkan backend
 //! cuts them from. A clip that names corners joins it the same way, as the
-//! layer of the span when the operation carries none; where it does, the
-//! layer of the operation wins, because one span is cut by one box and the
-//! clip falls back to its scissor rectangle.
+//! layer of the span when the operation carries none; where it does, one
+//! span is cut by one box, so only a layer that paints the whole clip takes
+//! its corners and the rest of the clip falls back to its scissor rectangle.
 //!
 //! # Target
 //!
@@ -112,10 +112,10 @@ pub struct DrawSpan {
     /// rounded box its clip asked for when the operation had none.
     ///
     /// A scissor only knows rectangles, so the corners of a clip travel to
-    /// the signed-distance program the same way the corners of a rectangle
-    /// do. A span cannot be cut by two boxes, so where the operation has an
-    /// effect of its own that layer wins and the clip stays a rectangle.
-    /// `None` means the plain `ui` program draws the span.
+    /// the signed-distance program the way those of a rectangle do. One span
+    /// is cut by one box, so a layer of its own keeps the rounding it asked
+    /// for, unless it paints the whole clip. `None` means the plain `ui`
+    /// program draws the span.
     pub effect: Option<Effect>,
 }
 
@@ -207,7 +207,7 @@ impl UiGeometry {
             first_vertex: first_vertex as u32,
             vertex_count: vertex_count as u32,
             clip,
-            effect: effect.or_else(|| rounded_clip(clip, command.clip_radii)),
+            effect: rounded_clip(effect, clip, command.clip_radii),
         });
     }
 
@@ -389,14 +389,24 @@ fn channels(color: Color) -> [f32; 4] {
 
 /// The layer that cuts a span to the rounded box its clip named.
 ///
-/// Sharp corners, or a clip that never left the surface, need no program:
-/// the scissor of the span already is the rectangle.
+/// A scissor only knows rectangles, so the corners of a clip travel to the
+/// signed-distance program the way those of a rectangle do. One span is cut
+/// by one box: the layer of an operation keeps its own rounding, and only a
+/// layer that names none *and* covers the whole clip — the canvas that
+/// paints the box it decorates — takes the corners of the clip. A sharp
+/// clip, or one that never left the surface, needs no program at all.
 #[inline]
-fn rounded_clip(clip: Option<Rect>, radii: CornerRadii) -> Option<Effect> {
+fn rounded_clip(effect: Option<Effect>, clip: Option<Rect>, radii: CornerRadii) -> Option<Effect> {
     if radii.is_zero() {
-        return None;
+        return effect;
     }
-    clip.map(|rect| Effect::new(rect).shape(radii))
+    match (effect, clip) {
+        (None, Some(rect)) => Some(Effect::new(rect).shape(radii)),
+        (Some(layer), Some(rect)) if layer.radii.is_zero() && layer.bounds == rect => {
+            Some(layer.shape(radii))
+        }
+        (layer, _) => layer,
+    }
 }
 
 /// The immediate data of the `ui_effect` shader pair.
