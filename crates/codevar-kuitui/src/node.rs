@@ -101,7 +101,7 @@ enum ModifierOp {
         radii: CornerRadii,
     },
     /// Clips the widget to its own rectangle.
-    Clip,
+    Clip(CornerRadii),
     /// Positions the widget inside the space its padding leaves.
     Align(Alignment),
     /// Paints the container of the node with a ramp between two colors.
@@ -216,9 +216,27 @@ impl Modifier {
     }
 
     /// Clips the widget to its own rectangle.
+    ///
+    /// The clip covers everything the node paints over its own bounds —
+    /// the custom drawings of [`Modifier::concrete`], the widget and its
+    /// children — and not the container or the border the chain itself
+    /// paints, which already carry their own corners.
     #[must_use]
     pub fn clip(mut self) -> Self {
-        self.ops.push(ModifierOp::Clip);
+        self.ops.push(ModifierOp::Clip(CornerRadii::ZERO));
+        self
+    }
+
+    /// Clips the widget to its own rectangle, rounded with `radii`.
+    ///
+    /// A canvas that paints the whole node box cannot otherwise respect
+    /// the shape of the node it decorates: its square corners would cover
+    /// the rounding the container was given. The radii travel with the
+    /// clip, so a backend that rasterizes a signed distance cuts the
+    /// shapes and one that only knows scissors still clips to the box.
+    #[must_use]
+    pub fn clip_rounded(mut self, radii: CornerRadii) -> Self {
+        self.ops.push(ModifierOp::Clip(radii));
         self
     }
 
@@ -418,11 +436,24 @@ impl Modifier {
         )
     }
 
-    /// Whether the modifier clips the widget.
-    fn clips(&self) -> bool {
-        self.ops
-            .iter()
-            .any(|op| matches!(op, ModifierOp::Clip))
+    /// The corners of the clip the modifier asks for, or `None` when it
+    /// does not clip at all.
+    ///
+    /// A chain can name both a rounded and a plain clip; the rounding it
+    /// asked for anywhere wins, because a plain clip is only narrowing a
+    /// rectangle that is already rounded.
+    fn clip_radii(&self) -> Option<CornerRadii> {
+        let mut radii = CornerRadii::ZERO;
+        let mut clipping = false;
+        for op in &self.ops {
+            if let ModifierOp::Clip(shape) = op {
+                clipping = true;
+                if !shape.is_zero() {
+                    radii = *shape;
+                }
+            }
+        }
+        clipping.then_some(radii)
     }
 
     /// Whether the modifier reacts to the events of the widget.
@@ -815,7 +846,10 @@ impl Node {
     /// background of the widget, the decorations of the chain, the
     /// content of the widget, the children and last the border of the
     /// chain, so a decoration sits above the container it decorates and
-    /// below the content it shares the node with.
+    /// below the content it shares the node with. A clip the chain asks
+    /// for covers the decorations, the content and the children — the
+    /// painting the node does *over* its own box — and never the container
+    /// or the border, which are rounded by their own radii.
     pub fn draw(&mut self, theme: &Theme, list: &mut DrawList) {
         let bounds = self.bounds;
         let inner = self.content_rect(bounds);
@@ -842,13 +876,16 @@ impl Node {
             let mut scope = DrawScope::new(&mut *list, theme, inner.origin);
             widget.draw_background(&mut scope, inner);
         }
+        let clip = self.modifier.clip_radii();
+        if let Some(radii) = clip {
+            // The clip opens over the decorations rather than only over
+            // the content: a canvas that paints the whole node box would
+            // otherwise cover the rounding of the container it decorates.
+            list.push_rounded_clip(inner, radii);
+        }
         {
             let mut scope = DrawScope::new(&mut *list, theme, inner.origin);
             self.modifier.draw_concrete(&mut scope, inner);
-        }
-        let clipped = self.modifier.clips();
-        if clipped {
-            list.push_clip(inner);
         }
         {
             let Node {
@@ -860,7 +897,7 @@ impl Node {
         for child in &mut self.children {
             child.draw(theme, &mut *list);
         }
-        if clipped {
+        if clip.is_some() {
             list.pop_clip();
         }
         if let Some((color, width, radii)) = self.modifier.border_paint() {
@@ -1287,6 +1324,42 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(painted, [Color::RED, Color::GREEN, Color::BLUE]);
+    }
+
+    #[test]
+    fn the_clip_of_the_chain_covers_its_own_decoration() {
+        let theme = Theme::light();
+        let mut list = DrawList::new();
+        let radii = CornerRadii::uniform(4.0);
+        let mut node = Node::new(Layered).modifier(Modifier::none().clip_rounded(radii).concrete(
+            |scope, bounds| {
+                scope.fill_rect(
+                    Rect::from_min_size(Offset::ZERO, bounds.size.width, 2.0),
+                    Color::GREEN,
+                );
+            },
+        ));
+        node.measure(&theme, Constraints::unbounded());
+        node.place(Rect::from_min_size(Offset::ZERO, 10.0, 10.0));
+        node.draw(&theme, &mut list);
+
+        // The canvas is the pass that would otherwise paint the square
+        // corners of the box over the rounding the node was given, so it
+        // is recorded inside the clip and the container is not.
+        let clipped = list
+            .commands()
+            .map(|command| (command.clip, command.clip_radii))
+            .collect::<Vec<_>>();
+        let inner = Rect::from_min_size(Offset::ZERO, 10.0, 10.0);
+        assert_eq!(
+            clipped,
+            [
+                (None, CornerRadii::ZERO),
+                (Some(inner), radii),
+                (Some(inner), radii),
+            ],
+            "the decoration and the content are cut to the clip, the background of the widget is not"
+        );
     }
 
     #[test]

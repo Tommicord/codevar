@@ -281,6 +281,15 @@ pub struct DrawCommand {
     /// The clipping rectangle that applied when the operation was
     /// recorded; `None` means the whole surface.
     pub clip: Option<Rect>,
+    /// The corners of the clip, the rounded box the operation is cut to
+    /// when the clip is an inset of `clip`.
+    ///
+    /// `clip` stays the rectangle a backend scissor to, because the
+    /// intersection of two rounded boxes is not a rounded box; the radii
+    /// are the extra shape a backend that rasterizes a signed distance
+    /// can honor. Sharp when no clip rounded the operation, which is what
+    /// a backend that only knows rectangles needs to know.
+    pub clip_radii: CornerRadii,
     /// The layer effect that applied when the operation was recorded;
     /// `None` means the operation is rasterized as recorded.
     ///
@@ -306,8 +315,8 @@ pub struct DrawCommand {
 pub struct DrawList {
     /// The queued commands, oldest first (the queue).
     commands: VecDeque<DrawCommand>,
-    /// The rectangles of the open clips.
-    clips: Vec<Rect>,
+    /// The rectangle and the corners of every open clip, innermost last.
+    clips: Vec<(Rect, CornerRadii)>,
     /// The effects of the open layers.
     effects: Vec<Effect>,
 }
@@ -385,7 +394,19 @@ impl DrawList {
     /// Without an open clip the whole surface is visible.
     #[must_use]
     pub fn current_clip(&self) -> Option<Rect> {
-        self.clips.last().copied()
+        self.clips.last().map(|(rect, _)| *rect)
+    }
+
+    /// The corners of the rounded box the operations recorded from now on
+    /// are cut to.
+    ///
+    /// Sharp without an open clip, and sharp for a clip that only named a
+    /// rectangle.
+    #[must_use]
+    pub fn current_clip_radii(&self) -> CornerRadii {
+        self.clips
+            .last()
+            .map_or(CornerRadii::ZERO, |(_, radii)| *radii)
     }
 
     /// Restricts the following operations to `rect`.
@@ -393,10 +414,27 @@ impl DrawList {
     /// The clips nest: an operation is only visible inside the
     /// intersection of every open clip.
     pub fn push_clip(&mut self, rect: Rect) {
-        self.clips.push(match self.current_clip() {
-            Some(current) => current.intersection(rect),
-            None => rect,
-        });
+        self.push_rounded_clip(rect, CornerRadii::ZERO);
+    }
+
+    /// Restricts the following operations to `rect`, cut to the rounded
+    /// box of `radii` inside it.
+    ///
+    /// The rectangles intersect the way every clip does. The corners
+    /// cannot: the intersection of two rounded boxes is not a rounded
+    /// box, so the innermost clip that names one decides the shape and a
+    /// clip that names none only narrows the rectangle. A widget therefore
+    /// rounds a clip for its children without a child having to ask, and
+    /// a child that clips to a rectangle inside it stays rounded.
+    pub fn push_rounded_clip(&mut self, rect: Rect, radii: CornerRadii) {
+        let (rect, radii) = match self.clips.last() {
+            Some(&(outer, shape)) => (
+                outer.intersection(rect),
+                if radii.is_zero() { shape } else { radii },
+            ),
+            None => (rect, radii),
+        };
+        self.clips.push((rect, radii));
     }
 
     /// Ends the innermost clip.
@@ -454,9 +492,14 @@ impl DrawList {
     /// holds a trait object; [`DrawList::push`] is the boxing shorthand.
     pub fn push_boxed(&mut self, op: Box<dyn Draw>) {
         let clip = self.current_clip();
+        let clip_radii = self.current_clip_radii();
         let effect = self.current_effect();
-        self.commands
-            .push_back(DrawCommand { op, clip, effect });
+        self.commands.push_back(DrawCommand {
+            op,
+            clip,
+            clip_radii,
+            effect,
+        });
     }
 
     /// Records a rectangle.
@@ -622,6 +665,48 @@ mod tests {
             list.current_clip(),
             Some(Rect::from_min_size(Offset::ZERO, 100.0, 100.0))
         );
+    }
+
+    #[test]
+    fn a_rounded_clip_reaches_the_command_that_sits_inside_it() {
+        let mut list = DrawList::new();
+        let clip = Rect::from_min_size(Offset::ZERO, 40.0, 20.0);
+        let radii = CornerRadii::uniform(8.0);
+        list.push_rounded_clip(clip, radii);
+        list.rect(clip, CornerRadii::ZERO, Paint::fill(Color::BLACK));
+        list.pop_clip();
+        list.rect(clip, CornerRadii::ZERO, Paint::fill(Color::BLACK));
+
+        let commands: Vec<DrawCommand> = list.drain().collect();
+        assert_eq!(commands[0].clip, Some(clip));
+        assert_eq!(commands[0].clip_radii, radii);
+        assert_eq!(
+            commands[1].clip_radii,
+            CornerRadii::ZERO,
+            "a command outside every clip is cut by nothing"
+        );
+    }
+
+    #[test]
+    fn the_rounding_of_a_clip_survives_a_plain_clip_inside_it() {
+        let mut list = DrawList::new();
+        let radii = CornerRadii::uniform(6.0);
+        list.push_rounded_clip(Rect::from_min_size(Offset::ZERO, 100.0, 100.0), radii);
+        list.push_clip(Rect::from_min_size(Offset::new(10.0, 10.0), 40.0, 40.0));
+        assert_eq!(
+            list.current_clip(),
+            Some(Rect::from_min_size(Offset::new(10.0, 10.0), 40.0, 40.0))
+        );
+        assert_eq!(
+            list.current_clip_radii(),
+            radii,
+            "a clip that names no corner only narrows the box it is inside"
+        );
+        list.push_rounded_clip(
+            Rect::from_min_size(Offset::new(12.0, 12.0), 20.0, 20.0),
+            CornerRadii::uniform(2.0),
+        );
+        assert_eq!(list.current_clip_radii(), CornerRadii::uniform(2.0));
     }
 
     #[test]
