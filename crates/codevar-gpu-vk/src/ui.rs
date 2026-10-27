@@ -36,16 +36,15 @@
 //! into vertices. A [`TextOp`] run carries no polygon geometry — it is
 //! drawn by the text pass, which owns the glyph atlas and the `text`
 //! shader — so this pass leaves it to the trait's default no-op.
-//! Rounded corners are not representable by the color-only `ui` shader
-//! and are drawn square; both limits are recorded here rather than
-//! silently ignored.
-//!
-//! A command that carries an [`Effect`] is the exception: the span keeps
-//! the effect, the renderer binds the `ui_effect` program for it, and the
-//! rectangle is expanded to the coverage of the layer so the blurred halo
-//! has fragments to shade. The corner radii travel inside the effect, so
-//! the same span draws them from the signed distance instead of the
-//! vertex grid.
+//! Rounded corners are not representable by the color-only `ui` shader, so
+//! a rectangle that asks for them is expanded as a layer of the `ui_effect`
+//! program instead, exactly like a command that already carries an
+//! [`Effect`]: the span keeps the layer, the renderer binds the effect
+//! program for it, and the rectangle is expanded to the coverage of the
+//! layer so a blurred halo has fragments to shade. The corner radii travel
+//! inside the effect, so the same span draws them from the signed distance
+//! instead of the vertex grid, and an outline of a rounded rectangle
+//! follows those corners rather than being cut as four straight edges.
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;
@@ -170,10 +169,12 @@ impl UiGeometry {
     pub fn push_command(&mut self, command: DrawCommand) {
         let first_vertex = self.vertices.len();
         let clip = command.clip;
-        let effect = command.effect;
-        self.effect = effect;
+        self.effect = command.effect;
         command.op.visit(self);
-        self.effect = None;
+        // The visitor sees the open layer and may replace it: a rounded
+        // rectangle asks the signed-distance program to cut its corners,
+        // so the layer the span carries is the one the visitor left.
+        let effect = self.effect.take();
         let vertex_count = self.vertices.len() - first_vertex;
         if vertex_count == 0 {
             return;
@@ -186,7 +187,12 @@ impl UiGeometry {
         });
     }
 
-    /// Expands a rectangle: a filled quad, or four quads for an outline.
+    /// Expands a rectangle with the flat program: a filled quad, or four
+    /// quads for an outline.
+    ///
+    /// The corners of the operation are sharp; a rounded rectangle goes
+    /// through [`UiGeometry::push_rounded_rect`], which asks the signed
+    /// distance of the layer to cut them.
     fn push_rect(&mut self, rect: Rect, paint: Paint) {
         let color = vertex_color(paint);
         let width = paint.stroke_width();
@@ -243,6 +249,34 @@ impl UiGeometry {
             Offset::new(right, top + width),
             Offset::new(right, bottom - width),
             Offset::new(right - width, bottom - width),
+            color,
+        );
+    }
+
+    /// Expands a rounded rectangle through the signed-distance program.
+    ///
+    /// A curve is a property of the rasterization, not of the geometry, so
+    /// the operation is one quad the layer cuts: the corners come from
+    /// `radii` and an outline from the stroke width of the paint, which
+    /// `ui_effect.frag.glsl` subtracts as the band between the box and the
+    /// box inset by that width. A layer the command already carries keeps
+    /// its own bounds and its blur, rotation or ramp; the radii of the
+    /// operation are what the recorded rectangle asked for.
+    fn push_rounded_rect(&mut self, rect: Rect, radii: CornerRadii, paint: Paint) {
+        let color = vertex_color(paint);
+        let width = paint.stroke_width();
+        let layer = self
+            .effect
+            .unwrap_or_else(|| Effect::new(rect))
+            .shape(radii);
+        let layer = if width > 0.0 { layer.stroke(width) } else { layer };
+        self.effect = Some(layer);
+        let rect = rect.union(layer.coverage());
+        self.push_quad(
+            Offset::new(rect.left(), rect.top()),
+            Offset::new(rect.right(), rect.top()),
+            Offset::new(rect.right(), rect.bottom()),
+            Offset::new(rect.left(), rect.bottom()),
             color,
         );
     }
@@ -304,8 +338,12 @@ impl UiGeometry {
 }
 
 impl DrawVisitor for UiGeometry {
-    fn rect(&mut self, rect: Rect, _radii: CornerRadii, paint: Paint) {
-        self.push_rect(rect, paint);
+    fn rect(&mut self, rect: Rect, radii: CornerRadii, paint: Paint) {
+        if radii.is_zero() {
+            self.push_rect(rect, paint);
+        } else {
+            self.push_rounded_rect(rect, radii, paint);
+        }
     }
 
     fn line(&mut self, from: Offset, to: Offset, paint: Paint) {
@@ -1185,6 +1223,42 @@ mod tests {
         // edge, and the shader needs those fragments to draw the halo.
         assert_eq!(geometry.vertices()[0].position, [-8.0, -8.0]);
         assert_eq!(geometry.vertices()[1].position, [68.0, -8.0]);
+    }
+
+    #[test]
+    fn a_rounded_rectangle_is_cut_by_the_effect_program() {
+        let bounds = Rect::from_min_size(Offset::new(10.0, 10.0), 40.0, 20.0);
+        let radii = CornerRadii::uniform(8.0);
+        let mut list = DrawList::new();
+        list.rect(bounds, radii, fill());
+
+        let mut geometry = UiGeometry::new();
+        geometry.expand(&mut list);
+
+        // The corners are a property of the rasterization, so the operation
+        // is one quad and a layer that carries nothing but its rounding.
+        let span = geometry.spans()[0];
+        assert_eq!(span.vertex_count, 6);
+        assert_eq!(span.effect, Some(Effect::new(bounds).shape(radii)));
+        assert_eq!(geometry.vertices()[0].position, [10.0, 10.0]);
+    }
+
+    #[test]
+    fn a_rounded_outline_is_a_ring_instead_of_four_edges() {
+        let bounds = Rect::from_min_size(Offset::ZERO, 30.0, 12.0);
+        let radii = CornerRadii::uniform(6.0);
+        let mut list = DrawList::new();
+        list.rect(bounds, radii, Paint::stroke(Color::WHITE, 2.0));
+
+        let mut geometry = UiGeometry::new();
+        geometry.expand(&mut list);
+
+        assert_eq!(geometry.spans().len(), 1);
+        assert_eq!(geometry.spans()[0].vertex_count, 6, "one quad");
+        assert_eq!(
+            geometry.spans()[0].effect,
+            Some(Effect::new(bounds).shape(radii).stroke(2.0))
+        );
     }
 
     #[test]
