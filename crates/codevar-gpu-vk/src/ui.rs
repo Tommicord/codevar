@@ -338,9 +338,9 @@ const EFFECT_PUSH_BYTES: u32 = core::mem::size_of::<EffectParams>() as u32;
 ///
 /// The field order is the `PushConstants` block of
 /// `ui_effect.vert.glsl` and `ui_effect.frag.glsl`; `glslc` lays its
-/// members out at offsets 0, 16, 32, 40, 48, 56, 64, 72, 80, 96 and 100,
-/// and a test pins every offset so reordering a field cannot silently hand
-/// the shader a rotated pixel grid.
+/// members out at offsets 0, 16, 32, 40, 48, 56, 64, 72, 80, 96, 100 and
+/// 104, and a test pins every offset so reordering a field cannot silently
+/// hand the shader a rotated pixel grid.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct EffectParams {
@@ -369,6 +369,10 @@ struct EffectParams {
     /// The [`codevar_kuitui::effect::EffectKinds`] bits the fragment
     /// stage tests.
     kinds: u32,
+    /// The width of the outline, in logical pixels; unread when the
+    /// stroke bit is clear, because then the fragment keeps the whole
+    /// rounded box.
+    stroke: f32,
 }
 
 /// The parameters that rasterize `effect` over a `viewport` surface.
@@ -407,6 +411,7 @@ fn effect_params(effect: &Effect, viewport: [f32; 2]) -> EffectParams {
         ],
         rotation: effect.rotation,
         kinds: u32::from(effect.kinds.bits()),
+        stroke: effect.stroke,
     }
 }
 
@@ -1184,7 +1189,7 @@ mod tests {
 
     #[test]
     fn the_effect_block_keeps_the_shader_offsets() {
-        assert_eq!(EFFECT_PUSH_BYTES, 104);
+        assert_eq!(EFFECT_PUSH_BYTES, 108);
         assert_eq!(core::mem::offset_of!(EffectParams, color_from), 0);
         assert_eq!(core::mem::offset_of!(EffectParams, color_to), 16);
         assert_eq!(core::mem::offset_of!(EffectParams, viewport), 32);
@@ -1196,17 +1201,19 @@ mod tests {
         assert_eq!(core::mem::offset_of!(EffectParams, radii), 80);
         assert_eq!(core::mem::offset_of!(EffectParams, rotation), 96);
         assert_eq!(core::mem::offset_of!(EffectParams, kinds), 100);
+        assert_eq!(core::mem::offset_of!(EffectParams, stroke), 104);
     }
 
     #[test]
     fn the_kind_bits_are_the_ones_the_shader_tests() {
         // `ui_effect.frag.glsl` names these KIND_BLUR, KIND_PIXELATE,
-        // KIND_ROTATE and KIND_GRADIENT; the two sides meet in the push
-        // constants and nothing else checks them.
+        // KIND_ROTATE, KIND_GRADIENT and KIND_STROKE; the two sides meet
+        // in the push constants and nothing else checks them.
         assert_eq!(EffectKinds::BLUR.bits(), 1);
         assert_eq!(EffectKinds::PIXELATE.bits(), 2);
         assert_eq!(EffectKinds::ROTATE.bits(), 4);
         assert_eq!(EffectKinds::GRADIENT.bits(), 8);
+        assert_eq!(EffectKinds::STROKE.bits(), 16);
     }
 
     #[test]
@@ -1235,6 +1242,21 @@ mod tests {
         assert_eq!(params.rotation, 0.5);
         assert_eq!(params.radii, [2.0, 2.0, 2.0, 2.0]);
         assert_eq!(params.kinds, 2 | 4 | 8);
+        assert_eq!(params.stroke, 0.0);
+    }
+
+    #[test]
+    fn the_effect_parameters_carry_the_width_of_an_outline() {
+        let bounds = Rect::from_min_size(Offset::new(0.0, 0.0), 30.0, 12.0);
+        let effect = Effect::new(bounds).stroke(2.5).gradient(
+            Gradient::new(Offset::ZERO, Offset::new(30.0, 0.0), Color::RED, Color::BLUE),
+            CornerRadii::uniform(6.0),
+        );
+
+        let params = effect_params(&effect, [64.0, 64.0]);
+        assert_eq!(params.stroke, 2.5);
+        assert_eq!(params.kinds, 8 | 16);
+        assert_eq!(params.radii, [6.0; 4]);
     }
 
     #[test]
