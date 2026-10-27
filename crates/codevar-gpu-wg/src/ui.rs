@@ -41,7 +41,10 @@
 //! has fragments to shade. A rounded rectangle joins it: it is expanded as
 //! a layer of that program instead of being drawn square, so its corners
 //! and its outline come from the same signed distance the Vulkan backend
-//! cuts them from.
+//! cuts them from. A clip that names corners joins it the same way, as the
+//! layer of the span when the operation carries none; where it does, the
+//! layer of the operation wins, because one span is cut by one box and the
+//! clip falls back to its scissor rectangle.
 //!
 //! # Target
 //!
@@ -105,7 +108,13 @@ pub struct DrawSpan {
     /// Clip resolved by kuitui when the operation was recorded; `None`
     /// means the whole surface.
     pub clip: Option<Rect>,
-    /// Layer effect resolved by kuitui when the operation was recorded;
+    /// Layer rasterizing the span: the effect the command carried, or the
+    /// rounded box its clip asked for when the operation had none.
+    ///
+    /// A scissor only knows rectangles, so the corners of a clip travel to
+    /// the signed-distance program the same way the corners of a rectangle
+    /// do. A span cannot be cut by two boxes, so where the operation has an
+    /// effect of its own that layer wins and the clip stays a rectangle.
     /// `None` means the plain `ui` program draws the span.
     pub effect: Option<Effect>,
 }
@@ -198,7 +207,7 @@ impl UiGeometry {
             first_vertex: first_vertex as u32,
             vertex_count: vertex_count as u32,
             clip,
-            effect,
+            effect: effect.or_else(|| rounded_clip(clip, command.clip_radii)),
         });
     }
 
@@ -376,6 +385,18 @@ fn vertex_color(paint: Paint) -> [f32; 4] {
 #[inline]
 fn channels(color: Color) -> [f32; 4] {
     [color.red, color.green, color.blue, color.alpha]
+}
+
+/// The layer that cuts a span to the rounded box its clip named.
+///
+/// Sharp corners, or a clip that never left the surface, need no program:
+/// the scissor of the span already is the rectangle.
+#[inline]
+fn rounded_clip(clip: Option<Rect>, radii: CornerRadii) -> Option<Effect> {
+    if radii.is_zero() {
+        return None;
+    }
+    clip.map(|rect| Effect::new(rect).shape(radii))
 }
 
 /// The immediate data of the `ui_effect` shader pair.

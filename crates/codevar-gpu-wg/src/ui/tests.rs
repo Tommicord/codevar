@@ -96,6 +96,55 @@ fn a_span_carries_the_command_clip() {
     geometry.expand(&mut list);
     assert_eq!(geometry.spans()[0].clip, Some(clip));
     assert_eq!(geometry.spans()[1].clip, None);
+    assert_eq!(
+        geometry.spans()[0].effect,
+        None,
+        "a rectangular clip is a scissor, not a layer"
+    );
+}
+
+#[test]
+fn a_rounded_clip_becomes_the_layer_that_cuts_the_span() {
+    let mut list = DrawList::new();
+    let clip = Rect::from_min_size(Offset::ZERO, 40.0, 20.0);
+    let radii = CornerRadii::uniform(8.0);
+    list.push_rounded_clip(clip, radii);
+    // A canvas that paints the whole node box is the shape a square scissor
+    // leaves behind: the rounding has to reach the program.
+    list.rect(clip, CornerRadii::ZERO, fill());
+    list.pop_clip();
+
+    let mut geometry = UiGeometry::new();
+    geometry.expand(&mut list);
+
+    let span = geometry.spans()[0];
+    assert_eq!(span.clip, Some(clip));
+    assert_eq!(span.effect, Some(Effect::new(clip).shape(radii)));
+}
+
+#[test]
+fn the_layer_of_an_operation_is_the_box_that_cuts_the_span() {
+    let mut list = DrawList::new();
+    let clip = Rect::from_min_size(Offset::ZERO, 40.0, 20.0);
+    let bounds = Rect::from_min_size(Offset::new(10.0, 10.0), 20.0, 10.0);
+    list.push_rounded_clip(clip, CornerRadii::uniform(8.0));
+    list.push_effect(Effect::new(bounds).blur(4.0, CornerRadii::ZERO));
+    list.rect(bounds, CornerRadii::ZERO, fill());
+    list.pop_effect();
+    list.pop_clip();
+
+    let mut geometry = UiGeometry::new();
+    geometry.expand(&mut list);
+
+    // One span is cut by one box: the halo of the operation keeps the
+    // program and its clip is honored as the rectangle it is inside.
+    let span = geometry.spans()[0];
+    assert_eq!(span.clip, Some(clip));
+    assert!(
+        span.effect
+            .is_some_and(|effect| effect.kinds.contains(EffectKinds::BLUR)),
+        "the layer of the operation survives the rounding of the clip"
+    );
 }
 
 #[test]
