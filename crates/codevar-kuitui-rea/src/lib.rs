@@ -82,6 +82,7 @@ mod fiber;
 mod hooks;
 mod host;
 mod reconcile;
+mod work;
 
 pub use element::Element;
 pub use hooks::{Cleanup, RenderCtx, State};
