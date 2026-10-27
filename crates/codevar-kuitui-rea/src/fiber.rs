@@ -50,6 +50,7 @@ use core::any::TypeId;
 use core::fmt;
 use core::ops::{BitAnd, BitOr, Not};
 
+use crate::hooks::HookList;
 use crate::host::{Host, Key, Props};
 use crate::lane::Lanes;
 
@@ -201,6 +202,11 @@ impl FiberId {
     pub(crate) const fn index(self) -> usize {
         self.0 as usize
     }
+
+    /// Builds an id from an arena index.
+    pub(crate) const fn from_index(index: u32) -> Self {
+        Self(index)
+    }
 }
 
 /// A node of the tree the reconciler works on.
@@ -225,6 +231,8 @@ pub(crate) struct Fiber<H: Host> {
     pub(crate) index: usize,
     /// The host node, shared by both alternates.
     pub(crate) state_node: Option<H::Node>,
+    /// The hooks of a component.
+    pub(crate) hooks: HookList,
     /// What must be done to this node in the commit.
     pub(crate) flags: Flags,
     /// What must be done to the subtree, including this node.
@@ -254,6 +262,7 @@ impl<H: Host> Fiber<H> {
             sibling: None,
             index: 0,
             state_node: None,
+            hooks: HookList::default(),
             flags: Flags::NONE,
             subtree_flags: Flags::NONE,
             deletions: Vec::new(),
@@ -281,6 +290,7 @@ impl<H: Host> Fiber<H> {
             sibling: current.sibling,
             index: current.index,
             state_node: current.state_node,
+            hooks: current.hooks.clone(),
             flags: Flags::NONE,
             subtree_flags: Flags::NONE,
             deletions: Vec::new(),
