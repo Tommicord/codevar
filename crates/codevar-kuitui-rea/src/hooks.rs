@@ -65,6 +65,13 @@ use core::mem;
 use crate::fiber::FiberId;
 use crate::lane::Lanes;
 
+/// The cleanup of an effect.
+///
+/// The engine runs it before the effect runs again and when the component
+/// unmounts. Returning `None` from the effect's create function means there is
+/// nothing to clean up.
+pub type Cleanup = Box<dyn FnOnce()>;
+
 /// What a dispatch does to the state.
 enum UpdateAction<T> {
     /// Replace the value.
@@ -232,6 +239,57 @@ impl<T> Clone for State<T> {
     }
 }
 
+/// Whether an effect runs after the host mutation or after the frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EffectTag {
+    /// Runs right after the host tree is mutated, before the frame is
+    /// presented.
+    Layout,
+    /// Runs after the frame, in the passive phase.
+    Passive,
+}
+
+/// One effect that must run in the upcoming commit.
+///
+/// The destroy cell is shared by every record the hook produced, so replacing
+/// the effect with new dependencies keeps the cleanup of the previous run.
+#[derive(Clone)]
+pub(crate) struct EffectRecord {
+    /// When the effect runs.
+    tag: EffectTag,
+    /// The function that installs the effect.
+    create: Rc<dyn Fn() -> Option<Cleanup>>,
+    /// The cleanup installed by the previous run, if any.
+    destroy: Rc<RefCell<Option<Cleanup>>>,
+    /// The dependencies the effect was created with.
+    deps: Option<Rc<dyn Any>>,
+}
+
+impl EffectRecord {
+    /// Runs the previous cleanup, then the effect, and keeps the new cleanup.
+    pub(crate) fn run(&self) {
+        let destroy = self.destroy.borrow_mut().take();
+        if let Some(destroy) = destroy {
+            destroy();
+        }
+        let cleanup = (self.create)();
+        *self.destroy.borrow_mut() = cleanup;
+    }
+
+    /// Runs the cleanup without rerunning the effect.
+    pub(crate) fn unmount(&self) {
+        let destroy = self.destroy.borrow_mut().take();
+        if let Some(destroy) = destroy {
+            destroy();
+        }
+    }
+
+    /// When the effect runs.
+    pub(crate) const fn tag(&self) -> EffectTag {
+        self.tag
+    }
+}
+
 /// The hooks of one fiber.
 ///
 /// The list is cloned shallowly into the work-in-progress fiber: the values
@@ -270,6 +328,15 @@ impl HookList {
         }
     }
 
+    /// Runs the cleanup of every effect, for a fiber that is being removed.
+    pub(crate) fn destroy_effects(&self) {
+        for slot in &self.slots {
+            if let Some(effect) = &slot.effect {
+                effect.unmount();
+            }
+        }
+    }
+
     /// Drops the extra slots of a render that used fewer hooks than the last.
     fn finish(&mut self, cursor: usize) {
         self.slots.truncate(cursor);
@@ -301,6 +368,8 @@ struct HookSlot {
     queue: Option<Rc<RefCell<UpdateQueue>>>,
     /// How many updates of the queue this alternate applied.
     consumed: usize,
+    /// The effect of an effect hook, if it must run.
+    effect: Option<EffectRecord>,
 }
 
 /// The scope a component renders in.
@@ -316,6 +385,8 @@ pub struct RenderCtx<'a> {
     hooks: &'a mut HookList,
     /// The next free hook slot.
     cursor: usize,
+    /// The effects this render must commit.
+    effects: &'a mut Vec<EffectRecord>,
     /// The lanes this render was started for.
     render_lanes: Lanes,
     /// The root's mailbox.
@@ -331,6 +402,7 @@ impl<'a> RenderCtx<'a> {
     pub(crate) fn new(
         fiber: FiberId,
         hooks: &'a mut HookList,
+        effects: &'a mut Vec<EffectRecord>,
         render_lanes: Lanes,
         mailbox: MailboxHandle,
         ids: &'a mut u64,
@@ -339,6 +411,7 @@ impl<'a> RenderCtx<'a> {
             fiber,
             hooks,
             cursor: 0,
+            effects,
             render_lanes,
             mailbox,
             ids,
@@ -477,6 +550,61 @@ impl<'a> RenderCtx<'a> {
         self.use_memo(deps, || callback)
     }
 
+    /// Runs an effect after the host tree is mutated.
+    ///
+    /// The effect runs when the hook is first reached and whenever `deps`
+    /// change. The cleanup returned by the previous run runs first; returning
+    /// `None` means there is nothing to clean up.
+    pub fn use_layout_effect<D: PartialEq + 'static>(
+        &mut self,
+        deps: D,
+        create: impl Fn() -> Option<Cleanup> + 'static,
+    ) {
+        self.use_effect_impl(EffectTag::Layout, deps, create);
+    }
+
+    /// Runs an effect after the frame.
+    ///
+    /// Passive effects are the ones an application uses to talk to the outside
+    /// world; they may run a moment after the pixels are shown.
+    pub fn use_effect<D: PartialEq + 'static>(
+        &mut self,
+        deps: D,
+        create: impl Fn() -> Option<Cleanup> + 'static,
+    ) {
+        self.use_effect_impl(EffectTag::Passive, deps, create);
+    }
+
+    fn use_effect_impl<D: PartialEq + 'static>(
+        &mut self,
+        tag: EffectTag,
+        deps: D,
+        create: impl Fn() -> Option<Cleanup> + 'static,
+    ) {
+        let slot = Self::next_slot(self.hooks, &mut self.cursor);
+        let unchanged = slot
+            .effect
+            .as_ref()
+            .and_then(|effect| effect.deps.as_deref())
+            .and_then(|stored| stored.downcast_ref::<D>())
+            .is_some_and(|stored| stored == &deps);
+        if unchanged {
+            return;
+        }
+        let destroy = match &slot.effect {
+            Some(effect) => Rc::clone(&effect.destroy),
+            None => Rc::new(RefCell::new(None)),
+        };
+        let record = EffectRecord {
+            tag,
+            create: Rc::new(create),
+            destroy,
+            deps: Some(Rc::new(deps)),
+        };
+        slot.effect = Some(record.clone());
+        self.effects.push(record);
+    }
+
     /// Returns a stable identifier for this hook.
     ///
     /// The id is unique within the composition and does not change across
@@ -506,6 +634,7 @@ mod tests {
     struct Harness {
         fiber: FiberId,
         hooks: HookList,
+        effects: Vec<EffectRecord>,
         mailbox: MailboxHandle,
         ids: u64,
         lanes: Lanes,
@@ -516,6 +645,7 @@ mod tests {
             Self {
                 fiber: FiberId::from_index(0),
                 hooks: HookList::default(),
+                effects: Vec::new(),
                 mailbox: mailbox(),
                 ids: 0,
                 lanes: Lanes::DEFAULT,
@@ -526,9 +656,11 @@ mod tests {
             // A render consumes the queued marks, the way the root does when it
             // turns a dispatch into pending lanes.
             self.mailbox.borrow_mut().drain();
+            self.effects.clear();
             let mut ctx = RenderCtx::new(
                 self.fiber,
                 &mut self.hooks,
+                &mut self.effects,
                 self.lanes,
                 Rc::clone(&self.mailbox),
                 &mut self.ids,
@@ -601,11 +733,13 @@ mod tests {
 
         let mut first = harness.hooks.clone();
         let mut second = harness.hooks.clone();
+        let mut effects = Vec::new();
         let mut ids = harness.ids;
-        let read = |hooks: &mut HookList, ids: &mut u64| {
+        let read = |hooks: &mut HookList, effects: &mut Vec<EffectRecord>, ids: &mut u64| {
             let mut ctx = RenderCtx::new(
                 harness.fiber,
                 hooks,
+                effects,
                 Lanes::DEFAULT,
                 Rc::clone(&harness.mailbox),
                 ids,
@@ -614,8 +748,8 @@ mod tests {
             ctx.finish();
             *state.get()
         };
-        let once = read(&mut first, &mut ids);
-        let twice = read(&mut second, &mut ids);
+        let once = read(&mut first, &mut effects, &mut ids);
+        let twice = read(&mut second, &mut effects, &mut ids);
         assert_eq!(once, 6);
         assert_eq!(twice, 6);
     }
@@ -679,6 +813,61 @@ mod tests {
         let second = harness.render(|ctx| ctx.use_callback((), eight as fn() -> u32));
         assert!(Rc::ptr_eq(&first, &second));
         assert_eq!(second(), 7);
+    }
+
+    #[test]
+    fn an_effect_runs_when_its_deps_change() {
+        let mut harness = Harness::new();
+        let runs = Rc::new(Cell::new(0));
+        let counted = Rc::clone(&runs);
+        harness.render(move |ctx| {
+            ctx.use_effect((), move || {
+                counted.set(counted.get() + 1);
+                None
+            })
+        });
+        assert_eq!(harness.effects.len(), 1);
+        assert_eq!(harness.effects[0].tag(), EffectTag::Passive);
+
+        harness.render(|ctx| ctx.use_effect((), || None));
+        assert!(harness.effects.is_empty());
+
+        let counted = Rc::clone(&runs);
+        harness.render(move |ctx| {
+            ctx.use_effect((1_u32,), move || {
+                counted.set(counted.get() + 1);
+                None
+            })
+        });
+        assert_eq!(harness.effects.len(), 1);
+        assert_eq!(harness.effects[0].tag(), EffectTag::Passive);
+    }
+
+    #[test]
+    fn a_layout_effect_keeps_the_previous_cleanup() {
+        let mut harness = Harness::new();
+        let cleaned = Rc::new(Cell::new(0));
+        let first = Rc::clone(&cleaned);
+        harness.render(move |ctx| {
+            ctx.use_layout_effect((), move || {
+                let cleaned = Rc::clone(&first);
+                Some(Box::new(move || cleaned.set(cleaned.get() + 1)))
+            })
+        });
+        assert_eq!(harness.effects.len(), 1);
+        harness.effects[0].run();
+        assert_eq!(cleaned.get(), 0);
+
+        let second = Rc::clone(&cleaned);
+        harness.render(move |ctx| {
+            ctx.use_layout_effect((1_u32,), move || {
+                let cleaned = Rc::clone(&second);
+                Some(Box::new(move || cleaned.set(cleaned.get() + 1)))
+            })
+        });
+        assert_eq!(harness.effects.len(), 1);
+        harness.effects[0].run();
+        assert_eq!(cleaned.get(), 1);
     }
 
     #[test]

@@ -57,7 +57,7 @@
 //! fiber arena and the hook model are in place; the element vocabulary,
 //! reconciliation, the work loop and the commit phase follow. Until the root
 //! lands, the public surface is [`lane`], [`Host`], [`Key`], [`Props`],
-//! [`RenderCtx`] and [`State`].
+//! [`RenderCtx`], [`State`] and [`Cleanup`].
 //!
 //! # References
 //!
@@ -80,6 +80,6 @@ mod fiber;
 mod hooks;
 mod host;
 
-pub use hooks::{RenderCtx, State};
+pub use hooks::{Cleanup, RenderCtx, State};
 pub use host::{Host, Key, Props, props, props_ref};
 pub use lane::{LANE_COUNT, Lanes, SchedulerPriority};

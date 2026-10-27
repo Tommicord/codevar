@@ -50,7 +50,7 @@ use core::any::TypeId;
 use core::fmt;
 use core::ops::{BitAnd, BitOr, Not};
 
-use crate::hooks::HookList;
+use crate::hooks::{EffectRecord, HookList};
 use crate::host::{Host, Key, Props};
 use crate::lane::Lanes;
 
@@ -233,6 +233,8 @@ pub(crate) struct Fiber<H: Host> {
     pub(crate) state_node: Option<H::Node>,
     /// The hooks of a component.
     pub(crate) hooks: HookList,
+    /// The effects this render must commit.
+    pub(crate) effects: Vec<EffectRecord>,
     /// What must be done to this node in the commit.
     pub(crate) flags: Flags,
     /// What must be done to the subtree, including this node.
@@ -263,6 +265,7 @@ impl<H: Host> Fiber<H> {
             index: 0,
             state_node: None,
             hooks: HookList::default(),
+            effects: Vec::new(),
             flags: Flags::NONE,
             subtree_flags: Flags::NONE,
             deletions: Vec::new(),
@@ -291,6 +294,7 @@ impl<H: Host> Fiber<H> {
             index: current.index,
             state_node: current.state_node,
             hooks: current.hooks.clone(),
+            effects: Vec::new(),
             flags: Flags::NONE,
             subtree_flags: Flags::NONE,
             deletions: Vec::new(),
