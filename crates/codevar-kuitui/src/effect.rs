@@ -19,7 +19,8 @@
 //! not of what is drawn inside it: the geometry stays the same, and the
 //! backend evaluates the shape in a shader. Every effect a modifier
 //! builds — [`EffectKinds::BLUR`], [`EffectKinds::PIXELATE`],
-//! [`EffectKinds::ROTATE`], [`EffectKinds::GRADIENT`] — is defined by
+//! [`EffectKinds::ROTATE`], [`EffectKinds::GRADIENT`],
+//! [`EffectKinds::STROKE`] — is defined by
 //! the closed form of a rounded box, so the fragment shader costs a
 //! distance evaluation instead of a texture pass:
 //!
@@ -29,7 +30,10 @@
 //!   smooth gradient into a mosaic of its own colors;
 //! * rotate maps the sample point back into the frame of the shape, so
 //!   the rectangle itself never moves in memory;
-//! * gradient evaluates the ramp between the two endpoints of an axis.
+//! * gradient evaluates the ramp between the two endpoints of an axis;
+//! * stroke keeps the band of the rounded box that lies within one stroke
+//!   width of its edge, which is how an outlined rectangle follows its own
+//!   corners instead of being drawn as four straight edges.
 //!
 //! An effect travels with the operations recorded while it was open,
 //! the same way a clip does, which is what keeps a backend from having
@@ -68,6 +72,9 @@ impl EffectKinds {
     pub const ROTATE: EffectKinds = EffectKinds(1 << 2);
     /// The rectangle is painted with a ramp between two colors.
     pub const GRADIENT: EffectKinds = EffectKinds(1 << 3);
+    /// The rectangle is outlined: only the band of the rounded box within
+    /// [`Effect::stroke`] of its edge is covered.
+    pub const STROKE: EffectKinds = EffectKinds(1 << 4);
 
     /// The underlying bits.
     #[inline]
@@ -212,6 +219,13 @@ pub struct Effect {
     pub blur: f32,
     /// The edge of a pixelate block, in logical pixels.
     pub pixel: f32,
+    /// The width of the outline, in logical pixels.
+    ///
+    /// The band is measured inward from the edge of the rounded box, so a
+    /// stroked layer covers the area whose signed distance is between
+    /// `-stroke` and `0`. It is only read with
+    /// [`EffectKinds::STROKE`] set.
+    pub stroke: f32,
     /// The rotation of the rectangle around its center, in radians.
     pub rotation: f32,
     /// The ramp the rectangle is painted with, if any.
@@ -230,6 +244,7 @@ impl Effect {
             kinds: EffectKinds::NONE,
             blur: 0.0,
             pixel: 0.0,
+            stroke: 0.0,
             rotation: 0.0,
             gradient: None,
         }
@@ -279,6 +294,21 @@ impl Effect {
     pub const fn pixelate(mut self, pixel: f32) -> Self {
         self.kinds = self.kinds.union(EffectKinds::PIXELATE);
         self.pixel = pixel;
+        self
+    }
+
+    /// The rectangle outlined by the band of `width` logical pixels that
+    /// lies inside its edge.
+    ///
+    /// The outline follows whatever corners the layer already carries, so a
+    /// shape asks for its rounding once: a layer that was given radii and
+    /// then outlined draws the rounded ring, and one that was only outlined
+    /// draws a rectangular one.
+    #[inline]
+    #[must_use]
+    pub const fn stroke(mut self, width: f32) -> Self {
+        self.kinds = self.kinds.union(EffectKinds::STROKE);
+        self.stroke = width;
         self
     }
 
@@ -550,6 +580,29 @@ mod tests {
             Effect::new(bounds)
                 .shape(CornerRadii::ZERO)
                 .is_identity()
+        );
+    }
+
+    #[test]
+    fn an_outline_is_a_layer_effect_of_its_own() {
+        let bounds = Rect::from_min_size(Offset::ZERO, 40.0, 20.0);
+        let effect = Effect::new(bounds).stroke(3.0);
+        assert!(effect.kinds.contains(EffectKinds::STROKE));
+        assert_eq!(effect.stroke, 3.0);
+        assert!(!effect.is_identity(), "a ring is not a plain fill");
+        assert_eq!(effect.coverage(), bounds, "an outline never leaves the box");
+    }
+
+    #[test]
+    fn an_outline_keeps_the_rounding_of_its_layer() {
+        let bounds = Rect::from_min_size(Offset::ZERO, 40.0, 20.0);
+        let radii = CornerRadii::uniform(6.0);
+        let effect = Effect::new(bounds).shape(radii).stroke(2.0);
+        assert_eq!(effect.radii, radii);
+        assert!(effect.kinds.contains(EffectKinds::STROKE));
+        assert!(
+            !effect.kinds.contains(EffectKinds::BLUR),
+            "an outline does not bleed past its edge"
         );
     }
 }
