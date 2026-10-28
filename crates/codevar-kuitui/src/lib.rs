@@ -103,6 +103,7 @@ pub mod color;
 pub mod compose;
 pub mod driver;
 pub mod effect;
+pub mod elements;
 pub mod event;
 pub mod geometry;
 pub mod host;
@@ -161,6 +162,7 @@ pub mod prelude {
     pub use crate::color::{Color, ColorScheme};
     pub use crate::compose::{Composer, Composition, Recomposition};
     pub use crate::effect::{Effect, EffectKinds, Gradient, InteractionSource, InteractionState};
+    pub use crate::element;
     pub use crate::event::{
         Event, EventResult, KeyEvent, Modifiers, PointerButton, PointerButtons, PointerEvent,
         PointerEventKind,
