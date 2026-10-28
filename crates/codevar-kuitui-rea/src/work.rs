@@ -72,7 +72,7 @@ use alloc::rc::Rc;
 use core::mem;
 
 use crate::element::Element;
-use crate::fiber::{Arena, Fiber, FiberId, FiberTag, Flags, Payload};
+use crate::fiber::{Arena, Fiber, FiberId, FiberTag, Flags, Payload, Visibility};
 use crate::hooks::{EffectTag, MailboxHandle, RenderCtx};
 use crate::host::Host;
 use crate::lane::Lanes;
@@ -579,6 +579,21 @@ impl<'a, H: Host> WorkLoop<'a, H> {
         let alternate = work.alternate;
         let mut flags = Flags::NONE;
         let mut state_node = state;
+        if tag == FiberTag::Offscreen {
+            // React's `completeWork` schedules the effect when the boundary
+            // switched its primary tree between hidden and visible. A boundary
+            // that mounts needs it only while the tree starts out hidden: a
+            // visible tree is on screen from the start.
+            let hidden = work.visibility == Visibility::Hidden;
+            let was_hidden = alternate
+                .and_then(|current| self.arena.get(current))
+                .is_some_and(|current| current.visibility == Visibility::Hidden);
+            match alternate {
+                None if hidden => flags.insert(Flags::VISIBILITY),
+                Some(_) if was_hidden != hidden => flags.insert(Flags::VISIBILITY),
+                _ => {}
+            }
+        }
         if tag == FiberTag::Host
             && let Payload::Host(element) = &payload
         {

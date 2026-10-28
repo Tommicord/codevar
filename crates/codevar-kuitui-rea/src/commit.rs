@@ -19,7 +19,8 @@
 //! The commit turns that description into host calls, in an order that is
 //! observable and therefore fixed:
 //!
-//! 1. **Mutation** — removed nodes leave the host, moved nodes are placed,
+//! 1. **Mutation** — removed nodes leave the host, moved nodes are placed, the
+//!    primary tree of a Suspense boundary leaves or re-enters the host's sight,
 //!    and the effect cleanups of the removed subtrees run.
 //! 2. **Root swap** — the caller makes the finished tree current. Nothing is
 //!    mutated after this point.
@@ -68,7 +69,7 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::mem;
 
-use crate::fiber::{Arena, FiberId, FiberTag, Flags};
+use crate::fiber::{Arena, FiberId, FiberTag, Flags, Visibility};
 use crate::hooks::EffectTag;
 use crate::host::Host;
 
@@ -97,7 +98,7 @@ impl<'a, H: Host> Commit<'a, H> {
             .arena
             .get(root)
             .and_then(|fiber| fiber.state_node);
-        self.mutate(root, parent);
+        self.mutate(root, parent, false);
     }
 
     /// Commits the hook queues and creates the layout effects.
@@ -171,15 +172,22 @@ impl<'a, H: Host> Commit<'a, H> {
     /// Mutates one fiber and its subtree.
     ///
     /// `host_parent` is the node of the nearest host ancestor; a component or
-    /// a fragment passes it through unchanged.
-    fn mutate(&mut self, fiber: FiberId, host_parent: Option<H::Node>) {
+    /// a fragment passes it through unchanged. `hidden_parent` says whether an
+    /// Offscreen above this fiber already took everything below it out of
+    /// sight, which is what keeps a nested boundary from showing a tree its
+    /// parent still hides.
+    fn mutate(&mut self, fiber: FiberId, host_parent: Option<H::Node>, hidden_parent: bool) {
         let Some(node) = self.arena.get(fiber) else {
             return;
         };
         let flags = node.flags;
         let own = node.state_node;
         let alternate = node.alternate;
+        let hidden = node.visibility == Visibility::Hidden;
         let children_parent = own.or(host_parent);
+        // Only an Offscreen extends the hidden state of the subtree it wraps;
+        // every other fiber passes on what it was given.
+        let children_hidden = hidden_parent || (node.tag == FiberTag::Offscreen && hidden);
 
         if flags.contains(Flags::CHILD_DELETION) {
             let deletions = match self.arena.get_mut(fiber) {
@@ -200,7 +208,7 @@ impl<'a, H: Host> Commit<'a, H> {
                 .arena
                 .get(current)
                 .and_then(|fiber| fiber.sibling);
-            self.mutate(current, children_parent);
+            self.mutate(current, children_parent, children_hidden);
         }
 
         if flags.contains(Flags::PLACEMENT)
@@ -208,6 +216,14 @@ impl<'a, H: Host> Commit<'a, H> {
         {
             let anchor = self.anchor(fiber);
             self.host.insert_before(parent, child, anchor);
+        }
+
+        // The primary tree of a boundary that switched to its fallback leaves
+        // the host's sight after its children were placed, so the walk sees the
+        // finished tree. A tree that comes back must not show itself while the
+        // boundary above still hides everything below it.
+        if flags.contains(Flags::VISIBILITY) && (hidden || !hidden_parent) {
+            self.hide_or_unhide_all_children(fiber, hidden);
         }
 
         // The committed ref detaches after the subtree moved and before the
@@ -223,6 +239,49 @@ impl<'a, H: Host> Commit<'a, H> {
         if let Some(node) = self.arena.get_mut(fiber) {
             node.flags.remove(Flags::MUTATION_MASK);
         }
+    }
+
+    /// Hides or shows the nearest host nodes below an Offscreen fiber.
+    ///
+    /// This is React's `hideOrUnhideAllChildren`. The walk stops at the first
+    /// host node on a path, because hiding a node hides everything inside it
+    /// and one call is cheaper than a descent. A nested Offscreen that is
+    /// itself hidden stops the walk as well: its subtree is already hidden, and
+    /// showing it would contradict the boundary that hid it.
+    fn hide_or_unhide_all_children(&mut self, parent: FiberId, hidden: bool) {
+        let mut child = self
+            .arena
+            .get(parent)
+            .and_then(|fiber| fiber.first_child);
+        while let Some(current) = child {
+            child = self
+                .arena
+                .get(current)
+                .and_then(|fiber| fiber.sibling);
+            self.hide_or_unhide_tree(current, hidden);
+        }
+    }
+
+    /// Hides or shows one fiber on the way down to its nearest host nodes.
+    fn hide_or_unhide_tree(&mut self, fiber: FiberId, hidden: bool) {
+        let Some(node) = self.arena.get(fiber) else {
+            return;
+        };
+        match node.tag {
+            FiberTag::Host => {
+                if let Some(state_node) = node.state_node {
+                    if hidden {
+                        self.host.hide(state_node);
+                    } else {
+                        self.host.unhide(state_node);
+                    }
+                }
+                return;
+            }
+            FiberTag::Offscreen if node.visibility == Visibility::Hidden => return,
+            _ => {}
+        }
+        self.hide_or_unhide_all_children(fiber, hidden);
     }
 
     /// The node a placement inserts before, or `None` to append.
@@ -407,10 +466,12 @@ mod tests {
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     struct NodeId(u32);
 
-    /// One node: its element and the children the commit attached.
+    /// One node: its element, whether the host shows it, and the children the
+    /// commit attached.
     struct NodeState {
         element: Option<u32>,
         children: Vec<NodeId>,
+        hidden: bool,
     }
 
     /// A host that keeps the child order, so a placement can be asserted.
@@ -424,6 +485,7 @@ mod tests {
                 nodes: vec![NodeState {
                     element: None,
                     children: Vec::new(),
+                    hidden: false,
                 }],
             }
         }
@@ -438,6 +500,10 @@ mod tests {
 
         fn element(&self, node: NodeId) -> Option<u32> {
             self.nodes[node.0 as usize].element
+        }
+
+        fn hidden(&self, node: NodeId) -> bool {
+            self.nodes[node.0 as usize].hidden
         }
     }
 
@@ -454,6 +520,7 @@ mod tests {
             self.nodes.push(NodeState {
                 element: Some(*element),
                 children: Vec::new(),
+                hidden: false,
             });
             id
         }
@@ -461,6 +528,18 @@ mod tests {
         fn update(&mut self, node: NodeId, element: &u32) {
             if let Some(state) = self.nodes.get_mut(node.0 as usize) {
                 state.element = Some(*element);
+            }
+        }
+
+        fn hide(&mut self, node: NodeId) {
+            if let Some(state) = self.nodes.get_mut(node.0 as usize) {
+                state.hidden = true;
+            }
+        }
+
+        fn unhide(&mut self, node: NodeId) {
+            if let Some(state) = self.nodes.get_mut(node.0 as usize) {
+                state.hidden = false;
             }
         }
 
@@ -835,5 +914,137 @@ mod tests {
                 node.tag
             );
         }
+    }
+
+    /// Appends a fiber of `tag` to `parent`, with `node` as its host node.
+    fn attach(harness: &mut Harness, parent: FiberId, tag: FiberTag, node: Option<NodeId>) -> FiberId {
+        let mut fiber = Fiber::new(tag);
+        fiber.parent = Some(parent);
+        fiber.state_node = node;
+        let id = harness.arena.alloc(fiber);
+        let Some(first) = harness
+            .arena
+            .get(parent)
+            .and_then(|fiber| fiber.first_child)
+        else {
+            if let Some(fiber) = harness.arena.get_mut(parent) {
+                fiber.first_child = Some(id);
+            }
+            return id;
+        };
+        let mut tail = first;
+        while let Some(next) = harness
+            .arena
+            .get(tail)
+            .and_then(|fiber| fiber.sibling)
+        {
+            tail = next;
+        }
+        if let Some(fiber) = harness.arena.get_mut(tail) {
+            fiber.sibling = Some(id);
+        }
+        id
+    }
+
+    /// Appends an Offscreen fiber in the given visibility state to `parent`.
+    fn offscreen(harness: &mut Harness, parent: FiberId, visibility: Visibility) -> FiberId {
+        let id = attach(harness, parent, FiberTag::Offscreen, None);
+        if let Some(fiber) = harness.arena.get_mut(id) {
+            fiber.visibility = visibility;
+        }
+        id
+    }
+
+    /// Marks `fiber` as having switched its subtree's visibility in this
+    /// commit.
+    fn visibility_flag(harness: &mut Harness, fiber: FiberId) {
+        if let Some(node) = harness.arena.get_mut(fiber) {
+            node.flags.insert(Flags::VISIBILITY);
+        }
+    }
+
+    /// A host node with no fibers attached yet.
+    fn host_node(harness: &mut Harness, element: u32) -> NodeId {
+        harness.host.create(&element)
+    }
+
+    #[test]
+    fn a_hidden_offscreen_hides_the_nearest_host_nodes() {
+        let mut harness = Harness::new();
+        let root = harness.root;
+        let offscreen = offscreen(&mut harness, root, Visibility::Hidden);
+        let fragment = attach(&mut harness, offscreen, FiberTag::Fragment, None);
+        let outer = host_node(&mut harness, 1);
+        let inner = host_node(&mut harness, 2);
+        let first = attach(&mut harness, fragment, FiberTag::Host, Some(outer));
+        let beneath = host_node(&mut harness, 3);
+        // A host node inside another is hidden with its parent, so the walk has
+        // to hand over the nearest one only.
+        attach(&mut harness, first, FiberTag::Host, Some(beneath));
+        attach(&mut harness, fragment, FiberTag::Host, Some(inner));
+        visibility_flag(&mut harness, offscreen);
+
+        Commit::new(&mut harness.host, &mut harness.arena).mutation(root);
+
+        assert!(harness.host.hidden(outer));
+        assert!(harness.host.hidden(inner));
+        assert!(!harness.host.hidden(beneath));
+        assert!(
+            harness
+                .arena
+                .get(offscreen)
+                .is_some_and(|fiber| fiber.flags.is_empty()),
+            "the mutation phase consumes the visibility flag"
+        );
+    }
+
+    #[test]
+    fn a_visible_offscreen_shows_the_host_nodes_it_wraps() {
+        let mut harness = Harness::new();
+        let root = harness.root;
+        let offscreen = offscreen(&mut harness, root, Visibility::Visible);
+        let node = host_node(&mut harness, 1);
+        attach(&mut harness, offscreen, FiberTag::Host, Some(node));
+        harness.host.hide(node);
+        visibility_flag(&mut harness, offscreen);
+
+        Commit::new(&mut harness.host, &mut harness.arena).mutation(root);
+
+        assert!(!harness.host.hidden(node));
+    }
+
+    #[test]
+    fn a_visible_offscreen_under_a_hidden_one_stays_hidden() {
+        let mut harness = Harness::new();
+        let root = harness.root;
+        // The outer boundary hid its tree in an earlier commit, so only the
+        // inner one carries the flag now.
+        let outer = offscreen(&mut harness, root, Visibility::Hidden);
+        let inner = offscreen(&mut harness, outer, Visibility::Visible);
+        let node = host_node(&mut harness, 1);
+        attach(&mut harness, inner, FiberTag::Host, Some(node));
+        harness.host.hide(node);
+        visibility_flag(&mut harness, inner);
+
+        Commit::new(&mut harness.host, &mut harness.arena).mutation(root);
+
+        assert!(harness.host.hidden(node));
+    }
+
+    #[test]
+    fn a_hidden_offscreen_inside_a_hidden_one_keeps_its_subtree_hidden() {
+        let mut harness = Harness::new();
+        let root = harness.root;
+        let outer = offscreen(&mut harness, root, Visibility::Hidden);
+        let inner = offscreen(&mut harness, outer, Visibility::Hidden);
+        let node = host_node(&mut harness, 1);
+        attach(&mut harness, inner, FiberTag::Host, Some(node));
+        visibility_flag(&mut harness, outer);
+
+        Commit::new(&mut harness.host, &mut harness.arena).mutation(root);
+
+        // The inner boundary hid its own tree when it hid itself; the outer walk
+        // must not search behind it and show the tree again.
+        assert!(!harness.host.hidden(node));
     }
 }
