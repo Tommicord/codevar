@@ -78,8 +78,11 @@ use core::any::Any;
 use core::cell::{Cell, RefCell};
 use core::mem;
 
+use crate::element::Element;
 use crate::fiber::FiberId;
+use crate::host::Host;
 use crate::lane::Lanes;
+use crate::wakeable::Wakeable;
 
 /// The cleanup of an effect.
 ///
@@ -686,6 +689,14 @@ pub struct RenderCtx<'a> {
     /// update ran; the difference only matters to the bailout that arrives
     /// with `bailoutOnAlreadyFinishedWork`.
     did_update: bool,
+    /// The wakeable of the suspension this render raised, if it raised one.
+    ///
+    /// A component suspends by calling [`RenderCtx::suspend`]. Rust has no
+    /// unwinding, so the component runs to its end and returns an element that
+    /// nothing ever sees: the work pass throws the element away and carries the
+    /// wakeable to the nearest boundary, the way React carries the thenable the
+    /// component threw.
+    suspended: Option<Wakeable>,
 }
 
 impl<'a> RenderCtx<'a> {
@@ -709,6 +720,7 @@ impl<'a> RenderCtx<'a> {
             mailbox,
             ids,
             did_update: false,
+            suspended: None,
         }
     }
 
@@ -720,6 +732,31 @@ impl<'a> RenderCtx<'a> {
     /// Whether a state hook applied an update during this render.
     pub(crate) const fn did_update(&self) -> bool {
         self.did_update
+    }
+
+    /// Suspends the component until `wakeable` reports that its work completed.
+    ///
+    /// React's component `throw`s a thenable; Rust has no unwinding, so a
+    /// component calls this and returns the value. The element is never
+    /// reconciled: the work pass throws the render of this component away and
+    /// carries the wakeable to the nearest Suspense boundary, exactly as React
+    /// unwinds to the boundary in `throwException`. A component that resumes
+    /// without suspending renders again from the hooks it committed, so
+    /// everything this pass wrote to the hook slots is discarded with it.
+    ///
+    /// The first suspension of a pass wins. A later call in the same pass has
+    /// no boundary left to reach — the pass already has one — so it returns the
+    /// same empty element and keeps the wakeable it already recorded.
+    pub fn suspend<H: Host>(&mut self, wakeable: Wakeable) -> Element<H> {
+        if self.suspended.is_none() {
+            self.suspended = Some(wakeable);
+        }
+        Element::empty()
+    }
+
+    /// Takes the suspension the render raised, if it raised one.
+    pub(crate) fn take_suspended(&mut self) -> Option<Wakeable> {
+        self.suspended.take()
     }
 
     /// The next hook slot, creating it on the first render.
