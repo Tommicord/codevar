@@ -1276,6 +1276,19 @@ impl Node {
 /// A child that asked for a higher `z_index` is offered the pointer
 /// before its siblings, the way it paints above them: the topmost node
 /// under the pointer is the one that reacts to it.
+/// Whether `node` or a descendant under `position` reacts to a pointer.
+///
+/// A node that does not react is transparent: the pointer falls through it
+/// to the nodes below, which is what lets an event inside a container reach
+/// the interactive child the container holds.
+fn reacts(node: &Node, position: Offset) -> bool {
+    node.hit_testable()
+        || node
+            .children
+            .iter()
+            .any(|child| child.bounds.contains(position) && reacts(child, position))
+}
+
 pub(crate) fn dispatch_event(
     node: &mut Node,
     theme: &Theme,
@@ -1286,7 +1299,7 @@ pub(crate) fn dispatch_event(
     if let Event::Pointer(pointer) = event {
         let mut target: Option<(i32, usize)> = None;
         for (index, child) in node.children.iter().enumerate() {
-            if !child.bounds.contains(pointer.position) || !child.hit_testable() {
+            if !child.bounds.contains(pointer.position) || !reacts(child, pointer.position) {
                 continue;
             }
             let order = (child.z_index(), index);
@@ -1797,6 +1810,28 @@ mod tests {
                 .state()
                 .contains(InteractionState::SELECTED)
         );
+    }
+
+    #[test]
+    fn a_pointer_passes_through_a_container_that_does_not_react() {
+        let theme = Theme::light();
+        let source = InteractionSource::new();
+        let label = Node::new(Filler)
+            .modifier(Modifier::none().clickable_with(source.clone(), |_| EventResult::Consumed));
+        let mut node = Node::new(crate::widgets::Row::new()).with_children(vec![label]);
+        node.measure(&theme, Constraints::tight(Size::new(10.0, 10.0)));
+        node.place(Rect::from_min_size(Offset::ZERO, 10.0, 10.0));
+        assert!(!node.hit_testable(), "the container itself does not react");
+
+        let mut focus = None;
+        let mut path = Vec::new();
+        let press = Event::Pointer(PointerEvent::new(PointerEventKind::Down, Offset::new(5.0, 5.0)));
+        let result = dispatch_event(&mut node, &theme, &mut path, &mut focus, &press);
+        assert!(
+            result.is_consumed(),
+            "the press reached the child of the container"
+        );
+        assert!(source.state().contains(InteractionState::PRESSED));
     }
 
     #[test]
