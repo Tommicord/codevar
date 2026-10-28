@@ -416,11 +416,29 @@ impl<'a, H: Host> WorkLoop<'a, H> {
         let payload = work.pending.clone();
         let memoized = work.memoized.clone();
         let state = work.state_node;
+        let alternate = work.alternate;
         let mut flags = Flags::NONE;
         let mut state_node = state;
         if tag == FiberTag::Host
             && let Payload::Host(element) = &payload
         {
+            // React's `markRef`: a node attaches its reference when it mounts
+            // or when the callback changes identity. The committed fiber is the
+            // one that holds the current ref, so a fiber without an alternate
+            // has none, even when reconciliation already seeded `memoized` with
+            // the pending element.
+            let old = alternate
+                .and_then(|current| self.arena.get(current))
+                .and_then(|current| current.memoized.reference())
+                .cloned();
+            let ref_changed = match (old.as_ref(), element.reference.as_ref()) {
+                (None, None) => false,
+                (Some(old), Some(new)) => !Rc::ptr_eq(old, new),
+                _ => true,
+            };
+            if ref_changed {
+                flags.insert(Flags::REF);
+            }
             match state {
                 Some(node) => {
                     let changed = match &memoized {
@@ -450,6 +468,7 @@ impl<'a, H: Host> WorkLoop<'a, H> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::element::Reference;
     use crate::fiber::Fiber;
     use crate::hooks::{State, mailbox};
     use alloc::vec::Vec;
@@ -625,6 +644,44 @@ mod tests {
         assert_eq!(harness.host.nodes.len(), 1);
         assert_eq!(harness.host.nodes[0].element, (0, 2));
         assert_eq!(harness.host.nodes[0].updates, 1);
+    }
+
+    /// The host fiber directly below the root.
+    fn host_fiber(harness: &Harness) -> Option<FiberId> {
+        harness.child(harness.root)
+    }
+
+    /// Whether the host fiber carries `flag`.
+    fn flagged(harness: &Harness, flag: Flags) -> bool {
+        host_fiber(harness).is_some_and(|fiber| {
+            harness
+                .arena
+                .get(fiber)
+                .is_some_and(|fiber| fiber.flags.contains(flag))
+        })
+    }
+
+    #[test]
+    fn a_reference_is_flagged_when_it_mounts_or_changes_identity() {
+        let mut harness = Harness::new();
+        let first: Reference<TestHost> = Rc::new(|_| None);
+        let second: Reference<TestHost> = Rc::new(|_| None);
+
+        // A node that mounts with a callback has to attach it.
+        harness.render(Element::host((0, 1)).referenced(Rc::clone(&first)));
+        assert!(flagged(&harness, Flags::REF));
+
+        // The same callback is not a change, exactly as `markRef` compares the
+        // ref identity rather than the element.
+        harness.render(Element::host((0, 1)).referenced(Rc::clone(&first)));
+        assert!(!flagged(&harness, Flags::REF));
+
+        harness.render(Element::host((0, 1)).referenced(Rc::clone(&second)));
+        assert!(flagged(&harness, Flags::REF));
+
+        // Dropping the callback is a change too: the committed ref must detach.
+        harness.render(Element::host((0, 1)));
+        assert!(flagged(&harness, Flags::REF));
     }
 
     #[test]

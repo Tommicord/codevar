@@ -63,7 +63,9 @@
 
 #![allow(dead_code)]
 
+use alloc::rc::Rc;
 use alloc::vec::Vec;
+use core::cell::RefCell;
 use core::mem;
 
 use crate::fiber::{Arena, FiberId, FiberTag, Flags};
@@ -99,10 +101,16 @@ impl<'a, H: Host> Commit<'a, H> {
     }
 
     /// Commits the hook queues and creates the layout effects.
+    ///
+    /// The order is React's: a fiber's children are visited first, then its
+    /// reference is attached, then its layout effects run. A child's ref
+    /// therefore observes the node after it was placed, and a parent's layout
+    /// effect observes the refs of the subtree below it.
     pub(crate) fn layout(&mut self, root: FiberId) {
         let mut order = Vec::new();
         self.collect(root, &mut order);
         for fiber in order {
+            self.attach_ref(fiber);
             if let Some(node) = self.arena.get_mut(fiber) {
                 if node.tag == FiberTag::Component {
                     node.hooks.commit();
@@ -113,6 +121,31 @@ impl<'a, H: Host> Commit<'a, H> {
                 node.flags.remove(Flags::LAYOUT_MASK);
             }
             self.create_effects(fiber, EffectTag::Layout);
+        }
+    }
+
+    /// Hands the node of a finished host fiber to its reference callback.
+    ///
+    /// The callback may return a cleanup, which stays on the fiber — shared
+    /// with its alternate — until the node is detached. A fiber without the
+    /// [`Flags::REF`] flag keeps the reference it already attached: React only
+    /// attaches when `markRef` saw a new or different ref.
+    fn attach_ref(&mut self, fiber: FiberId) {
+        let Some(node) = self.arena.get(fiber) else {
+            return;
+        };
+        if !node.flags.contains(Flags::REF) {
+            return;
+        }
+        let Some(reference) = node.memoized.reference().cloned() else {
+            return;
+        };
+        let Some(state_node) = node.state_node else {
+            return;
+        };
+        let cleanup = reference(Some(state_node));
+        if let Some(node) = self.arena.get_mut(fiber) {
+            node.ref_cleanup = cleanup.map(|cleanup| Rc::new(RefCell::new(Some(cleanup))));
         }
     }
 
@@ -145,6 +178,7 @@ impl<'a, H: Host> Commit<'a, H> {
         };
         let flags = node.flags;
         let own = node.state_node;
+        let alternate = node.alternate;
         let children_parent = own.or(host_parent);
 
         if flags.contains(Flags::CHILD_DELETION) {
@@ -174,6 +208,15 @@ impl<'a, H: Host> Commit<'a, H> {
         {
             let anchor = self.anchor(fiber);
             self.host.insert_before(parent, child, anchor);
+        }
+
+        // The committed ref detaches after the subtree moved and before the
+        // finished ref attaches in the layout phase, which is where React
+        // detaches it in `commitMutationEffectsOnFiber`.
+        if flags.contains(Flags::REF)
+            && let Some(current) = alternate
+        {
+            self.detach_ref(current);
         }
 
         self.destroy_effects(fiber, EffectTag::Layout);
@@ -224,14 +267,21 @@ impl<'a, H: Host> Commit<'a, H> {
 
     /// Removes a subtree from the host and frees its fibers.
     fn unmount(&mut self, fiber: FiberId, host_parent: Option<H::Node>) {
-        let Some(node) = self.arena.get(fiber) else {
+        let Some((own, alternate, first_child)) = self
+            .arena
+            .get(fiber)
+            .map(|node| (node.state_node, node.alternate, node.first_child))
+        else {
             return;
         };
-        let own = node.state_node;
-        let alternate = node.alternate;
         let children_parent = own.or(host_parent);
 
-        let mut child = node.first_child;
+        // A deleted host fiber detaches its ref before its children are
+        // removed, so the callback still sees the subtree whole. React keeps
+        // the same order in `commitDeletionEffectsOnFiber`.
+        self.detach_ref(fiber);
+
+        let mut child = first_child;
         while let Some(current) = child {
             child = self
                 .arena
@@ -253,6 +303,31 @@ impl<'a, H: Host> Commit<'a, H> {
         self.arena.take(fiber);
         if let Some(alternate) = alternate {
             self.arena.take(alternate);
+        }
+    }
+
+    /// Runs the reference of a committed host fiber before its node goes away.
+    ///
+    /// A cleanup the callback returned on attach replaces the `None` call.
+    /// Taking it out of the shared cell empties it for both alternates, so the
+    /// cleanup cannot run twice — the rule React enforces by clearing
+    /// `refCleanup` on the fiber and its alternate.
+    fn detach_ref(&mut self, fiber: FiberId) {
+        let Some(node) = self.arena.get(fiber) else {
+            return;
+        };
+        let Some(reference) = node.memoized.reference().cloned() else {
+            return;
+        };
+        let cleanup = node
+            .ref_cleanup
+            .as_ref()
+            .and_then(|cleanup| cleanup.borrow_mut().take());
+        match cleanup {
+            Some(cleanup) => cleanup(),
+            None => {
+                reference(None);
+            }
         }
     }
 

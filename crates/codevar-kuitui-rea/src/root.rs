@@ -604,7 +604,8 @@ impl<H: Host> Root<H> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hooks::State;
+    use crate::element::Reference;
+    use crate::hooks::{Cleanup, State};
     use alloc::rc::Rc;
     use alloc::vec;
     use alloc::vec::Vec;
@@ -762,6 +763,136 @@ mod tests {
         root.render(Element::empty());
         root.flush();
         assert!(top_level(&root).is_empty());
+    }
+
+    /// The nodes the container shows, in order.
+    fn mounted(root: &Root<TreeHost>) -> Vec<NodeId> {
+        root.host()
+            .children(root.host().container())
+            .to_vec()
+    }
+
+    #[test]
+    fn a_reference_receives_the_node_when_it_mounts() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let reference: Reference<TreeHost> = {
+            let calls = Rc::clone(&calls);
+            Rc::new(move |node| {
+                calls.borrow_mut().push(node);
+                None
+            })
+        };
+        let root = mount(Element::host(1).referenced(Rc::clone(&reference)));
+
+        assert_eq!(*calls.borrow(), [Some(mounted(&root)[0])]);
+    }
+
+    #[test]
+    fn a_reference_detaches_when_its_node_unmounts() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let reference: Reference<TreeHost> = {
+            let calls = Rc::clone(&calls);
+            Rc::new(move |node| {
+                calls.borrow_mut().push(node);
+                None
+            })
+        };
+        let mut root = mount(Element::host(1).referenced(Rc::clone(&reference)));
+        let node = mounted(&root)[0];
+
+        root.render(Element::empty());
+        root.flush();
+        assert!(top_level(&root).is_empty());
+        assert_eq!(*calls.borrow(), [Some(node), None]);
+    }
+
+    #[test]
+    fn a_changed_reference_detaches_the_old_callback_before_attaching_the_new() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let make = |tag: &'static str| -> Reference<TreeHost> {
+            let calls = Rc::clone(&calls);
+            Rc::new(move |node| {
+                calls.borrow_mut().push((tag, node));
+                None
+            })
+        };
+        let first = make("first");
+        let second = make("second");
+        let mut root = mount(Element::host(1).referenced(Rc::clone(&first)));
+        let node = mounted(&root)[0];
+
+        root.render(Element::host(1).referenced(Rc::clone(&second)));
+        root.flush();
+        assert_eq!(
+            *calls.borrow(),
+            [("first", Some(node)), ("first", None), ("second", Some(node))]
+        );
+    }
+
+    #[test]
+    fn a_reference_that_does_not_change_is_not_re_attached() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let handle = Rc::new(RefCell::new(None::<State<u32>>));
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let reference: Reference<TreeHost> = {
+            let calls = Rc::clone(&calls);
+            Rc::new(move |node| {
+                calls.borrow_mut().push(node);
+                None
+            })
+        };
+        let element = {
+            let handle = Rc::clone(&handle);
+            let log = Rc::clone(&log);
+            let reference = Rc::clone(&reference);
+            Element::component(move |ctx| {
+                let value = ctx.use_state(|| 1_u32);
+                *handle.borrow_mut() = Some(value.clone());
+                log.borrow_mut().push(*value.get());
+                // The node keeps its kind across the update, so the fiber is
+                // reused and only the ref comparison can ask for a re-attach.
+                Element::host(7).referenced(Rc::clone(&reference))
+            })
+        };
+        let mut root = mount(element);
+        assert_eq!(calls.borrow().len(), 1);
+
+        // The re-render rebuilds the host element but keeps the callback, so
+        // the node is neither detached nor attached again.
+        let Some(state) = handle.borrow().clone() else {
+            return;
+        };
+        state.set(2);
+        root.flush();
+        assert_eq!(*log.borrow(), [1, 2]);
+        assert_eq!(top_level(&root), [Some(7)]);
+        assert_eq!(calls.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_cleanup_returned_by_a_reference_runs_instead_of_the_none_call() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let cleaned = Rc::new(Cell::new(0_u32));
+        let reference: Reference<TreeHost> = {
+            let calls = Rc::clone(&calls);
+            let cleaned = Rc::clone(&cleaned);
+            Rc::new(move |node| match node {
+                Some(_) => {
+                    let cleaned = Rc::clone(&cleaned);
+                    Some(Box::new(move || cleaned.set(cleaned.get() + 1)) as Cleanup)
+                }
+                None => {
+                    calls.borrow_mut().push("detached");
+                    None
+                }
+            })
+        };
+        let mut root = mount(Element::host(1).referenced(Rc::clone(&reference)));
+
+        root.render(Element::empty());
+        root.flush();
+        assert_eq!(cleaned.get(), 1);
+        assert!(calls.borrow().is_empty());
     }
 
     #[test]
