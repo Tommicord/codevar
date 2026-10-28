@@ -158,7 +158,15 @@ impl NodeElement {
 
     /// Builds the node this element describes.
     fn build(&self) -> Node {
-        (self.make)().modifier(self.modifier.clone())
+        let node = (self.make)();
+        if self.modifier.is_empty() {
+            // A factory may already have decorated the node it built — an
+            // opaque node usually has — and replacing that chain with an
+            // empty one would drop the interactions the library attached.
+            node
+        } else {
+            node.modifier(self.modifier.clone())
+        }
     }
 }
 
@@ -582,6 +590,20 @@ mod tests {
         assert!(host.element_matches(&first, &second));
         assert!(!host.element_matches(&first, &other));
         assert!(!host.element_matches(&first, &block(1.0)));
+    }
+
+    #[test]
+    fn a_factory_that_decorated_its_node_keeps_the_chain() {
+        let mut host = WidgetHost::new();
+        let element = NodeElement::opaque::<Spliced>(|| {
+            Node::new(Block { side: 1.0 })
+                .modifier(Modifier::none().clickable(|_| crate::event::EventResult::Consumed))
+        });
+        let id = host.create(&element);
+        assert!(
+            host.node(id).is_some_and(Node::hit_testable),
+            "an element with no chain of its own must not replace the one the node built"
+        );
     }
 
     #[test]
