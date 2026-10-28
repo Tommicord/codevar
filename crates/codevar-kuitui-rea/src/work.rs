@@ -61,7 +61,7 @@ use alloc::rc::Rc;
 use core::mem;
 
 use crate::element::Element;
-use crate::fiber::{Arena, FiberId, FiberTag, Flags, Payload};
+use crate::fiber::{Arena, Fiber, FiberId, FiberTag, Flags, Payload};
 use crate::hooks::{EffectTag, MailboxHandle, RenderCtx};
 use crate::host::Host;
 use crate::lane::Lanes;
@@ -149,7 +149,8 @@ impl<'a, H: Host> WorkLoop<'a, H> {
         }
         match tag {
             FiberTag::Component => self.render_component(fiber),
-            FiberTag::Fragment => self.render_fragment(fiber),
+            FiberTag::Suspense => self.render_suspense(fiber),
+            FiberTag::Fragment | FiberTag::Offscreen => self.render_fragment(fiber),
             FiberTag::Host => self.render_host(fiber),
             // The root's children are reconciled by the caller before the pass
             // starts.
@@ -188,7 +189,11 @@ impl<'a, H: Host> WorkLoop<'a, H> {
             // The caller reconciles the root's child before the pass starts,
             // so the child it would clone is already a work-in-progress fiber.
             FiberTag::Root => node.first_child,
-            FiberTag::Component | FiberTag::Fragment | FiberTag::Host => self.clone_child_fibers(fiber),
+            FiberTag::Component
+            | FiberTag::Suspense
+            | FiberTag::Fragment
+            | FiberTag::Offscreen
+            | FiberTag::Host => self.clone_child_fibers(fiber),
         }
     }
 
@@ -326,6 +331,74 @@ impl<'a, H: Host> WorkLoop<'a, H> {
         };
         self.reconcile(fiber, &children);
         self.arena.get(fiber)?.first_child
+    }
+
+    /// Renders the primary tree of a Suspense boundary.
+    ///
+    /// React gives the boundary two children: an Offscreen fiber that carries
+    /// the primary tree and, while the boundary shows its fallback, a Fragment
+    /// that carries the fallback next to the hidden primary. Only the first
+    /// exists while nothing below the boundary is suspended, so this pass
+    /// reconciles the primary tree alone and leaves the fallback in the
+    /// boundary's payload for the pass that switches trees.
+    fn render_suspense(&mut self, fiber: FiberId) -> Option<FiberId> {
+        let Some(Payload::Suspense(boundary)) = self
+            .arena
+            .get(fiber)
+            .map(|fiber| fiber.pending.clone())
+        else {
+            return self.arena.get(fiber)?.first_child;
+        };
+        let current_child = self
+            .arena
+            .get(fiber)
+            .and_then(|fiber| fiber.alternate)
+            .and_then(|current| self.arena.get(current))
+            .and_then(|current| current.first_child);
+        let offscreen = self.reconcile_offscreen(fiber, current_child, &boundary.children);
+        if let Some(node) = self.arena.get_mut(fiber) {
+            node.first_child = Some(offscreen);
+        }
+        Some(offscreen)
+    }
+
+    /// Starts the Offscreen fiber that carries a boundary's primary tree.
+    ///
+    /// The fiber has no node of its own, so it is the primary element's
+    /// children that the pass reconciles when it begins the fiber. A boundary
+    /// keeps the same Offscreen fiber across renders, which is what lets the
+    /// primary tree keep its fibers when the boundary switches trees; a
+    /// committed child of another kind cannot carry the tree and is replaced.
+    fn reconcile_offscreen(
+        &mut self,
+        parent: FiberId,
+        current: Option<FiberId>,
+        primary: &Element<H>,
+    ) -> FiberId {
+        let children: Rc<[Element<H>]> = Rc::from([primary.clone()]);
+        let reusable = current.filter(|current| {
+            self.arena
+                .get(*current)
+                .is_some_and(|fiber| fiber.tag == FiberTag::Offscreen)
+        });
+        if let Some(work) = reusable.and_then(|current| self.arena.create_work_in_progress(current)) {
+            if let Some(node) = self.arena.get_mut(work) {
+                node.pending = Payload::Fragment(children);
+                node.parent = Some(parent);
+                node.index = 0;
+                // The boundary owns exactly one primary container until it
+                // renders a fallback beside it.
+                node.sibling = None;
+            }
+            return work;
+        }
+        let mut fiber = Fiber::new(FiberTag::Offscreen);
+        fiber.pending = Payload::Fragment(children);
+        fiber.memoized = fiber.pending.clone();
+        fiber.parent = Some(parent);
+        fiber.index = 0;
+        fiber.flags.insert(Flags::PLACEMENT);
+        self.arena.alloc(fiber)
     }
 
     /// Diffs the children a host node arranges.
@@ -1031,6 +1104,87 @@ mod tests {
                 .get(new_a)
                 .is_some_and(|fiber| fiber.flags.contains(Flags::PLACEMENT))
         );
+    }
+
+    #[test]
+    fn a_suspense_boundary_mounts_its_primary_tree() {
+        let mut harness = Harness::new();
+        harness.render(Element::suspense(leaf(1), leaf(2)));
+
+        let Some(boundary) = harness.child(harness.root) else {
+            return;
+        };
+        assert_eq!(
+            harness.arena.get(boundary).map(|fiber| fiber.tag),
+            Some(FiberTag::Suspense)
+        );
+        let Some(offscreen) = harness.child(boundary) else {
+            return;
+        };
+        assert_eq!(
+            harness
+                .arena
+                .get(offscreen)
+                .map(|fiber| fiber.tag),
+            Some(FiberTag::Offscreen)
+        );
+        let Some(primary) = harness.child(offscreen) else {
+            return;
+        };
+        assert_eq!(harness.node(primary), Some(TestNode(1)));
+        // The fallback is not mounted while the primary tree is up.
+        assert_eq!(harness.host.nodes.len(), 1);
+        assert_eq!(harness.host.nodes[0].element, (0, 1));
+    }
+
+    #[test]
+    fn a_suspense_boundary_reuses_its_primary_container() {
+        let mut harness = Harness::new();
+        harness.render(Element::suspense(leaf(1), leaf(2)));
+        let Some(boundary) = harness.child(harness.root) else {
+            return;
+        };
+        let Some(offscreen) = harness.child(boundary) else {
+            return;
+        };
+        let Some(primary) = harness.child(offscreen) else {
+            return;
+        };
+
+        harness.render(Element::suspense(leaf(3), leaf(4)));
+        let Some(new_boundary) = harness.child(harness.root) else {
+            return;
+        };
+        assert_eq!(
+            harness
+                .arena
+                .get(new_boundary)
+                .and_then(|fiber| fiber.alternate),
+            Some(boundary)
+        );
+        let Some(new_offscreen) = harness.child(new_boundary) else {
+            return;
+        };
+        assert_eq!(
+            harness
+                .arena
+                .get(new_offscreen)
+                .and_then(|fiber| fiber.alternate),
+            Some(offscreen)
+        );
+        let Some(new_primary) = harness.child(new_offscreen) else {
+            return;
+        };
+        assert_eq!(
+            harness
+                .arena
+                .get(new_primary)
+                .and_then(|fiber| fiber.alternate),
+            Some(primary)
+        );
+        assert_eq!(harness.host.nodes.len(), 1);
+        assert_eq!(harness.host.nodes[0].element, (0, 3));
+        assert_eq!(harness.host.nodes[0].updates, 1);
     }
 
     #[test]

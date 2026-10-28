@@ -86,6 +86,23 @@ pub struct Element<H: Host> {
     kind: Kind<H>,
 }
 
+/// The two trees of a Suspense boundary.
+///
+/// The primary tree is what the boundary shows; the fallback is what it shows
+/// when something below the primary tree suspends. React keeps both on the
+/// boundary's props, and so does Rea: the description lives here, while which
+/// tree the boundary currently renders is state of its fiber.
+pub(crate) struct SuspenseNode<H: Host> {
+    /// The tree the boundary shows while nothing below it is suspended.
+    pub(crate) children: Element<H>,
+    /// The tree the boundary shows in place of the primary one.
+    // The pass that switches the boundary to this tree builds on the same
+    // suspension support as the primary one; until it lands the payload only
+    // carries the description.
+    #[allow(dead_code)]
+    pub(crate) fallback: Element<H>,
+}
+
 /// A host element together with the element children it arranges.
 ///
 /// The description of the node itself is what the host matches and updates;
@@ -116,6 +133,9 @@ pub(crate) enum Kind<H: Host> {
     },
     /// A group of children with no node of its own.
     Fragment(Rc<[Element<H>]>),
+    /// A boundary that shows its primary tree until a descendant suspends and
+    /// its fallback otherwise.
+    Suspense(Rc<SuspenseNode<H>>),
 }
 
 impl<H: Host> Element<H> {
@@ -212,6 +232,22 @@ impl<H: Host> Element<H> {
         }
     }
 
+    /// A Suspense boundary around `children` with `fallback` as its substitute.
+    ///
+    /// The boundary has no host node of its own: it arranges its primary tree
+    /// the way React's boundary arranges an Offscreen fragment, so every host
+    /// node below the boundary belongs to one of the two trees and nothing is
+    /// added for the boundary itself. The fallback is kept with the primary
+    /// tree in the description and only reaches the host when the boundary
+    /// renders it.
+    #[must_use]
+    pub fn suspense(children: Self, fallback: Self) -> Self {
+        Self {
+            key: None,
+            kind: Kind::Suspense(Rc::new(SuspenseNode { children, fallback })),
+        }
+    }
+
     /// Gives the element a key, so a reorder can follow it.
     #[must_use]
     pub fn keyed(mut self, key: impl Into<Key>) -> Self {
@@ -256,6 +292,7 @@ impl<H: Host> Clone for Element<H> {
                 type_id: *type_id,
             },
             Kind::Fragment(children) => Kind::Fragment(Rc::clone(children)),
+            Kind::Suspense(node) => Kind::Suspense(Rc::clone(node)),
         };
         Self {
             key: self.key.clone(),
@@ -393,6 +430,28 @@ mod tests {
         let first = panel();
         let second: Element<TestHost> = Element::component(|_| Element::host(9));
         assert_ne!(first.component_type(), second.component_type());
+    }
+
+    #[test]
+    fn a_suspense_boundary_keeps_both_trees() {
+        let element: Element<TestHost> = Element::suspense(Element::host(1), Element::host(2));
+        assert!(!element.is_empty());
+        assert_eq!(element.component_type(), None);
+        let Kind::Suspense(node) = element.kind() else {
+            return;
+        };
+        assert!(matches!(node.children.kind(), Kind::Host(child) if *child.element == 1));
+        assert!(matches!(node.fallback.kind(), Kind::Host(child) if *child.element == 2));
+    }
+
+    #[test]
+    fn cloning_a_suspense_boundary_shares_the_description() {
+        let element: Element<TestHost> = Element::suspense(Element::host(1), Element::host(2));
+        let clone = element.clone();
+        let (Kind::Suspense(a), Kind::Suspense(b)) = (element.kind(), clone.kind()) else {
+            return;
+        };
+        assert!(Rc::ptr_eq(a, b));
     }
 
     #[test]

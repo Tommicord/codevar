@@ -234,6 +234,9 @@ fn same_type<H: Host>(host: &H, fiber: &Fiber<H>, element: &Element<H>) -> bool 
         },
         (FiberTag::Component, Kind::Component { type_id, .. }) => fiber.element_type == Some(*type_id),
         (FiberTag::Fragment, Kind::Fragment(_)) => true,
+        // A Suspense boundary is matched by its kind alone: React reuses the
+        // boundary fiber for every render of it and diffs the two trees below.
+        (FiberTag::Suspense, Kind::Suspense(_)) => true,
         _ => false,
     }
 }
@@ -245,6 +248,7 @@ fn payload_of<H: Host>(element: &Element<H>) -> Payload<H> {
         Kind::Host(node) => Payload::Host(Rc::clone(node)),
         Kind::Component { render, .. } => Payload::Component(Rc::clone(render)),
         Kind::Fragment(children) => Payload::Fragment(Rc::clone(children)),
+        Kind::Suspense(node) => Payload::Suspense(Rc::clone(node)),
     }
 }
 
@@ -266,6 +270,7 @@ fn create<H: Host>(arena: &mut Arena<H>, element: &Element<H>) -> FiberId {
     let tag = match element.kind() {
         Kind::Host(_) => FiberTag::Host,
         Kind::Component { .. } => FiberTag::Component,
+        Kind::Suspense(_) => FiberTag::Suspense,
         // Empty is skipped by the caller; a fragment is the closest node.
         Kind::Empty | Kind::Fragment(_) => FiberTag::Fragment,
     };
@@ -539,6 +544,33 @@ mod tests {
                 .get(replaced[0])
                 .and_then(|fiber| fiber.alternate),
             None
+        );
+    }
+
+    #[test]
+    fn a_suspense_element_gets_a_suspense_fiber() {
+        let (arena, parent) = mount(&[Element::suspense(leaf(1), leaf(2))]);
+        let ids = children(&arena, parent);
+        assert_eq!(ids.len(), 1);
+        let Some(fiber) = arena.get(ids[0]) else {
+            return;
+        };
+        assert_eq!(fiber.tag, FiberTag::Suspense);
+        assert!(matches!(&fiber.pending, Payload::Suspense(node) if node.children.key().is_none()));
+    }
+
+    #[test]
+    fn a_suspense_boundary_is_reused_by_its_kind() {
+        let (mut arena, parent) = mount(&[Element::suspense(leaf(1), leaf(2))]);
+        let old = children(&arena, parent);
+        let first = render(&mut arena, parent, &[Element::suspense(leaf(3), leaf(4))]);
+        let new = chain(&arena, first);
+        assert_eq!(new.len(), 1);
+        assert_eq!(
+            arena
+                .get(new[0])
+                .and_then(|fiber| fiber.alternate),
+            Some(old[0])
         );
     }
 

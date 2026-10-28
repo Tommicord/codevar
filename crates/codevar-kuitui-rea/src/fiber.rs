@@ -61,7 +61,7 @@ use core::cell::RefCell;
 use core::fmt;
 use core::ops::{BitAnd, BitOr, Not};
 
-use crate::element::{ComponentFn, Element, HostNode, Reference};
+use crate::element::{ComponentFn, Element, HostNode, Reference, SuspenseNode};
 use crate::hooks::{Cleanup, EffectRecord, HookList};
 use crate::host::{Host, Key};
 use crate::lane::Lanes;
@@ -203,6 +203,8 @@ pub(crate) enum Payload<H: Host> {
     Host(Rc<HostNode<H>>),
     /// The children a fragment describes.
     Fragment(Rc<[Element<H>]>),
+    /// The primary and fallback trees of a Suspense boundary.
+    Suspense(Rc<SuspenseNode<H>>),
 }
 
 impl<H: Host> Clone for Payload<H> {
@@ -212,6 +214,7 @@ impl<H: Host> Clone for Payload<H> {
             Self::Component(render) => Self::Component(Rc::clone(render)),
             Self::Host(node) => Self::Host(Rc::clone(node)),
             Self::Fragment(children) => Self::Fragment(Rc::clone(children)),
+            Self::Suspense(node) => Self::Suspense(Rc::clone(node)),
         }
     }
 }
@@ -229,6 +232,7 @@ impl<H: Host> Payload<H> {
             (Self::Component(a), Self::Component(b)) => Rc::ptr_eq(a, b),
             (Self::Host(a), Self::Host(b)) => Rc::ptr_eq(a, b),
             (Self::Fragment(a), Self::Fragment(b)) => Rc::ptr_eq(a, b),
+            (Self::Suspense(a), Self::Suspense(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -262,6 +266,16 @@ pub(crate) enum FiberTag {
     Host,
     /// A transparent node around a list of children.
     Fragment,
+    /// A Suspense boundary; its children are the primary tree and, while the
+    /// boundary shows its fallback, the fallback beside the hidden primary.
+    Suspense,
+    /// The container of a Suspense boundary's primary tree.
+    ///
+    /// React renders the primary tree inside an Offscreen fiber so the
+    /// boundary can switch to its fallback without unmounting that tree. The
+    /// fiber has no host node of its own; it keeps the primary tree's fibers
+    /// and node identity across the switch.
+    Offscreen,
 }
 
 /// An index into the fiber arena.
