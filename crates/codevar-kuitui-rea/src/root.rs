@@ -18,10 +18,10 @@
 //! [`Root`] owns everything a tree needs to come to life: the host, the fiber
 //! arena, the committed tree, the mailbox of dispatches and the lanes that
 //! still have work. It is the counterpart of React's `FiberRoot` and work
-//! loop, with one deliberate difference: it has no scheduler and no time
-//! slicing. Work runs in the caller's turn, one lane at a time, and
-//! [`Root::flush`] returns only when nothing is pending, so the host decides
-//! when a frame is worth flushing.
+//! loop, with one deliberate difference: it has no scheduler of its own. The
+//! host decides when a frame is worth flushing, and [`Root::flush_slice`] gives
+//! control back between units of work so a render can stay inside the host's
+//! budget.
 //!
 //! # The flush loop
 //!
@@ -41,6 +41,26 @@
 //! one component while another renders — take part in the same flush as the
 //! work that caused it. An update a component dispatches to *itself* while it
 //! renders never reaches the mailbox at all; see below.
+//!
+//! # Time slicing
+//!
+//! A render whose lanes are all speculative — transitions, retries and the
+//! other work no input is waiting on — may be stopped between units of work. A
+//! unit is one fiber begun plus the chain of ancestors that completes with it,
+//! so a component is never left half-rendered. [`Root::flush_slice`] asks its
+//! caller before each unit; when the caller says the slice is over, the render
+//! stays in flight, the work-in-progress tree reaches no host, and the next
+//! slice resumes from the fiber that had not started. A render that covers a
+//! blocking lane — sync, continuous input, default or gesture work — is never
+//! stopped, even when its caller asks; [`Root::flush`] never stops at all.
+//!
+//! Work that arrives while a render is in flight only replaces it when it is
+//! strictly more urgent than the lanes the render covers; default work does
+//! not interrupt a transition. When work does replace the render, the tree in
+//! flight is thrown away: its fibers are freed and its update queues return to
+//! the state the last commit left, so the next render replays them from the
+//! committed tree. A lane a render could not cover, and a lane that arrived
+//! while it rendered, stay pending for a later pass.
 //!
 //! # Render phase updates
 //!
@@ -69,9 +89,9 @@
 //! way `markRootFinished` does, so a lane is never both rendered and pending.
 //!
 //! Idle, offscreen and deferred work is picked only when no other lane is
-//! pending. React's suspension, warm-up and interruption branches have no
-//! counterpart here: the root never has a render in flight, because a render
-//! and its commit share one call.
+//! pending. The root makes the lanes the render could not cover pending
+//! *before* the commit mutates the host, the way `markRootFinished` does, so a
+//! lane is never both rendered and pending.
 //!
 //! # Passive effects
 //!
@@ -99,7 +119,7 @@
 //!
 //! # Not implemented yet
 //!
-//! There is no time slicing, no suspension and no starvation protection.
+//! There is no suspension and no starvation protection.
 
 use alloc::rc::Rc;
 use core::slice;
@@ -112,6 +132,20 @@ use crate::host::Host;
 use crate::lane::Lanes;
 use crate::reconcile::reconcile_children;
 use crate::work::WorkLoop;
+
+/// A render in flight.
+///
+/// The work-in-progress tree is complete when `next` is `None`; a render that
+/// yielded leaves the fiber it was about to begin, so the next slice resumes
+/// exactly there.
+struct Render {
+    /// The work-in-progress root.
+    root: FiberId,
+    /// The next fiber to begin, or `None` when the tree is complete.
+    next: Option<FiberId>,
+    /// The lanes this render covers.
+    lanes: Lanes,
+}
 
 /// A mounted tree.
 ///
@@ -140,6 +174,12 @@ pub struct Root<H: Host> {
     ids: u64,
     /// The lanes that still have work.
     pending_lanes: Lanes,
+    /// The render in flight, if a slice stopped before the tree completed.
+    render: Option<Render>,
+    /// Work that arrived while a render was in flight. Its lane is pending but
+    /// no fiber of that render necessarily carries it, so the completion has to
+    /// account for it on its own.
+    interleaved: Lanes,
     /// The finished tree whose passive effects have not run yet.
     passive: Option<FiberId>,
 }
@@ -164,6 +204,8 @@ impl<H: Host> Root<H> {
             mailbox: mailbox(),
             ids: 0,
             pending_lanes: Lanes::NONE,
+            render: None,
+            interleaved: Lanes::NONE,
             passive: None,
         }
     }
@@ -206,13 +248,30 @@ impl<H: Host> Root<H> {
     /// effect sees the result before `flush` returns. Passive effects follow
     /// their own rule; see the module documentation.
     pub fn flush(&mut self) {
+        self.flush_slice(|| false);
+    }
+
+    /// Renders and commits the pending lanes, giving control back between
+    /// units of work.
+    ///
+    /// `should_yield` is asked before every unit of a render whose lanes are
+    /// not blocking, and a `true` answer leaves the render in flight: nothing
+    /// the slice built has reached the host, and the next call resumes the
+    /// render at the fiber it had not started. A render that covers a blocking
+    /// lane ignores the callback and always completes.
+    ///
+    /// The return value says whether work is left: `false` means nothing is
+    /// pending, the tree committed everything it was asked to cover.
+    pub fn flush_slice(&mut self, mut should_yield: impl FnMut() -> bool) -> bool {
         loop {
             self.drain_mailbox();
             let lanes = self.next_lanes();
             if lanes.is_empty() {
-                return;
+                return false;
             }
-            self.perform(lanes);
+            if !self.perform(lanes, &mut should_yield) {
+                return true;
+            }
         }
     }
 
@@ -230,21 +289,99 @@ impl<H: Host> Root<H> {
     /// The lanes the next render must cover.
     ///
     /// Idle work waits: only when no other lane is pending does the root look
-    /// at the idle, offscreen and deferred lanes. The rest of React's
-    /// `getNextLanes` has no counterpart here — there is no render in flight
-    /// to interrupt and no suspension to wait for.
+    /// at the idle, offscreen and deferred lanes. When a render is in flight,
+    /// the work that arrived since it started replaces it only when strictly
+    /// more urgent — and default work never interrupts a transition. This is
+    /// React's rule in `getNextLanes`, which returns the lanes of the render in
+    /// flight for everything else, so a render that has begun is not thrown
+    /// away for equal or lower priority work.
     fn next_lanes(&self) -> Lanes {
         let non_idle = self.pending_lanes & Lanes::NON_IDLE;
-        if non_idle.is_empty() {
+        let next = if non_idle.is_empty() {
             self.pending_lanes.render_lanes()
         } else {
             non_idle.render_lanes()
+        };
+        let Some(render) = &self.render else {
+            return next;
+        };
+        if next == render.lanes {
+            return next;
+        }
+        let more_urgent = next
+            .highest()
+            .is_strictly_higher_than(render.lanes.highest());
+        let default_over_transition =
+            next.highest() == Lanes::DEFAULT && render.lanes.intersects(Lanes::TRANSITION);
+        if more_urgent && !default_over_transition {
+            next
+        } else {
+            render.lanes
         }
     }
 
-    /// Renders `lanes`, commits the finished tree and records what is left.
-    fn perform(&mut self, lanes: Lanes) {
+    /// Renders `lanes` to completion, then commits the finished tree.
+    ///
+    /// Returns whether the render completed. A slice of non-blocking lanes
+    /// stops between units when `should_yield` asks it to and leaves the render
+    /// for the next call; a blocking render is never stopped.
+    fn perform(&mut self, lanes: Lanes, should_yield: &mut dyn FnMut() -> bool) -> bool {
+        if !self
+            .render
+            .as_ref()
+            .is_some_and(|render| render.lanes == lanes)
+        {
+            self.prepare_fresh(lanes);
+        }
+        let Some(root) = self.render.as_ref().map(|render| render.root) else {
+            return true;
+        };
+        let mut next = self
+            .render
+            .as_ref()
+            .and_then(|render| render.next);
+        let sliceable = !lanes.intersects(Lanes::BLOCKING);
+        {
+            let mut work_loop = WorkLoop::new(
+                &mut self.host,
+                &mut self.arena,
+                Rc::clone(&self.mailbox),
+                &mut self.ids,
+                lanes,
+            );
+            while let Some(fiber) = next {
+                if sliceable && should_yield() {
+                    break;
+                }
+                next = work_loop.step(fiber, root);
+            }
+        }
+        if next.is_some() {
+            if let Some(render) = self.render.as_mut() {
+                render.next = next;
+            }
+            return false;
+        }
+        self.render = None;
+        self.arena.end_render();
+        self.commit(root, lanes);
+        true
+    }
+
+    /// Throws away a render in flight and starts a fresh tree for `lanes`.
+    ///
+    /// This is React's `prepareFreshStack`. The abandoned tree never reached
+    /// the host: its fibers are freed, its update queues return to the state
+    /// the last commit left, and the committed root is copied again. Work that
+    /// arrived during the abandoned render is already in `pending_lanes`, so
+    /// clearing the interleaved set here loses nothing.
+    fn prepare_fresh(&mut self, lanes: Lanes) {
+        self.arena.abandon_render();
+        self.render = None;
+        self.interleaved = Lanes::NONE;
+        self.arena.begin_render();
         let Some(work) = self.arena.create_work_in_progress(self.current) else {
+            self.arena.end_render();
             return;
         };
         let current_first = self
@@ -260,15 +397,15 @@ impl<H: Host> Root<H> {
                 slice::from_ref(element),
             );
         }
-        let mut work_loop = WorkLoop::new(
-            &mut self.host,
-            &mut self.arena,
-            Rc::clone(&self.mailbox),
-            &mut self.ids,
+        self.render = Some(Render {
+            root: work,
+            next: Some(work),
             lanes,
-        );
-        work_loop.run(work);
+        });
+    }
 
+    /// Commits a finished tree and records the lanes the render left pending.
+    fn commit(&mut self, work: FiberId, lanes: Lanes) {
         // `completeRoot`: the passive effects of the previous commit run before
         // this tree becomes current, so their destroy pass still visits the
         // fibers that created them.
@@ -276,12 +413,16 @@ impl<H: Host> Root<H> {
 
         let (remaining, has_passive) = match self.arena.get(work) {
             Some(fiber) => (
-                fiber.lanes.union(fiber.child_lanes),
+                fiber
+                    .lanes
+                    .union(fiber.child_lanes)
+                    .union(self.interleaved),
                 fiber.flags.intersects(Flags::PASSIVE) || fiber.subtree_flags.intersects(Flags::PASSIVE),
             ),
-            None => (Lanes::NONE, false),
+            None => (self.interleaved, false),
         };
-        // `markRootFinished`: a lane this render did not cover stays pending.
+        // `markRootFinished`: a lane this render did not cover stays pending,
+        // and so does the work that arrived while it rendered.
         self.pending_lanes = remaining;
 
         let mut commit = Commit::new(&mut self.host, &mut self.arena);
@@ -317,13 +458,18 @@ impl<H: Host> Root<H> {
     /// A queue whose fiber unmounted is detached and no longer wakes the root;
     /// should one still be signalled, its owner is `None` and the update is
     /// dropped, because a fiber that is not in the tree has no render to
-    /// schedule.
+    /// schedule. A dispatch that lands while a render is in flight is also
+    /// recorded as interleaved: the render may be past the fiber it names, so
+    /// its own lanes cannot be relied on to carry the lane to the completion.
     fn drain_mailbox(&mut self) {
         let updates = self.mailbox.borrow_mut().drain();
         for (queue, lanes) in updates {
             let Some(owner) = queue.borrow().owner() else {
                 continue;
             };
+            if self.render.is_some() {
+                self.interleaved.insert(lanes);
+            }
             self.mark_update(owner, lanes);
         }
     }
@@ -479,12 +625,18 @@ mod tests {
         }
     }
 
-    /// Mounts `element` and leaves the root with no pending work.
-    fn mount(element: Element<TreeHost>) -> Root<TreeHost> {
+    /// Creates a root with `element` scheduled but not rendered.
+    fn scheduled(element: Element<TreeHost>) -> Root<TreeHost> {
         let host = TreeHost::new();
         let container = host.container();
         let mut root = Root::new(host, container);
         root.render(element);
+        root
+    }
+
+    /// Mounts `element` and leaves the root with no pending work.
+    fn mount(element: Element<TreeHost>) -> Root<TreeHost> {
+        let mut root = scheduled(element);
         root.flush();
         root
     }
@@ -822,5 +974,107 @@ mod tests {
         state.set(3);
         root.flush();
         assert_eq!(*log.borrow(), [(3, "render"), (2, "passive"), (3, "passive")]);
+    }
+
+    #[test]
+    fn a_time_sliced_render_reaches_the_host_only_when_it_completes() {
+        let handle = Rc::new(RefCell::new(None::<State<u32>>));
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut root = mount(counter(&handle, &log));
+        let Some(state) = handle.borrow().clone() else {
+            return;
+        };
+        state.set_with_lane(Lanes::TRANSITION.highest(), 2);
+
+        // The slice stops after the root, before the component runs: the
+        // work-in-progress tree exists but the host still shows the old one.
+        let mut checks = 0;
+        assert!(root.flush_slice(|| {
+            checks += 1;
+            checks > 1
+        }));
+        assert_eq!(*log.borrow(), [1]);
+        assert_eq!(top_level(&root), [Some(1)]);
+        assert!(root.has_pending_work());
+
+        root.flush();
+        assert_eq!(*log.borrow(), [1, 2]);
+        assert_eq!(top_level(&root), [Some(2)]);
+        assert!(!root.has_pending_work());
+    }
+
+    #[test]
+    fn a_blocking_render_ignores_the_yield_callback() {
+        let handle = Rc::new(RefCell::new(None::<State<u32>>));
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut root = scheduled(counter(&handle, &log));
+
+        // Default work is never time sliced, so the callback is not even asked.
+        let mut asked = false;
+        assert!(!root.flush_slice(|| {
+            asked = true;
+            true
+        }));
+        assert!(!asked);
+        assert_eq!(top_level(&root), [Some(1)]);
+        assert!(!root.has_pending_work());
+    }
+
+    #[test]
+    fn more_urgent_work_restarts_a_render_in_flight() {
+        let handle = Rc::new(RefCell::new(None::<State<u32>>));
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut root = mount(counter(&handle, &log));
+        let Some(state) = handle.borrow().clone() else {
+            return;
+        };
+
+        // The transition render reaches the component and stops right after
+        // it, so the value it read never reaches the host.
+        state.update_with_lane(Lanes::TRANSITION.highest(), |value| *value * 10);
+        let mut checks = 0;
+        assert!(root.flush_slice(|| {
+            checks += 1;
+            checks > 2
+        }));
+        assert_eq!(*log.borrow(), [1, 10]);
+        assert_eq!(top_level(&root), [Some(1)]);
+
+        // A sync update outranks the transition, so the render is thrown away
+        // and starts again from the committed tree. The abandoned update is
+        // not lost: the transition replays it on top of the sync one.
+        state.update_with_lane(Lanes::SYNC, |value| *value + 5);
+        root.flush();
+        assert_eq!(*log.borrow(), [1, 10, 6, 15]);
+        assert_eq!(top_level(&root), [Some(15)]);
+        assert!(!root.has_pending_work());
+    }
+
+    #[test]
+    fn work_that_arrives_during_a_render_stays_pending() {
+        let handle = Rc::new(RefCell::new(None::<State<u32>>));
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut root = mount(counter(&handle, &log));
+        let Some(state) = handle.borrow().clone() else {
+            return;
+        };
+
+        state.set_with_lane(Lanes::TRANSITION.highest(), 2);
+        let mut checks = 0;
+        assert!(root.flush_slice(|| {
+            checks += 1;
+            checks > 2
+        }));
+        assert_eq!(*log.borrow(), [1, 2]);
+
+        // Default work does not interrupt a transition, so the render in flight
+        // finishes first. The render is already past the fiber the update names,
+        // so the completion has to carry the lane by itself instead of trusting
+        // the finished tree to hold it.
+        state.set(5);
+        root.flush();
+        assert_eq!(*log.borrow(), [1, 2, 5]);
+        assert_eq!(top_level(&root), [Some(5)]);
+        assert!(!root.has_pending_work());
     }
 }

@@ -377,13 +377,20 @@ impl<T: PartialEq + 'static> State<T> {
         self.enqueue(lane, UpdateAction::Apply(Rc::new(update)));
     }
 
-    /// The last rendered value, when the queue is empty.
+    /// The last rendered value, when the queue is empty and no render is
+    /// replaying it.
     ///
-    /// Outside that case the eager computation is skipped: the last rendered
-    /// value is not the base the update would apply to.
+    /// Outside those cases the eager computation is skipped, because the base
+    /// of the update is not the value this renders: the queue has updates the
+    /// render has not applied yet, or a render in flight replayed the queue and
+    /// left [`UpdateQueue::last_rendered`] describing a pass that may still be
+    /// thrown away. React guards the eager computation the same way, with
+    /// `fiber.lanes === NoLanes && alternate.lanes === NoLanes`: the committed
+    /// fiber carries the lane of every update it has not rendered, so a fiber
+    /// with work never takes this shortcut.
     fn current_value(&self) -> Option<Rc<T>> {
         let queue = self.queue.borrow();
-        if !queue.is_empty() {
+        if !queue.is_empty() || queue.committed.is_some() {
             return None;
         }
         queue
