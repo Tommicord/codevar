@@ -94,6 +94,7 @@ mod hooks;
 mod host;
 mod reconcile;
 mod root;
+mod wakeable;
 mod work;
 
 pub use element::Element;
@@ -101,3 +102,4 @@ pub use hooks::{Cleanup, RenderCtx, State};
 pub use host::{Host, Key, Props, props, props_ref};
 pub use lane::{LANE_COUNT, Lanes, SchedulerPriority};
 pub use root::Root;
+pub use wakeable::{Wake, Wakeable};
