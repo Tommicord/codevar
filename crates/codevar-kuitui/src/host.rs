@@ -31,6 +31,16 @@
 //! above it; a widget that needs to survive has to keep its state in a hook or
 //! in a shared value its description carries.
 //!
+//! # Opaque subtrees
+//!
+//! Some widget libraries build their nodes outside the engine: a button
+//! answers a trait and returns the node that draws it, children included.
+//! [`NodeElement::opaque`] describes such a node. The engine reconciles the
+//! node and the slot it lives in, but the subtree the factory builds stays the
+//! node's own: assembly leaves it where the factory put it, and the element
+//! takes no element children. The factory runs on every create and update, so
+//! the description the render produced is the one the node is rebuilt from.
+//!
 //! # Assembly
 //!
 //! A [`Node`] owns its children, so one node cannot be both in the host's
@@ -38,7 +48,9 @@
 //! *childless* and keeps the structure — the parent and the child order —
 //! beside it. [`WidgetHost::assemble`] nests the nodes into the tree a layout
 //! pass walks, and [`WidgetHost::disassemble`] takes the tree apart again
-//! before the engine mutates anything.
+//! before the engine mutates anything. An opaque node is the exception: it
+//! keeps the children its factory built, and only the nodes above it are
+//! nested.
 //!
 //! The slots keep their ids across the hand-off, so the handle a fiber stores
 //! stays valid and a widget keeps its state from one frame to the next. The
@@ -93,6 +105,8 @@ pub struct NodeElement {
     make: Rc<dyn Fn() -> Node>,
     /// The modifier chain the built node carries.
     modifier: Modifier,
+    /// Whether the node owns the subtree under it.
+    opaque: bool,
 }
 
 impl NodeElement {
@@ -106,6 +120,29 @@ impl NodeElement {
             kind: TypeId::of::<W>(),
             make: Rc::new(move || Node::new(make())),
             modifier: Modifier::none(),
+            opaque: false,
+        }
+    }
+
+    /// Describes a node that owns the subtree under it.
+    ///
+    /// The engine reconciles the node but never the children `make` builds:
+    /// assembly leaves that subtree where the factory put it, so a library
+    /// that builds nodes of its own — a button that answers a trait, for
+    /// example — is placed in a reactive tree as it is. The factory runs on
+    /// every create and update, which is what makes the node follow the
+    /// description the last render produced.
+    ///
+    /// `M` is the identity the engine compares: two opaque elements of the
+    /// same `M` reuse one slot, and an opaque element never matches a typed
+    /// one. An opaque element takes no element children; everything under the
+    /// node is the factory's.
+    pub fn opaque<M: 'static>(make: impl Fn() -> Node + 'static) -> Self {
+        Self {
+            kind: TypeId::of::<M>(),
+            make: Rc::new(make),
+            modifier: Modifier::none(),
+            opaque: true,
         }
     }
 
@@ -133,6 +170,8 @@ struct Slot {
     parent: Option<NodeId>,
     /// The children, in order.
     children: Vec<NodeId>,
+    /// Whether the node owns the subtree under it.
+    opaque: bool,
 }
 
 /// The host that owns the widget nodes of one tree.
@@ -160,6 +199,7 @@ impl WidgetHost {
                 node: Some(Node::new(Stack::new())),
                 parent: None,
                 children: Vec::new(),
+                opaque: false,
             }],
             free: Vec::new(),
             container: NodeId(0),
@@ -224,8 +264,23 @@ impl WidgetHost {
         self.assembled = false;
     }
 
+    /// Whether the node of `id` owns the subtree under it.
+    fn is_opaque(&self, id: NodeId) -> bool {
+        self.slots
+            .get(id.index())
+            .is_some_and(|slot| slot.opaque)
+    }
+
     /// Takes the subtree of `id` out of the slots, childless nodes nested.
     fn take_tree(&mut self, id: NodeId) -> Option<Node> {
+        if self.is_opaque(id) {
+            let slot = self.slots.get_mut(id.index())?;
+            debug_assert!(
+                slot.children.is_empty(),
+                "an opaque node owns its subtree and takes no children"
+            );
+            return slot.node.take();
+        }
         let (node, ids) = {
             let slot = self.slots.get_mut(id.index())?;
             (slot.node.take()?, mem::take(&mut slot.children))
@@ -244,6 +299,12 @@ impl WidgetHost {
 
     /// Returns a node and its subtree to the slots.
     fn put_tree(&mut self, id: NodeId, mut node: Node) {
+        if self.is_opaque(id) {
+            if let Some(slot) = self.slots.get_mut(id.index()) {
+                slot.node = Some(node);
+            }
+            return;
+        }
         let children = node.take_children();
         let ids = match self.slots.get_mut(id.index()) {
             Some(slot) => {
@@ -265,12 +326,13 @@ impl WidgetHost {
     }
 
     /// Allocates a slot for `node`.
-    fn alloc(&mut self, node: Node) -> NodeId {
+    fn alloc(&mut self, node: Node, opaque: bool) -> NodeId {
         if let Some(id) = self.free.pop() {
             if let Some(slot) = self.slots.get_mut(id.index()) {
                 slot.node = Some(node);
                 slot.parent = None;
                 slot.children.clear();
+                slot.opaque = opaque;
             }
             return id;
         }
@@ -279,6 +341,7 @@ impl WidgetHost {
             node: Some(node),
             parent: None,
             children: Vec::new(),
+            opaque,
         });
         id
     }
@@ -300,20 +363,30 @@ impl Host for WidgetHost {
 
     fn create(&mut self, element: &NodeElement) -> NodeId {
         debug_assert!(!self.assembled, "the host must be disassembled to mutate it");
-        self.alloc(element.build())
+        self.alloc(element.build(), element.opaque)
     }
 
     fn update(&mut self, node: NodeId, element: &NodeElement) {
         debug_assert!(!self.assembled, "the host must be disassembled to mutate it");
         // The children belong to the fiber tree, not to the description: the
-        // slot keeps them and only the widget and its chain are replaced.
+        // slot keeps them and only the widget and its chain are replaced. An
+        // opaque node replaces its own subtree, which is why the element
+        // keeps the flag on every update.
         if let Some(slot) = self.slots.get_mut(node.index()) {
             slot.node = Some(element.build());
+            slot.opaque = element.opaque;
         }
     }
 
     fn insert_before(&mut self, parent: NodeId, child: NodeId, anchor: Option<NodeId>) {
         debug_assert!(!self.assembled, "the host must be disassembled to mutate it");
+        debug_assert!(
+            !self.is_opaque(parent),
+            "an opaque node owns its subtree and takes no children"
+        );
+        if self.is_opaque(parent) {
+            return;
+        }
         if let Some(current) = self
             .slots
             .get(child.index())
@@ -384,6 +457,16 @@ mod tests {
 
     fn block(side: f32) -> NodeElement {
         NodeElement::new(move || Block { side })
+    }
+
+    /// The marker of the opaque elements of the tests.
+    struct Spliced;
+
+    /// An opaque element whose node holds one `Block` child.
+    fn spliced(side: f32) -> NodeElement {
+        NodeElement::opaque::<Spliced>(move || {
+            Node::new(Block { side }).with_children(vec![Node::new(Block { side: side * 0.5 })])
+        })
     }
 
     /// A host with `children` inserted under the container.
@@ -464,6 +547,55 @@ mod tests {
         assert_eq!(host.children(host.container()), [ids[0]]);
         assert_eq!(host.children(ids[0]), [ids[1]]);
         assert!(host.node(ids[1]).is_some());
+    }
+
+    #[test]
+    fn an_opaque_node_keeps_the_subtree_its_factory_built() {
+        let (mut host, ids) = host_with(&[spliced(4.0)]);
+        assert_eq!(host.children(host.container()), [ids[0]]);
+        assert!(host.children(ids[0]).is_empty());
+
+        let Some(mut tree) = host.assemble() else {
+            return;
+        };
+        assert_eq!(tree.children()[0].children().len(), 1);
+
+        let theme = Theme::light();
+        let size = tree.measure(&theme, Constraints::unbounded());
+        tree.place(Rect::new(crate::geometry::Offset::ZERO, size));
+        assert_eq!(tree.children()[0].bounds().size, Size::new(4.0, 4.0));
+        host.disassemble(tree);
+        assert_eq!(
+            host.node(ids[0])
+                .map(|node| node.children().len()),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn an_opaque_element_matches_only_its_own_marker() {
+        struct OtherSubtree;
+        let host = WidgetHost::new();
+        let first = spliced(1.0);
+        let second = spliced(2.0);
+        let other = NodeElement::opaque::<OtherSubtree>(|| Node::new(Block { side: 3.0 }));
+        assert!(host.element_matches(&first, &second));
+        assert!(!host.element_matches(&first, &other));
+        assert!(!host.element_matches(&first, &block(1.0)));
+    }
+
+    #[test]
+    fn an_update_rebuilds_an_opaque_node_and_its_subtree() {
+        let (mut host, ids) = host_with(&[spliced(2.0)]);
+        host.update(ids[0], &spliced(6.0));
+
+        let Some(mut tree) = host.assemble() else {
+            return;
+        };
+        let theme = Theme::light();
+        let size = tree.measure(&theme, Constraints::unbounded());
+        assert_eq!(size, Size::new(6.0, 6.0));
+        assert_eq!(tree.children()[0].children().len(), 1);
     }
 
     #[test]

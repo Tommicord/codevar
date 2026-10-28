@@ -47,6 +47,14 @@
 //! expression of type
 //! [`Element<WidgetHost>`](codevar_kuitui_rea::Element).
 //!
+//! A node built outside the macro — the node of a button that answers a trait,
+//! for example — is spliced in with `Node(expr)`, which turns the expression
+//! into the factory the engine rebuilds the node from. The node owns the
+//! subtree under it: the engine reconciles the node and the slot it lives in,
+//! and leaves its children where the expression put them. Every spliced node
+//! is the same kind to the engine, because a retained node has no widget type
+//! of its own.
+//!
 //! # Identity
 //!
 //! A host element is identified by its widget type, so a `Text` keeps its node
@@ -85,10 +93,27 @@
 ///     }
 /// };
 /// ```
+///
+/// A node built by another library is spliced in with `Node(expr)`, which the
+/// macro evaluates whenever the engine builds the node:
+///
+/// ```
+/// use codevar_kuitui::prelude::*;
+/// use codevar_kuitui::node::Node;
+///
+/// let tree = element! {
+///     Row {
+///         Node(Node::new(Text::new("Save")))
+///     }
+/// };
+/// ```
 #[macro_export]
 macro_rules! element {
     (Element ( $($element:tt)* )) => {{
         $($element)*
+    }};
+    (Node ( $($node:tt)* )) => {{
+        $crate::elements::private::opaque(move || $($node)*)
     }};
     ($name:ident (modifier : $modifier:expr $(, $arg:ident : $value:expr)* $(,)?)
      $( { $($child:tt)* } )?) => {{
@@ -140,6 +165,12 @@ macro_rules! __kuitui_element_children {
         $crate::elements::private::append(&mut __children, $crate::__kuitui_element_children!($($rest)*));
         __children
     }};
+    (Node ( $($node:tt)* ) $($rest:tt)*) => {{
+        let mut __children = $crate::elements::private::no_children();
+        __children.push($crate::element!(Node($($node)*)));
+        $crate::elements::private::append(&mut __children, $crate::__kuitui_element_children!($($rest)*));
+        __children
+    }};
     ($name:ident { $($inner:tt)* } $($rest:tt)*) => {{
         let mut __children = $crate::elements::private::no_children();
         __children.push($crate::element!($name { $($inner)* }));
@@ -170,7 +201,7 @@ pub mod private {
     use codevar_kuitui_rea::Element;
 
     use crate::host::{NodeElement, WidgetHost};
-    use crate::node::Modifier;
+    use crate::node::{Modifier, Node};
     use crate::widget::Widget;
 
     /// Creates the element of `widget` with `children`.
@@ -194,6 +225,21 @@ pub mod private {
         Element::host(NodeElement::new(move || widget.clone()).modifier(modifier)).children(children)
     }
 
+    /// The marker that names the kind of a spliced node.
+    ///
+    /// A retained node has no widget type of its own, so every splice is the
+    /// same kind to the engine: two spliced nodes in the same position reuse
+    /// one slot, and the factory rebuilds the node it describes.
+    pub struct Spliced;
+
+    /// Creates the element of a node built outside the macro.
+    ///
+    /// The node owns the subtree its factory builds; the engine reconciles
+    /// the node and the slot it lives in and leaves that subtree alone.
+    pub fn opaque(make: impl Fn() -> Node + 'static) -> Element<WidgetHost> {
+        Element::host(NodeElement::opaque::<Spliced>(make))
+    }
+
     /// Creates an empty list of children.
     pub fn no_children() -> Vec<Element<WidgetHost>> {
         Vec::new()
@@ -215,9 +261,10 @@ mod tests {
     use crate::event::{Event, EventResult, PointerEvent, PointerEventKind};
     use crate::geometry::{Offset, Size};
     use crate::host::WidgetHost;
-    use crate::node::Modifier;
+    use crate::node::{Modifier, Node};
     use crate::reactive::ReactiveComposition;
     use crate::theme::Theme;
+    use crate::widgets::Text;
 
     /// Mounts the element the content builds and returns the composition.
     fn composed(content: impl Fn() -> Element<WidgetHost> + 'static) -> ReactiveComposition {
@@ -257,6 +304,30 @@ mod tests {
         let host = composition.host();
         let roots = host.children(host.container());
         assert_eq!(host.children(roots[0]).len(), 2);
+    }
+
+    #[test]
+    fn the_macro_splices_a_node_that_keeps_its_own_children() {
+        let composition = composed(|| {
+            element! {
+                Column {
+                    Node(Node::new(Text::new("one")).with_children(vec![Node::new(Text::new("two"))]))
+                }
+            }
+        });
+        let host = composition.host();
+        let roots = host.children(host.container());
+        let spliced = host.children(roots[0])[0];
+        assert!(
+            host.children(spliced).is_empty(),
+            "the engine holds no child of its own"
+        );
+        assert_eq!(
+            composition.root().children()[0].children()[0]
+                .children()
+                .len(),
+            1
+        );
     }
 
     #[test]
