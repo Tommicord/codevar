@@ -110,6 +110,7 @@ pub mod input;
 mod macros;
 pub mod node;
 pub mod paint;
+pub mod reactive;
 /// Compiled UI shaders.
 ///
 /// `build.rs` compiles every GLSL source under the crate's `shaders/`
@@ -128,6 +129,7 @@ pub mod widget;
 pub mod widgets;
 pub mod window;
 
+pub use codevar_kuitui_rea as rea;
 pub use color::{Color, ColorScheme};
 pub use compose::{Composer, Composition, Recomposition};
 pub use driver::{FrameDriver, FrameReport};
@@ -142,6 +144,7 @@ pub use paint::{
     ClippedOps, ColorTextOp, CornerRadii, Draw, DrawCommand, DrawList, DrawVisitor, LineOp, Paint,
     PaintStyle, RectOp, TextOp,
 };
+pub use reactive::{Content, ReactiveComposition};
 pub use state::{DirtyState, MutableState, State};
 pub use text::{FontMetrics, FontWeight, TextSpan, TextStyle};
 pub use theme::{Theme, ThemeMode, Typography};
@@ -170,6 +173,7 @@ pub mod prelude {
         ClippedOps, ColorTextOp, CornerRadii, Draw, DrawCommand, DrawList, DrawVisitor, LineOp, Paint,
         PaintStyle, RectOp, TextOp,
     };
+    pub use crate::reactive::ReactiveComposition;
     pub use crate::state::{DirtyState, MutableState, State};
     pub use crate::text::{
         ApproximateFontMetrics, FontMetrics, FontWeight, TextAlign, TextContent, TextSpan, TextStyle,
