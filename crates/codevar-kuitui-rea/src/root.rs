@@ -128,9 +128,23 @@
 //! it. A parent that builds a new element for a component defeats this, the
 //! way React re-renders a child whose props object changed.
 //!
-//! # Not implemented yet
+//! # Suspension
 //!
-//! There is no suspension.
+//! A component suspends by recording a wakeable instead of rendering (see
+//! [`RenderCtx::suspend`]). A suspension that reaches the shell — nothing above
+//! it can show a substitute — throws the render away and parks the lanes it
+//! covered: nothing is committed, and the host keeps showing the last tree that
+//! completed. A parked lane is still pending but no flush can make progress on
+//! it, so [`Root::has_pending_work`] ignores it and [`Root::next_lanes`] skips
+//! it, which is React's `getNextLanes` with a non-empty `suspendedLanes`. An
+//! update on any lane that is not idle clears the parked set — `markRootUpdated`
+//! assumes the update may carry the data the tree was waiting for — and the
+//! next flush tries the parked work again. Parked lanes lose their expiration
+//! clock: the wait is for data, not for the CPU, so starvation protection has
+//! nothing to measure.
+//!
+//! Boundaries do not capture a suspension yet; the pass that renders the
+//! fallback in place of a suspended primary tree lands next.
 
 use alloc::rc::Rc;
 use core::slice;
@@ -142,7 +156,7 @@ use crate::hooks::{MailboxHandle, mailbox};
 use crate::host::Host;
 use crate::lane::{LANE_COUNT, Lanes};
 use crate::reconcile::reconcile_children;
-use crate::work::WorkLoop;
+use crate::work::{Progress, WorkLoop};
 
 /// A render in flight.
 ///
@@ -185,6 +199,13 @@ pub struct Root<H: Host> {
     ids: u64,
     /// The lanes that still have work.
     pending_lanes: Lanes,
+    /// The lanes a render parked on a suspension.
+    ///
+    /// A lane in this set is still pending, but the tree cannot make progress
+    /// on it: what it renders needs data that is not there, so a render would
+    /// suspend in the same place. React keeps the same set on the root and
+    /// takes it out of `getNextLanes`.
+    suspended_lanes: Lanes,
     /// When each pending lane expires, indexed by lane bit. `None` until the
     /// root first sees the lane pending, and again once the lane is rendered.
     expiration_times: [Option<u64>; LANE_COUNT],
@@ -220,6 +241,7 @@ impl<H: Host> Root<H> {
             mailbox: mailbox(),
             ids: 0,
             pending_lanes: Lanes::NONE,
+            suspended_lanes: Lanes::NONE,
             expiration_times: [None; LANE_COUNT],
             expired_lanes: Lanes::NONE,
             render: None,
@@ -242,10 +264,14 @@ impl<H: Host> Root<H> {
     /// Whether a dispatch or a lane is waiting for a flush.
     ///
     /// A dispatch that only reached the mailbox counts: it becomes a pending
-    /// lane when [`Root::flush`] drains it.
+    /// lane when [`Root::flush`] drains it. A lane the tree suspended on does
+    /// not count: it is pending, but no flush can make progress on it until an
+    /// update unblocks it, so a host that keeps flushing while this is true
+    /// cannot spin on parked work. The dispatch that unblocks it is a mailbox
+    /// entry the moment it is sent, so the host sees it.
     #[must_use]
     pub fn has_pending_work(&self) -> bool {
-        !self.pending_lanes.is_empty() || !self.mailbox.borrow().is_empty()
+        !(self.pending_lanes & !self.suspended_lanes).is_empty() || !self.mailbox.borrow().is_empty()
     }
 
     /// Schedules `element` as the tree of the root.
@@ -261,8 +287,9 @@ impl<H: Host> Root<H> {
     /// Renders and commits every pending lane, most urgent first.
     ///
     /// The call returns when no lane is pending and no dispatch is left in the
-    /// mailbox. Work that a layout effect or a component dispatches during the
-    /// call is picked up by the loop, so a caller that sets state from an
+    /// mailbox, or when every lane that is still pending is parked on a
+    /// suspension. Work that a layout effect or a component dispatches during
+    /// the call is picked up by the loop, so a caller that sets state from an
     /// effect sees the result before `flush` returns. Passive effects follow
     /// their own rule; see the module documentation.
     pub fn flush(&mut self) {
@@ -284,7 +311,9 @@ impl<H: Host> Root<H> {
     /// a blocking lane ignores the callback and always completes.
     ///
     /// The return value says whether work is left: `false` means nothing is
-    /// pending, the tree committed everything it was asked to cover.
+    /// pending, the tree committed everything it was asked to cover. Parked
+    /// lanes do not count as left — the next call has nothing to do on them
+    /// until an update unblocks them — so a parked tree also returns `false`.
     pub fn flush_slice(&mut self, now: u64, mut should_yield: impl FnMut() -> bool) -> bool {
         // The mailbox is drained first so the lanes this call sees are the ones
         // the host's clock starts the expiration of; React marks them from
@@ -320,7 +349,11 @@ impl<H: Host> Root<H> {
     /// an uncached promise.
     fn mark_starved_lanes(&mut self, now: u64) {
         let mut expired = self.expired_lanes;
-        for lane in (self.pending_lanes & !Lanes::RETRY).iter() {
+        // A parked lane waits for data instead of the CPU, so it is not
+        // starving and React does not arm its clock (`markStarvedLanesAsExpired`
+        // skips the suspended lanes that were not pinged).
+        let starving = self.pending_lanes & !Lanes::RETRY & !self.suspended_lanes;
+        for lane in starving.iter() {
             let Some(index) = lane.index() else {
                 continue;
             };
@@ -353,19 +386,26 @@ impl<H: Host> Root<H> {
     /// The lanes the next render must cover.
     ///
     /// Idle work waits: only when no other lane is pending does the root look
-    /// at the idle, offscreen and deferred lanes. When a render is in flight,
-    /// the work that arrived since it started replaces it only when strictly
-    /// more urgent — and default work never interrupts a transition. This is
-    /// React's rule in `getNextLanes`, which returns the lanes of the render in
-    /// flight for everything else, so a render that has begun is not thrown
-    /// away for equal or lower priority work.
+    /// at the idle, offscreen and deferred lanes. Parked lanes are not
+    /// candidates at all — a render would suspend in the same place — and when
+    /// nothing else is left the root returns no lanes, which is what
+    /// `getNextLanes` does once every remaining lane is suspended. When a
+    /// render is in flight, the work that arrived since it started replaces it
+    /// only when strictly more urgent — and default work never interrupts a
+    /// transition. This is React's rule in `getNextLanes`, which returns the
+    /// lanes of the render in flight for everything else, so a render that has
+    /// begun is not thrown away for equal or lower priority work.
     fn next_lanes(&self) -> Lanes {
-        let non_idle = self.pending_lanes & Lanes::NON_IDLE;
+        let runnable = self.pending_lanes & !self.suspended_lanes;
+        let non_idle = runnable & Lanes::NON_IDLE;
         let next = if non_idle.is_empty() {
-            self.pending_lanes.render_lanes()
+            runnable.render_lanes()
         } else {
             non_idle.render_lanes()
         };
+        if next.is_empty() {
+            return Lanes::NONE;
+        }
         let Some(render) = &self.render else {
             return next;
         };
@@ -388,7 +428,10 @@ impl<H: Host> Root<H> {
     ///
     /// Returns whether the render completed. A slice of non-blocking lanes
     /// stops between units when `should_yield` asks it to and leaves the render
-    /// for the next call; a blocking render is never stopped.
+    /// for the next call; a blocking render is never stopped. A render that
+    /// suspends never completes: the tree is thrown away, nothing reaches the
+    /// host, and the lanes are parked so no later flush repeats the attempt
+    /// until something they wait for changed.
     fn perform(&mut self, lanes: Lanes, should_yield: &mut dyn FnMut() -> bool) -> bool {
         if !self
             .render
@@ -407,6 +450,7 @@ impl<H: Host> Root<H> {
         // `shouldTimeSlice`: a render that covers blocking or expired work
         // runs to the end even when the host asks for the core.
         let sliceable = !lanes.intersects(Lanes::BLOCKING) && !lanes.intersects(self.expired_lanes);
+        let mut suspended = false;
         {
             let mut work_loop = WorkLoop::new(
                 &mut self.host,
@@ -419,8 +463,27 @@ impl<H: Host> Root<H> {
                 if sliceable && should_yield() {
                     break;
                 }
-                next = work_loop.step(fiber, root);
+                match work_loop.step(fiber, root) {
+                    Progress::Next(child) => next = Some(child),
+                    Progress::Done => next = None,
+                    // Nothing below the shell captured the suspension, so
+                    // there is no fiber to render next: this is React's
+                    // `RootSuspendedAtTheShell`, which unwinds to the root and
+                    // leaves the finished tree uncommitted.
+                    Progress::Suspended(_) => {
+                        suspended = true;
+                        next = None;
+                        break;
+                    }
+                }
             }
+        }
+        if suspended {
+            self.render = None;
+            self.arena.abandon_render();
+            self.interleaved = Lanes::NONE;
+            self.mark_suspended(lanes);
+            return true;
         }
         if next.is_some() {
             if let Some(render) = self.render.as_mut() {
@@ -432,6 +495,23 @@ impl<H: Host> Root<H> {
         self.arena.end_render();
         self.commit(root, lanes);
         true
+    }
+
+    /// Parks `lanes` until an update makes them runnable again.
+    ///
+    /// This is React's `markRootSuspended`: the lanes join the suspended set
+    /// and lose their expiration clock, because the tree waits for data and not
+    /// for the CPU. The wakeable the render suspended on is dropped with it: a
+    /// suspension that reaches the shell has no boundary to retry through, so
+    /// nothing subscribes it, and these lanes stay parked until an update
+    /// clears the set or a later pass subscribes the work at the root.
+    fn mark_suspended(&mut self, lanes: Lanes) {
+        self.suspended_lanes.insert(lanes);
+        for lane in lanes.iter() {
+            if let Some(index) = lane.index() {
+                self.expiration_times[index as usize] = None;
+            }
+        }
     }
 
     /// Throws away a render in flight and starts a fresh tree for `lanes`.
@@ -491,6 +571,10 @@ impl<H: Host> Root<H> {
         // and so does the work that arrived while it rendered.
         let previously_pending = self.pending_lanes;
         self.pending_lanes = remaining;
+        // The tree committed, so nothing below it is holding a lane back any
+        // more; a boundary that still waits re-parks its retry lane when it
+        // attaches one. React resets the same sets in `markRootFinished`.
+        self.suspended_lanes = Lanes::NONE;
         // A lane that is no longer pending starts over: a later update on it
         // gets a fresh expiration time instead of inheriting the one the
         // finished work had, and it is no longer expired.
@@ -572,6 +656,15 @@ impl<H: Host> Root<H> {
             node = parent;
         }
         self.pending_lanes.insert(lanes);
+        // `markRootUpdated`: a tree parked on a suspension is tried again when
+        // any non-idle update arrives, because the update may be what the
+        // parked work was waiting for. React clears the whole set rather than
+        // the updated lanes, since it cannot tell which suspension an update
+        // unblocks. Idle work never runs while regular work is pending, so it
+        // cannot unblock anything and leaves the set alone.
+        if !lanes.is_subset_of(Lanes::IDLE) {
+            self.suspended_lanes = Lanes::NONE;
+        }
     }
 
     /// Records `lanes` on a fiber and its alternate.
@@ -606,6 +699,7 @@ mod tests {
     use super::*;
     use crate::element::Reference;
     use crate::hooks::{Cleanup, State};
+    use crate::wakeable::Wakeable;
     use alloc::rc::Rc;
     use alloc::vec;
     use alloc::vec::Vec;
@@ -763,6 +857,75 @@ mod tests {
         root.render(Element::empty());
         root.flush();
         assert!(top_level(&root).is_empty());
+    }
+
+    /// A component that renders one host node until its state says its data is
+    /// missing, and suspends on a wakeable nothing resolves until then.
+    fn sometimes(handle: &Rc<RefCell<Option<State<bool>>>>, rendered: &Rc<Cell<u32>>) -> Element<TreeHost> {
+        let handle = Rc::clone(handle);
+        let rendered = Rc::clone(rendered);
+        Element::component(move |ctx| {
+            let missing = ctx.use_state(|| false);
+            *handle.borrow_mut() = Some(missing.clone());
+            rendered.set(rendered.get() + 1);
+            if *missing.get() {
+                return ctx.suspend(Wakeable::from_fn(|_| {}));
+            }
+            Element::host(7)
+        })
+    }
+
+    #[test]
+    fn a_suspension_at_the_shell_keeps_the_committed_tree() {
+        let handle = Rc::new(RefCell::new(None));
+        let rendered = Rc::new(Cell::new(0));
+        let mut root = mount(sometimes(&handle, &rendered));
+        assert_eq!(top_level(&root), [Some(7)]);
+        let nodes = root.host().nodes.len();
+        let fibers = root.arena.len();
+        let Some(missing) = handle.borrow().clone() else {
+            return;
+        };
+
+        missing.set(true);
+        root.flush();
+
+        // The component rendered again and suspended, so the pass stopped
+        // there: the element it never built reached no host, and the fibers of
+        // the thrown-away tree are gone.
+        assert_eq!(rendered.get(), 2);
+        assert_eq!(top_level(&root), [Some(7)]);
+        assert_eq!(root.host().nodes.len(), nodes);
+        assert_eq!(root.arena.len(), fibers);
+        // The lane stays pending, but parked: no flush can progress on it.
+        assert_eq!(root.pending_lanes, Lanes::DEFAULT);
+        assert_eq!(root.suspended_lanes, Lanes::DEFAULT);
+        assert!(!root.has_pending_work());
+    }
+
+    #[test]
+    fn an_update_after_a_suspension_tries_the_parked_lane_again() {
+        let handle = Rc::new(RefCell::new(None));
+        let rendered = Rc::new(Cell::new(0));
+        let mut root = mount(sometimes(&handle, &rendered));
+        let nodes = root.host().nodes.len();
+        let Some(missing) = handle.borrow().clone() else {
+            return;
+        };
+        missing.set(true);
+        root.flush();
+        assert!(!root.has_pending_work());
+
+        // The handle the committed render handed out still reaches its queue,
+        // and the update is what unblocks the parked lane.
+        missing.set(false);
+        root.flush();
+
+        assert_eq!(rendered.get(), 3);
+        assert_eq!(top_level(&root), [Some(7)]);
+        assert_eq!(root.suspended_lanes, Lanes::NONE);
+        assert!(!root.has_pending_work());
+        assert_eq!(root.host().nodes.len(), nodes);
     }
 
     /// The nodes the container shows, in order.

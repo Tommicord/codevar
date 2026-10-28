@@ -58,7 +58,8 @@
 //! fiber arena, the hook model, the element vocabulary, keyed reconciliation,
 //! the begin/complete work pass, the commit phases and the root that drives
 //! them are in place. The public surface is [`lane`], [`element`], [`Host`],
-//! [`Key`], [`Props`], [`RenderCtx`], [`State`], [`Cleanup`] and [`Root`].
+//! [`Key`], [`Props`], [`RenderCtx`], [`State`], [`Cleanup`], [`Wakeable`] and
+//! [`Root`].
 //!
 //! The root renders every pending lane before it returns by default, and a
 //! render whose lanes are speculative can be time sliced: [`Root::flush_slice`]
@@ -68,7 +69,10 @@
 //! work cannot starve it. A component that writes to its own state while it
 //! renders is rendered again in place, so the intermediate tree is never
 //! mounted, and a fiber whose description did not change and whose lanes the
-//! render does not cover bails out. There is no suspension yet.
+//! render does not cover bails out. A component that cannot describe its tree
+//! without more data suspends with a wakeable: a suspension that reaches the
+//! shell throws the render away and parks its lanes, so the host keeps showing
+//! the committed tree until an update unblocks them.
 //!
 //! # References
 //!

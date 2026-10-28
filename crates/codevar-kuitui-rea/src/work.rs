@@ -37,6 +37,17 @@
 //! when it has none. Because the tree is stored in an arena, the climb is a
 //! field read rather than a stack pop.
 //!
+//! # Suspension
+//!
+//! A component suspends by recording a wakeable on its [`RenderCtx`]; the pass
+//! throws the element it built away, because a component that does not have
+//! its data cannot describe the tree. React unwinds the call stack to the
+//! nearest Suspense boundary in `throwException`. Rea has no stack to unwind —
+//! a fiber is begun, then its children — so [`WorkLoop::step`] reports the
+//! suspension as a [`Progress::Suspended`] and the caller decides which fiber
+//! renders next. Until a boundary takes the suspension, the tree in flight is
+//! abandoned and the committed tree keeps showing what it showed before.
+//!
 //! # Host nodes
 //!
 //! A host node is created in the complete pass, which is the first moment the
@@ -66,6 +77,7 @@ use crate::hooks::{EffectTag, MailboxHandle, RenderCtx};
 use crate::host::Host;
 use crate::lane::Lanes;
 use crate::reconcile::{committed_first_child, reconcile_children};
+use crate::wakeable::Wakeable;
 
 /// The state the render pass needs while it walks the tree.
 pub(crate) struct WorkLoop<'a, H: Host> {
@@ -87,6 +99,29 @@ pub(crate) struct WorkLoop<'a, H: Host> {
 /// so the loop stops instead and drops the updates the last pass queued: they
 /// were queued for a pass the limit did not allow.
 const RE_RENDER_LIMIT: u32 = 25;
+
+/// What a begun fiber asks the pass to do next.
+enum Begin {
+    /// The fiber has a child to begin.
+    Child(FiberId),
+    /// The fiber has no child, so it completes.
+    Complete,
+    /// A component suspended and the suspension has to reach a boundary.
+    Suspended(Wakeable),
+}
+
+/// What one unit of work produced.
+///
+/// The caller owns the cursor, so a pass that has to leave the current fiber —
+/// a suspension does — can resume somewhere else without a stack to unwind.
+pub(crate) enum Progress {
+    /// The next fiber to begin.
+    Next(FiberId),
+    /// The tree is complete.
+    Done,
+    /// A component suspended with nothing in the tree to capture it.
+    Suspended(Wakeable),
+}
 
 impl<'a, H: Host> WorkLoop<'a, H> {
     /// Creates a render pass.
@@ -113,10 +148,14 @@ impl<'a, H: Host> WorkLoop<'a, H> {
     /// The cursor is the only state the pass keeps: a caller that stops between
     /// units resumes by passing the returned fiber, which is what time slicing
     /// does.
-    pub(crate) fn step(&mut self, fiber: FiberId, root: FiberId) -> Option<FiberId> {
+    pub(crate) fn step(&mut self, fiber: FiberId, root: FiberId) -> Progress {
         match self.begin_work(fiber) {
-            Some(child) => Some(child),
-            None => self.complete_work(fiber, root),
+            Begin::Child(child) => Progress::Next(child),
+            Begin::Complete => match self.complete_work(fiber, root) {
+                Some(next) => Progress::Next(next),
+                None => Progress::Done,
+            },
+            Begin::Suspended(wakeable) => Progress::Suspended(wakeable),
         }
     }
 
@@ -125,21 +164,35 @@ impl<'a, H: Host> WorkLoop<'a, H> {
     /// The root is begun like every other fiber, so it is also completed when
     /// it has no child left — which is what replaces the lanes and flags the
     /// work-in-progress copy inherited from the committed tree.
-    pub(crate) fn run(&mut self, root: FiberId) {
+    ///
+    /// Returns the wakeable of the suspension that stopped the pass, when a
+    /// component suspended and nothing in the tree could capture it. Everything
+    /// the pass built is in the arena but nothing of it is committed.
+    pub(crate) fn run(&mut self, root: FiberId) -> Option<Wakeable> {
         let mut next = Some(root);
         while let Some(fiber) = next {
-            next = self.step(fiber, root);
+            match self.step(fiber, root) {
+                Progress::Next(child) => next = Some(child),
+                Progress::Done => return None,
+                Progress::Suspended(wakeable) => return Some(wakeable),
+            }
         }
+        None
     }
 
     /// Renders one fiber and returns the child to work on next, if any.
-    fn begin_work(&mut self, fiber: FiberId) -> Option<FiberId> {
-        let node = self.arena.get(fiber)?;
+    fn begin_work(&mut self, fiber: FiberId) -> Begin {
+        let Some(node) = self.arena.get(fiber) else {
+            return Begin::Complete;
+        };
         let tag = node.tag;
         if let Some(current) = node.alternate
             && !self.did_receive_update(fiber, current)
         {
-            return self.bailout_on_already_finished_work(fiber);
+            return match self.bailout_on_already_finished_work(fiber) {
+                Some(child) => Begin::Child(child),
+                None => Begin::Complete,
+            };
         }
         if let Some(node) = self.arena.get_mut(fiber) {
             // The lanes copied from the committed alternate describe the work
@@ -154,7 +207,19 @@ impl<'a, H: Host> WorkLoop<'a, H> {
             FiberTag::Host => self.render_host(fiber),
             // The root's children are reconciled by the caller before the pass
             // starts.
-            FiberTag::Root => self.arena.get(fiber)?.first_child,
+            FiberTag::Root => self.child_or_complete(fiber),
+        }
+    }
+
+    /// The first child of `fiber`, or the completion it needs when it has none.
+    fn child_or_complete(&self, fiber: FiberId) -> Begin {
+        match self
+            .arena
+            .get(fiber)
+            .and_then(|fiber| fiber.first_child)
+        {
+            Some(child) => Begin::Child(child),
+            None => Begin::Complete,
         }
     }
 
@@ -244,13 +309,21 @@ impl<'a, H: Host> WorkLoop<'a, H> {
     /// here does the same. Every pass starts from the same committed hook list
     /// and compares its effects against the committed dependencies, so the
     /// effects of the last pass are the ones the commit runs.
-    fn render_component(&mut self, fiber: FiberId) -> Option<FiberId> {
+    ///
+    /// A component that suspends ends the pass instead. Its element never
+    /// reaches the reconciler and the hooks go back to the fiber as they are:
+    /// the fiber is part of the subtree a boundary throws away, and the render
+    /// that threw it away puts every queue back through the hooks it finds
+    /// there. The slots are deliberately not truncated to the pass — a
+    /// suspension can sit before the hooks a shorter component would not reach,
+    /// and a queue behind the cursor still has to be restored.
+    fn render_component(&mut self, fiber: FiberId) -> Begin {
         let Some(Payload::Component(render)) = self
             .arena
             .get(fiber)
             .map(|fiber| fiber.pending.clone())
         else {
-            return self.arena.get(fiber)?.first_child;
+            return self.child_or_complete(fiber);
         };
         let mut hooks = self
             .arena
@@ -272,6 +345,7 @@ impl<'a, H: Host> WorkLoop<'a, H> {
             .begin_render(fiber, alternate, self.render_lanes);
         let mut lanes = Lanes::NONE;
         let mut element;
+        let mut suspended;
         let mut rerenders = 0;
         loop {
             effects.clear();
@@ -286,9 +360,15 @@ impl<'a, H: Host> WorkLoop<'a, H> {
                     &mut *self.ids,
                 );
                 let element = render(&mut ctx);
-                ctx.finish();
+                suspended = ctx.take_suspended();
+                if suspended.is_none() {
+                    ctx.finish();
+                }
                 element
             };
+            if suspended.is_some() {
+                break;
+            }
             if !self
                 .mailbox
                 .borrow_mut()
@@ -303,6 +383,13 @@ impl<'a, H: Host> WorkLoop<'a, H> {
             rerenders += 1;
         }
         self.mailbox.borrow_mut().end_render();
+        if let Some(wakeable) = suspended {
+            if let Some(current) = self.arena.get_mut(fiber) {
+                current.hooks = hooks;
+                current.effects = effects;
+            }
+            return Begin::Suspended(wakeable);
+        }
         let mut flags = Flags::NONE;
         for effect in &effects {
             match effect.tag() {
@@ -317,20 +404,20 @@ impl<'a, H: Host> WorkLoop<'a, H> {
             current.lanes.insert(lanes);
         }
         self.reconcile(fiber, &[element]);
-        self.arena.get(fiber)?.first_child
+        self.child_or_complete(fiber)
     }
 
     /// Diffs the children a fragment describes.
-    fn render_fragment(&mut self, fiber: FiberId) -> Option<FiberId> {
+    fn render_fragment(&mut self, fiber: FiberId) -> Begin {
         let Some(Payload::Fragment(children)) = self
             .arena
             .get(fiber)
             .map(|fiber| fiber.pending.clone())
         else {
-            return self.arena.get(fiber)?.first_child;
+            return self.child_or_complete(fiber);
         };
         self.reconcile(fiber, &children);
-        self.arena.get(fiber)?.first_child
+        self.child_or_complete(fiber)
     }
 
     /// Renders the primary tree of a Suspense boundary.
@@ -341,13 +428,13 @@ impl<'a, H: Host> WorkLoop<'a, H> {
     /// exists while nothing below the boundary is suspended, so this pass
     /// reconciles the primary tree alone and leaves the fallback in the
     /// boundary's payload for the pass that switches trees.
-    fn render_suspense(&mut self, fiber: FiberId) -> Option<FiberId> {
+    fn render_suspense(&mut self, fiber: FiberId) -> Begin {
         let Some(Payload::Suspense(boundary)) = self
             .arena
             .get(fiber)
             .map(|fiber| fiber.pending.clone())
         else {
-            return self.arena.get(fiber)?.first_child;
+            return self.child_or_complete(fiber);
         };
         let current_child = self
             .arena
@@ -359,7 +446,7 @@ impl<'a, H: Host> WorkLoop<'a, H> {
         if let Some(node) = self.arena.get_mut(fiber) {
             node.first_child = Some(offscreen);
         }
-        Some(offscreen)
+        Begin::Child(offscreen)
     }
 
     /// Starts the Offscreen fiber that carries a boundary's primary tree.
@@ -402,16 +489,16 @@ impl<'a, H: Host> WorkLoop<'a, H> {
     }
 
     /// Diffs the children a host node arranges.
-    fn render_host(&mut self, fiber: FiberId) -> Option<FiberId> {
+    fn render_host(&mut self, fiber: FiberId) -> Begin {
         let Some(Payload::Host(element)) = self
             .arena
             .get(fiber)
             .map(|fiber| fiber.pending.clone())
         else {
-            return self.arena.get(fiber)?.first_child;
+            return self.child_or_complete(fiber);
         };
         self.reconcile(fiber, &element.children);
-        self.arena.get(fiber)?.first_child
+        self.child_or_complete(fiber)
     }
 
     /// Diffs `children` against the committed children of `fiber`.
@@ -616,16 +703,16 @@ mod tests {
 
         /// Renders `element` as the root's child and makes it the current tree,
         /// which is what a commit will do.
-        fn render(&mut self, element: Element<TestHost>) {
+        ///
+        /// Returns the wakeable when the pass suspended instead of completing.
+        fn render(&mut self, element: Element<TestHost>) -> Option<Wakeable> {
             // Rendering the root's element marks the root, the way
             // `Root::render` marks it with the default lane; without the mark
             // the root would bail out and the new element would never render.
             if let Some(root) = self.arena.get_mut(self.root) {
                 root.lanes.insert(self.lanes);
             }
-            let Some(work) = self.arena.create_work_in_progress(self.root) else {
-                return;
-            };
+            let work = self.arena.create_work_in_progress(self.root)?;
             let current_first = self
                 .arena
                 .get(self.root)
@@ -638,8 +725,9 @@ mod tests {
                 &mut self.ids,
                 self.lanes,
             );
-            work_loop.run(work);
+            let suspended = work_loop.run(work);
             self.root = work;
+            suspended
         }
 
         fn node(&self, fiber: FiberId) -> Option<TestNode> {
@@ -1104,6 +1192,23 @@ mod tests {
                 .get(new_a)
                 .is_some_and(|fiber| fiber.flags.contains(Flags::PLACEMENT))
         );
+    }
+
+    #[test]
+    fn a_suspending_component_reports_its_wakeable_and_renders_nothing() {
+        let mut harness = Harness::new();
+        let wakeable = Wakeable::from_fn(|_| {});
+        let expected = wakeable.clone();
+        let suspended = harness.render(Element::component(move |ctx| ctx.suspend(wakeable.clone())));
+        let Some(reported) = suspended else {
+            return;
+        };
+        assert!(reported.same(&expected));
+        assert!(harness.host.nodes.is_empty());
+        let Some(component) = harness.child(harness.root) else {
+            return;
+        };
+        assert!(harness.child(component).is_none());
     }
 
     #[test]
