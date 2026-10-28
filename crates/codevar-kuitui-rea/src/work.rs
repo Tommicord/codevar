@@ -19,7 +19,9 @@
 //! every fiber its turn. A fiber is *begun* before its children — that is
 //! where a component runs and where the element tree is diffed into fibers —
 //! and *completed* after them, when its children have a host node and flags
-//! can be bubbled to the parent.
+//! can be bubbled to the parent. One begun fiber and the chain of ancestors
+//! that completes with it make one unit of work, which is also the smallest
+//! step a render can be stopped after (see [`WorkLoop::step`]).
 //!
 //! ```text
 //! begin(root)
@@ -104,6 +106,20 @@ impl<'a, H: Host> WorkLoop<'a, H> {
         }
     }
 
+    /// Renders one unit of work and returns the next fiber to begin.
+    ///
+    /// A unit is one fiber begun and, when it has no child, the chain of
+    /// ancestors completed with it, so a component is never left half-rendered.
+    /// The cursor is the only state the pass keeps: a caller that stops between
+    /// units resumes by passing the returned fiber, which is what time slicing
+    /// does.
+    pub(crate) fn step(&mut self, fiber: FiberId, root: FiberId) -> Option<FiberId> {
+        match self.begin_work(fiber) {
+            Some(child) => Some(child),
+            None => self.complete_work(fiber, root),
+        }
+    }
+
     /// Renders the whole tree below `root`.
     ///
     /// The root is begun like every other fiber, so it is also completed when
@@ -112,10 +128,7 @@ impl<'a, H: Host> WorkLoop<'a, H> {
     pub(crate) fn run(&mut self, root: FiberId) {
         let mut next = Some(root);
         while let Some(fiber) = next {
-            next = match self.begin_work(fiber) {
-                Some(child) => Some(child),
-                None => self.complete_work(fiber, root),
-            };
+            next = self.step(fiber, root);
         }
     }
 

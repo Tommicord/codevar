@@ -34,6 +34,16 @@
 //! parent's reconciliation then overwrites the pending payload if the node's
 //! props changed.
 //!
+//! # Throwing a render away
+//!
+//! A render can be interrupted before it commits. The tree it built never
+//! reaches the host, but the arena owns the fibers it allocated and the hook
+//! queues it replayed. [`Arena::begin_render`] starts recording every fiber a
+//! render starts; [`Arena::abandon_render`] frees what the render allocated,
+//! returns each queue to the fiber that owns it in the committed tree and puts
+//! the queue back to the state the last commit left. [`Arena::end_render`]
+//! stops recording once the tree is complete, before the commit runs.
+//!
 //! # Why the tree is not a `Vec<Fiber>`
 //!
 //! Fibers are both created and destroyed between commits (a conditional
@@ -41,7 +51,7 @@
 //! slots. The two halves of an alternate are freed together: the slot of one
 //! half must never be handed out while the other half still points at it.
 
-// The work loop that consumes these primitives lands in the next increment.
+// The work loop that consumes these primitives lives in `work`.
 #![allow(dead_code)]
 
 use alloc::rc::Rc;
@@ -356,12 +366,23 @@ impl<H: Host> Fiber<H> {
     }
 }
 
+/// A fiber a render started.
+struct Started {
+    /// The work-in-progress fiber.
+    id: FiberId,
+    /// Whether the render allocated the slot, so throwing the render away frees
+    /// it. A reused alternate keeps its slot for the next render to overwrite.
+    allocated: bool,
+}
+
 /// The arena that owns every fiber.
 pub(crate) struct Arena<H: Host> {
     /// The slots. `None` marks a slot on the free list.
     fibers: Vec<Option<Fiber<H>>>,
     /// The indices of the free slots.
     free: Vec<u32>,
+    /// The fibers the render in flight started, in the order it started them.
+    started: Option<Vec<Started>>,
 }
 
 impl<H: Host> Arena<H> {
@@ -370,6 +391,7 @@ impl<H: Host> Arena<H> {
         Self {
             fibers: Vec::new(),
             free: Vec::new(),
+            started: None,
         }
     }
 
@@ -397,15 +419,20 @@ impl<H: Host> Arena<H> {
 
     /// Stores a fiber and returns its id, recycling a free slot when possible.
     pub(crate) fn alloc(&mut self, fiber: Fiber<H>) -> FiberId {
-        if let Some(index) = self.free.pop() {
+        let id = if let Some(index) = self.free.pop() {
             if let Some(slot) = self.fibers.get_mut(index as usize) {
                 *slot = Some(fiber);
             }
-            return FiberId(index);
+            FiberId(index)
+        } else {
+            let index = self.fibers.len() as u32;
+            self.fibers.push(Some(fiber));
+            FiberId(index)
+        };
+        if let Some(started) = &mut self.started {
+            started.push(Started { id, allocated: true });
         }
-        let index = self.fibers.len() as u32;
-        self.fibers.push(Some(fiber));
-        FiberId(index)
+        id
     }
 
     /// Removes a fiber from the arena and reclaims its slot.
@@ -439,6 +466,12 @@ impl<H: Host> Arena<H> {
                 && slot.is_some()
             {
                 *slot = Some(fiber);
+                if let Some(started) = &mut self.started {
+                    started.push(Started {
+                        id: alternate,
+                        allocated: false,
+                    });
+                }
                 return Some(alternate);
             }
         }
@@ -450,6 +483,55 @@ impl<H: Host> Arena<H> {
             fiber.alternate = Some(id);
         }
         Some(id)
+    }
+
+    /// Starts recording the fibers a render starts.
+    ///
+    /// Only a render that can be interrupted needs the record; the work loop
+    /// calls this when it prepares a fresh tree.
+    pub(crate) fn begin_render(&mut self) {
+        debug_assert!(
+            self.started.is_none(),
+            "a render cannot start before the previous one ended"
+        );
+        self.started = Some(Vec::new());
+    }
+
+    /// Stops recording the fibers a render starts.
+    ///
+    /// The tree is complete at this point, so it is about to become the
+    /// committed one and there is nothing left to throw away.
+    pub(crate) fn end_render(&mut self) {
+        self.started = None;
+    }
+
+    /// Throws away the tree the render in flight built.
+    ///
+    /// Every fiber the render started is detached from its update queues: the
+    /// queues return to the fiber that owns them in the committed tree, because
+    /// a state handle must not wake a fiber the render abandoned — and a freed
+    /// slot is handed out again. The queue itself goes back to the state the
+    /// last commit left, so the next render can replay the updates this one
+    /// consumed. The fibers the render allocated are freed; a reused alternate
+    /// keeps its slot, which the next render overwrites from the committed
+    /// fiber.
+    pub(crate) fn abandon_render(&mut self) {
+        let Some(started) = self.started.take() else {
+            return;
+        };
+        for started in started.into_iter().rev() {
+            let Some(fiber) = self.get(started.id) else {
+                continue;
+            };
+            fiber.hooks.restore_committed();
+            match fiber.alternate {
+                Some(owner) => fiber.hooks.reset_owners(owner),
+                None => fiber.hooks.detach(),
+            }
+            if started.allocated {
+                self.take(started.id);
+            }
+        }
     }
 }
 
@@ -552,6 +634,74 @@ mod tests {
         assert_eq!(work.element_type, Some(TypeId::of::<u32>()));
         assert_eq!(work.alternate, Some(current));
         assert!(matches!(work.pending, Payload::Component(_)));
+    }
+
+    #[test]
+    fn abandoning_a_render_frees_what_it_allocated() {
+        let mut arena = arena();
+        let committed = arena.alloc(fiber(FiberTag::Component));
+        arena.begin_render();
+        let Some(work) = arena.create_work_in_progress(committed) else {
+            return;
+        };
+        // A fiber the render created from scratch, the way reconciliation
+        // allocates a child with no committed counterpart.
+        let created = arena.alloc(fiber(FiberTag::Host));
+        assert_eq!(arena.len(), 3);
+
+        arena.abandon_render();
+        assert_eq!(arena.len(), 1);
+        assert!(arena.get(work).is_none());
+        assert!(arena.get(created).is_none());
+        assert!(arena.get(committed).is_some());
+        // The committed fiber no longer points at the freed half.
+        assert_eq!(
+            arena
+                .get(committed)
+                .and_then(|fiber| fiber.alternate),
+            None
+        );
+    }
+
+    #[test]
+    fn abandoning_a_render_keeps_a_reused_alternate() {
+        let mut arena = arena();
+        let committed = arena.alloc(fiber(FiberTag::Component));
+        let Some(alternate) = arena.create_work_in_progress(committed) else {
+            return;
+        };
+
+        // The slot an earlier render allocated is reused, not allocated again.
+        arena.begin_render();
+        assert_eq!(arena.create_work_in_progress(committed), Some(alternate));
+        arena.abandon_render();
+
+        assert_eq!(arena.len(), 2);
+        assert_eq!(
+            arena
+                .get(committed)
+                .and_then(|fiber| fiber.alternate),
+            Some(alternate)
+        );
+        assert_eq!(
+            arena
+                .get(alternate)
+                .and_then(|fiber| fiber.alternate),
+            Some(committed)
+        );
+    }
+
+    #[test]
+    fn a_completed_render_stops_recording() {
+        let mut arena = arena();
+        arena.alloc(fiber(FiberTag::Component));
+        arena.begin_render();
+        arena.end_render();
+        // The tree committed: a later abandon has nothing to throw away.
+        let work = arena.alloc(fiber(FiberTag::Host));
+        arena.abandon_render();
+        assert_eq!(arena.len(), 2);
+        assert!(arena.get(work).is_some());
     }
 
     #[test]
