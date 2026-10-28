@@ -15,7 +15,7 @@
 
 //! The frame driver that runs the pump and the composition together.
 //!
-//! An application that owns an [`InputPump`] and a [`Composition`] has to call
+//! An application that owns an [`InputPump`] and a composition has to call
 //! them in the right order every frame: drain the stream before the states are
 //! read, end the frame so the staged events become the frame the tree sees,
 //! offer those events to the tree so a click can write a state, and only then
@@ -32,6 +32,17 @@
 //! }
 //! ```
 //!
+//! # Which composition
+//!
+//! The driver only needs the frame operations, which [`FrameComposition`] names, so it
+//! drives either composition of the crate:
+//! [`Composition`](crate::compose::Composition), whose content builds
+//! [`Node`](crate::node::Node)s, or
+//! [`ReactiveComposition`](crate::reactive::ReactiveComposition), whose content
+//! builds elements for the reactivity engine. An application that migrates
+//! from one to the other changes the composition it hands the driver and
+//! nothing else.
+//!
 //! # The order of a frame
 //!
 //! 1. [`InputPump::pump`] — the device states move and the frame's events are
@@ -44,15 +55,23 @@
 //!    order the frame delivers them to a handler. The first frame builds the
 //!    tree before it offers anything to it, because a composition has no tree
 //!    until its first recomposition.
-//! 4. [`Composition::handle_event`] for each of them — a widget that writes a
+//! 4. [`FrameComposition::handle_event`] for each of them — a widget that writes a
 //!    state marks the composition dirty here, which is why this step runs
 //!    before the tree is rebuilt.
-//! 5. [`Composition::recompose`] and [`Composition::layout`] — both skip their
+//! 5. [`FrameComposition::recompose`] and [`FrameComposition::layout`] — both skip their
 //!    work when nothing is dirty, so an idle frame costs the drain alone.
 //!
 //! The driver never registers a callback with the pump and never holds a list
 //! of widgets: it is a caller of the two layers, which keeps the "no observer
 //! list" rule of the input module intact.
+//!
+//! # Passive effects
+//!
+//! A reactive composition leaves the passive effects of a transition or idle
+//! commit pending until the frame is presented. [`FrameDriver::flush_passive`]
+//! is that call: an application runs it right after it submits the frame, and
+//! the work those effects schedule lands in the next
+//! [`frame`](FrameDriver::frame).
 
 use alloc::vec::Vec;
 
@@ -63,6 +82,7 @@ use crate::event::{Event, EventResult};
 use crate::geometry::Size;
 use crate::input::{InputPump, KEYBOARD, POINTER, PointerSnapshot, bridge_frame};
 use crate::paint::DrawList;
+use crate::reactive::ReactiveComposition;
 
 /// What one frame of a [`FrameDriver`] did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -94,16 +114,92 @@ impl FrameReport {
     }
 }
 
+/// The frame operations a [`FrameDriver`] runs.
+///
+/// The trait is what keeps the driver out of the composition's business: it
+/// names the four calls a frame makes and both compositions of the crate
+/// implement it, each in the way its own content needs. Implementing it for a
+/// third composition only requires these calls.
+pub trait FrameComposition {
+    /// Renders the pending work and commits it, skipping when nothing is
+    /// pending and `force` is false.
+    ///
+    /// The report of the frame reads a [`Recomposition`] to tell a rebuilt tree
+    /// from a skipped one, which is why the composition's own result is the
+    /// one the trait returns.
+    fn recompose(&mut self, force: bool) -> Recomposition;
+
+    /// Measures and places the tree inside `size`, skipping when nothing
+    /// changed and `force` is false.
+    fn layout(&mut self, size: Size, force: bool);
+
+    /// Draws the tree into `list`, emptying it first.
+    fn render(&mut self, list: &mut DrawList);
+
+    /// Offers one event to the tree.
+    fn handle_event(&mut self, event: &Event) -> EventResult;
+
+    /// Runs the passive effects the last commit left pending, together with
+    /// the work they schedule.
+    ///
+    /// The default does nothing, which is what a composition without deferred
+    /// effects needs. A reactive composition overrides it because a
+    /// transition or idle commit waits for the frame to be presented.
+    fn flush_passive(&mut self) -> bool {
+        false
+    }
+}
+
+impl FrameComposition for Composition<'_> {
+    fn recompose(&mut self, force: bool) -> Recomposition {
+        Composition::recompose(self, force)
+    }
+
+    fn layout(&mut self, size: Size, force: bool) {
+        Composition::layout(self, size, force);
+    }
+
+    fn render(&mut self, list: &mut DrawList) {
+        Composition::render(self, list);
+    }
+
+    fn handle_event(&mut self, event: &Event) -> EventResult {
+        Composition::handle_event(self, event)
+    }
+}
+
+impl FrameComposition for ReactiveComposition {
+    fn recompose(&mut self, force: bool) -> Recomposition {
+        ReactiveComposition::recompose(self, force)
+    }
+
+    fn layout(&mut self, size: Size, force: bool) {
+        ReactiveComposition::layout(self, size, force);
+    }
+
+    fn render(&mut self, list: &mut DrawList) {
+        ReactiveComposition::render(self, list);
+    }
+
+    fn handle_event(&mut self, event: &Event) -> EventResult {
+        ReactiveComposition::handle_event(self, event)
+    }
+
+    fn flush_passive(&mut self) -> bool {
+        ReactiveComposition::flush_passive(self)
+    }
+}
+
 /// The pump and the composition of one window, run as one frame.
 ///
 /// The driver borrows the states through the pump it was given and owns the
 /// composition, the display list and the buffer of bridged events, so the
 /// buffers are allocated once for the life of the window.
-pub struct FrameDriver<'device, 'content> {
+pub struct FrameDriver<'device, C: FrameComposition> {
     /// The stream and the states it writes.
     pump: InputPump<'device>,
     /// The tree the events are offered to and that is laid out each frame.
-    composition: Composition<'content>,
+    composition: C,
     /// The tree events of the last frame, kept between frames to reuse it.
     events: Vec<Event>,
     /// The display list the tree renders into.
@@ -115,10 +211,10 @@ pub struct FrameDriver<'device, 'content> {
     booted: bool,
 }
 
-impl<'device, 'content> FrameDriver<'device, 'content> {
+impl<'device, C: FrameComposition> FrameDriver<'device, C> {
     /// Drives `composition` with the events `pump` reads.
     #[must_use]
-    pub const fn new(pump: InputPump<'device>, composition: Composition<'content>) -> Self {
+    pub const fn new(pump: InputPump<'device>, composition: C) -> Self {
         Self {
             pump,
             composition,
@@ -136,10 +232,7 @@ impl<'device, 'content> FrameDriver<'device, 'content> {
     /// which is what a handler bound with
     /// [`KeyboardBinding::global`](crate::input::KeyboardBinding::global) or
     /// [`MouseBinding::global`](crate::input::MouseBinding::global) reads.
-    pub fn open<B: Backend>(
-        control: &mut Control<B>,
-        composition: Composition<'content>,
-    ) -> Result<Self, ControlError> {
+    pub fn open<B: Backend>(control: &mut Control<B>, composition: C) -> Result<Self, ControlError> {
         let pump = InputPump::open(control, &KEYBOARD, &POINTER)?;
         Ok(Self::new(pump, composition))
     }
@@ -147,7 +240,7 @@ impl<'device, 'content> FrameDriver<'device, 'content> {
     /// Opens the streams of `control` with `capacity` and drives `composition`.
     pub fn open_with_capacity<B: Backend>(
         control: &mut Control<B>,
-        composition: Composition<'content>,
+        composition: C,
         capacity: usize,
     ) -> Result<Self, ControlError> {
         let pump = InputPump::open_with_capacity(control, &KEYBOARD, &POINTER, capacity)?;
@@ -219,6 +312,18 @@ impl<'device, 'content> FrameDriver<'device, 'content> {
         self.composition.handle_event(event)
     }
 
+    /// Runs the passive effects of the frame [`render`](Self::render) produced.
+    ///
+    /// An application calls this once the frame it submitted is presented. A
+    /// composition whose commits run their effects immediately has none left,
+    /// so the call costs a check; a reactive composition runs the ones a
+    /// transition or idle commit deferred, and the work they schedule lands in
+    /// the next [`frame`](Self::frame). Returns whether there were effects to
+    /// run.
+    pub fn flush_passive(&mut self) -> bool {
+        self.composition.flush_passive()
+    }
+
     /// The pointer totals of the last finished frame.
     ///
     /// `None` before the first frame. The motion and scroll are the totals of
@@ -242,12 +347,12 @@ impl<'device, 'content> FrameDriver<'device, 'content> {
 
     /// The tree the driver runs.
     #[must_use]
-    pub const fn composition(&self) -> &Composition<'content> {
+    pub const fn composition(&self) -> &C {
         &self.composition
     }
 
     /// The tree, for an application that sets content, theme or focus.
-    pub fn composition_mut(&mut self) -> &mut Composition<'content> {
+    pub fn composition_mut(&mut self) -> &mut C {
         &mut self.composition
     }
 
@@ -364,7 +469,11 @@ mod tests {
         log: Log,
         state: Option<Rc<MutableState<u32>>>,
         consume: bool,
-    ) -> (TestBackend, Control<TestBackend>, FrameDriver<'static, 'static>) {
+    ) -> (
+        TestBackend,
+        Control<TestBackend>,
+        FrameDriver<'static, Composition<'static>>,
+    ) {
         let backend = TestBackend::default();
         let mut control = Control::new(backend.clone());
         let subscription = control
@@ -546,5 +655,69 @@ mod tests {
         driver.frame(Size::new(10.0, 10.0), true);
         assert_eq!(driver.composition().size(), Size::new(10.0, 10.0));
         assert!(!driver.render().is_empty());
+    }
+
+    #[test]
+    fn a_frame_drives_a_reactive_composition() {
+        use crate::host::NodeElement;
+        use crate::node::Modifier;
+        use codevar_kuitui_rea::{Element, State};
+
+        let backend = TestBackend::default();
+        let mut control = Control::new(backend.clone());
+        let subscription = control
+            .open_many_with_capacity(ClassSet::KEYBOARD | ClassSet::POINTER, 16)
+            .unwrap();
+        let keyboard = Box::leak(Box::new(KeyboardState::new()));
+        let pointer = Box::leak(Box::new(PointerState::new()));
+        let pump = InputPump::new(subscription, keyboard, pointer, 16);
+
+        let handle: Rc<RefCell<Option<State<u32>>>> = Rc::new(RefCell::new(None));
+        let slot = Rc::clone(&handle);
+        let mut composition = ReactiveComposition::new(Theme::light());
+        composition.set_content(move |ctx| {
+            let count = ctx.use_state(|| 0_u32);
+            *slot.borrow_mut() = Some(count.clone());
+            let clicked = count.clone();
+            let widget = NodeElement::new(|| Recorder {
+                log: Log::default(),
+                state: None,
+                consume: false,
+            })
+            .modifier(Modifier::none().clickable(move |event| {
+                if matches!(event, Event::Pointer(pointer) if pointer.kind == PointerEventKind::Down) {
+                    clicked.set(clicked.get() + 1);
+                    return EventResult::Consumed;
+                }
+                EventResult::Ignored
+            }));
+            Element::host(widget)
+        });
+
+        let mut driver = FrameDriver::new(pump, composition);
+        // The first frame builds and lays the tree out; only then does the
+        // widget have bounds an event can be hit-tested against.
+        assert!(
+            driver
+                .frame(Size::new(10.0, 10.0), false)
+                .recomposed
+        );
+
+        backend.publish(move_to(Point::new(5.0, 5.0)));
+        backend.publish(press(PointerButton::Primary));
+        let report = driver.frame(Size::new(10.0, 10.0), false);
+
+        // The handler wrote the state while the events were offered, and the
+        // frame recomposed the tree again before it laid it out.
+        assert_eq!(report.consumed, 1);
+        assert!(report.recomposed);
+        // A handle reads the value of its render, so the update shows on the
+        // handle the render the frame committed handed the content.
+        let Some(rendered) = handle.borrow().clone() else {
+            return;
+        };
+        assert_eq!(*rendered.get(), 1);
+        assert!(!driver.composition().is_dirty());
+        assert!(!driver.flush_passive());
     }
 }

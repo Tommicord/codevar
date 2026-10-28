@@ -132,7 +132,7 @@ pub mod window;
 pub use codevar_kuitui_rea as rea;
 pub use color::{Color, ColorScheme};
 pub use compose::{Composer, Composition, Recomposition};
-pub use driver::{FrameDriver, FrameReport};
+pub use driver::{FrameComposition, FrameDriver, FrameReport};
 pub use effect::{Effect, EffectKinds, Gradient, InteractionSource, InteractionState};
 pub use event::{Event, EventResult, KeyEvent, PointerButton, PointerEvent, PointerEventKind};
 pub use geometry::{Alignment, Constraints, EdgeInsets, Offset, Rect, Size};
