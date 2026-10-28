@@ -22,8 +22,8 @@
 //!   `xdg-shell` (`ack_configure`, `ping`/`pong`, frame callbacks,
 //!   `wl_buffer.release`) and a `zwp_linux_dmabuf_v1` buffer built from the
 //!   render target's exported dma-buf.
-//! * **[`Composition`]:** a [`kuitui!`](codevar_kuitui::kuitui) tree of
-//!   widgets laid out at the window size. It records a [`DrawList`] whose
+//! * **[`ReactiveComposition`]:** an [`element!`](codevar_kuitui::element)
+//!   tree of widgets laid out at the window size. It records a [`DrawList`] whose
 //!   text runs carry a baseline origin.
 //! * **[`shape_list_with_color`]:** walks that list and rasterizes every text
 //!   run with a real [`Font`] into a shared [`TextFrame`] — coverage into the
@@ -55,7 +55,7 @@ use codevar_gpu_vk::ui::{UiFrame, UiPipe};
 use codevar_kuitui::color::Color;
 use codevar_kuitui::geometry::{Offset, Rect, Size};
 use codevar_kuitui::paint::{CornerRadii, Paint};
-use codevar_kuitui::prelude::{Composition, FontMetrics, Theme, kuitui};
+use codevar_kuitui::prelude::{FontMetrics, ReactiveComposition, Theme, element};
 use codevar_kuitui_text::{AtlasConfig, TextAtlas, TextFrame, TextPipe};
 use codevar_kuitui_widget::{Font, shape_list_with_color};
 use codevar_time_core::TimeDuration;
@@ -365,9 +365,9 @@ fn run() -> ExampleResult<String> {
     // Load the color emoji font for color glyph rendering.
     let emoji_font = Rc::new(Font::from_bytes(std::fs::read(EMOJI_FONT)?)?.with_ppem(FONT_PPEM));
     let metrics: Rc<dyn FontMetrics> = font.clone();
-    let mut composition = Composition::new(Theme::dark().with_metrics(metrics));
-    composition.set_content(|_composer| {
-        kuitui! {
+    let mut composition = ReactiveComposition::new(Theme::dark().with_metrics(metrics));
+    composition.set_content(|_| {
+        element! {
             Column {
                 Spacer(height: TOP_PADDING)
                 Text("Hello World!", color: Color::WHITE)
