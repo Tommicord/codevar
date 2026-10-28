@@ -205,6 +205,24 @@ impl<H: Host> Clone for Payload<H> {
     }
 }
 
+impl<H: Host> Payload<H> {
+    /// Whether two payloads describe the same element.
+    ///
+    /// Identity, not equality: a render that hands the fiber the same `Rc` is
+    /// a render that described the same thing, which is the check React makes
+    /// on `memoizedProps` vs `pendingProps`. Only then can the fiber keep the
+    /// subtree it rendered last time.
+    pub(crate) fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::None, Self::None) => true,
+            (Self::Component(a), Self::Component(b)) => Rc::ptr_eq(a, b),
+            (Self::Host(a), Self::Host(b)) => Rc::ptr_eq(a, b),
+            (Self::Fragment(a), Self::Fragment(b)) => Rc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+}
+
 /// What kind of node a fiber is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FiberTag {

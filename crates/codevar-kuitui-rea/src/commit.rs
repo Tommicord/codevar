@@ -441,6 +441,12 @@ mod tests {
         }
 
         fn render(&mut self, element: Element<TreeHost>) {
+            // Rendering the root's element marks the root, the way
+            // `Root::render` marks it with the default lane; without the mark
+            // the root would bail out and the new element would never render.
+            if let Some(root) = self.arena.get_mut(self.root) {
+                root.lanes.insert(Lanes::SYNC);
+            }
             let Some(work) = self.arena.create_work_in_progress(self.root) else {
                 return;
             };
@@ -624,51 +630,59 @@ mod tests {
         assert_eq!(*log.borrow(), [String::from("child"), String::from("parent")]);
     }
 
+    /// A component that logs its layout create and cleanup whenever the epoch
+    /// changes, and renders `child`.
+    fn logging_component(
+        log: &Rc<RefCell<Vec<&'static str>>>,
+        epoch: &Rc<Cell<u32>>,
+        create: &'static str,
+        cleanup: &'static str,
+        child: Element<TreeHost>,
+    ) -> Element<TreeHost> {
+        let log = Rc::clone(log);
+        let epoch = Rc::clone(epoch);
+        Element::component(move |ctx: &mut RenderCtx<'_>| {
+            let run = Rc::clone(&log);
+            let destroy = Rc::clone(&log);
+            ctx.use_layout_effect((epoch.get(),), move || {
+                run.borrow_mut().push(create);
+                let destroy = Rc::clone(&destroy);
+                Some(Box::new(move || {
+                    destroy.borrow_mut().push(cleanup);
+                }) as Cleanup)
+            });
+            child.clone()
+        })
+    }
+
+    /// A component with a layout and a passive effect that re-run whenever the
+    /// epoch changes, rendering host `9`.
+    fn epoch_probe(epoch: &Rc<Cell<u32>>) -> Element<TreeHost> {
+        let epoch = Rc::clone(epoch);
+        Element::component(move |ctx: &mut RenderCtx<'_>| {
+            let tick = epoch.get();
+            ctx.use_layout_effect((tick,), || None);
+            ctx.use_effect((tick,), || None);
+            Element::host(9)
+        })
+    }
+
     #[test]
     fn every_layout_cleanup_runs_before_any_layout_create() {
         let log = Rc::new(RefCell::new(Vec::<&'static str>::new()));
-        let epoch = Rc::new(core::cell::Cell::new(0_u32));
-
-        let child = {
-            let log = Rc::clone(&log);
-            let epoch = Rc::clone(&epoch);
-            Element::component(move |ctx: &mut RenderCtx<'_>| {
-                let create = Rc::clone(&log);
-                let destroy = Rc::clone(&log);
-                ctx.use_layout_effect((epoch.get(),), move || {
-                    create.borrow_mut().push("child create");
-                    let destroy = Rc::clone(&destroy);
-                    Some(Box::new(move || {
-                        destroy.borrow_mut().push("child cleanup");
-                    }) as Cleanup)
-                });
-                Element::empty()
-            })
-        };
-        let parent = {
-            let log = Rc::clone(&log);
-            let epoch = Rc::clone(&epoch);
-            Element::component(move |ctx: &mut RenderCtx<'_>| {
-                let create = Rc::clone(&log);
-                let destroy = Rc::clone(&log);
-                ctx.use_layout_effect((epoch.get(),), move || {
-                    create.borrow_mut().push("parent create");
-                    let destroy = Rc::clone(&destroy);
-                    Some(Box::new(move || {
-                        destroy.borrow_mut().push("parent cleanup");
-                    }) as Cleanup)
-                });
-                child.clone()
-            })
+        let epoch = Rc::new(Cell::new(0_u32));
+        let element = || {
+            let child = logging_component(&log, &epoch, "child create", "child cleanup", Element::empty());
+            logging_component(&log, &epoch, "parent create", "parent cleanup", child)
         };
 
         let mut harness = Harness::new();
-        harness.render(parent.clone());
+        harness.render(element());
         assert_eq!(*log.borrow(), ["child create", "parent create"]);
 
         log.borrow_mut().clear();
         epoch.set(1);
-        harness.render(parent);
+        harness.render(element());
         assert_eq!(
             *log.borrow(),
             ["child cleanup", "parent cleanup", "child create", "parent create"]
@@ -703,31 +717,24 @@ mod tests {
     #[test]
     fn the_commit_leaves_no_flag_of_any_phase_behind() {
         let epoch = Rc::new(Cell::new(0_u32));
-        let effectful = {
-            let epoch = Rc::clone(&epoch);
-            Element::component(move |ctx: &mut RenderCtx<'_>| {
-                let tick = epoch.get();
-                ctx.use_layout_effect((tick,), || None);
-                ctx.use_effect((tick,), || None);
-                Element::host(9)
-            })
-        };
 
         let mut harness = Harness::new();
         harness.render(Element::fragment([
             Element::host(1).keyed("a"),
-            effectful.clone(),
+            epoch_probe(&epoch),
             Element::host(2).keyed("b"),
         ]));
         assert_eq!(harness.children().len(), 3);
 
         // A reorder, an insertion and a component whose effect deps changed:
         // every phase of the commit has work to do and flags to consume.
+        // `epoch_probe` builds a fresh element so the component renders again;
+        // a reused element would bail out and leave both effect phases empty.
         epoch.set(1);
         harness.render(Element::fragment([
             Element::host(2).keyed("b"),
             Element::host(1).keyed("a"),
-            effectful,
+            epoch_probe(&epoch),
             Element::host(3).keyed("c"),
         ]));
         assert_eq!(harness.children().len(), 4);

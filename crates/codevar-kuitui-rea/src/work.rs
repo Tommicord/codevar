@@ -114,12 +114,19 @@ impl<'a, H: Host> WorkLoop<'a, H> {
 
     /// Renders one fiber and returns the child to work on next, if any.
     fn begin_work(&mut self, fiber: FiberId) -> Option<FiberId> {
-        let node = self.arena.get_mut(fiber)?;
-        // The lanes copied from the committed alternate describe the work the
-        // last render found. Beginning the fiber finds that work again: only a
-        // skipped update marks a lane from here on.
-        node.lanes = Lanes::NONE;
+        let node = self.arena.get(fiber)?;
         let tag = node.tag;
+        if let Some(current) = node.alternate
+            && !self.did_receive_update(fiber, current)
+        {
+            return self.bailout_on_already_finished_work(fiber);
+        }
+        if let Some(node) = self.arena.get_mut(fiber) {
+            // The lanes copied from the committed alternate describe the work
+            // the last render found. A fiber that renders replaces them with
+            // what this render could not apply.
+            node.lanes = Lanes::NONE;
+        }
         match tag {
             FiberTag::Component => self.render_component(fiber),
             FiberTag::Fragment => self.render_fragment(fiber),
@@ -128,6 +135,80 @@ impl<'a, H: Host> WorkLoop<'a, H> {
             // starts.
             FiberTag::Root => self.arena.get(fiber)?.first_child,
         }
+    }
+
+    /// Whether the fiber has an element of its own to apply or work of its own
+    /// lane to replay.
+    ///
+    /// This is React's `didReceiveUpdate`. The element decides first: a fiber
+    /// whose element did not change still renders when a lane it owns belongs
+    /// to this render, and one whose element changed renders even without a
+    /// lane of its own.
+    fn did_receive_update(&self, fiber: FiberId, current: FiberId) -> bool {
+        let (Some(work), Some(current)) = (self.arena.get(fiber), self.arena.get(current)) else {
+            return true;
+        };
+        !current.memoized.same(&work.pending) || current.lanes.intersects(self.render_lanes)
+    }
+
+    /// Skips a fiber whose element and lanes need no work.
+    ///
+    /// When no lane below the fiber belongs to this render, the subtree below
+    /// it is already what the host shows, so the pass leaves it alone and the
+    /// finished tree keeps sharing it with the committed one. Otherwise the
+    /// pass still has to walk in, and the children are cloned first: the fiber
+    /// only has a link to the committed child list, and walking that list
+    /// would write to the committed tree.
+    fn bailout_on_already_finished_work(&mut self, fiber: FiberId) -> Option<FiberId> {
+        let node = self.arena.get(fiber)?;
+        if !node.child_lanes.intersects(self.render_lanes) {
+            return None;
+        }
+        match node.tag {
+            // The caller reconciles the root's child before the pass starts,
+            // so the child it would clone is already a work-in-progress fiber.
+            FiberTag::Root => node.first_child,
+            FiberTag::Component | FiberTag::Fragment | FiberTag::Host => self.clone_child_fibers(fiber),
+        }
+    }
+
+    /// Clones the committed children of a bailed-out fiber.
+    ///
+    /// The clone keeps the committed payload as its pending one: a bailed-out
+    /// fiber never reconciled, so its children still describe what the host
+    /// shows. React's `cloneChildFibers` preserves `pendingProps` the same way.
+    fn clone_child_fibers(&mut self, fiber: FiberId) -> Option<FiberId> {
+        let first = self.arena.get(fiber)?.first_child?;
+        let mut current = Some(first);
+        let mut cloned = None;
+        let mut previous: Option<FiberId> = None;
+        while let Some(child) = current {
+            let Some(work) = self.arena.create_work_in_progress(child) else {
+                break;
+            };
+            if let Some(node) = self.arena.get_mut(work) {
+                node.parent = Some(fiber);
+            }
+            match previous {
+                Some(previous) => {
+                    if let Some(node) = self.arena.get_mut(previous) {
+                        node.sibling = Some(work);
+                    }
+                }
+                None => {
+                    if let Some(node) = self.arena.get_mut(fiber) {
+                        node.first_child = Some(work);
+                    }
+                    cloned = Some(work);
+                }
+            }
+            previous = Some(work);
+            current = self
+                .arena
+                .get(child)
+                .and_then(|fiber| fiber.sibling);
+        }
+        cloned
     }
 
     /// Runs a component and diffs the element it returned.
@@ -253,9 +334,14 @@ impl<'a, H: Host> WorkLoop<'a, H> {
         let mut flags = Flags::NONE;
         let mut lanes = Lanes::NONE;
         while let Some(current) = child {
-            let Some(node) = self.arena.get(current) else {
+            let Some(node) = self.arena.get_mut(current) else {
                 break;
             };
+            // A child the pass did not clone is shared with the committed tree
+            // and still points at its committed parent. The finished tree owns
+            // it now, which is the link a later dispatch climbs to mark work.
+            // React repairs the pointer the same way in `bubbleProperties`.
+            node.parent = Some(fiber);
             flags.insert(node.flags);
             flags.insert(node.subtree_flags);
             lanes.insert(node.lanes.union(node.child_lanes));
@@ -386,6 +472,12 @@ mod tests {
         /// Renders `element` as the root's child and makes it the current tree,
         /// which is what a commit will do.
         fn render(&mut self, element: Element<TestHost>) {
+            // Rendering the root's element marks the root, the way
+            // `Root::render` marks it with the default lane; without the mark
+            // the root would bail out and the new element would never render.
+            if let Some(root) = self.arena.get_mut(self.root) {
+                root.lanes.insert(self.lanes);
+            }
             let Some(work) = self.arena.create_work_in_progress(self.root) else {
                 return;
             };
@@ -416,6 +508,44 @@ mod tests {
                 .get(fiber)
                 .and_then(|fiber| fiber.first_child)
         }
+
+        /// Marks `lanes` on `fiber` and its ancestors, the way the root turns
+        /// a drained dispatch into work.
+        fn mark(&mut self, fiber: FiberId, lanes: Lanes) {
+            let mut current = Some(fiber);
+            let mut own = true;
+            while let Some(node) = current {
+                let Some(entry) = self.arena.get_mut(node) else {
+                    return;
+                };
+                if own {
+                    entry.lanes.insert(lanes);
+                } else {
+                    entry.child_lanes.insert(lanes);
+                }
+                current = entry.parent;
+                own = false;
+            }
+        }
+    }
+
+    /// A component that renders the value it is given, with a fresh element on
+    /// every call.
+    fn counted(props: &Rc<Cell<u16>>) -> Element<TestHost> {
+        let props = Rc::clone(props);
+        Element::component(move |_| Element::host((0, props.get())))
+    }
+
+    /// A component that renders `count` host children.
+    fn listing(count: &Rc<Cell<u16>>) -> Element<TestHost> {
+        let count = Rc::clone(count);
+        Element::component(move |_| {
+            let mut children = Vec::new();
+            for index in 0..count.get() {
+                children.push(leaf(index + 1));
+            }
+            Element::fragment(children)
+        })
     }
 
     #[test]
@@ -436,11 +566,9 @@ mod tests {
     fn a_host_node_is_updated_instead_of_recreated() {
         let mut harness = Harness::new();
         let props = Rc::new(Cell::new(1_u16));
-        let handle = Rc::clone(&props);
-        let element = Element::component(move |_| Element::host((0, handle.get())));
-        harness.render(element.clone());
+        harness.render(counted(&props));
         props.set(2);
-        harness.render(element);
+        harness.render(counted(&props));
         assert_eq!(harness.host.nodes.len(), 1);
         assert_eq!(harness.host.nodes[0].element, (0, 2));
         assert_eq!(harness.host.nodes[0].updates, 1);
@@ -463,6 +591,12 @@ mod tests {
             return;
         };
         value.set(2);
+        // The root turns the dispatch into a lane on the component; the
+        // element did not change, so only the lane can make it render.
+        let Some(component) = harness.child(harness.root) else {
+            return;
+        };
+        harness.mark(component, Lanes::DEFAULT);
         harness.render(element);
         assert_eq!(harness.host.nodes[0].element, (0, 2));
     }
@@ -482,9 +616,14 @@ mod tests {
             return;
         };
 
-        // The default render cannot cover the transition update: the host keeps
-        // the rendered value and the lane reaches the root through the bubble.
+        // The default render cannot cover the transition update: the component
+        // bails out, the host keeps the rendered value, and the lane stays on
+        // the fiber and reaches the root through the bubble.
         value.set_with_lane(Lanes::TRANSITION, 7);
+        let Some(component) = harness.child(harness.root) else {
+            return;
+        };
+        harness.mark(component, Lanes::TRANSITION);
         harness.render(element.clone());
         assert_eq!(harness.host.nodes[0].element, (0, 1));
         let Some(component) = harness.child(harness.root) else {
@@ -536,17 +675,9 @@ mod tests {
     fn a_new_child_is_flagged_and_gets_a_node() {
         let mut harness = Harness::new();
         let count = Rc::new(Cell::new(1_u16));
-        let handle = Rc::clone(&count);
-        let element = Element::component(move |_| {
-            let mut children = Vec::new();
-            for index in 0..handle.get() {
-                children.push(Element::host((0, index + 1)));
-            }
-            Element::fragment(children)
-        });
-        harness.render(element.clone());
+        harness.render(listing(&count));
         count.set(2);
-        harness.render(element);
+        harness.render(listing(&count));
         assert_eq!(harness.host.nodes.len(), 2);
 
         let Some(component) = harness.child(harness.root) else {
