@@ -39,6 +39,14 @@
 //! [`Host::insert_before`] is the only way to attach a node. It must move the
 //! node when it is already attached somewhere, so the commit phase can reorder
 //! children without first removing them. Passing `None` as the anchor appends.
+//!
+//! # Visibility
+//!
+//! A Suspense boundary that shows its fallback keeps the primary tree mounted.
+//! [`Host::hide`] and [`Host::unhide`] are how the commit takes the nearest
+//! nodes of that tree out of sight and puts them back; both default to doing
+//! nothing, because a host that cannot hide a node still renders a tree, it
+//! only cannot show a boundary's fallback in place of its primary.
 
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
@@ -176,6 +184,26 @@ pub trait Host {
     ///
     /// The node keeps its children; the commit phase reconciles them itself.
     fn update(&mut self, node: Self::Node, element: &Self::Element);
+
+    /// Hides `node` and everything inside it, without removing anything.
+    ///
+    /// A boundary that shows its fallback keeps the primary tree mounted but
+    /// out of sight, so the host hides the node instead of removing it and the
+    /// tree keeps its state until the data arrives. Children are hidden with
+    /// the node, so the engine only hands over the nearest ones.
+    ///
+    /// The default does nothing: a host without a notion of visibility still
+    /// renders correctly, it only cannot keep a hidden tree out of sight.
+    fn hide(&mut self, node: Self::Node) {
+        let _ = node;
+    }
+
+    /// Shows `node` again after [`hide`](Host::hide).
+    ///
+    /// The default does nothing.
+    fn unhide(&mut self, node: Self::Node) {
+        let _ = node;
+    }
 
     /// Inserts `child` under `parent` before `anchor`, or appends it.
     ///

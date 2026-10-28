@@ -106,8 +106,19 @@ impl Flags {
     /// The node's effect cleanup must run before its parent is mutated.
     pub(crate) const INSERTION: Self = Self(1 << 7);
 
+    /// The subtree below an Offscreen fiber switched between hidden and
+    /// visible, so the commit must hide or show its nearest host nodes.
+    pub(crate) const VISIBILITY: Self = Self(1 << 8);
+
+    /// A Suspense boundary caught a suspension raised below it.
+    ///
+    /// Reconciliation raises the flag when the boundary has to render its
+    /// fallback; the begin pass consumes it, which is why no commit mask
+    /// contains it.
+    pub(crate) const DID_CAPTURE: Self = Self(1 << 9);
+
     /// Every flag.
-    pub(crate) const ALL: Self = Self((1 << 8) - 1);
+    pub(crate) const ALL: Self = Self((1 << 10) - 1);
 
     /// The flags the mutation phase applies and consumes.
     ///
@@ -120,7 +131,8 @@ impl Flags {
             | Self::UPDATE.0
             | Self::CHILD_DELETION.0
             | Self::CONTENT_RESET.0
-            | Self::INSERTION.0,
+            | Self::INSERTION.0
+            | Self::VISIBILITY.0,
     );
 
     /// The flags the layout phase applies and consumes.
@@ -278,6 +290,20 @@ pub(crate) enum FiberTag {
     Offscreen,
 }
 
+/// Whether the host nodes below an Offscreen fiber are shown.
+///
+/// A boundary that shows its fallback keeps the primary tree mounted with its
+/// host nodes hidden, so the tree survives until the data arrives. React keeps
+/// the same bit in the Offscreen fiber's `memoizedState`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) enum Visibility {
+    /// The subtree is part of what the host shows.
+    #[default]
+    Visible,
+    /// The subtree is mounted, but the host must not show it.
+    Hidden,
+}
+
 /// An index into the fiber arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct FiberId(u32);
@@ -333,6 +359,11 @@ pub(crate) struct Fiber<H: Host> {
     pub(crate) lanes: Lanes,
     /// The lanes of updates anywhere below this node.
     pub(crate) child_lanes: Lanes,
+    /// Whether the host nodes below this fiber are shown.
+    ///
+    /// Only an Offscreen fiber ever carries [`Visibility::Hidden`]; every other
+    /// tag leaves the value at its default and the commit never reads it there.
+    pub(crate) visibility: Visibility,
     /// The node on the other tree.
     pub(crate) alternate: Option<FiberId>,
 }
@@ -359,6 +390,7 @@ impl<H: Host> Fiber<H> {
             deletions: Vec::new(),
             lanes: Lanes::NONE,
             child_lanes: Lanes::NONE,
+            visibility: Visibility::Visible,
             alternate: None,
         }
     }
@@ -391,6 +423,7 @@ impl<H: Host> Fiber<H> {
             deletions: Vec::new(),
             lanes: current.lanes,
             child_lanes: current.child_lanes,
+            visibility: current.visibility,
             alternate: None,
         }
     }
@@ -808,9 +841,29 @@ mod tests {
     }
 
     #[test]
-    fn the_phase_masks_cover_every_flag() {
+    fn the_phase_masks_cover_every_flag_a_phase_applies() {
         let masks = Flags::MUTATION_MASK | Flags::LAYOUT_MASK | Flags::PASSIVE_MASK;
         // A flag outside every mask would survive the commit that applied it.
-        assert!(masks.contains(Flags::ALL));
+        // `DID_CAPTURE` is the exception: it is raised and cleared in the
+        // render, never applied by a commit phase.
+        assert!(masks.contains(Flags::ALL & !Flags::DID_CAPTURE));
+    }
+
+    #[test]
+    fn a_work_in_progress_fiber_keeps_the_visibility_of_the_committed_one() {
+        let mut arena = arena();
+        let mut current = fiber(FiberTag::Offscreen);
+        current.visibility = Visibility::Hidden;
+        let current = arena.alloc(current);
+
+        let Some(work) = arena
+            .create_work_in_progress(current)
+            .and_then(|id| arena.get(id))
+        else {
+            return;
+        };
+        // The boundary has to know the primary tree was hidden before this
+        // render to decide whether showing it again is a change.
+        assert_eq!(work.visibility, Visibility::Hidden);
     }
 }
