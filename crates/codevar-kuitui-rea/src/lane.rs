@@ -310,6 +310,10 @@ impl Lanes {
     /// `None` means the lane never expires. Expired work renders in one slice
     /// and is never interrupted, which is the root's protection against a
     /// stream of urgent updates starving a transition.
+    ///
+    /// A retry lane never expires: React keeps retry expiration behind
+    /// `enableRetryLaneExpiration`, which is off, because a retry has to be
+    /// time sliced to unwrap an uncached promise.
     #[must_use]
     pub const fn expiration_delay(self) -> Option<u64> {
         let highest = self.highest().0;
@@ -317,7 +321,6 @@ impl Lanes {
             Some(250)
         } else if highest == Self::DEFAULT.0
             || (highest & (Self::TRANSITION_UPDATE_LANES.0 | Self::TRANSITION_DEFERRED_LANES.0)) != 0
-            || (highest & Self::RETRY.0) != 0
         {
             Some(5_000)
         } else {
@@ -547,7 +550,9 @@ mod tests {
         assert_eq!(Lanes::GESTURE.expiration_delay(), Some(250));
         assert_eq!(Lanes::DEFAULT.expiration_delay(), Some(5_000));
         assert_eq!(Lanes::TRANSITION.expiration_delay(), Some(5_000));
-        assert_eq!(Lanes::RETRY.expiration_delay(), Some(5_000));
+        // Retry work must be time sliced to unwrap an uncached promise, so it
+        // never expires (`enableRetryLaneExpiration` is off in React).
+        assert_eq!(Lanes::RETRY.expiration_delay(), None);
         assert_eq!(Lanes::IDLE.expiration_delay(), None);
         assert_eq!(Lanes::OFFSCREEN.expiration_delay(), None);
         assert_eq!(Lanes::DEFERRED.expiration_delay(), None);

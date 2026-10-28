@@ -62,6 +62,17 @@
 //! committed tree. A lane a render could not cover, and a lane that arrived
 //! while it rendered, stay pending for a later pass.
 //!
+//! # Starvation
+//!
+//! High-priority work can keep a low-priority lane pending forever: a stream of
+//! input interrupts every transition render before it commits. The root
+//! therefore records when the clock first sees a lane pending and marks the
+//! lane *expired* once [`Lanes::expiration_delay`] has passed. A render that
+//! covers an expired lane is never time sliced, so the starved work finishes in
+//! one slice instead of being interrupted again. Retry lanes do not expire —
+//! React gates that behind `enableRetryLaneExpiration`, which is off — because a
+//! retry has to be time sliced to unwrap an uncached promise.
+//!
 //! # Render phase updates
 //!
 //! A component that writes to its own state while it renders is re-rendered in
@@ -119,7 +130,7 @@
 //!
 //! # Not implemented yet
 //!
-//! There is no suspension and no starvation protection.
+//! There is no suspension.
 
 use alloc::rc::Rc;
 use core::slice;
@@ -129,7 +140,7 @@ use crate::element::Element;
 use crate::fiber::{Arena, Fiber, FiberId, FiberTag, Flags};
 use crate::hooks::{MailboxHandle, mailbox};
 use crate::host::Host;
-use crate::lane::Lanes;
+use crate::lane::{LANE_COUNT, Lanes};
 use crate::reconcile::reconcile_children;
 use crate::work::WorkLoop;
 
@@ -174,6 +185,11 @@ pub struct Root<H: Host> {
     ids: u64,
     /// The lanes that still have work.
     pending_lanes: Lanes,
+    /// When each pending lane expires, indexed by lane bit. `None` until the
+    /// root first sees the lane pending, and again once the lane is rendered.
+    expiration_times: [Option<u64>; LANE_COUNT],
+    /// The lanes that have been pending past their expiration delay.
+    expired_lanes: Lanes,
     /// The render in flight, if a slice stopped before the tree completed.
     render: Option<Render>,
     /// Work that arrived while a render was in flight. Its lane is pending but
@@ -204,6 +220,8 @@ impl<H: Host> Root<H> {
             mailbox: mailbox(),
             ids: 0,
             pending_lanes: Lanes::NONE,
+            expiration_times: [None; LANE_COUNT],
+            expired_lanes: Lanes::NONE,
             render: None,
             interleaved: Lanes::NONE,
             passive: None,
@@ -248,31 +266,77 @@ impl<H: Host> Root<H> {
     /// effect sees the result before `flush` returns. Passive effects follow
     /// their own rule; see the module documentation.
     pub fn flush(&mut self) {
-        self.flush_slice(|| false);
+        self.flush_loop(&mut || false);
     }
 
     /// Renders and commits the pending lanes, giving control back between
     /// units of work.
     ///
+    /// `now` is the host's monotonic clock in milliseconds. The root uses it to
+    /// mark the pending lanes that have waited past [`Lanes::expiration_delay`]
+    /// as expired, and a render that covers an expired lane is never stopped
+    /// for the caller's budget: starved work finishes in this slice.
+    ///
     /// `should_yield` is asked before every unit of a render whose lanes are
-    /// not blocking, and a `true` answer leaves the render in flight: nothing
-    /// the slice built has reached the host, and the next call resumes the
-    /// render at the fiber it had not started. A render that covers a blocking
-    /// lane ignores the callback and always completes.
+    /// neither blocking nor expired, and a `true` answer leaves the render in
+    /// flight: nothing the slice built has reached the host, and the next call
+    /// resumes the render at the fiber it had not started. A render that covers
+    /// a blocking lane ignores the callback and always completes.
     ///
     /// The return value says whether work is left: `false` means nothing is
     /// pending, the tree committed everything it was asked to cover.
-    pub fn flush_slice(&mut self, mut should_yield: impl FnMut() -> bool) -> bool {
+    pub fn flush_slice(&mut self, now: u64, mut should_yield: impl FnMut() -> bool) -> bool {
+        // The mailbox is drained first so the lanes this call sees are the ones
+        // the host's clock starts the expiration of; React marks them from
+        // `ensureRootIsScheduled`, after the update has marked the root.
+        self.drain_mailbox();
+        self.mark_starved_lanes(now);
+        self.flush_loop(&mut should_yield)
+    }
+
+    /// Renders and commits the pending lanes until none is left or a slice
+    /// stops the render.
+    fn flush_loop(&mut self, should_yield: &mut dyn FnMut() -> bool) -> bool {
         loop {
             self.drain_mailbox();
             let lanes = self.next_lanes();
             if lanes.is_empty() {
                 return false;
             }
-            if !self.perform(lanes, &mut should_yield) {
+            if !self.perform(lanes, should_yield) {
                 return true;
             }
         }
+    }
+
+    /// Marks the lanes that have been pending past their expiration delay.
+    ///
+    /// This is React's `markStarvedLanesAsExpired`. The first time the host's
+    /// clock sees a lane pending the root records when that lane expires; once
+    /// the clock passes that time the lane is expired, and a render that covers
+    /// it runs without time slicing, so urgent work cannot keep postponing it
+    /// forever. Retry lanes are left out, exactly as React does with
+    /// `enableRetryLaneExpiration` off: a retry has to be time sliced to unwrap
+    /// an uncached promise.
+    fn mark_starved_lanes(&mut self, now: u64) {
+        let mut expired = self.expired_lanes;
+        for lane in (self.pending_lanes & !Lanes::RETRY).iter() {
+            let Some(index) = lane.index() else {
+                continue;
+            };
+            let index = index as usize;
+            match self.expiration_times[index] {
+                // Assumes the clock is monotonic.
+                None => {
+                    self.expiration_times[index] = lane
+                        .expiration_delay()
+                        .map(|delay| now.saturating_add(delay));
+                }
+                Some(at) if at <= now => expired.insert(lane),
+                Some(_) => {}
+            }
+        }
+        self.expired_lanes = expired;
     }
 
     /// Runs the passive effects of the last commit, then flushes the work they
@@ -340,7 +404,9 @@ impl<H: Host> Root<H> {
             .render
             .as_ref()
             .and_then(|render| render.next);
-        let sliceable = !lanes.intersects(Lanes::BLOCKING);
+        // `shouldTimeSlice`: a render that covers blocking or expired work
+        // runs to the end even when the host asks for the core.
+        let sliceable = !lanes.intersects(Lanes::BLOCKING) && !lanes.intersects(self.expired_lanes);
         {
             let mut work_loop = WorkLoop::new(
                 &mut self.host,
@@ -423,7 +489,17 @@ impl<H: Host> Root<H> {
         };
         // `markRootFinished`: a lane this render did not cover stays pending,
         // and so does the work that arrived while it rendered.
+        let previously_pending = self.pending_lanes;
         self.pending_lanes = remaining;
+        // A lane that is no longer pending starts over: a later update on it
+        // gets a fresh expiration time instead of inheriting the one the
+        // finished work had, and it is no longer expired.
+        for lane in (previously_pending & !remaining).iter() {
+            if let Some(index) = lane.index() {
+                self.expiration_times[index as usize] = None;
+            }
+        }
+        self.expired_lanes &= remaining;
 
         let mut commit = Commit::new(&mut self.host, &mut self.arena);
         commit.mutation(work);
@@ -989,7 +1065,7 @@ mod tests {
         // The slice stops after the root, before the component runs: the
         // work-in-progress tree exists but the host still shows the old one.
         let mut checks = 0;
-        assert!(root.flush_slice(|| {
+        assert!(root.flush_slice(0, || {
             checks += 1;
             checks > 1
         }));
@@ -1011,7 +1087,7 @@ mod tests {
 
         // Default work is never time sliced, so the callback is not even asked.
         let mut asked = false;
-        assert!(!root.flush_slice(|| {
+        assert!(!root.flush_slice(0, || {
             asked = true;
             true
         }));
@@ -1033,7 +1109,7 @@ mod tests {
         // it, so the value it read never reaches the host.
         state.update_with_lane(Lanes::TRANSITION.highest(), |value| *value * 10);
         let mut checks = 0;
-        assert!(root.flush_slice(|| {
+        assert!(root.flush_slice(0, || {
             checks += 1;
             checks > 2
         }));
@@ -1061,7 +1137,7 @@ mod tests {
 
         state.set_with_lane(Lanes::TRANSITION.highest(), 2);
         let mut checks = 0;
-        assert!(root.flush_slice(|| {
+        assert!(root.flush_slice(0, || {
             checks += 1;
             checks > 2
         }));
@@ -1075,6 +1151,71 @@ mod tests {
         root.flush();
         assert_eq!(*log.borrow(), [1, 2, 5]);
         assert_eq!(top_level(&root), [Some(5)]);
+        assert!(!root.has_pending_work());
+    }
+
+    #[test]
+    fn a_starved_transition_finishes_in_one_slice() {
+        let handle = Rc::new(RefCell::new(None::<State<u32>>));
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut root = mount(counter(&handle, &log));
+        let Some(state) = handle.borrow().clone() else {
+            return;
+        };
+
+        state.set_with_lane(Lanes::TRANSITION.highest(), 2);
+        // The lane has just started waiting, so the render is still sliceable.
+        let mut asked = false;
+        assert!(root.flush_slice(0, || {
+            asked = true;
+            true
+        }));
+        assert!(asked);
+        assert_eq!(top_level(&root), [Some(1)]);
+
+        // Five seconds later the transition has waited its full delay. The
+        // render completes in this slice even though the host asks to stop.
+        asked = false;
+        assert!(!root.flush_slice(5_000, || {
+            asked = true;
+            true
+        }));
+        assert!(!asked);
+        assert_eq!(*log.borrow(), [1, 2]);
+        assert_eq!(top_level(&root), [Some(2)]);
+        assert!(!root.has_pending_work());
+    }
+
+    #[test]
+    fn an_expiration_time_is_cleared_when_the_lane_is_rendered() {
+        let handle = Rc::new(RefCell::new(None::<State<u32>>));
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut root = mount(counter(&handle, &log));
+        let Some(state) = handle.borrow().clone() else {
+            return;
+        };
+
+        // The first update starts the clock and the render yields, so the lane
+        // expires while the render is still in flight.
+        state.set_with_lane(Lanes::TRANSITION.highest(), 2);
+        assert!(root.flush_slice(1_000, || true));
+        assert!(!root.flush_slice(6_000, || true));
+        assert_eq!(top_level(&root), [Some(2)]);
+
+        // The lane is no longer pending, so the expiration time is gone: the
+        // update queued on the same lane gets a fresh delay instead of being
+        // expired the moment the root sees it.
+        state.set_with_lane(Lanes::TRANSITION.highest(), 3);
+        let mut asked = false;
+        assert!(root.flush_slice(6_500, || {
+            asked = true;
+            true
+        }));
+        assert!(asked);
+        assert_eq!(top_level(&root), [Some(2)]);
+
+        root.flush();
+        assert_eq!(top_level(&root), [Some(3)]);
         assert!(!root.has_pending_work());
     }
 }
