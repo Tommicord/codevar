@@ -70,12 +70,21 @@
 //!   group ([`Lanes::SYNC_UPDATE`]), so a discrete update is fully observable
 //!   when the caller regains control.
 //!
+//! # Work the render skips
+//!
+//! A fiber whose pending description is the one it already committed and whose
+//! lanes the render does not cover is not rendered again: it keeps its
+//! children, and the pass clones them into the finished tree so both trees own
+//! a copy of the subtree. The bailout stops outright when `child_lanes` holds
+//! no lane of the render, which skips a whole subtree with nothing pending in
+//! it. A parent that builds a new element for a component defeats this, the
+//! way React re-renders a child whose props object changed.
+//!
 //! # Not implemented yet
 //!
-//! A component always renders; the bailout that would skip a subtree with no
-//! pending lanes in it is not implemented. There is no time slicing, no
-//! suspension and no starvation protection. A state update dispatched while a
-//! component renders is applied by the next pass of the flush loop, so the
+//! There is no time slicing, no suspension and no starvation protection. A
+//! state update dispatched while a component renders is applied by the next
+//! pass of the flush loop, so the
 //! intermediate tree is committed, where React re-renders the component in
 //! place before committing. The hook queues already support that replay; the
 //! work pass does not drive it yet.
@@ -525,6 +534,48 @@ mod tests {
         root.flush();
         assert_eq!(top_level(&root), [Some(2)]);
         assert!(!root.has_pending_work());
+    }
+
+    #[test]
+    fn a_sibling_with_no_new_element_does_not_render_again() {
+        let first = Rc::new(RefCell::new(None::<State<u32>>));
+        let first_log = Rc::new(RefCell::new(Vec::new()));
+        let second = Rc::new(RefCell::new(None::<State<u32>>));
+        let second_log = Rc::new(RefCell::new(Vec::new()));
+        let mut root = mount(Element::fragment([
+            counter(&first, &first_log),
+            counter(&second, &second_log),
+        ]));
+        assert_eq!(*first_log.borrow(), [1]);
+        assert_eq!(*second_log.borrow(), [1]);
+
+        let Some(state) = first.borrow().clone() else {
+            return;
+        };
+        state.set(2);
+        root.flush();
+
+        assert_eq!(*first_log.borrow(), [1, 2]);
+        // The sibling kept the element the root still holds and no lane of it
+        // is pending, so the render never enters it.
+        assert_eq!(*second_log.borrow(), [1]);
+        assert_eq!(top_level(&root), [Some(2), Some(1)]);
+    }
+
+    #[test]
+    fn a_new_element_renders_the_component_again() {
+        let handle = Rc::new(RefCell::new(None::<State<u32>>));
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut root = mount(counter(&handle, &log));
+        assert_eq!(*log.borrow(), [1]);
+
+        // The same component type with a different element: the description
+        // changed, so the component renders even though no lane is pending.
+        root.render(counter(&handle, &log));
+        root.flush();
+
+        assert_eq!(*log.borrow(), [1, 1]);
+        assert_eq!(top_level(&root), [Some(1)]);
     }
 
     #[test]
