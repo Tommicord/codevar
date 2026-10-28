@@ -57,11 +57,12 @@
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::any::TypeId;
+use core::cell::RefCell;
 use core::fmt;
 use core::ops::{BitAnd, BitOr, Not};
 
-use crate::element::{ComponentFn, Element, HostNode};
-use crate::hooks::{EffectRecord, HookList};
+use crate::element::{ComponentFn, Element, HostNode, Reference};
+use crate::hooks::{Cleanup, EffectRecord, HookList};
 use crate::host::{Host, Key};
 use crate::lane::Lanes;
 
@@ -92,38 +93,38 @@ impl Flags {
     /// The node's children must be removed because its content changed kind.
     pub(crate) const CONTENT_RESET: Self = Self(1 << 3);
 
-    /// The node has a ref to attach or detach.
+    /// The node has a ref to detach in the mutation phase and attach in the
+    /// layout phase.
     pub(crate) const REF: Self = Self(1 << 4);
 
-    /// The node has a callback ref to invoke.
-    pub(crate) const CALLBACK: Self = Self(1 << 5);
-
     /// The node has a layout effect to run.
-    pub(crate) const LAYOUT: Self = Self(1 << 6);
+    pub(crate) const LAYOUT: Self = Self(1 << 5);
 
     /// The node has a passive effect to run.
-    pub(crate) const PASSIVE: Self = Self(1 << 7);
+    pub(crate) const PASSIVE: Self = Self(1 << 6);
 
     /// The node's effect cleanup must run before its parent is mutated.
-    pub(crate) const INSERTION: Self = Self(1 << 8);
+    pub(crate) const INSERTION: Self = Self(1 << 7);
 
     /// Every flag.
-    pub(crate) const ALL: Self = Self((1 << 9) - 1);
+    pub(crate) const ALL: Self = Self((1 << 8) - 1);
 
     /// The flags the mutation phase applies and consumes.
+    ///
+    /// [`Flags::REF`] is not here: the mutation phase detaches the *committed*
+    /// ref, but the flag describes the finished node, whose ref the layout
+    /// phase attaches. Clearing it with the rest of the mutation work would
+    /// leave the new ref unattached.
     pub(crate) const MUTATION_MASK: Self = Self(
         Self::PLACEMENT.0
             | Self::UPDATE.0
             | Self::CHILD_DELETION.0
             | Self::CONTENT_RESET.0
-            | Self::REF.0
-            | Self::CALLBACK.0
             | Self::INSERTION.0,
     );
 
     /// The flags the layout phase applies and consumes.
-    pub(crate) const LAYOUT_MASK: Self =
-        Self(Self::UPDATE.0 | Self::CALLBACK.0 | Self::REF.0 | Self::LAYOUT.0);
+    pub(crate) const LAYOUT_MASK: Self = Self(Self::UPDATE.0 | Self::REF.0 | Self::LAYOUT.0);
 
     /// The flags the passive phase applies and consumes.
     pub(crate) const PASSIVE_MASK: Self = Self(Self::PASSIVE.0);
@@ -231,7 +232,24 @@ impl<H: Host> Payload<H> {
             _ => false,
         }
     }
+
+    /// The reference callback of a host payload, when it has one.
+    pub(crate) fn reference(&self) -> Option<&Reference<H>> {
+        match self {
+            Self::Host(node) => node.reference.as_ref(),
+            _ => None,
+        }
+    }
 }
+
+/// The cleanup a reference callback returned when it was attached.
+///
+/// The two alternates of a fiber share the cell. React copies `refCleanup`
+/// into the work-in-progress fiber, so a render that never touches the ref
+/// still leaves the cleanup on the fiber that becomes current, and a detach
+/// clears it on both halves so it cannot run twice. One shared cell gives Rea
+/// both properties while the cleanup stays an `FnOnce`.
+pub(crate) type RefCleanup = Rc<RefCell<Option<Cleanup>>>;
 
 /// What kind of node a fiber is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -284,6 +302,8 @@ pub(crate) struct Fiber<H: Host> {
     pub(crate) index: usize,
     /// The host node, shared by both alternates.
     pub(crate) state_node: Option<H::Node>,
+    /// The cleanup the attached reference returned, shared by both alternates.
+    pub(crate) ref_cleanup: Option<RefCleanup>,
     /// The hooks of a component.
     pub(crate) hooks: HookList,
     /// The effects this render must commit.
@@ -317,6 +337,7 @@ impl<H: Host> Fiber<H> {
             sibling: None,
             index: 0,
             state_node: None,
+            ref_cleanup: None,
             hooks: HookList::default(),
             effects: Vec::new(),
             flags: Flags::NONE,
@@ -348,6 +369,7 @@ impl<H: Host> Fiber<H> {
             sibling: None,
             index: current.index,
             state_node: current.state_node,
+            ref_cleanup: current.ref_cleanup.clone(),
             hooks: current.hooks.clone(),
             effects: Vec::new(),
             flags: Flags::NONE,
@@ -729,6 +751,26 @@ mod tests {
     }
 
     #[test]
+    fn a_work_in_progress_fiber_shares_the_ref_cleanup() {
+        let mut arena = arena();
+        let mut current = fiber(FiberTag::Host);
+        let cleanup: RefCleanup = Rc::new(RefCell::new(Some(Box::new(|| {}))));
+        current.ref_cleanup = Some(Rc::clone(&cleanup));
+        current.state_node = Some(TestNode(1));
+        let current = arena.alloc(current);
+
+        let Some(work) = arena.create_work_in_progress(current) else {
+            return;
+        };
+        let carried = arena
+            .get(work)
+            .and_then(|fiber| fiber.ref_cleanup.as_ref());
+        // A render that never touches the ref still has to hand the cleanup to
+        // the fiber that becomes current, or a later detach cannot run it.
+        assert!(carried.is_some_and(|carried| Rc::ptr_eq(carried, &cleanup)));
+    }
+
+    #[test]
     fn deleting_a_child_marks_the_parent() {
         let mut fiber = fiber(FiberTag::Host);
         fiber.delete_child(FiberId(4));
@@ -741,6 +783,7 @@ mod tests {
         let element: Rc<HostNode<TestHost>> = Rc::new(HostNode {
             element: Rc::new(7),
             children: Rc::from(Vec::<Element<TestHost>>::new()),
+            reference: None,
         });
         let payload: Payload<TestHost> = Payload::Host(Rc::clone(&element));
         let clone = payload.clone();

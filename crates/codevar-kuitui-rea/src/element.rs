@@ -55,7 +55,7 @@
 use alloc::rc::Rc;
 use core::any::TypeId;
 
-use crate::hooks::RenderCtx;
+use crate::hooks::{Cleanup, RenderCtx};
 use crate::host::{Host, Key};
 
 /// The render function of a component.
@@ -64,6 +64,19 @@ use crate::host::{Host, Key};
 /// the scope is only valid for one call, and a component cannot keep the
 /// borrow it is given.
 pub type ComponentFn<H> = dyn Fn(&mut RenderCtx<'_>) -> Element<H>;
+
+/// The callback a host element hands its node to.
+///
+/// The callback receives the node while the element is mounted and `None` when
+/// the node is detached. It may return a cleanup, which then runs on detach in
+/// place of the `None` call, exactly like a React 19 callback ref.
+///
+/// The callback is behind an `Rc`, so its identity — not the source expression
+/// that created it — is what decides whether a render changed it. A component
+/// must pass the same `Rc` on every render, just as a callback hoisted out of a
+/// React component is the same function object; a fresh `Rc` per render is a
+/// different callback and is detached and attached again.
+pub type Reference<H> = Rc<dyn Fn(Option<<H as Host>::Node>) -> Option<Cleanup>>;
 
 /// One node of the tree a component describes.
 pub struct Element<H: Host> {
@@ -83,6 +96,8 @@ pub(crate) struct HostNode<H: Host> {
     pub(crate) element: Rc<H::Element>,
     /// The elements the node arranges.
     pub(crate) children: Rc<[Element<H>]>,
+    /// The callback the node is handed to, when the element has one.
+    pub(crate) reference: Option<Reference<H>>,
 }
 
 /// What an element describes.
@@ -125,6 +140,7 @@ impl<H: Host> Element<H> {
             kind: Kind::Host(Rc::new(HostNode {
                 element: Rc::new(element),
                 children: Rc::from([]),
+                reference: None,
             })),
         }
     }
@@ -142,6 +158,25 @@ impl<H: Host> Element<H> {
             self.kind = Kind::Host(Rc::new(HostNode {
                 element: Rc::clone(&node.element),
                 children: children.into_iter().collect(),
+                reference: node.reference.clone(),
+            }));
+        }
+        self
+    }
+
+    /// Gives a host element a reference callback.
+    ///
+    /// The callback is attached in the layout phase and detached in the
+    /// mutation phase; see [`Reference`] for what it receives. As with
+    /// [`Element::children`], the call is ignored on any other kind, because
+    /// only a host element owns a node to reference.
+    #[must_use]
+    pub fn referenced(mut self, reference: Reference<H>) -> Self {
+        if let Kind::Host(node) = &self.kind {
+            self.kind = Kind::Host(Rc::new(HostNode {
+                element: Rc::clone(&node.element),
+                children: Rc::clone(&node.children),
+                reference: Some(reference),
             }));
         }
         self
@@ -313,6 +348,30 @@ mod tests {
         assert!(a.children.is_empty());
         assert_eq!(b.children.len(), 1);
         assert!(Rc::ptr_eq(&a.element, &b.element));
+    }
+
+    #[test]
+    fn a_reference_follows_the_children_it_is_given() {
+        let reference: Reference<TestHost> = Rc::new(|_| None);
+        let element: Element<TestHost> = Element::host(1)
+            .referenced(Rc::clone(&reference))
+            .children([Element::host(2)]);
+        let Kind::Host(node) = element.kind() else {
+            return;
+        };
+        assert!(
+            node.reference
+                .as_ref()
+                .is_some_and(|kept| Rc::ptr_eq(kept, &reference))
+        );
+        assert_eq!(node.children.len(), 1);
+    }
+
+    #[test]
+    fn a_component_ignores_a_reference() {
+        let reference: Reference<TestHost> = Rc::new(|_| None);
+        let element: Element<TestHost> = panel().referenced(reference);
+        assert!(element.component_type().is_some());
     }
 
     #[test]
