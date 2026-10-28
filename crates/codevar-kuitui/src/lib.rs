@@ -105,6 +105,7 @@ pub mod driver;
 pub mod effect;
 pub mod event;
 pub mod geometry;
+pub mod host;
 pub mod input;
 mod macros;
 pub mod node;
@@ -133,6 +134,7 @@ pub use driver::{FrameDriver, FrameReport};
 pub use effect::{Effect, EffectKinds, Gradient, InteractionSource, InteractionState};
 pub use event::{Event, EventResult, KeyEvent, PointerButton, PointerEvent, PointerEventKind};
 pub use geometry::{Alignment, Constraints, EdgeInsets, Offset, Rect, Size};
+pub use host::{NodeElement, NodeId, WidgetHost};
 #[doc(hidden)]
 pub use macros::__private;
 pub use node::{Modifier, Node};
@@ -161,6 +163,7 @@ pub mod prelude {
         PointerEventKind,
     };
     pub use crate::geometry::{Alignment, Constraints, EdgeInsets, Horizontal, Offset, Rect, Size, Vertical};
+    pub use crate::host::{NodeElement, NodeId, WidgetHost};
     pub use crate::kuitui;
     pub use crate::node::{Modifier, Node};
     pub use crate::paint::{
