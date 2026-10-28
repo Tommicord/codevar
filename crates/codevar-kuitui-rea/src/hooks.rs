@@ -97,6 +97,7 @@ enum UpdateAction<T> {
 }
 
 /// One queued update of a state hook.
+#[derive(Clone)]
 struct Update {
     /// The lane the update arrived on. [`Lanes::NONE`] marks an update that
     /// must be replayed by the next render whatever its lanes are: it was
@@ -125,9 +126,27 @@ impl Update {
     }
 }
 
+/// The queue as the last commit left it, with the updates the in-flight render
+/// has taken out of [`UpdateQueue::pending`] merged in.
+///
+/// React keeps the same thing on the committed hook: `updateReducer` moves the
+/// pending updates onto `current.baseQueue` before it processes them, so a
+/// render that is thrown away leaves the committed fiber able to replay every
+/// update. Rea shares one queue between the alternates, so this snapshot plays
+/// that role until the commit makes the new base current.
+struct CommittedBase {
+    /// The base queue followed by the updates that were pending when the
+    /// render reached this hook.
+    updates: Vec<Update>,
+    /// The state the base queue applies to.
+    base_state: Option<Rc<dyn Any>>,
+    /// The last rendered value before the render started.
+    last_rendered: Option<Rc<dyn Any>>,
+}
+
 /// The queue shared by the alternates of a fiber.
 pub(crate) struct UpdateQueue {
-    /// The updates queued since the last render.
+    /// The updates queued since they were last merged into the base queue.
     pending: Vec<Update>,
     /// The updates a render skipped, in source order, followed by the rebased
     /// copies of the updates it applied after the first skip.
@@ -146,6 +165,8 @@ pub(crate) struct UpdateQueue {
     owner: Cell<Option<FiberId>>,
     /// The last rendered value, as `Rc<T>`.
     last_rendered: Option<Rc<dyn Any>>,
+    /// What an abandoned render puts back, while one is replaying this queue.
+    committed: Option<CommittedBase>,
 }
 
 impl UpdateQueue {
@@ -168,6 +189,22 @@ impl UpdateQueue {
     fn discard(&mut self, lanes: Lanes) {
         self.pending
             .retain(|update| update.lane.is_empty() || !update.lane.is_subset_of(lanes));
+    }
+
+    /// Puts the queue back to the state the last commit left.
+    ///
+    /// The render that replayed the queue is being thrown away, so the base
+    /// queue, the state it applies to and the last rendered value return to
+    /// what the committed tree holds. Every update the render had taken out of
+    /// the pending queue is back in the base queue, in source order; the next
+    /// render replays them and applies the ones its lanes cover.
+    fn restore_committed(&mut self) {
+        let Some(committed) = self.committed.take() else {
+            return;
+        };
+        self.base = committed.updates;
+        self.base_state = committed.base_state;
+        self.last_rendered = committed.last_rendered;
     }
 }
 
@@ -506,7 +543,11 @@ impl HookList {
     pub(crate) fn commit(&mut self) {
         for slot in &mut self.slots {
             if let Some(queue) = &slot.queue {
-                queue.borrow_mut().last_rendered = slot.value.clone();
+                let mut queue = queue.borrow_mut();
+                queue.last_rendered = slot.value.clone();
+                // The base queue the render compacted is the committed one now,
+                // so there is nothing left for an abandoned render to put back.
+                queue.committed = None;
             }
         }
     }
@@ -530,6 +571,20 @@ impl HookList {
         for slot in &self.slots {
             if let Some(queue) = &slot.queue {
                 queue.borrow_mut().discard(lanes);
+            }
+        }
+    }
+
+    /// Puts every queue back to the state the last commit left.
+    ///
+    /// The work pass calls this when it throws a render away: a render that
+    /// did not commit may have replayed updates and consumed them from the
+    /// pending queue, and the committed tree must still be able to produce the
+    /// value those updates describe.
+    pub(crate) fn restore_committed(&self) {
+        for slot in &self.slots {
+            if let Some(queue) = &slot.queue {
+                queue.borrow_mut().restore_committed();
             }
         }
     }
@@ -702,6 +757,7 @@ impl<'a> RenderCtx<'a> {
             base_state: Some(Rc::new(Rc::clone(&value)) as Rc<dyn Any>),
             owner: Cell::new(Some(self.fiber)),
             last_rendered: Some(Rc::new(Rc::clone(&value)) as Rc<dyn Any>),
+            committed: None,
         }));
         slot.value = Some(Rc::new(Rc::clone(&value)) as Rc<dyn Any>);
         slot.queue = Some(Rc::clone(&queue));
@@ -723,6 +779,10 @@ impl<'a> RenderCtx<'a> {
     /// top of the skipped update. The committed alternate's value is the base
     /// when the queue has none, which only happens for a queue created before
     /// the base state existed.
+    ///
+    /// While the render runs, the merged queue — the base plus everything that
+    /// was pending — stays on [`UpdateQueue::committed`], so a render the root
+    /// throws away puts back exactly what the committed tree had.
     fn replay<T: 'static>(
         queue: &mut UpdateQueue,
         current: Rc<T>,
@@ -730,7 +790,24 @@ impl<'a> RenderCtx<'a> {
         skipped: &mut Lanes,
     ) -> (Rc<T>, bool) {
         let mut updates = mem::take(&mut queue.base);
-        updates.append(&mut queue.pending);
+        let mut pending = mem::take(&mut queue.pending);
+        // The first pass of a render keeps the whole queue on the base state
+        // the commit left; a later pass only adds the updates the earlier pass
+        // queued, so a render that is thrown away after any pass puts back
+        // every update exactly once.
+        match &mut queue.committed {
+            Some(committed) => committed.updates.extend(pending.iter().cloned()),
+            None => {
+                let mut merged = updates.clone();
+                merged.extend(pending.iter().cloned());
+                queue.committed = Some(CommittedBase {
+                    updates: merged,
+                    base_state: queue.base_state.clone(),
+                    last_rendered: queue.last_rendered.clone(),
+                });
+            }
+        }
+        updates.append(&mut pending);
         let had_updates = !updates.is_empty();
         let mut value = queue
             .base_state
@@ -985,6 +1062,34 @@ mod tests {
         }
     }
 
+    impl Harness {
+        /// Renders into a hook list that is not the committed one, the way the
+        /// work pass renders into a fiber's alternate.
+        fn render_away<R>(
+            harness: &Self,
+            hooks: &mut HookList,
+            content: impl FnOnce(&mut RenderCtx<'_>) -> R,
+        ) -> R {
+            harness.mailbox.borrow_mut().drain();
+            let mut effects = Vec::new();
+            let mut skipped = Lanes::NONE;
+            let mut ids = harness.ids;
+            hooks.begin_render();
+            let mut ctx = RenderCtx::new(
+                harness.fiber,
+                hooks,
+                &mut effects,
+                harness.lanes,
+                &mut skipped,
+                Rc::clone(&harness.mailbox),
+                &mut ids,
+            );
+            let result = content(&mut ctx);
+            ctx.finish();
+            result
+        }
+    }
+
     #[test]
     fn a_state_survives_a_render() {
         let mut harness = Harness::new();
@@ -1055,6 +1160,26 @@ mod tests {
         let state = harness.render(|ctx| ctx.use_state(|| 0_u32));
         assert_eq!(*state.get(), 22);
         assert!(harness.skipped.is_empty());
+    }
+
+    #[test]
+    fn a_render_that_is_thrown_away_leaves_its_updates_in_the_queue() {
+        let mut harness = Harness::new();
+        let state = harness.render(|ctx| ctx.use_state(|| 1_u32));
+        harness.commit();
+        state.set(2);
+
+        // A work-in-progress render replays the update and takes it out of the
+        // pending queue...
+        let mut thrown_away = harness.hooks.clone();
+        let work = Harness::render_away(&harness, &mut thrown_away, |ctx| ctx.use_state(|| 0_u32));
+        assert_eq!(*work.get(), 2);
+
+        // ...and the render is abandoned. The committed list still holds the
+        // update, so the next render produces the value it describes.
+        thrown_away.restore_committed();
+        let state = harness.render(|ctx| ctx.use_state(|| 0_u32));
+        assert_eq!(*state.get(), 2);
     }
 
     #[test]
