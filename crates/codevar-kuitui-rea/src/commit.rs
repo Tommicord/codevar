@@ -50,6 +50,16 @@
 //! fiber's records are shared with the previous render through their destroy
 //! cell, which is what lets the destroy pass of this frame run the cleanup
 //! that the previous frame installed.
+//!
+//! # Consuming the flags
+//!
+//! Each phase clears the flags it applied ([`Flags::MUTATION_MASK`],
+//! [`Flags::LAYOUT_MASK`], [`Flags::PASSIVE_MASK`]). The finished tree can
+//! share fibers with the committed tree — a subtree with no work is not cloned
+//! — and the commit walks it through those shared fibers, so a flag that
+//! outlived its phase would make a later commit repeat work the host already
+//! saw. Clearing is also what makes "does this tree still have passive work?"
+//! answer no once the passive phase ran.
 
 #![allow(dead_code)]
 
@@ -93,13 +103,14 @@ impl<'a, H: Host> Commit<'a, H> {
         let mut order = Vec::new();
         self.collect(root, &mut order);
         for fiber in order {
-            if let Some(node) = self.arena.get_mut(fiber)
-                && node.tag == FiberTag::Component
-            {
-                node.hooks.commit();
-                // The swap made this fiber the current one, so a dispatch that
-                // outlives the render must name it from now on.
-                node.hooks.reset_owners(fiber);
+            if let Some(node) = self.arena.get_mut(fiber) {
+                if node.tag == FiberTag::Component {
+                    node.hooks.commit();
+                    // The swap made this fiber the current one, so a dispatch
+                    // that outlives the render must name it from now on.
+                    node.hooks.reset_owners(fiber);
+                }
+                node.flags.remove(Flags::LAYOUT_MASK);
             }
             self.create_effects(fiber, EffectTag::Layout);
         }
@@ -118,6 +129,9 @@ impl<'a, H: Host> Commit<'a, H> {
         }
         for fiber in order {
             self.create_effects(fiber, EffectTag::Passive);
+            if let Some(node) = self.arena.get_mut(fiber) {
+                node.flags.remove(Flags::PASSIVE_MASK);
+            }
         }
     }
 
@@ -163,6 +177,9 @@ impl<'a, H: Host> Commit<'a, H> {
         }
 
         self.destroy_effects(fiber, EffectTag::Layout);
+        if let Some(node) = self.arena.get_mut(fiber) {
+            node.flags.remove(Flags::MUTATION_MASK);
+        }
     }
 
     /// The node a placement inserts before, or `None` to append.
@@ -309,7 +326,7 @@ mod tests {
     use alloc::rc::Rc;
     use alloc::string::String;
     use alloc::vec;
-    use core::cell::RefCell;
+    use core::cell::{Cell, RefCell};
 
     /// The handle of a node in [`TreeHost`].
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -452,6 +469,22 @@ mod tests {
         fn children(&self) -> &[NodeId] {
             self.host.children(self.host.container())
         }
+    }
+
+    /// Every fiber reachable from the finished root, through children and
+    /// siblings.
+    fn fibers(harness: &Harness) -> Vec<FiberId> {
+        let mut order = Vec::new();
+        let mut pending = vec![harness.root];
+        while let Some(fiber) = pending.pop() {
+            let Some(node) = harness.arena.get(fiber) else {
+                continue;
+            };
+            order.push(fiber);
+            pending.extend(node.first_child);
+            pending.extend(node.sibling);
+        }
+        order
     }
 
     #[test]
@@ -665,5 +698,60 @@ mod tests {
         let mut harness = Harness::new();
         harness.render(element);
         assert_eq!(*log.borrow(), ["layout", "passive"]);
+    }
+
+    #[test]
+    fn the_commit_leaves_no_flag_of_any_phase_behind() {
+        let epoch = Rc::new(Cell::new(0_u32));
+        let effectful = {
+            let epoch = Rc::clone(&epoch);
+            Element::component(move |ctx: &mut RenderCtx<'_>| {
+                let tick = epoch.get();
+                ctx.use_layout_effect((tick,), || None);
+                ctx.use_effect((tick,), || None);
+                Element::host(9)
+            })
+        };
+
+        let mut harness = Harness::new();
+        harness.render(Element::fragment([
+            Element::host(1).keyed("a"),
+            effectful.clone(),
+            Element::host(2).keyed("b"),
+        ]));
+        assert_eq!(harness.children().len(), 3);
+
+        // A reorder, an insertion and a component whose effect deps changed:
+        // every phase of the commit has work to do and flags to consume.
+        epoch.set(1);
+        harness.render(Element::fragment([
+            Element::host(2).keyed("b"),
+            Element::host(1).keyed("a"),
+            effectful,
+            Element::host(3).keyed("c"),
+        ]));
+        assert_eq!(harness.children().len(), 4);
+
+        let order = fibers(&harness);
+        let component = order.iter().any(|fiber| {
+            harness
+                .arena
+                .get(*fiber)
+                .is_some_and(|node| node.tag == FiberTag::Component)
+        });
+        assert!(component, "the walk must reach the component fiber");
+        for fiber in order {
+            let Some(node) = harness.arena.get(fiber) else {
+                continue;
+            };
+            // The finished tree shares fibers with the committed one, so a
+            // flag that outlived its phase would replay it in a later commit.
+            assert!(
+                node.flags.is_empty(),
+                "stale {:?} left on {:?}",
+                node.flags,
+                node.tag
+            );
+        }
     }
 }

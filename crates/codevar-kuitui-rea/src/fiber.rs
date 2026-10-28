@@ -57,9 +57,12 @@ use crate::lane::Lanes;
 
 /// Bookkeeping the commit phase needs, attached to a fiber.
 ///
-/// Flags are per-alternate and are not cleared by the commit. They are reset
-/// when the alternate is reused as a work-in-progress node, which is why
-/// [`Fiber::work_in_progress`] starts from [`Flags::NONE`].
+/// Flags are per-alternate. Starting a work-in-progress node resets them (see
+/// [`Fiber::work_in_progress`]), and every commit phase also clears the mask it
+/// applied. The second rule is what keeps a finished tree honest: a fiber can
+/// be shared with the committed tree instead of cloned, and a flag left on it
+/// would make a later commit redo work that already ran. The masks together
+/// cover [`Flags::ALL`].
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct Flags(u16);
 
@@ -96,6 +99,24 @@ impl Flags {
 
     /// Every flag.
     pub(crate) const ALL: Self = Self((1 << 9) - 1);
+
+    /// The flags the mutation phase applies and consumes.
+    pub(crate) const MUTATION_MASK: Self = Self(
+        Self::PLACEMENT.0
+            | Self::UPDATE.0
+            | Self::CHILD_DELETION.0
+            | Self::CONTENT_RESET.0
+            | Self::REF.0
+            | Self::CALLBACK.0
+            | Self::INSERTION.0,
+    );
+
+    /// The flags the layout phase applies and consumes.
+    pub(crate) const LAYOUT_MASK: Self =
+        Self(Self::UPDATE.0 | Self::CALLBACK.0 | Self::REF.0 | Self::LAYOUT.0);
+
+    /// The flags the passive phase applies and consumes.
+    pub(crate) const PASSIVE_MASK: Self = Self(Self::PASSIVE.0);
 
     /// Whether no flag is set.
     pub(crate) const fn is_empty(self) -> bool {
@@ -551,5 +572,12 @@ mod tests {
             return;
         };
         assert!(Rc::ptr_eq(&a, &b));
+    }
+
+    #[test]
+    fn the_phase_masks_cover_every_flag() {
+        let masks = Flags::MUTATION_MASK | Flags::LAYOUT_MASK | Flags::PASSIVE_MASK;
+        // A flag outside every mask would survive the commit that applied it.
+        assert!(masks.contains(Flags::ALL));
     }
 }
