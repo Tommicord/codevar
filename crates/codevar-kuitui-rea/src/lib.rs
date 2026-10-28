@@ -60,13 +60,15 @@
 //! them are in place. The public surface is [`lane`], [`element`], [`Host`],
 //! [`Key`], [`Props`], [`RenderCtx`], [`State`], [`Cleanup`] and [`Root`].
 //!
-//! The root is synchronous: it renders every pending lane before it returns.
-//! A component that writes to its own state while it renders is rendered again
-//! in place, so the intermediate tree is never mounted. A fiber whose
-//! description did not change and whose lanes the render does not cover bails
-//! out, cloning its children only when a lane below it still needs the render.
-//! There is no time slicing, suspension or starvation protection yet; those are
-//! the next increments.
+//! The root renders every pending lane before it returns by default, and a
+//! render whose lanes are speculative can be time sliced: [`Root::flush_slice`]
+//! stops between units of work and resumes the tree on the next call, while
+//! work that is strictly more urgent throws the tree away and starts over. A
+//! lane that waits past its expiration delay renders without slicing, so urgent
+//! work cannot starve it. A component that writes to its own state while it
+//! renders is rendered again in place, so the intermediate tree is never
+//! mounted, and a fiber whose description did not change and whose lanes the
+//! render does not cover bails out. There is no suspension yet.
 //!
 //! # References
 //!

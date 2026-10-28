@@ -52,9 +52,6 @@
 //! when it reaches the host, exactly as it diffs the children of a fragment,
 //! so a host node keeps the fibers and nodes below it across a re-render.
 
-// The reconciler that reads these descriptions lands in the next increment.
-#![allow(dead_code)]
-
 use alloc::rc::Rc;
 use core::any::TypeId;
 
