@@ -61,10 +61,12 @@
 //! [`Key`], [`Props`], [`RenderCtx`], [`State`], [`Cleanup`] and [`Root`].
 //!
 //! The root is synchronous: it renders every pending lane before it returns.
-//! A fiber whose description did not change and whose lanes the render does
-//! not cover bails out, cloning its children only when a lane below it still
-//! needs the render. There is no time slicing, suspension or starvation
-//! protection yet; those are the next increments.
+//! A component that writes to its own state while it renders is rendered again
+//! in place, so the intermediate tree is never mounted. A fiber whose
+//! description did not change and whose lanes the render does not cover bails
+//! out, cloning its children only when a lane below it still needs the render.
+//! There is no time slicing, suspension or starvation protection yet; those are
+//! the next increments.
 //!
 //! # References
 //!

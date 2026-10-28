@@ -37,9 +37,26 @@
 //! A dispatch never renders on its own. It queues the update and signals the
 //! mailbox; draining the mailbox is what turns a wake into pending lanes and
 //! marks them on the fiber that owns the queue and on its ancestors. Draining
-//! between passes is what lets an update dispatched by a layout effect, or by
-//! a component while it renders, take part in the same flush as the work that
-//! caused it.
+//! between passes is what lets an update dispatched by a layout effect — or by
+//! one component while another renders — take part in the same flush as the
+//! work that caused it. An update a component dispatches to *itself* while it
+//! renders never reaches the mailbox at all; see below.
+//!
+//! # Render phase updates
+//!
+//! A component that writes to its own state while it renders is re-rendered in
+//! place, before its element reaches the reconciler: the pass reruns the
+//! component until no pass queues another update, so the intermediate element
+//! is never mounted and the commit applies the tree the final value produced.
+//! React calls these *render phase updates* and bounds the loop at 25 extra
+//! passes; the work pass does the same. Where React throws "Too many
+//! re-renders" and unmounts the tree, Rea stops the loop and drops the updates
+//! of the last pass — they were queued for a pass the limit did not allow —
+//! and commits the tree the last allowed pass described.
+//!
+//! A dispatch to *another* component's state during a render is an ordinary
+//! update: it signals the mailbox and the flush loop renders that component in
+//! its own pass.
 //!
 //! # Lanes and what a commit leaves behind
 //!
@@ -82,12 +99,7 @@
 //!
 //! # Not implemented yet
 //!
-//! There is no time slicing, no suspension and no starvation protection. A
-//! state update dispatched while a component renders is applied by the next
-//! pass of the flush loop, so the
-//! intermediate tree is committed, where React re-renders the component in
-//! place before committing. The hook queues already support that replay; the
-//! work pass does not drive it yet.
+//! There is no time slicing, no suspension and no starvation protection.
 
 use alloc::rc::Rc;
 use core::slice;
@@ -380,10 +392,12 @@ mod tests {
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     struct NodeId(u32);
 
-    /// One node: its element and the children the commit attached.
+    /// One node: its element, the children the commit attached and how many
+    /// times the host updated it.
     struct NodeState {
         element: Option<u32>,
         children: Vec<NodeId>,
+        updates: u32,
     }
 
     /// A host that keeps the child order, so a placement can be asserted.
@@ -397,6 +411,7 @@ mod tests {
                 nodes: vec![NodeState {
                     element: None,
                     children: Vec::new(),
+                    updates: 0,
                 }],
             }
         }
@@ -427,6 +442,7 @@ mod tests {
             self.nodes.push(NodeState {
                 element: Some(*element),
                 children: Vec::new(),
+                updates: 0,
             });
             id
         }
@@ -434,6 +450,7 @@ mod tests {
         fn update(&mut self, node: NodeId, element: &u32) {
             if let Some(state) = self.nodes.get_mut(node.0 as usize) {
                 state.element = Some(*element);
+                state.updates += 1;
             }
         }
 
@@ -533,6 +550,70 @@ mod tests {
         assert!(root.has_pending_work());
         root.flush();
         assert_eq!(top_level(&root), [Some(2)]);
+        assert!(!root.has_pending_work());
+    }
+
+    #[test]
+    fn a_render_phase_update_is_committed_by_the_same_flush() {
+        let log = Rc::new(RefCell::new(Vec::<u32>::new()));
+        let element = {
+            let log = Rc::clone(&log);
+            Element::component(move |ctx| {
+                let value = ctx.use_state(|| 1_u32);
+                let current = *value.get();
+                log.borrow_mut().push(current);
+                if current < 2 {
+                    value.set(2);
+                }
+                Element::host(current)
+            })
+        };
+        let root = mount(element);
+
+        // The component ran twice before its element reached the host, so the
+        // host saw one creation and never an intermediate tree.
+        assert_eq!(*log.borrow(), [1, 2]);
+        assert_eq!(top_level(&root), [Some(2)]);
+        assert_eq!(root.host().nodes[1].updates, 0);
+        assert!(!root.has_pending_work());
+    }
+
+    /// A component that renders `child` and, once `dispatch` is set, writes the
+    /// state of another component while it renders.
+    fn parent_of(
+        child: Element<TreeHost>,
+        dispatch: &Rc<Cell<bool>>,
+        into: &Rc<RefCell<Option<State<u32>>>>,
+    ) -> Element<TreeHost> {
+        let dispatch = Rc::clone(dispatch);
+        let into = Rc::clone(into);
+        Element::component(move |_| {
+            if dispatch.replace(false)
+                && let Some(state) = into.borrow().clone()
+            {
+                state.set(5);
+            }
+            child.clone()
+        })
+    }
+
+    #[test]
+    fn an_update_to_another_component_during_a_render_is_scheduled() {
+        let handle = Rc::new(RefCell::new(None::<State<u32>>));
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let dispatch = Rc::new(Cell::new(false));
+        let child = counter(&handle, &log);
+        let mut root = mount(parent_of(child.clone(), &dispatch, &handle));
+        assert_eq!(*log.borrow(), [1]);
+
+        // The write names the child, not the component being rendered, so the
+        // flush turns it into a render of the child instead of an in-place
+        // re-render of the parent.
+        dispatch.set(true);
+        root.render(parent_of(child, &dispatch, &handle));
+        root.flush();
+        assert_eq!(*log.borrow(), [1, 5]);
+        assert_eq!(top_level(&root), [Some(5)]);
         assert!(!root.has_pending_work());
     }
 
