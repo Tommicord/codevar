@@ -24,7 +24,7 @@
 //! ```text
 //! begin(root)
 //!   begin(component) ── render, reconcile
-//!     begin(host)    ── reconcile children (none)
+//!     begin(host)    ── reconcile the children it arranges
 //!     complete(host) ── create or update the node
 //!   complete(component)
 //! complete(root)
@@ -63,7 +63,7 @@ use crate::fiber::{Arena, FiberId, FiberTag, Flags, Payload};
 use crate::hooks::{EffectTag, MailboxHandle, RenderCtx};
 use crate::host::Host;
 use crate::lane::Lanes;
-use crate::reconcile::reconcile_children;
+use crate::reconcile::{committed_first_child, reconcile_children};
 
 /// The state the render pass needs while it walks the tree.
 pub(crate) struct WorkLoop<'a, H: Host> {
@@ -123,9 +123,10 @@ impl<'a, H: Host> WorkLoop<'a, H> {
         match tag {
             FiberTag::Component => self.render_component(fiber),
             FiberTag::Fragment => self.render_fragment(fiber),
-            // The root's children are reconciled by the caller before the
-            // pass starts; a host node's content is the host's business.
-            FiberTag::Root | FiberTag::Host => self.arena.get(fiber)?.first_child,
+            FiberTag::Host => self.render_host(fiber),
+            // The root's children are reconciled by the caller before the pass
+            // starts.
+            FiberTag::Root => self.arena.get(fiber)?.first_child,
         }
     }
 
@@ -193,14 +194,22 @@ impl<'a, H: Host> WorkLoop<'a, H> {
         self.arena.get(fiber)?.first_child
     }
 
-    /// Diffs `children` against the committed children of `fiber`.
-    fn reconcile(&mut self, fiber: FiberId, children: &[Element<H>]) {
-        let current_first = self
+    /// Diffs the children a host node arranges.
+    fn render_host(&mut self, fiber: FiberId) -> Option<FiberId> {
+        let Some(Payload::Host(element)) = self
             .arena
             .get(fiber)
-            .and_then(|fiber| fiber.alternate)
-            .and_then(|alternate| self.arena.get(alternate))
-            .and_then(|fiber| fiber.first_child);
+            .map(|fiber| fiber.pending.clone())
+        else {
+            return self.arena.get(fiber)?.first_child;
+        };
+        self.reconcile(fiber, &element.children);
+        self.arena.get(fiber)?.first_child
+    }
+
+    /// Diffs `children` against the committed children of `fiber`.
+    fn reconcile(&mut self, fiber: FiberId, children: &[Element<H>]) {
+        let current_first = committed_first_child(self.arena, fiber);
         reconcile_children(self.host, self.arena, fiber, current_first, children);
     }
 
@@ -267,25 +276,25 @@ impl<'a, H: Host> WorkLoop<'a, H> {
         let tag = work.tag;
         let payload = work.pending.clone();
         let memoized = work.memoized.clone();
-        let node = work.state_node;
+        let state = work.state_node;
         let mut flags = Flags::NONE;
-        let mut state_node = node;
+        let mut state_node = state;
         if tag == FiberTag::Host
             && let Payload::Host(element) = &payload
         {
-            match node {
+            match state {
                 Some(node) => {
                     let changed = match &memoized {
                         Payload::Host(old) => !Rc::ptr_eq(old, element),
                         _ => true,
                     };
                     if changed {
-                        self.host.update(node, element);
+                        self.host.update(node, &element.element);
                         flags.insert(Flags::UPDATE);
                     }
                 }
                 None => {
-                    state_node = Some(self.host.create(element));
+                    state_node = Some(self.host.create(&element.element));
                     flags.insert(Flags::PLACEMENT);
                 }
             }
@@ -573,5 +582,139 @@ mod tests {
             return;
         };
         assert!(root.subtree_flags.contains(Flags::PLACEMENT));
+    }
+
+    fn leaf(props: u16) -> Element<TestHost> {
+        Element::host((0, props))
+    }
+
+    fn keyed(props: u16, key: &str) -> Element<TestHost> {
+        Element::host((0, props)).keyed(key)
+    }
+
+    fn container(children: Vec<Element<TestHost>>) -> Element<TestHost> {
+        Element::host((0, 0)).children(children)
+    }
+
+    #[test]
+    fn a_host_element_reconciles_the_children_it_carries() {
+        let mut harness = Harness::new();
+        harness.render(container(Vec::from([leaf(1), leaf(2)])));
+        let Some(host) = harness.child(harness.root) else {
+            return;
+        };
+        let Some(first) = harness.child(host) else {
+            return;
+        };
+        let Some(second) = harness
+            .arena
+            .get(first)
+            .and_then(|fiber| fiber.sibling)
+        else {
+            return;
+        };
+        assert_eq!(harness.node(first), Some(TestNode(1)));
+        assert_eq!(harness.node(second), Some(TestNode(2)));
+        for child in [first, second] {
+            assert_eq!(
+                harness
+                    .arena
+                    .get(child)
+                    .and_then(|fiber| fiber.parent),
+                Some(host)
+            );
+        }
+    }
+
+    #[test]
+    fn host_children_keep_their_fibers_across_a_reorder() {
+        let mut harness = Harness::new();
+        harness.render(container(Vec::from([keyed(1, "a"), keyed(1, "b")])));
+        let Some(host) = harness.child(harness.root) else {
+            return;
+        };
+        let Some(old_a) = harness.child(host) else {
+            return;
+        };
+        let Some(old_b) = harness
+            .arena
+            .get(old_a)
+            .and_then(|fiber| fiber.sibling)
+        else {
+            return;
+        };
+
+        harness.render(container(Vec::from([keyed(1, "b"), keyed(1, "a")])));
+        let Some(new_host) = harness.child(harness.root) else {
+            return;
+        };
+        assert_eq!(
+            harness
+                .arena
+                .get(new_host)
+                .and_then(|fiber| fiber.alternate),
+            Some(host)
+        );
+        let Some(new_b) = harness.child(new_host) else {
+            return;
+        };
+        let Some(new_a) = harness
+            .arena
+            .get(new_b)
+            .and_then(|fiber| fiber.sibling)
+        else {
+            return;
+        };
+        assert_eq!(
+            harness
+                .arena
+                .get(new_b)
+                .and_then(|fiber| fiber.alternate),
+            Some(old_b)
+        );
+        assert_eq!(
+            harness
+                .arena
+                .get(new_a)
+                .and_then(|fiber| fiber.alternate),
+            Some(old_a)
+        );
+        assert!(
+            harness
+                .arena
+                .get(new_a)
+                .is_some_and(|fiber| fiber.flags.contains(Flags::PLACEMENT))
+        );
+    }
+
+    #[test]
+    fn a_host_element_that_loses_its_children_reports_them() {
+        let mut harness = Harness::new();
+        harness.render(container(Vec::from([leaf(1), leaf(2)])));
+        let Some(host) = harness.child(harness.root) else {
+            return;
+        };
+        let Some(old) = harness.child(host) else {
+            return;
+        };
+        let Some(second) = harness
+            .arena
+            .get(old)
+            .and_then(|fiber| fiber.sibling)
+        else {
+            return;
+        };
+
+        harness.render(container(Vec::new()));
+        let Some(new_host) = harness.child(harness.root) else {
+            return;
+        };
+        assert!(
+            harness
+                .arena
+                .get(new_host)
+                .is_some_and(|fiber| fiber.deletions == [old, second])
+        );
+        assert!(harness.child(new_host).is_none());
     }
 }

@@ -50,7 +50,7 @@ use core::any::TypeId;
 use core::fmt;
 use core::ops::{BitAnd, BitOr, Not};
 
-use crate::element::{ComponentFn, Element};
+use crate::element::{ComponentFn, Element, HostNode};
 use crate::hooks::{EffectRecord, HookList};
 use crate::host::{Host, Key};
 use crate::lane::Lanes;
@@ -183,8 +183,13 @@ pub(crate) enum Payload<H: Host> {
     None,
     /// The render function of a component.
     Component(Rc<ComponentFn<H>>),
-    /// A host element, shared with the committed tree until it changes.
-    Host(Rc<H::Element>),
+    /// A host element together with the children it arranges, shared with the
+    /// committed tree until the element changes.
+    ///
+    /// The whole description is the payload, not just the node: an element's
+    /// identity is what decides whether a fiber can keep its subtree, and the
+    /// children are part of that description.
+    Host(Rc<HostNode<H>>),
     /// The children a fragment describes.
     Fragment(Rc<[Element<H>]>),
 }
@@ -194,7 +199,7 @@ impl<H: Host> Clone for Payload<H> {
         match self {
             Self::None => Self::None,
             Self::Component(render) => Self::Component(Rc::clone(render)),
-            Self::Host(element) => Self::Host(Rc::clone(element)),
+            Self::Host(node) => Self::Host(Rc::clone(node)),
             Self::Fragment(children) => Self::Fragment(Rc::clone(children)),
         }
     }
@@ -565,7 +570,10 @@ mod tests {
 
     #[test]
     fn a_payload_is_shared_between_alternates() {
-        let element: Rc<u32> = Rc::new(7);
+        let element: Rc<HostNode<TestHost>> = Rc::new(HostNode {
+            element: Rc::new(7),
+            children: Rc::from(Vec::<Element<TestHost>>::new()),
+        });
         let payload: Payload<TestHost> = Payload::Host(Rc::clone(&element));
         let clone = payload.clone();
         let (Payload::Host(a), Payload::Host(b)) = (payload, clone) else {
