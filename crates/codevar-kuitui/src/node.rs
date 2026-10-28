@@ -1041,6 +1041,16 @@ impl Node {
         &mut self.children
     }
 
+    /// Removes the children from the node and returns them.
+    ///
+    /// The node keeps its widget, its modifier and its layout; only the child
+    /// list is emptied. The framework uses this to hand a built tree to another
+    /// owner and to take it apart again without dropping the children.
+    #[must_use]
+    pub fn take_children(&mut self) -> Vec<Node> {
+        core::mem::take(&mut self.children)
+    }
+
     /// The modifier of the node.
     #[inline]
     #[must_use]
@@ -1443,6 +1453,14 @@ mod tests {
         let size = node.measure(&theme, Constraints::unbounded());
         assert_eq!(size, Size::new(10.0, 10.0));
         assert_eq!(node.size(), size);
+    }
+
+    #[test]
+    fn a_node_gives_up_its_children_without_dropping_them() {
+        let mut parent = Node::new(Filler).with_children([Node::new(Filler), Node::new(Filler)]);
+        let children = parent.take_children();
+        assert_eq!(children.len(), 2);
+        assert!(parent.children().is_empty());
     }
 
     #[test]
