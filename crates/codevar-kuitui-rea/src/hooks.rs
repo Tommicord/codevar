@@ -53,8 +53,22 @@
 //! is queued with no lane and the root is not woken: the render would produce
 //! the same tree. The comparison is only sound while the queue is empty,
 //! because only then is the last rendered value the base of the update.
+//!
+//! # Render phase updates
+//!
+//! A component that writes to its own state while it renders is a *render
+//! phase update*. React does not schedule a new render for it: the update
+//! applies to the component that is rendering, and that component renders
+//! again in place before the pass goes on, so the tree the commit sees is the
+//! one the final value produced and the intermediate tree is never mounted.
+//!
+//! The mailbox records which component is rendering, and every state handle
+//! already shares it. A dispatch on a queue that component owns is tagged with
+//! the lanes of the render instead of its own lanes and does not wake the
+//! root; the work pass reruns the component and the queue replays the update
+//! like any other. A dispatch on any other queue — a parent writing a child's
+//! state, say — is an ordinary update and takes the usual path.
 
-// The work loop that drives these hooks lands in the next increment.
 #![allow(dead_code)]
 
 use alloc::boxed::Box;
@@ -144,6 +158,17 @@ impl UpdateQueue {
     fn is_empty(&self) -> bool {
         self.pending.is_empty() && self.base.is_empty()
     }
+
+    /// Removes the pending updates that were queued on `lanes` themselves.
+    ///
+    /// Only a render phase update carries exactly the lanes of the render it
+    /// was queued in, so only those are removed. An update that arrived from
+    /// outside keeps its lane and waits for the render that covers it, and an
+    /// update with no lane keeps the eager comparison's meaning.
+    fn discard(&mut self, lanes: Lanes) {
+        self.pending
+            .retain(|update| update.lane.is_empty() || !update.lane.is_subset_of(lanes));
+    }
 }
 
 /// A shared handle to one update queue.
@@ -158,6 +183,35 @@ pub(crate) struct Mailbox {
     /// the current tree changes when alternates swap, while the queue is
     /// shared by both alternates and knows which fiber owns it right now.
     updates: Vec<(QueueHandle, Lanes)>,
+    /// The component render that is in flight, when there is one.
+    render_phase: Option<RenderPhase>,
+}
+
+/// The component render the root is running right now.
+///
+/// The record is what turns a dispatch into a render phase update: a queue
+/// the rendering fiber owns names the component being rendered, so the update
+/// applies to that render instead of scheduling a new one.
+struct RenderPhase {
+    /// The fiber being rendered.
+    fiber: FiberId,
+    /// The other half of that fiber.
+    ///
+    /// A state handle captured before the render began still reaches its
+    /// queue through the committed fiber, which is this alternate until the
+    /// first hook of the pass refreshes the owner.
+    alternate: Option<FiberId>,
+    /// The lanes of the render, which tag its updates.
+    lanes: Lanes,
+    /// Whether a dispatch queued an update since the pass began.
+    did_schedule_update: bool,
+}
+
+impl RenderPhase {
+    /// Whether a queue owned by `owner` belongs to this render.
+    fn owns(&self, owner: Option<FiberId>) -> bool {
+        owner == Some(self.fiber) || owner == self.alternate
+    }
 }
 
 impl Mailbox {
@@ -174,6 +228,39 @@ impl Mailbox {
     /// Whether no dispatch happened since the last drain.
     pub(crate) fn is_empty(&self) -> bool {
         self.updates.is_empty()
+    }
+
+    /// Starts the render of a component.
+    ///
+    /// From here until [`Mailbox::end_render`], a dispatch on a queue the
+    /// fiber owns is a render phase update.
+    pub(crate) fn begin_render(&mut self, fiber: FiberId, alternate: Option<FiberId>, lanes: Lanes) {
+        debug_assert!(
+            self.render_phase.is_none(),
+            "a component render cannot start inside another"
+        );
+        self.render_phase = Some(RenderPhase {
+            fiber,
+            alternate,
+            lanes,
+            did_schedule_update: false,
+        });
+    }
+
+    /// Whether a dispatch queued a render phase update since the last call,
+    /// clearing the mark.
+    ///
+    /// Every pass of a component asks for its own mark: it is the signal that
+    /// the function must run again before the element is reconciled.
+    pub(crate) fn take_render_phase_update(&mut self) -> bool {
+        self.render_phase
+            .as_mut()
+            .is_some_and(|phase| mem::replace(&mut phase.did_schedule_update, false))
+    }
+
+    /// Ends the component render.
+    pub(crate) fn end_render(&mut self) {
+        self.render_phase = None;
     }
 }
 
@@ -270,18 +357,38 @@ impl<T: PartialEq + 'static> State<T> {
     }
 
     /// Queues an action and wakes the root when the lane is not empty.
+    ///
+    /// A dispatch on the queue of the component that is rendering right now is
+    /// a render phase update: it takes the lanes of the render, so the next
+    /// pass applies it, and it does not wake the root, because the render that
+    /// is already running replays it before the commit.
     fn enqueue(&self, lane: Lanes, action: UpdateAction<T>) {
+        let mut mailbox = self.mailbox.borrow_mut();
         let mut queue = self.queue.borrow_mut();
+        let render_phase = if lane.is_empty() {
+            // The eager comparison already knows the value cannot change:
+            // there is nothing to replay, in a render phase or anywhere else.
+            None
+        } else {
+            mailbox
+                .render_phase
+                .as_mut()
+                .filter(|phase| phase.owns(queue.owner.get()))
+        };
+        let (lane, signal) = match render_phase {
+            Some(phase) => {
+                phase.did_schedule_update = true;
+                (phase.lanes, false)
+            }
+            None => (lane, !lane.is_empty() && queue.owner.get().is_some()),
+        };
         queue.pending.push(Update {
             lane,
             action: Rc::new(action),
         });
-        let attached = queue.owner.get().is_some();
         drop(queue);
-        if attached && !lane.is_empty() {
-            self.mailbox
-                .borrow_mut()
-                .signal(Rc::clone(&self.queue), lane);
+        if signal {
+            mailbox.signal(Rc::clone(&self.queue), lane);
         }
     }
 }
@@ -356,9 +463,41 @@ impl EffectRecord {
 pub(crate) struct HookList {
     /// One slot per hook.
     slots: Vec<HookSlot>,
+    /// The effect dependencies the committed render recorded, one entry per
+    /// hook slot.
+    ///
+    /// A re-render pass compares its effect dependencies against this
+    /// snapshot, not against the slot the previous pass wrote: React rebuilds
+    /// the effect list of every pass from the committed hook, so a dependency
+    /// that changes between passes is committed once, with the value of the
+    /// last pass.
+    committed_effects: Vec<Option<Rc<dyn Any>>>,
 }
 
 impl HookList {
+    /// Freezes the committed effect dependencies for the render that starts
+    /// now.
+    pub(crate) fn begin_render(&mut self) {
+        self.committed_effects = self
+            .slots
+            .iter()
+            .map(|slot| {
+                slot.effect
+                    .as_ref()
+                    .and_then(|effect| effect.deps.as_ref().map(Rc::clone))
+            })
+            .collect();
+    }
+
+    /// The dependencies of a slot's effect in the committed render, when the
+    /// committed render reached that slot and the effect had dependencies.
+    fn committed_deps(&self, index: usize) -> Option<Rc<dyn Any>> {
+        self.committed_effects
+            .get(index)
+            .cloned()
+            .flatten()
+    }
+
     /// Makes the rendered state the committed state.
     ///
     /// The applied updates already left the queue during the render, so the
@@ -377,6 +516,20 @@ impl HookList {
         for slot in &self.slots {
             if let Some(queue) = &slot.queue {
                 queue.borrow_mut().owner.set(Some(owner));
+            }
+        }
+    }
+
+    /// Drops the render phase updates of a component that rendered too often.
+    ///
+    /// A render phase update applies in the pass that queued it. When a
+    /// component asks for more passes than the limit allows, the update of the
+    /// last pass has no pass left to apply it, and keeping it in the queue
+    /// would apply it out of order in a later render.
+    pub(crate) fn discard_render_phase_updates(&self, lanes: Lanes) {
+        for slot in &self.slots {
+            if let Some(queue) = &slot.queue {
+                queue.borrow_mut().discard(lanes);
             }
         }
     }
@@ -702,14 +855,21 @@ impl<'a> RenderCtx<'a> {
         deps: D,
         create: impl Fn() -> Option<Cleanup> + 'static,
     ) {
-        let slot = Self::next_slot(self.hooks, &mut self.cursor);
-        let unchanged = slot
-            .effect
-            .as_ref()
-            .and_then(|effect| effect.deps.as_deref())
+        let index = self.cursor;
+        let committed = self.hooks.committed_deps(index);
+        let unchanged = committed
+            .as_deref()
             .and_then(|stored| stored.downcast_ref::<D>())
             .is_some_and(|stored| stored == &deps);
+        let slot = Self::next_slot(self.hooks, &mut self.cursor);
         if unchanged {
+            // The effect does not run, but the record the work-in-progress
+            // hook keeps must describe this pass: a later render compares its
+            // dependencies against it, and a re-render may have changed them
+            // before this pass put them back.
+            if let Some(effect) = &mut slot.effect {
+                effect.deps = committed;
+            }
             return;
         }
         let destroy = match &slot.effect {
@@ -781,6 +941,9 @@ mod tests {
             self.mailbox.borrow_mut().drain();
             self.effects.clear();
             self.skipped = Lanes::NONE;
+            // The harness has no alternates, so the hooks the render starts
+            // from are both the committed and the work-in-progress list.
+            self.hooks.begin_render();
             let mut ctx = RenderCtx::new(
                 self.fiber,
                 &mut self.hooks,
@@ -793,6 +956,24 @@ mod tests {
             let result = content(&mut ctx);
             ctx.finish();
             result
+        }
+
+        /// Starts a component render, so a dispatch from here on is a render
+        /// phase update.
+        fn begin(&mut self) {
+            self.mailbox
+                .borrow_mut()
+                .begin_render(self.fiber, None, self.lanes);
+        }
+
+        fn end(&mut self) {
+            self.mailbox.borrow_mut().end_render();
+        }
+
+        fn took_update(&mut self) -> bool {
+            self.mailbox
+                .borrow_mut()
+                .take_render_phase_update()
         }
 
         fn signals(&self) -> usize {
@@ -889,6 +1070,7 @@ mod tests {
         let mut ids = harness.ids;
         let read = |hooks: &mut HookList, effects: &mut Vec<EffectRecord>, ids: &mut u64| {
             let mut skipped = Lanes::NONE;
+            hooks.begin_render();
             let mut ctx = RenderCtx::new(
                 harness.fiber,
                 hooks,
@@ -1082,5 +1264,80 @@ mod tests {
             ctx.use_state(|| 3_u32);
         });
         assert_eq!(harness.hooks.slots.len(), 1);
+    }
+
+    #[test]
+    fn a_dispatch_during_the_render_is_a_render_phase_update() {
+        let mut harness = Harness::new();
+        harness.begin();
+        let state = harness.render(|ctx| ctx.use_state(|| 1_u32));
+        state.set(2);
+        // The root is not asked for a render: the pass that is running replays
+        // the update itself.
+        assert_eq!(harness.signals(), 0);
+        assert!(harness.took_update());
+
+        // The next pass applies it, and no further pass is owed.
+        let state = harness.render(|ctx| ctx.use_state(|| 1_u32));
+        assert_eq!(*state.get(), 2);
+        assert!(!harness.took_update());
+        harness.end();
+
+        // Once the component is done rendering, a dispatch is an ordinary
+        // update again.
+        state.set(3);
+        assert_eq!(harness.signals(), 1);
+    }
+
+    #[test]
+    fn a_render_phase_update_takes_the_lanes_of_the_render() {
+        let mut harness = Harness::new();
+        harness.begin();
+        let state = harness.render(|ctx| ctx.use_state(|| 1_u32));
+        // The transition lane is not part of the render, but the update belongs
+        // to the render that queued it, so it applies in the same render.
+        state.set_with_lane(Lanes::TRANSITION, 2);
+        let state = harness.render(|ctx| ctx.use_state(|| 1_u32));
+        assert_eq!(*state.get(), 2);
+        assert!(harness.skipped.is_empty());
+        harness.end();
+    }
+
+    #[test]
+    fn a_dispatch_to_another_component_is_scheduled_normally() {
+        let mut harness = Harness::new();
+        let mut other = Harness::new();
+        other.fiber = FiberId::from_index(1);
+        let foreign = other.render(|ctx| ctx.use_state(|| 1_u32));
+
+        harness.begin();
+        harness.render(|ctx| ctx.use_state(|| 1_u32));
+        foreign.set(2);
+        assert_eq!(other.signals(), 1);
+        assert!(!harness.took_update());
+        harness.end();
+    }
+
+    #[test]
+    fn the_committed_alternate_of_the_rendering_fiber_owns_the_queue() {
+        let mut harness = Harness::new();
+        // The first render makes the harness fiber the committed one and gives
+        // the queue its owner.
+        let state = harness.render(|ctx| ctx.use_state(|| 1_u32));
+
+        // A handle captured before the first hook of a render still names the
+        // queue through the committed fiber, which is the alternate of the one
+        // being rendered.
+        let mut mailbox = harness.mailbox.borrow_mut();
+        mailbox.begin_render(FiberId::from_index(9), Some(harness.fiber), harness.lanes);
+        drop(mailbox);
+        state.set(2);
+        assert_eq!(harness.signals(), 0);
+        assert!(harness.took_update());
+
+        // The work-in-progress fiber renders the update in the next pass.
+        let state = harness.render(|ctx| ctx.use_state(|| 1_u32));
+        assert_eq!(*state.get(), 2);
+        harness.end();
     }
 }

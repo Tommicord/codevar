@@ -79,6 +79,13 @@ pub(crate) struct WorkLoop<'a, H: Host> {
     render_lanes: Lanes,
 }
 
+/// The number of extra passes a component may ask for before the render stops.
+///
+/// React throws "Too many re-renders" at this limit. Rea has no error channel,
+/// so the loop stops instead and drops the updates the last pass queued: they
+/// were queued for a pass the limit did not allow.
+const RE_RENDER_LIMIT: u32 = 25;
+
 impl<'a, H: Host> WorkLoop<'a, H> {
     /// Creates a render pass.
     pub(crate) fn new(
@@ -212,6 +219,13 @@ impl<'a, H: Host> WorkLoop<'a, H> {
     }
 
     /// Runs a component and diffs the element it returned.
+    ///
+    /// A component that writes to its own state while it renders asks for
+    /// another pass. React re-renders it in place, before the element reaches
+    /// the reconciler, so the intermediate element is never mounted; the loop
+    /// here does the same. Every pass starts from the same committed hook list
+    /// and compares its effects against the committed dependencies, so the
+    /// effects of the last pass are the ones the commit runs.
     fn render_component(&mut self, fiber: FiberId) -> Option<FiberId> {
         let Some(Payload::Component(render)) = self
             .arena
@@ -230,21 +244,47 @@ impl<'a, H: Host> WorkLoop<'a, H> {
             .get_mut(fiber)
             .map(|fiber| mem::take(&mut fiber.effects))
             .unwrap_or_default();
+        hooks.begin_render();
+        let alternate = self
+            .arena
+            .get(fiber)
+            .and_then(|fiber| fiber.alternate);
+        self.mailbox
+            .borrow_mut()
+            .begin_render(fiber, alternate, self.render_lanes);
         let mut lanes = Lanes::NONE;
-        let element = {
-            let mut ctx = RenderCtx::new(
-                fiber,
-                &mut hooks,
-                &mut effects,
-                self.render_lanes,
-                &mut lanes,
-                Rc::clone(&self.mailbox),
-                &mut *self.ids,
-            );
-            let element = render(&mut ctx);
-            ctx.finish();
-            element
-        };
+        let mut element;
+        let mut rerenders = 0;
+        loop {
+            effects.clear();
+            element = {
+                let mut ctx = RenderCtx::new(
+                    fiber,
+                    &mut hooks,
+                    &mut effects,
+                    self.render_lanes,
+                    &mut lanes,
+                    Rc::clone(&self.mailbox),
+                    &mut *self.ids,
+                );
+                let element = render(&mut ctx);
+                ctx.finish();
+                element
+            };
+            if !self
+                .mailbox
+                .borrow_mut()
+                .take_render_phase_update()
+            {
+                break;
+            }
+            if rerenders >= RE_RENDER_LIMIT {
+                hooks.discard_render_phase_updates(self.render_lanes);
+                break;
+            }
+            rerenders += 1;
+        }
+        self.mailbox.borrow_mut().end_render();
         let mut flags = Flags::NONE;
         for effect in &effects {
             match effect.tag() {
@@ -599,6 +639,111 @@ mod tests {
         harness.mark(component, Lanes::DEFAULT);
         harness.render(element);
         assert_eq!(harness.host.nodes[0].element, (0, 2));
+    }
+
+    /// A component that renders its value and bumps it to `2` on the value it
+    /// was first rendered with.
+    fn bumping(log: &Rc<RefCell<Vec<u16>>>) -> Element<TestHost> {
+        let log = Rc::clone(log);
+        Element::component(move |ctx| {
+            let value = ctx.use_state(|| 1_u16);
+            let current = *value.get();
+            log.borrow_mut().push(current);
+            if current < 2 {
+                value.set(2);
+            }
+            Element::host((0, current))
+        })
+    }
+
+    #[test]
+    fn a_render_phase_update_renders_again_before_the_element_is_reconciled() {
+        let mut harness = Harness::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        harness.render(bumping(&log));
+
+        // The component runs twice, and only the element of the second pass
+        // reaches the host: the first element was neither mounted nor updated.
+        assert_eq!(*log.borrow(), [1, 2]);
+        assert_eq!(harness.host.nodes.len(), 1);
+        assert_eq!(harness.host.nodes[0].element, (0, 2));
+        assert_eq!(harness.host.nodes[0].updates, 0);
+
+        // The update was applied by the render that queued it, so the root was
+        // never asked for another pass and no lane is left behind.
+        assert!(harness.mailbox.borrow().is_empty());
+        let Some(component) = harness.child(harness.root) else {
+            return;
+        };
+        assert!(
+            harness
+                .arena
+                .get(component)
+                .is_some_and(|fiber| fiber.lanes.is_empty() && fiber.child_lanes.is_empty())
+        );
+    }
+
+    #[test]
+    fn a_render_phase_update_commits_only_the_effects_of_the_last_pass() {
+        let mut harness = Harness::new();
+        let element = Element::component(|ctx| {
+            let value = ctx.use_state(|| 1_u16);
+            let current = *value.get();
+            ctx.use_effect((current,), || None);
+            if current < 2 {
+                value.set(2);
+            }
+            Element::host((0, current))
+        });
+        harness.render(element);
+        let Some(component) = harness.child(harness.root) else {
+            return;
+        };
+        // The first pass recorded an effect for the value it rendered; the
+        // second pass replaced it, because both compare against the committed
+        // dependencies. The commit therefore runs one effect per hook.
+        assert_eq!(
+            harness
+                .arena
+                .get(component)
+                .map(|fiber| fiber.effects.len()),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn a_component_that_never_stops_re_rendering_stops_at_the_limit() {
+        /// A component that bumps its state on every pass it renders.
+        fn bump_forever(log: &Rc<RefCell<Vec<u16>>>, dispatch: &Rc<Cell<bool>>) -> Element<TestHost> {
+            let log = Rc::clone(log);
+            let dispatch = Rc::clone(dispatch);
+            Element::component(move |ctx| {
+                let value = ctx.use_state(|| 0_u16);
+                log.borrow_mut().push(*value.get());
+                if dispatch.get() {
+                    value.update(|current| current + 1);
+                }
+                Element::host((0, 1))
+            })
+        }
+
+        let mut harness = Harness::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let dispatch = Rc::new(Cell::new(true));
+        harness.render(bump_forever(&log, &dispatch));
+
+        // The first pass plus the limit of re-renders, each with the value the
+        // pass before queued.
+        assert_eq!(log.borrow().len() as u32, RE_RENDER_LIMIT + 1);
+        assert_eq!(log.borrow().last(), Some(&(RE_RENDER_LIMIT as u16)));
+        assert!(harness.mailbox.borrow().is_empty());
+
+        // The update of the last pass had no pass left to apply it and was
+        // dropped, so another render starts from the value the loop stopped on
+        // instead of replaying it.
+        dispatch.set(false);
+        harness.render(bump_forever(&log, &dispatch));
+        assert_eq!(log.borrow().last(), Some(&(RE_RENDER_LIMIT as u16)));
     }
 
     #[test]
