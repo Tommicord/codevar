@@ -153,7 +153,7 @@ pub fn validate(input: &str) -> Result<(), XmlError> {
 
     let bytes = input.as_bytes();
     let mut i = 0usize;
-    let mut stack: Vec<&str> = Vec::new();
+    let mut stack: Vec<&str> = Vec::with_capacity(8);
     let mut found_root = false;
 
     if bytes.get(i..i + 5) == Some(b"<?xml") {

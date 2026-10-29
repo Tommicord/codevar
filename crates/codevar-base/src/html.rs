@@ -2905,12 +2905,12 @@ impl HtmlParser {
             pushback: VecDeque::new(),
             total_bytes: 0,
             base_offset: 0,
-            carry: Vec::new(),
+            carry: Vec::with_capacity(8),
             started: false,
             prev_cr: false,
             tag_kind: TagKind::Start,
             tag_name: String::new(),
-            attrs: Vec::new(),
+            attrs: Vec::with_capacity(4),
             attr_name: String::new(),
             attr_value: String::new(),
             self_closing: false,
@@ -2926,7 +2926,7 @@ impl HtmlParser {
             ref_hex: None,
             dt_quote: None,
             dt_bracket: false,
-            stack: Vec::new(),
+            stack: Vec::with_capacity(8),
             foreign_depth: 0,
             root_count: 0,
             top_text: false,
@@ -4120,12 +4120,12 @@ impl HtmlParser {
                 .any(|t| raw_name.eq_ignore_ascii_case(t))
             {
                 let n = normalize_name(raw_name).into_owned();
-                self.write_start(&n, Vec::new(), false);
+                self.write_start(&n, Vec::with_capacity(0), false);
                 self.out.push_str("</");
                 self.out.push_str(&n);
                 self.out.push('>');
             } else if raw_name.eq_ignore_ascii_case("br") {
-                self.write_start("br", Vec::new(), true);
+                self.write_start("br", Vec::with_capacity(0), true);
             }
         }
     }
