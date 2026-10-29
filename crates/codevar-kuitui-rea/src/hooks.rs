@@ -754,6 +754,14 @@ impl<T: PartialEq> PartialEq for StoreDeps<T> {
     }
 }
 
+/// One external store read a finished tree has to verify before it commits.
+///
+/// React's `StoreConsistencyCheck`. The closure reads the store again and
+/// reports whether it still returns the snapshot the render saw. The reader and
+/// the value are captured behind a `bool` so one fiber can hold reads of
+/// different types in the same list.
+pub(crate) type StoreCheck = Rc<dyn Fn() -> bool>;
+
 /// The starter of a [`RenderCtx::use_transition`] pair.
 ///
 /// A clone is cheap and every clone drives the same pending flag. The value a
@@ -1027,6 +1035,18 @@ struct HookSlot {
     deferred: bool,
 }
 
+/// What one component render hands back to the work pass.
+///
+/// React keeps both on the work-in-progress fiber: the effects in the hook
+/// list and the store checks in the update queue. The pass takes them together
+/// so a render can append to them without knowing the fiber.
+pub(crate) struct RenderOutput<'r> {
+    /// The effects the commit must run.
+    pub(crate) effects: &'r mut Vec<EffectRecord>,
+    /// The store reads a concurrent render must verify before it commits.
+    pub(crate) store_checks: &'r mut Vec<StoreCheck>,
+}
+
 /// The scope a component renders in.
 ///
 /// The context is passed to the component by the work loop and is only valid
@@ -1040,8 +1060,8 @@ pub struct RenderCtx<'a> {
     hooks: &'a mut HookList,
     /// The next free hook slot.
     cursor: usize,
-    /// The effects this render must commit.
-    effects: &'a mut Vec<EffectRecord>,
+    /// What the render hands back to the work pass.
+    output: RenderOutput<'a>,
     /// The lanes this render was started for.
     render_lanes: Lanes,
     /// The lanes this render could not apply, for the fiber to record.
@@ -1077,7 +1097,7 @@ impl<'a> RenderCtx<'a> {
     pub(crate) fn new(
         fiber: FiberId,
         hooks: &'a mut HookList,
-        effects: &'a mut Vec<EffectRecord>,
+        output: RenderOutput<'a>,
         render_lanes: Lanes,
         lanes: &'a mut Lanes,
         mailbox: MailboxHandle,
@@ -1087,7 +1107,7 @@ impl<'a> RenderCtx<'a> {
             fiber,
             hooks,
             cursor: 0,
-            effects,
+            output,
             render_lanes,
             lanes,
             mailbox,
@@ -1447,9 +1467,10 @@ impl<'a> RenderCtx<'a> {
         });
 
         // `updateStoreInstance`, pushed whenever the reader, the subscriber or
-        // the rendered snapshot changed — and on mount, which
-        // `use_effect` already covers with the empty committed deps.
-        self.use_effect(
+        // the rendered snapshot changed — and on mount, which the empty
+        // committed deps cover.
+        let instance_changed = self.use_effect_impl(
+            EffectTag::Passive,
             StoreDeps {
                 get_snapshot: Rc::clone(&get_snapshot),
                 subscribe: Rc::clone(&subscribe),
@@ -1460,6 +1481,7 @@ impl<'a> RenderCtx<'a> {
                 let queue = Rc::clone(&queue);
                 let mailbox = Rc::clone(&mailbox);
                 let value = Rc::clone(&rendered);
+                let get_snapshot = Rc::clone(&get_snapshot);
                 move || {
                     {
                         let mut instance = instance.borrow_mut();
@@ -1478,7 +1500,27 @@ impl<'a> RenderCtx<'a> {
                 }
             },
         );
+        // `pushStoreConsistencyCheck`: a render that can be interrupted may
+        // yield between this read and its commit, and an event in that window
+        // can move the store. React records the read so the root can verify it
+        // again; a render of the blocking lanes runs to its commit and needs
+        // no check.
+        if instance_changed && !self.render_lanes.intersects(Lanes::BLOCKING) {
+            self.push_store_check(Rc::clone(&get_snapshot), Rc::clone(&rendered));
+        }
         rendered
+    }
+
+    /// Records an external store read the finished tree must verify.
+    ///
+    /// This is React's `pushStoreConsistencyCheck`. The check captures the
+    /// reader and the snapshot the render read, so the root can call the reader
+    /// again after the render and compare; it costs one `Rc` pair per read and
+    /// only exists on renders that could have been interrupted.
+    fn push_store_check<T: PartialEq + 'static>(&mut self, get_snapshot: Rc<dyn Fn() -> T>, rendered: Rc<T>) {
+        self.output
+            .store_checks
+            .push(Rc::new(move || get_snapshot() == *rendered));
     }
 
     /// Replays the update queue of a state hook for one render.
@@ -1642,12 +1684,16 @@ impl<'a> RenderCtx<'a> {
         self.use_effect_impl(EffectTag::Passive, deps, create);
     }
 
+    /// Sets up an effect, or skips it when its dependencies are unchanged.
+    ///
+    /// Returns whether the effect runs in the upcoming commit: on mount, or
+    /// when `deps` differ from the ones the last commit recorded.
     fn use_effect_impl<D: PartialEq + 'static>(
         &mut self,
         tag: EffectTag,
         deps: D,
         create: impl Fn() -> Option<Cleanup> + 'static,
-    ) {
+    ) -> bool {
         let index = self.cursor;
         let committed = self.hooks.committed_deps(index);
         let unchanged = committed
@@ -1663,7 +1709,7 @@ impl<'a> RenderCtx<'a> {
             if let Some(effect) = &mut slot.effect {
                 effect.deps = committed;
             }
-            return;
+            return false;
         }
         let destroy = match &slot.effect {
             Some(effect) => Rc::clone(&effect.destroy),
@@ -1676,7 +1722,8 @@ impl<'a> RenderCtx<'a> {
             deps: Some(Rc::new(deps)),
         };
         slot.effect = Some(record.clone());
-        self.effects.push(record);
+        self.output.effects.push(record);
+        true
     }
 
     /// Returns a stable identifier for this hook.
@@ -1709,6 +1756,7 @@ mod tests {
         fiber: FiberId,
         hooks: HookList,
         effects: Vec<EffectRecord>,
+        stores: Vec<StoreCheck>,
         mailbox: MailboxHandle,
         ids: u64,
         lanes: Lanes,
@@ -1721,6 +1769,7 @@ mod tests {
                 fiber: FiberId::from_index(0),
                 hooks: HookList::default(),
                 effects: Vec::new(),
+                stores: Vec::new(),
                 mailbox: mailbox(),
                 ids: 0,
                 lanes: Lanes::DEFAULT,
@@ -1733,6 +1782,7 @@ mod tests {
             // turns a dispatch into pending lanes.
             self.mailbox.borrow_mut().drain();
             self.effects.clear();
+            self.stores.clear();
             self.skipped = Lanes::NONE;
             // The harness has no alternates, so the hooks the render starts
             // from are both the committed and the work-in-progress list.
@@ -1740,7 +1790,10 @@ mod tests {
             let mut ctx = RenderCtx::new(
                 self.fiber,
                 &mut self.hooks,
-                &mut self.effects,
+                RenderOutput {
+                    effects: &mut self.effects,
+                    store_checks: &mut self.stores,
+                },
                 self.lanes,
                 &mut self.skipped,
                 Rc::clone(&self.mailbox),
@@ -1798,13 +1851,17 @@ mod tests {
         ) -> R {
             harness.mailbox.borrow_mut().drain();
             let mut effects = Vec::new();
+            let mut stores = Vec::new();
             let mut skipped = Lanes::NONE;
             let mut ids = harness.ids;
             hooks.begin_render();
             let mut ctx = RenderCtx::new(
                 harness.fiber,
                 hooks,
-                &mut effects,
+                RenderOutput {
+                    effects: &mut effects,
+                    store_checks: &mut stores,
+                },
                 harness.lanes,
                 &mut skipped,
                 Rc::clone(&harness.mailbox),
@@ -1950,12 +2007,16 @@ mod tests {
         let mut effects = Vec::new();
         let mut ids = harness.ids;
         let read = |hooks: &mut HookList, effects: &mut Vec<EffectRecord>, ids: &mut u64| {
+            let mut stores = Vec::new();
             let mut skipped = Lanes::NONE;
             hooks.begin_render();
             let mut ctx = RenderCtx::new(
                 harness.fiber,
                 hooks,
-                effects,
+                RenderOutput {
+                    effects,
+                    store_checks: &mut stores,
+                },
                 Lanes::DEFAULT,
                 &mut skipped,
                 Rc::clone(&harness.mailbox),
@@ -2649,5 +2710,67 @@ mod tests {
         assert_eq!(store.unsubscribed.get(), 1);
         assert_eq!(store.subscribed.get(), 2);
         assert_eq!(harness.signals(), 0);
+    }
+
+    #[test]
+    fn a_concurrent_store_render_records_a_consistency_check() {
+        let mut harness = Harness::new();
+        harness.lanes = Lanes::TRANSITION;
+        let store = TestStore::new(1);
+        harness.render(|ctx| {
+            ctx.use_sync_external_store(Rc::clone(&store.subscribe), Rc::clone(&store.get_snapshot))
+        });
+
+        // The render could yield before it commits, so its read is recorded
+        // for the root to verify.
+        assert_eq!(harness.stores.len(), 1);
+        let Some(check) = harness.stores.first() else {
+            return;
+        };
+        assert!(check());
+
+        // The check reads the store again, so a store that moved since the
+        // render fails it.
+        store.set(2);
+        assert!(!check());
+    }
+
+    #[test]
+    fn a_blocking_store_render_records_no_check() {
+        let mut harness = Harness::new();
+        let store = TestStore::new(1);
+        harness.render(|ctx| {
+            ctx.use_sync_external_store(Rc::clone(&store.subscribe), Rc::clone(&store.get_snapshot))
+        });
+
+        // A render of the blocking lanes runs to its commit, so nothing can
+        // move between the read and the commit.
+        assert!(harness.stores.is_empty());
+    }
+
+    #[test]
+    fn a_store_render_records_a_check_only_when_the_instance_changed() {
+        let mut harness = Harness::new();
+        harness.lanes = Lanes::TRANSITION;
+        let store = TestStore::new(1);
+        harness.render(|ctx| {
+            ctx.use_sync_external_store(Rc::clone(&store.subscribe), Rc::clone(&store.get_snapshot))
+        });
+        assert_eq!(harness.stores.len(), 1);
+        harness.commit();
+
+        // Same reader, subscriber and snapshot: the instance does not change,
+        // so there is nothing new for the root to verify.
+        harness.render(|ctx| {
+            ctx.use_sync_external_store(Rc::clone(&store.subscribe), Rc::clone(&store.get_snapshot))
+        });
+        assert!(harness.stores.is_empty());
+
+        // A moved snapshot refreshes the instance, so the read is recorded.
+        store.set(2);
+        harness.render(|ctx| {
+            ctx.use_sync_external_store(Rc::clone(&store.subscribe), Rc::clone(&store.get_snapshot))
+        });
+        assert_eq!(harness.stores.len(), 1);
     }
 }

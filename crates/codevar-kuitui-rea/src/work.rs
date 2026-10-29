@@ -86,7 +86,7 @@ use core::mem;
 
 use crate::element::{Element, SuspenseNode};
 use crate::fiber::{Arena, Fiber, FiberId, FiberTag, Flags, Payload, Visibility};
-use crate::hooks::{EffectTag, MailboxHandle, RenderCtx};
+use crate::hooks::{EffectTag, MailboxHandle, RenderCtx, RenderOutput};
 use crate::host::Host;
 use crate::lane::Lanes;
 use crate::reconcile::{committed_first_child, reconcile_children};
@@ -555,6 +555,14 @@ impl<'a, H: Host> WorkLoop<'a, H> {
             .get_mut(fiber)
             .map(|fiber| mem::take(&mut fiber.effects))
             .unwrap_or_default();
+        // React nulls the update queue, which holds the store checks, at the
+        // start of a component render; the checks then accumulate across the
+        // passes of a render-phase update, just as its effect list does.
+        let mut store_checks = self
+            .arena
+            .get_mut(fiber)
+            .map(|fiber| mem::take(&mut fiber.store_checks))
+            .unwrap_or_default();
         hooks.begin_render();
         let alternate = self
             .arena
@@ -573,7 +581,10 @@ impl<'a, H: Host> WorkLoop<'a, H> {
                 let mut ctx = RenderCtx::new(
                     fiber,
                     &mut hooks,
-                    &mut effects,
+                    RenderOutput {
+                        effects: &mut effects,
+                        store_checks: &mut store_checks,
+                    },
                     self.render_lanes,
                     &mut lanes,
                     Rc::clone(&self.mailbox),
@@ -617,9 +628,13 @@ impl<'a, H: Host> WorkLoop<'a, H> {
                 EffectTag::Passive => flags.insert(Flags::PASSIVE),
             }
         }
+        if !store_checks.is_empty() {
+            flags.insert(Flags::STORE_CONSISTENCY);
+        }
         if let Some(current) = self.arena.get_mut(fiber) {
             current.hooks = hooks;
             current.effects = effects;
+            current.store_checks = store_checks;
             current.flags.insert(flags);
             current.lanes.insert(lanes);
         }

@@ -84,7 +84,7 @@ use core::fmt;
 use core::ops::{BitAnd, BitOr, Not};
 
 use crate::element::{ComponentFn, Element, HostNode, Reference, SuspenseNode};
-use crate::hooks::{Cleanup, EffectRecord, HookList};
+use crate::hooks::{Cleanup, EffectRecord, HookList, StoreCheck};
 use crate::host::{Host, Key};
 use crate::lane::Lanes;
 use crate::wakeable::Wakeable;
@@ -140,8 +140,15 @@ impl Flags {
     /// contains it.
     pub(crate) const DID_CAPTURE: Self = Self(1 << 9);
 
+    /// The node read an external store this render has to verify before it
+    /// commits.
+    ///
+    /// This is React's `StoreConsistency`. The flag is raised by the render,
+    /// not applied by a commit phase, so no mask contains it.
+    pub(crate) const STORE_CONSISTENCY: Self = Self(1 << 10);
+
     /// Every flag.
-    pub(crate) const ALL: Self = Self((1 << 10) - 1);
+    pub(crate) const ALL: Self = Self((1 << 11) - 1);
 
     /// The flags the mutation phase applies and consumes.
     ///
@@ -383,6 +390,12 @@ pub(crate) struct Fiber<H: Host> {
     pub(crate) hooks: HookList,
     /// The effects this render must commit.
     pub(crate) effects: Vec<EffectRecord>,
+    /// The external store reads this render has to verify before it commits.
+    ///
+    /// React keeps the same list on the component's update queue; the engine
+    /// keeps it on the fiber because a component has no update queue of its
+    /// own.
+    pub(crate) store_checks: Vec<StoreCheck>,
     /// What must be done to this node in the commit.
     pub(crate) flags: Flags,
     /// What must be done to the subtree, including this node.
@@ -430,6 +443,7 @@ impl<H: Host> Fiber<H> {
             ref_cleanup: None,
             hooks: HookList::default(),
             effects: Vec::new(),
+            store_checks: Vec::new(),
             flags: Flags::NONE,
             subtree_flags: Flags::NONE,
             deletions: Vec::new(),
@@ -465,6 +479,7 @@ impl<H: Host> Fiber<H> {
             ref_cleanup: current.ref_cleanup.clone(),
             hooks: current.hooks.clone(),
             effects: Vec::new(),
+            store_checks: Vec::new(),
             flags: Flags::NONE,
             subtree_flags: Flags::NONE,
             deletions: Vec::new(),
@@ -1072,9 +1087,9 @@ mod tests {
     fn the_phase_masks_cover_every_flag_a_phase_applies() {
         let masks = Flags::MUTATION_MASK | Flags::LAYOUT_MASK | Flags::PASSIVE_MASK;
         // A flag outside every mask would survive the commit that applied it.
-        // `DID_CAPTURE` is the exception: it is raised and cleared in the
-        // render, never applied by a commit phase.
-        assert!(masks.contains(Flags::ALL & !Flags::DID_CAPTURE));
+        // `DID_CAPTURE` and `STORE_CONSISTENCY` are the exceptions: they are
+        // raised and cleared in the render, never applied by a commit phase.
+        assert!(masks.contains(Flags::ALL & !(Flags::DID_CAPTURE | Flags::STORE_CONSISTENCY)));
     }
 
     #[test]
