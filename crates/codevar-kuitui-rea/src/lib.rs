@@ -69,10 +69,18 @@
 //! work cannot starve it. A component that writes to its own state while it
 //! renders is rendered again in place, so the intermediate tree is never
 //! mounted, and a fiber whose description did not change and whose lanes the
-//! render does not cover bails out. A component that cannot describe its tree
-//! without more data suspends with a wakeable: a suspension that reaches the
-//! shell throws the render away and parks its lanes, so the host keeps showing
-//! the committed tree until an update unblocks them.
+//! render does not cover bails out.
+//!
+//! A component that cannot describe its tree without more data suspends with a
+//! wakeable. A [`Element::suspense`] boundary above it catches the suspension
+//! and shows its fallback: the primary tree stays mounted with its host nodes
+//! hidden, the partial tree that threw is thrown away, and the tree that just
+//! went out of sight runs its layout cleanups and detaches its references until
+//! it comes back. The commit subscribes every wakeable the boundary caught, and
+//! the work resolving marks the boundary with a retry lane, so the primary tree
+//! is tried again even when no unrelated update arrives. A suspension with no
+//! boundary above it reaches the shell and parks its lanes, so the host keeps
+//! showing the committed tree until an update unblocks them.
 //!
 //! # References
 //!
