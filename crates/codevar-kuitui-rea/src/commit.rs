@@ -70,7 +70,7 @@ use core::cell::RefCell;
 use core::mem;
 
 use crate::fiber::{Arena, FiberId, FiberTag, Flags, Visibility};
-use crate::hooks::EffectTag;
+use crate::hooks::{EffectTag, MailboxHandle, RetryRequest};
 use crate::host::Host;
 
 /// The passes that apply a finished tree to the host.
@@ -79,12 +79,14 @@ pub(crate) struct Commit<'a, H: Host> {
     host: &'a mut H,
     /// The arena that owns the fibers.
     arena: &'a mut Arena<H>,
+    /// The mailbox the retry listeners a boundary subscribes signal.
+    mailbox: MailboxHandle,
 }
 
 impl<'a, H: Host> Commit<'a, H> {
     /// Creates a commit pass.
-    pub(crate) fn new(host: &'a mut H, arena: &'a mut Arena<H>) -> Self {
-        Self { host, arena }
+    pub(crate) fn new(host: &'a mut H, arena: &'a mut Arena<H>, mailbox: MailboxHandle) -> Self {
+        Self { host, arena, mailbox }
     }
 
     /// Applies the mutations of the finished tree: removals, then placements.
@@ -181,13 +183,14 @@ impl<'a, H: Host> Commit<'a, H> {
             return;
         };
         let flags = node.flags;
+        let tag = node.tag;
         let own = node.state_node;
         let alternate = node.alternate;
         let hidden = node.visibility == Visibility::Hidden;
         let children_parent = own.or(host_parent);
         // Only an Offscreen extends the hidden state of the subtree it wraps;
         // every other fiber passes on what it was given.
-        let children_hidden = hidden_parent || (node.tag == FiberTag::Offscreen && hidden);
+        let children_hidden = hidden_parent || (tag == FiberTag::Offscreen && hidden);
 
         if flags.contains(Flags::CHILD_DELETION) {
             let deletions = match self.arena.get_mut(fiber) {
@@ -226,6 +229,14 @@ impl<'a, H: Host> Commit<'a, H> {
             self.hide_or_unhide_all_children(fiber, hidden);
         }
 
+        // A boundary that caught a suspension this render subscribes the work
+        // it waits on. React's `completeWork` schedules the effect with
+        // `scheduleRetryEffect` and its mutation phase attaches the listeners
+        // here, after the children were placed.
+        if tag == FiberTag::Suspense && flags.contains(Flags::UPDATE) {
+            self.attach_retry_listeners(fiber);
+        }
+
         // The committed ref detaches after the subtree moved and before the
         // finished ref attaches in the layout phase, which is where React
         // detaches it in `commitMutationEffectsOnFiber`.
@@ -238,6 +249,52 @@ impl<'a, H: Host> Commit<'a, H> {
         self.destroy_effects(fiber, EffectTag::Layout);
         if let Some(node) = self.arena.get_mut(fiber) {
             node.flags.remove(Flags::MUTATION_MASK);
+        }
+    }
+
+    /// Subscribes a retry listener to each wakeable the boundary caught.
+    ///
+    /// This is React's `attachSuspenseRetryListeners`. The retry cache memoizes
+    /// the listeners per boundary, so a wakeable the boundary already waits on
+    /// — a retry that suspends on the same work — is not subscribed twice. A
+    /// listener runs whenever the work completes, which may be long after this
+    /// commit, so it cannot touch the root: it drops the wakeable from the
+    /// cache and leaves a [`RetryRequest`](crate::hooks::RetryRequest) in the
+    /// mailbox, where the next drain claims a retry lane and marks the
+    /// boundary.
+    fn attach_retry_listeners(&mut self, fiber: FiberId) {
+        let Some(node) = self.arena.get_mut(fiber) else {
+            return;
+        };
+        if node.retry_queue.is_empty() {
+            return;
+        }
+        let wakeables = mem::take(&mut node.retry_queue);
+        let cache = node
+            .retry_cache
+            .get_or_insert_with(|| Rc::new(RefCell::new(Vec::new())))
+            .clone();
+        for wakeable in wakeables {
+            if cache
+                .borrow()
+                .iter()
+                .any(|known| known.same(&wakeable))
+            {
+                continue;
+            }
+            cache.borrow_mut().push(wakeable.clone());
+            let listeners = Rc::clone(&cache);
+            let mailbox = Rc::clone(&self.mailbox);
+            let known = wakeable.clone();
+            wakeable.subscribe(Rc::new(move || {
+                listeners
+                    .borrow_mut()
+                    .retain(|cached| !cached.same(&known));
+                mailbox.borrow_mut().retry(RetryRequest {
+                    boundary: fiber,
+                    cache: Rc::clone(&listeners),
+                });
+            }));
         }
     }
 
@@ -619,7 +676,7 @@ mod tests {
                 Lanes::SYNC,
             );
             work_loop.run(work);
-            let mut commit = Commit::new(&mut self.host, &mut self.arena);
+            let mut commit = Commit::new(&mut self.host, &mut self.arena, Rc::clone(&self.mailbox));
             commit.mutation(work);
             commit.layout(work);
             commit.passive(work);
@@ -984,7 +1041,7 @@ mod tests {
         attach(&mut harness, fragment, FiberTag::Host, Some(inner));
         visibility_flag(&mut harness, offscreen);
 
-        Commit::new(&mut harness.host, &mut harness.arena).mutation(root);
+        Commit::new(&mut harness.host, &mut harness.arena, Rc::clone(&harness.mailbox)).mutation(root);
 
         assert!(harness.host.hidden(outer));
         assert!(harness.host.hidden(inner));
@@ -1008,7 +1065,7 @@ mod tests {
         harness.host.hide(node);
         visibility_flag(&mut harness, offscreen);
 
-        Commit::new(&mut harness.host, &mut harness.arena).mutation(root);
+        Commit::new(&mut harness.host, &mut harness.arena, Rc::clone(&harness.mailbox)).mutation(root);
 
         assert!(!harness.host.hidden(node));
     }
@@ -1026,7 +1083,7 @@ mod tests {
         harness.host.hide(node);
         visibility_flag(&mut harness, inner);
 
-        Commit::new(&mut harness.host, &mut harness.arena).mutation(root);
+        Commit::new(&mut harness.host, &mut harness.arena, Rc::clone(&harness.mailbox)).mutation(root);
 
         assert!(harness.host.hidden(node));
     }
@@ -1041,7 +1098,7 @@ mod tests {
         attach(&mut harness, inner, FiberTag::Host, Some(node));
         visibility_flag(&mut harness, outer);
 
-        Commit::new(&mut harness.host, &mut harness.arena).mutation(root);
+        Commit::new(&mut harness.host, &mut harness.arena, Rc::clone(&harness.mailbox)).mutation(root);
 
         // The inner boundary hid its own tree when it hid itself; the outer walk
         // must not search behind it and show the tree again.

@@ -156,9 +156,17 @@
 //! fallback. The primary tree stays mounted but hidden, so the host does not
 //! have to build it again when the boundary returns to it, and the lanes the
 //! interrupted render left below the boundary stay pending — that is what lets
-//! a later update retry the tree. Until that update arrives the boundary stays
-//! on its fallback, because nothing subscribes the wakeable it caught yet; the
-//! retry listener is what the next increment attaches at commit.
+//! a later update retry the tree.
+//!
+//! The boundary does not wait for that update. The commit subscribes a retry
+//! listener to the wakeable the boundary caught, and when the work resolves the
+//! listener leaves the boundary in the mailbox; the next drain claims one of
+//! the four retry lanes, rotating them so two retries never share a lane, and
+//! marks the boundary with it. The render that lane covers re-renders the
+//! boundary, which reconciles its primary tree again and deletes the fallback
+//! if the work it needed is there. A retry that suspends in the same place
+//! subscribes the new wakeable and stays on its fallback, so nothing retries in
+//! a loop.
 
 use alloc::rc::Rc;
 use alloc::vec::Vec;
@@ -168,7 +176,7 @@ use core::slice;
 use crate::commit::Commit;
 use crate::element::Element;
 use crate::fiber::{Arena, Fiber, FiberId, FiberTag, Flags};
-use crate::hooks::{MailboxHandle, mailbox};
+use crate::hooks::{MailboxHandle, RetryRequest, mailbox};
 use crate::host::Host;
 use crate::lane::{LANE_COUNT, Lanes};
 use crate::reconcile::reconcile_children;
@@ -244,6 +252,12 @@ pub struct Root<H: Host> {
     expiration_times: [Option<u64>; LANE_COUNT],
     /// The lanes that have been pending past their expiration delay.
     expired_lanes: Lanes,
+    /// The retry lane the next boundary retry claims.
+    ///
+    /// This is React's `nextRetryLane`. The four retry lanes rotate, so a retry
+    /// that follows another does not share its lane and the two are rendered
+    /// separately instead of entangled.
+    next_retry_lane: Lanes,
     /// The render in flight, if a slice stopped before the tree completed.
     render: Option<Render>,
     /// Work that arrived while a render was in flight. Its lane is pending but
@@ -279,6 +293,7 @@ impl<H: Host> Root<H> {
             ping_cache: Rc::new(RefCell::new(Vec::new())),
             expiration_times: [None; LANE_COUNT],
             expired_lanes: Lanes::NONE,
+            next_retry_lane: Lanes::RETRY_FIRST,
             render: None,
             interleaved: Lanes::NONE,
             passive: None,
@@ -586,6 +601,46 @@ impl<H: Host> Root<H> {
             .insert(self.suspended_lanes & pinged);
     }
 
+    /// Schedules a render of the primary tree of a boundary whose work resolved.
+    ///
+    /// This is React's `retryTimedOutBoundary`: the boundary is marked with a
+    /// fresh retry lane, exactly as an update would mark it, and the flush loop
+    /// renders that lane like any other. The retry is allowed to suspend in the
+    /// same place; the boundary then stays on its fallback until the new work
+    /// resolves.
+    ///
+    /// The request names the fiber and the retry cache the listener was
+    /// memoized in. A boundary that unmounted freed its slot, and the arena
+    /// hands the slot out again, so the cache is what says the fiber is still
+    /// the boundary that subscribed the listener; React checks the same thing
+    /// with `getNearestMountedFiber`.
+    fn retry_boundary(&mut self, request: RetryRequest) {
+        let mounted = self
+            .arena
+            .get(request.boundary)
+            .is_some_and(|node| {
+                node.retry_cache
+                    .as_ref()
+                    .is_some_and(|cache| Rc::ptr_eq(cache, &request.cache))
+            });
+        if !mounted {
+            return;
+        }
+        let lane = self.claim_next_retry_lane();
+        self.mark_update(request.boundary, lane);
+    }
+
+    /// Takes the next retry lane, rotating through the four.
+    ///
+    /// This is React's `claimNextRetryLane`. The rotation is what keeps a new
+    /// retry off a lane an earlier retry parked: a parked lane is skipped by
+    /// [`Root::next_lanes`], so a retry that shared it would never render.
+    fn claim_next_retry_lane(&mut self) -> Lanes {
+        let lane = self.next_retry_lane;
+        self.next_retry_lane = lane.next_retry();
+        lane
+    }
+
     /// Subscribes the root to the work a suspension waits for.
     ///
     /// This is React's `attachPingListener`. A lane can suspend on the same
@@ -689,10 +744,10 @@ impl<H: Host> Root<H> {
         }
         self.expired_lanes &= remaining;
 
-        let mut commit = Commit::new(&mut self.host, &mut self.arena);
+        let mut commit = Commit::new(&mut self.host, &mut self.arena, Rc::clone(&self.mailbox));
         commit.mutation(work);
         self.current = work;
-        let mut commit = Commit::new(&mut self.host, &mut self.arena);
+        let mut commit = Commit::new(&mut self.host, &mut self.arena, Rc::clone(&self.mailbox));
         commit.layout(work);
 
         if has_passive {
@@ -712,26 +767,32 @@ impl<H: Host> Root<H> {
         let Some(root) = self.passive.take() else {
             return false;
         };
-        let mut commit = Commit::new(&mut self.host, &mut self.arena);
+        let mut commit = Commit::new(&mut self.host, &mut self.arena, Rc::clone(&self.mailbox));
         commit.passive(root);
         true
     }
 
-    /// Turns the pings and dispatches collected since the last drain into
-    /// pending lanes.
+    /// Turns the pings, retries and dispatches collected since the last drain
+    /// into pending lanes.
     ///
     /// A ping names the lanes whose work resolved; it is applied before the
-    /// dispatches because a dispatch that clears the parked set would otherwise
-    /// make the ping look as if it named nothing. A queue whose fiber unmounted
-    /// is detached and no longer wakes the root; should one still be signalled,
-    /// its owner is `None` and the update is dropped, because a fiber that is
-    /// not in the tree has no render to schedule. A dispatch that lands while a
-    /// render is in flight is also recorded as interleaved: the render may be
-    /// past the fiber it names, so its own lanes cannot be relied on to carry
-    /// the lane to the completion.
+    /// retries and the dispatches because a dispatch that clears the parked set
+    /// would otherwise make the ping look as if it named nothing. A retry names
+    /// a boundary whose caught work resolved; it marks the boundary the way an
+    /// update would, so the flush loop renders the primary tree again. A queue
+    /// whose fiber unmounted is detached and no longer wakes the root; should
+    /// one still be signalled, its owner is `None` and the update is dropped,
+    /// because a fiber that is not in the tree has no render to schedule. A
+    /// dispatch that lands while a render is in flight is also recorded as
+    /// interleaved: the render may be past the fiber it names, so its own lanes
+    /// cannot be relied on to carry the lane to the completion.
     fn drain_mailbox(&mut self) {
         let pinged = self.mailbox.borrow_mut().take_pinged();
         self.mark_root_pinged(pinged);
+        let retries = self.mailbox.borrow_mut().drain_retries();
+        for retry in retries {
+            self.retry_boundary(retry);
+        }
         let updates = self.mailbox.borrow_mut().drain();
         for (queue, lanes) in updates {
             let Some(owner) = queue.borrow().owner() else {
@@ -1059,6 +1120,18 @@ mod tests {
         }
     }
 
+    /// Runs the listener `work` registered last, which is the one the latest
+    /// capture subscribed.
+    ///
+    /// A wakeable calls its subscribers once, when it completes; a test that
+    /// resumes the same work twice must not re-run the listener of the
+    /// resolution that already happened.
+    fn resolve_latest(subscribers: &Listeners) {
+        if let Some(wake) = subscribers.borrow().last() {
+            wake();
+        }
+    }
+
     /// A component that renders one host node once `ready` is set and suspends
     /// on `work` until then.
     fn waiting_on(ready: &Rc<Cell<bool>>, work: &Wakeable) -> Element<TreeHost> {
@@ -1111,6 +1184,90 @@ mod tests {
         root.flush();
         assert_eq!(root.suspended_lanes, Lanes::DEFAULT);
         assert_eq!(subscribers.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_boundary_retries_its_primary_tree_when_its_work_resolves() {
+        let ready = Rc::new(Cell::new(false));
+        let (work, subscribers) = manual();
+        let element = || Element::suspense(waiting_on(&ready, &work), Element::host(9));
+        let mut root = mount(element());
+
+        // The boundary caught the suspension: the host shows its fallback, and
+        // the commit subscribed the work the primary tree waits on.
+        assert_eq!(top_level(&root), [Some(9)]);
+        assert_eq!(subscribers.borrow().len(), 1);
+        assert_eq!(root.suspended_lanes, Lanes::NONE);
+        assert!(!root.has_pending_work());
+
+        // The work resolved. The listener marks the boundary with a retry lane,
+        // which is what tells the host the tree has something to try, before
+        // anything is flushed.
+        ready.set(true);
+        resolve(&subscribers);
+        assert!(root.has_pending_work());
+        root.flush();
+
+        // The boundary reconciled its primary tree again: the primary reached
+        // the host and the fallback was removed.
+        assert_eq!(top_level(&root), [Some(7)]);
+        assert!(root.pending_lanes.is_empty());
+        assert!(!root.has_pending_work());
+    }
+
+    #[test]
+    fn a_boundary_retry_that_suspends_again_waits_for_the_new_work() {
+        let ready = Rc::new(Cell::new(false));
+        let (work, subscribers) = manual();
+        let element = || Element::suspense(waiting_on(&ready, &work), Element::host(9));
+        let mut root = mount(element());
+        assert_eq!(top_level(&root), [Some(9)]);
+
+        // The work resolved but the data is still missing: the retry suspends
+        // in the same place, the boundary keeps its fallback, and the work is
+        // subscribed again because the cache forgot it when it resolved.
+        resolve_latest(&subscribers);
+        root.flush();
+        assert_eq!(top_level(&root), [Some(9)]);
+        assert_eq!(subscribers.borrow().len(), 2);
+        assert!(root.pending_lanes.is_empty());
+        assert!(!root.has_pending_work());
+
+        // The second resolution is the one that brings the primary tree back.
+        ready.set(true);
+        resolve_latest(&subscribers);
+        root.flush();
+        assert_eq!(top_level(&root), [Some(7)]);
+        assert!(!root.has_pending_work());
+    }
+
+    #[test]
+    fn each_boundary_retry_claims_a_fresh_lane() {
+        let first_ready = Rc::new(Cell::new(false));
+        let second_ready = Rc::new(Cell::new(false));
+        let (first_work, first_subscribers) = manual();
+        let (second_work, second_subscribers) = manual();
+        let mut root = mount(Element::fragment([
+            Element::suspense(waiting_on(&first_ready, &first_work), Element::host(9)),
+            Element::suspense(waiting_on(&second_ready, &second_work), Element::host(8)),
+        ]));
+        assert_eq!(top_level(&root), [Some(9), Some(8)]);
+
+        // Each retry takes the next lane of the group, so a retry that parks
+        // its lane cannot hold back one that starts later.
+        assert_eq!(root.next_retry_lane, Lanes::RETRY_FIRST);
+        first_ready.set(true);
+        resolve(&first_subscribers);
+        root.flush();
+        assert_eq!(top_level(&root), [Some(7), Some(8)]);
+        assert_eq!(root.next_retry_lane, Lanes::RETRY_FIRST.next_retry());
+
+        second_ready.set(true);
+        resolve(&second_subscribers);
+        root.flush();
+        assert_eq!(top_level(&root), [Some(7), Some(7)]);
+        assert_eq!(root.next_retry_lane, Lanes::RETRY_FIRST.next_retry().next_retry());
+        assert!(!root.has_pending_work());
     }
 
     #[test]

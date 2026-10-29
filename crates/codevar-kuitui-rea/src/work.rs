@@ -228,10 +228,18 @@ impl<'a, H: Host> WorkLoop<'a, H> {
     /// suspension reached the shell — nothing in the tree can render instead —
     /// so the pass reports it and the caller throws the whole tree away.
     ///
-    /// The wakeable is dropped. React stashes it on the boundary and attaches a
-    /// retry listener once the fallback commits; until that lands, a boundary
-    /// that caught a suspension stays on its fallback until an update reaches
-    /// it.
+    /// The wakeable is stashed on the boundary, and the begin that renders the
+    /// fallback flags the boundary for the commit, which subscribes a retry
+    /// listener to each stashed wakeable. That listener is what turns a
+    /// resolved suspension into a render of the boundary's primary tree.
+    /// React stashes the wakeable in the boundary's `updateQueue` the same way
+    /// and attaches the listener from `attachSuspenseRetryListeners`.
+    ///
+    /// A hidden Offscreen catches its own suspensions too, and React retries it
+    /// as well. Rea has no offscreen lane yet (see
+    /// [`WorkLoop::render_offscreen`]), so a suspension caught there is not
+    /// stashed: nothing could render the hidden tree again until that lane
+    /// exists.
     fn throw(&mut self, wakeable: Wakeable) -> Progress {
         let Some(captured) = self.arena.capture() else {
             return Progress::Suspended(wakeable);
@@ -244,6 +252,14 @@ impl<'a, H: Host> WorkLoop<'a, H> {
             // render recorded may be applied by the commit.
             node.subtree_flags = Flags::NONE;
             node.deletions.clear();
+            if node.tag == FiberTag::Suspense
+                && !node
+                    .retry_queue
+                    .iter()
+                    .any(|known| known.same(&wakeable))
+            {
+                node.retry_queue.push(wakeable);
+            }
         }
         Progress::Next(captured.boundary)
     }
@@ -899,6 +915,16 @@ impl<'a, H: Host> WorkLoop<'a, H> {
                 if let Some(node) = offscreen.and_then(|offscreen| self.arena.get_mut(offscreen)) {
                     node.flags.insert(Flags::VISIBILITY);
                 }
+            }
+            // React's `scheduleRetryEffect`: a boundary that caught work this
+            // render has a retry queue, and the commit must subscribe the
+            // listeners that turn the work resolving into a retry.
+            if self
+                .arena
+                .get(fiber)
+                .is_some_and(|fiber| !fiber.retry_queue.is_empty())
+            {
+                flags.insert(Flags::UPDATE);
             }
         }
         if tag == FiberTag::Host
