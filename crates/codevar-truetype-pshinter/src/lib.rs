@@ -2381,11 +2381,7 @@ fn psh_hint_table_init<'a>(
 ) -> TtResult<()> {
     let count = hints.len();
 
-    table.hints = Vec::new();
-    table
-        .hints
-        .try_reserve(count)
-        .map_err(|_| TtError::OUT_OF_MEMORY)?;
+    table.hints = Vec::with_capacity(count);
     for hint in hints {
         table.hints.push(PshHint {
             org_pos: hint.pos,
@@ -2397,12 +2393,8 @@ fn psh_hint_table_init<'a>(
         });
     }
 
-    table.sort = Vec::new();
     let slots = count.saturating_mul(2);
-    table
-        .sort
-        .try_reserve(slots)
-        .map_err(|_| TtError::OUT_OF_MEMORY)?;
+    table.sort = Vec::with_capacity(slots);
     table.sort.resize(slots, 0);
     table.num_hints = 0;
     table.hint_masks = hint_masks;
@@ -3092,20 +3084,12 @@ fn psh_glyph_init<'a>(glyph: &mut PshGlyph<'a>, outline: &Outline, ps_hints: &'a
 
     outline.check()?;
 
-    glyph.points = Vec::new();
-    glyph
-        .points
-        .try_reserve(num_points)
-        .map_err(|_| TtError::OUT_OF_MEMORY)?;
+    glyph.points = Vec::with_capacity(num_points);
     glyph
         .points
         .resize(num_points, PshPoint::default());
 
-    glyph.contours = Vec::new();
-    glyph
-        .contours
-        .try_reserve(num_contours)
-        .map_err(|_| TtError::OUT_OF_MEMORY)?;
+    glyph.contours = Vec::with_capacity(num_contours);
     glyph
         .contours
         .resize(num_contours, PshContour::default());
@@ -3803,12 +3787,10 @@ fn psh_glyph_interpolate_normal_points(
     // buffer mirrors `strongs_0[PSH_MAX_STRONG_INTERNAL]`, the `Vec`
     // mirrors the `FT_NEW_ARRAY` fallback of the C code
     let mut internal = [0usize; PSH_MAX_STRONG_INTERNAL];
-    let mut heap = Vec::new();
+    let mut heap = Vec::with_capacity(num_strongs);
     let strongs: &mut [usize] = if num_strongs <= PSH_MAX_STRONG_INTERNAL {
         &mut internal[..num_strongs]
     } else {
-        heap.try_reserve(num_strongs)
-            .map_err(|_| TtError::OUT_OF_MEMORY)?;
         heap.resize(num_strongs, 0);
         heap.as_mut_slice()
     };
