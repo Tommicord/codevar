@@ -48,6 +48,7 @@
 extern crate alloc;
 
 use alloc::sync::Arc;
+use alloc::vec;
 use alloc::vec::Vec;
 use codevar_truetype_core::StreamSource;
 use spin::Mutex;
@@ -3052,9 +3053,7 @@ impl<'a> HuffCtx<'a> {
     /// Allocates the work area (`inflate_trees_bits` /
     /// `inflate_trees_dynamic` `ZALLOC`); `None` reports `Z_MEM_ERROR`.
     fn new(hp: &'a mut [Huft]) -> Option<HuffCtx<'a>> {
-        let mut v = Vec::new();
-        v.try_reserve_exact(288).ok()?;
-        v.resize(288, 0);
+        let v = vec![0; 288];
         Some(HuffCtx { hp, hn: 0, v })
     }
 
@@ -3574,9 +3573,7 @@ impl Win {
     /// Allocates the window (`inflate_blocks_new`'s `ZALLOC(z, 1, w)`);
     /// `None` reports `Z_MEM_ERROR`.
     fn new(size: usize, checkfn: Option<fn(u32, &[u8]) -> u32>) -> Option<Win> {
-        let mut buf = Vec::new();
-        buf.try_reserve_exact(size).ok()?;
-        buf.resize(size, 0);
+        let buf = vec![0u8; size];
         Some(Win {
             buf,
             read: 0,
@@ -3687,8 +3684,7 @@ impl BlocksState {
     /// Port of `inflate_blocks_new` + `inflate_blocks_reset`; `None`
     /// reports `Z_MEM_ERROR`.
     fn new(wbits: u32, checkfn: Option<fn(u32, &[u8]) -> u32>) -> Option<BlocksState> {
-        let mut hufts = Vec::new();
-        hufts.try_reserve_exact(MANY).ok()?;
+        let mut hufts = Vec::with_capacity(MANY);
         hufts.resize(MANY, Huft::default());
         let win = Win::new(1usize << wbits, checkfn)?;
         Some(BlocksState {
@@ -4380,12 +4376,7 @@ impl BlocksState {
                     }
                     let ntotal = 258 + (table & 0x1f) + ((table >> 5) & 0x1f);
                     // ZALLOC(z, t, sizeof(uInt)) for the code lengths
-                    let mut blens = Vec::new();
-                    if blens.try_reserve_exact(ntotal as usize).is_err() {
-                        r = Z_MEM_ERROR;
-                        return self.win.flush(z, out, r);
-                    }
-                    blens.resize(ntotal as usize, 0);
+                    let blens = vec![0; ntotal as usize];
                     dumpbits!(self, 14u32);
                     self.sub = BlockSub::Trees(TreesState {
                         table,
@@ -5053,20 +5044,9 @@ impl GzipFileState {
     /// window size (C's `ft_gzip_file_init`) or [`TtError::OUT_OF_MEMORY`].
     fn new(start: u64) -> TtResult<GzipFileState> {
         let inf = Inflater::new(true, MAX_WBITS).ok_or(TtError::INVALID_FILE_FORMAT)?;
-        let mut buffer = Vec::new();
-        buffer
-            .try_reserve_exact(FT_GZIP_BUFFER_SIZE)
-            .map_err(|_| TtError::OUT_OF_MEMORY)?;
-        buffer.resize(FT_GZIP_BUFFER_SIZE, 0);
-        let mut input = Vec::new();
-        input
-            .try_reserve_exact(FT_GZIP_BUFFER_SIZE)
-            .map_err(|_| TtError::OUT_OF_MEMORY)?;
-        input.resize(FT_GZIP_BUFFER_SIZE, 0);
-        let mut hist = Vec::new();
-        hist.try_reserve_exact(HISTORY_SIZE as usize)
-            .map_err(|_| TtError::OUT_OF_MEMORY)?;
-        hist.resize(HISTORY_SIZE as usize, 0);
+        let buffer = vec![0u8; FT_GZIP_BUFFER_SIZE];
+        let input = vec![0u8; FT_GZIP_BUFFER_SIZE];
+        let hist = vec![0u8; HISTORY_SIZE as usize];
         Ok(GzipFileState {
             buffer,
             input,
@@ -5213,10 +5193,7 @@ impl GzipSource {
 
         // FT's small-file trick: keep the whole image in memory
         let small = if total_size > 0 && total_size < SMALL_FILE_LIMIT {
-            let mut image = Vec::new();
-            image
-                .try_reserve_exact(total_size as usize)
-                .map_err(|_| TtError::OUT_OF_MEMORY)?;
+            let mut image = Vec::with_capacity(total_size as usize);
             while st.produced < total_size {
                 let before = st.produced;
                 let n = st.fill_output(source.as_ref())?;
