@@ -289,6 +289,7 @@ impl<'a, H: Host> WorkLoop<'a, H> {
             FiberTag::Offscreen => self.render_offscreen(fiber),
             FiberTag::Fragment => self.render_fragment(fiber),
             FiberTag::Host => self.render_host(fiber),
+            FiberTag::Provider => self.render_provider(fiber),
             // The root's children are reconciled by the caller before the pass
             // starts.
             FiberTag::Root => self.child_or_complete(fiber),
@@ -368,6 +369,13 @@ impl<'a, H: Host> WorkLoop<'a, H> {
             .and_then(|fiber| fiber.alternate)?;
         if self.did_receive_update(fiber, current) {
             return None;
+        }
+        if tag == FiberTag::Provider {
+            // React's early bailout pushes the provider's committed value
+            // before it continues: the children it is about to clone render
+            // under this node, so they must read the value this node publishes
+            // even though the node itself does not render.
+            self.publish_provider(fiber);
         }
         if tag != FiberTag::Suspense {
             return Some(self.continue_bailout(fiber));
@@ -478,6 +486,7 @@ impl<'a, H: Host> WorkLoop<'a, H> {
             | FiberTag::Suspense
             | FiberTag::Fragment
             | FiberTag::Offscreen
+            | FiberTag::Provider
             | FiberTag::Host => self.clone_child_fibers(fiber),
         }
     }
@@ -653,6 +662,51 @@ impl<'a, H: Host> WorkLoop<'a, H> {
         };
         self.reconcile(fiber, &children);
         self.child_or_complete(fiber)
+    }
+
+    /// Publishes a provider's value and diffs the children it arranges.
+    ///
+    /// This is React's `updateContextProvider`: the value goes onto the
+    /// context before the children render, so every component below this node
+    /// reads the value the provider was just given, and the completion that
+    /// follows the subtree puts the previous value back.
+    ///
+    /// React also walks the subtree here when the value changed
+    /// (`propagateContextChange`), marking the lanes of every consumer, so a
+    /// consumer below a provider whose children did not change still
+    /// re-renders. Rea has no consumer to mark until a hook reads a context:
+    /// today a changed value reaches the children through the elements the
+    /// provider carries.
+    fn render_provider(&mut self, fiber: FiberId) -> Begin {
+        let Some(Payload::Provider(node)) = self
+            .arena
+            .get(fiber)
+            .map(|fiber| fiber.pending.clone())
+        else {
+            return self.child_or_complete(fiber);
+        };
+        self.arena
+            .push_provider(fiber, Rc::clone(&node.context), Rc::clone(&node.value));
+        self.reconcile(fiber, &node.children);
+        self.child_or_complete(fiber)
+    }
+
+    /// Publishes what a provider holds without reconciling its children.
+    ///
+    /// Used by the bailout path, where the children are cloned rather than
+    /// diffed but still render under the provider. The payload on a
+    /// work-in-progress fiber starts as the committed one, so this is the
+    /// value the provider last committed.
+    fn publish_provider(&mut self, fiber: FiberId) {
+        let Some(Payload::Provider(node)) = self
+            .arena
+            .get(fiber)
+            .map(|fiber| fiber.pending.clone())
+        else {
+            return;
+        };
+        self.arena
+            .push_provider(fiber, Rc::clone(&node.context), Rc::clone(&node.value));
     }
 
     /// Renders a Suspense boundary.
@@ -994,9 +1048,11 @@ impl<'a, H: Host> WorkLoop<'a, H> {
         let visibility = work.visibility;
         // A fiber that pushed a handler pops it here, whether it began this
         // render or was cloned by a bailout. The pop is matched by owner, so a
-        // completion without a begin leaves the stack alone.
+        // completion without a begin leaves the stack alone. A provider pops
+        // its context value the same way, once its children are complete.
         match tag {
             FiberTag::Suspense | FiberTag::Offscreen => self.arena.pop_handler(fiber),
+            FiberTag::Provider => self.arena.pop_provider(fiber),
             _ => {}
         }
         let mut flags = Flags::NONE;
@@ -1103,10 +1159,11 @@ impl<'a, H: Host> WorkLoop<'a, H> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::element::Reference;
+    use crate::element::{AnyContext, ProviderNode, Reference};
     use crate::fiber::Fiber;
     use crate::hooks::{State, mailbox};
     use alloc::vec::Vec;
+    use core::any::Any;
     use core::cell::{Cell, RefCell};
 
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1184,22 +1241,34 @@ mod tests {
         /// away and the committed tree stays current — what `Root::perform`
         /// does with an uncaptured suspension.
         fn render(&mut self, element: Element<TestHost>) -> Option<Wakeable> {
-            // Rendering the root's element marks the root, the way
-            // `Root::render` marks it with the default lane; without the mark
-            // the root would bail out and the new element would never render.
-            if let Some(root) = self.arena.get_mut(self.root) {
-                root.lanes.insert(self.lanes);
-            }
-            self.arena.begin_render();
-            let Some(work) = self.arena.create_work_in_progress(self.root) else {
-                self.arena.end_render();
-                return None;
-            };
+            let work = self.begin()?;
             let current_first = self
                 .arena
                 .get(self.root)
                 .and_then(|fiber| fiber.first_child);
             reconcile_children(&self.host, &mut self.arena, work, current_first, &[element]);
+            self.finish(work)
+        }
+
+        /// Starts a render of the root and returns its work-in-progress half.
+        ///
+        /// Rendering the root's element marks the root, the way `Root::render`
+        /// marks it with the default lane; without the mark the root would bail
+        /// out and the new element would never render.
+        fn begin(&mut self) -> Option<FiberId> {
+            if let Some(root) = self.arena.get_mut(self.root) {
+                root.lanes.insert(self.lanes);
+            }
+            self.arena.begin_render();
+            let work = self.arena.create_work_in_progress(self.root);
+            if work.is_none() {
+                self.arena.end_render();
+            }
+            work
+        }
+
+        /// Runs the pass over a prepared tree and commits or abandons it.
+        fn finish(&mut self, work: FiberId) -> Option<Wakeable> {
             let mut work_loop = WorkLoop::new(
                 &mut self.host,
                 &mut self.arena,
@@ -1217,6 +1286,16 @@ mod tests {
                     self.arena.abandon_render();
                     Some(wakeable)
                 }
+            }
+        }
+
+        /// Makes `child` the only child of the tree `work` renders.
+        fn attach(&mut self, work: FiberId, child: FiberId) {
+            if let Some(node) = self.arena.get_mut(child) {
+                node.parent = Some(work);
+            }
+            if let Some(root) = self.arena.get_mut(work) {
+                root.first_child = Some(child);
             }
         }
 
@@ -2038,5 +2117,128 @@ mod tests {
                 .is_some_and(|fiber| fiber.deletions == [old, second])
         );
         assert!(harness.child(new_host).is_none());
+    }
+
+    /// A context whose current value the tests can read without a consumer.
+    struct TestContext {
+        value: RefCell<Rc<dyn Any>>,
+    }
+
+    impl TestContext {
+        fn new() -> Rc<Self> {
+            Rc::new(Self {
+                value: RefCell::new(Rc::new(0_u16)),
+            })
+        }
+
+        fn current(&self) -> u16 {
+            self.value
+                .borrow()
+                .clone()
+                .downcast::<u16>()
+                .map_or(0, |value| *value)
+        }
+    }
+
+    impl AnyContext for TestContext {
+        fn swap(&self, value: Rc<dyn Any>) -> Rc<dyn Any> {
+            self.value.replace(value)
+        }
+
+        fn restore(&self, previous: Rc<dyn Any>) {
+            *self.value.borrow_mut() = previous;
+        }
+    }
+
+    /// A provider fiber that publishes `value` above `children`.
+    fn provider_fiber(
+        context: &Rc<TestContext>,
+        value: u16,
+        children: Vec<Element<TestHost>>,
+    ) -> Fiber<TestHost> {
+        let payload = Payload::Provider(Rc::new(ProviderNode {
+            context: Rc::clone(context) as Rc<dyn AnyContext>,
+            value: Rc::new(value),
+            children: Rc::from(children),
+        }));
+        let mut fiber = Fiber::new(FiberTag::Provider);
+        fiber.pending = payload.clone();
+        fiber.memoized = payload;
+        fiber
+    }
+
+    #[test]
+    fn a_provider_publishes_its_value_while_its_subtree_renders() {
+        let mut harness = Harness::new();
+        let context = TestContext::new();
+        let seen = Rc::new(Cell::new(0_u16));
+        let reader = Rc::clone(&context);
+        let recorded = Rc::clone(&seen);
+        let child = Element::component(move |_| {
+            recorded.set(reader.current());
+            Element::host((0, 0))
+        });
+
+        let Some(work) = harness.begin() else {
+            return;
+        };
+        let provider = harness
+            .arena
+            .alloc(provider_fiber(&context, 2, Vec::from([child])));
+        harness.attach(work, provider);
+        assert!(harness.finish(work).is_none());
+
+        assert_eq!(seen.get(), 2);
+        // The provider completed after its subtree, so the value it replaced
+        // is current again.
+        assert_eq!(context.current(), 0);
+        assert_eq!(harness.arena.provider_depth(), 0);
+    }
+
+    #[test]
+    fn a_provider_that_bails_out_still_publishes_its_value() {
+        let mut harness = Harness::new();
+        let context = TestContext::new();
+        let seen = Rc::new(Cell::new(0_u16));
+        let renders = Rc::new(Cell::new(0_u16));
+        let reader = Rc::clone(&context);
+        let recorded = Rc::clone(&seen);
+        let counted = Rc::clone(&renders);
+        let child = Element::component(move |_| {
+            counted.set(counted.get() + 1);
+            recorded.set(reader.current());
+            Element::host((0, 1))
+        });
+
+        let Some(work) = harness.begin() else {
+            return;
+        };
+        let provider = harness
+            .arena
+            .alloc(provider_fiber(&context, 2, Vec::from([child])));
+        harness.attach(work, provider);
+        assert!(harness.finish(work).is_none());
+        assert_eq!(renders.get(), 1);
+
+        // Work lands below the provider, so the pass has to walk in. The
+        // provider itself has nothing to apply, so it bails out and its
+        // children are cloned: they still render under the value it publishes.
+        let Some(child) = harness.child(provider) else {
+            return;
+        };
+        harness.mark(child, Lanes::DEFAULT);
+        let Some(work) = harness.begin() else {
+            return;
+        };
+        let Some(next) = harness.arena.create_work_in_progress(provider) else {
+            return;
+        };
+        harness.attach(work, next);
+        assert!(harness.finish(work).is_none());
+
+        assert_eq!(renders.get(), 2);
+        assert_eq!(seen.get(), 2);
+        assert_eq!(context.current(), 0);
+        assert_eq!(harness.arena.provider_depth(), 0);
     }
 }

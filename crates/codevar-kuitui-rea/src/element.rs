@@ -53,7 +53,7 @@
 //! so a host node keeps the fibers and nodes below it across a re-render.
 
 use alloc::rc::Rc;
-use core::any::TypeId;
+use core::any::{Any, TypeId};
 
 use crate::hooks::{Cleanup, RenderCtx};
 use crate::host::{Host, Key};
@@ -111,6 +111,41 @@ pub(crate) struct HostNode<H: Host> {
     pub(crate) children: Rc<[Element<H>]>,
     /// The callback the node is handed to, when the element has one.
     pub(crate) reference: Option<Reference<H>>,
+}
+
+/// The shared cell a context keeps its current value in.
+///
+/// A reader has to be type-erased all the way to the value: the engine swaps
+/// the value while a provider's subtree renders and puts the previous one
+/// back when that subtree completes, and a provider fiber cannot name the
+/// context's type. This trait is that erasure. The concrete context stores its
+/// `T` inside the `Rc<dyn Any>`, so the value only has to survive the round
+/// trip the provider stack performs on it.
+///
+/// React keeps the same value on `context._currentValue`, a field only its
+/// push/pop helpers touch; Rea hides the cell behind this trait so a provider
+/// cannot reach the value any other way.
+pub(crate) trait AnyContext {
+    /// Replaces the value readers see and returns the value it replaced.
+    fn swap(&self, value: Rc<dyn Any>) -> Rc<dyn Any>;
+
+    /// Puts back a value [`Self::swap`] returned.
+    fn restore(&self, previous: Rc<dyn Any>);
+}
+
+/// A provider and the children it publishes its value to.
+///
+/// React describes a provider as `<Context.Provider value={...}>` and keeps
+/// the value on the fiber's props; the fiber pushes it while its children
+/// render and pops it when they complete. Rea keeps the same description here:
+/// the context's identity, the value to publish, and the children that read it.
+pub(crate) struct ProviderNode<H: Host> {
+    /// The context whose value the subtree reads.
+    pub(crate) context: Rc<dyn AnyContext>,
+    /// The value the subtree reads while the provider is rendered.
+    pub(crate) value: Rc<dyn Any>,
+    /// The children the provider publishes the value to.
+    pub(crate) children: Rc<[Element<H>]>,
 }
 
 /// What an element describes.

@@ -69,6 +69,21 @@
 //! (`InvisibleParentSuspenseContext`) and reads it when it decides whether a
 //! render should keep the previous screen.
 //!
+//! # Context providers
+//!
+//! A provider publishes a value to every component below it. The value lives
+//! in the context itself, so a provider pushes it when its begin runs and pops
+//! it when its complete runs — React's `pushProvider` and `popProvider` — and
+//! the stack of pushes is kept in the arena for the same reason the handler
+//! stack is: a render that yields keeps publishing what the fibers it has not
+//! completed publish.
+//!
+//! An entry records the value the context held before the push and how many
+//! fibers the render had started. A suspension discards a subtree, and every
+//! provider the discarded fibers pushed has to give its previous value back;
+//! [`Arena::discard_since`] uses the mark for that. React unwinds the same
+//! stack by popping providers in `unwindInterruptedWork` and `throwException`.
+//!
 //! # Why the tree is not a `Vec<Fiber>`
 //!
 //! Fibers are both created and destroyed between commits (a conditional
@@ -78,12 +93,12 @@
 
 use alloc::rc::Rc;
 use alloc::vec::Vec;
-use core::any::TypeId;
+use core::any::{Any, TypeId};
 use core::cell::RefCell;
 use core::fmt;
 use core::ops::{BitAnd, BitOr, Not};
 
-use crate::element::{ComponentFn, Element, HostNode, Reference, SuspenseNode};
+use crate::element::{AnyContext, ComponentFn, Element, HostNode, ProviderNode, Reference, SuspenseNode};
 use crate::hooks::{Cleanup, EffectRecord, HookList, StoreCheck};
 use crate::host::{Host, Key};
 use crate::lane::Lanes;
@@ -248,6 +263,8 @@ pub(crate) enum Payload<H: Host> {
     Fragment(Rc<[Element<H>]>),
     /// The primary and fallback trees of a Suspense boundary.
     Suspense(Rc<SuspenseNode<H>>),
+    /// A context provider and the children it publishes its value to.
+    Provider(Rc<ProviderNode<H>>),
 }
 
 impl<H: Host> Clone for Payload<H> {
@@ -258,6 +275,7 @@ impl<H: Host> Clone for Payload<H> {
             Self::Host(node) => Self::Host(Rc::clone(node)),
             Self::Fragment(children) => Self::Fragment(Rc::clone(children)),
             Self::Suspense(node) => Self::Suspense(Rc::clone(node)),
+            Self::Provider(node) => Self::Provider(Rc::clone(node)),
         }
     }
 }
@@ -276,6 +294,7 @@ impl<H: Host> Payload<H> {
             (Self::Host(a), Self::Host(b)) => Rc::ptr_eq(a, b),
             (Self::Fragment(a), Self::Fragment(b)) => Rc::ptr_eq(a, b),
             (Self::Suspense(a), Self::Suspense(b)) => Rc::ptr_eq(a, b),
+            (Self::Provider(a), Self::Provider(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -329,6 +348,13 @@ pub(crate) enum FiberTag {
     /// fiber has no host node of its own; it keeps the primary tree's fibers
     /// and node identity across the switch.
     Offscreen,
+    /// A context provider.
+    ///
+    /// The fiber has no host node of its own: its begin publishes the value
+    /// its payload carries and its complete puts the previous value back, so
+    /// the subtree between them reads it. React's `ContextProvider` tag does
+    /// the same in `updateContextProvider` and `completeWork`.
+    Provider,
 }
 
 /// Whether the host nodes below an Offscreen fiber are shown.
@@ -551,6 +577,28 @@ pub(crate) struct Captured {
     pub(crate) mark: usize,
 }
 
+/// An entry of the stack of providers the render is inside of.
+///
+/// React sets `context._currentValue` in `pushProvider` and keeps the value it
+/// replaced in the provider fiber's `memoizedState`, so `popProvider` can put
+/// it back. The arena keeps both halves of that pair here, because a fiber the
+/// render discards never reaches `popProvider`: the entry has to survive on
+/// its own until [`Arena::unwind_providers`] hands the value back.
+///
+/// `mark` is the number of fibers the render had started when the entry was
+/// pushed, which is what tells a discard whether the provider that pushed it
+/// belongs to the subtree being thrown away.
+struct ProviderFrame {
+    /// The fiber that pushed the entry and pops it when it completes.
+    owner: FiberId,
+    /// The context the entry publishes a value for.
+    context: Rc<dyn AnyContext>,
+    /// The value the context held before the push.
+    previous: Rc<dyn Any>,
+    /// The number of fibers the render had started when the entry was pushed.
+    mark: usize,
+}
+
 /// The arena that owns every fiber.
 pub(crate) struct Arena<H: Host> {
     /// The slots. `None` marks a slot on the free list.
@@ -561,6 +609,8 @@ pub(crate) struct Arena<H: Host> {
     started: Option<Vec<Started>>,
     /// The stack of fibers that can catch a suspension, outermost first.
     handlers: Vec<SuspenseHandler>,
+    /// The stack of providers the render is inside of, outermost first.
+    providers: Vec<ProviderFrame>,
 }
 
 impl<H: Host> Arena<H> {
@@ -571,6 +621,7 @@ impl<H: Host> Arena<H> {
             free: Vec::new(),
             started: None,
             handlers: Vec::new(),
+            providers: Vec::new(),
         }
     }
 
@@ -678,6 +729,10 @@ impl<H: Host> Arena<H> {
             self.handlers.is_empty(),
             "a render cannot start with a handler its predecessor left behind"
         );
+        debug_assert!(
+            self.providers.is_empty(),
+            "a render cannot start with a provider its predecessor left behind"
+        );
         self.started = Some(Vec::new());
     }
 
@@ -689,6 +744,10 @@ impl<H: Host> Arena<H> {
         debug_assert!(
             self.handlers.is_empty(),
             "a finished render must pop every handler it pushed"
+        );
+        debug_assert!(
+            self.providers.is_empty(),
+            "a finished render must pop every provider it pushed"
         );
         self.started = None;
     }
@@ -705,6 +764,7 @@ impl<H: Host> Arena<H> {
     /// fiber.
     pub(crate) fn abandon_render(&mut self) {
         self.handlers.clear();
+        self.restore_providers();
         let Some(started) = self.started.take() else {
             return;
         };
@@ -721,6 +781,7 @@ impl<H: Host> Arena<H> {
     /// keeps. They are dropped in reverse order so a fiber is freed after the
     /// children that are still linked from it.
     pub(crate) fn discard_since(&mut self, mark: usize) {
+        self.unwind_providers(mark);
         let Some(started) = self.started.as_mut() else {
             return;
         };
@@ -844,6 +905,75 @@ impl<H: Host> Arena<H> {
     #[cfg(test)]
     pub(crate) fn handler_depth(&self) -> usize {
         self.handlers.len()
+    }
+
+    /// Publishes a provider's value to everything that renders below it.
+    ///
+    /// This is React's `pushProvider`: the context starts reporting `value`,
+    /// and the entry keeps the value it replaced so the push can be undone.
+    /// The entry records how many fibers the render has started, because a
+    /// later discard has to tell this provider's subtree from the tree outside
+    /// it.
+    pub(crate) fn push_provider(&mut self, owner: FiberId, context: Rc<dyn AnyContext>, value: Rc<dyn Any>) {
+        let previous = context.swap(value);
+        self.providers.push(ProviderFrame {
+            owner,
+            context,
+            previous,
+            mark: self.started_len(),
+        });
+    }
+
+    /// Puts the value a provider replaced back when the provider completes.
+    ///
+    /// This is React's `popProvider`. The pop is matched by owner, so a fiber
+    /// that completes without having pushed — the way a bailout clones a fiber
+    /// it never began — leaves the stack of some other provider alone.
+    pub(crate) fn pop_provider(&mut self, owner: FiberId) {
+        if self
+            .providers
+            .last()
+            .is_some_and(|frame| frame.owner == owner)
+        {
+            self.pop_last_provider();
+        }
+    }
+
+    /// Puts back every value a provider pushed for the subtree from `mark` on.
+    ///
+    /// This is the provider half of React's `unwindInterruptedWork`: the
+    /// fibers a capture discards include the providers that published a value
+    /// below the boundary, and those values must go back before the boundary
+    /// renders again. A frame pushed before the subtree began has a mark at or
+    /// below `mark` — the providers the render is still inside of — and stays.
+    fn unwind_providers(&mut self, mark: usize) {
+        while self
+            .providers
+            .last()
+            .is_some_and(|frame| frame.mark > mark)
+        {
+            self.pop_last_provider();
+        }
+    }
+
+    /// Puts back every value the render in flight published.
+    fn restore_providers(&mut self) {
+        while !self.providers.is_empty() {
+            self.pop_last_provider();
+        }
+    }
+
+    /// Restores one provider frame, innermost first.
+    fn pop_last_provider(&mut self) {
+        if let Some(frame) = self.providers.pop() {
+            frame.context.restore(frame.previous);
+        }
+    }
+
+    /// The number of provider entries on the stack.
+    #[cfg(test)]
+    pub(crate) fn provider_depth(&self) -> usize {
+        self.providers.len()
     }
 }
 
@@ -1159,6 +1289,104 @@ mod tests {
         assert!(arena.get(inner).is_none());
         assert!(arena.get(child).is_none());
         assert_eq!(arena.handler_depth(), 0);
+        arena.end_render();
+    }
+
+    /// A context whose current value the tests can read without a consumer.
+    struct TestContext {
+        value: RefCell<Rc<dyn Any>>,
+    }
+
+    impl TestContext {
+        fn new() -> Rc<Self> {
+            Rc::new(Self {
+                value: RefCell::new(Rc::new(0_u16)),
+            })
+        }
+
+        fn current(&self) -> u16 {
+            self.value
+                .borrow()
+                .clone()
+                .downcast::<u16>()
+                .map_or(0, |value| *value)
+        }
+    }
+
+    impl AnyContext for TestContext {
+        fn swap(&self, value: Rc<dyn Any>) -> Rc<dyn Any> {
+            self.value.replace(value)
+        }
+
+        fn restore(&self, previous: Rc<dyn Any>) {
+            *self.value.borrow_mut() = previous;
+        }
+    }
+
+    #[test]
+    fn a_provider_push_replaces_the_value_and_the_pop_puts_it_back() {
+        let mut arena = arena();
+        let context = TestContext::new();
+        arena.begin_render();
+        let owner = arena.alloc(fiber(FiberTag::Provider));
+        arena.push_provider(owner, Rc::clone(&context) as Rc<dyn AnyContext>, Rc::new(7_u16));
+        assert_eq!(context.current(), 7);
+        assert_eq!(arena.provider_depth(), 1);
+
+        // A pop belongs to the fiber that pushed: a completion of some other
+        // fiber must not publish the value back.
+        arena.pop_provider(FiberId::from_index(9));
+        assert_eq!(context.current(), 7);
+        assert_eq!(arena.provider_depth(), 1);
+
+        arena.pop_provider(owner);
+        assert_eq!(context.current(), 0);
+        assert_eq!(arena.provider_depth(), 0);
+        arena.end_render();
+    }
+
+    #[test]
+    fn abandoning_a_render_puts_every_provider_value_back() {
+        let mut arena = arena();
+        let context = TestContext::new();
+        arena.begin_render();
+        let outer = arena.alloc(fiber(FiberTag::Provider));
+        arena.push_provider(outer, Rc::clone(&context) as Rc<dyn AnyContext>, Rc::new(5_u16));
+        let inner = arena.alloc(fiber(FiberTag::Provider));
+        arena.push_provider(inner, Rc::clone(&context) as Rc<dyn AnyContext>, Rc::new(6_u16));
+        assert_eq!(context.current(), 6);
+
+        arena.abandon_render();
+        // The render never committed, so nothing it published may outlive it.
+        assert_eq!(context.current(), 0);
+        assert_eq!(arena.provider_depth(), 0);
+    }
+
+    #[test]
+    fn a_discard_unwinds_only_the_providers_it_throws_away() {
+        let mut arena = arena();
+        let kept = TestContext::new();
+        let discarded = TestContext::new();
+        arena.begin_render();
+        let owner = arena.alloc(fiber(FiberTag::Component));
+        arena.push_provider(owner, Rc::clone(&kept) as Rc<dyn AnyContext>, Rc::new(1_u16));
+        let boundary = arena.alloc(fiber(FiberTag::Suspense));
+        arena.push_handler(boundary, Some(boundary));
+        let child = arena.alloc(fiber(FiberTag::Component));
+        arena.push_provider(child, Rc::clone(&discarded) as Rc<dyn AnyContext>, Rc::new(2_u16));
+
+        let Some(captured) = arena.capture() else {
+            return;
+        };
+        arena.discard_since(captured.mark);
+
+        // The provider the render is still inside of keeps publishing; the one
+        // that belonged to the subtree the boundary threw away gives its value
+        // back.
+        assert_eq!(kept.current(), 1);
+        assert_eq!(discarded.current(), 0);
+        assert_eq!(arena.provider_depth(), 1);
+        arena.pop_provider(owner);
         arena.end_render();
     }
 }
