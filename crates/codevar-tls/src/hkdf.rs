@@ -72,7 +72,7 @@ pub fn hkdf_expand_label(
     if context.len() > 255 {
         return Err(TlsError::Internal("HKDF context too long".into()));
     }
-    let mut hkdf_label = Vec::new();
+    let mut hkdf_label = Vec::with_capacity(8 + label.len() + context.len());
     put_u16(&mut hkdf_label, length as u16);
     let mut full_label = Vec::with_capacity(6 + label.len());
     full_label.extend_from_slice(b"tls13 ");

@@ -166,7 +166,7 @@ fn parse_supported_versions(data: &[u8]) -> TlsResult<Vec<ProtocolVersion>> {
     if list.len() < 2 || !list.len().is_multiple_of(2) {
         return Err(TlsError::Alert(AlertDescription::DecodeError));
     }
-    let mut versions = Vec::new();
+    let mut versions = Vec::with_capacity(list.len() / 2);
     let mut lr = Reader::new(list);
     while !lr.is_empty() {
         let v = lr.u16()?;
@@ -181,7 +181,7 @@ fn parse_named_groups(data: &[u8]) -> TlsResult<Vec<NamedGroup>> {
     let mut r = Reader::new(data);
     let list = r.vec_u16()?;
     r.expect_empty("supported_groups")?;
-    let mut groups = Vec::new();
+    let mut groups = Vec::with_capacity(list.len() / 2);
     let mut lr = Reader::new(list);
     while !lr.is_empty() {
         let g = lr.u16()?;
@@ -196,7 +196,7 @@ fn parse_signature_schemes(data: &[u8]) -> TlsResult<Vec<SignatureScheme>> {
     let mut r = Reader::new(data);
     let list = r.vec_u16()?;
     r.expect_empty("signature_algorithms")?;
-    let mut schemes = Vec::new();
+    let mut schemes = Vec::with_capacity(list.len() / 2);
     let mut lr = Reader::new(list);
     while !lr.is_empty() {
         let s = lr.u16()?;
@@ -211,7 +211,7 @@ fn parse_alpn(data: &[u8]) -> TlsResult<Vec<Vec<u8>>> {
     let mut r = Reader::new(data);
     let list = r.vec_u16()?;
     r.expect_empty("alpn")?;
-    let mut protocols = Vec::new();
+    let mut protocols = Vec::with_capacity(list.len() / 2);
     let mut lr = Reader::new(list);
     while !lr.is_empty() {
         protocols.push(lr.vec_u8()?.to_vec());
@@ -265,21 +265,21 @@ fn parse_key_share(data: &[u8], out: &mut ParsedExtensions) -> TlsResult<()> {
 
 /// Encodes the SNI extension data for a DNS host name.
 pub fn encode_server_name(hostname: &str) -> TlsResult<Vec<u8>> {
-    let mut host_entry = Vec::new();
+    let mut host_entry = Vec::with_capacity(3 + hostname.len());
     host_entry.push(0); // host_name
     put_vec_u16(&mut host_entry, hostname.as_bytes())?;
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(2 + host_entry.len());
     put_vec_u16(&mut out, &host_entry)?;
     Ok(out)
 }
 
 /// Encodes ClientHello `supported_versions`.
 pub fn encode_supported_versions_client(versions: &[ProtocolVersion]) -> TlsResult<Vec<u8>> {
-    let mut list = Vec::new();
+    let mut list = Vec::with_capacity(2 * versions.len());
     for v in versions {
         put_u16(&mut list, v.as_u16());
     }
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(2 + list.len());
     put_vec_u8(&mut out, &list)?;
     Ok(out)
 }
@@ -292,41 +292,41 @@ pub fn encode_supported_versions_server(version: ProtocolVersion) -> Vec<u8> {
 
 /// Encodes `supported_groups`.
 pub fn encode_supported_groups(groups: &[NamedGroup]) -> TlsResult<Vec<u8>> {
-    let mut list = Vec::new();
+    let mut list = Vec::with_capacity(2 * groups.len());
     for g in groups {
         put_u16(&mut list, g.as_u16());
     }
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(2 + list.len());
     put_vec_u16(&mut out, &list)?;
     Ok(out)
 }
 
 /// Encodes `signature_algorithms`.
 pub fn encode_signature_algorithms(schemes: &[SignatureScheme]) -> TlsResult<Vec<u8>> {
-    let mut list = Vec::new();
+    let mut list = Vec::with_capacity(2 * schemes.len());
     for s in schemes {
         put_u16(&mut list, s.as_u16());
     }
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(2 + list.len());
     put_vec_u16(&mut out, &list)?;
     Ok(out)
 }
 
 /// Encodes ClientHello key_share list.
 pub fn encode_key_share_client(shares: &[KeySharePublic]) -> TlsResult<Vec<u8>> {
-    let mut list = Vec::new();
+    let mut list = Vec::with_capacity(8 * shares.len());
     for s in shares {
         put_u16(&mut list, s.group.as_u16());
         put_vec_u16(&mut list, &s.key_exchange)?;
     }
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(2 + list.len());
     put_vec_u16(&mut out, &list)?;
     Ok(out)
 }
 
 /// Encodes ServerHello key_share entry.
 pub fn encode_key_share_server(share: &KeySharePublic) -> TlsResult<Vec<u8>> {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(4 + share.key_exchange.len());
     put_u16(&mut out, share.group.as_u16());
     put_vec_u16(&mut out, &share.key_exchange)?;
     Ok(out)
@@ -340,11 +340,11 @@ pub fn encode_key_share_hrr(group: NamedGroup) -> Vec<u8> {
 
 /// Encodes ALPN extension data.
 pub fn encode_alpn(protocols: &[Vec<u8>]) -> TlsResult<Vec<u8>> {
-    let mut list = Vec::new();
+    let mut list = Vec::with_capacity(4 * protocols.len());
     for p in protocols {
         put_vec_u8(&mut list, p)?;
     }
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(2 + list.len());
     put_vec_u16(&mut out, &list)?;
     Ok(out)
 }
@@ -375,21 +375,21 @@ pub fn finish_extensions(out: &mut Vec<u8>, idx: usize) -> TlsResult<()> {
 
 /// Encodes empty renegotiation_info (secure renegotiation sentinel for initial handshake).
 pub fn encode_renegotiation_info_empty() -> TlsResult<Vec<u8>> {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(2);
     put_vec_u8(&mut out, &[])?;
     Ok(out)
 }
 
 /// Encodes `psk_key_exchange_modes` with `psk_dhe_ke`.
 pub fn encode_psk_modes_dhe() -> TlsResult<Vec<u8>> {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(2);
     put_vec_u8(&mut out, &[1])?; // psk_dhe_ke
     Ok(out)
 }
 
 /// Encodes EC point formats: uncompressed only.
 pub fn encode_ec_point_formats() -> TlsResult<Vec<u8>> {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(2);
     let idx = start_u8_vec(&mut out);
     out.push(0); // uncompressed
     fill_u8_len(&mut out, idx)?;

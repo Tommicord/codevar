@@ -134,7 +134,7 @@ impl ClientHello {
         if suites.len() < 2 || !suites.len().is_multiple_of(2) {
             return Err(TlsError::Alert(AlertDescription::DecodeError));
         }
-        let mut cipher_suites = Vec::new();
+        let mut cipher_suites = Vec::with_capacity(suites.len() / 2);
         let mut sr = Reader::new(suites);
         while !sr.is_empty() {
             cipher_suites.push(sr.u16()?);
@@ -255,11 +255,11 @@ pub fn build_client_hello_body(
     cipher_suites: &[u16],
     extensions: &[u8],
 ) -> TlsResult<Vec<u8>> {
-    let mut body = Vec::new();
+    let mut body = Vec::with_capacity(64 + extensions.len() + 2 * cipher_suites.len());
     put_u16(&mut body, legacy_version.as_u16());
     body.extend_from_slice(random);
     put_vec_u8(&mut body, session_id)?;
-    let mut suites = Vec::new();
+    let mut suites = Vec::with_capacity(2 * cipher_suites.len());
     for s in cipher_suites {
         put_u16(&mut suites, *s);
     }
@@ -277,7 +277,7 @@ pub fn build_server_hello_body(
     cipher_suite: CipherSuite,
     extensions: &[u8],
 ) -> TlsResult<Vec<u8>> {
-    let mut body = Vec::new();
+    let mut body = Vec::with_capacity(48 + extensions.len());
     put_u16(&mut body, legacy_version.as_u16());
     body.extend_from_slice(random);
     put_vec_u8(&mut body, session_id_echo)?;
@@ -304,7 +304,7 @@ impl CertificateTls13 {
         let list = r.vec_u24()?;
         r.expect_empty("certificate")?;
         let mut lr = Reader::new(list);
-        let mut cert_chain = Vec::new();
+        let mut cert_chain = Vec::with_capacity(4);
         while !lr.is_empty() {
             let cert = lr.vec_u24()?.to_vec();
             let _exts = lr.vec_u16()?; // certificate extensions
@@ -318,7 +318,7 @@ impl CertificateTls13 {
 
     /// Encodes a TLS 1.3 Certificate body.
     pub fn encode(request_context: &[u8], cert_chain: &[Vec<u8>]) -> TlsResult<Vec<u8>> {
-        let mut body = Vec::new();
+        let mut body = Vec::with_capacity(8 + request_context.len());
         put_vec_u8(&mut body, request_context)?;
         let list_idx = start_u24_vec(&mut body);
         for cert in cert_chain {
@@ -344,7 +344,7 @@ impl CertificateTls12 {
         let list = r.vec_u24()?;
         r.expect_empty("certificate")?;
         let mut lr = Reader::new(list);
-        let mut cert_chain = Vec::new();
+        let mut cert_chain = Vec::with_capacity(4);
         while !lr.is_empty() {
             cert_chain.push(lr.vec_u24()?.to_vec());
         }
@@ -353,7 +353,7 @@ impl CertificateTls12 {
 
     /// Encodes a TLS 1.2 Certificate body.
     pub fn encode(cert_chain: &[Vec<u8>]) -> TlsResult<Vec<u8>> {
-        let mut body = Vec::new();
+        let mut body = Vec::with_capacity(6);
         let idx = start_u24_vec(&mut body);
         for cert in cert_chain {
             put_vec_u24(&mut body, cert)?;
@@ -385,7 +385,7 @@ impl CertificateVerify {
 
     /// Encodes CertificateVerify.
     pub fn encode(scheme: SignatureScheme, signature: &[u8]) -> TlsResult<Vec<u8>> {
-        let mut body = Vec::new();
+        let mut body = Vec::with_capacity(4 + signature.len());
         put_u16(&mut body, scheme.as_u16());
         put_vec_u16(&mut body, signature)?;
         Ok(body)
@@ -425,7 +425,7 @@ pub fn parse_encrypted_extensions(body: &[u8]) -> TlsResult<ParsedExtensions> {
 
 /// Encodes EncryptedExtensions from a raw extensions payload (already a vector body).
 pub fn encode_encrypted_extensions(extensions_payload: &[u8]) -> TlsResult<Vec<u8>> {
-    let mut body = Vec::new();
+    let mut body = Vec::with_capacity(2 + extensions_payload.len());
     put_vec_u16(&mut body, extensions_payload)?;
     Ok(body)
 }
@@ -474,7 +474,7 @@ impl ServerKeyExchangeEcdhe {
         scheme: SignatureScheme,
         signature: &[u8],
     ) -> TlsResult<Vec<u8>> {
-        let mut body = Vec::new();
+        let mut body = Vec::with_capacity(8 + public_key.len() + signature.len());
         body.push(3); // named_curve
         put_u16(&mut body, curve.as_u16());
         put_vec_u8(&mut body, public_key)?;
@@ -520,7 +520,7 @@ impl ClientKeyExchangeEcdhe {
 
     /// Encodes ClientKeyExchange.
     pub fn encode(public_key: &[u8]) -> TlsResult<Vec<u8>> {
-        let mut body = Vec::new();
+        let mut body = Vec::with_capacity(1 + public_key.len());
         put_vec_u8(&mut body, public_key)?;
         Ok(body)
     }
