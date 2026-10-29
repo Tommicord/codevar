@@ -96,10 +96,6 @@ pub(crate) struct SuspenseNode<H: Host> {
     /// The tree the boundary shows while nothing below it is suspended.
     pub(crate) children: Element<H>,
     /// The tree the boundary shows in place of the primary one.
-    // The pass that switches the boundary to this tree builds on the same
-    // suspension support as the primary one; until it lands the payload only
-    // carries the description.
-    #[allow(dead_code)]
     pub(crate) fallback: Element<H>,
 }
 

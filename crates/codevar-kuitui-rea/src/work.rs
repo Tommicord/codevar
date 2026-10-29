@@ -43,10 +43,15 @@
 //! throws the element it built away, because a component that does not have
 //! its data cannot describe the tree. React unwinds the call stack to the
 //! nearest Suspense boundary in `throwException`. Rea has no stack to unwind —
-//! a fiber is begun, then its children — so [`WorkLoop::step`] reports the
-//! suspension as a [`Progress::Suspended`] and the caller decides which fiber
-//! renders next. Until a boundary takes the suspension, the tree in flight is
-//! abandoned and the committed tree keeps showing what it showed before.
+//! a fiber is begun, then its children — so the arena keeps the stack of
+//! fibers that can catch a suspension (see [`Arena::push_handler`]) and
+//! [`WorkLoop::step`] throws the wakeable to the target on top of it. The
+//! fibers the boundary started go back to the committed tree, the boundary is
+//! flagged [`Flags::DID_CAPTURE`], and the pass begins it again — this time it
+//! renders its fallback. A suspension with no target reached the shell, so
+//! [`WorkLoop::step`] reports it as a [`Progress::Suspended`] and the caller
+//! abandons the whole tree; the committed tree keeps showing what it showed
+//! before.
 //!
 //! # Host nodes
 //!
@@ -66,12 +71,14 @@
 //! root, where `finishedWork.lanes | finishedWork.child_lanes` is the work the
 //! next render has to cover.
 
+// The root drives the pass through `step`; `run` and the rest of the surface
+// are for the tests and for callers that render a tree in one go.
 #![allow(dead_code)]
 
 use alloc::rc::Rc;
 use core::mem;
 
-use crate::element::Element;
+use crate::element::{Element, SuspenseNode};
 use crate::fiber::{Arena, Fiber, FiberId, FiberTag, Flags, Payload, Visibility};
 use crate::hooks::{EffectTag, MailboxHandle, RenderCtx};
 use crate::host::Host;
@@ -147,7 +154,9 @@ impl<'a, H: Host> WorkLoop<'a, H> {
     /// ancestors completed with it, so a component is never left half-rendered.
     /// The cursor is the only state the pass keeps: a caller that stops between
     /// units resumes by passing the returned fiber, which is what time slicing
-    /// does.
+    /// does. A suspension is part of the same step: the boundary that catches
+    /// it is returned as the next fiber, so a captured throw never looks like a
+    /// stopped render.
     pub(crate) fn step(&mut self, fiber: FiberId, root: FiberId) -> Progress {
         match self.begin_work(fiber) {
             Begin::Child(child) => Progress::Next(child),
@@ -155,7 +164,7 @@ impl<'a, H: Host> WorkLoop<'a, H> {
                 Some(next) => Progress::Next(next),
                 None => Progress::Done,
             },
-            Begin::Suspended(wakeable) => Progress::Suspended(wakeable),
+            Begin::Suspended(wakeable) => self.throw(wakeable),
         }
     }
 
@@ -186,13 +195,10 @@ impl<'a, H: Host> WorkLoop<'a, H> {
             return Begin::Complete;
         };
         let tag = node.tag;
-        if let Some(current) = node.alternate
-            && !self.did_receive_update(fiber, current)
-        {
-            return match self.bailout_on_already_finished_work(fiber) {
-                Some(child) => Begin::Child(child),
-                None => Begin::Complete,
-            };
+        let captured = node.flags.contains(Flags::DID_CAPTURE);
+        let has_alternate = node.alternate.is_some();
+        if has_alternate && let Some(bailout) = self.bailout(fiber, tag, captured) {
+            return bailout;
         }
         if let Some(node) = self.arena.get_mut(fiber) {
             // The lanes copied from the committed alternate describe the work
@@ -203,12 +209,126 @@ impl<'a, H: Host> WorkLoop<'a, H> {
         match tag {
             FiberTag::Component => self.render_component(fiber),
             FiberTag::Suspense => self.render_suspense(fiber),
-            FiberTag::Fragment | FiberTag::Offscreen => self.render_fragment(fiber),
+            FiberTag::Offscreen => self.render_offscreen(fiber),
+            FiberTag::Fragment => self.render_fragment(fiber),
             FiberTag::Host => self.render_host(fiber),
             // The root's children are reconciled by the caller before the pass
             // starts.
             FiberTag::Root => self.child_or_complete(fiber),
         }
+    }
+
+    /// Throws a suspension to the boundary that catches it.
+    ///
+    /// This is React's `throwException`: the handler stack names the boundary
+    /// that takes the suspension, and everything the boundary started below
+    /// that point belongs to the subtree it is about to discard. The boundary
+    /// is then begun again with [`Flags::DID_CAPTURE`] set, which is what makes
+    /// its second begin render the fallback. A stack with no target means the
+    /// suspension reached the shell — nothing in the tree can render instead —
+    /// so the pass reports it and the caller throws the whole tree away.
+    ///
+    /// The wakeable is dropped. React stashes it on the boundary and attaches a
+    /// retry listener once the fallback commits; until that lands, a boundary
+    /// that caught a suspension stays on its fallback until an update reaches
+    /// it.
+    fn throw(&mut self, wakeable: Wakeable) -> Progress {
+        let Some(captured) = self.arena.capture() else {
+            return Progress::Suspended(wakeable);
+        };
+        self.arena.discard_since(captured.mark);
+        if let Some(node) = self.arena.get_mut(captured.boundary) {
+            node.flags.insert(Flags::DID_CAPTURE);
+            // `unwindUnitOfWork` clears the bookkeeping of every fiber it
+            // climbs through, the boundary included: nothing the abandoned
+            // render recorded may be applied by the commit.
+            node.subtree_flags = Flags::NONE;
+            node.deletions.clear();
+        }
+        Progress::Next(captured.boundary)
+    }
+
+    /// Decides whether a fiber with a committed alternate can skip its render.
+    ///
+    /// This is React's `attemptEarlyBailoutIfNoScheduledUpdate`. A Suspense
+    /// boundary is skipped differently depending on which tree it shows:
+    /// showing its primary tree it pushes the handler and bails like any other
+    /// fiber, while showing its fallback it must either retry the primary tree
+    /// — the render may have been scheduled for work below it — or skip the
+    /// hidden primary entirely and continue at the fallback. An Offscreen fiber
+    /// never bails: it has to push the handler that decides where a suspension
+    /// inside it lands, and a fiber that is not begun never pushes.
+    fn bailout(&mut self, fiber: FiberId, tag: FiberTag, captured: bool) -> Option<Begin> {
+        if captured || tag == FiberTag::Offscreen {
+            return None;
+        }
+        let current = self
+            .arena
+            .get(fiber)
+            .and_then(|fiber| fiber.alternate)?;
+        if self.did_receive_update(fiber, current) {
+            return None;
+        }
+        if tag != FiberTag::Suspense {
+            return Some(self.continue_bailout(fiber));
+        }
+        let timed_out = self.suspense_timeout(fiber);
+        if timed_out
+            && self
+                .suspense_primary_lanes(fiber)
+                .intersects(self.render_lanes)
+        {
+            // The primary tree has work in this render, so the boundary renders
+            // it again instead of staying on the fallback.
+            return None;
+        }
+        self.arena.push_handler(fiber, Some(fiber));
+        if !timed_out {
+            return Some(self.continue_bailout(fiber));
+        }
+        Some(match self.bailout_on_already_finished_work(fiber) {
+            // The hidden primary is cloned but never begun: only its sibling,
+            // the fallback, is rendered from here.
+            Some(primary) => match self
+                .arena
+                .get(primary)
+                .and_then(|primary| primary.sibling)
+            {
+                Some(fallback) => Begin::Child(fallback),
+                None => Begin::Complete,
+            },
+            None => Begin::Complete,
+        })
+    }
+
+    /// Continues a bailed-out fiber at its first child, if it has work below.
+    fn continue_bailout(&mut self, fiber: FiberId) -> Begin {
+        match self.bailout_on_already_finished_work(fiber) {
+            Some(child) => Begin::Child(child),
+            None => Begin::Complete,
+        }
+    }
+
+    /// Whether a boundary is showing its fallback.
+    ///
+    /// React keeps the marker in `memoizedState`; Rea derives it from the child
+    /// list, which holds a fallback sibling exactly while the boundary shows
+    /// one.
+    fn suspense_timeout(&self, fiber: FiberId) -> bool {
+        self.arena
+            .get(fiber)
+            .and_then(|fiber| fiber.first_child)
+            .and_then(|primary| self.arena.get(primary))
+            .is_some_and(|primary| primary.sibling.is_some())
+    }
+
+    /// The lanes of work a boundary's primary tree still carries.
+    fn suspense_primary_lanes(&self, fiber: FiberId) -> Lanes {
+        self.arena
+            .get(fiber)
+            .and_then(|fiber| fiber.first_child)
+            .and_then(|primary| self.arena.get(primary))
+            .map_or(Lanes::NONE, |primary| primary.child_lanes)
     }
 
     /// The first child of `fiber`, or the completion it needs when it has none.
@@ -420,14 +540,20 @@ impl<'a, H: Host> WorkLoop<'a, H> {
         self.child_or_complete(fiber)
     }
 
-    /// Renders the primary tree of a Suspense boundary.
+    /// Renders a Suspense boundary.
     ///
     /// React gives the boundary two children: an Offscreen fiber that carries
     /// the primary tree and, while the boundary shows its fallback, a Fragment
-    /// that carries the fallback next to the hidden primary. Only the first
-    /// exists while nothing below the boundary is suspended, so this pass
-    /// reconciles the primary tree alone and leaves the fallback in the
-    /// boundary's payload for the pass that switches trees.
+    /// that carries the fallback next to the hidden primary. Which tree this
+    /// begin renders is decided by [`Flags::DID_CAPTURE`], the flag the throw
+    /// set on the boundary — this is the begin that consumes it.
+    ///
+    /// The handler the boundary pushes is what a suspension below it is thrown
+    /// to. A boundary that renders its primary tree pushes itself, because that
+    /// is the tree a suspension should replace. A boundary that renders a
+    /// fallback pushes the handler it inherited instead, so a suspension inside
+    /// the fallback passes through to the boundary outside it, the way a throw
+    /// inside a `catch` block leaves the block.
     fn render_suspense(&mut self, fiber: FiberId) -> Begin {
         let Some(Payload::Suspense(boundary)) = self
             .arena
@@ -436,17 +562,99 @@ impl<'a, H: Host> WorkLoop<'a, H> {
         else {
             return self.child_or_complete(fiber);
         };
-        let current_child = self
+        let current = self
             .arena
             .get(fiber)
-            .and_then(|fiber| fiber.alternate)
-            .and_then(|current| self.arena.get(current))
-            .and_then(|current| current.first_child);
-        let offscreen = self.reconcile_offscreen(fiber, current_child, &boundary.children);
+            .and_then(|fiber| fiber.alternate);
+        let captured = self
+            .arena
+            .get(fiber)
+            .is_some_and(|fiber| fiber.flags.contains(Flags::DID_CAPTURE));
+        if captured {
+            if let Some(node) = self.arena.get_mut(fiber) {
+                node.flags.remove(Flags::DID_CAPTURE);
+            }
+            let target = self.arena.handler_target();
+            self.arena.push_handler(fiber, target);
+            let fallback = self.update_suspense_fallback(fiber, current, &boundary);
+            return Begin::Child(fallback);
+        }
+        self.arena.push_handler(fiber, Some(fiber));
+        Begin::Child(self.update_suspense_primary(fiber, current, &boundary.children))
+    }
+
+    /// Reconciles the primary tree and drops the fallback the boundary showed.
+    ///
+    /// This is React's `mountSuspensePrimaryChildren` and
+    /// `updateSuspensePrimaryChildren`. The Offscreen fiber is reused when the
+    /// committed boundary had one — that is what kept the primary tree's fibers
+    /// and host nodes alive while the fallback was up — and the fallback beside
+    /// it is queued for removal.
+    fn update_suspense_primary(
+        &mut self,
+        fiber: FiberId,
+        current: Option<FiberId>,
+        primary: &Element<H>,
+    ) -> FiberId {
+        let (offscreen, fallback) = self.suspense_children(current);
+        let offscreen = self.reconcile_offscreen(fiber, offscreen, primary, Visibility::Visible);
+        if let Some(fallback) = fallback
+            && let Some(node) = self.arena.get_mut(fiber)
+        {
+            node.delete_child(fallback);
+        }
         if let Some(node) = self.arena.get_mut(fiber) {
             node.first_child = Some(offscreen);
         }
-        Begin::Child(offscreen)
+        offscreen
+    }
+
+    /// Reconciles the fallback and keeps the primary tree mounted beside it.
+    ///
+    /// This is React's `mountSuspenseFallbackChildren` and
+    /// `updateSuspenseFallbackChildren`. The primary container is hidden and
+    /// never begun; when it already exists it keeps the children it has, so the
+    /// tree is only hidden rather than unmounted. The fallback is what the
+    /// caller continues at, which is why this returns it — React's
+    /// `bailoutOffscreenComponent` returns the hidden container's sibling for
+    /// the same reason.
+    fn update_suspense_fallback(
+        &mut self,
+        fiber: FiberId,
+        current: Option<FiberId>,
+        boundary: &SuspenseNode<H>,
+    ) -> FiberId {
+        let (offscreen, fallback) = self.suspense_children(current);
+        // `getRemainingWorkInPrimaryTree`: the work the interrupted render left
+        // below the boundary is covered by a later render, not this one, so the
+        // hidden tree keeps it and the boundary retries when that work arrives.
+        let remaining = current
+            .and_then(|current| self.arena.get(current))
+            .map_or(Lanes::NONE, |current| current.child_lanes & !self.render_lanes);
+        let offscreen = self.reconcile_offscreen(fiber, offscreen, &boundary.children, Visibility::Hidden);
+        if let Some(node) = self.arena.get_mut(offscreen) {
+            node.child_lanes = remaining;
+        }
+        let fallback = self.reconcile_fallback(fiber, fallback, &boundary.fallback, current.is_some());
+        if let Some(node) = self.arena.get_mut(offscreen) {
+            node.sibling = Some(fallback);
+        }
+        if let Some(node) = self.arena.get_mut(fiber) {
+            node.first_child = Some(offscreen);
+        }
+        fallback
+    }
+
+    /// The committed children of a boundary: the primary container and the
+    /// fallback beside it.
+    fn suspense_children(&self, current: Option<FiberId>) -> (Option<FiberId>, Option<FiberId>) {
+        let primary = current
+            .and_then(|current| self.arena.get(current))
+            .and_then(|current| current.first_child);
+        let fallback = primary
+            .and_then(|primary| self.arena.get(primary))
+            .and_then(|primary| primary.sibling);
+        (primary, fallback)
     }
 
     /// Starts the Offscreen fiber that carries a boundary's primary tree.
@@ -461,6 +669,7 @@ impl<'a, H: Host> WorkLoop<'a, H> {
         parent: FiberId,
         current: Option<FiberId>,
         primary: &Element<H>,
+        visibility: Visibility,
     ) -> FiberId {
         let children: Rc<[Element<H>]> = Rc::from([primary.clone()]);
         let reusable = current.filter(|current| {
@@ -473,8 +682,9 @@ impl<'a, H: Host> WorkLoop<'a, H> {
                 node.pending = Payload::Fragment(children);
                 node.parent = Some(parent);
                 node.index = 0;
-                // The boundary owns exactly one primary container until it
-                // renders a fallback beside it.
+                node.visibility = visibility;
+                // The boundary owns exactly one primary container; a fallback
+                // is linked beside it when the boundary shows one.
                 node.sibling = None;
             }
             return work;
@@ -484,8 +694,79 @@ impl<'a, H: Host> WorkLoop<'a, H> {
         fiber.memoized = fiber.pending.clone();
         fiber.parent = Some(parent);
         fiber.index = 0;
-        fiber.flags.insert(Flags::PLACEMENT);
+        fiber.visibility = visibility;
         self.arena.alloc(fiber)
+    }
+
+    /// Starts the fragment that carries a boundary's fallback.
+    ///
+    /// The fragment has no node of its own, so its children are reconciled when
+    /// the pass begins it. `update` says whether the boundary already exists:
+    /// React marks a fallback replaced on an existing boundary as a placement,
+    /// because the boundary itself is not new and only the fallback moved into
+    /// the tree.
+    fn reconcile_fallback(
+        &mut self,
+        parent: FiberId,
+        current: Option<FiberId>,
+        fallback: &Element<H>,
+        update: bool,
+    ) -> FiberId {
+        let children: Rc<[Element<H>]> = Rc::from([fallback.clone()]);
+        if let Some(work) = current.and_then(|current| self.arena.create_work_in_progress(current)) {
+            if let Some(node) = self.arena.get_mut(work) {
+                node.pending = Payload::Fragment(children);
+                node.parent = Some(parent);
+                node.index = 0;
+            }
+            return work;
+        }
+        let mut fiber = Fiber::new(FiberTag::Fragment);
+        fiber.pending = Payload::Fragment(children);
+        fiber.memoized = fiber.pending.clone();
+        fiber.parent = Some(parent);
+        fiber.index = 0;
+        if update {
+            fiber.flags.insert(Flags::PLACEMENT);
+        }
+        self.arena.alloc(fiber)
+    }
+
+    /// Renders an Offscreen fiber and pushes the handler it stands for.
+    ///
+    /// A visible Offscreen hands the handler it inherited straight down, so a
+    /// suspension inside the primary tree still reaches the boundary that owns
+    /// it. A hidden Offscreen is a tree kept out of sight, so it catches its own
+    /// suspensions: React's `pushOffscreenSuspenseHandler` pushes the fiber
+    /// itself, which keeps a throw inside a hidden tree from replacing the
+    /// visible content around it.
+    ///
+    /// A hidden tree that suspended is deferred: React keeps the children it
+    /// has and resumes the tree in a later render at the offscreen lane
+    /// (`deferHiddenOffscreenComponent`). Rea has no offscreen lane yet, so the
+    /// flag is consumed here and the committed children are left exactly as
+    /// they are — the tree is neither re-rendered nor thrown away.
+    fn render_offscreen(&mut self, fiber: FiberId) -> Begin {
+        let captured = self
+            .arena
+            .get(fiber)
+            .is_some_and(|fiber| fiber.flags.contains(Flags::DID_CAPTURE));
+        let hidden = self
+            .arena
+            .get(fiber)
+            .is_some_and(|fiber| fiber.visibility == Visibility::Hidden);
+        let target = match hidden {
+            true => Some(fiber),
+            false => self.arena.handler_target(),
+        };
+        self.arena.push_handler(fiber, target);
+        if captured {
+            if let Some(node) = self.arena.get_mut(fiber) {
+                node.flags.remove(Flags::DID_CAPTURE);
+            }
+            return Begin::Complete;
+        }
+        self.render_fragment(fiber)
     }
 
     /// Diffs the children a host node arranges.
@@ -577,6 +858,14 @@ impl<'a, H: Host> WorkLoop<'a, H> {
         let memoized = work.memoized.clone();
         let state = work.state_node;
         let alternate = work.alternate;
+        let visibility = work.visibility;
+        // A fiber that pushed a handler pops it here, whether it began this
+        // render or was cloned by a bailout. The pop is matched by owner, so a
+        // completion without a begin leaves the stack alone.
+        match tag {
+            FiberTag::Suspense | FiberTag::Offscreen => self.arena.pop_handler(fiber),
+            _ => {}
+        }
         let mut flags = Flags::NONE;
         let mut state_node = state;
         if tag == FiberTag::Offscreen {
@@ -584,7 +873,7 @@ impl<'a, H: Host> WorkLoop<'a, H> {
             // switched its primary tree between hidden and visible. A boundary
             // that mounts needs it only while the tree starts out hidden: a
             // visible tree is on screen from the start.
-            let hidden = work.visibility == Visibility::Hidden;
+            let hidden = visibility == Visibility::Hidden;
             let was_hidden = alternate
                 .and_then(|current| self.arena.get(current))
                 .is_some_and(|current| current.visibility == Visibility::Hidden);
@@ -592,6 +881,24 @@ impl<'a, H: Host> WorkLoop<'a, H> {
                 None if hidden => flags.insert(Flags::VISIBILITY),
                 Some(_) if was_hidden != hidden => flags.insert(Flags::VISIBILITY),
                 _ => {}
+            }
+        }
+        if tag == FiberTag::Suspense {
+            // A boundary that switches to its fallback hides a tree whose
+            // Offscreen fiber does not complete this render — it is not begun,
+            // only replaced beside the fallback — so the visibility effect is
+            // scheduled here, on the fiber that would otherwise schedule it.
+            // The other direction is handled by the Offscreen's own completion.
+            let next_timeout = self.suspense_timeout(fiber);
+            let prev_timeout = alternate.is_some_and(|current| self.suspense_timeout(current));
+            if next_timeout && !prev_timeout {
+                let offscreen = self
+                    .arena
+                    .get(fiber)
+                    .and_then(|fiber| fiber.first_child);
+                if let Some(node) = offscreen.and_then(|offscreen| self.arena.get_mut(offscreen)) {
+                    node.flags.insert(Flags::VISIBILITY);
+                }
             }
         }
         if tag == FiberTag::Host
@@ -719,7 +1026,10 @@ mod tests {
         /// Renders `element` as the root's child and makes it the current tree,
         /// which is what a commit will do.
         ///
-        /// Returns the wakeable when the pass suspended instead of completing.
+        /// Returns the wakeable when the suspension reached the shell instead
+        /// of a boundary, in which case the tree the render built is thrown
+        /// away and the committed tree stays current — what `Root::perform`
+        /// does with an uncaptured suspension.
         fn render(&mut self, element: Element<TestHost>) -> Option<Wakeable> {
             // Rendering the root's element marks the root, the way
             // `Root::render` marks it with the default lane; without the mark
@@ -727,7 +1037,11 @@ mod tests {
             if let Some(root) = self.arena.get_mut(self.root) {
                 root.lanes.insert(self.lanes);
             }
-            let work = self.arena.create_work_in_progress(self.root)?;
+            self.arena.begin_render();
+            let Some(work) = self.arena.create_work_in_progress(self.root) else {
+                self.arena.end_render();
+                return None;
+            };
             let current_first = self
                 .arena
                 .get(self.root)
@@ -740,9 +1054,17 @@ mod tests {
                 &mut self.ids,
                 self.lanes,
             );
-            let suspended = work_loop.run(work);
-            self.root = work;
-            suspended
+            match work_loop.run(work) {
+                None => {
+                    self.arena.end_render();
+                    self.root = work;
+                    None
+                }
+                Some(wakeable) => {
+                    self.arena.abandon_render();
+                    Some(wakeable)
+                }
+            }
         }
 
         fn node(&self, fiber: FiberId) -> Option<TestNode> {
@@ -1220,10 +1542,237 @@ mod tests {
         };
         assert!(reported.same(&expected));
         assert!(harness.host.nodes.is_empty());
-        let Some(component) = harness.child(harness.root) else {
+        // The shell cannot render anything else, so the whole tree is thrown
+        // away: the committed root keeps the children it had, which is none.
+        assert!(harness.child(harness.root).is_none());
+        assert_eq!(harness.arena.len(), 1);
+    }
+
+    /// A component that suspends while `pending` is set and renders otherwise.
+    fn suspense_when(pending: &Rc<Cell<bool>>, wakeable: Wakeable) -> Element<TestHost> {
+        let pending = Rc::clone(pending);
+        Element::component(move |ctx| {
+            if pending.get() {
+                ctx.suspend(wakeable.clone())
+            } else {
+                leaf(9)
+            }
+        })
+    }
+
+    #[test]
+    fn a_captured_suspension_renders_the_fallback() {
+        let mut harness = Harness::new();
+        let gate = Rc::new(Cell::new(true));
+        let wakeable = Wakeable::from_fn(|_| {});
+        let primary = suspense_when(&gate, wakeable);
+        assert!(
+            harness
+                .render(Element::suspense(primary, leaf(2)))
+                .is_none()
+        );
+
+        // The boundary caught the throw, so the pass completed and the fallback
+        // is what reached the host.
+        assert_eq!(harness.host.nodes.len(), 1);
+        assert_eq!(harness.host.nodes[0].element, (0, 2));
+        let Some(boundary) = harness.child(harness.root) else {
             return;
         };
-        assert!(harness.child(component).is_none());
+        let Some(offscreen) = harness.child(boundary) else {
+            return;
+        };
+        assert_eq!(
+            harness
+                .arena
+                .get(offscreen)
+                .map(|fiber| fiber.tag),
+            Some(FiberTag::Offscreen)
+        );
+        // The primary container is mounted hidden and holds no children: what
+        // the boundary discards leaves no tree behind.
+        assert_eq!(
+            harness
+                .arena
+                .get(offscreen)
+                .map(|fiber| fiber.visibility),
+            Some(Visibility::Hidden)
+        );
+        assert!(harness.child(offscreen).is_none());
+        // The hidden container never completes, so the boundary schedules the
+        // effect that takes the primary tree out of sight.
+        assert!(
+            harness
+                .arena
+                .get(offscreen)
+                .is_some_and(|fiber| fiber.flags.contains(Flags::VISIBILITY))
+        );
+        let Some(fallback) = harness
+            .arena
+            .get(offscreen)
+            .and_then(|fiber| fiber.sibling)
+        else {
+            return;
+        };
+        assert_eq!(
+            harness.arena.get(fallback).map(|fiber| fiber.tag),
+            Some(FiberTag::Fragment)
+        );
+        let Some(show) = harness.child(fallback) else {
+            return;
+        };
+        assert_eq!(harness.node(show), Some(TestNode(1)));
+        // A capture pops every handler it unwinds through.
+        assert_eq!(harness.arena.handler_depth(), 0);
+    }
+
+    #[test]
+    fn a_suspension_inside_a_fallback_reaches_the_boundary_outside_it() {
+        let mut harness = Harness::new();
+        let gate = Rc::new(Cell::new(true));
+        let wakeable = Wakeable::from_fn(|_| {});
+        let inner = Element::suspense(
+            suspense_when(&gate, wakeable.clone()),
+            // The inner fallback suspends as well, so the inner boundary cannot
+            // show it and the throw has to pass through to the outer one, the
+            // way a throw inside a `catch` block leaves the block.
+            suspense_when(&gate, wakeable),
+        );
+        assert!(
+            harness
+                .render(Element::suspense(inner, leaf(7)))
+                .is_none()
+        );
+
+        assert_eq!(harness.host.nodes.len(), 1);
+        assert_eq!(harness.host.nodes[0].element, (0, 7));
+        let Some(boundary) = harness.child(harness.root) else {
+            return;
+        };
+        let Some(offscreen) = harness.child(boundary) else {
+            return;
+        };
+        assert_eq!(
+            harness
+                .arena
+                .get(offscreen)
+                .map(|fiber| fiber.visibility),
+            Some(Visibility::Hidden)
+        );
+        assert!(harness.child(offscreen).is_none());
+        let Some(fallback) = harness
+            .arena
+            .get(offscreen)
+            .and_then(|fiber| fiber.sibling)
+        else {
+            return;
+        };
+        let Some(show) = harness.child(fallback) else {
+            return;
+        };
+        assert_eq!(harness.node(show), Some(TestNode(1)));
+        assert_eq!(harness.arena.handler_depth(), 0);
+    }
+
+    #[test]
+    fn a_boundary_that_renders_its_primary_tree_again_deletes_the_fallback() {
+        let mut harness = Harness::new();
+        let gate = Rc::new(Cell::new(true));
+        let wakeable = Wakeable::from_fn(|_| {});
+        assert!(
+            harness
+                .render(Element::suspense(suspense_when(&gate, wakeable.clone()), leaf(2)))
+                .is_none()
+        );
+        let Some(boundary) = harness.child(harness.root) else {
+            return;
+        };
+        let Some(offscreen) = harness.child(boundary) else {
+            return;
+        };
+        let Some(fallback) = harness
+            .arena
+            .get(offscreen)
+            .and_then(|fiber| fiber.sibling)
+        else {
+            return;
+        };
+
+        // The data arrived: the boundary retries its primary tree, which was
+        // kept mounted — though hidden — while the fallback was up.
+        gate.set(false);
+        assert!(
+            harness
+                .render(Element::suspense(suspense_when(&gate, wakeable), leaf(2)))
+                .is_none()
+        );
+        let Some(new_boundary) = harness.child(harness.root) else {
+            return;
+        };
+        let Some(new_offscreen) = harness.child(new_boundary) else {
+            return;
+        };
+        assert_eq!(
+            harness
+                .arena
+                .get(new_offscreen)
+                .and_then(|fiber| fiber.alternate),
+            Some(offscreen)
+        );
+        assert_eq!(
+            harness
+                .arena
+                .get(new_offscreen)
+                .map(|fiber| fiber.visibility),
+            Some(Visibility::Visible)
+        );
+        // The fallback no longer sits beside the primary container, so the
+        // boundary reports it for removal.
+        assert!(
+            harness
+                .arena
+                .get(new_offscreen)
+                .is_some_and(|fiber| fiber.sibling.is_none())
+        );
+        assert!(harness.arena.get(new_boundary).is_some_and(
+            |fiber| fiber.deletions == [fallback] && fiber.flags.contains(Flags::CHILD_DELETION)
+        ));
+        let Some(primary) = harness.child(new_offscreen) else {
+            return;
+        };
+        assert_eq!(
+            harness.arena.get(primary).map(|fiber| fiber.tag),
+            Some(FiberTag::Component)
+        );
+        let Some(host) = harness.child(primary) else {
+            return;
+        };
+        assert_eq!(harness.node(host), Some(TestNode(2)));
+        assert_eq!(harness.host.nodes.len(), 2);
+        assert_eq!(harness.host.nodes[1].element, (0, 9));
+        assert_eq!(harness.arena.handler_depth(), 0);
+    }
+
+    #[test]
+    fn a_sibling_of_a_captured_boundary_still_renders() {
+        let mut harness = Harness::new();
+        let gate = Rc::new(Cell::new(true));
+        let wakeable = Wakeable::from_fn(|_| {});
+        let boundary = Element::suspense(suspense_when(&gate, wakeable), leaf(2));
+        assert!(
+            harness
+                .render(container(Vec::from([boundary, leaf(3)])))
+                .is_none()
+        );
+        // The fallback takes the primary tree's place; the sibling after the
+        // boundary is untouched by the capture and still reaches the host.
+        let rendered: Vec<(u8, u16)> = harness
+            .host
+            .nodes
+            .iter()
+            .map(|node| node.element)
+            .collect();
+        assert_eq!(rendered, [(0, 2), (0, 3), (0, 0)]);
     }
 
     #[test]
