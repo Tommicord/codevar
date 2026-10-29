@@ -313,7 +313,7 @@ impl TlsClientConnection {
             .kx
             .as_ref()
             .ok_or_else(|| TlsError::Internal("missing key share".into()))?;
-        let mut ext_payload = Vec::new();
+        let mut ext_payload = Vec::with_capacity(64);
         let ext_idx = start_extensions(&mut ext_payload);
 
         put_extension(
@@ -364,7 +364,7 @@ impl TlsClientConnection {
             &encode_ec_point_formats()?,
         )?;
         if let Some(cookie) = &self.cookie {
-            let mut c = Vec::new();
+            let mut c = Vec::with_capacity(2 + cookie.len());
             crate::codec::put_vec_u16(&mut c, cookie)?;
             put_extension(&mut ext_payload, ExtensionType::Cookie, &c)?;
         }

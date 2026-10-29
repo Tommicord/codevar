@@ -97,7 +97,7 @@ impl ParsedCert {
         let signature = cert.signature_value.data.to_vec();
         let tbs_der = cert.tbs_certificate.as_ref().to_vec();
 
-        let mut dns_names = Vec::new();
+        let mut dns_names = Vec::with_capacity(4);
         let mut is_ca = false;
         for ext in cert.extensions() {
             match ext.parsed_extension() {
@@ -235,7 +235,7 @@ fn dns_name_matches(pattern: &str, host: &str) -> bool {
 pub fn parse_pem_certs(pem_bytes: &[u8]) -> TlsResult<Vec<Vec<u8>>> {
     let text = core::str::from_utf8(pem_bytes)
         .map_err(|_| TlsError::certificate(String::from("PEM is not UTF-8")))?;
-    let mut certs = Vec::new();
+    let mut certs = Vec::with_capacity(4);
     for block in pem::parse_many(text).map_err(|e| TlsError::certificate(format!("PEM: {e}")))? {
         if block.tag() == "CERTIFICATE" {
             certs.push(block.contents().to_vec());
@@ -260,7 +260,9 @@ impl RootCertStore {
     /// Creates an empty store.
     #[must_use]
     pub fn empty() -> Self {
-        Self { roots: Vec::new() }
+        Self {
+            roots: Vec::with_capacity(0),
+        }
     }
 
     /// Adds a DER-encoded trust anchor.

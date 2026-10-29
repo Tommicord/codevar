@@ -57,7 +57,7 @@ impl ClientConfig {
             cipher_suites: CipherSuite::default_offered().to_vec(),
             named_groups: NamedGroup::default_offered().to_vec(),
             signature_schemes: SignatureScheme::default_offered().to_vec(),
-            alpn_protocols: Vec::new(),
+            alpn_protocols: Vec::with_capacity(0),
             verifier: Arc::new(CertVerifier::dangerous_insecure()),
             require_ems: true,
         })
@@ -186,7 +186,7 @@ impl ServerConfig {
     pub fn builder(certified_key: CertifiedKey) -> ServerConfigBuilder {
         ServerConfigBuilder {
             certified_key,
-            alpn: Vec::new(),
+            alpn: Vec::with_capacity(0),
             versions: None,
         }
     }
@@ -198,7 +198,7 @@ impl ServerConfig {
             cipher_suites: CipherSuite::default_offered().to_vec(),
             named_groups: NamedGroup::default_offered().to_vec(),
             signature_schemes: SignatureScheme::default_offered().to_vec(),
-            alpn_protocols: Vec::new(),
+            alpn_protocols: Vec::with_capacity(0),
             certified_key,
             require_ems: true,
         })
