@@ -176,9 +176,22 @@ impl UpdateQueue {
         self.owner.get()
     }
 
-    /// Whether no render has work left in the queue.
-    fn is_empty(&self) -> bool {
-        self.pending.is_empty() && self.base.is_empty()
+    /// Whether the base of the next update can differ from the last rendered
+    /// value.
+    ///
+    /// The base queue holds the updates a render skipped and the rebased
+    /// copies of the ones it applied on top of them, so a non-empty base means
+    /// the next render starts from somewhere else. A pending update with a
+    /// lane has the same effect, and it is also the update that marks the
+    /// fiber. An update that already knows it changes nothing waits with no
+    /// lane at all and does not count: React queues that one precisely so the
+    /// next dispatch can still compare (see [`State::current_value`]).
+    fn has_lane_bearing_work(&self) -> bool {
+        !self.base.is_empty()
+            || self
+                .pending
+                .iter()
+                .any(|update| !update.lane.is_empty())
     }
 
     /// Removes the pending updates that were queued on `lanes` themselves.
@@ -424,20 +437,20 @@ impl<T: PartialEq + 'static> State<T> {
         self.enqueue(lane, UpdateAction::Apply(Rc::new(update)));
     }
 
-    /// The last rendered value, when the queue is empty and no render is
-    /// replaying it.
+    /// The last rendered value, while an eager comparison against it is still
+    /// valid.
     ///
-    /// Outside those cases the eager computation is skipped, because the base
-    /// of the update is not the value this renders: the queue has updates the
-    /// render has not applied yet, or a render in flight replayed the queue and
-    /// left [`UpdateQueue::last_rendered`] describing a pass that may still be
-    /// thrown away. React guards the eager computation the same way, with
-    /// `fiber.lanes === NoLanes && alternate.lanes === NoLanes`: the committed
-    /// fiber carries the lane of every update it has not rendered, so a fiber
-    /// with work never takes this shortcut.
+    /// This is the queue's side of React's `fiber.lanes === NoLanes &&
+    /// alternate.lanes === NoLanes`. An update the last render did not apply
+    /// makes the base of the next one differ from the value this renders, and
+    /// a render in flight may leave [`UpdateQueue::last_rendered`] describing
+    /// a pass that is still thrown away. The eager no-op is neither: React
+    /// queues it without marking the fiber exactly because it already knows
+    /// the value cannot change, so it does not stop the next dispatch from
+    /// comparing against the same value.
     fn current_value(&self) -> Option<Rc<T>> {
         let queue = self.queue.borrow();
-        if !queue.is_empty() || queue.committed.is_some() {
+        if queue.has_lane_bearing_work() || queue.committed.is_some() {
             return None;
         }
         queue
@@ -1232,6 +1245,36 @@ mod tests {
         assert_eq!(harness.signals(), 0);
         let state = harness.render(|ctx| ctx.use_state(|| 1_u32));
         assert_eq!(*state.get(), 1);
+    }
+
+    #[test]
+    fn an_equal_update_keeps_the_eager_comparison_available() {
+        let mut harness = Harness::new();
+        let state = harness.render(|ctx| ctx.use_state(|| 1_u32));
+        harness.commit();
+        state.set(1);
+        assert_eq!(harness.signals(), 0);
+        // The update that changed nothing waits in the queue without a lane,
+        // the way React keeps it in the interleaved list. It did not change
+        // the value, so the next dispatch still knows what the committed one
+        // is and can compare against it instead of scheduling a render.
+        state.set(1);
+        assert_eq!(harness.signals(), 0);
+    }
+
+    #[test]
+    fn a_change_after_an_equal_update_is_still_scheduled() {
+        let mut harness = Harness::new();
+        let state = harness.render(|ctx| ctx.use_state(|| 1_u32));
+        harness.commit();
+        state.set(1);
+        assert_eq!(harness.signals(), 0);
+        // The comparison the no-op left available is against the committed
+        // value, so a value that differs from it still takes the usual path.
+        state.set(2);
+        assert_eq!(harness.signals(), 1);
+        let state = harness.render(|ctx| ctx.use_state(|| 0_u32));
+        assert_eq!(*state.get(), 2);
     }
 
     #[test]
