@@ -295,7 +295,7 @@ fn point_segment_distance(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
 /// keep their previous contents exactly like the CPU path.
 pub fn try_render(source: &Outline, target: &mut Bitmap) -> bool {
     let mut builder = EdgeBuilder {
-        edges: Vec::new(),
+        edges: Vec::with_capacity(source.n_points as usize * 4),
         current: [0.0; 2],
     };
     if decompose(source, &mut builder).is_err() {
