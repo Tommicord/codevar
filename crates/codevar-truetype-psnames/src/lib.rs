@@ -442,9 +442,7 @@ pub fn ps_unicodes_init<'a>(
     let mut extra_glyph_list_states = [0_u8; EXTRA_GLYPH_LIST_SIZE];
     let mut extra_glyphs = [0_u32; EXTRA_GLYPH_LIST_SIZE];
 
-    let mut maps = Vec::new();
-    maps.try_reserve(num_glyphs as usize + EXTRA_GLYPH_LIST_SIZE)
-        .map_err(|_| TtError::OUT_OF_MEMORY)?;
+    let mut maps = Vec::with_capacity(num_glyphs as usize + EXTRA_GLYPH_LIST_SIZE);
 
     for n in 0..num_glyphs {
         if let Some(gname) = get_glyph_name(n) {
