@@ -340,10 +340,14 @@ pub(crate) struct LineAnchors {
 
 impl LineAnchors {
     /// An invalid/empty index.
+    ///
+    /// The backing store is an empty boxed slice: no allocation happens
+    /// for a zero-length array, and `len == 0` doubles as the
+    /// "invalid" flag without a second boolean.
     #[must_use]
     pub(crate) fn empty() -> Self {
         Self {
-            starts: Vec::new().into_boxed_slice(),
+            starts: Box::new([]),
             len: 0,
             stride: 0,
             rows: 0,
@@ -529,7 +533,10 @@ impl LineAnchors {
         // fits the anchor capacity keeps every row start, so the index
         // answers a jump with a lookup and never touches the text.
         let mut buffer = [0u32; LINE_ANCHOR_SCAN_CHUNK];
-        let mut starts: Vec<u32> = Vec::new();
+        // Bounded growth: at most the initial row start plus one entry
+        // per newline, capped at LINE_ANCHOR_CAPACITY, so pre-allocate
+        // the full worst-case capacity and never reallocate.
+        let mut starts: Vec<u32> = Vec::with_capacity(LINE_ANCHOR_CAPACITY + 1);
         starts.push(0);
         let mut newlines = 0usize;
         let mut from = 0;
