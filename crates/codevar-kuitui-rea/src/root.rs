@@ -176,6 +176,14 @@
 //! inside a tree that is already out of sight, so their fallbacks commit at
 //! once; that is React's `RootSuspendedWithDelay` against `RootSuspended`.
 //!
+//! A fallback that would take visible content away from any other render is not
+//! committed at once either. Its finished tree is held until the next Just
+//! Noticeable Difference boundary after the newest update the render covers —
+//! React's `jnd` — so a user who already waited does not get a loading state
+//! the next instant. A wait of a few milliseconds is not worth holding for, and
+//! a root with no clock cannot measure one, so both commit the placeholder at
+//! once.
+//!
 //! A retry is throttled as well. A tree that retries through several levels —
 //! the data one boundary waited for arrives and reveals another boundary that
 //! still waits — would otherwise replace one loading state with the next within
@@ -226,10 +234,11 @@ struct Render {
 ///
 /// This is React's `root.finishedWork` together with the `timeoutHandle`
 /// `finishConcurrentRender` schedules for it: the render completed, but showing
-/// the tree now would replace one loading state with another, so the commit
-/// waits until the host's clock reaches `deadline`. The fibers stay in the
-/// arena meanwhile; a new render throws them away (React's `prepareFreshStack`
-/// cancels the handle).
+/// the tree now would take content away too soon — replacing one loading state
+/// with another, or a screen the user is reading with a placeholder — so the
+/// commit waits until the host's clock reaches `deadline`. The fibers stay in
+/// the arena meanwhile; a new render throws them away (React's
+/// `prepareFreshStack` cancels the handle).
 struct Held {
     /// The finished work-in-progress root.
     root: FiberId,
@@ -292,6 +301,14 @@ pub struct Root<H: Host> {
     /// When each pending lane expires, indexed by lane bit. `None` until the
     /// root first sees the lane pending, and again once the lane is rendered.
     expiration_times: [Option<u64>; LANE_COUNT],
+    /// When each pending lane's newest update was requested, indexed by lane
+    /// bit.
+    ///
+    /// This is React's `root.eventTimes`, which a delayed fallback measures its
+    /// wait from: a user who has already waited should not get a loading state
+    /// the next instant. `None` is React's `NoTimestamp` — no clock has dated
+    /// the lane yet.
+    event_times: [Option<u64>; LANE_COUNT],
     /// The lanes that have been pending past their expiration delay.
     expired_lanes: Lanes,
     /// The retry lane the next boundary retry claims.
@@ -344,6 +361,7 @@ impl<H: Host> Root<H> {
             pinged_lanes: Lanes::NONE,
             ping_cache: Rc::new(RefCell::new(Vec::new())),
             expiration_times: [None; LANE_COUNT],
+            event_times: [None; LANE_COUNT],
             expired_lanes: Lanes::NONE,
             next_retry_lane: Lanes::RETRY_FIRST,
             render: None,
@@ -418,8 +436,9 @@ impl<H: Host> Root<H> {
     /// mark the pending lanes that have waited past [`Lanes::expiration_delay`]
     /// as expired, and a render that covers an expired lane is never stopped
     /// for the caller's budget: starved work finishes in this slice. The clock
-    /// also decides when a finished tree the root holds back for a fallback
-    /// throttle may commit; [see the module documentation](self#suspension).
+    /// also decides when a finished tree the root holds back for a fallback may
+    /// commit — one throttled after another fallback, or one delayed until the
+    /// next noticeable difference; [see the module documentation](self#suspension).
     ///
     /// `should_yield` is asked before every unit of a render whose lanes are
     /// neither blocking nor expired, and a `true` answer leaves the render in
@@ -437,7 +456,7 @@ impl<H: Host> Root<H> {
         // The mailbox is drained first so the lanes this call sees are the ones
         // the host's clock starts the expiration of; React marks them from
         // `ensureRootIsScheduled`, after the update has marked the root.
-        self.drain_mailbox();
+        self.drain_mailbox(Some(now));
         self.mark_starved_lanes(now);
         self.flush_loop(Some(now), &mut should_yield)
     }
@@ -449,7 +468,7 @@ impl<H: Host> Root<H> {
     /// [`Root::flush`], which cannot wait: a held tree commits at once.
     fn flush_loop(&mut self, now: Option<u64>, should_yield: &mut dyn FnMut() -> bool) -> bool {
         loop {
-            self.drain_mailbox();
+            self.drain_mailbox(now);
             let lanes = self.next_lanes();
             if !lanes.is_empty() {
                 if !self.perform(lanes, now, should_yield) {
@@ -495,6 +514,18 @@ impl<H: Host> Root<H> {
     /// `enableRetryLaneExpiration` off: a retry has to be time sliced to unwrap
     /// an uncached promise.
     fn mark_starved_lanes(&mut self, now: u64) {
+        // A lane marked without a clock — the element of `Root::render`, or an
+        // update that a clockless flush drained — is dated the first time the
+        // host's clock sees it pending. That is the closest rea gets to React's
+        // request time, and a delayed fallback measures its wait from it.
+        for lane in self.pending_lanes.iter() {
+            if let Some(index) = lane.index() {
+                let index = index as usize;
+                if self.event_times[index].is_none() {
+                    self.event_times[index] = Some(now);
+                }
+            }
+        }
         let mut expired = self.expired_lanes;
         // A parked lane waits for data instead of the CPU, so it is not
         // starving and React does not arm its clock (`markStarvedLanesAsExpired`
@@ -676,22 +707,32 @@ impl<H: Host> Root<H> {
                 return true;
             }
         }
-        if exit == ExitStatus::SuspendedWithDelay && includes_only_transitions(lanes) {
+        if exit == ExitStatus::SuspendedWithDelay {
             // React's `finishConcurrentRender`, case `RootSuspendedWithDelay`:
-            // a transition that had to hide content keeps the previous screen
-            // instead of committing a placeholder, and waits for the data with
-            // no timeout at all. Nothing commits, so the retry queue of the
-            // boundary is thrown away with the tree: the root subscribes the
-            // work itself — React's `attachPingListener` in `throwException` —
-            // and the ping is what makes the parked lanes candidates again.
-            self.render = None;
-            self.arena.abandon_render();
-            self.interleaved = Lanes::NONE;
+            // the lanes park either way; what follows decides whether anything
+            // commits.
             self.mark_suspended(lanes);
-            for wakeable in caught {
-                self.attach_ping_listener(&wakeable, lanes);
+            if includes_only_transitions(lanes) {
+                // A transition that had to hide content keeps the previous
+                // screen instead of committing a placeholder, and waits for the
+                // data with no timeout at all. Nothing commits, so the retry
+                // queue of the boundary is thrown away with the tree: the root
+                // subscribes the work itself — React's `attachPingListener` in
+                // `throwException` — and the ping is what makes the parked
+                // lanes candidates again.
+                self.render = None;
+                self.arena.abandon_render();
+                self.interleaved = Lanes::NONE;
+                for wakeable in caught {
+                    self.attach_ping_listener(&wakeable, lanes);
+                }
+                return true;
             }
-            return true;
+            // A render that would hide content has to wait a little before it
+            // replaces the screen, unless the wait is not worth taking.
+            if self.defer_delay(root, lanes, now) {
+                return true;
+            }
         }
         self.render = None;
         self.arena.end_render();
@@ -748,12 +789,7 @@ impl<H: Host> Root<H> {
         // `root.finishedWork` alive until the handle fires. The fibers stay in
         // the arena, and the host's next slice commits them once the clock
         // reaches the deadline.
-        self.render = None;
-        self.held = Some(Held {
-            root,
-            lanes,
-            deadline,
-        });
+        self.hold(root, lanes, deadline);
         true
     }
 
@@ -768,6 +804,85 @@ impl<H: Host> Root<H> {
             .fallback_time?
             .saturating_add(FALLBACK_THROTTLE_MS);
         (deadline.saturating_sub(now) > MINIMUM_HOLD_MS).then_some(deadline)
+    }
+
+    /// Holds a finished tree until the next noticeable difference, if waiting
+    /// is worth it.
+    ///
+    /// This is the rest of React's `finishConcurrentRender`, case
+    /// `RootSuspendedWithDelay`: a render that would take visible content away
+    /// waits for the next [`jnd`] boundary after the update it renders, because
+    /// until then the user is unlikely to tell the wait from the placeholder it
+    /// avoids. Returns whether it took the render away from the caller; `false`
+    /// means the wait is too short to matter and the placeholder commits at
+    /// once.
+    ///
+    /// A root without a clock cannot measure the wait, so it commits the
+    /// placeholder immediately; work that arrives before the deadline replaces
+    /// the held tree through [`Root::prepare_fresh`].
+    fn defer_delay(&mut self, root: FiberId, lanes: Lanes, now: Option<u64>) -> bool {
+        let Some(now) = now else {
+            return false;
+        };
+        // React's `getMostRecentEventTime`: the wait is measured from the
+        // newest update the render covers. A lane no clock has dated counts as
+        // older than any reading — React's `NoTimestamp` — so the wait lands on
+        // the next boundary above the current clock.
+        let event_time = self.most_recent_event_time(lanes).unwrap_or(0);
+        let elapsed = now.saturating_sub(event_time);
+        let remaining = jnd(elapsed).saturating_sub(elapsed);
+        if remaining <= MINIMUM_HOLD_MS {
+            return false;
+        }
+        self.hold(root, lanes, now.saturating_add(remaining));
+        true
+    }
+
+    /// Keeps the finished tree of a render until `deadline`.
+    ///
+    /// The render is over: its tree does not need to be resumed, only committed
+    /// later, which is what React's `root.finishedWork` is for.
+    fn hold(&mut self, root: FiberId, lanes: Lanes, deadline: u64) {
+        self.render = None;
+        self.held = Some(Held {
+            root,
+            lanes,
+            deadline,
+        });
+    }
+
+    /// The newest event time among `lanes`.
+    ///
+    /// This is React's `getMostRecentEventTime`: of the updates one render
+    /// covers, the latest one says how long the user has been waiting, and a
+    /// lane no clock has dated is left out.
+    fn most_recent_event_time(&self, lanes: Lanes) -> Option<u64> {
+        lanes
+            .iter()
+            .filter_map(|lane| {
+                lane.index()
+                    .and_then(|index| self.event_times[index as usize])
+            })
+            .max()
+    }
+
+    /// Dates `lanes` with the host's clock.
+    ///
+    /// This is the event time React records in `markRootUpdated`: a dispatch
+    /// carries the moment it was requested, so a render that finishes later can
+    /// tell how long the user has waited. A rea dispatch has no clock of its
+    /// own — the host supplies one per slice — so the update is dated when the
+    /// root drains it, and a lane that was marked without a clock keeps `None`
+    /// until [`Root::mark_starved_lanes`] dates it.
+    fn record_event_time(&mut self, lanes: Lanes, now: Option<u64>) {
+        let Some(now) = now else {
+            return;
+        };
+        for lane in lanes.iter() {
+            if let Some(index) = lane.index() {
+                self.event_times[index as usize] = Some(now);
+            }
+        }
     }
 
     /// Marks the parked lanes whose work resolved.
@@ -794,7 +909,7 @@ impl<H: Host> Root<H> {
     /// hands the slot out again, so the cache is what says the fiber is still
     /// the boundary that subscribed the listener; React checks the same thing
     /// with `getNearestMountedFiber`.
-    fn retry_boundary(&mut self, request: RetryRequest) {
+    fn retry_boundary(&mut self, request: RetryRequest, now: Option<u64>) {
         let mounted = self
             .arena
             .get(request.boundary)
@@ -807,6 +922,9 @@ impl<H: Host> Root<H> {
             return;
         }
         let lane = self.claim_next_retry_lane();
+        // React's `retryTimedOutBoundary` dates the retry like any other
+        // update, with the moment it is requested.
+        self.record_event_time(lane, now);
         self.mark_update(request.boundary, lane);
     }
 
@@ -922,10 +1040,14 @@ impl<H: Host> Root<H> {
         self.pinged_lanes = Lanes::NONE;
         // A lane that is no longer pending starts over: a later update on it
         // gets a fresh expiration time instead of inheriting the one the
-        // finished work had, and it is no longer expired.
+        // finished work had, and it is no longer expired. Its event time goes
+        // with it, so a delayed fallback on that lane is not measured from an
+        // update the previous screen already answered.
         for lane in (previously_pending & !remaining).iter() {
             if let Some(index) = lane.index() {
-                self.expiration_times[index as usize] = None;
+                let index = index as usize;
+                self.expiration_times[index] = None;
+                self.event_times[index] = None;
             }
         }
         self.expired_lanes &= remaining;
@@ -981,12 +1103,15 @@ impl<H: Host> Root<H> {
     /// dispatch that lands while a render is in flight is also recorded as
     /// interleaved: the render may be past the fiber it names, so its own lanes
     /// cannot be relied on to carry the lane to the completion.
-    fn drain_mailbox(&mut self) {
+    ///
+    /// `now` is the host's clock, when this drain runs inside a slice. It dates
+    /// the updates: a render that finishes later measures its wait from it.
+    fn drain_mailbox(&mut self, now: Option<u64>) {
         let pinged = self.mailbox.borrow_mut().take_pinged();
         self.mark_root_pinged(pinged);
         let retries = self.mailbox.borrow_mut().drain_retries();
         for retry in retries {
-            self.retry_boundary(retry);
+            self.retry_boundary(retry, now);
         }
         let updates = self.mailbox.borrow_mut().drain();
         for (queue, lanes) in updates {
@@ -996,6 +1121,7 @@ impl<H: Host> Root<H> {
             if self.render.is_some() {
                 self.interleaved.insert(lanes);
             }
+            self.record_event_time(lanes, now);
             self.mark_update(owner, lanes);
         }
     }
@@ -1067,9 +1193,28 @@ const FALLBACK_THROTTLE_MS: u64 = 500;
 
 /// The shortest wait worth holding a finished tree for.
 ///
-/// This is React's `msUntilTimeout > 10`: replacing one loading state with
-/// another a few milliseconds later is not worth keeping the previous screen.
+/// This is React's `msUntilTimeout > 10`: replacing the screen a few
+/// milliseconds later is not worth keeping the previous one.
 const MINIMUM_HOLD_MS: u64 = 10;
+
+/// The next Just Noticeable Difference boundary after `time_elapsed`.
+///
+/// This is React's `jnd`. A person cannot tell small differences in time apart,
+/// so waiting a little longer than necessary costs nothing while it may spare
+/// an intermediate loading state. The longer the wait already was, the longer
+/// an added wait is imperceptible, so the boundaries widen on a fixed schedule
+/// up to a point and then repeat at a constant interval.
+fn jnd(time_elapsed: u64) -> u64 {
+    match time_elapsed {
+        0..120 => 120,
+        120..480 => 480,
+        480..1080 => 1080,
+        1080..1920 => 1920,
+        1920..3000 => 3000,
+        3000..4320 => 4320,
+        _ => time_elapsed.div_ceil(1960) * 1960,
+    }
+}
 
 /// Whether `lanes` hold nothing but retries.
 ///
@@ -1964,6 +2109,107 @@ mod tests {
         resolve(&subscribers);
         root.flush();
         assert_eq!(top_level(&root), [Some(8)]);
+        assert!(!root.has_pending_work());
+    }
+
+    #[test]
+    fn a_delayed_fallback_waits_for_the_next_noticeable_difference() {
+        let handle = Rc::new(RefCell::new(None::<State<bool>>));
+        let ready = Rc::new(Cell::new(false));
+        let (work, _subscribers) = manual();
+        let element = {
+            let handle = Rc::clone(&handle);
+            let ready = Rc::clone(&ready);
+            let work = work.clone();
+            Element::suspense(
+                Element::component(move |ctx| {
+                    let missing = ctx.use_state(|| false);
+                    *handle.borrow_mut() = Some(missing.clone());
+                    if *missing.get() && !ready.get() {
+                        return ctx.suspend(work.clone());
+                    }
+                    Element::host(if *missing.get() { 8 } else { 7 })
+                }),
+                Element::host(9),
+            )
+        };
+        let mut root = mount(element);
+        assert_eq!(top_level(&root), [Some(7)]);
+        let Some(missing) = handle.borrow().clone() else {
+            return;
+        };
+
+        // The update hides content the user is looking at, so the fallback is
+        // held for the first noticeable difference instead of replacing the
+        // screen at once. Nothing on screen changes and the held tree is work
+        // the root still owes.
+        missing.set(true);
+        assert!(root.flush_slice(0, || false));
+        assert_eq!(top_level(&root), [Some(7)]);
+        assert!(root.has_pending_work());
+
+        assert!(root.flush_slice(119, || false));
+        assert_eq!(top_level(&root), [Some(7)]);
+
+        // The boundary is reached, so the fallback commits beside the primary
+        // tree, which stays in the host hidden.
+        assert!(!root.flush_slice(120, || false));
+        assert_eq!(top_level(&root), [Some(7), Some(9)]);
+        assert!(!root.has_pending_work());
+    }
+
+    #[test]
+    fn a_delayed_fallback_measures_its_wait_from_the_update() {
+        let shell_missing = Rc::new(Cell::new(false));
+        let content_ready = Rc::new(Cell::new(true));
+        let handle = Rc::new(RefCell::new(None::<State<bool>>));
+        let (outer_work, outer_subscribers) = manual();
+        let (inner_work, _inner_subscribers) = manual();
+        let element = {
+            let shell_missing = Rc::clone(&shell_missing);
+            let content_ready = Rc::clone(&content_ready);
+            let handle = Rc::clone(&handle);
+            let outer_work = outer_work.clone();
+            let inner_work = inner_work.clone();
+            Element::component(move |ctx| {
+                let triggered = ctx.use_state(|| false);
+                *handle.borrow_mut() = Some(triggered.clone());
+                if *triggered.get() && shell_missing.get() {
+                    return ctx.suspend(outer_work.clone());
+                }
+                Element::suspense(waiting_on(&content_ready, &inner_work), Element::host(9))
+            })
+        };
+        let mut root = mount(element);
+        assert_eq!(top_level(&root), [Some(7)]);
+        let Some(triggered) = handle.borrow().clone() else {
+            return;
+        };
+
+        // The update suspends at the shell, so the previous screen stays and
+        // the lane parks.
+        content_ready.set(false);
+        shell_missing.set(true);
+        triggered.set(true);
+        root.flush_slice(0, || false);
+        assert_eq!(top_level(&root), [Some(7)]);
+        assert_eq!(root.suspended_lanes, Lanes::DEFAULT);
+
+        // The work resolves 500 ms into the wait. The retry reaches the
+        // boundary this time, and the fallback it would show measures the
+        // wait from the update at 0: the next boundary above 500 is 1080, not
+        // the first one.
+        shell_missing.set(false);
+        resolve(&outer_subscribers);
+        assert!(root.flush_slice(500, || false));
+        assert_eq!(top_level(&root), [Some(7)]);
+        assert!(root.has_pending_work());
+
+        assert!(root.flush_slice(1_079, || false));
+        assert_eq!(top_level(&root), [Some(7)]);
+
+        assert!(!root.flush_slice(1_080, || false));
+        assert_eq!(top_level(&root), [Some(7), Some(9)]);
         assert!(!root.has_pending_work());
     }
 
