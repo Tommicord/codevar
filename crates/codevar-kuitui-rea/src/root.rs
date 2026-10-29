@@ -1342,7 +1342,7 @@ fn includes_only_transitions(lanes: Lanes) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::element::Reference;
+    use crate::element::{Context, Reference};
     use crate::hooks::{Cleanup, Dispatch, OnStoreChange, State, Subscribe};
     use crate::wakeable::Wakeable;
     use alloc::rc::Rc;
@@ -3244,5 +3244,87 @@ mod tests {
         root.flush();
         assert_eq!(top_level(&root), [Some(3)]);
         assert!(!root.has_pending_work());
+    }
+
+    /// A component that reads `context`, records the value and renders it.
+    fn context_reader(context: &Rc<Context<u32>>, log: &Rc<RefCell<Vec<u32>>>) -> Element<TreeHost> {
+        let context = Rc::clone(context);
+        let log = Rc::clone(log);
+        Element::component(move |ctx| {
+            let value = *ctx.use_context(&context);
+            log.borrow_mut().push(value);
+            Element::host(value)
+        })
+    }
+
+    #[test]
+    fn a_provider_value_moves_from_the_root_to_its_consumer() {
+        let context = Context::new(0_u32);
+        let handle = Rc::new(RefCell::new(None));
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let child = context_reader(&context, &log);
+        let mut root = mount(Element::component({
+            let context = Rc::clone(&context);
+            let handle = Rc::clone(&handle);
+            move |ctx| {
+                let value = ctx.use_state(|| 1_u32);
+                *handle.borrow_mut() = Some(value.clone());
+                Element::provider(&context, Rc::new(*value.get()), [child.clone()])
+            }
+        }));
+        assert_eq!(*log.borrow(), [1]);
+        assert_eq!(top_level(&root), [Some(1)]);
+
+        let Some(value) = handle.borrow().clone() else {
+            return;
+        };
+        value.set(2);
+        root.flush();
+
+        // The consumer's element never changed; the value the provider
+        // publishes did, and that alone has to reach the consumer.
+        assert_eq!(*log.borrow(), [1, 2]);
+        assert_eq!(top_level(&root), [Some(2)]);
+        assert!(!root.has_pending_work());
+        // The value belongs to the render that published it.
+        assert_eq!(*context.read(), 0);
+    }
+
+    #[test]
+    fn an_owner_render_that_keeps_the_value_leaves_its_consumer_alone() {
+        let context = Context::new(0_u32);
+        type Handles = Rc<RefCell<Option<(State<Rc<u32>>, State<u32>)>>>;
+        let handles: Handles = Rc::new(RefCell::new(None));
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let child = context_reader(&context, &log);
+        let mut root = mount(Element::component({
+            let context = Rc::clone(&context);
+            let handles = Rc::clone(&handles);
+            move |ctx| {
+                let value = ctx.use_state(|| Rc::new(1_u32));
+                let tick = ctx.use_state(|| 0_u32);
+                *handles.borrow_mut() = Some((value.clone(), tick.clone()));
+                Element::provider(&context, Rc::clone(value.get()), [child.clone()])
+            }
+        }));
+        assert_eq!(*log.borrow(), [1]);
+
+        let Some((value, tick)) = handles.borrow().clone() else {
+            return;
+        };
+        // The owner renders again for a state of its own, but the value it
+        // publishes is the same allocation: its consumer has nothing to read
+        // differently and does not render.
+        tick.set(1);
+        root.flush();
+        assert_eq!(*log.borrow(), [1]);
+        assert_eq!(top_level(&root), [Some(1)]);
+        assert!(!root.has_pending_work());
+
+        // A new value still reaches the consumer.
+        value.set(Rc::new(2));
+        root.flush();
+        assert_eq!(*log.borrow(), [1, 2]);
+        assert_eq!(top_level(&root), [Some(2)]);
     }
 }
