@@ -880,12 +880,13 @@ mod tests {
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     struct NodeId(u32);
 
-    /// One node: its element, the children the commit attached and how many
-    /// times the host updated it.
+    /// One node: its element, the children the commit attached, how many
+    /// times the host updated it and whether it is shown.
     struct NodeState {
         element: Option<u32>,
         children: Vec<NodeId>,
         updates: u32,
+        hidden: bool,
     }
 
     /// A host that keeps the child order, so a placement can be asserted.
@@ -900,6 +901,7 @@ mod tests {
                     element: None,
                     children: Vec::new(),
                     updates: 0,
+                    hidden: false,
                 }],
             }
         }
@@ -914,6 +916,10 @@ mod tests {
 
         fn element(&self, node: NodeId) -> Option<u32> {
             self.nodes[node.0 as usize].element
+        }
+
+        fn hidden(&self, node: NodeId) -> bool {
+            self.nodes[node.0 as usize].hidden
         }
     }
 
@@ -931,6 +937,7 @@ mod tests {
                 element: Some(*element),
                 children: Vec::new(),
                 updates: 0,
+                hidden: false,
             });
             id
         }
@@ -963,6 +970,18 @@ mod tests {
         fn remove(&mut self, parent: NodeId, child: NodeId) {
             if let Some(state) = self.nodes.get_mut(parent.0 as usize) {
                 state.children.retain(|current| *current != child);
+            }
+        }
+
+        fn hide(&mut self, node: NodeId) {
+            if let Some(state) = self.nodes.get_mut(node.0 as usize) {
+                state.hidden = true;
+            }
+        }
+
+        fn unhide(&mut self, node: NodeId) {
+            if let Some(state) = self.nodes.get_mut(node.0 as usize) {
+                state.hidden = false;
             }
         }
     }
@@ -1238,6 +1257,227 @@ mod tests {
         resolve_latest(&subscribers);
         root.flush();
         assert_eq!(top_level(&root), [Some(7)]);
+        assert!(!root.has_pending_work());
+    }
+
+    #[test]
+    fn a_hidden_tree_unmounts_its_layout_effects_until_it_reappears() {
+        let handle = Rc::new(RefCell::new(None::<State<bool>>));
+        let ready = Rc::new(Cell::new(false));
+        let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        let (work, subscribers) = manual();
+        let element = {
+            let handle = Rc::clone(&handle);
+            let ready = Rc::clone(&ready);
+            let log = Rc::clone(&log);
+            let work = work.clone();
+            Element::suspense(
+                Element::component(move |ctx| {
+                    let missing = ctx.use_state(|| false);
+                    *handle.borrow_mut() = Some(missing.clone());
+                    let created = Rc::clone(&log);
+                    let cleaned = Rc::clone(&log);
+                    // The dependencies never change, so neither render of the
+                    // returning tree queues an effect: only the reappearance
+                    // brings the effect back.
+                    ctx.use_layout_effect((), move || {
+                        created.borrow_mut().push("create");
+                        let cleaned = Rc::clone(&cleaned);
+                        Some(Box::new(move || cleaned.borrow_mut().push("cleanup")) as Cleanup)
+                    });
+                    if *missing.get() && !ready.get() {
+                        ctx.suspend(work.clone())
+                    } else {
+                        Element::host(7)
+                    }
+                }),
+                Element::host(9),
+            )
+        };
+        let mut root = mount(element);
+        assert_eq!(top_level(&root), [Some(7)]);
+        assert_eq!(*log.borrow(), ["create"]);
+
+        // The update suspends: the boundary puts up its fallback and the commit
+        // takes the hidden tree's layout cleanup. The suspended render queued
+        // no effect of its own: its fibers were thrown away.
+        let Some(missing) = handle.borrow().clone() else {
+            return;
+        };
+        missing.set(true);
+        root.flush();
+        assert_eq!(top_level(&root), [Some(7), Some(9)]);
+        let primary = mounted(&root)[0];
+        assert!(root.host().hidden(primary));
+        assert_eq!(*log.borrow(), ["create", "cleanup"]);
+
+        // The work resolved: the retry shows the primary tree again. The retry
+        // lane does not cover the component's update, so the component itself is
+        // not re-rendered and the reappearance is what mounts its layout effect,
+        // from the record the hooks kept.
+        ready.set(true);
+        resolve(&subscribers);
+        root.flush();
+        assert_eq!(top_level(&root), [Some(7)]);
+        assert!(!root.host().hidden(primary));
+        assert_eq!(*log.borrow(), ["create", "cleanup", "create"]);
+        assert!(!root.has_pending_work());
+    }
+
+    #[test]
+    fn a_hidden_tree_detaches_its_references_until_it_reappears() {
+        let handle = Rc::new(RefCell::new(None::<State<bool>>));
+        let ready = Rc::new(Cell::new(false));
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let reference: Reference<TreeHost> = {
+            let calls = Rc::clone(&calls);
+            Rc::new(move |node| {
+                calls.borrow_mut().push(node);
+                None
+            })
+        };
+        let (work, subscribers) = manual();
+        let element = {
+            let handle = Rc::clone(&handle);
+            let ready = Rc::clone(&ready);
+            let reference = Rc::clone(&reference);
+            let work = work.clone();
+            Element::suspense(
+                Element::component(move |ctx| {
+                    let missing = ctx.use_state(|| false);
+                    *handle.borrow_mut() = Some(missing.clone());
+                    if *missing.get() && !ready.get() {
+                        ctx.suspend(work.clone())
+                    } else {
+                        Element::host(7).referenced(Rc::clone(&reference))
+                    }
+                }),
+                Element::host(9),
+            )
+        };
+        let mut root = mount(element);
+        let node = mounted(&root)[0];
+        assert_eq!(*calls.borrow(), [Some(node)]);
+
+        // A hidden tree is not on screen, so its reference lets go of the node
+        // even though the node stays mounted.
+        let Some(missing) = handle.borrow().clone() else {
+            return;
+        };
+        missing.set(true);
+        root.flush();
+        assert_eq!(top_level(&root), [Some(7), Some(9)]);
+        assert!(root.host().hidden(node));
+        assert_eq!(*calls.borrow(), [Some(node), None]);
+
+        // The reappearing tree attaches the node again. The reference did not
+        // change, so no render marked the fiber: only the reappearance can.
+        ready.set(true);
+        resolve(&subscribers);
+        root.flush();
+        assert_eq!(top_level(&root), [Some(7)]);
+        assert!(!root.host().hidden(node));
+        assert_eq!(*calls.borrow(), [Some(node), None, Some(node)]);
+        assert!(!root.has_pending_work());
+    }
+
+    #[test]
+    fn a_hidden_boundary_leaves_an_already_hidden_tree_alone() {
+        let inner_handle = Rc::new(RefCell::new(None::<State<bool>>));
+        let outer_handle = Rc::new(RefCell::new(None::<State<bool>>));
+        let inner_ready = Rc::new(Cell::new(false));
+        let outer_ready = Rc::new(Cell::new(false));
+        let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        let (inner_work, inner_subscribers) = manual();
+        let (outer_work, outer_subscribers) = manual();
+        let element = {
+            let inner_handle = Rc::clone(&inner_handle);
+            let outer_handle = Rc::clone(&outer_handle);
+            let inner_ready = Rc::clone(&inner_ready);
+            let outer_ready = Rc::clone(&outer_ready);
+            let log = Rc::clone(&log);
+            let inner_work = inner_work.clone();
+            let outer_work = outer_work.clone();
+            let inner = Element::suspense(
+                Element::component(move |ctx| {
+                    let missing = ctx.use_state(|| false);
+                    *inner_handle.borrow_mut() = Some(missing.clone());
+                    let created = Rc::clone(&log);
+                    let cleaned = Rc::clone(&log);
+                    ctx.use_layout_effect((), move || {
+                        created.borrow_mut().push("create");
+                        let cleaned = Rc::clone(&cleaned);
+                        Some(Box::new(move || cleaned.borrow_mut().push("cleanup")) as Cleanup)
+                    });
+                    if *missing.get() && !inner_ready.get() {
+                        ctx.suspend(inner_work.clone())
+                    } else {
+                        Element::host(7)
+                    }
+                }),
+                Element::host(8),
+            );
+            let outer_child = Element::component(move |ctx| {
+                let missing = ctx.use_state(|| false);
+                *outer_handle.borrow_mut() = Some(missing.clone());
+                if *missing.get() && !outer_ready.get() {
+                    ctx.suspend(outer_work.clone())
+                } else {
+                    Element::host(6)
+                }
+            });
+            Element::suspense(Element::fragment([inner, outer_child]), Element::host(9))
+        };
+        let mut root = mount(element);
+        assert_eq!(top_level(&root), [Some(7), Some(6)]);
+        let seven = mounted(&root)[0];
+        assert_eq!(*log.borrow(), ["create"]);
+
+        // The inner boundary catches its own suspension: its primary tree goes
+        // out of sight and the host shows the inner fallback.
+        let Some(inner_missing) = inner_handle.borrow().clone() else {
+            return;
+        };
+        inner_missing.set(true);
+        root.flush();
+        assert_eq!(top_level(&root), [Some(7), Some(8), Some(6)]);
+        let eight = mounted(&root)[1];
+        assert!(root.host().hidden(seven));
+        assert!(!root.host().hidden(eight));
+        assert_eq!(*log.borrow(), ["create", "cleanup"]);
+
+        // The outer boundary now catches a suspension of its own. Its primary
+        // tree contains the inner boundary, so the disappearing walk meets a
+        // tree the inner boundary already hid: that tree must not lose its
+        // effects a second time.
+        let Some(outer_missing) = outer_handle.borrow().clone() else {
+            return;
+        };
+        outer_missing.set(true);
+        root.flush();
+        assert_eq!(top_level(&root), [Some(7), Some(8), Some(6), Some(9)]);
+        assert!(root.host().hidden(eight));
+        assert!(root.host().hidden(seven));
+        assert_eq!(*log.borrow(), ["create", "cleanup"]);
+
+        // The outer work resolved: the reappearing walk shows its own subtree
+        // but stops at the inner hidden tree, which keeps waiting for its work.
+        outer_ready.set(true);
+        resolve(&outer_subscribers);
+        root.flush();
+        assert_eq!(top_level(&root), [Some(7), Some(8), Some(6)]);
+        assert!(!root.host().hidden(eight));
+        assert!(root.host().hidden(seven));
+        assert_eq!(*log.borrow(), ["create", "cleanup"]);
+
+        // The inner work resolved last, so the inner tree is the one that comes
+        // back, and it creates the effect exactly once.
+        inner_ready.set(true);
+        resolve(&inner_subscribers);
+        root.flush();
+        assert_eq!(top_level(&root), [Some(7), Some(6)]);
+        assert!(!root.host().hidden(seven));
+        assert_eq!(*log.borrow(), ["create", "cleanup", "create"]);
         assert!(!root.has_pending_work());
     }
 

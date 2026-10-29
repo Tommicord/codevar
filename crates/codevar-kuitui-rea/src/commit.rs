@@ -100,7 +100,7 @@ impl<'a, H: Host> Commit<'a, H> {
             .arena
             .get(root)
             .and_then(|fiber| fiber.state_node);
-        self.mutate(root, parent, false);
+        self.mutate(root, parent, false, false);
     }
 
     /// Commits the hook queues and creates the layout effects.
@@ -109,35 +109,83 @@ impl<'a, H: Host> Commit<'a, H> {
     /// reference is attached, then its layout effects run. A child's ref
     /// therefore observes the node after it was placed, and a parent's layout
     /// effect observes the refs of the subtree below it.
+    ///
+    /// A hidden tree is left out: its layout effects went away when it was
+    /// hidden, and they come back with the tree (see
+    /// [`Commit::reappear_layout_effects`]).
     pub(crate) fn layout(&mut self, root: FiberId) {
-        let mut order = Vec::new();
-        self.collect(root, &mut order);
-        for fiber in order {
-            self.attach_ref(fiber);
-            if let Some(node) = self.arena.get_mut(fiber) {
-                if node.tag == FiberTag::Component {
-                    node.hooks.commit();
-                    // The swap made this fiber the current one, so a dispatch
-                    // that outlives the render must name it from now on.
-                    node.hooks.reset_owners(fiber);
-                }
-                node.flags.remove(Flags::LAYOUT_MASK);
+        self.layout_fiber(root, false, false);
+    }
+
+    /// Commits one fiber and its subtree, children first.
+    ///
+    /// `hidden_parent` and `hidden_before_parent` say whether an Offscreen
+    /// above this fiber hides the subtree in the finished tree, and whether it
+    /// hid it in the committed one. A subtree that was hidden and is shown now
+    /// is a reappearing tree, and its layout effects are created again from the
+    /// list the hooks remember rather than from the records a render queued.
+    fn layout_fiber(&mut self, fiber: FiberId, hidden_parent: bool, hidden_before_parent: bool) {
+        let Some(node) = self.arena.get(fiber) else {
+            return;
+        };
+        let tag = node.tag;
+        let hidden = node.visibility == Visibility::Hidden;
+        let was_hidden = node
+            .alternate
+            .and_then(|current| self.arena.get(current))
+            .is_some_and(|current| current.visibility == Visibility::Hidden);
+        let children_hidden = hidden_parent || (tag == FiberTag::Offscreen && hidden);
+        let children_were_hidden = hidden_before_parent || (tag == FiberTag::Offscreen && was_hidden);
+
+        if tag == FiberTag::Offscreen {
+            if hidden {
+                // The host does not show this tree, so its layout effects stay
+                // unmounted until it reappears.
+                return;
             }
-            self.create_effects(fiber, EffectTag::Layout);
+            // React's `reappearLayoutEffects`: the root of a tree that was
+            // hidden before creates the effects of its whole subtree.
+            if was_hidden && !hidden_parent && !hidden_before_parent {
+                self.reappear_layout_effects(fiber);
+                return;
+            }
         }
+
+        let mut child = node.first_child;
+        while let Some(current) = child {
+            child = self
+                .arena
+                .get(current)
+                .and_then(|fiber| fiber.sibling);
+            self.layout_fiber(current, children_hidden, children_were_hidden);
+        }
+
+        self.attach_ref(fiber, false);
+        if let Some(node) = self.arena.get_mut(fiber) {
+            if node.tag == FiberTag::Component {
+                node.hooks.commit();
+                // The swap made this fiber the current one, so a dispatch
+                // that outlives the render must name it from now on.
+                node.hooks.reset_owners(fiber);
+            }
+            node.flags.remove(Flags::LAYOUT_MASK);
+        }
+        self.create_effects(fiber, EffectTag::Layout);
     }
 
     /// Hands the node of a finished host fiber to its reference callback.
     ///
     /// The callback may return a cleanup, which stays on the fiber — shared
-    /// with its alternate — until the node is detached. A fiber without the
-    /// [`Flags::REF`] flag keeps the reference it already attached: React only
-    /// attaches when `markRef` saw a new or different ref.
-    fn attach_ref(&mut self, fiber: FiberId) {
+    /// with its alternate — until the node is detached. Unless `always` is
+    /// set, a fiber without the [`Flags::REF`] flag keeps the reference it
+    /// already attached: React only attaches when `markRef` saw a new or
+    /// different ref. A reappearing tree sets it, because disappearing
+    /// detached the references its fibers had attached.
+    fn attach_ref(&mut self, fiber: FiberId, always: bool) {
         let Some(node) = self.arena.get(fiber) else {
             return;
         };
-        if !node.flags.contains(Flags::REF) {
+        if !always && !node.flags.contains(Flags::REF) {
             return;
         }
         let Some(reference) = node.memoized.reference().cloned() else {
@@ -177,8 +225,16 @@ impl<'a, H: Host> Commit<'a, H> {
     /// a fragment passes it through unchanged. `hidden_parent` says whether an
     /// Offscreen above this fiber already took everything below it out of
     /// sight, which is what keeps a nested boundary from showing a tree its
-    /// parent still hides.
-    fn mutate(&mut self, fiber: FiberId, host_parent: Option<H::Node>, hidden_parent: bool) {
+    /// parent still hides. `hidden_before_parent` is the same question about
+    /// the committed tree, which tells a tree that was hidden and is now shown
+    /// from one that was already visible.
+    fn mutate(
+        &mut self,
+        fiber: FiberId,
+        host_parent: Option<H::Node>,
+        hidden_parent: bool,
+        hidden_before_parent: bool,
+    ) {
         let Some(node) = self.arena.get(fiber) else {
             return;
         };
@@ -187,10 +243,14 @@ impl<'a, H: Host> Commit<'a, H> {
         let own = node.state_node;
         let alternate = node.alternate;
         let hidden = node.visibility == Visibility::Hidden;
+        let was_hidden = alternate
+            .and_then(|current| self.arena.get(current))
+            .is_some_and(|current| current.visibility == Visibility::Hidden);
         let children_parent = own.or(host_parent);
         // Only an Offscreen extends the hidden state of the subtree it wraps;
         // every other fiber passes on what it was given.
         let children_hidden = hidden_parent || (tag == FiberTag::Offscreen && hidden);
+        let children_were_hidden = hidden_before_parent || (tag == FiberTag::Offscreen && was_hidden);
 
         if flags.contains(Flags::CHILD_DELETION) {
             let deletions = match self.arena.get_mut(fiber) {
@@ -211,7 +271,7 @@ impl<'a, H: Host> Commit<'a, H> {
                 .arena
                 .get(current)
                 .and_then(|fiber| fiber.sibling);
-            self.mutate(current, children_parent, children_hidden);
+            self.mutate(current, children_parent, children_hidden, children_were_hidden);
         }
 
         if flags.contains(Flags::PLACEMENT)
@@ -219,6 +279,21 @@ impl<'a, H: Host> Commit<'a, H> {
         {
             let anchor = self.anchor(fiber);
             self.host.insert_before(parent, child, anchor);
+        }
+
+        // React's mutation phase takes the layout effects of a tree that just
+        // went out of sight away, before the host hides it. This is the root of
+        // that tree: it was visible, and neither it nor an ancestor was hidden
+        // in the committed tree, so this commit is the one that hid it.
+        if tag == FiberTag::Offscreen
+            && flags.contains(Flags::VISIBILITY)
+            && hidden
+            && alternate.is_some()
+            && !was_hidden
+            && !hidden_parent
+            && !hidden_before_parent
+        {
+            self.disappear_layout_effects(fiber);
         }
 
         // The primary tree of a boundary that switched to its fallback leaves
@@ -295,6 +370,103 @@ impl<'a, H: Host> Commit<'a, H> {
                     cache: Rc::clone(&listeners),
                 });
             }));
+        }
+    }
+
+    /// Creates the layout effects of a tree that a boundary brought back.
+    ///
+    /// This is React's `reappearLayoutEffects`. The tree kept its fibers and
+    /// its hook lists while it was hidden, but its layout effects and its
+    /// references went away with the visible tree (see
+    /// [`Commit::disappear_layout_effects`]), so the walk attaches every
+    /// reference again and creates every layout effect the hooks remember —
+    /// whether or not a render queued it. The pending records a render of the
+    /// reappearing tree pushed duplicate the slot records, which is why they
+    /// are dropped instead of run: React's hook list is the only source too.
+    ///
+    /// A nested Offscreen that is still hidden keeps its effects unmounted,
+    /// the way the disappear walk leaves a tree that was already hidden alone.
+    fn reappear_layout_effects(&mut self, fiber: FiberId) {
+        let Some(node) = self.arena.get(fiber) else {
+            return;
+        };
+        let still_hidden = node.tag == FiberTag::Offscreen && node.visibility == Visibility::Hidden;
+        if !still_hidden {
+            let mut child = node.first_child;
+            while let Some(current) = child {
+                child = self
+                    .arena
+                    .get(current)
+                    .and_then(|fiber| fiber.sibling);
+                self.reappear_layout_effects(current);
+            }
+        }
+        self.attach_ref(fiber, true);
+        let effects = match self.arena.get_mut(fiber) {
+            Some(node) => {
+                node.effects
+                    .retain(|effect| effect.tag() != EffectTag::Layout);
+                node.flags.remove(Flags::LAYOUT_MASK);
+                if node.tag == FiberTag::Component {
+                    node.hooks.commit();
+                    node.hooks.reset_owners(fiber);
+                    node.hooks.layout_effects()
+                } else {
+                    Vec::new()
+                }
+            }
+            None => return,
+        };
+        for effect in effects {
+            effect.create();
+        }
+    }
+
+    /// Unmounts the layout effects of a tree that just went out of sight.
+    ///
+    /// This is React's `commitDisappearLayoutEffects`: the tree keeps its
+    /// fibers, but its references detach and its layout effects run their
+    /// cleanups, because the host is not showing it. The hook lists keep the
+    /// records, so the effects come back when the tree reappears. A nested
+    /// Offscreen that is already hidden keeps its effects unmounted.
+    ///
+    /// The walk starts below `fiber`, the Offscreen that turned hidden: the
+    /// container itself has no effects to take away.
+    fn disappear_layout_effects(&mut self, fiber: FiberId) {
+        let mut child = match self.arena.get(fiber) {
+            Some(node) => node.first_child,
+            None => return,
+        };
+        while let Some(current) = child {
+            child = self
+                .arena
+                .get(current)
+                .and_then(|fiber| fiber.sibling);
+            self.disappear_effect(current);
+        }
+    }
+
+    /// Takes away the layout effects of one fiber on the way down a
+    /// disappearing tree, before its children.
+    fn disappear_effect(&mut self, fiber: FiberId) {
+        let Some(node) = self.arena.get(fiber) else {
+            return;
+        };
+        let hidden_offscreen = node.tag == FiberTag::Offscreen && node.visibility == Visibility::Hidden;
+        let mut child = node.first_child;
+        self.detach_ref(fiber);
+        if let Some(node) = self.arena.get(fiber) {
+            node.hooks.unmount_layout_effects();
+        }
+        if hidden_offscreen {
+            return;
+        }
+        while let Some(current) = child {
+            child = self
+                .arena
+                .get(current)
+                .and_then(|fiber| fiber.sibling);
+            self.disappear_effect(current);
         }
     }
 

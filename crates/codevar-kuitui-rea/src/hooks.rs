@@ -608,6 +608,34 @@ impl HookList {
         }
     }
 
+    /// The layout effects the hooks remember, whether or not they must run.
+    ///
+    /// The commit creates an effect and leaves its record in the slot, so the
+    /// list outlives the render. A tree that reappears after being hidden
+    /// creates its layout effects from here: the commit that hid it unmounted
+    /// them, and no render of the hidden tree queued a replacement.
+    pub(crate) fn layout_effects(&self) -> Vec<EffectRecord> {
+        self.slots
+            .iter()
+            .filter_map(|slot| slot.effect.clone())
+            .filter(|effect| effect.tag() == EffectTag::Layout)
+            .collect()
+    }
+
+    /// Runs the cleanups of every layout effect the hooks remember.
+    ///
+    /// The records stay in the slots: the effects come back when the tree
+    /// reappears, which mounts them again.
+    pub(crate) fn unmount_layout_effects(&self) {
+        for slot in &self.slots {
+            if let Some(effect) = &slot.effect
+                && effect.tag() == EffectTag::Layout
+            {
+                effect.unmount();
+            }
+        }
+    }
+
     /// Points every queue at the fiber that now owns it.
     pub(crate) fn reset_owners(&self, owner: FiberId) {
         for slot in &self.slots {
