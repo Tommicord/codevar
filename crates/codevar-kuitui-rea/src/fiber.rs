@@ -44,6 +44,24 @@
 //! the queue back to the state the last commit left. [`Arena::end_render`]
 //! stops recording once the tree is complete, before the commit runs.
 //!
+//! # Suspense handlers
+//!
+//! While the pass walks the tree it keeps a stack of the fibers that can catch
+//! a suspension: a Suspense boundary pushes itself, a visible Offscreen keeps
+//! the handler it inherited, and a hidden one catches its own tree. When a
+//! component suspends, the pass reads the top of the stack — React's
+//! `getSuspenseHandler` — and unwinds to the boundary named there. The entry a
+//! boundary pushes records how many fibers the render had started, so
+//! [`Arena::capture`] can hand everything the boundary started back to the
+//! committed tree with [`Arena::discard_since`].
+//!
+//! A boundary that renders its fallback pushes again with the handler it
+//! inherited, so a suspension inside the fallback behaves like a throw inside a
+//! `catch` block and reaches the next boundary out; React's
+//! `pushFallbackTreeSuspenseHandler` does the same. The stack lives in the
+//! arena rather than in the pass because a render that yields between two units
+//! of work resumes with the same stack.
+//!
 //! # Why the tree is not a `Vec<Fiber>`
 //!
 //! Fibers are both created and destroyed between commits (a conditional
@@ -51,7 +69,7 @@
 //! slots. The two halves of an alternate are freed together: the slot of one
 //! half must never be handed out while the other half still points at it.
 
-// The work loop that consumes these primitives lives in `work`.
+// The render pass, and the tests, reach only part of the arena's surface.
 #![allow(dead_code)]
 
 use alloc::rc::Rc;
@@ -444,6 +462,42 @@ struct Started {
     allocated: bool,
 }
 
+/// An entry of the stack that decides where a suspension lands.
+///
+/// A Suspense boundary pushes an entry while its primary tree renders, and so
+/// does every Offscreen fiber; the *target* is the fiber a suspension is thrown
+/// to, which is the boundary itself for a primary tree and whatever handler was
+/// inherited for a fallback. React keeps the same pair on its handler stack:
+/// the top value is what `getSuspenseHandler` returns, and the entry's owner is
+/// the fiber whose `completeWork` pops it.
+///
+/// The entry also records how many fibers the render had started when it was
+/// pushed, so a capture can hand everything the target started back to the
+/// committed tree. React does that by unwinding its call stack; the arena has
+/// no stack, so the offset in `started` is the boundary.
+#[derive(Clone, Copy)]
+struct SuspenseHandler {
+    /// The fiber that pushed the entry and pops it when it completes.
+    owner: FiberId,
+    /// The fiber a suspension is thrown to, or `None` when nothing in the
+    /// current tree can catch one.
+    target: Option<FiberId>,
+    /// The number of fibers the render had started when the entry was pushed.
+    mark: usize,
+}
+
+/// Where a suspension was thrown to.
+///
+/// Returned by [`Arena::capture`]: the boundary that takes the suspension and
+/// the point in the render's `started` record from which everything belongs to
+/// the subtree the boundary is about to throw away.
+pub(crate) struct Captured {
+    /// The boundary the suspension was thrown to.
+    pub(crate) boundary: FiberId,
+    /// The `started` offset the boundary was pushed at.
+    pub(crate) mark: usize,
+}
+
 /// The arena that owns every fiber.
 pub(crate) struct Arena<H: Host> {
     /// The slots. `None` marks a slot on the free list.
@@ -452,6 +506,8 @@ pub(crate) struct Arena<H: Host> {
     free: Vec<u32>,
     /// The fibers the render in flight started, in the order it started them.
     started: Option<Vec<Started>>,
+    /// The stack of fibers that can catch a suspension, outermost first.
+    handlers: Vec<SuspenseHandler>,
 }
 
 impl<H: Host> Arena<H> {
@@ -461,6 +517,7 @@ impl<H: Host> Arena<H> {
             fibers: Vec::new(),
             free: Vec::new(),
             started: None,
+            handlers: Vec::new(),
         }
     }
 
@@ -563,6 +620,10 @@ impl<H: Host> Arena<H> {
             self.started.is_none(),
             "a render cannot start before the previous one ended"
         );
+        debug_assert!(
+            self.handlers.is_empty(),
+            "a render cannot start with a handler its predecessor left behind"
+        );
         self.started = Some(Vec::new());
     }
 
@@ -571,6 +632,10 @@ impl<H: Host> Arena<H> {
     /// The tree is complete at this point, so it is about to become the
     /// committed one and there is nothing left to throw away.
     pub(crate) fn end_render(&mut self) {
+        debug_assert!(
+            self.handlers.is_empty(),
+            "a finished render must pop every handler it pushed"
+        );
         self.started = None;
     }
 
@@ -585,22 +650,114 @@ impl<H: Host> Arena<H> {
     /// keeps its slot, which the next render overwrites from the committed
     /// fiber.
     pub(crate) fn abandon_render(&mut self) {
+        self.handlers.clear();
         let Some(started) = self.started.take() else {
             return;
         };
         for started in started.into_iter().rev() {
-            let Some(fiber) = self.get(started.id) else {
-                continue;
-            };
-            fiber.hooks.restore_committed();
-            match fiber.alternate {
-                Some(owner) => fiber.hooks.reset_owners(owner),
-                None => fiber.hooks.detach(),
-            }
-            if started.allocated {
-                self.take(started.id);
-            }
+            self.discard(started);
         }
+    }
+
+    /// Throws away everything the render started from `mark` on.
+    ///
+    /// This is the arena's half of React's `unwindUnitOfWork`: the fibers the
+    /// boundary started below the point it was pushed at are the subtree the
+    /// suspension discards, and the ones started before it are what the render
+    /// keeps. They are dropped in reverse order so a fiber is freed after the
+    /// children that are still linked from it.
+    pub(crate) fn discard_since(&mut self, mark: usize) {
+        let Some(started) = self.started.as_mut() else {
+            return;
+        };
+        let discarded = started.split_off(mark.min(started.len()));
+        for started in discarded.into_iter().rev() {
+            self.discard(started);
+        }
+    }
+
+    /// Returns one fiber of the render in flight to the committed tree.
+    fn discard(&mut self, started: Started) {
+        let Some(fiber) = self.get(started.id) else {
+            return;
+        };
+        fiber.hooks.restore_committed();
+        match fiber.alternate {
+            Some(owner) => fiber.hooks.reset_owners(owner),
+            None => fiber.hooks.detach(),
+        }
+        if started.allocated {
+            self.take(started.id);
+        }
+    }
+
+    /// The number of fibers the render in flight has started.
+    fn started_len(&self) -> usize {
+        self.started.as_ref().map_or(0, Vec::len)
+    }
+
+    /// Pushes a fiber that can catch a suspension.
+    ///
+    /// `target` is the fiber a suspension is thrown to: the boundary itself
+    /// while its primary tree renders, and the handler the push inherited while
+    /// its fallback renders — a throw inside a fallback behaves like a throw
+    /// inside a `catch` block. React keeps the two apart on its stack for the
+    /// same reason: the entry's owner pops it, its value is read by the throw.
+    pub(crate) fn push_handler(&mut self, owner: FiberId, target: Option<FiberId>) {
+        self.handlers.push(SuspenseHandler {
+            owner,
+            target,
+            mark: self.started_len(),
+        });
+    }
+
+    /// The fiber a suspension would be thrown to, if any.
+    pub(crate) fn handler_target(&self) -> Option<FiberId> {
+        self.handlers
+            .last()
+            .and_then(|handler| handler.target)
+    }
+
+    /// Pops the entry `owner` pushed.
+    ///
+    /// Pops are matched by owner so a completion that arrives without a begin —
+    /// a fiber cloned by a bailout is completed without ever being begun — does
+    /// not pop an entry that belongs to someone else.
+    pub(crate) fn pop_handler(&mut self, owner: FiberId) {
+        if self
+            .handlers
+            .last()
+            .is_some_and(|handler| handler.owner == owner)
+        {
+            self.handlers.pop();
+        }
+    }
+
+    /// Pops the stack down to the boundary a suspension is thrown to.
+    ///
+    /// This is React's `throwException`: the top target decides which boundary
+    /// catches the suspension, and every entry inside it goes away with the
+    /// subtree the boundary is about to discard. The returned mark is where
+    /// that subtree begins in the render's `started` record, which
+    /// [`Arena::discard_since`] consumes.
+    pub(crate) fn capture(&mut self) -> Option<Captured> {
+        let target = self.handlers.last()?.target?;
+        let index = self
+            .handlers
+            .iter()
+            .rposition(|handler| handler.owner == target)?;
+        let mark = self.handlers.get(index)?.mark;
+        self.handlers.truncate(index);
+        Some(Captured {
+            boundary: target,
+            mark,
+        })
+    }
+
+    /// The number of handler entries on the stack.
+    #[cfg(test)]
+    pub(crate) fn handler_depth(&self) -> usize {
+        self.handlers.len()
     }
 }
 
@@ -865,5 +1022,57 @@ mod tests {
         // The boundary has to know the primary tree was hidden before this
         // render to decide whether showing it again is a change.
         assert_eq!(work.visibility, Visibility::Hidden);
+    }
+
+    #[test]
+    fn a_capture_pops_to_the_boundary_and_reports_its_mark() {
+        let mut arena = arena();
+        arena.begin_render();
+        let boundary = arena.alloc(fiber(FiberTag::Suspense));
+        arena.push_handler(boundary, Some(boundary));
+        assert_eq!(arena.handler_target(), Some(boundary));
+        let child = arena.alloc(fiber(FiberTag::Component));
+
+        let Some(captured) = arena.capture() else {
+            return;
+        };
+        assert_eq!(captured.boundary, boundary);
+        assert_eq!(captured.mark, 1);
+
+        // Everything the boundary started below the mark is the subtree the
+        // suspension throws away; the boundary itself survives.
+        arena.discard_since(captured.mark);
+        assert!(arena.get(boundary).is_some());
+        assert!(arena.get(child).is_none());
+        assert_eq!(arena.handler_depth(), 0);
+        arena.end_render();
+    }
+
+    #[test]
+    fn a_capture_skips_entries_that_reuse_an_outer_boundary() {
+        let mut arena = arena();
+        arena.begin_render();
+        let outer = arena.alloc(fiber(FiberTag::Suspense));
+        arena.push_handler(outer, Some(outer));
+        let inner = arena.alloc(fiber(FiberTag::Suspense));
+        // A boundary showing its fallback pushes the handler it inherited, so a
+        // suspension inside the fallback reaches the boundary outside it.
+        arena.push_handler(inner, Some(outer));
+        let child = arena.alloc(fiber(FiberTag::Component));
+
+        let Some(captured) = arena.capture() else {
+            return;
+        };
+        assert_eq!(captured.boundary, outer);
+        assert_eq!(captured.mark, 1);
+
+        arena.discard_since(captured.mark);
+        assert!(arena.get(outer).is_some());
+        // The inner boundary was started below the outer handler, so it goes
+        // with the subtree the outer boundary throws away.
+        assert!(arena.get(inner).is_none());
+        assert!(arena.get(child).is_none());
+        assert_eq!(arena.handler_depth(), 0);
+        arena.end_render();
     }
 }
