@@ -35,7 +35,7 @@ impl Transcript {
         Self {
             alg,
             hasher: HashCtx::new(alg),
-            bytes: Vec::new(),
+            bytes: Vec::with_capacity(256),
         }
     }
 

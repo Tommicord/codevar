@@ -115,8 +115,8 @@ impl RecordLayer {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            rx_buf: Vec::new(),
-            tx_buf: Vec::new(),
+            rx_buf: Vec::with_capacity(RECORD_HEADER_LEN),
+            tx_buf: Vec::with_capacity(RECORD_HEADER_LEN),
             read_keys: None,
             write_keys: None,
             read_mode: RecordProtection::Cleartext,

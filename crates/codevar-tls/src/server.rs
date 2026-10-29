@@ -91,7 +91,7 @@ impl TlsServerConnection {
             hs: ServerHs::ExpectClientHello,
             server_random: [0u8; 32],
             client_random: None,
-            session_id_echo: Vec::new(),
+            session_id_echo: Vec::with_capacity(32),
             kx: None,
             hrr_sent: false,
             tls13: None,
@@ -365,7 +365,7 @@ impl TlsServerConnection {
     }
 
     fn send_hello_retry_request(&mut self, suite: CipherSuite, group: NamedGroup) -> TlsResult<()> {
-        let mut ext = Vec::new();
+        let mut ext = Vec::with_capacity(32);
         let idx = start_extensions(&mut ext);
         put_extension(
             &mut ext,
@@ -398,7 +398,7 @@ impl TlsServerConnection {
             .suite
             .ok_or_else(|| TlsError::Internal("suite".into()))?;
         // ServerHello
-        let mut ext = Vec::new();
+        let mut ext = Vec::with_capacity(64);
         let idx = start_extensions(&mut ext);
         put_extension(
             &mut ext,
@@ -439,7 +439,7 @@ impl TlsServerConnection {
         );
 
         // EncryptedExtensions
-        let mut ee_ext = Vec::new();
+        let mut ee_ext = Vec::with_capacity(32);
         let ee_idx = start_extensions(&mut ee_ext);
         if let Some(alpn) = &self.common.alpn {
             put_extension(
@@ -576,7 +576,7 @@ impl TlsServerConnection {
         self.server_random = random;
 
         // ServerHello
-        let mut ext = Vec::new();
+        let mut ext = Vec::with_capacity(64);
         let idx = start_extensions(&mut ext);
         if self.ems {
             put_extension(&mut ext, ExtensionType::ExtendedMasterSecret, &[])?;
