@@ -58,8 +58,8 @@
 //! fiber arena, the hook model, the element vocabulary, keyed reconciliation,
 //! the begin/complete work pass, the commit phases and the root that drives
 //! them are in place. The public surface is [`lane`], [`element`], [`Host`],
-//! [`Key`], [`Props`], [`RenderCtx`], [`State`], [`Cleanup`], [`Wakeable`] and
-//! [`Root`].
+//! [`Key`], [`Props`], [`RenderCtx`], [`State`], [`Transition`], [`Cleanup`],
+//! [`Wakeable`] and [`Root`].
 //!
 //! The root renders every pending lane before it returns by default, and a
 //! render whose lanes are speculative can be time sliced: [`Root::flush_slice`]
@@ -70,6 +70,14 @@
 //! renders is rendered again in place, so the intermediate tree is never
 //! mounted, and a fiber whose description did not change and whose lanes the
 //! render does not cover bails out.
+//!
+//! A transition is a scope whose dispatches take a transition lane:
+//! [`Root::start_transition`] runs one from the host,
+//! [`RenderCtx::use_transition`] returns the pending flag and a starter for a
+//! component. The urgent work of the event renders first and the transition
+//! after it; the transitions of one event share a lane, and each later event
+//! takes the next lane of the rotation, so a transition never waits behind an
+//! older one.
 //!
 //! A component that cannot describe its tree without more data suspends with a
 //! wakeable. A [`Element::suspense`] boundary above it catches the suspension
@@ -110,7 +118,7 @@ mod wakeable;
 mod work;
 
 pub use element::Element;
-pub use hooks::{Cleanup, RenderCtx, State};
+pub use hooks::{Cleanup, RenderCtx, State, Transition};
 pub use host::{Host, Key, Props, props, props_ref};
 pub use lane::{LANE_COUNT, Lanes, SchedulerPriority};
 pub use root::Root;

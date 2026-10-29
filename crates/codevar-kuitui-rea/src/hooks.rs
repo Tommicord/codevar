@@ -253,7 +253,7 @@ pub(crate) struct Mailbox {
     ///
     /// This is React's `ReactCurrentBatchConfig.transition`: a dispatch that
     /// sees it takes a transition lane instead of the lane it was given.
-    transition: Option<Transition>,
+    transition: Option<TransitionScope>,
     /// The transition lane every transition of the current event shares.
     ///
     /// React's `currentEventTransitionLane`. The first transition dispatch of
@@ -284,7 +284,7 @@ impl Default for Mailbox {
 }
 
 /// The transition scope [`start_transition`] is running.
-struct Transition;
+struct TransitionScope;
 
 /// A boundary a retry listener named.
 ///
@@ -452,7 +452,7 @@ pub(crate) fn mailbox() -> MailboxHandle {
 pub(crate) fn start_transition<R>(mailbox: &MailboxHandle, scope: impl FnOnce() -> R) -> R {
     let previous = {
         let mut mailbox = mailbox.borrow_mut();
-        mailbox.transition.replace(Transition)
+        mailbox.transition.replace(TransitionScope)
     };
     let result = scope();
     mailbox.borrow_mut().transition = previous;
@@ -601,6 +601,40 @@ impl<T> Clone for State<T> {
             queue: Rc::clone(&self.queue),
             mailbox: Rc::clone(&self.mailbox),
         }
+    }
+}
+
+/// The starter of a [`RenderCtx::use_transition`] pair.
+///
+/// A clone is cheap and every clone drives the same pending flag. The value a
+/// component captures in a handler stays valid across renders, because it holds
+/// the state handle and the mailbox rather than the render scope.
+#[derive(Clone)]
+pub struct Transition {
+    /// The pending flag the starter raises and lowers.
+    pending: State<bool>,
+    /// The root's mailbox, which carries the transition scope.
+    mailbox: MailboxHandle,
+}
+
+impl Transition {
+    /// Runs `scope` as a transition and moves the pending flag around it.
+    ///
+    /// The flag is raised before the scope opens, on the default lane, so the
+    /// blocking render that follows shows it. It is lowered inside the scope,
+    /// so that update rides the transition lane and the render that clears the
+    /// flag is the one that applies the scope's work. React's `startTransition`
+    /// calls `setPending` the same way around
+    /// `ReactCurrentBatchConfig.transition`.
+    ///
+    /// Nothing renders when the call returns; the host decides when, by
+    /// flushing or by handing the root a slice.
+    pub fn start(&self, scope: impl FnOnce()) {
+        self.pending.set(true);
+        start_transition(&self.mailbox, || {
+            self.pending.set(false);
+            scope();
+        });
     }
 }
 
@@ -987,6 +1021,35 @@ impl<'a> RenderCtx<'a> {
             queue,
             mailbox: Rc::clone(&self.mailbox),
         }
+    }
+
+    /// Returns whether a transition is pending and the starter that runs one.
+    ///
+    /// This is React's `useTransition`. The starter is the same value across
+    /// renders, so a handler can keep it. [`Transition::start`] raises the
+    /// pending flag and runs its scope with every dispatch inside it marked as
+    /// a transition: the flag and the event's urgent updates render first, then
+    /// the transition's own updates render and clear it.
+    ///
+    /// The hook consumes two slots — the pending state and the starter — the
+    /// way `mountTransition` does with its state hook and its memoized `start`.
+    pub fn use_transition(&mut self) -> (bool, Transition) {
+        let pending = self.use_state(|| false);
+        let is_pending = *pending.get();
+        let slot = Self::next_slot(self.hooks, &mut self.cursor);
+        if let Some(start) = slot
+            .value
+            .as_deref()
+            .and_then(|value| value.downcast_ref::<Transition>())
+        {
+            return (is_pending, start.clone());
+        }
+        let start = Transition {
+            pending,
+            mailbox: Rc::clone(&self.mailbox),
+        };
+        slot.value = Some(Rc::new(start.clone()) as Rc<dyn Any>);
+        (is_pending, start)
     }
 
     /// Replays the update queue of a state hook for one render.
@@ -1687,6 +1750,47 @@ mod tests {
         assert_eq!(*state.get(), 2);
         assert!(harness.skipped.is_empty());
         harness.end();
+    }
+
+    #[test]
+    fn a_transition_starter_raises_the_flag_and_runs_the_scope() {
+        let mut harness = Harness::new();
+        let (pending, start, value) = harness.render(|ctx| {
+            let (pending, start) = ctx.use_transition();
+            let value = ctx.use_state(|| 1_u32);
+            (pending, start, value)
+        });
+        assert!(!pending);
+        harness.commit();
+
+        start.start(|| value.set(2));
+        // The flag goes up on the default lane; its lowering and the value
+        // then ride the transition lane.
+        assert_eq!(
+            harness.drained_lanes(),
+            [Lanes::DEFAULT, Lanes::TRANSITION_FIRST, Lanes::TRANSITION_FIRST]
+        );
+
+        // The default render raises the flag and leaves the transition's
+        // updates pending.
+        harness.lanes = Lanes::DEFAULT;
+        let (pending, _, value) = harness.render(|ctx| {
+            let (pending, start) = ctx.use_transition();
+            let value = ctx.use_state(|| 1_u32);
+            (pending, start, value)
+        });
+        assert!(pending);
+        assert_eq!(*value.get(), 1);
+        harness.commit();
+
+        // The transition render applies them and clears the flag.
+        harness.lanes = Lanes::TRANSITION_FIRST;
+        let (pending, value) = harness.render(|ctx| {
+            let (pending, _) = ctx.use_transition();
+            (pending, ctx.use_state(|| 1_u32))
+        });
+        assert!(!pending);
+        assert_eq!(*value.get(), 2);
     }
 
     #[test]
