@@ -97,6 +97,18 @@ use crate::wakeable::Wakeable;
 /// nothing to clean up.
 pub type Cleanup = Box<dyn FnOnce()>;
 
+/// The callback a store subscription installs.
+///
+/// The store calls it whenever its snapshot may have changed; the hook then
+/// reads the snapshot and only renders when it moved.
+pub type OnStoreChange = Rc<dyn Fn()>;
+
+/// A function that subscribes to an external store.
+///
+/// The argument is the [`OnStoreChange`] callback to install; the returned
+/// [`Cleanup`] removes the subscription.
+pub type Subscribe = Rc<dyn Fn(OnStoreChange) -> Cleanup>;
+
 /// What a [`State`] dispatch does to the value.
 ///
 /// A reducer's dispatch stores its action as it is instead, because React
@@ -681,6 +693,64 @@ impl<A> Clone for Dispatch<A> {
             mailbox: Rc::clone(&self.mailbox),
             action: PhantomData,
         }
+    }
+}
+
+/// The state one [`RenderCtx::use_sync_external_store`] hook keeps between
+/// renders.
+struct ExternalStore<T> {
+    /// The snapshot the last render read. React's `hook.memoizedState`.
+    rendered: Rc<T>,
+    /// The instance the effects keep current. React's `hook.queue`.
+    instance: Rc<RefCell<StoreInstance<T>>>,
+}
+
+/// What a subscription compares the store against. React's `inst`.
+struct StoreInstance<T> {
+    /// The snapshot the last commit saw.
+    value: Rc<T>,
+    /// The reader the hook was last given.
+    get_snapshot: Rc<dyn Fn() -> T>,
+}
+
+/// Whether the store moved since the snapshot the instance remembers.
+///
+/// React's `checkIfSnapshotChanged`. The instance is borrowed only to take the
+/// reader and the value: the reader is a callback the store owns, and holding
+/// the borrow across it would make a re-entrant notification panic.
+fn snapshot_changed<T: PartialEq>(instance: &Rc<RefCell<StoreInstance<T>>>) -> bool {
+    let (value, get_snapshot) = {
+        let instance = instance.borrow();
+        (Rc::clone(&instance.value), Rc::clone(&instance.get_snapshot))
+    };
+    get_snapshot() != *value
+}
+
+/// The dependencies of a store subscription: the subscriber, by identity.
+struct SubscribeDeps(Subscribe);
+
+impl PartialEq for SubscribeDeps {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// The dependencies of a store instance update: the reader and the subscriber
+/// by identity, and the rendered snapshot by value.
+struct StoreDeps<T> {
+    /// The reader this render was given.
+    get_snapshot: Rc<dyn Fn() -> T>,
+    /// The subscriber this render was given.
+    subscribe: Subscribe,
+    /// The snapshot this render read.
+    value: Rc<T>,
+}
+
+impl<T: PartialEq> PartialEq for StoreDeps<T> {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.get_snapshot, &other.get_snapshot)
+            && Rc::ptr_eq(&self.subscribe, &other.subscribe)
+            && self.value == other.value
     }
 }
 
@@ -1276,6 +1346,139 @@ impl<'a> RenderCtx<'a> {
             slot.deferred = true;
         }
         (*previous).clone()
+    }
+
+    /// Returns the snapshot of an external store and subscribes to it.
+    ///
+    /// This is React's `useSyncExternalStore`. The snapshot is read on every
+    /// render, and the store wakes the component when its subscription reports
+    /// a change; a notification does not render if the snapshot it reports
+    /// equals the one the last commit saw. The two functions are compared by
+    /// identity, the way React compares the functions a component passes, so a
+    /// component that builds `subscribe` on every render re-subscribes on
+    /// every commit. Hand a stable handle — for example one captured in
+    /// [`RenderCtx::use_memo`] — to subscribe once.
+    ///
+    /// The subscription is a passive effect: it installs after the frame, and
+    /// its cleanup runs when the subscriber changes or the component unmounts.
+    /// A second passive effect keeps the instance the subscription compares
+    /// against current, and re-checks the store because an effect or an event
+    /// may have moved it between the render and the commit. A store change
+    /// renders on the sync lane, as React's `forceStoreRerender` schedules it
+    /// there, so the screen never waits for the change behind lower work.
+    pub fn use_sync_external_store<T: PartialEq + 'static>(
+        &mut self,
+        subscribe: Subscribe,
+        get_snapshot: Rc<dyn Fn() -> T>,
+    ) -> Rc<T> {
+        let next = Rc::new(get_snapshot());
+        let slot = Self::next_slot(self.hooks, &mut self.cursor);
+        let (rendered, instance, queue) = match slot
+            .value
+            .as_deref()
+            .and_then(|value| value.downcast_ref::<Rc<ExternalStore<T>>>())
+            .zip(slot.queue.as_ref())
+        {
+            Some((store, queue)) => {
+                let store = Rc::clone(store);
+                let queue = Rc::clone(queue);
+                queue.borrow_mut().owner.set(Some(self.fiber));
+                // `updateSyncExternalStore`: a render that reads a snapshot
+                // other than the one the last commit recorded has performed
+                // work even though no update marked the fiber.
+                if store.rendered != next {
+                    self.did_update = true;
+                }
+                (next, Rc::clone(&store.instance), queue)
+            }
+            None => {
+                // The queue carries no updates of its own: it exists so a
+                // store notification can name the fiber through it, the way
+                // React's `forceStoreRerender` schedules the fiber itself.
+                let queue = Rc::new(RefCell::new(UpdateQueue {
+                    pending: Vec::new(),
+                    base: Vec::new(),
+                    base_state: None,
+                    owner: Cell::new(Some(self.fiber)),
+                    last_rendered: None,
+                    committed: None,
+                }));
+                let instance = Rc::new(RefCell::new(StoreInstance {
+                    value: Rc::clone(&next),
+                    get_snapshot: Rc::clone(&get_snapshot),
+                }));
+                slot.queue = Some(Rc::clone(&queue));
+                (Rc::clone(&next), instance, queue)
+            }
+        };
+        // The effects hold the instance, not the slot's store: a later render
+        // replaces the store's rendered snapshot, while the subscription must
+        // keep comparing against the one instance.
+        slot.value = Some(Rc::new(Rc::new(ExternalStore {
+            rendered: Rc::clone(&rendered),
+            instance: Rc::clone(&instance),
+        })) as Rc<dyn Any>);
+
+        // The subscription follows `subscribe` alone, so a snapshot change
+        // never replaces a subscription that is still the one the component
+        // passed.
+        let deps = SubscribeDeps(Rc::clone(&subscribe));
+        let mailbox = Rc::clone(&self.mailbox);
+        self.use_effect(deps, {
+            let instance = Rc::clone(&instance);
+            let queue = Rc::clone(&queue);
+            let mailbox = Rc::clone(&mailbox);
+            let subscribe = Rc::clone(&subscribe);
+            move || {
+                let instance = Rc::clone(&instance);
+                let queue = Rc::clone(&queue);
+                let mailbox = Rc::clone(&mailbox);
+                let subscribe = Rc::clone(&subscribe);
+                // `subscribeToStore`: the listener checks the snapshot the
+                // instance remembers, and only a real change wakes the root.
+                Some(subscribe(Rc::new(move || {
+                    if snapshot_changed(&instance) {
+                        mailbox
+                            .borrow_mut()
+                            .signal(Rc::clone(&queue), Lanes::SYNC);
+                    }
+                }) as Rc<dyn Fn()>))
+            }
+        });
+
+        // `updateStoreInstance`, pushed whenever the reader, the subscriber or
+        // the rendered snapshot changed — and on mount, which
+        // `use_effect` already covers with the empty committed deps.
+        self.use_effect(
+            StoreDeps {
+                get_snapshot: Rc::clone(&get_snapshot),
+                subscribe: Rc::clone(&subscribe),
+                value: Rc::clone(&rendered),
+            },
+            {
+                let instance = Rc::clone(&instance);
+                let queue = Rc::clone(&queue);
+                let mailbox = Rc::clone(&mailbox);
+                let value = Rc::clone(&rendered);
+                move || {
+                    {
+                        let mut instance = instance.borrow_mut();
+                        instance.value = Rc::clone(&value);
+                        instance.get_snapshot = Rc::clone(&get_snapshot);
+                    }
+                    // An event or an earlier effect may have moved the store
+                    // between the render and this effect; React checks again
+                    // and forces the render the stale snapshot missed.
+                    if snapshot_changed(&instance) {
+                        mailbox
+                            .borrow_mut()
+                            .signal(Rc::clone(&queue), Lanes::SYNC);
+                    }
+                    None
+                }
+            },
+        );
+        rendered
     }
 
     /// Replays the update queue of a state hook for one render.
@@ -2249,5 +2452,202 @@ mod tests {
         let state = harness.render(|ctx| ctx.use_state(|| 1_u32));
         assert_eq!(*state.get(), 2);
         harness.end();
+    }
+
+    /// A store a component can read and a test can move, with the listener the
+    /// subscription installs.
+    struct TestStore {
+        value: Rc<Cell<u32>>,
+        listener: Rc<RefCell<Option<OnStoreChange>>>,
+        subscribed: Rc<Cell<u32>>,
+        unsubscribed: Rc<Cell<u32>>,
+        subscribe: Subscribe,
+        get_snapshot: Rc<dyn Fn() -> u32>,
+    }
+
+    impl TestStore {
+        fn new(value: u32) -> Self {
+            let value = Rc::new(Cell::new(value));
+            let listener: Rc<RefCell<Option<OnStoreChange>>> = Rc::new(RefCell::new(None));
+            let subscribed = Rc::new(Cell::new(0));
+            let unsubscribed = Rc::new(Cell::new(0));
+            let subscribe = {
+                let current = Rc::clone(&listener);
+                let subscribed = Rc::clone(&subscribed);
+                let unsubscribed = Rc::clone(&unsubscribed);
+                Rc::new(move |on_change: Rc<dyn Fn()>| -> Cleanup {
+                    *current.borrow_mut() = Some(on_change);
+                    subscribed.set(subscribed.get() + 1);
+                    let current = Rc::clone(&current);
+                    let unsubscribed = Rc::clone(&unsubscribed);
+                    Box::new(move || {
+                        *current.borrow_mut() = None;
+                        unsubscribed.set(unsubscribed.get() + 1);
+                    })
+                }) as Subscribe
+            };
+            let get_snapshot = {
+                let value = Rc::clone(&value);
+                Rc::new(move || value.get()) as Rc<dyn Fn() -> u32>
+            };
+            Self {
+                value,
+                listener,
+                subscribed,
+                unsubscribed,
+                subscribe,
+                get_snapshot,
+            }
+        }
+
+        /// Moves the store without telling anyone.
+        fn set(&self, value: u32) {
+            self.value.set(value);
+        }
+
+        /// Calls the listener the current subscription installed.
+        fn notify(&self) {
+            let listener = self.listener.borrow().clone();
+            if let Some(listener) = listener {
+                listener();
+            }
+        }
+
+        /// A subscriber with its own identity that does the same thing, to
+        /// change the function a render passes without changing the store.
+        fn resubscribe(&self) -> Subscribe {
+            let subscribe = Rc::clone(&self.subscribe);
+            Rc::new(move |on_change| subscribe(on_change))
+        }
+    }
+
+    #[test]
+    fn a_store_reads_its_snapshot_and_queues_its_subscription() {
+        let mut harness = Harness::new();
+        let store = TestStore::new(1);
+        let shown = harness.render(|ctx| {
+            ctx.use_sync_external_store(Rc::clone(&store.subscribe), Rc::clone(&store.get_snapshot))
+        });
+        assert_eq!(*shown, 1);
+
+        // The subscription and the instance update are passive effects, in the
+        // order React pushes them. Neither has installed anything yet.
+        assert_eq!(harness.effects.len(), 2);
+        assert_eq!(harness.effects[0].tag(), EffectTag::Passive);
+        assert_eq!(harness.effects[1].tag(), EffectTag::Passive);
+        assert_eq!(store.subscribed.get(), 0);
+
+        harness.effects[0].create();
+        harness.effects[1].create();
+        assert_eq!(store.subscribed.get(), 1);
+        // The instance effect found the snapshot the render read, so it does
+        // not wake the root.
+        assert_eq!(harness.signals(), 0);
+    }
+
+    #[test]
+    fn a_store_notification_wakes_only_on_a_changed_snapshot() {
+        let mut harness = Harness::new();
+        let store = TestStore::new(1);
+        harness.render(|ctx| {
+            ctx.use_sync_external_store(Rc::clone(&store.subscribe), Rc::clone(&store.get_snapshot))
+        });
+        harness.effects[0].create();
+        harness.effects[1].create();
+
+        // A notification that reports the snapshot the commit already saw is
+        // not work.
+        store.notify();
+        assert_eq!(harness.signals(), 0);
+
+        store.set(2);
+        store.notify();
+        // `forceStoreRerender` schedules on the sync lane, so the change never
+        // waits behind lower work.
+        assert_eq!(harness.drained_lanes(), [Lanes::SYNC]);
+
+        harness.lanes = Lanes::SYNC;
+        let shown = harness.render(|ctx| {
+            ctx.use_sync_external_store(Rc::clone(&store.subscribe), Rc::clone(&store.get_snapshot))
+        });
+        assert_eq!(*shown, 2);
+        // The reader and the subscriber are the same, so only the instance
+        // update follows the changed snapshot.
+        assert_eq!(harness.effects.len(), 1);
+        harness.effects[0].create();
+        assert_eq!(harness.signals(), 0);
+
+        // The listener the first subscription installed compares against the
+        // same instance this commit refreshed, so the repeated notification is
+        // still nothing.
+        store.notify();
+        assert_eq!(harness.signals(), 0);
+    }
+
+    #[test]
+    fn a_store_that_moved_before_its_effect_renders_again() {
+        let mut harness = Harness::new();
+        let store = TestStore::new(1);
+        harness.render(|ctx| {
+            ctx.use_sync_external_store(Rc::clone(&store.subscribe), Rc::clone(&store.get_snapshot))
+        });
+
+        // The store moves between the render and the passive effects, the way
+        // an event or a layout effect moves it in React.
+        store.set(5);
+        harness.effects[0].create();
+        harness.effects[1].create();
+
+        // `updateStoreInstance` checks the store again and forces the render
+        // the stale snapshot missed.
+        assert_eq!(harness.drained_lanes(), [Lanes::SYNC]);
+    }
+
+    #[test]
+    fn a_stable_subscription_survives_a_render() {
+        let mut harness = Harness::new();
+        let store = TestStore::new(1);
+        harness.render(|ctx| {
+            ctx.use_sync_external_store(Rc::clone(&store.subscribe), Rc::clone(&store.get_snapshot))
+        });
+        harness.effects[0].create();
+        harness.effects[1].create();
+        harness.commit();
+
+        // Same subscriber and reader by identity, same snapshot: React pushes
+        // neither effect again.
+        harness.render(|ctx| {
+            ctx.use_sync_external_store(Rc::clone(&store.subscribe), Rc::clone(&store.get_snapshot))
+        });
+        assert!(harness.effects.is_empty());
+        assert_eq!(store.subscribed.get(), 1);
+    }
+
+    #[test]
+    fn a_new_subscription_replaces_the_previous_one() {
+        let mut harness = Harness::new();
+        let store = TestStore::new(1);
+        harness.render(|ctx| {
+            ctx.use_sync_external_store(Rc::clone(&store.subscribe), Rc::clone(&store.get_snapshot))
+        });
+        harness.effects[0].create();
+        harness.effects[1].create();
+        harness.commit();
+
+        let subscribe = store.resubscribe();
+        harness
+            .render(|ctx| ctx.use_sync_external_store(Rc::clone(&subscribe), Rc::clone(&store.get_snapshot)));
+        // The subscriber changed by identity, so both effects run again.
+        assert_eq!(harness.effects.len(), 2);
+
+        // The commit cleans the old subscription up before creating the new
+        // one, the way the passive unmount pass runs first.
+        harness.effects[0].unmount();
+        harness.effects[1].unmount();
+        harness.effects[0].create();
+        harness.effects[1].create();
+        assert_eq!(store.unsubscribed.get(), 1);
+        assert_eq!(store.subscribed.get(), 2);
+        assert_eq!(harness.signals(), 0);
     }
 }

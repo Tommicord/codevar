@@ -1263,7 +1263,7 @@ fn includes_only_transitions(lanes: Lanes) -> bool {
 mod tests {
     use super::*;
     use crate::element::Reference;
-    use crate::hooks::{Cleanup, Dispatch, State};
+    use crate::hooks::{Cleanup, Dispatch, OnStoreChange, State, Subscribe};
     use crate::wakeable::Wakeable;
     use alloc::rc::Rc;
     use alloc::vec;
@@ -1503,6 +1503,87 @@ mod tests {
         assert_eq!(*log.borrow(), [1, 6]);
         assert_eq!(top_level(&root), [Some(6)]);
         assert!(!root.has_pending_work());
+    }
+
+    /// A store a component can read and a test can move, with the listener the
+    /// subscription installs.
+    struct Store {
+        value: Rc<Cell<u32>>,
+        listener: Rc<RefCell<Option<OnStoreChange>>>,
+        subscribe: Subscribe,
+        get_snapshot: Rc<dyn Fn() -> u32>,
+    }
+
+    impl Store {
+        fn new(value: u32) -> Self {
+            let value = Rc::new(Cell::new(value));
+            let listener: Rc<RefCell<Option<OnStoreChange>>> = Rc::new(RefCell::new(None));
+            let subscribe = {
+                let current = Rc::clone(&listener);
+                Rc::new(move |on_change: Rc<dyn Fn()>| -> Cleanup {
+                    *current.borrow_mut() = Some(on_change);
+                    let current = Rc::clone(&current);
+                    Box::new(move || *current.borrow_mut() = None)
+                }) as Subscribe
+            };
+            let get_snapshot = {
+                let value = Rc::clone(&value);
+                Rc::new(move || value.get()) as Rc<dyn Fn() -> u32>
+            };
+            Self {
+                value,
+                listener,
+                subscribe,
+                get_snapshot,
+            }
+        }
+
+        /// Moves the store without telling anyone.
+        fn set(&self, value: u32) {
+            self.value.set(value);
+        }
+
+        /// Calls the listener the current subscription installed.
+        fn notify(&self) {
+            let listener = self.listener.borrow().clone();
+            if let Some(listener) = listener {
+                listener();
+            }
+        }
+    }
+
+    /// A component that renders a store's snapshot and records what it read.
+    fn stored(store: &Store, log: &Rc<RefCell<Vec<u32>>>) -> Element<TreeHost> {
+        let subscribe = Rc::clone(&store.subscribe);
+        let get_snapshot = Rc::clone(&store.get_snapshot);
+        let log = Rc::clone(log);
+        Element::component(move |ctx| {
+            let shown = ctx.use_sync_external_store(Rc::clone(&subscribe), Rc::clone(&get_snapshot));
+            log.borrow_mut().push(*shown);
+            Element::host(*shown)
+        })
+    }
+
+    #[test]
+    fn a_store_notification_renders_through_the_root() {
+        let store = Store::new(1);
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut root = mount(stored(&store, &log));
+
+        // The mount commit ran the subscription effect, so the store has a
+        // listener to call.
+        store.set(2);
+        store.notify();
+        root.flush();
+        assert_eq!(*log.borrow(), [1, 2]);
+        assert_eq!(top_level(&root), [Some(2)]);
+        assert!(!root.has_pending_work());
+
+        // A notification that reports the snapshot the commit already saw is
+        // not work.
+        store.notify();
+        root.flush();
+        assert_eq!(*log.borrow(), [1, 2]);
     }
 
     #[test]
