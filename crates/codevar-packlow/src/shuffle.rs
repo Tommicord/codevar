@@ -50,7 +50,7 @@ impl ShuffleTable {
     #[must_use]
     pub fn new(capacity: usize) -> Self {
         Self {
-            entries: Vec::new(),
+            entries: Vec::with_capacity(capacity.max(1)),
             capacity: capacity.max(1),
         }
     }
