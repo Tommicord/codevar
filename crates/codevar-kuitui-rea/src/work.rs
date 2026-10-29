@@ -84,7 +84,7 @@ use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::mem;
 
-use crate::element::{Element, SuspenseNode};
+use crate::element::{AnyContext, Element, SuspenseNode};
 use crate::fiber::{Arena, Fiber, FiberId, FiberTag, Flags, Payload, Visibility};
 use crate::hooks::{EffectTag, MailboxHandle, RenderCtx, RenderOutput};
 use crate::host::Host;
@@ -572,6 +572,16 @@ impl<'a, H: Host> WorkLoop<'a, H> {
             .get_mut(fiber)
             .map(|fiber| mem::take(&mut fiber.store_checks))
             .unwrap_or_default();
+        // React's `prepareToReadContext` drops the dependency list the previous
+        // render built: the reads of this render are the ones the next
+        // propagation has to match. The list is rebuilt across the passes of a
+        // render-phase update, so it is cleared once, before the loop.
+        let mut dependencies = self
+            .arena
+            .get_mut(fiber)
+            .map(|fiber| mem::take(&mut fiber.dependencies))
+            .unwrap_or_default();
+        dependencies.clear();
         hooks.begin_render();
         let alternate = self
             .arena
@@ -593,6 +603,7 @@ impl<'a, H: Host> WorkLoop<'a, H> {
                     RenderOutput {
                         effects: &mut effects,
                         store_checks: &mut store_checks,
+                        dependencies: &mut dependencies,
                     },
                     self.render_lanes,
                     &mut lanes,
@@ -627,6 +638,7 @@ impl<'a, H: Host> WorkLoop<'a, H> {
             if let Some(current) = self.arena.get_mut(fiber) {
                 current.hooks = hooks;
                 current.effects = effects;
+                current.dependencies = dependencies;
             }
             return Begin::Suspended(wakeable);
         }
@@ -644,6 +656,7 @@ impl<'a, H: Host> WorkLoop<'a, H> {
             current.hooks = hooks;
             current.effects = effects;
             current.store_checks = store_checks;
+            current.dependencies = dependencies;
             current.flags.insert(flags);
             current.lanes.insert(lanes);
         }
@@ -671,12 +684,12 @@ impl<'a, H: Host> WorkLoop<'a, H> {
     /// reads the value the provider was just given, and the completion that
     /// follows the subtree puts the previous value back.
     ///
-    /// React also walks the subtree here when the value changed
-    /// (`propagateContextChange`), marking the lanes of every consumer, so a
-    /// consumer below a provider whose children did not change still
-    /// re-renders. Rea has no consumer to mark until a hook reads a context:
-    /// today a changed value reaches the children through the elements the
-    /// provider carries.
+    /// A value that changed hands the subtree a value it was not rendered
+    /// with, so the consumers below it have to render again even when the
+    /// element their parents produced for them is the same one as last time.
+    /// [`WorkLoop::propagate_context_change`] is React's eager
+    /// `propagateContextChange`: it marks them before the children are
+    /// reconciled, so the work they do belongs to this render's lanes.
     fn render_provider(&mut self, fiber: FiberId) -> Begin {
         let Some(Payload::Provider(node)) = self
             .arena
@@ -687,8 +700,132 @@ impl<'a, H: Host> WorkLoop<'a, H> {
         };
         self.arena
             .push_provider(fiber, Rc::clone(&node.context), Rc::clone(&node.value));
+        let changed = match self.arena.get(fiber).map(|fiber| &fiber.memoized) {
+            Some(Payload::Provider(old)) => !Rc::ptr_eq(&old.value, &node.value),
+            _ => false,
+        };
+        if changed {
+            self.propagate_context_change(fiber, &node.context);
+        }
         self.reconcile(fiber, &node.children);
         self.child_or_complete(fiber)
+    }
+
+    /// Marks every consumer of `context` below `provider` for this render.
+    ///
+    /// This is React's `propagateContextChange` with eager propagation, which
+    /// is what React 18 does when `enableLazyContextPropagation` is off. The
+    /// walk covers the provider's committed subtree — reconciliation has not
+    /// run yet, so its children are the fibers the host currently shows — and
+    /// marks the dependencies of every fiber whose list names `context`.
+    /// Marking the consumer's lanes is what makes `did_receive_update` see the
+    /// change, and marking `child_lanes` up to the provider is what keeps the
+    /// path from bailing out before it reaches the consumer.
+    ///
+    /// A nested provider of the same context is skipped with its subtree: what
+    /// is below it reads the inner value, and the inner provider publishes —
+    /// and propagates — whatever changed there itself.
+    fn propagate_context_change(&mut self, provider: FiberId, context: &Rc<dyn AnyContext>) {
+        let lanes = self.render_lanes;
+        let Some(root) = self
+            .arena
+            .get(provider)
+            .and_then(|fiber| fiber.alternate)
+        else {
+            return;
+        };
+        let mut next = self
+            .arena
+            .get(provider)
+            .and_then(|fiber| fiber.first_child);
+        while let Some(fiber) = next {
+            let Some(node) = self.arena.get(fiber) else {
+                break;
+            };
+            let child = node.first_child;
+            let alternate = node.alternate;
+            let parent = node.parent;
+            let reads = node
+                .dependencies
+                .iter()
+                .any(|dependency| Rc::ptr_eq(dependency, context));
+            let descend = node.tag != FiberTag::Provider
+                || !matches!(&node.memoized, Payload::Provider(nested) if Rc::ptr_eq(&nested.context, context));
+            if reads {
+                if let Some(node) = self.arena.get_mut(fiber) {
+                    node.lanes.insert(lanes);
+                }
+                if let Some(alternate) = alternate
+                    && let Some(node) = self.arena.get_mut(alternate)
+                {
+                    node.lanes.insert(lanes);
+                }
+                self.schedule_context_work_on_parent_path(parent, root, lanes);
+            }
+            next = match descend {
+                true => child,
+                false => None,
+            };
+            if next.is_some() {
+                continue;
+            }
+            // No child to visit: continue at the next sibling, climbing out of
+            // every subtree that ran out of siblings and stopping at the
+            // provider, whose siblings are outside the subtree it publishes to.
+            let mut step = Some(fiber);
+            next = loop {
+                match step {
+                    Some(current) if current != root && current != provider => {
+                        match self
+                            .arena
+                            .get(current)
+                            .and_then(|node| node.sibling)
+                        {
+                            Some(sibling) => break Some(sibling),
+                            None => {
+                                step = self
+                                    .arena
+                                    .get(current)
+                                    .and_then(|node| node.parent)
+                            }
+                        }
+                    }
+                    _ => break None,
+                }
+            };
+        }
+    }
+
+    /// Marks the path from `parent` up to `root` as having work below it.
+    ///
+    /// This is React's `scheduleContextWorkOnParentPath`. Both halves of every
+    /// fiber on the path get the lanes, because either half may be the one a
+    /// later bailout consults, and the walk stops at the provider that started
+    /// the propagation: nothing above it descends because of a value it
+    /// publishes.
+    fn schedule_context_work_on_parent_path(&mut self, parent: Option<FiberId>, root: FiberId, lanes: Lanes) {
+        let mut node = parent;
+        while let Some(current) = node {
+            let alternate = self
+                .arena
+                .get(current)
+                .and_then(|fiber| fiber.alternate);
+            if let Some(fiber) = self.arena.get_mut(current) {
+                fiber.child_lanes.insert(lanes);
+            }
+            if let Some(alternate) = alternate
+                && let Some(fiber) = self.arena.get_mut(alternate)
+            {
+                fiber.child_lanes.insert(lanes);
+            }
+            if current == root {
+                break;
+            }
+            node = self
+                .arena
+                .get(current)
+                .and_then(|fiber| fiber.parent);
+        }
     }
 
     /// Publishes what a provider holds without reconciling its children.
@@ -2267,5 +2404,109 @@ mod tests {
         // The value is published for the render that published it and no
         // longer.
         assert_eq!(*context.read(), 0);
+    }
+
+    /// A consumer that records the value it reads and how often it rendered.
+    fn consumer(
+        context: &Rc<Context<u16>>,
+        seen: &Rc<Cell<u16>>,
+        renders: &Rc<Cell<u32>>,
+    ) -> Element<TestHost> {
+        let reader = Rc::clone(context);
+        let recorded = Rc::clone(seen);
+        let counted = Rc::clone(renders);
+        Element::component(move |ctx| {
+            counted.set(counted.get() + 1);
+            recorded.set(*ctx.use_context(&reader));
+            Element::host((0, 1))
+        })
+    }
+
+    #[test]
+    fn a_provider_that_publishes_a_new_value_renders_its_consumers_again() {
+        let mut harness = Harness::new();
+        let context = Context::new(0_u16);
+        let seen = Rc::new(Cell::new(0_u16));
+        let renders = Rc::new(Cell::new(0_u32));
+        let child = consumer(&context, &seen, &renders);
+
+        harness.render(Element::provider(&context, Rc::new(1_u16), [child.clone()]));
+        assert_eq!((seen.get(), renders.get()), (1, 1));
+
+        // The child element is the one the first render produced, so nothing
+        // below the provider would render on its own: the published value is
+        // the only thing that changed.
+        harness.render(Element::provider(&context, Rc::new(2_u16), [child]));
+        assert_eq!((seen.get(), renders.get()), (2, 2));
+    }
+
+    #[test]
+    fn a_provider_with_the_same_value_leaves_its_consumers_alone() {
+        let mut harness = Harness::new();
+        let context = Context::new(0_u16);
+        let seen = Rc::new(Cell::new(0_u16));
+        let renders = Rc::new(Cell::new(0_u32));
+        let child = consumer(&context, &seen, &renders);
+        let value = Rc::new(1_u16);
+
+        harness.render(Element::provider(&context, Rc::clone(&value), [child.clone()]));
+        assert_eq!(renders.get(), 1);
+
+        // The provider element is new, so the provider itself renders again,
+        // but the value it publishes is the same allocation: its consumers have
+        // nothing to read differently.
+        harness.render(Element::provider(&context, Rc::clone(&value), [child]));
+        assert_eq!(renders.get(), 1);
+        assert_eq!(seen.get(), 1);
+    }
+
+    #[test]
+    fn a_changed_value_reaches_a_consumer_below_an_unchanged_wrapper() {
+        let mut harness = Harness::new();
+        let context = Context::new(0_u16);
+        let seen = Rc::new(Cell::new(0_u16));
+        let renders = Rc::new(Cell::new(0_u32));
+        let child = consumer(&context, &seen, &renders);
+        let wrapper = Element::component(move |_| child.clone());
+
+        harness.render(Element::provider(&context, Rc::new(1_u16), [wrapper.clone()]));
+        assert_eq!((seen.get(), renders.get()), (1, 1));
+
+        // The wrapper's element did not change and it has no work of its own,
+        // so it only descends because the walk marked the path to the consumer.
+        harness.render(Element::provider(&context, Rc::new(2_u16), [wrapper]));
+        assert_eq!((seen.get(), renders.get()), (2, 2));
+    }
+
+    #[test]
+    fn a_provider_skips_a_provider_of_its_own_context() {
+        let mut harness = Harness::new();
+        let context = Context::new(0_u16);
+        let outer_seen = Rc::new(Cell::new(0_u16));
+        let outer_renders = Rc::new(Cell::new(0_u32));
+        let inner_seen = Rc::new(Cell::new(0_u16));
+        let inner_renders = Rc::new(Cell::new(0_u32));
+        let sibling = consumer(&context, &outer_seen, &outer_renders);
+        let nested = Element::provider(
+            &context,
+            Rc::new(10_u16),
+            [consumer(&context, &inner_seen, &inner_renders)],
+        );
+
+        harness.render(Element::provider(
+            &context,
+            Rc::new(1_u16),
+            [sibling.clone(), nested.clone()],
+        ));
+        assert_eq!((outer_seen.get(), inner_seen.get()), (1, 10));
+        assert_eq!(inner_renders.get(), 1);
+
+        // The sibling reads the outer provider and renders with the new value.
+        // The consumer below the nested provider reads the inner value, which
+        // did not change, so the walk must not mark it.
+        harness.render(Element::provider(&context, Rc::new(2_u16), [sibling, nested]));
+        assert_eq!(outer_seen.get(), 2);
+        assert_eq!(inner_seen.get(), 10);
+        assert_eq!(inner_renders.get(), 1);
     }
 }

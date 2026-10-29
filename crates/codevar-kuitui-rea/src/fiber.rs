@@ -99,7 +99,7 @@ use core::fmt;
 use core::ops::{BitAnd, BitOr, Not};
 
 use crate::element::{AnyContext, ComponentFn, Element, HostNode, ProviderNode, Reference, SuspenseNode};
-use crate::hooks::{Cleanup, EffectRecord, HookList, StoreCheck};
+use crate::hooks::{Cleanup, ContextDeps, EffectRecord, HookList, StoreCheck};
 use crate::host::{Host, Key};
 use crate::lane::Lanes;
 use crate::wakeable::Wakeable;
@@ -422,6 +422,13 @@ pub(crate) struct Fiber<H: Host> {
     /// keeps it on the fiber because a component has no update queue of its
     /// own.
     pub(crate) store_checks: Vec<StoreCheck>,
+    /// The contexts this component read during its last render.
+    ///
+    /// This is React's `fiber.dependencies`. A provider that publishes a new
+    /// value walks the subtree it covers and marks every fiber whose list names
+    /// its context, so a consumer re-renders even when the element below the
+    /// provider did not change.
+    pub(crate) dependencies: ContextDeps,
     /// What must be done to this node in the commit.
     pub(crate) flags: Flags,
     /// What must be done to the subtree, including this node.
@@ -470,6 +477,7 @@ impl<H: Host> Fiber<H> {
             hooks: HookList::default(),
             effects: Vec::new(),
             store_checks: Vec::new(),
+            dependencies: Vec::new(),
             flags: Flags::NONE,
             subtree_flags: Flags::NONE,
             deletions: Vec::new(),
@@ -506,6 +514,11 @@ impl<H: Host> Fiber<H> {
             hooks: current.hooks.clone(),
             effects: Vec::new(),
             store_checks: Vec::new(),
+            // React clones the dependencies into the work-in-progress fiber
+            // because the render mutates them; a fiber whose component does not
+            // render keeps the committed list, which is still the one a
+            // provider below has to find.
+            dependencies: current.dependencies.clone(),
             flags: Flags::NONE,
             subtree_flags: Flags::NONE,
             deletions: Vec::new(),

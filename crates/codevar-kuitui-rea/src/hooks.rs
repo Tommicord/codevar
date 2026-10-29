@@ -61,6 +61,13 @@
 //! reducer dispatch has no such comparison, because an action only means
 //! something to the reducer that sees it.
 //!
+//! # Context reads
+//!
+//! [`RenderCtx::use_context`] is a hook in name only. React's `useContext`
+//! never takes a slot, because the value belongs to the provider above the
+//! component: the read only appends the context to the fiber's dependency
+//! list, which is what a provider walks when it publishes a new value.
+//!
 //! # Render phase updates
 //!
 //! A component that writes to its own state while it renders is a *render
@@ -84,7 +91,7 @@ use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;
 use core::mem;
 
-use crate::element::Element;
+use crate::element::{AnyContext, Context, Element};
 use crate::fiber::{FiberId, RetryCache};
 use crate::host::Host;
 use crate::lane::Lanes;
@@ -1035,16 +1042,28 @@ struct HookSlot {
     deferred: bool,
 }
 
+/// The contexts a component read during its last render.
+///
+/// React keeps the same list on the fiber's `dependencies`, one item per
+/// `useContext`, with the value the render saw beside the context. That value
+/// is only consulted by React's lazy propagation, which compares it with what
+/// the context reports at bailout time; as long as the engine propagates
+/// eagerly, naming the context is all the walk needs to find a consumer.
+pub(crate) type ContextDeps = Vec<Rc<dyn AnyContext>>;
+
 /// What one component render hands back to the work pass.
 ///
-/// React keeps both on the work-in-progress fiber: the effects in the hook
-/// list and the store checks in the update queue. The pass takes them together
-/// so a render can append to them without knowing the fiber.
+/// React keeps all three on the work-in-progress fiber: the effects in the
+/// hook list, the store checks in the update queue and the context reads in
+/// the fiber's dependencies. The pass takes them together so a render can
+/// append to them without knowing the fiber.
 pub(crate) struct RenderOutput<'r> {
     /// The effects the commit must run.
     pub(crate) effects: &'r mut Vec<EffectRecord>,
     /// The store reads a concurrent render must verify before it commits.
     pub(crate) store_checks: &'r mut Vec<StoreCheck>,
+    /// The contexts this render read.
+    pub(crate) dependencies: &'r mut ContextDeps,
 }
 
 /// The scope a component renders in.
@@ -1150,6 +1169,27 @@ impl<'a> RenderCtx<'a> {
     /// The next hook slot, creating it on the first render.
     fn next_slot<'b>(hooks: &'b mut HookList, cursor: &mut usize) -> &'b mut HookSlot {
         hooks.slot_at(cursor)
+    }
+
+    /// Returns the value `context` reports and records the read.
+    ///
+    /// This is React's `useContext`. It takes no slot, because a context read
+    /// is not state: a component may read a context in a branch, as long as the
+    /// hooks around it keep their order. React allows the same, which is why
+    /// `useContext` is exempt from the rules of hooks.
+    ///
+    /// The value comes from the nearest provider above the component in this
+    /// render, and from the context's default when no provider is above it.
+    /// The read is appended to the fiber's dependency list; a provider that
+    /// publishes a new value walks its subtree for the fibers whose list names
+    /// its context and marks them for a render, so a consumer re-renders even
+    /// when the element it returns would have bailed out.
+    pub fn use_context<T: 'static>(&mut self, context: &Rc<Context<T>>) -> Rc<T> {
+        let value = context.read();
+        self.output
+            .dependencies
+            .push(Rc::clone(context) as Rc<dyn AnyContext>);
+        value
     }
 
     /// Returns a state that survives a recomposition.
@@ -1757,6 +1797,7 @@ mod tests {
         hooks: HookList,
         effects: Vec<EffectRecord>,
         stores: Vec<StoreCheck>,
+        dependencies: ContextDeps,
         mailbox: MailboxHandle,
         ids: u64,
         lanes: Lanes,
@@ -1770,6 +1811,7 @@ mod tests {
                 hooks: HookList::default(),
                 effects: Vec::new(),
                 stores: Vec::new(),
+                dependencies: Vec::new(),
                 mailbox: mailbox(),
                 ids: 0,
                 lanes: Lanes::DEFAULT,
@@ -1783,6 +1825,7 @@ mod tests {
             self.mailbox.borrow_mut().drain();
             self.effects.clear();
             self.stores.clear();
+            self.dependencies.clear();
             self.skipped = Lanes::NONE;
             // The harness has no alternates, so the hooks the render starts
             // from are both the committed and the work-in-progress list.
@@ -1793,6 +1836,7 @@ mod tests {
                 RenderOutput {
                     effects: &mut self.effects,
                     store_checks: &mut self.stores,
+                    dependencies: &mut self.dependencies,
                 },
                 self.lanes,
                 &mut self.skipped,
@@ -1852,6 +1896,7 @@ mod tests {
             harness.mailbox.borrow_mut().drain();
             let mut effects = Vec::new();
             let mut stores = Vec::new();
+            let mut dependencies = Vec::new();
             let mut skipped = Lanes::NONE;
             let mut ids = harness.ids;
             hooks.begin_render();
@@ -1861,6 +1906,7 @@ mod tests {
                 RenderOutput {
                     effects: &mut effects,
                     store_checks: &mut stores,
+                    dependencies: &mut dependencies,
                 },
                 harness.lanes,
                 &mut skipped,
@@ -2008,6 +2054,7 @@ mod tests {
         let mut ids = harness.ids;
         let read = |hooks: &mut HookList, effects: &mut Vec<EffectRecord>, ids: &mut u64| {
             let mut stores = Vec::new();
+            let mut dependencies = Vec::new();
             let mut skipped = Lanes::NONE;
             hooks.begin_render();
             let mut ctx = RenderCtx::new(
@@ -2016,6 +2063,7 @@ mod tests {
                 RenderOutput {
                     effects,
                     store_checks: &mut stores,
+                    dependencies: &mut dependencies,
                 },
                 Lanes::DEFAULT,
                 &mut skipped,
