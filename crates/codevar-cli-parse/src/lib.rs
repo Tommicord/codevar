@@ -232,7 +232,8 @@ impl ArgParser {
     /// column layout computed from the widest left-hand entry. Every line,
     /// including the last, is newline-terminated.
     pub fn help(&self) -> String {
-        let mut options: Vec<(String, String, &str)> = Vec::new();
+        let mut options: Vec<(String, String, &str)> =
+            Vec::with_capacity(self.flags.len() + self.options.len());
         for flag in &self.flags {
             let left = match flag.short {
                 Some(short) => format!("-{short}, --{}", flag.long),
@@ -249,7 +250,7 @@ impl ArgParser {
             options.push((option.long.clone(), left, option.help.as_str()));
         }
         options.sort_by(|left, right| left.0.cmp(&right.0));
-        let mut positionals: Vec<(String, &str)> = Vec::new();
+        let mut positionals: Vec<(String, &str)> = Vec::with_capacity(self.positionals.len());
         for definition in &self.positionals {
             let left = if definition.required {
                 format!("<{}>", definition.name)
