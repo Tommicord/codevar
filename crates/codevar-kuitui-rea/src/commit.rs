@@ -62,8 +62,6 @@
 //! saw. Clearing is also what makes "does this tree still have passive work?"
 //! answer no once the passive phase ran.
 
-#![allow(dead_code)]
-
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::cell::RefCell;

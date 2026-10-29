@@ -69,8 +69,6 @@
 //! like any other. A dispatch on any other queue — a parent writing a child's
 //! state, say — is an ordinary update and takes the usual path.
 
-#![allow(dead_code)]
-
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
@@ -801,11 +799,6 @@ impl<'a> RenderCtx<'a> {
     /// Ends the render, dropping the slots a shorter render did not use.
     pub(crate) fn finish(&mut self) {
         self.hooks.finish(self.cursor);
-    }
-
-    /// Whether a state hook applied an update during this render.
-    pub(crate) const fn did_update(&self) -> bool {
-        self.did_update
     }
 
     /// Suspends the component until `wakeable` reports that its work completed.

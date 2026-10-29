@@ -76,9 +76,6 @@
 //! slots. The two halves of an alternate are freed together: the slot of one
 //! half must never be handed out while the other half still points at it.
 
-// The render pass, and the tests, reach only part of the arena's surface.
-#![allow(dead_code)]
-
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::any::TypeId;
@@ -168,6 +165,7 @@ impl Flags {
     pub(crate) const PASSIVE_MASK: Self = Self(Self::PASSIVE.0);
 
     /// Whether no flag is set.
+    #[cfg(test)]
     pub(crate) const fn is_empty(self) -> bool {
         self.0 == 0
     }
@@ -351,6 +349,7 @@ impl FiberId {
     }
 
     /// Builds an id from an arena index.
+    #[cfg(test)]
     pub(crate) const fn from_index(index: u32) -> Self {
         Self(index)
     }
@@ -561,6 +560,7 @@ impl<H: Host> Arena<H> {
     }
 
     /// The number of live fibers.
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.fibers
             .iter()

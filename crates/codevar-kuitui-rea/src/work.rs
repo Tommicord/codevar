@@ -80,10 +80,6 @@
 //! root, where `finishedWork.lanes | finishedWork.child_lanes` is the work the
 //! next render has to cover.
 
-// The root drives the pass through `step`; `run` and the rest of the surface
-// are for the tests and for callers that render a tree in one go.
-#![allow(dead_code)]
-
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::mem;
@@ -257,6 +253,7 @@ impl<'a, H: Host> WorkLoop<'a, H> {
     /// Returns the wakeable of the suspension that stopped the pass, when a
     /// component suspended and nothing in the tree could capture it. Everything
     /// the pass built is in the arena but nothing of it is committed.
+    #[cfg(test)]
     pub(crate) fn run(&mut self, root: FiberId) -> Option<Wakeable> {
         let mut next = Some(root);
         while let Some(fiber) = next {
