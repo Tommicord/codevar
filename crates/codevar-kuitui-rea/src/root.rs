@@ -1436,6 +1436,39 @@ mod tests {
         })
     }
 
+    /// A component that renders the deferred value of its state, records what
+    /// it shows and hands the state handle to the test.
+    fn deferred(handle: &Rc<RefCell<Option<State<u32>>>>, log: &Rc<RefCell<Vec<u32>>>) -> Element<TreeHost> {
+        let handle = Rc::clone(handle);
+        let log = Rc::clone(log);
+        Element::component(move |ctx| {
+            let value = ctx.use_state(|| 1_u32);
+            *handle.borrow_mut() = Some(value.clone());
+            let shown = ctx.use_deferred_value(*value.get());
+            log.borrow_mut().push(shown);
+            Element::host(shown)
+        })
+    }
+
+    #[test]
+    fn a_deferred_value_shows_the_old_value_until_its_lane_renders() {
+        let handle = Rc::new(RefCell::new(None));
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut root = mount(deferred(&handle, &log));
+        let Some(value) = handle.borrow().clone() else {
+            return;
+        };
+
+        value.set(2);
+        root.flush();
+
+        // The urgent render keeps showing the old value and leaves the deferred
+        // lane pending; the root then renders that lane, which catches up.
+        assert_eq!(*log.borrow(), [1, 1, 2]);
+        assert_eq!(top_level(&root), [Some(2)]);
+        assert!(!root.has_pending_work());
+    }
+
     #[test]
     fn a_transition_update_waits_for_the_default_lane() {
         let handles = Rc::new(RefCell::new(None));

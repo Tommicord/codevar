@@ -413,10 +413,22 @@ impl Mailbox {
             return lane;
         }
         if self.event_transition_lane.is_empty() {
-            self.event_transition_lane = self.next_transition_lane;
-            self.next_transition_lane = self.next_transition_lane.next_transition();
+            self.event_transition_lane = self.claim_next_transition_lane();
         }
         self.event_transition_lane
+    }
+
+    /// Claims the next transition lane of the rotation.
+    ///
+    /// This is React's `claimNextTransitionLane`. A transition dispatch takes
+    /// one of these lanes for the whole event, and `use_deferred_value` claims
+    /// one directly when an urgent render has to postpone a value: the deferred
+    /// render is a transition of its own and must not share the lane of the
+    /// event's updates.
+    fn claim_next_transition_lane(&mut self) -> Lanes {
+        let lane = self.next_transition_lane;
+        self.next_transition_lane = lane.next_transition();
+        lane
     }
 
     /// Ends the event whose transitions shared a lane.
@@ -868,6 +880,13 @@ struct HookSlot {
     queue: Option<Rc<RefCell<UpdateQueue>>>,
     /// The effect of an effect hook, if it must run.
     effect: Option<EffectRecord>,
+    /// Whether a `use_deferred_value` hook held its value back.
+    ///
+    /// React keeps this flag on `hook.baseState`: an urgent render returned the
+    /// previous value and claimed a lane to show the new one, so the render
+    /// that catches up has to count as an update even though no update marked
+    /// the fiber.
+    deferred: bool,
 }
 
 /// The scope a component renders in.
@@ -1050,6 +1069,60 @@ impl<'a> RenderCtx<'a> {
         };
         slot.value = Some(Rc::new(start.clone()) as Rc<dyn Any>);
         (is_pending, start)
+    }
+
+    /// Returns `value`, or the previous one while an urgent render catches up.
+    ///
+    /// This is React's `useDeferredValue`. A render that covers an urgent lane
+    /// (sync, continuous input or default) cannot wait, so when the value
+    /// changed it keeps the one it rendered before and claims a transition lane
+    /// for the render that will show the new one. The cost of rendering the new
+    /// value therefore never blocks the input that caused it; a render that
+    /// covers the claimed lane renders it.
+    ///
+    /// The hook keeps the deferred value in its own slot rather than in a state
+    /// queue: only a render that receives a new `value` can move it, never a
+    /// dispatch. A gesture render is not urgent by this rule — React's
+    /// `includesOnlyNonUrgentLanes` counts only the three sync-update lanes —
+    /// so a gesture shows the new value immediately.
+    pub fn use_deferred_value<T: PartialEq + Clone + 'static>(&mut self, value: T) -> T {
+        let slot = Self::next_slot(self.hooks, &mut self.cursor);
+        let Some(previous) = slot
+            .value
+            .as_deref()
+            .and_then(|value| value.downcast_ref::<Rc<T>>())
+            .cloned()
+        else {
+            // The first render has nothing to hold back, so the value shows as
+            // it is and no lane is claimed.
+            slot.value = Some(Rc::new(Rc::new(value.clone())) as Rc<dyn Any>);
+            return value;
+        };
+        if !self.render_lanes.intersects(Lanes::SYNC_UPDATE) {
+            // A render with no urgent lane was started for the deferred lane an
+            // urgent render claimed, so it can show the latest value. When the
+            // urgent render held the value back, no update marked the fiber:
+            // this pass is the one that makes the difference visible, so it
+            // records itself as an update.
+            if slot.deferred {
+                slot.deferred = false;
+                self.did_update = true;
+            }
+            slot.value = Some(Rc::new(Rc::new(value.clone())) as Rc<dyn Any>);
+            return value;
+        }
+        if *previous != value {
+            // The deferred render runs on a transition lane of its own, and the
+            // lane on the fiber is what makes the root render it after the
+            // urgent work.
+            let lane = self
+                .mailbox
+                .borrow_mut()
+                .claim_next_transition_lane();
+            self.lanes.insert(lane);
+            slot.deferred = true;
+        }
+        (*previous).clone()
     }
 
     /// Replays the update queue of a state hook for one render.
@@ -1791,6 +1864,49 @@ mod tests {
         });
         assert!(!pending);
         assert_eq!(*value.get(), 2);
+    }
+
+    #[test]
+    fn a_deferred_value_lags_an_urgent_render_and_catches_up() {
+        let mut harness = Harness::new();
+        let shown = harness.render(|ctx| ctx.use_deferred_value(1_u32));
+        assert_eq!(shown, 1);
+        harness.commit();
+
+        // The urgent render keeps the value it had and claims the first
+        // transition lane, which the fiber records for the root.
+        let shown = harness.render(|ctx| ctx.use_deferred_value(2_u32));
+        assert_eq!(shown, 1);
+        assert_eq!(harness.skipped, Lanes::TRANSITION_FIRST);
+
+        // The render that covers the claimed lane shows the latest value.
+        harness.lanes = Lanes::TRANSITION_FIRST;
+        let shown = harness.render(|ctx| ctx.use_deferred_value(2_u32));
+        assert_eq!(shown, 2);
+        assert!(harness.skipped.is_empty());
+    }
+
+    #[test]
+    fn an_unchanged_deferred_value_claims_no_lane() {
+        let mut harness = Harness::new();
+        harness.render(|ctx| ctx.use_deferred_value(1_u32));
+        harness.commit();
+        let shown = harness.render(|ctx| ctx.use_deferred_value(1_u32));
+        assert_eq!(shown, 1);
+        assert!(harness.skipped.is_empty());
+    }
+
+    #[test]
+    fn a_gesture_render_shows_the_new_deferred_value() {
+        let mut harness = Harness::new();
+        harness.render(|ctx| ctx.use_deferred_value(1_u32));
+        harness.commit();
+        // A gesture is not in React's urgent set, so there is nothing to defer
+        // and no lane is claimed.
+        harness.lanes = Lanes::GESTURE;
+        let shown = harness.render(|ctx| ctx.use_deferred_value(2_u32));
+        assert_eq!(shown, 2);
+        assert!(harness.skipped.is_empty());
     }
 
     #[test]
