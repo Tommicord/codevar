@@ -201,7 +201,9 @@ impl<B: BufRead> Iterator for Split<B> {
     type Item = Result<Vec<u8>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut buf = Vec::new();
+        // 16-byte cache of the currently loaded values; clear-and-reuse keeps
+        // allocations bounded and never loads the entire input into memory.
+        let mut buf = Vec::with_capacity(16);
         match read_until(&mut self.buf, self.delim, &mut buf) {
             Ok(0) => None,
             Ok(_) => {

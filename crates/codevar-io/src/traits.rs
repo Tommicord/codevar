@@ -259,7 +259,7 @@ pub trait BufRead: Read {
     /// let mut cursor = Cursor::new(&b"Ferris\0Likes long walks on the beach\0Crustacean\0!"[..]);
     ///
     /// // read name
-    /// let mut name = Vec::new();
+    /// let mut name = Vec::with_capacity(16);
     /// let num_bytes = cursor.read_until(b'\0', &mut name)
     ///     .expect("reading from cursor won't fail");
     /// assert_eq!(num_bytes, 7);
@@ -271,7 +271,7 @@ pub trait BufRead: Read {
     /// assert_eq!(num_bytes, 30);
     ///
     /// // read animal type
-    /// let mut animal = Vec::new();
+    /// let mut animal = Vec::with_capacity(16);
     /// let num_bytes = cursor.read_until(b'\0', &mut animal)
     ///     .expect("reading from cursor won't fail");
     /// assert_eq!(num_bytes, 11);
