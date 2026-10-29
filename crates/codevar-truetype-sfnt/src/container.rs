@@ -154,7 +154,7 @@ impl<'a> SfntDirectory<'a> {
             .ok_or(TtError::INVALID_TABLE)?;
 
         let size = data.len();
-        let mut records = Vec::new();
+        let mut records = Vec::with_capacity(num_tables as usize);
         for index in 0..num_tables as usize {
             let pos = index * 16;
             let mut record_buf = entries
@@ -320,7 +320,7 @@ impl<'a> SfntDirectory<'a> {
     /// usable, but the bytes were modified after the directory was
     /// written (or the producer wrote wrong checksums).
     pub fn verify_checksums(&self) -> Vec<Tag> {
-        let mut bad = Vec::new();
+        let mut bad = Vec::with_capacity(self.records.len());
         for record in &self.records {
             if record.length == 0 {
                 continue;

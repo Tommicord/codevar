@@ -533,7 +533,7 @@ impl<'a> KernTable<'a> {
         let _version = header.try_get_u16().map_err(invalid)?;
         let declared = header.try_get_u16().map_err(invalid)?;
         let num_tables = declared.min(32);
-        let mut subtables = Vec::new();
+        let mut subtables = Vec::with_capacity(num_tables as usize);
         let mut pos = 4usize;
         for _ in 0..num_tables {
             if pos + 6 > data.len() {

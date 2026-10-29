@@ -210,7 +210,7 @@ pub fn parse_charmaps(table: &[u8]) -> TtResult<Vec<SfntCMap<'_>>> {
         return Err(TtError::INVALID_TABLE);
     }
     let num_cmaps = u16_at(table, 2).ok_or(TtError::INVALID_TABLE)?;
-    let mut charmaps = Vec::new();
+    let mut charmaps = Vec::with_capacity(num_cmaps as usize);
     let mut pos = 4usize;
     for _ in 0..num_cmaps {
         let Some(end) = pos.checked_add(8) else {
