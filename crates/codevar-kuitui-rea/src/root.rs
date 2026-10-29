@@ -412,6 +412,25 @@ impl<H: Host> Root<H> {
         self.mark_update(self.current, Lanes::DEFAULT);
     }
 
+    /// Runs `scope` with every dispatch inside it marked as a transition.
+    ///
+    /// This is React's `startTransition`. Nothing renders when the call
+    /// returns: the dispatches the scope made are queued on a transition lane
+    /// and wait for the host to flush, so the committed tree stays on screen
+    /// until the new one is ready. Transition work renders after the urgent
+    /// lanes, and a transition that waited past its expiration delay finishes
+    /// in one slice so urgent work cannot postpone it forever.
+    ///
+    /// The scopes of one event share a lane, so the updates they make render
+    /// together. The root clears that cache when it starts working — the
+    /// concurrent work loop is what says the event is over — so a transition
+    /// started by a later event takes the next lane of the rotation and never
+    /// waits behind an older one. A nested scope reuses the lane of the scope
+    /// around it, rather than starting a transition of its own.
+    pub fn start_transition<R>(&self, scope: impl FnOnce() -> R) -> R {
+        crate::hooks::start_transition(&self.mailbox, scope)
+    }
+
     /// Renders and commits every pending lane, most urgent first.
     ///
     /// The call returns when no lane is pending and no dispatch is left in the
@@ -467,6 +486,11 @@ impl<H: Host> Root<H> {
     /// `now` is the host's clock, when the host has one. `None` is the clockless
     /// [`Root::flush`], which cannot wait: a held tree commits at once.
     fn flush_loop(&mut self, now: Option<u64>, should_yield: &mut dyn FnMut() -> bool) -> bool {
+        // The event that scheduled this work is over, so a transition started
+        // from now on belongs to the next one and takes the next lane of the
+        // rotation. This is where React's `performConcurrentWorkOnRoot` clears
+        // `currentEventTransitionLane`.
+        self.mailbox.borrow_mut().end_event();
         loop {
             self.drain_mailbox(now);
             let lanes = self.next_lanes();
@@ -1392,6 +1416,63 @@ mod tests {
             log.borrow_mut().push(*value.get());
             Element::host(*value.get())
         })
+    }
+
+    /// The two state handles a [`pair`] component hands to its test.
+    type PairHandles = Rc<RefCell<Option<(State<u32>, State<u32>)>>>;
+
+    /// A component with two states: it renders the first one, records both
+    /// values on every render and hands the handles to the test.
+    fn pair(handles: &PairHandles, log: &Rc<RefCell<Vec<(u32, u32)>>>) -> Element<TreeHost> {
+        let handles = Rc::clone(handles);
+        let log = Rc::clone(log);
+        Element::component(move |ctx| {
+            let first = ctx.use_state(|| 1_u32);
+            let second = ctx.use_state(|| 1_u32);
+            *handles.borrow_mut() = Some((first.clone(), second.clone()));
+            log.borrow_mut()
+                .push((*first.get(), *second.get()));
+            Element::host(*first.get())
+        })
+    }
+
+    #[test]
+    fn a_transition_update_waits_for_the_default_lane() {
+        let handles = Rc::new(RefCell::new(None));
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut root = mount(pair(&handles, &log));
+        let Some((first, second)) = handles.borrow().clone() else {
+            return;
+        };
+
+        root.start_transition(|| first.set(2));
+        second.set(3);
+        root.flush();
+
+        // The default lane renders first and sees the transition's update still
+        // pending; the transition lane then applies it.
+        assert_eq!(*log.borrow(), [(1, 1), (1, 3), (2, 3)]);
+        assert_eq!(top_level(&root), [Some(2)]);
+        assert!(!root.has_pending_work());
+    }
+
+    #[test]
+    fn transitions_started_before_a_flush_share_a_lane() {
+        let handles = Rc::new(RefCell::new(None));
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut root = mount(pair(&handles, &log));
+        let Some((first, second)) = handles.borrow().clone() else {
+            return;
+        };
+
+        root.start_transition(|| first.set(2));
+        root.start_transition(|| second.set(3));
+        root.flush();
+
+        // Both scopes ran in the same event, so their updates carry one lane
+        // and reach the host in a single render.
+        assert_eq!(*log.borrow(), [(1, 1), (2, 3)]);
+        assert!(!root.has_pending_work());
     }
 
     #[test]

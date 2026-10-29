@@ -106,6 +106,16 @@ impl Lanes {
     /// Every transition lane, update and deferred.
     pub const TRANSITION: Self = Self(Self::TRANSITION_UPDATE_LANES.0 | Self::TRANSITION_DEFERRED_LANES.0);
 
+    /// The transition-update lane a transition starts at.
+    ///
+    /// This is React's `TransitionLane1`. The ten lanes are not entangled, so
+    /// each transition renders on a lane of its own; a transition started in a
+    /// later event takes the next lane of the rotation, which keeps an older
+    /// transition from blocking a newer one. [`Lanes::next_transition`]
+    /// advances the cursor the way `claimNextTransitionLane` advances
+    /// `nextTransitionLane`.
+    pub const TRANSITION_FIRST: Self = Self(1 << 4);
+
     /// The four lanes a suspended boundary retries on.
     pub const RETRY: Self = Self(0xf << 18);
 
@@ -235,6 +245,24 @@ impl Lanes {
             next
         } else {
             Self::RETRY_FIRST
+        }
+    }
+
+    /// The transition-update lane that follows this one, wrapping inside
+    /// [`Lanes::TRANSITION_UPDATE_LANES`].
+    ///
+    /// This is the rotation React's `claimNextTransitionLane` applies to its
+    /// `nextTransitionLane` cursor. Every transition started in a new event
+    /// takes the next lane, so the ten lanes are ten transitions that render
+    /// one after the other instead of in one render. A lane outside the group,
+    /// and [`Lanes::NONE`], restart the rotation.
+    #[must_use]
+    pub const fn next_transition(self) -> Self {
+        let next = Self::from_bits(self.0 << 1);
+        if next.intersects(Self::TRANSITION_UPDATE_LANES) {
+            next
+        } else {
+            Self::TRANSITION_FIRST
         }
     }
 
@@ -550,6 +578,31 @@ mod tests {
         }
         assert_eq!(lane, Lanes::RETRY_FIRST);
         assert_eq!(Lanes::NONE.next_retry(), Lanes::RETRY_FIRST);
+    }
+
+    #[test]
+    fn transition_lanes_rotate_inside_their_group() {
+        assert!(Lanes::TRANSITION_UPDATE_LANES.contains(Lanes::TRANSITION_FIRST));
+        assert_eq!(
+            Lanes::TRANSITION_FIRST.next_transition(),
+            Lanes::from_bits(1 << 5)
+        );
+        assert_eq!(
+            Lanes::from_bits(1 << 13).next_transition(),
+            Lanes::TRANSITION_FIRST
+        );
+        // Every rotation stays inside the group and names a single transition,
+        // so the root renders it on its own instead of latching onto another.
+        let mut lane = Lanes::TRANSITION_FIRST;
+        for _ in 0..10 {
+            assert!(Lanes::TRANSITION_UPDATE_LANES.contains(lane));
+            assert_eq!(lane.count(), 1);
+            assert_eq!(lane.render_lanes(), lane);
+            lane = lane.next_transition();
+        }
+        assert_eq!(lane, Lanes::TRANSITION_FIRST);
+        assert_eq!(Lanes::NONE.next_transition(), Lanes::TRANSITION_FIRST);
+        assert_eq!(Lanes::IDLE.next_transition(), Lanes::TRANSITION_FIRST);
     }
 
     #[test]

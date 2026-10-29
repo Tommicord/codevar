@@ -226,7 +226,6 @@ impl UpdateQueue {
 pub(crate) type QueueHandle = Rc<RefCell<UpdateQueue>>;
 
 /// The signal a dispatch raises for the root.
-#[derive(Default)]
 pub(crate) struct Mailbox {
     /// The queues waiting for a render, with the lanes of their updates.
     ///
@@ -250,7 +249,42 @@ pub(crate) struct Mailbox {
     retries: Vec<RetryRequest>,
     /// The component render that is in flight, when there is one.
     render_phase: Option<RenderPhase>,
+    /// The transition scope that is running, when there is one.
+    ///
+    /// This is React's `ReactCurrentBatchConfig.transition`: a dispatch that
+    /// sees it takes a transition lane instead of the lane it was given.
+    transition: Option<Transition>,
+    /// The transition lane every transition of the current event shares.
+    ///
+    /// React's `currentEventTransitionLane`. The first transition dispatch of
+    /// an event claims the next lane of the rotation and the rest reuse it, so
+    /// the updates of one event render together. [`Mailbox::end_event`] clears
+    /// it when the root starts working, which is React's
+    /// `finishEventHandler`.
+    event_transition_lane: Lanes,
+    /// The lane the next event's first transition is assigned.
+    ///
+    /// React's `nextTransitionLane`. It advances once per event that starts a
+    /// transition, so consecutive events render on different lanes.
+    next_transition_lane: Lanes,
 }
+
+impl Default for Mailbox {
+    fn default() -> Self {
+        Self {
+            updates: Vec::new(),
+            pinged: Lanes::NONE,
+            retries: Vec::new(),
+            render_phase: None,
+            transition: None,
+            event_transition_lane: Lanes::NONE,
+            next_transition_lane: Lanes::TRANSITION_FIRST,
+        }
+    }
+}
+
+/// The transition scope [`start_transition`] is running.
+struct Transition;
 
 /// A boundary a retry listener named.
 ///
@@ -359,6 +393,41 @@ impl Mailbox {
     pub(crate) fn end_render(&mut self) {
         self.render_phase = None;
     }
+
+    /// The lane a dispatch asks for `lane` should carry.
+    ///
+    /// A dispatch inside a transition takes a transition-update lane instead of
+    /// the one it asked for, the way `requestUpdateLane` consults
+    /// `ReactCurrentBatchConfig.transition` before choosing a lane. The first
+    /// transition dispatch of an event claims the next lane of the rotation
+    /// and every later one reuses it until [`Mailbox::end_event`], so all the
+    /// updates of one event render together.
+    ///
+    /// A dispatch with no lane keeps it: that is the eager no-op, whose queue
+    /// entry exists only so the next comparison can see it did not change the
+    /// value, and it must not turn into work just because a transition is
+    /// running. Render-phase updates do not come through here either; they
+    /// carry the lanes of the render they belong to.
+    fn transition_lane(&mut self, lane: Lanes) -> Lanes {
+        if self.transition.is_none() || lane.is_empty() {
+            return lane;
+        }
+        if self.event_transition_lane.is_empty() {
+            self.event_transition_lane = self.next_transition_lane;
+            self.next_transition_lane = self.next_transition_lane.next_transition();
+        }
+        self.event_transition_lane
+    }
+
+    /// Ends the event whose transitions shared a lane.
+    ///
+    /// This is React's `finishEventHandler`, which `performConcurrentWorkOnRoot`
+    /// runs before it renders: the concurrent work loop is the heuristic that
+    /// says the event is over. The next transition dispatch, from a new event,
+    /// starts the rotation one lane further.
+    pub(crate) fn end_event(&mut self) {
+        self.event_transition_lane = Lanes::NONE;
+    }
 }
 
 /// A shared handle to the root's mailbox.
@@ -367,6 +436,27 @@ pub(crate) type MailboxHandle = Rc<RefCell<Mailbox>>;
 /// Creates an empty mailbox.
 pub(crate) fn mailbox() -> MailboxHandle {
     Rc::new(RefCell::new(Mailbox::default()))
+}
+
+/// Runs `scope` with every dispatch inside it marked as a transition.
+///
+/// This is React's `startTransition`: the scope does not render anything, it
+/// only asks the dispatches it runs to take a transition lane. The lane is
+/// claimed from the event's cache, so the scopes of one event share it, and an
+/// inner scope restores the outer one when it returns, the way
+/// `ReactCurrentBatchConfig.transition` is saved and restored.
+///
+/// The scope restores the previous transition by running to completion rather
+/// than through a guard: rea does not unwind with panics, so there is no path
+/// that leaves the mailbox pointing at a transition that is over.
+pub(crate) fn start_transition<R>(mailbox: &MailboxHandle, scope: impl FnOnce() -> R) -> R {
+    let previous = {
+        let mut mailbox = mailbox.borrow_mut();
+        mailbox.transition.replace(Transition)
+    };
+    let result = scope();
+    mailbox.borrow_mut().transition = previous;
+    result
 }
 
 /// A value that survives a recomposition and can be written from anywhere.
@@ -484,7 +574,14 @@ impl<T: PartialEq + 'static> State<T> {
                 phase.did_schedule_update = true;
                 (phase.lanes, false)
             }
-            None => (lane, !lane.is_empty() && queue.owner.get().is_some()),
+            None => {
+                // A transition takes its lane after the eager no-op and the
+                // render phase have had their say, so it never turns a no-op
+                // into scheduled work and never overrides the render that owns
+                // the queue.
+                let lane = mailbox.transition_lane(lane);
+                (lane, !lane.is_empty() && queue.owner.get().is_some())
+            }
         };
         queue.pending.push(Update {
             lane,
@@ -1181,6 +1278,16 @@ mod tests {
             self.mailbox.borrow().updates.len()
         }
 
+        /// Takes the lanes of the queued signals, the way the root drains them.
+        fn drained_lanes(&mut self) -> Vec<Lanes> {
+            self.mailbox
+                .borrow_mut()
+                .drain()
+                .into_iter()
+                .map(|(_, lanes)| lanes)
+                .collect()
+        }
+
         fn commit(&mut self) {
             self.hooks.commit();
         }
@@ -1594,6 +1701,71 @@ mod tests {
         foreign.set(2);
         assert_eq!(other.signals(), 1);
         assert!(!harness.took_update());
+        harness.end();
+    }
+
+    #[test]
+    fn a_dispatch_inside_a_transition_takes_a_transition_lane() {
+        let mut harness = Harness::new();
+        let state = harness.render(|ctx| ctx.use_state(|| 1_u32));
+        harness.commit();
+        start_transition(&harness.mailbox, || state.set(2));
+        // The default lane the dispatch asked for is replaced by the lane the
+        // transition was assigned.
+        assert_eq!(harness.drained_lanes(), [Lanes::TRANSITION_FIRST]);
+
+        harness.lanes = Lanes::TRANSITION_FIRST;
+        let state = harness.render(|ctx| ctx.use_state(|| 1_u32));
+        assert_eq!(*state.get(), 2);
+    }
+
+    #[test]
+    fn transitions_of_one_event_share_a_lane() {
+        let mut harness = Harness::new();
+        let state = harness.render(|ctx| ctx.use_state(|| 1_u32));
+        harness.commit();
+        start_transition(&harness.mailbox, || state.set(2));
+        start_transition(&harness.mailbox, || state.set(3));
+        assert_eq!(
+            harness.drained_lanes(),
+            [Lanes::TRANSITION_FIRST, Lanes::TRANSITION_FIRST]
+        );
+
+        // The root clears the cache when it starts working, so the next event
+        // starts one lane further into the rotation.
+        harness.mailbox.borrow_mut().end_event();
+        start_transition(&harness.mailbox, || state.set(4));
+        assert_eq!(harness.drained_lanes(), [Lanes::from_bits(1 << 5)]);
+    }
+
+    #[test]
+    fn a_no_op_inside_a_transition_claims_no_lane() {
+        let mut harness = Harness::new();
+        let state = harness.render(|ctx| ctx.use_state(|| 1_u32));
+        harness.commit();
+        start_transition(&harness.mailbox, || state.set(1));
+        // The eager comparison queued the equal update without a lane, so it
+        // neither wakes the root nor takes a transition lane.
+        assert_eq!(harness.signals(), 0);
+
+        start_transition(&harness.mailbox, || state.set(2));
+        assert_eq!(harness.drained_lanes(), [Lanes::TRANSITION_FIRST]);
+    }
+
+    #[test]
+    fn a_transition_does_not_capture_a_render_phase_update() {
+        let mut harness = Harness::new();
+        harness.begin();
+        let state = harness.render(|ctx| ctx.use_state(|| 1_u32));
+        start_transition(&harness.mailbox, || state.set(2));
+        // The update belongs to the render that is running, so it keeps that
+        // render's lanes and never reaches the root.
+        assert_eq!(harness.signals(), 0);
+        assert!(harness.took_update());
+
+        let state = harness.render(|ctx| ctx.use_state(|| 1_u32));
+        assert_eq!(*state.get(), 2);
+        assert!(harness.skipped.is_empty());
         harness.end();
     }
 
