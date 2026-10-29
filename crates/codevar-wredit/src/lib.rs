@@ -28,3 +28,4 @@ pub mod hot;
 pub mod simd;
 pub mod staging_gap;
 pub mod storage;
+pub mod storage_bind;
