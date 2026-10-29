@@ -48,9 +48,6 @@
 //! links, moves or deletes them, so an interrupted render leaves the tree on
 //! screen exactly as it was.
 
-// The work loop that calls this diff lands in the next increment.
-#![allow(dead_code)]
-
 use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
 use core::cmp::Ordering;

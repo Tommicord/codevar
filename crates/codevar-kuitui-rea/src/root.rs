@@ -143,8 +143,15 @@
 //! clock: the wait is for data, not for the CPU, so starvation protection has
 //! nothing to measure.
 //!
-//! Boundaries do not capture a suspension yet; the pass that renders the
-//! fallback in place of a suspended primary tree lands next.
+//! A suspension below a [`Element::suspense`] boundary does not reach
+//! the root: the boundary catches it, the pass throws away the primary tree it
+//! was building and renders the fallback in its place, and the commit shows the
+//! fallback. The primary tree stays mounted but hidden, so the host does not
+//! have to build it again when the boundary returns to it, and the lanes the
+//! interrupted render left below the boundary stay pending — that is what lets
+//! a later update retry the tree. Until that update arrives the boundary stays
+//! on its fallback, because nothing subscribes the wakeable it caught yet; the
+//! retry listener is what the next increment attaches at commit.
 
 use alloc::rc::Rc;
 use core::slice;
