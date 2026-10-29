@@ -660,6 +660,26 @@ impl<H: Host> Root<H> {
         {
             self.prepare_fresh(lanes);
         }
+        self.work(lanes, now, should_yield, true)
+    }
+
+    /// Runs the render in flight to its end and finishes it.
+    ///
+    /// `verify_stores` makes a finished render check the external stores it
+    /// read before anything decides what happens to it. A render that can be
+    /// sliced may have yielded to an event that moved a store, and the snapshot
+    /// the render read would then never have been on screen. The check only
+    /// matters for a render that could yield: the blocking lanes run straight
+    /// to their commit. A store that moved sends the lanes through one more
+    /// render without yielding, the way React's `performConcurrentWorkOnRoot`
+    /// runs `renderRootSync`; that render does not check again.
+    fn work(
+        &mut self,
+        lanes: Lanes,
+        now: Option<u64>,
+        should_yield: &mut dyn FnMut() -> bool,
+        verify_stores: bool,
+    ) -> bool {
         let Some(root) = self.render.as_ref().map(|render| render.root) else {
             return true;
         };
@@ -725,6 +745,17 @@ impl<H: Host> Root<H> {
             .render
             .as_ref()
             .map_or(ExitStatus::InProgress, |render| render.exit);
+        // React checks the finished tree here, before `finishConcurrentRender`
+        // decides what happens to it: a tree that is about to be held for a
+        // delay or parked on a suspension is checked too, so the tree that
+        // eventually commits is not one a store moved behind.
+        if verify_stores && !lanes.intersects(Lanes::BLOCKING) && !self.stores_consistent(root) {
+            // An event landed while the render was in flight and moved a
+            // store. Render again without yielding, so nothing can move
+            // between this render and the commit.
+            self.prepare_fresh(lanes);
+            return self.work(lanes, now, &mut || false, false);
+        }
         if exit == ExitStatus::Suspended && includes_only_retries(lanes) {
             self.mark_suspended(lanes);
             if self.defer_retry(root, lanes, now) {
@@ -762,6 +793,55 @@ impl<H: Host> Root<H> {
         self.arena.end_render();
         self.commit(root, lanes, now);
         true
+    }
+
+    /// Whether every external store the finished tree read still reports the
+    /// snapshot its render saw.
+    ///
+    /// This is React's `isRenderConsistentWithExternalStores`. The walk is
+    /// iterative so it can stop at the first store that moved, and it only
+    /// enters a subtree the [`Flags::STORE_CONSISTENCY`] flag reached: a tree
+    /// that read no store under it costs one flag test at its root.
+    fn stores_consistent(&self, root: FiberId) -> bool {
+        let mut node = root;
+        loop {
+            let Some(fiber) = self.arena.get(node) else {
+                return true;
+            };
+            if fiber.flags.contains(Flags::STORE_CONSISTENCY) {
+                for check in &fiber.store_checks {
+                    if !check() {
+                        return false;
+                    }
+                }
+            }
+            if fiber
+                .subtree_flags
+                .contains(Flags::STORE_CONSISTENCY)
+                && let Some(child) = fiber.first_child
+            {
+                node = child;
+                continue;
+            }
+            if node == root {
+                return true;
+            }
+            // Climb to the next sibling, and stop once the walk leaves the
+            // finished root's children.
+            loop {
+                let Some(fiber) = self.arena.get(node) else {
+                    return true;
+                };
+                if let Some(sibling) = fiber.sibling {
+                    node = sibling;
+                    break;
+                }
+                match fiber.parent {
+                    Some(parent) if parent != root => node = parent,
+                    _ => return true,
+                }
+            }
+        }
     }
 
     /// Parks `lanes` until an update or a ping makes them runnable again.
@@ -1584,6 +1664,83 @@ mod tests {
         store.notify();
         root.flush();
         assert_eq!(*log.borrow(), [1, 2]);
+    }
+
+    /// A component that reads a store, records every snapshot it renders and
+    /// hands its state handle to the test, so a transition can re-render it.
+    fn watched(
+        store: &Store,
+        handle: &Rc<RefCell<Option<State<u32>>>>,
+        log: &Rc<RefCell<Vec<u32>>>,
+    ) -> Element<TreeHost> {
+        let subscribe = Rc::clone(&store.subscribe);
+        let get_snapshot = Rc::clone(&store.get_snapshot);
+        let handle = Rc::clone(handle);
+        let log = Rc::clone(log);
+        Element::component(move |ctx| {
+            let state = ctx.use_state(|| 0_u32);
+            *handle.borrow_mut() = Some(state.clone());
+            let shown = ctx.use_sync_external_store(Rc::clone(&subscribe), Rc::clone(&get_snapshot));
+            log.borrow_mut().push(*shown);
+            Element::host(*shown)
+        })
+    }
+
+    /// A component that moves a store once to the armed value, the way an
+    /// event landing between two units of a render would. It carries a state
+    /// of its own so the transition renders it instead of bailing it out.
+    fn mover(
+        value: Rc<Cell<u32>>,
+        armed: Rc<Cell<Option<u32>>>,
+        handle: &Rc<RefCell<Option<State<u32>>>>,
+    ) -> Element<TreeHost> {
+        let handle = Rc::clone(handle);
+        Element::component(move |ctx| {
+            let state = ctx.use_state(|| 0_u32);
+            *handle.borrow_mut() = Some(state.clone());
+            if let Some(next) = armed.replace(None) {
+                value.set(next);
+            }
+            Element::host(9)
+        })
+    }
+
+    #[test]
+    fn a_store_that_moves_behind_the_render_is_read_again() {
+        let store = Store::new(1);
+        let handle = Rc::new(RefCell::new(None));
+        let moved = Rc::new(RefCell::new(None));
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let armed = Rc::new(Cell::new(None));
+        let mut root = mount(Element::fragment([
+            watched(&store, &handle, &log),
+            mover(Rc::clone(&store.value), Rc::clone(&armed), &moved),
+        ]));
+        assert_eq!(*log.borrow(), [1]);
+        let Some(state) = handle.borrow().clone() else {
+            return;
+        };
+        let Some(moved) = moved.borrow().clone() else {
+            return;
+        };
+
+        // The store moved since the commit, and the render is armed to move it
+        // again after the reading fiber has run: the transition render reads 2
+        // and something lands behind it that makes the snapshot 3.
+        store.set(2);
+        armed.set(Some(3));
+        root.start_transition(|| {
+            state.set(1);
+            moved.set(1);
+        });
+        root.flush();
+
+        // Committing 2 would put a snapshot on screen that the store has moved
+        // past, so the root renders the transition again without yielding and
+        // commits the snapshot the store reports at the commit.
+        assert_eq!(*log.borrow(), [1, 2, 3]);
+        assert_eq!(top_level(&root), [Some(3), Some(9)]);
+        assert!(!root.has_pending_work());
     }
 
     #[test]
