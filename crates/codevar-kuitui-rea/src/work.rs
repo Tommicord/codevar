@@ -1159,7 +1159,7 @@ impl<'a, H: Host> WorkLoop<'a, H> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::element::{AnyContext, ProviderNode, Reference};
+    use crate::element::{AnyContext, Context, ProviderNode, Reference};
     use crate::fiber::Fiber;
     use crate::hooks::{State, mailbox};
     use alloc::vec::Vec;
@@ -2240,5 +2240,32 @@ mod tests {
         assert_eq!(seen.get(), 2);
         assert_eq!(context.current(), 0);
         assert_eq!(harness.arena.provider_depth(), 0);
+    }
+
+    #[test]
+    fn a_provider_element_publishes_its_value_to_the_tree_it_wraps() {
+        let mut harness = Harness::new();
+        let context = Context::new(0_u16);
+        let seen = Rc::new(Cell::new(0_u16));
+        let reader = Rc::clone(&context);
+        let recorded = Rc::clone(&seen);
+        let child = Element::component(move |_| {
+            recorded.set(*reader.read());
+            Element::host((0, 1))
+        });
+
+        harness.render(Element::provider(&context, Rc::new(2), [child]));
+        assert_eq!(seen.get(), 2);
+        assert_eq!(harness.host.nodes[0].element, (0, 1));
+        let Some(provider) = harness.child(harness.root) else {
+            return;
+        };
+        assert_eq!(
+            harness.arena.get(provider).map(|fiber| fiber.tag),
+            Some(FiberTag::Provider)
+        );
+        // The value is published for the render that published it and no
+        // longer.
+        assert_eq!(*context.read(), 0);
     }
 }

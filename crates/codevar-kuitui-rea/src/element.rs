@@ -37,6 +37,15 @@
 //! reconciler skips empty elements entirely: they never get a fiber, and they
 //! do not shift the position of their siblings.
 //!
+//! # Context
+//!
+//! A context carries a value to every component below a provider without the
+//! layers in between passing it along. [`Context::new`] builds the handle,
+//! [`Element::provider`] publishes a value for the subtree it wraps, and a
+//! component reads the value while it renders. The handle's identity is its
+//! allocation, so a context built inside a render is a different context on
+//! every pass: it belongs outside the tree, next to the root that renders it.
+//!
 //! # No widgets here
 //!
 //! The engine knows structure and nothing else. It never names a widget, a
@@ -54,6 +63,7 @@
 
 use alloc::rc::Rc;
 use core::any::{Any, TypeId};
+use core::cell::RefCell;
 
 use crate::hooks::{Cleanup, RenderCtx};
 use crate::host::{Host, Key};
@@ -113,6 +123,62 @@ pub(crate) struct HostNode<H: Host> {
     pub(crate) reference: Option<Reference<H>>,
 }
 
+/// A value components can read without receiving it as a prop.
+///
+/// A context reports the value [`Context::new`] is given until a provider
+/// element publishes another value to the elements below it. The published
+/// value only outlives the render that publishes it: a component reads it
+/// while it renders, and the context reports the default again afterwards.
+///
+/// Two contexts are the same context only when they are the same `Rc`, exactly
+/// as two `createContext` calls in React are two contexts even when their
+/// defaults are equal.
+pub struct Context<T> {
+    /// The value the context reports while no provider above it publishes.
+    default: Rc<T>,
+    /// The value the context reports right now.
+    current: RefCell<Rc<dyn Any>>,
+}
+
+impl<T: 'static> Context<T> {
+    /// Creates a context that reports `default` until a provider publishes
+    /// another value.
+    #[must_use]
+    pub fn new(default: T) -> Rc<Self> {
+        let default = Rc::new(default);
+        Rc::new(Self {
+            current: RefCell::new(Rc::clone(&default) as Rc<dyn Any>),
+            default,
+        })
+    }
+
+    /// The value the context reports right now.
+    ///
+    /// While a tree below a provider renders, this is the value that provider
+    /// published; anywhere else it is the default. Component code should read
+    /// a context through `RenderCtx::use_context` instead, which records the
+    /// read so the component renders again when the provider publishes
+    /// another value.
+    #[must_use]
+    pub fn read(&self) -> Rc<T> {
+        self.current
+            .borrow()
+            .clone()
+            .downcast::<T>()
+            .unwrap_or_else(|_| Rc::clone(&self.default))
+    }
+}
+
+impl<T: 'static> AnyContext for Context<T> {
+    fn swap(&self, value: Rc<dyn Any>) -> Rc<dyn Any> {
+        self.current.replace(value)
+    }
+
+    fn restore(&self, previous: Rc<dyn Any>) {
+        *self.current.borrow_mut() = previous;
+    }
+}
+
 /// The shared cell a context keeps its current value in.
 ///
 /// A reader has to be type-erased all the way to the value: the engine swaps
@@ -167,6 +233,8 @@ pub(crate) enum Kind<H: Host> {
     /// A boundary that shows its primary tree until a descendant suspends and
     /// its fallback otherwise.
     Suspense(Rc<SuspenseNode<H>>),
+    /// A provider that publishes a context value to the elements below it.
+    Provider(Rc<ProviderNode<H>>),
 }
 
 impl<H: Host> Element<H> {
@@ -279,6 +347,32 @@ impl<H: Host> Element<H> {
         }
     }
 
+    /// A provider that publishes `value` to `children`.
+    ///
+    /// The value replaces what `context` reports while the children render and
+    /// the render winds back down; [`Context::read`] then reports the default
+    /// again. The provider has no host node of its own, exactly like a
+    /// fragment, so the children belong to the nearest host node around it.
+    ///
+    /// The value is typed with the context, so a provider cannot publish a
+    /// value the context's readers cannot read. React gets the same guarantee
+    /// from `createContext<T>` and the provider's `value` prop.
+    #[must_use]
+    pub fn provider<T: 'static>(
+        context: &Rc<Context<T>>,
+        value: Rc<T>,
+        children: impl IntoIterator<Item = Self>,
+    ) -> Self {
+        Self {
+            key: None,
+            kind: Kind::Provider(Rc::new(ProviderNode {
+                context: Rc::clone(context) as Rc<dyn AnyContext>,
+                value: value as Rc<dyn Any>,
+                children: children.into_iter().collect(),
+            })),
+        }
+    }
+
     /// Gives the element a key, so a reorder can follow it.
     #[must_use]
     pub fn keyed(mut self, key: impl Into<Key>) -> Self {
@@ -324,6 +418,7 @@ impl<H: Host> Clone for Element<H> {
             },
             Kind::Fragment(children) => Kind::Fragment(Rc::clone(children)),
             Kind::Suspense(node) => Kind::Suspense(Rc::clone(node)),
+            Kind::Provider(node) => Kind::Provider(Rc::clone(node)),
         };
         Self {
             key: self.key.clone(),

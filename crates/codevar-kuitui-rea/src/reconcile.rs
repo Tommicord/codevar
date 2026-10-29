@@ -234,6 +234,13 @@ fn same_type<H: Host>(host: &H, fiber: &Fiber<H>, element: &Element<H>) -> bool 
         // A Suspense boundary is matched by its kind alone: React reuses the
         // boundary fiber for every render of it and diffs the two trees below.
         (FiberTag::Suspense, Kind::Suspense(_)) => true,
+        // A provider is matched by the context it publishes. React compares
+        // the fiber's type, which *is* the context object; Rea keeps the
+        // context in the payload, so the payload is what has to match.
+        (FiberTag::Provider, Kind::Provider(new)) => match &fiber.memoized {
+            Payload::Provider(old) => Rc::ptr_eq(&old.context, &new.context),
+            _ => false,
+        },
         _ => false,
     }
 }
@@ -246,6 +253,7 @@ fn payload_of<H: Host>(element: &Element<H>) -> Payload<H> {
         Kind::Component { render, .. } => Payload::Component(Rc::clone(render)),
         Kind::Fragment(children) => Payload::Fragment(Rc::clone(children)),
         Kind::Suspense(node) => Payload::Suspense(Rc::clone(node)),
+        Kind::Provider(node) => Payload::Provider(Rc::clone(node)),
     }
 }
 
@@ -268,6 +276,7 @@ fn create<H: Host>(arena: &mut Arena<H>, element: &Element<H>) -> FiberId {
         Kind::Host(_) => FiberTag::Host,
         Kind::Component { .. } => FiberTag::Component,
         Kind::Suspense(_) => FiberTag::Suspense,
+        Kind::Provider(_) => FiberTag::Provider,
         // Empty is skipped by the caller; a fragment is the closest node.
         Kind::Empty | Kind::Fragment(_) => FiberTag::Fragment,
     };
@@ -283,6 +292,7 @@ fn create<H: Host>(arena: &mut Arena<H>, element: &Element<H>) -> FiberId {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::element::{AnyContext, Context};
 
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     struct TestNode(u32);
@@ -624,5 +634,77 @@ mod tests {
                 .get(parent)
                 .is_some_and(|fiber| fiber.deletions.is_empty())
         );
+    }
+
+    #[test]
+    fn a_provider_element_gets_a_provider_fiber() {
+        let context = Context::new(0_u16);
+        let (arena, parent) = mount(&[Element::provider(&context, Rc::new(1), [leaf(1)])]);
+        let ids = children(&arena, parent);
+        assert_eq!(ids.len(), 1);
+        let Some(fiber) = arena.get(ids[0]) else {
+            return;
+        };
+        assert_eq!(fiber.tag, FiberTag::Provider);
+        assert!(fiber.flags.contains(Flags::PLACEMENT));
+        // The payload carries the context, because the fiber's begin has to
+        // know which cell to publish the value into.
+        let Payload::Provider(node) = &fiber.pending else {
+            return;
+        };
+        assert!(Rc::ptr_eq(
+            &node.context,
+            &(Rc::clone(&context) as Rc<dyn AnyContext>)
+        ));
+        assert_eq!(node.children.len(), 1);
+    }
+
+    #[test]
+    fn a_provider_is_reused_by_the_context_it_publishes() {
+        let context = Context::new(0_u16);
+        let (mut arena, parent) = mount(&[Element::provider(&context, Rc::new(1), [leaf(1)])]);
+        let old = children(&arena, parent);
+        let first = render(
+            &mut arena,
+            parent,
+            &[Element::provider(&context, Rc::new(2), [leaf(2)])],
+        );
+        let new = chain(&arena, first);
+        assert_eq!(new.len(), 1);
+        assert_eq!(
+            arena
+                .get(new[0])
+                .and_then(|fiber| fiber.alternate),
+            Some(old[0])
+        );
+        let Some(fiber) = arena.get(new[0]) else {
+            return;
+        };
+        assert!(matches!(&fiber.pending, Payload::Provider(node) if node.children.len() == 1));
+    }
+
+    #[test]
+    fn a_provider_of_another_context_takes_a_new_fiber() {
+        let first_context = Context::new(0_u16);
+        let second_context = Context::new(0_u16);
+        let (mut arena, parent) = mount(&[Element::provider(&first_context, Rc::new(1), [leaf(1)])]);
+        let old = children(&arena, parent);
+        let first = render(
+            &mut arena,
+            parent,
+            &[Element::provider(&second_context, Rc::new(1), [leaf(1)])],
+        );
+        let new = chain(&arena, first);
+        assert_eq!(new.len(), 1);
+        // Two contexts with the same default are still two contexts: a provider
+        // of one cannot publish the other's value, so the fiber is replaced the
+        // way React replaces a provider whose type changed.
+        assert_eq!(
+            arena
+                .get(new[0])
+                .and_then(|fiber| fiber.alternate),
+            None
+        );
+        assert_ne!(new[0], old[0]);
     }
 }
