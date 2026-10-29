@@ -175,6 +175,16 @@
 //! the work resolves. A boundary that mounts hides nothing, and neither does one
 //! inside a tree that is already out of sight, so their fallbacks commit at
 //! once; that is React's `RootSuspendedWithDelay` against `RootSuspended`.
+//!
+//! A retry is throttled as well. A tree that retries through several levels —
+//! the data one boundary waited for arrives and reveals another boundary that
+//! still waits — would otherwise replace one loading state with the next within
+//! a frame. A render whose lanes are retries only and that has to show a
+//! fallback therefore waits until [`FALLBACK_THROTTLE_MS`] has passed since the
+//! last fallback that hid content: the finished tree is held, its lanes are
+//! parked, and [`Root::flush_slice`] commits the tree once its clock reaches
+//! the deadline. Work that arrives before then replaces the held tree, and
+//! [`Root::flush`], which has no clock, commits it at once.
 
 use alloc::rc::Rc;
 use alloc::vec::Vec;
@@ -210,6 +220,23 @@ struct Render {
     /// the root for the same reason, and a slice that resumed with a fresh
     /// status would commit a fallback the whole render wanted to avoid.
     exit: ExitStatus,
+}
+
+/// A finished tree the root holds back until its commit is due.
+///
+/// This is React's `root.finishedWork` together with the `timeoutHandle`
+/// `finishConcurrentRender` schedules for it: the render completed, but showing
+/// the tree now would replace one loading state with another, so the commit
+/// waits until the host's clock reaches `deadline`. The fibers stay in the
+/// arena meanwhile; a new render throws them away (React's `prepareFreshStack`
+/// cancels the handle).
+struct Held {
+    /// The finished work-in-progress root.
+    root: FiberId,
+    /// The lanes the render covered.
+    lanes: Lanes,
+    /// When the commit is due, on the host's clock.
+    deadline: u64,
 }
 
 /// A mounted tree.
@@ -275,6 +302,16 @@ pub struct Root<H: Host> {
     next_retry_lane: Lanes,
     /// The render in flight, if a slice stopped before the tree completed.
     render: Option<Render>,
+    /// The finished tree whose commit waits for its deadline.
+    held: Option<Held>,
+    /// When the last fallback replaced content the user could see, on the
+    /// host's clock.
+    ///
+    /// This is React's `globalMostRecentFallbackTime`. It stays `None` until a
+    /// commit that hid a primary tree runs with a clock: without a moment to
+    /// measure from there is nothing a later fallback could be throttled
+    /// against.
+    fallback_time: Option<u64>,
     /// Work that arrived while a render was in flight. Its lane is pending but
     /// no fiber of that render necessarily carries it, so the completion has to
     /// account for it on its own.
@@ -310,6 +347,8 @@ impl<H: Host> Root<H> {
             expired_lanes: Lanes::NONE,
             next_retry_lane: Lanes::RETRY_FIRST,
             render: None,
+            held: None,
+            fallback_time: None,
             interleaved: Lanes::NONE,
             passive: None,
         }
@@ -329,8 +368,10 @@ impl<H: Host> Root<H> {
     /// Whether a flush would find work to do.
     ///
     /// A dispatch or a ping that only reached the mailbox counts: it becomes
-    /// pending work when [`Root::flush`] drains the mailbox. A lane the tree
-    /// suspended on does not count while nothing has pinged it, and neither
+    /// pending work when [`Root::flush`] drains the mailbox. A finished tree
+    /// the root holds back until its deadline counts too, because the host has
+    /// to keep giving the root the clock until the commit is due. A lane the
+    /// tree suspended on does not count while nothing has pinged it, and neither
     /// does idle work that waits behind such a lane: a render would suspend in
     /// the same place, or would show the parked work as if it had finished, so
     /// a host that keeps flushing while this is true cannot spin on work it
@@ -340,7 +381,7 @@ impl<H: Host> Root<H> {
     /// arrives, so the host sees it.
     #[must_use]
     pub fn has_pending_work(&self) -> bool {
-        !self.next_lanes().is_empty() || !self.mailbox.borrow().is_empty()
+        self.held.is_some() || !self.next_lanes().is_empty() || !self.mailbox.borrow().is_empty()
     }
 
     /// Schedules `element` as the tree of the root.
@@ -361,8 +402,13 @@ impl<H: Host> Root<H> {
     /// the call is picked up by the loop, so a caller that sets state from an
     /// effect sees the result before `flush` returns. Passive effects follow
     /// their own rule; see the module documentation.
+    ///
+    /// The call supplies no clock, so a finished tree the root would otherwise
+    /// hold back for a fallback throttle commits at once: there is no moment to
+    /// schedule the wait from. A host that wants the throttle uses
+    /// [`Root::flush_slice`].
     pub fn flush(&mut self) {
-        self.flush_loop(&mut || false);
+        self.flush_loop(None, &mut || false);
     }
 
     /// Renders and commits the pending lanes, giving control back between
@@ -371,7 +417,9 @@ impl<H: Host> Root<H> {
     /// `now` is the host's monotonic clock in milliseconds. The root uses it to
     /// mark the pending lanes that have waited past [`Lanes::expiration_delay`]
     /// as expired, and a render that covers an expired lane is never stopped
-    /// for the caller's budget: starved work finishes in this slice.
+    /// for the caller's budget: starved work finishes in this slice. The clock
+    /// also decides when a finished tree the root holds back for a fallback
+    /// throttle may commit; [see the module documentation](self#suspension).
     ///
     /// `should_yield` is asked before every unit of a render whose lanes are
     /// neither blocking nor expired, and a `true` answer leaves the render in
@@ -380,31 +428,61 @@ impl<H: Host> Root<H> {
     /// a blocking lane ignores the callback and always completes.
     ///
     /// The return value says whether work is left: `false` means nothing is
-    /// pending, the tree committed everything it was asked to cover. Parked
-    /// lanes do not count as left — the next call has nothing to do on them
-    /// until an update unblocks them — so a parked tree also returns `false`.
+    /// pending, the tree committed everything it was asked to cover. A held
+    /// tree counts as left, so a host keeps calling until the commit is due.
+    /// Parked lanes do not count as left — the next call has nothing to do on
+    /// them until an update unblocks them — so a parked tree also returns
+    /// `false`.
     pub fn flush_slice(&mut self, now: u64, mut should_yield: impl FnMut() -> bool) -> bool {
         // The mailbox is drained first so the lanes this call sees are the ones
         // the host's clock starts the expiration of; React marks them from
         // `ensureRootIsScheduled`, after the update has marked the root.
         self.drain_mailbox();
         self.mark_starved_lanes(now);
-        self.flush_loop(&mut should_yield)
+        self.flush_loop(Some(now), &mut should_yield)
     }
 
     /// Renders and commits the pending lanes until none is left or a slice
     /// stops the render.
-    fn flush_loop(&mut self, should_yield: &mut dyn FnMut() -> bool) -> bool {
+    ///
+    /// `now` is the host's clock, when the host has one. `None` is the clockless
+    /// [`Root::flush`], which cannot wait: a held tree commits at once.
+    fn flush_loop(&mut self, now: Option<u64>, should_yield: &mut dyn FnMut() -> bool) -> bool {
         loop {
             self.drain_mailbox();
             let lanes = self.next_lanes();
-            if lanes.is_empty() {
-                return false;
+            if !lanes.is_empty() {
+                if !self.perform(lanes, now, should_yield) {
+                    return true;
+                }
+                continue;
             }
-            if !self.perform(lanes, should_yield) {
-                return true;
+            // Nothing is runnable. A held tree commits once its deadline
+            // passed; until then it is work this root still owes the host, the
+            // way React's timeout handle is a callback it still owes.
+            if !self.commit_held(now) {
+                return self.held.is_some();
             }
         }
+    }
+
+    /// Commits the held tree once the host's clock reaches its deadline.
+    ///
+    /// Returns whether a tree was committed. This is the `commitRoot` callback
+    /// React hands to `scheduleTimeout`: the tree is finished, so nothing is
+    /// rendered again — the commit simply applies it. A host that supplies no
+    /// clock cannot schedule the wait, so the tree commits at once.
+    fn commit_held(&mut self, now: Option<u64>) -> bool {
+        let Some(held) = self.held.take() else {
+            return false;
+        };
+        if now.is_some_and(|now| now < held.deadline) {
+            self.held = Some(held);
+            return false;
+        }
+        self.arena.end_render();
+        self.commit(held.root, held.lanes, now);
+        true
     }
 
     /// Marks the lanes that have been pending past their expiration delay.
@@ -519,7 +597,7 @@ impl<H: Host> Root<H> {
     /// suspends never completes: the tree is thrown away, nothing reaches the
     /// host, and the lanes are parked so no later flush repeats the attempt
     /// until something they wait for changed.
-    fn perform(&mut self, lanes: Lanes, should_yield: &mut dyn FnMut() -> bool) -> bool {
+    fn perform(&mut self, lanes: Lanes, now: Option<u64>, should_yield: &mut dyn FnMut() -> bool) -> bool {
         if !self
             .render
             .as_ref()
@@ -592,6 +670,12 @@ impl<H: Host> Root<H> {
             .render
             .as_ref()
             .map_or(ExitStatus::InProgress, |render| render.exit);
+        if exit == ExitStatus::Suspended && includes_only_retries(lanes) {
+            self.mark_suspended(lanes);
+            if self.defer_retry(root, lanes, now) {
+                return true;
+            }
+        }
         if exit == ExitStatus::SuspendedWithDelay && includes_only_transitions(lanes) {
             // React's `finishConcurrentRender`, case `RootSuspendedWithDelay`:
             // a transition that had to hide content keeps the previous screen
@@ -611,7 +695,7 @@ impl<H: Host> Root<H> {
         }
         self.render = None;
         self.arena.end_render();
-        self.commit(root, lanes);
+        self.commit(root, lanes, now);
         true
     }
 
@@ -630,6 +714,60 @@ impl<H: Host> Root<H> {
                 self.expiration_times[index as usize] = None;
             }
         }
+    }
+
+    /// Defers a retry that would replace one fallback with another.
+    ///
+    /// This is React's `finishConcurrentRender`, case `RootSuspended`, after
+    /// the lanes were parked: a retry that shows a fallback waits until
+    /// [`FALLBACK_THROTTLE_MS`] has passed since the last fallback that hid
+    /// content, so a tree that retries through several levels does not flash a
+    /// loading state for every level it reaches. Returns whether it took the
+    /// render away from the caller, which happens when the tree is held for a
+    /// later commit or thrown away for work that arrived meanwhile.
+    ///
+    /// React re-pings the still-suspended lanes instead of holding the tree
+    /// when they name a level outside this render, so the next pass prefers the
+    /// fallback of the last suspended level. Rea never reaches that case: a
+    /// retry lane is only rendered after the update that claims it cleared the
+    /// parked set, so the lanes this render parks are that whole set.
+    fn defer_retry(&mut self, root: FiberId, lanes: Lanes, now: Option<u64>) -> bool {
+        let Some(deadline) = now.and_then(|now| self.fallback_deadline(now)) else {
+            return false;
+        };
+        // React's `getNextLanes(root, NoLanes) !== NoLanes`: additional work is
+        // pending and replaces this tree, so holding it would only postpone the
+        // commit that work performs.
+        if !self.next_lanes().is_empty() {
+            self.render = None;
+            self.arena.abandon_render();
+            self.interleaved = Lanes::NONE;
+            return true;
+        }
+        // React's `scheduleTimeout(commitRoot, msUntilTimeout)` keeps
+        // `root.finishedWork` alive until the handle fires. The fibers stay in
+        // the arena, and the host's next slice commits them once the clock
+        // reaches the deadline.
+        self.render = None;
+        self.held = Some(Held {
+            root,
+            lanes,
+            deadline,
+        });
+        true
+    }
+
+    /// When the next fallback may commit, if it has to wait at all.
+    ///
+    /// This is React's `globalMostRecentFallbackTime + FALLBACK_THROTTLE_MS`
+    /// measured against `now()`. A wait of a few milliseconds is not worth
+    /// keeping the previous screen for — React's `msUntilTimeout > 10` — so a
+    /// deadline that close answers `None` and the fallback commits at once.
+    fn fallback_deadline(&self, now: u64) -> Option<u64> {
+        let deadline = self
+            .fallback_time?
+            .saturating_add(FALLBACK_THROTTLE_MS);
+        (deadline.saturating_sub(now) > MINIMUM_HOLD_MS).then_some(deadline)
     }
 
     /// Marks the parked lanes whose work resolved.
@@ -720,8 +858,11 @@ impl<H: Host> Root<H> {
     /// the host: its fibers are freed, its update queues return to the state
     /// the last commit left, and the committed root is copied again. Work that
     /// arrived during the abandoned render is already in `pending_lanes`, so
-    /// clearing the interleaved set here loses nothing.
+    /// clearing the interleaved set here loses nothing. A held tree goes with
+    /// it — React cancels the timeout a held fallback scheduled here — because
+    /// the new render replaces the tree the hold would have committed.
     fn prepare_fresh(&mut self, lanes: Lanes) {
+        self.held = None;
         self.arena.abandon_render();
         self.render = None;
         self.interleaved = Lanes::NONE;
@@ -752,7 +893,9 @@ impl<H: Host> Root<H> {
     }
 
     /// Commits a finished tree and records the lanes the render left pending.
-    fn commit(&mut self, work: FiberId, lanes: Lanes) {
+    ///
+    /// `now` is the host's clock at the commit, if it supplied one.
+    fn commit(&mut self, work: FiberId, lanes: Lanes, now: Option<u64>) {
         // `completeRoot`: the passive effects of the previous commit run before
         // this tree becomes current, so their destroy pass still visits the
         // fibers that created them.
@@ -789,6 +932,15 @@ impl<H: Host> Root<H> {
 
         let mut commit = Commit::new(&mut self.host, &mut self.arena, Rc::clone(&self.mailbox));
         commit.mutation(work);
+        // React's `markCommitTimeOfFallback` runs inside the mutation phase;
+        // the root only records the moment the commit reported so a later
+        // fallback can be throttled against it. A commit with no clock leaves
+        // the record alone: it cannot say when the fallback happened.
+        if commit.hid_primary_tree()
+            && let Some(now) = now
+        {
+            self.fallback_time = Some(now);
+        }
         self.current = work;
         let mut commit = Commit::new(&mut self.host, &mut self.arena, Rc::clone(&self.mailbox));
         commit.layout(work);
@@ -906,6 +1058,26 @@ impl<H: Host> Root<H> {
             }
         }
     }
+}
+
+/// How long after a fallback that hid content the next one may commit.
+///
+/// This is React's `FALLBACK_THROTTLE_MS`.
+const FALLBACK_THROTTLE_MS: u64 = 500;
+
+/// The shortest wait worth holding a finished tree for.
+///
+/// This is React's `msUntilTimeout > 10`: replacing one loading state with
+/// another a few milliseconds later is not worth keeping the previous screen.
+const MINIMUM_HOLD_MS: u64 = 10;
+
+/// Whether `lanes` hold nothing but retries.
+///
+/// This is React's `includesOnlyRetries`: `(lanes & RetryLanes) === lanes`. A
+/// retry renders no user update, so a fallback it shows is the only thing that
+/// changed on screen and React throttles it rather than flashing it.
+fn includes_only_retries(lanes: Lanes) -> bool {
+    lanes & Lanes::RETRY == lanes
 }
 
 /// Whether `lanes` hold nothing but transition updates.
@@ -1698,6 +1870,100 @@ mod tests {
         assert!(root.host().hidden(mounted[2]));
         assert!(!root.host().hidden(mounted[3]));
         assert_eq!(root.suspended_lanes, Lanes::NONE);
+        assert!(!root.has_pending_work());
+    }
+
+    /// An element whose boundary suspends on `work` until `ready` and then
+    /// reveals a nested boundary whose content suspends on `nested`.
+    fn revealing_nested(ready: &Rc<Cell<bool>>, work: &Wakeable, nested: &Wakeable) -> Element<TreeHost> {
+        let ready = Rc::clone(ready);
+        let work = work.clone();
+        let nested = nested.clone();
+        let missing = Rc::new(Cell::new(false));
+        Element::suspense(
+            Element::component(move |ctx| {
+                if ready.get() {
+                    Element::suspense(waiting_on(&missing, &nested), Element::host(8))
+                } else {
+                    ctx.suspend(work.clone())
+                }
+            }),
+            Element::host(9),
+        )
+    }
+
+    #[test]
+    fn a_retry_that_reveals_a_new_fallback_waits_for_the_throttle() {
+        let ready = Rc::new(Cell::new(false));
+        let (work, subscribers) = manual();
+        let (nested, _nested_subscribers) = manual();
+        let host = TreeHost::new();
+        let container = host.container();
+        let mut root = Root::new(host, container);
+        root.render(revealing_nested(&ready, &work, &nested));
+
+        // The mount shows the first fallback at t=0. The commit hid a primary
+        // tree, so the throttle starts here even though nothing was on screen.
+        assert!(!root.flush_slice(0, || false));
+        assert_eq!(top_level(&root), [Some(9)]);
+
+        // The outer work resolved, and the retry mounts a boundary that
+        // suspends at once. Its fallback would replace the one committed
+        // 100 ms ago, so the finished tree is held and its retry lane parked.
+        ready.set(true);
+        resolve(&subscribers);
+        assert!(root.flush_slice(100, || false));
+        assert_eq!(top_level(&root), [Some(9)]);
+        assert!(root.has_pending_work());
+
+        // Nothing commits while the throttle is still running.
+        assert!(root.flush_slice(499, || false));
+        assert_eq!(top_level(&root), [Some(9)]);
+
+        // At the deadline the held tree commits and the nested fallback takes
+        // the place of the one it replaced.
+        assert!(!root.flush_slice(500, || false));
+        assert_eq!(top_level(&root), [Some(8)]);
+        assert!(!root.has_pending_work());
+    }
+
+    #[test]
+    fn a_retry_after_the_throttle_commits_its_fallback_at_once() {
+        let ready = Rc::new(Cell::new(false));
+        let (work, subscribers) = manual();
+        let (nested, _nested_subscribers) = manual();
+        let host = TreeHost::new();
+        let container = host.container();
+        let mut root = Root::new(host, container);
+        root.render(revealing_nested(&ready, &work, &nested));
+        assert!(!root.flush_slice(0, || false));
+
+        // The next fallback comes a full throttle later, so there is nothing
+        // left to wait for and the commit happens in this slice.
+        ready.set(true);
+        resolve(&subscribers);
+        assert!(!root.flush_slice(500, || false));
+        assert_eq!(top_level(&root), [Some(8)]);
+        assert!(!root.has_pending_work());
+    }
+
+    #[test]
+    fn a_flush_without_a_clock_commits_a_throttled_fallback_at_once() {
+        let ready = Rc::new(Cell::new(false));
+        let (work, subscribers) = manual();
+        let (nested, _nested_subscribers) = manual();
+        let host = TreeHost::new();
+        let container = host.container();
+        let mut root = Root::new(host, container);
+        root.render(revealing_nested(&ready, &work, &nested));
+        assert!(!root.flush_slice(0, || false));
+
+        // `flush` supplies no clock, so it cannot schedule the wait and the
+        // fallback commits at once instead of being held.
+        ready.set(true);
+        resolve(&subscribers);
+        root.flush();
+        assert_eq!(top_level(&root), [Some(8)]);
         assert!(!root.has_pending_work());
     }
 

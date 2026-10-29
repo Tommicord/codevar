@@ -81,12 +81,30 @@ pub(crate) struct Commit<'a, H: Host> {
     arena: &'a mut Arena<H>,
     /// The mailbox the retry listeners a boundary subscribes signal.
     mailbox: MailboxHandle,
+    /// Whether the mutation phase hid the primary tree of a boundary that was
+    /// on screen.
+    fallback: bool,
 }
 
 impl<'a, H: Host> Commit<'a, H> {
     /// Creates a commit pass.
     pub(crate) fn new(host: &'a mut H, arena: &'a mut Arena<H>, mailbox: MailboxHandle) -> Self {
-        Self { host, arena, mailbox }
+        Self {
+            host,
+            arena,
+            mailbox,
+            fallback: false,
+        }
+    }
+
+    /// Whether this commit replaced visible content with a fallback.
+    ///
+    /// This is React's `markCommitTimeOfFallback`: the root records the moment
+    /// so the next fallback can be throttled against it, which keeps a tree
+    /// that retries through several levels from flashing one loading state
+    /// after another.
+    pub(crate) fn hid_primary_tree(&self) -> bool {
+        self.fallback
     }
 
     /// Applies the mutations of the finished tree: removals, then placements.
@@ -252,6 +270,14 @@ impl<'a, H: Host> Commit<'a, H> {
         let children_hidden = hidden_parent || (tag == FiberTag::Offscreen && hidden);
         let children_were_hidden = hidden_before_parent || (tag == FiberTag::Offscreen && was_hidden);
 
+        // React's `markCommitTimeOfFallback`, which runs in the mutation phase
+        // of a boundary whose primary container carries the visibility effect.
+        // The container's own mutation consumes that flag, so the boundary asks
+        // before the walk reaches it.
+        if tag == FiberTag::Suspense && self.hides_primary_tree(fiber) {
+            self.fallback = true;
+        }
+
         if flags.contains(Flags::CHILD_DELETION) {
             let deletions = match self.arena.get_mut(fiber) {
                 Some(node) => mem::take(&mut node.deletions),
@@ -325,6 +351,30 @@ impl<'a, H: Host> Commit<'a, H> {
         if let Some(node) = self.arena.get_mut(fiber) {
             node.flags.remove(Flags::MUTATION_MASK);
         }
+    }
+
+    /// Whether this commit puts the primary tree of `fiber` out of sight.
+    ///
+    /// The container answers for the boundary: it is hidden while the boundary
+    /// shows a fallback, and the committed container says whether it already
+    /// was. A boundary that mounts straight into its fallback has no committed
+    /// container, so it counts as newly hidden — the first fallback of a tree
+    /// starts the throttle like every other one.
+    fn hides_primary_tree(&self, fiber: FiberId) -> bool {
+        let Some(offscreen) = self
+            .arena
+            .get(fiber)
+            .and_then(|fiber| fiber.first_child)
+            .and_then(|offscreen| self.arena.get(offscreen))
+        else {
+            return false;
+        };
+        offscreen.flags.contains(Flags::VISIBILITY)
+            && offscreen.visibility == Visibility::Hidden
+            && !offscreen
+                .alternate
+                .and_then(|current| self.arena.get(current))
+                .is_some_and(|current| current.visibility == Visibility::Hidden)
     }
 
     /// Subscribes a retry listener to each wakeable the boundary caught.
