@@ -136,12 +136,19 @@
 //! covered: nothing is committed, and the host keeps showing the last tree that
 //! completed. A parked lane is still pending but no flush can make progress on
 //! it, so [`Root::has_pending_work`] ignores it and [`Root::next_lanes`] skips
-//! it, which is React's `getNextLanes` with a non-empty `suspendedLanes`. An
-//! update on any lane that is not idle clears the parked set — `markRootUpdated`
-//! assumes the update may carry the data the tree was waiting for — and the
-//! next flush tries the parked work again. Parked lanes lose their expiration
-//! clock: the wait is for data, not for the CPU, so starvation protection has
-//! nothing to measure.
+//! it, which is React's `getNextLanes` with a non-empty `suspendedLanes`.
+//!
+//! The root subscribes the wakeable before it parks the lanes. When the work it
+//! names resolves, it *pings*: the lanes go into the root's pinged set, which
+//! is the only way a still-suspended lane becomes a candidate for a render, and
+//! the mailbox entry the ping raises is what tells the host that the tree has
+//! something to try. A render that suspends in the same place clears the lanes
+//! from the pinged set as it parks them again, so a wakeable that cannot help
+//! does not cause a retry loop. An update on any lane that is not idle clears
+//! the parked set outright — `markRootUpdated` assumes the update may carry the
+//! data the tree was waiting for — and the next flush tries the parked work
+//! again. Parked lanes lose their expiration clock: the wait is for data, not
+//! for the CPU, so starvation protection has nothing to measure.
 //!
 //! A suspension below a [`Element::suspense`] boundary does not reach
 //! the root: the boundary catches it, the pass throws away the primary tree it
@@ -154,6 +161,8 @@
 //! retry listener is what the next increment attaches at commit.
 
 use alloc::rc::Rc;
+use alloc::vec::Vec;
+use core::cell::RefCell;
 use core::slice;
 
 use crate::commit::Commit;
@@ -163,6 +172,7 @@ use crate::hooks::{MailboxHandle, mailbox};
 use crate::host::Host;
 use crate::lane::{LANE_COUNT, Lanes};
 use crate::reconcile::reconcile_children;
+use crate::wakeable::Wakeable;
 use crate::work::{Progress, WorkLoop};
 
 /// A render in flight.
@@ -213,6 +223,22 @@ pub struct Root<H: Host> {
     /// suspend in the same place. React keeps the same set on the root and
     /// takes it out of `getNextLanes`.
     suspended_lanes: Lanes,
+    /// The parked lanes whose work has resolved since they were parked.
+    ///
+    /// A lane stays suspended when its work pings: the retry may suspend in the
+    /// same place, and parking it again from a set it is still in would say
+    /// nothing. Instead the pinged set is what lets [`Root::next_lanes`] pick a
+    /// still-suspended lane, exactly as React's `getNextLanes` consults
+    /// `pingedLanes` when no unsuspended work is left.
+    pinged_lanes: Lanes,
+    /// The wakeables the root subscribed to, with the lanes they were
+    /// subscribed for.
+    ///
+    /// This is React's `pingCache`. A lane can suspend on the same work more
+    /// than once — the render retries and the component reads the same missing
+    /// value — so the root subscribes once per pair and forgets the wakeable
+    /// when it pings, because work that completed is never thrown again.
+    ping_cache: Rc<RefCell<Vec<(Wakeable, Lanes)>>>,
     /// When each pending lane expires, indexed by lane bit. `None` until the
     /// root first sees the lane pending, and again once the lane is rendered.
     expiration_times: [Option<u64>; LANE_COUNT],
@@ -249,6 +275,8 @@ impl<H: Host> Root<H> {
             ids: 0,
             pending_lanes: Lanes::NONE,
             suspended_lanes: Lanes::NONE,
+            pinged_lanes: Lanes::NONE,
+            ping_cache: Rc::new(RefCell::new(Vec::new())),
             expiration_times: [None; LANE_COUNT],
             expired_lanes: Lanes::NONE,
             render: None,
@@ -268,17 +296,21 @@ impl<H: Host> Root<H> {
         &mut self.host
     }
 
-    /// Whether a dispatch or a lane is waiting for a flush.
+    /// Whether a flush would find work to do.
     ///
-    /// A dispatch that only reached the mailbox counts: it becomes a pending
-    /// lane when [`Root::flush`] drains it. A lane the tree suspended on does
-    /// not count: it is pending, but no flush can make progress on it until an
-    /// update unblocks it, so a host that keeps flushing while this is true
-    /// cannot spin on parked work. The dispatch that unblocks it is a mailbox
-    /// entry the moment it is sent, so the host sees it.
+    /// A dispatch or a ping that only reached the mailbox counts: it becomes
+    /// pending work when [`Root::flush`] drains the mailbox. A lane the tree
+    /// suspended on does not count while nothing has pinged it, and neither
+    /// does idle work that waits behind such a lane: a render would suspend in
+    /// the same place, or would show the parked work as if it had finished, so
+    /// a host that keeps flushing while this is true cannot spin on work it
+    /// cannot make progress on. React reaches the same conclusion in
+    /// `getNextLanes`, which returns no lanes for exactly those sets; the
+    /// dispatch or ping that unblocks the work is a mailbox entry the moment it
+    /// arrives, so the host sees it.
     #[must_use]
     pub fn has_pending_work(&self) -> bool {
-        !(self.pending_lanes & !self.suspended_lanes).is_empty() || !self.mailbox.borrow().is_empty()
+        !self.next_lanes().is_empty() || !self.mailbox.borrow().is_empty()
     }
 
     /// Schedules `element` as the tree of the root.
@@ -392,24 +424,42 @@ impl<H: Host> Root<H> {
 
     /// The lanes the next render must cover.
     ///
-    /// Idle work waits: only when no other lane is pending does the root look
-    /// at the idle, offscreen and deferred lanes. Parked lanes are not
-    /// candidates at all — a render would suspend in the same place — and when
-    /// nothing else is left the root returns no lanes, which is what
-    /// `getNextLanes` does once every remaining lane is suspended. When a
-    /// render is in flight, the work that arrived since it started replaces it
-    /// only when strictly more urgent — and default work never interrupts a
-    /// transition. This is React's rule in `getNextLanes`, which returns the
-    /// lanes of the render in flight for everything else, so a render that has
-    /// begun is not thrown away for equal or lower priority work.
+    /// This is React's `getNextLanes`. Unblocked non-idle work comes first, then
+    /// non-idle work whose suspension pinged; only when no non-idle lane is
+    /// pending at all does the root look at the idle, offscreen and deferred
+    /// lanes, by the same two steps. A parked lane that has not pinged is not a
+    /// candidate — a render would suspend in the same place — and idle work
+    /// does not overtake non-idle work even while that work is parked, because
+    /// a render that skipped the parked lane would commit the tree around a
+    /// suspension that is still unresolved. When nothing qualifies the root
+    /// returns no lanes. When a render is in flight, the work that arrived
+    /// since it started replaces it only when strictly more urgent — and
+    /// default work never interrupts a transition. That is React's rule in
+    /// `getNextLanes`, which returns the lanes of the render in flight for
+    /// everything else, so a render that has begun is not thrown away for equal
+    /// or lower priority work.
     fn next_lanes(&self) -> Lanes {
-        let runnable = self.pending_lanes & !self.suspended_lanes;
-        let non_idle = runnable & Lanes::NON_IDLE;
+        let pending = self.pending_lanes;
+        if pending.is_empty() {
+            return Lanes::NONE;
+        }
+        let non_idle = pending & Lanes::NON_IDLE;
         let next = if non_idle.is_empty() {
-            runnable.render_lanes()
+            let unblocked = pending & !self.suspended_lanes;
+            if unblocked.is_empty() {
+                self.pinged_lanes
+            } else {
+                unblocked
+            }
         } else {
-            non_idle.render_lanes()
-        };
+            let unblocked = non_idle & !self.suspended_lanes;
+            if unblocked.is_empty() {
+                non_idle & self.pinged_lanes
+            } else {
+                unblocked
+            }
+        }
+        .render_lanes();
         if next.is_empty() {
             return Lanes::NONE;
         }
@@ -457,7 +507,7 @@ impl<H: Host> Root<H> {
         // `shouldTimeSlice`: a render that covers blocking or expired work
         // runs to the end even when the host asks for the core.
         let sliceable = !lanes.intersects(Lanes::BLOCKING) && !lanes.intersects(self.expired_lanes);
-        let mut suspended = false;
+        let mut suspended = None;
         {
             let mut work_loop = WorkLoop::new(
                 &mut self.host,
@@ -477,15 +527,19 @@ impl<H: Host> Root<H> {
                     // there is no fiber to render next: this is React's
                     // `RootSuspendedAtTheShell`, which unwinds to the root and
                     // leaves the finished tree uncommitted.
-                    Progress::Suspended(_) => {
-                        suspended = true;
+                    Progress::Suspended(wakeable) => {
+                        suspended = Some(wakeable);
                         next = None;
                         break;
                     }
                 }
             }
         }
-        if suspended {
+        if let Some(wakeable) = suspended {
+            // React subscribes a suspension with no boundary as well: the lanes
+            // are about to be parked, and the work resolving is the only thing
+            // that can make them runnable again.
+            self.attach_ping_listener(&wakeable, lanes);
             self.render = None;
             self.arena.abandon_render();
             self.interleaved = Lanes::NONE;
@@ -504,21 +558,63 @@ impl<H: Host> Root<H> {
         true
     }
 
-    /// Parks `lanes` until an update makes them runnable again.
+    /// Parks `lanes` until an update or a ping makes them runnable again.
     ///
     /// This is React's `markRootSuspended`: the lanes join the suspended set
     /// and lose their expiration clock, because the tree waits for data and not
-    /// for the CPU. The wakeable the render suspended on is dropped with it: a
-    /// suspension that reaches the shell has no boundary to retry through, so
-    /// nothing subscribes it, and these lanes stay parked until an update
-    /// clears the set or a later pass subscribes the work at the root.
+    /// for the CPU. The lanes also lose their pinged mark: a retry that
+    /// suspended in the same place has not been unblocked by the ping it was
+    /// given, so the next render must not pick them again without new evidence.
     fn mark_suspended(&mut self, lanes: Lanes) {
         self.suspended_lanes.insert(lanes);
+        self.pinged_lanes.remove(lanes);
         for lane in lanes.iter() {
             if let Some(index) = lane.index() {
                 self.expiration_times[index as usize] = None;
             }
         }
+    }
+
+    /// Marks the parked lanes whose work resolved.
+    ///
+    /// This is React's `markRootPinged`. Only a lane that is still parked is
+    /// marked: a lane that finished rendering no longer waits for the work, and
+    /// the lanes stay suspended so [`Root::mark_suspended`] can park them again
+    /// if the retry suspends in the same place.
+    fn mark_root_pinged(&mut self, pinged: Lanes) {
+        self.pinged_lanes
+            .insert(self.suspended_lanes & pinged);
+    }
+
+    /// Subscribes the root to the work a suspension waits for.
+    ///
+    /// This is React's `attachPingListener`. A lane can suspend on the same
+    /// work more than once — the render retries and the component reads the
+    /// same missing value — so the root keeps the pairs it already subscribed
+    /// to and adds a listener once per pair. When the work reports back, the
+    /// listener drops the wakeable: work that completed is never thrown again,
+    /// and the retry reads what it produced.
+    fn attach_ping_listener(&mut self, wakeable: &Wakeable, lanes: Lanes) {
+        if self
+            .ping_cache
+            .borrow()
+            .iter()
+            .any(|(known, known_lanes)| known.same(wakeable) && *known_lanes == lanes)
+        {
+            return;
+        }
+        self.ping_cache
+            .borrow_mut()
+            .push((wakeable.clone(), lanes));
+        let cache = Rc::clone(&self.ping_cache);
+        let mailbox = Rc::clone(&self.mailbox);
+        let known = wakeable.clone();
+        wakeable.subscribe(Rc::new(move || {
+            cache
+                .borrow_mut()
+                .retain(|(cached, _)| !cached.same(&known));
+            mailbox.borrow_mut().ping(lanes);
+        }));
     }
 
     /// Throws away a render in flight and starts a fresh tree for `lanes`.
@@ -582,6 +678,7 @@ impl<H: Host> Root<H> {
         // more; a boundary that still waits re-parks its retry lane when it
         // attaches one. React resets the same sets in `markRootFinished`.
         self.suspended_lanes = Lanes::NONE;
+        self.pinged_lanes = Lanes::NONE;
         // A lane that is no longer pending starts over: a later update on it
         // gets a fresh expiration time instead of inheriting the one the
         // finished work had, and it is no longer expired.
@@ -620,15 +717,21 @@ impl<H: Host> Root<H> {
         true
     }
 
-    /// Turns the dispatches collected since the last drain into pending lanes.
+    /// Turns the pings and dispatches collected since the last drain into
+    /// pending lanes.
     ///
-    /// A queue whose fiber unmounted is detached and no longer wakes the root;
-    /// should one still be signalled, its owner is `None` and the update is
-    /// dropped, because a fiber that is not in the tree has no render to
-    /// schedule. A dispatch that lands while a render is in flight is also
-    /// recorded as interleaved: the render may be past the fiber it names, so
-    /// its own lanes cannot be relied on to carry the lane to the completion.
+    /// A ping names the lanes whose work resolved; it is applied before the
+    /// dispatches because a dispatch that clears the parked set would otherwise
+    /// make the ping look as if it named nothing. A queue whose fiber unmounted
+    /// is detached and no longer wakes the root; should one still be signalled,
+    /// its owner is `None` and the update is dropped, because a fiber that is
+    /// not in the tree has no render to schedule. A dispatch that lands while a
+    /// render is in flight is also recorded as interleaved: the render may be
+    /// past the fiber it names, so its own lanes cannot be relied on to carry
+    /// the lane to the completion.
     fn drain_mailbox(&mut self) {
+        let pinged = self.mailbox.borrow_mut().take_pinged();
+        self.mark_root_pinged(pinged);
         let updates = self.mailbox.borrow_mut().drain();
         for (queue, lanes) in updates {
             let Some(owner) = queue.borrow().owner() else {
@@ -933,6 +1036,112 @@ mod tests {
         assert_eq!(root.suspended_lanes, Lanes::NONE);
         assert!(!root.has_pending_work());
         assert_eq!(root.host().nodes.len(), nodes);
+    }
+
+    /// The listeners a [`manual`] wakeable has registered, in order.
+    type Listeners = Rc<RefCell<Vec<Rc<dyn Fn()>>>>;
+
+    /// A wakeable the test resolves by hand.
+    ///
+    /// The subscribers stay in the returned list so the test can fire the work
+    /// the way a completed request would; the engine's listener is one of them.
+    fn manual() -> (Wakeable, Listeners) {
+        let subscribers: Listeners = Rc::new(RefCell::new(Vec::new()));
+        let waiting = Rc::clone(&subscribers);
+        let wakeable = Wakeable::from_fn(move |wake| waiting.borrow_mut().push(wake));
+        (wakeable, subscribers)
+    }
+
+    /// Runs every listener `work` registered.
+    fn resolve(subscribers: &Listeners) {
+        for wake in subscribers.borrow().iter() {
+            wake();
+        }
+    }
+
+    /// A component that renders one host node once `ready` is set and suspends
+    /// on `work` until then.
+    fn waiting_on(ready: &Rc<Cell<bool>>, work: &Wakeable) -> Element<TreeHost> {
+        let ready = Rc::clone(ready);
+        let work = work.clone();
+        Element::component(move |ctx| {
+            if ready.get() {
+                Element::host(7)
+            } else {
+                ctx.suspend(work.clone())
+            }
+        })
+    }
+
+    #[test]
+    fn a_shell_suspension_retries_when_its_work_resolves() {
+        let ready = Rc::new(Cell::new(false));
+        let (work, subscribers) = manual();
+        let mut root = mount(waiting_on(&ready, &work));
+
+        // The suspension parked the lane and left the container empty.
+        assert!(top_level(&root).is_empty());
+        assert_eq!(root.suspended_lanes, Lanes::DEFAULT);
+        assert!(!root.has_pending_work());
+
+        // The work resolved while the tree was parked: the ping is what makes
+        // the lane a candidate again, and the host sees it before flushing.
+        ready.set(true);
+        resolve(&subscribers);
+        assert!(root.has_pending_work());
+        root.flush();
+
+        assert_eq!(top_level(&root), [Some(7)]);
+        assert_eq!(root.suspended_lanes, Lanes::NONE);
+        assert_eq!(root.pinged_lanes, Lanes::NONE);
+        assert!(!root.has_pending_work());
+    }
+
+    #[test]
+    fn the_root_subscribes_a_wakeable_once_per_lane() {
+        let ready = Rc::new(Cell::new(false));
+        let (work, subscribers) = manual();
+        let mut root = mount(waiting_on(&ready, &work));
+        assert_eq!(subscribers.borrow().len(), 1);
+
+        // The retry suspends on the same work at the same lane. The wakeable is
+        // already subscribed for that lane, so the root adds no second listener
+        // and the lane parks again.
+        root.render(waiting_on(&ready, &work));
+        root.flush();
+        assert_eq!(root.suspended_lanes, Lanes::DEFAULT);
+        assert_eq!(subscribers.borrow().len(), 1);
+    }
+
+    #[test]
+    fn idle_work_waits_behind_a_suspended_lane() {
+        let handle = Rc::new(RefCell::new(None));
+        let rendered = Rc::new(Cell::new(0));
+        let mut root = mount(sometimes(&handle, &rendered));
+        let Some(missing) = handle.borrow().clone() else {
+            return;
+        };
+        missing.set(true);
+        root.flush();
+        assert_eq!(root.suspended_lanes, Lanes::DEFAULT);
+
+        // The idle update is the only work that is not parked, and idle work
+        // does not overtake a suspended lane: a render would commit the tree
+        // around the parked lane as if its work had finished.
+        missing.set_with_lane(Lanes::IDLE, false);
+        root.flush();
+        assert_eq!(top_level(&root), [Some(7)]);
+        assert_eq!(root.pending_lanes, Lanes::DEFAULT | Lanes::IDLE);
+        assert!(!root.has_pending_work());
+        assert_eq!(rendered.get(), 2);
+
+        // The default update unblocks the parked lane; the idle update follows
+        // in the same flush, once no non-idle lane is left.
+        missing.set(false);
+        root.flush();
+        assert_eq!(rendered.get(), 4);
+        assert!(root.pending_lanes.is_empty());
+        assert!(!root.has_pending_work());
     }
 
     /// The nodes the container shows, in order.

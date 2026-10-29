@@ -223,6 +223,13 @@ pub(crate) struct Mailbox {
     /// the current tree changes when alternates swap, while the queue is
     /// shared by both alternates and knows which fiber owns it right now.
     updates: Vec<(QueueHandle, Lanes)>,
+    /// The lanes whose suspended work has resolved since the last drain.
+    ///
+    /// A ping names no queue: the work it unblocks belongs to a tree that
+    /// already suspended, so the root only has to learn which lanes can now
+    /// make progress. React reaches the root the same way, from the listener
+    /// it attached to the wakeable.
+    pinged: Lanes,
     /// The component render that is in flight, when there is one.
     render_phase: Option<RenderPhase>,
 }
@@ -265,9 +272,19 @@ impl Mailbox {
         mem::take(&mut self.updates)
     }
 
-    /// Whether no dispatch happened since the last drain.
+    /// Records that the work `lanes` were waiting for resolved.
+    pub(crate) fn ping(&mut self, lanes: Lanes) {
+        self.pinged.insert(lanes);
+    }
+
+    /// Takes the lanes pinged since the last drain.
+    pub(crate) fn take_pinged(&mut self) -> Lanes {
+        mem::take(&mut self.pinged)
+    }
+
+    /// Whether nothing is waiting for the root.
     pub(crate) fn is_empty(&self) -> bool {
-        self.updates.is_empty()
+        self.updates.is_empty() && self.pinged.is_empty()
     }
 
     /// Starts the render of a component.
