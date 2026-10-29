@@ -1263,7 +1263,7 @@ fn includes_only_transitions(lanes: Lanes) -> bool {
 mod tests {
     use super::*;
     use crate::element::Reference;
-    use crate::hooks::{Cleanup, State};
+    use crate::hooks::{Cleanup, Dispatch, State};
     use crate::wakeable::Wakeable;
     use alloc::rc::Rc;
     use alloc::vec;
@@ -1466,6 +1466,42 @@ mod tests {
         // lane pending; the root then renders that lane, which catches up.
         assert_eq!(*log.borrow(), [1, 1, 2]);
         assert_eq!(top_level(&root), [Some(2)]);
+        assert!(!root.has_pending_work());
+    }
+
+    /// A component whose value is the total its reducer computes. It records
+    /// the total it renders and hands the dispatch to the test.
+    fn reduced(
+        dispatch: &Rc<RefCell<Option<Dispatch<u32>>>>,
+        log: &Rc<RefCell<Vec<u32>>>,
+    ) -> Element<TreeHost> {
+        let slot = Rc::clone(dispatch);
+        let log = Rc::clone(log);
+        Element::component(move |ctx| {
+            let (value, send) = ctx.use_reducer(|sum: &u32, action: &u32| sum + action, || 1_u32);
+            *slot.borrow_mut() = Some(send);
+            log.borrow_mut().push(*value);
+            Element::host(*value)
+        })
+    }
+
+    #[test]
+    fn a_reducer_dispatch_renders_through_the_root() {
+        let dispatch = Rc::new(RefCell::new(None));
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut root = mount(reduced(&dispatch, &log));
+        let Some(send) = dispatch.borrow().clone() else {
+            return;
+        };
+
+        send.dispatch(2);
+        send.dispatch(3);
+        root.flush();
+
+        // Both actions are replayed from the committed tree's value in one
+        // render, so the host never sees the intermediate total.
+        assert_eq!(*log.borrow(), [1, 6]);
+        assert_eq!(top_level(&root), [Some(6)]);
         assert!(!root.has_pending_work());
     }
 

@@ -58,8 +58,8 @@
 //! fiber arena, the hook model, the element vocabulary, keyed reconciliation,
 //! the begin/complete work pass, the commit phases and the root that drives
 //! them are in place. The public surface is [`lane`], [`element`], [`Host`],
-//! [`Key`], [`Props`], [`RenderCtx`], [`State`], [`Transition`], [`Cleanup`],
-//! [`Wakeable`] and [`Root`].
+//! [`Key`], [`Props`], [`RenderCtx`], [`State`], [`Dispatch`], [`Transition`],
+//! [`Cleanup`], [`Wakeable`] and [`Root`].
 //!
 //! The root renders every pending lane before it returns by default, and a
 //! render whose lanes are speculative can be time sliced: [`Root::flush_slice`]
@@ -118,7 +118,7 @@ mod wakeable;
 mod work;
 
 pub use element::Element;
-pub use hooks::{Cleanup, RenderCtx, State, Transition};
+pub use hooks::{Cleanup, Dispatch, RenderCtx, State, Transition};
 pub use host::{Host, Key, Props, props, props_ref};
 pub use lane::{LANE_COUNT, Lanes, SchedulerPriority};
 pub use root::Root;

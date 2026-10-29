@@ -38,6 +38,11 @@
 //! so a skipped update can be replayed by a later render without losing it,
 //! and an applied update leaves the queue when a render applies it.
 //!
+//! A reducer update stores its action as it is, and the render that replays it
+//! applies the reducer *that* render was given, so a changed reducer
+//! reprocesses the actions of earlier renders. The queue is shared by both
+//! kinds of hook; only the hook knows how to read its own actions.
+//!
 //! A render applies every update whose lane is part of the render's lanes and
 //! *rebases* the rest, the way React's `updateReducer` does. The updates a
 //! render skipped stay in a base queue with their lanes, together with a copy
@@ -52,7 +57,9 @@
 //! next value immediately. If it equals the last rendered value, the update
 //! is queued with no lane and the root is not woken: the render would produce
 //! the same tree. The comparison is only sound while the queue is empty,
-//! because only then is the last rendered value the base of the update.
+//! because only then is the last rendered value the base of the update. A
+//! reducer dispatch has no such comparison, because an action only means
+//! something to the reducer that sees it.
 //!
 //! # Render phase updates
 //!
@@ -74,6 +81,7 @@ use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::any::Any;
 use core::cell::{Cell, RefCell};
+use core::marker::PhantomData;
 use core::mem;
 
 use crate::element::Element;
@@ -89,12 +97,29 @@ use crate::wakeable::Wakeable;
 /// nothing to clean up.
 pub type Cleanup = Box<dyn FnOnce()>;
 
-/// What a dispatch does to the state.
+/// What a [`State`] dispatch does to the value.
+///
+/// A reducer's dispatch stores its action as it is instead, because React
+/// applies a queued action with the reducer of the render that replays it and
+/// not with the one that was current when it was queued.
 enum UpdateAction<T> {
     /// Replace the value.
     Set(Rc<T>),
     /// Compute the next value from the previous one.
     Apply(Rc<dyn Fn(&T) -> T>),
+}
+
+/// Applies a state hook's action to the value the replay has reached.
+///
+/// The queue erases the action of every update, and the hook that owns the
+/// queue says how to bring it back; this is what a [`State`] hook answers. A
+/// payload that is not one of its actions belongs to a queue a different hook
+/// owns, which a component can only produce by breaking the rules of hooks.
+fn apply_state<T: 'static>(value: &T, action: &Rc<dyn Any>) -> Option<Rc<T>> {
+    match action.downcast_ref::<UpdateAction<T>>()? {
+        UpdateAction::Set(next) => Some(Rc::clone(next)),
+        UpdateAction::Apply(apply) => Some(Rc::new(apply(value))),
+    }
 }
 
 /// One queued update of a state hook.
@@ -563,46 +588,49 @@ impl<T: PartialEq + 'static> State<T> {
     }
 
     /// Queues an action and wakes the root when the lane is not empty.
-    ///
-    /// A dispatch on the queue of the component that is rendering right now is
-    /// a render phase update: it takes the lanes of the render, so the next
-    /// pass applies it, and it does not wake the root, because the render that
-    /// is already running replays it before the commit.
     fn enqueue(&self, lane: Lanes, action: UpdateAction<T>) {
-        let mut mailbox = self.mailbox.borrow_mut();
-        let mut queue = self.queue.borrow_mut();
-        let render_phase = if lane.is_empty() {
-            // The eager comparison already knows the value cannot change:
-            // there is nothing to replay, in a render phase or anywhere else.
-            None
-        } else {
-            mailbox
-                .render_phase
-                .as_mut()
-                .filter(|phase| phase.owns(queue.owner.get()))
-        };
-        let (lane, signal) = match render_phase {
-            Some(phase) => {
-                phase.did_schedule_update = true;
-                (phase.lanes, false)
-            }
-            None => {
-                // A transition takes its lane after the eager no-op and the
-                // render phase have had their say, so it never turns a no-op
-                // into scheduled work and never overrides the render that owns
-                // the queue.
-                let lane = mailbox.transition_lane(lane);
-                (lane, !lane.is_empty() && queue.owner.get().is_some())
-            }
-        };
-        queue.pending.push(Update {
-            lane,
-            action: Rc::new(action),
-        });
-        drop(queue);
-        if signal {
-            mailbox.signal(Rc::clone(&self.queue), lane);
+        enqueue_update(&self.queue, &self.mailbox, lane, Rc::new(action));
+    }
+}
+
+/// Queues `action` on `lane` and wakes the root when it is work.
+///
+/// This is the enqueue path of every hook that schedules work through a queue.
+/// A dispatch on the queue of the component that is rendering right now is a
+/// render phase update: it takes the lanes of the render, so the next pass
+/// applies it, and it does not wake the root, because the render that is
+/// already running replays it before the commit.
+fn enqueue_update(handle: &QueueHandle, mailbox: &MailboxHandle, lane: Lanes, action: Rc<dyn Any>) {
+    let mut mailbox = mailbox.borrow_mut();
+    let mut queue = handle.borrow_mut();
+    let render_phase = if lane.is_empty() {
+        // The eager comparison already knows the value cannot change: there
+        // is nothing to replay, in a render phase or anywhere else.
+        None
+    } else {
+        mailbox
+            .render_phase
+            .as_mut()
+            .filter(|phase| phase.owns(queue.owner.get()))
+    };
+    let (lane, signal) = match render_phase {
+        Some(phase) => {
+            phase.did_schedule_update = true;
+            (phase.lanes, false)
         }
+        None => {
+            // A transition takes its lane after the eager no-op and the
+            // render phase have had their say, so it never turns a no-op
+            // into scheduled work and never overrides the render that owns
+            // the queue.
+            let lane = mailbox.transition_lane(lane);
+            (lane, !lane.is_empty() && queue.owner.get().is_some())
+        }
+    };
+    queue.pending.push(Update { lane, action });
+    drop(queue);
+    if signal {
+        mailbox.signal(Rc::clone(handle), lane);
     }
 }
 
@@ -612,6 +640,46 @@ impl<T> Clone for State<T> {
             value: Rc::clone(&self.value),
             queue: Rc::clone(&self.queue),
             mailbox: Rc::clone(&self.mailbox),
+        }
+    }
+}
+
+/// The dispatch half of a [`RenderCtx::use_reducer`] state.
+///
+/// The handle is plain data built from the queue, so cloning it is cheap and
+/// every clone feeds the same state. It carries no value: an action only
+/// changes what the component renders when a render replays it.
+pub struct Dispatch<A> {
+    /// The queue of the reducing hook.
+    queue: QueueHandle,
+    /// The root's mailbox.
+    mailbox: MailboxHandle,
+    /// The action type, which only the type system reads.
+    action: PhantomData<A>,
+}
+
+impl<A: 'static> Dispatch<A> {
+    /// Queues `action` on the default lane.
+    pub fn dispatch(&self, action: A) {
+        self.dispatch_with_lane(Lanes::DEFAULT, action);
+    }
+
+    /// Queues `action` on `lane`.
+    ///
+    /// `lane` is a single lane, as in [`State::set_with_lane`]. The enqueue
+    /// path is the same one a state dispatch takes, so a transition and a
+    /// render phase update win over the lane here too.
+    pub fn dispatch_with_lane(&self, lane: Lanes, action: A) {
+        enqueue_update(&self.queue, &self.mailbox, lane, Rc::new(action));
+    }
+}
+
+impl<A> Clone for Dispatch<A> {
+    fn clone(&self) -> Self {
+        Self {
+            queue: Rc::clone(&self.queue),
+            mailbox: Rc::clone(&self.mailbox),
+            action: PhantomData,
         }
     }
 }
@@ -1011,8 +1079,13 @@ impl<'a> RenderCtx<'a> {
             let value = {
                 let mut queue = queue.borrow_mut();
                 queue.owner.set(Some(self.fiber));
-                let (value, applied) =
-                    Self::replay::<T>(&mut queue, Rc::clone(current), self.render_lanes, self.lanes);
+                let (value, applied) = Self::replay(
+                    &mut queue,
+                    Rc::clone(current),
+                    self.render_lanes,
+                    self.lanes,
+                    apply_state::<T>,
+                );
                 self.did_update |= applied;
                 value
             };
@@ -1040,6 +1113,86 @@ impl<'a> RenderCtx<'a> {
             queue,
             mailbox: Rc::clone(&self.mailbox),
         }
+    }
+
+    /// Returns a value computed by `reducer` and the dispatch that feeds it.
+    ///
+    /// This is React's `useReducer`. The value only changes when an action is
+    /// dispatched: `reducer` receives the current value and the action and
+    /// returns the next one. The action is queued as it is, not as the value
+    /// the reducer returned at dispatch time, so the render that replays it
+    /// applies the reducer *that* render was given. A render that changes the
+    /// reducer therefore reprocesses the actions of earlier renders, the way
+    /// React's `updateReducer` does with `queue.lastRenderedReducer`.
+    ///
+    /// `init` runs once, on mount. React's `initialArg` and optional `init`
+    /// become this single closure: `use_reducer(reducer, || arg)` is the plain
+    /// argument, and `use_reducer(reducer, || init(arg))` is the initializer.
+    ///
+    /// A reducer dispatch is never compared against the current value before
+    /// it is queued: React's `dispatchReducerAction` has no eager bailout, so
+    /// an action that computes the same value still renders.
+    pub fn use_reducer<T: 'static, A: 'static>(
+        &mut self,
+        reducer: impl Fn(&T, &A) -> T + 'static,
+        init: impl FnOnce() -> T,
+    ) -> (Rc<T>, Dispatch<A>) {
+        let reducer = Rc::new(reducer);
+        let slot = Self::next_slot(self.hooks, &mut self.cursor);
+        if let Some(current) = slot
+            .value
+            .as_deref()
+            .and_then(|value| value.downcast_ref::<Rc<T>>())
+            && let Some(queue) = &slot.queue
+        {
+            let queue = Rc::clone(queue);
+            let value = {
+                let mut queue = queue.borrow_mut();
+                queue.owner.set(Some(self.fiber));
+                let (value, applied) = Self::replay(
+                    &mut queue,
+                    Rc::clone(current),
+                    self.render_lanes,
+                    self.lanes,
+                    |value: &T, action: &Rc<dyn Any>| {
+                        action
+                            .downcast_ref::<A>()
+                            .map(|action| Rc::new(reducer(value, action)))
+                    },
+                );
+                self.did_update |= applied;
+                value
+            };
+            slot.value = Some(Rc::new(Rc::clone(&value)) as Rc<dyn Any>);
+            return (
+                value,
+                Dispatch {
+                    queue,
+                    mailbox: Rc::clone(&self.mailbox),
+                    action: PhantomData,
+                },
+            );
+        }
+
+        let value = Rc::new(init());
+        let queue = Rc::new(RefCell::new(UpdateQueue {
+            pending: Vec::new(),
+            base: Vec::new(),
+            base_state: Some(Rc::new(Rc::clone(&value)) as Rc<dyn Any>),
+            owner: Cell::new(Some(self.fiber)),
+            last_rendered: Some(Rc::new(Rc::clone(&value)) as Rc<dyn Any>),
+            committed: None,
+        }));
+        slot.value = Some(Rc::new(Rc::clone(&value)) as Rc<dyn Any>);
+        slot.queue = Some(Rc::clone(&queue));
+        (
+            value,
+            Dispatch {
+                queue,
+                mailbox: Rc::clone(&self.mailbox),
+                action: PhantomData,
+            },
+        )
     }
 
     /// Returns whether a transition is pending and the starter that runs one.
@@ -1140,11 +1293,17 @@ impl<'a> RenderCtx<'a> {
     /// While the render runs, the merged queue — the base plus everything that
     /// was pending — stays on [`UpdateQueue::committed`], so a render the root
     /// throws away puts back exactly what the committed tree had.
+    ///
+    /// `apply` is how the hook that owns the queue turns one erased action into
+    /// the next value. The queue cannot apply it itself: a state dispatch
+    /// resolved its action at dispatch time, while a reducer keeps it raw so
+    /// this render's reducer sees it.
     fn replay<T: 'static>(
         queue: &mut UpdateQueue,
         current: Rc<T>,
         render_lanes: Lanes,
         skipped: &mut Lanes,
+        apply: impl Fn(&T, &Rc<dyn Any>) -> Option<Rc<T>>,
     ) -> (Rc<T>, bool) {
         let mut updates = mem::take(&mut queue.base);
         let mut pending = mem::take(&mut queue.pending);
@@ -1186,11 +1345,8 @@ impl<'a> RenderCtx<'a> {
             if base_state.is_some() {
                 base.push(update.rebased());
             }
-            if let Some(action) = update.action.downcast_ref::<UpdateAction<T>>() {
-                value = match action {
-                    UpdateAction::Set(next) => Rc::clone(next),
-                    UpdateAction::Apply(apply) => Rc::new(apply(&value)),
-                };
+            if let Some(next) = apply(&value, &update.action) {
+                value = next;
                 applied = true;
             }
         }
@@ -1907,6 +2063,89 @@ mod tests {
         let shown = harness.render(|ctx| ctx.use_deferred_value(2_u32));
         assert_eq!(shown, 2);
         assert!(harness.skipped.is_empty());
+    }
+
+    #[test]
+    fn a_reducer_applies_the_actions_in_order() {
+        let mut harness = Harness::new();
+        let reducer = |sum: &u32, action: &u32| sum + action;
+        let (value, dispatch) = harness.render(|ctx| ctx.use_reducer(reducer, || 0_u32));
+        assert_eq!(*value, 0);
+
+        dispatch.dispatch(2);
+        dispatch.dispatch(3);
+        assert_eq!(harness.drained_lanes(), [Lanes::DEFAULT, Lanes::DEFAULT]);
+
+        let (value, _) = harness.render(|ctx| ctx.use_reducer(reducer, || 0_u32));
+        assert_eq!(*value, 5);
+    }
+
+    #[test]
+    fn a_reducer_dispatch_that_recomputes_the_same_value_is_still_scheduled() {
+        let mut harness = Harness::new();
+        let reducer = |value: &u32, _: &()| *value;
+        let (_, dispatch) = harness.render(|ctx| ctx.use_reducer(reducer, || 7_u32));
+
+        dispatch.dispatch(());
+        // React's `dispatchReducerAction` never computes an eager state, so
+        // this is real work even though the reducer returns the same value.
+        assert_eq!(harness.drained_lanes(), [Lanes::DEFAULT]);
+
+        let (value, _) = harness.render(|ctx| ctx.use_reducer(reducer, || 7_u32));
+        assert_eq!(*value, 7);
+    }
+
+    #[test]
+    fn a_skipped_reducer_action_is_replayed_with_the_latest_reducer() {
+        let add = |sum: &u32, action: &u32| sum + action;
+        let multiply = |sum: &u32, action: &u32| sum * action;
+        let mut harness = Harness::new();
+        let (_, dispatch) = harness.render(|ctx| ctx.use_reducer(add, || 1_u32));
+        dispatch.dispatch_with_lane(Lanes::DEFAULT, 3);
+
+        // A sync render does not cover the default-lane action: the value
+        // stays, and the lane is recorded so the root renders it again.
+        harness.lanes = Lanes::SYNC;
+        let (value, _) = harness.render(|ctx| ctx.use_reducer(add, || 1_u32));
+        assert_eq!(*value, 1);
+        assert_eq!(harness.skipped, Lanes::DEFAULT);
+
+        // The next render covers the lane but passes a different reducer:
+        // React replays the queued action with the reducer this render was
+        // given, not the one that was current at dispatch time.
+        harness.lanes = Lanes::DEFAULT;
+        let (value, _) = harness.render(|ctx| ctx.use_reducer(multiply, || 1_u32));
+        assert_eq!(*value, 3);
+    }
+
+    #[test]
+    fn a_reducer_dispatch_while_rendering_applies_in_the_same_pass() {
+        let reducer = |sum: &u32, action: &u32| sum + action;
+        let mut harness = Harness::new();
+        let (_, dispatch) = harness.render(|ctx| ctx.use_reducer(reducer, || 0_u32));
+        harness.commit();
+
+        harness.begin();
+        dispatch.dispatch(1);
+        assert!(harness.took_update());
+        // The render that is already running replays it, so the root is not
+        // woken and no signal is queued.
+        assert_eq!(harness.signals(), 0);
+        harness.end();
+
+        let (value, _) = harness.render(|ctx| ctx.use_reducer(reducer, || 0_u32));
+        assert_eq!(*value, 1);
+    }
+
+    #[test]
+    fn a_reducer_dispatch_inside_a_transition_takes_a_transition_lane() {
+        let reducer = |sum: &u32, action: &u32| sum + action;
+        let mut harness = Harness::new();
+        let (_, dispatch) = harness.render(|ctx| ctx.use_reducer(reducer, || 0_u32));
+        harness.commit();
+
+        start_transition(&harness.mailbox, || dispatch.dispatch(2));
+        assert_eq!(harness.drained_lanes(), [Lanes::TRANSITION_FIRST]);
     }
 
     #[test]
