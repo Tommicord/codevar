@@ -1595,7 +1595,7 @@ impl Memory {
         if count > isize::MAX as usize {
             return Err(TtError::OUT_OF_MEMORY);
         }
-        let mut v = Vec::new();
+        let mut v = Vec::with_capacity(count);
         v.resize_with(count, T::default);
         Ok(v)
     }
