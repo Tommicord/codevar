@@ -79,7 +79,7 @@ use core::cell::{Cell, RefCell};
 use core::mem;
 
 use crate::element::Element;
-use crate::fiber::FiberId;
+use crate::fiber::{FiberId, RetryCache};
 use crate::host::Host;
 use crate::lane::Lanes;
 use crate::wakeable::Wakeable;
@@ -230,8 +230,27 @@ pub(crate) struct Mailbox {
     /// make progress. React reaches the root the same way, from the listener
     /// it attached to the wakeable.
     pinged: Lanes,
+    /// The retries the listeners of a Suspense boundary raised.
+    ///
+    /// The listener runs whenever the work completes, long after the commit
+    /// that subscribed it, so it cannot reach into the root. It leaves the
+    /// boundary and its retry cache here instead; the root claims a retry lane
+    /// and marks the boundary when it drains the mailbox.
+    retries: Vec<RetryRequest>,
     /// The component render that is in flight, when there is one.
     render_phase: Option<RenderPhase>,
+}
+
+/// A boundary a retry listener named.
+///
+/// The cache is what says the boundary is still the one the listener belongs
+/// to: a fiber slot is handed out again after an unmount, and a request must
+/// only mark the boundary that subscribed it.
+pub(crate) struct RetryRequest {
+    /// The boundary fiber the listener was attached for.
+    pub(crate) boundary: FiberId,
+    /// The retry cache the listener was memoized in.
+    pub(crate) cache: RetryCache,
 }
 
 /// The component render the root is running right now.
@@ -282,9 +301,19 @@ impl Mailbox {
         mem::take(&mut self.pinged)
     }
 
+    /// Records that the work a boundary waited for resolved.
+    pub(crate) fn retry(&mut self, request: RetryRequest) {
+        self.retries.push(request);
+    }
+
+    /// Takes the retries raised since the last drain.
+    pub(crate) fn drain_retries(&mut self) -> Vec<RetryRequest> {
+        mem::take(&mut self.retries)
+    }
+
     /// Whether nothing is waiting for the root.
     pub(crate) fn is_empty(&self) -> bool {
-        self.updates.is_empty() && self.pinged.is_empty()
+        self.updates.is_empty() && self.pinged.is_empty() && self.retries.is_empty()
     }
 
     /// Starts the render of a component.

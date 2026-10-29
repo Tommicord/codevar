@@ -83,6 +83,7 @@ use crate::element::{ComponentFn, Element, HostNode, Reference, SuspenseNode};
 use crate::hooks::{Cleanup, EffectRecord, HookList};
 use crate::host::{Host, Key};
 use crate::lane::Lanes;
+use crate::wakeable::Wakeable;
 
 /// Bookkeeping the commit phase needs, attached to a fiber.
 ///
@@ -285,6 +286,16 @@ impl<H: Host> Payload<H> {
 /// both properties while the cleanup stays an `FnOnce`.
 pub(crate) type RefCleanup = Rc<RefCell<Option<Cleanup>>>;
 
+/// The wakeables a Suspense boundary is already listening to.
+///
+/// This is React's retry cache, the `PossiblyWeakSet` a boundary keeps in its
+/// `stateNode`. Both alternates of the boundary share it, because a listener
+/// outlives the half that attached it and a wakeable must not be subscribed
+/// twice when the boundary commits again. A wakeable leaves the set when it
+/// resolves: work that completed is never thrown again, so nothing needs the
+/// listener any more.
+pub(crate) type RetryCache = Rc<RefCell<Vec<Wakeable>>>;
+
 /// What kind of node a fiber is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FiberTag {
@@ -373,10 +384,20 @@ pub(crate) struct Fiber<H: Host> {
     /// The children that were deleted from this node and must be removed from
     /// the host before anything is inserted.
     pub(crate) deletions: Vec<FiberId>,
-    /// The lanes of updates that landed on this node.
+    /// The lane of updates that landed on this node.
     pub(crate) lanes: Lanes,
     /// The lanes of updates anywhere below this node.
     pub(crate) child_lanes: Lanes,
+    /// The wakeables a suspension caught while this node rendered.
+    ///
+    /// This is React's `updateQueue` on a Suspense fiber: a set of the
+    /// wakeables `throw` stored on the boundary. The commit subscribes a
+    /// retry listener to each one and empties the set, so a later commit does
+    /// not subscribe them again.
+    pub(crate) retry_queue: Vec<Wakeable>,
+    /// The wakeables the boundary already listens to, shared by the two
+    /// alternates. Only a Suspense fiber ever carries one.
+    pub(crate) retry_cache: Option<RetryCache>,
     /// Whether the host nodes below this fiber are shown.
     ///
     /// Only an Offscreen fiber ever carries [`Visibility::Hidden`]; every other
@@ -408,6 +429,8 @@ impl<H: Host> Fiber<H> {
             deletions: Vec::new(),
             lanes: Lanes::NONE,
             child_lanes: Lanes::NONE,
+            retry_queue: Vec::new(),
+            retry_cache: None,
             visibility: Visibility::Visible,
             alternate: None,
         }
@@ -441,6 +464,8 @@ impl<H: Host> Fiber<H> {
             deletions: Vec::new(),
             lanes: current.lanes,
             child_lanes: current.child_lanes,
+            retry_queue: current.retry_queue.clone(),
+            retry_cache: current.retry_cache.clone(),
             visibility: current.visibility,
             alternate: None,
         }

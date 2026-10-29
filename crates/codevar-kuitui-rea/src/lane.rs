@@ -109,6 +109,15 @@ impl Lanes {
     /// The four lanes a suspended boundary retries on.
     pub const RETRY: Self = Self(0xf << 18);
 
+    /// The retry lane a retry starts at.
+    ///
+    /// The four retry lanes rotate because a retry that suspends parks the lane
+    /// it ran on: a later retry must not land there, or the suspended lane
+    /// would keep it from rendering. This is React's `RetryLane1`, and
+    /// [`Lanes::next_retry`] advances the cursor the way `claimNextRetryLane`
+    /// advances `nextRetryLane`.
+    pub const RETRY_FIRST: Self = Self(1 << 18);
+
     /// Prefetching work that may be interrupted by anything else.
     pub const IDLE: Self = Self(1 << 22);
 
@@ -210,6 +219,23 @@ impl Lanes {
     #[must_use]
     pub const fn highest(self) -> Self {
         Self(self.0 & self.0.wrapping_neg())
+    }
+
+    /// The retry lane that follows this one, wrapping inside [`Lanes::RETRY`].
+    ///
+    /// This is the rotation React's `claimNextRetryLane` applies to its
+    /// `nextRetryLane` cursor. A retry that suspends parks its lane, so a retry
+    /// started later takes the next lane instead of the one that is parked: the
+    /// four lanes let four retries wait at once without blocking each other. A
+    /// lane outside the group, and [`Lanes::NONE`], restart the rotation.
+    #[must_use]
+    pub const fn next_retry(self) -> Self {
+        let next = Self::from_bits(self.0 << 1);
+        if next.intersects(Self::RETRY) {
+            next
+        } else {
+            Self::RETRY_FIRST
+        }
     }
 
     /// The single lane index of the set, or `None` when it holds zero or more
@@ -507,6 +533,23 @@ mod tests {
         assert!(updates.is_strictly_higher_than(deferred));
         assert!(!deferred.is_strictly_higher_than(updates));
         assert_eq!(updates | deferred, Lanes::TRANSITION);
+    }
+
+    #[test]
+    fn retry_lanes_rotate_inside_their_group() {
+        assert!(Lanes::RETRY.contains(Lanes::RETRY_FIRST));
+        assert_eq!(Lanes::RETRY_FIRST.next_retry(), Lanes::from_bits(1 << 19));
+        assert_eq!(Lanes::from_bits(1 << 21).next_retry(), Lanes::RETRY_FIRST);
+        // Every rotation stays inside the group, so the cursor never names a
+        // lane the root would not schedule as a retry.
+        let mut lane = Lanes::RETRY_FIRST;
+        for _ in 0..4 {
+            assert!(Lanes::RETRY.contains(lane));
+            assert_eq!(lane.count(), 1);
+            lane = lane.next_retry();
+        }
+        assert_eq!(lane, Lanes::RETRY_FIRST);
+        assert_eq!(Lanes::NONE.next_retry(), Lanes::RETRY_FIRST);
     }
 
     #[test]
