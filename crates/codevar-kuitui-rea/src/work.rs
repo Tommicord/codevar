@@ -53,6 +53,15 @@
 //! abandons the whole tree; the committed tree keeps showing what it showed
 //! before.
 //!
+//! Not every fallback is worth showing. A boundary that mounts, or that sits in
+//! a tree that is already out of sight, hides nothing by switching to its
+//! fallback, so the pass records [`ExitStatus::Suspended`] and the caller may
+//! commit it at once. A boundary that has to replace content the user is
+//! looking at records [`ExitStatus::SuspendedWithDelay`], and the caller keeps
+//! the previous screen when the render's lanes can wait for the data instead.
+//! React makes the distinction in `renderDidSuspend` and
+//! `renderDidSuspendDelayIfPossible`.
+//!
 //! # Host nodes
 //!
 //! A host node is created in the complete pass, which is the first moment the
@@ -76,6 +85,7 @@
 #![allow(dead_code)]
 
 use alloc::rc::Rc;
+use alloc::vec::Vec;
 use core::mem;
 
 use crate::element::{Element, SuspenseNode};
@@ -98,6 +108,38 @@ pub(crate) struct WorkLoop<'a, H: Host> {
     ids: &'a mut u64,
     /// The lanes this pass renders.
     render_lanes: Lanes,
+    /// What the pass found out about the tree while completing it.
+    exit: ExitStatus,
+    /// The wakeables a boundary caught this pass.
+    caught: Vec<Wakeable>,
+}
+
+/// What a render found out about the tree, from most to least important.
+///
+/// This is React's `workInProgressRootExitStatus` without the states a render
+/// cannot leave: a pass that reaches the shell reports the wakeable instead of
+/// a status. The order is the order React upgrades a status in — a later
+/// boundary can only make the outcome more cautious, never less.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub(crate) enum ExitStatus {
+    /// Nothing has suspended, or the suspension reached the shell instead of a
+    /// boundary.
+    ///
+    /// React's `RootInProgress`.
+    #[default]
+    InProgress,
+    /// A boundary is about to show a fallback in place of content that was not
+    /// on screen anyway: the boundary is new, or its primary tree is hidden.
+    ///
+    /// React's `RootSuspended`. The fallback may be committed at once.
+    Suspended,
+    /// A boundary is about to hide content that is on screen to show its
+    /// fallback.
+    ///
+    /// This is React's `RootSuspendedWithDelay`: the render should keep the
+    /// previous screen when its lanes allow waiting for the data instead of
+    /// committing a placeholder.
+    SuspendedWithDelay,
 }
 
 /// The number of extra passes a component may ask for before the render stops.
@@ -145,6 +187,44 @@ impl<'a, H: Host> WorkLoop<'a, H> {
             mailbox,
             ids,
             render_lanes,
+            exit: ExitStatus::InProgress,
+            caught: Vec::new(),
+        }
+    }
+
+    /// What the pass found out about the tree so far.
+    pub(crate) fn exit_status(&self) -> ExitStatus {
+        self.exit
+    }
+
+    /// Takes the wakeables a boundary caught.
+    ///
+    /// React subscribes each of them to the root from `throwException`, so a
+    /// lane that stays parked when the render is thrown away can be revived by
+    /// the work resolving. The pass cannot reach the root's ping cache, so it
+    /// hands the wakeables to the caller instead.
+    pub(crate) fn take_caught(&mut self) -> Vec<Wakeable> {
+        mem::take(&mut self.caught)
+    }
+
+    /// Records that a boundary is about to show a fallback where nothing
+    /// visible is lost.
+    ///
+    /// This is React's `renderDidSuspend`. A later boundary that has to hide
+    /// content still upgrades the result: React resolves the ambiguity of one
+    /// render in favour of the more cautious outcome.
+    fn render_did_suspend(&mut self) {
+        if self.exit == ExitStatus::InProgress {
+            self.exit = ExitStatus::Suspended;
+        }
+    }
+
+    /// Records that a boundary is about to hide content that is on screen.
+    ///
+    /// This is React's `renderDidSuspendDelayIfPossible`.
+    fn render_did_suspend_delay_if_possible(&mut self) {
+        if self.exit != ExitStatus::SuspendedWithDelay {
+            self.exit = ExitStatus::SuspendedWithDelay;
         }
     }
 
@@ -240,6 +320,12 @@ impl<'a, H: Host> WorkLoop<'a, H> {
     /// [`WorkLoop::render_offscreen`]), so a suspension caught there is not
     /// stashed: nothing could render the hidden tree again until that lane
     /// exists.
+    ///
+    /// Every captured wakeable is also recorded for the caller. React
+    /// subscribes the root to it right here (`attachPingListener`); rea keeps it
+    /// for the render to hand back, because the listener only matters when the
+    /// render is thrown away without a commit — a commit covers the same work
+    /// with the retry listener of the boundary.
     fn throw(&mut self, wakeable: Wakeable) -> Progress {
         let Some(captured) = self.arena.capture() else {
             return Progress::Suspended(wakeable);
@@ -258,9 +344,10 @@ impl<'a, H: Host> WorkLoop<'a, H> {
                     .iter()
                     .any(|known| known.same(&wakeable))
             {
-                node.retry_queue.push(wakeable);
+                node.retry_queue.push(wakeable.clone());
             }
         }
+        self.caught.push(wakeable);
         Progress::Next(captured.boundary)
     }
 
@@ -570,6 +657,11 @@ impl<'a, H: Host> WorkLoop<'a, H> {
     /// fallback pushes the handler it inherited instead, so a suspension inside
     /// the fallback passes through to the boundary outside it, the way a throw
     /// inside a `catch` block leaves the block.
+    ///
+    /// A primary tree is not on screen while the boundary is new or showing a
+    /// fallback: React marks that subtree invisible so a nested boundary knows
+    /// that its fallback hides nothing, and the mark is what a render consults
+    /// before it decides to keep the previous screen.
     fn render_suspense(&mut self, fiber: FiberId) -> Begin {
         let Some(Payload::Suspense(boundary)) = self
             .arena
@@ -595,7 +687,16 @@ impl<'a, H: Host> WorkLoop<'a, H> {
             let fallback = self.update_suspense_fallback(fiber, current, &boundary);
             return Begin::Child(fallback);
         }
-        self.arena.push_handler(fiber, Some(fiber));
+        // `current === null || current.memoizedState !== null` in React's
+        // `updateSuspenseComponent`: a boundary that mounts, and one that is
+        // already showing a fallback, render a primary tree nobody sees.
+        let hidden = current.is_none_or(|current| self.suspense_timeout(current));
+        match hidden {
+            true => self
+                .arena
+                .push_invisible_handler(fiber, Some(fiber)),
+            false => self.arena.push_handler(fiber, Some(fiber)),
+        }
         Begin::Child(self.update_suspense_primary(fiber, current, &boundary.children))
     }
 
@@ -844,14 +945,18 @@ impl<'a, H: Host> WorkLoop<'a, H> {
         let mut flags = Flags::NONE;
         let mut lanes = Lanes::NONE;
         while let Some(current) = child {
-            let Some(node) = self.arena.get_mut(current) else {
+            let Some(node) = self.arena.get(current) else {
                 break;
             };
             // A child the pass did not clone is shared with the committed tree
-            // and still points at its committed parent. The finished tree owns
-            // it now, which is the link a later dispatch climbs to mark work.
-            // React repairs the pointer the same way in `bubbleProperties`.
-            node.parent = Some(fiber);
+            // and still points at its committed parent, which is the alternate
+            // of this fiber. That link is deliberately left alone: marking a
+            // dispatch climbs both halves of every pair, so the committed
+            // parent reaches the root just as well, while rewriting it to this
+            // half would leave a resolver pointing at a fiber a discarded
+            // render can recycle into an unrelated one. React can rewrite the
+            // pointer (`bubbleProperties`) because a fiber there is never
+            // recycled into another.
             flags.insert(node.flags);
             flags.insert(node.subtree_flags);
             lanes.insert(node.lanes.union(node.child_lanes));
@@ -914,6 +1019,16 @@ impl<'a, H: Host> WorkLoop<'a, H> {
                     .and_then(|fiber| fiber.first_child);
                 if let Some(node) = offscreen.and_then(|offscreen| self.arena.get_mut(offscreen)) {
                     node.flags.insert(Flags::VISIBILITY);
+                }
+                // React's `completeWork` records here whether committing this
+                // fallback would hide content the user is looking at. A
+                // boundary that mounts hides nothing, and neither does one
+                // inside a tree that is already out of sight; only a boundary
+                // that was on screen has something to lose.
+                if alternate.is_none() || self.arena.handler_invisible() {
+                    self.render_did_suspend();
+                } else {
+                    self.render_did_suspend_delay_if_possible();
                 }
             }
             // React's `scheduleRetryEffect`: a boundary that caught work this

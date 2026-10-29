@@ -62,6 +62,13 @@
 //! arena rather than in the pass because a render that yields between two units
 //! of work resumes with the same stack.
 //!
+//! An entry also records whether everything below it is out of sight: a
+//! boundary renders its primary tree hidden while it is new or showing a
+//! fallback, so a fallback further down hides nothing and may be committed at
+//! once. React carries the same bit on its suspense context stack
+//! (`InvisibleParentSuspenseContext`) and reads it when it decides whether a
+//! render should keep the previous screen.
+//!
 //! # Why the tree is not a `Vec<Fiber>`
 //!
 //! Fibers are both created and destroyed between commits (a conditional
@@ -500,6 +507,11 @@ struct Started {
 /// pushed, so a capture can hand everything the target started back to the
 /// committed tree. React does that by unwinding its call stack; the arena has
 /// no stack, so the offset in `started` is the boundary.
+///
+/// `invisible` says whether the subtree below the entry is out of sight: a
+/// boundary that is new or already showing a fallback renders a primary tree
+/// nobody sees, and everything it pushes inherits the mark. This is the
+/// `InvisibleParentSuspenseContext` bit of React's suspense context stack.
 #[derive(Clone, Copy)]
 struct SuspenseHandler {
     /// The fiber that pushed the entry and pops it when it completes.
@@ -509,6 +521,8 @@ struct SuspenseHandler {
     target: Option<FiberId>,
     /// The number of fibers the render had started when the entry was pushed.
     mark: usize,
+    /// Whether the tree rendered below the entry is out of sight.
+    invisible: bool,
 }
 
 /// Where a suspension was thrown to.
@@ -728,11 +742,32 @@ impl<H: Host> Arena<H> {
     /// its fallback renders — a throw inside a fallback behaves like a throw
     /// inside a `catch` block. React keeps the two apart on its stack for the
     /// same reason: the entry's owner pops it, its value is read by the throw.
+    ///
+    /// The entry inherits whether the tree around it is out of sight, which is
+    /// what React's `setDefaultShallowSuspenseContext` keeps when it replaces
+    /// the shallow half of the context.
     pub(crate) fn push_handler(&mut self, owner: FiberId, target: Option<FiberId>) {
+        let invisible = self.handler_invisible();
+        self.push_handler_with(owner, target, invisible);
+    }
+
+    /// Pushes a fiber that catches suspensions in a tree nobody sees.
+    ///
+    /// This is React's `addSubtreeSuspenseContext(…, InvisibleParentSuspenseContext)`:
+    /// a boundary that is new or already showing a fallback renders a primary
+    /// tree that is not on screen, so a fallback further down hides nothing
+    /// that was visible.
+    pub(crate) fn push_invisible_handler(&mut self, owner: FiberId, target: Option<FiberId>) {
+        self.push_handler_with(owner, target, true);
+    }
+
+    /// Pushes an entry with the visibility the caller decided on.
+    fn push_handler_with(&mut self, owner: FiberId, target: Option<FiberId>, invisible: bool) {
         self.handlers.push(SuspenseHandler {
             owner,
             target,
             mark: self.started_len(),
+            invisible,
         });
     }
 
@@ -741,6 +776,17 @@ impl<H: Host> Arena<H> {
         self.handlers
             .last()
             .and_then(|handler| handler.target)
+    }
+
+    /// Whether the tree being rendered is out of sight.
+    ///
+    /// This is React's `hasSuspenseContext(suspenseStackCursor.current,
+    /// InvisibleParentSuspenseContext)`. The mark is inherited by every entry
+    /// below the one that set it, so reading the top of the stack is enough.
+    pub(crate) fn handler_invisible(&self) -> bool {
+        self.handlers
+            .last()
+            .is_some_and(|handler| handler.invisible)
     }
 
     /// Pops the entry `owner` pushed.

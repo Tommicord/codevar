@@ -167,6 +167,14 @@
 //! if the work it needed is there. A retry that suspends in the same place
 //! subscribes the new wakeable and stays on its fallback, so nothing retries in
 //! a loop.
+//!
+//! A fallback is not always worth committing. A boundary that has to replace
+//! content the user is looking at would make that content disappear, so a
+//! render whose lanes are transitions only — the lanes that are allowed to wait
+//! — parks them and commits nothing, leaving the previous screen in place until
+//! the work resolves. A boundary that mounts hides nothing, and neither does one
+//! inside a tree that is already out of sight, so their fallbacks commit at
+//! once; that is React's `RootSuspendedWithDelay` against `RootSuspended`.
 
 use alloc::rc::Rc;
 use alloc::vec::Vec;
@@ -181,7 +189,7 @@ use crate::host::Host;
 use crate::lane::{LANE_COUNT, Lanes};
 use crate::reconcile::reconcile_children;
 use crate::wakeable::Wakeable;
-use crate::work::{Progress, WorkLoop};
+use crate::work::{ExitStatus, Progress, WorkLoop};
 
 /// A render in flight.
 ///
@@ -195,6 +203,13 @@ struct Render {
     next: Option<FiberId>,
     /// The lanes this render covers.
     lanes: Lanes,
+    /// What the pass found out about the tree.
+    ///
+    /// A render can stop between units of work, so the outcome is kept here
+    /// rather than in the pass: React keeps `workInProgressRootExitStatus` on
+    /// the root for the same reason, and a slice that resumed with a fresh
+    /// status would commit a fallback the whole render wanted to avoid.
+    exit: ExitStatus,
 }
 
 /// A mounted tree.
@@ -523,7 +538,7 @@ impl<H: Host> Root<H> {
         // runs to the end even when the host asks for the core.
         let sliceable = !lanes.intersects(Lanes::BLOCKING) && !lanes.intersects(self.expired_lanes);
         let mut suspended = None;
-        {
+        let (exit, caught) = {
             let mut work_loop = WorkLoop::new(
                 &mut self.host,
                 &mut self.arena,
@@ -549,6 +564,12 @@ impl<H: Host> Root<H> {
                     }
                 }
             }
+            (work_loop.exit_status(), work_loop.take_caught())
+        };
+        if let Some(render) = self.render.as_mut() {
+            // A slice resumes the pass with a new work loop, so the outcome
+            // accumulates on the render the way React keeps it on the root.
+            render.exit = render.exit.max(exit);
         }
         if let Some(wakeable) = suspended {
             // React subscribes a suspension with no boundary as well: the lanes
@@ -566,6 +587,27 @@ impl<H: Host> Root<H> {
                 render.next = next;
             }
             return false;
+        }
+        let exit = self
+            .render
+            .as_ref()
+            .map_or(ExitStatus::InProgress, |render| render.exit);
+        if exit == ExitStatus::SuspendedWithDelay && includes_only_transitions(lanes) {
+            // React's `finishConcurrentRender`, case `RootSuspendedWithDelay`:
+            // a transition that had to hide content keeps the previous screen
+            // instead of committing a placeholder, and waits for the data with
+            // no timeout at all. Nothing commits, so the retry queue of the
+            // boundary is thrown away with the tree: the root subscribes the
+            // work itself — React's `attachPingListener` in `throwException` —
+            // and the ping is what makes the parked lanes candidates again.
+            self.render = None;
+            self.arena.abandon_render();
+            self.interleaved = Lanes::NONE;
+            self.mark_suspended(lanes);
+            for wakeable in caught {
+                self.attach_ping_listener(&wakeable, lanes);
+            }
+            return true;
         }
         self.render = None;
         self.arena.end_render();
@@ -705,6 +747,7 @@ impl<H: Host> Root<H> {
             root: work,
             next: Some(work),
             lanes,
+            exit: ExitStatus::InProgress,
         });
     }
 
@@ -863,6 +906,16 @@ impl<H: Host> Root<H> {
             }
         }
     }
+}
+
+/// Whether `lanes` hold nothing but transition updates.
+///
+/// This is React's `includesOnlyTransitions`: `(lanes & TransitionLanes) ===
+/// lanes`. Only the ten update lanes count — a deferred value of a transition
+/// is not a transition of its own — and the caller passes render lanes, which
+/// are never empty.
+fn includes_only_transitions(lanes: Lanes) -> bool {
+    lanes & Lanes::TRANSITION_UPDATE_LANES == lanes
 }
 
 #[cfg(test)]
@@ -1478,6 +1531,173 @@ mod tests {
         assert_eq!(top_level(&root), [Some(7), Some(6)]);
         assert!(!root.host().hidden(seven));
         assert_eq!(*log.borrow(), ["create", "cleanup", "create"]);
+        assert!(!root.has_pending_work());
+    }
+
+    #[test]
+    fn a_transition_that_has_to_hide_content_keeps_the_previous_screen() {
+        let handle = Rc::new(RefCell::new(None::<State<bool>>));
+        let ready = Rc::new(Cell::new(false));
+        let renders = Rc::new(Cell::new(0));
+        let (work, subscribers) = manual();
+        let element = {
+            let handle = Rc::clone(&handle);
+            let ready = Rc::clone(&ready);
+            let renders = Rc::clone(&renders);
+            let work = work.clone();
+            Element::suspense(
+                Element::component(move |ctx| {
+                    let missing = ctx.use_state(|| false);
+                    *handle.borrow_mut() = Some(missing.clone());
+                    renders.set(renders.get() + 1);
+                    let missing = *missing.get();
+                    if missing && !ready.get() {
+                        return ctx.suspend(work.clone());
+                    }
+                    Element::host(if missing { 8 } else { 7 })
+                }),
+                Element::host(9),
+            )
+        };
+        let mut root = mount(element);
+        assert_eq!(top_level(&root), [Some(7)]);
+        let Some(missing) = handle.borrow().clone() else {
+            return;
+        };
+
+        // The transition needs data the primary tree does not have, and showing
+        // the fallback would take away the content on screen. A transition may
+        // wait, so nothing commits and the lane parks.
+        missing.set_with_lane(Lanes::TRANSITION.highest(), true);
+        root.flush();
+
+        assert_eq!(renders.get(), 2);
+        assert_eq!(top_level(&root), [Some(7)]);
+        assert_eq!(root.suspended_lanes, Lanes::TRANSITION.highest());
+        assert!(!root.has_pending_work());
+        // The render that would have shown the fallback is gone, so the work it
+        // waited on is subscribed by the root instead of by a boundary.
+        assert_eq!(subscribers.borrow().len(), 1);
+
+        // The work resolved: the ping makes the parked lane a candidate again
+        // and the transition finds the data, so it commits.
+        ready.set(true);
+        resolve(&subscribers);
+        assert!(root.has_pending_work());
+        root.flush();
+
+        assert_eq!(top_level(&root), [Some(8)]);
+        assert_eq!(root.suspended_lanes, Lanes::NONE);
+        assert!(!root.has_pending_work());
+    }
+
+    #[test]
+    fn a_transition_that_mounts_a_suspending_boundary_shows_its_fallback() {
+        let handle = Rc::new(RefCell::new(None::<State<bool>>));
+        let ready = Rc::new(Cell::new(false));
+        let (work, _subscribers) = manual();
+        let element = {
+            let handle = Rc::clone(&handle);
+            let ready = Rc::clone(&ready);
+            let work = work.clone();
+            Element::component(move |ctx| {
+                let show = ctx.use_state(|| false);
+                *handle.borrow_mut() = Some(show.clone());
+                if *show.get() {
+                    Element::suspense(waiting_on(&ready, &work), Element::host(9))
+                } else {
+                    Element::host(1)
+                }
+            })
+        };
+        let mut root = mount(element);
+        assert_eq!(top_level(&root), [Some(1)]);
+        let Some(show) = handle.borrow().clone() else {
+            return;
+        };
+
+        // The boundary does not exist yet, so its fallback hides nothing: a
+        // transition commits the initial loading state instead of waiting for
+        // data that may never be needed.
+        show.set_with_lane(Lanes::TRANSITION.highest(), true);
+        root.flush();
+
+        assert_eq!(top_level(&root), [Some(9)]);
+        assert_eq!(root.suspended_lanes, Lanes::NONE);
+        assert!(!root.has_pending_work());
+    }
+
+    #[test]
+    fn a_fallback_inside_a_hidden_tree_commits_during_a_transition() {
+        let inner_handle = Rc::new(RefCell::new(None::<State<bool>>));
+        let outer_handle = Rc::new(RefCell::new(None::<State<bool>>));
+        let (inner_work, _inner_subscribers) = manual();
+        let (outer_work, _outer_subscribers) = manual();
+        let element = {
+            let inner_handle = Rc::clone(&inner_handle);
+            let outer_handle = Rc::clone(&outer_handle);
+            let inner_work = inner_work.clone();
+            let outer_work = outer_work.clone();
+            let inner = Element::suspense(
+                Element::component(move |ctx| {
+                    let missing = ctx.use_state(|| false);
+                    *inner_handle.borrow_mut() = Some(missing.clone());
+                    if *missing.get() {
+                        ctx.suspend(inner_work.clone())
+                    } else {
+                        Element::host(5)
+                    }
+                }),
+                Element::host(6),
+            );
+            let outer_child = Element::component(move |ctx| {
+                let missing = ctx.use_state(|| false);
+                *outer_handle.borrow_mut() = Some(missing.clone());
+                if *missing.get() {
+                    ctx.suspend(outer_work.clone())
+                } else {
+                    Element::host(4)
+                }
+            });
+            Element::suspense(Element::fragment([inner, outer_child]), Element::host(9))
+        };
+        let mut root = mount(element);
+        assert_eq!(top_level(&root), [Some(5), Some(4)]);
+
+        // The outer boundary hides its whole primary tree, the inner boundary
+        // included, behind its fallback. The update that made it suspend went
+        // with the primary attempt the boundary threw away, so the hidden tree's
+        // lanes do not stay pending: the fallback commit covers them.
+        let Some(outer_missing) = outer_handle.borrow().clone() else {
+            return;
+        };
+        outer_missing.set(true);
+        root.flush();
+        assert_eq!(top_level(&root), [Some(5), Some(4), Some(9)]);
+        assert!(!root.has_pending_work());
+
+        // The transition reaches the inner boundary through the hidden tree and
+        // makes it show its fallback. That fallback hides nothing the user can
+        // see — the tree around it is already out of sight — so the boundary
+        // does not ask the render to wait, and the nested fallback is committed
+        // instead of the transition lane parking.
+        let Some(inner_missing) = inner_handle.borrow().clone() else {
+            return;
+        };
+        inner_missing.set_with_lane(Lanes::TRANSITION.highest(), true);
+        root.flush();
+
+        // Revealing the primary tree hands the outer child's own update back to
+        // the root, which the transition render bailed out of; applying it hides
+        // the tree once more. The nested fallback is inside it: the transition
+        // committed rather than being thrown away.
+        assert_eq!(top_level(&root), [Some(5), Some(6), Some(4), Some(9)]);
+        let mounted = mounted(&root);
+        assert!(root.host().hidden(mounted[0]));
+        assert!(root.host().hidden(mounted[1]));
+        assert!(root.host().hidden(mounted[2]));
+        assert!(!root.host().hidden(mounted[3]));
+        assert_eq!(root.suspended_lanes, Lanes::NONE);
         assert!(!root.has_pending_work());
     }
 
