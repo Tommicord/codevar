@@ -1,0 +1,19 @@
+[package]
+name = "codevar-negex-parse"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Parser for Negex regular expressions, following RFC 9485 (I-Regexp)"
+
+[lib]
+name = "codevar_negex_parse"
+
+[dependencies]
+codevar-negex-lex = { workspace = true }
+codevar-logger = { workspace = true }
+
+[lints]
+workspace = true
