@@ -2468,7 +2468,7 @@ mod tests {
             ] {
                 let found = for_bom(&candidate);
                 assert!(
-                    found.map_or(true, |e| matches!(e.name, "UTF-8" | "UTF-16BE" | "UTF-16LE")),
+                    found.is_none_or(|e| matches!(e.name, "UTF-8" | "UTF-16BE" | "UTF-16LE")),
                     "{candidate:?} -> {}",
                     found.map_or("nothing", |e| e.name)
                 );
