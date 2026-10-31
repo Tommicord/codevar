@@ -693,6 +693,7 @@ impl Decoder {
 }
 
 fn write_ncr(unmappable: char, dst: &mut [u8]) -> usize {
+    // len is 3 plus the number of decimal digits: "&#" and ";" around them.
     let mut number = unmappable as u32;
     let len = if number >= 1_000_000u32 {
         10
@@ -704,8 +705,10 @@ fn write_ncr(unmappable: char, dst: &mut [u8]) -> usize {
         7
     } else if number >= 100u32 {
         6
-    } else {
+    } else if number >= 10u32 {
         5
+    } else {
+        4
     };
     let mut pos = len - 1;
     dst[pos] = b';';
@@ -2294,15 +2297,20 @@ mod tests {
     }
 
     #[test]
-    fn write_ncr_single_digit_leaves_interior_byte_current_behavior() {
-        // Documents actual behavior: for a code point below 100 the fixed
-        // 5-byte layout only fills two digit slots, so a one-digit value
-        // leaves the interior byte untouched (suspect noted in `write_ncr`,
-        // unreachable from the encoders because ASCII never unmaps).
-        let mut dst = [0u8; 16];
-        let len = write_ncr('\u{1}', &mut dst);
-        assert_eq!(len, 5);
-        assert_eq!(&dst[..len], &[b'&', b'#', 0, b'1', b';']);
+    fn write_ncr_writes_every_byte_of_a_single_digit_reference() {
+        // A one-digit value is four bytes wide: the fixed 5-byte layout the
+        // first version used left the byte between "#" and the digit
+        // uninitialized, so the encoder emitted allocator garbage.
+        for p in 0u32..10 {
+            let Some(c) = char::from_u32(p) else {
+                panic!("{p} is not a char");
+            };
+            let reference = format!("&#{p};");
+            let mut dst = [0xFFu8; 16];
+            let len = write_ncr(c, &mut dst);
+            assert_eq!(len, reference.len(), "cp {p}");
+            assert_eq!(&dst[..len], reference.as_bytes(), "cp {p}");
+        }
     }
 
     #[test]
