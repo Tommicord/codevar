@@ -2412,4 +2412,240 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn convert_str_to_utf16_valid_paths() {
+        let src = "abc\u{1F4A9}";
+        let mut dst = vec![0u16; src.len()];
+        let len = ok_size(convert_str_to_utf16(src, &mut dst));
+        dst.truncate(len);
+        assert_eq!(dst, utf16_units(src));
+        let mut ascii_dst = vec![0u16; 3];
+        let len2 = ok_size(convert_str_to_utf16("abc", &mut ascii_dst));
+        assert_eq!(len2, 3);
+        assert_eq!(ascii_dst.as_slice(), &[0x61u16, 0x62, 0x63]);
+    }
+
+    #[test]
+    fn convert_str_to_utf16_destination_too_small() {
+        let mut dst: Vec<u16> = vec![0; 2];
+        let err = err_of(convert_str_to_utf16("abc", &mut dst[..]));
+        assert_eq!(
+            err,
+            EncodingError::DestinationTooSmall {
+                required: 3,
+                actual: 2
+            }
+        );
+    }
+
+    #[test]
+    fn convert_utf16_to_utf8_valid_and_too_small() {
+        let src: Vec<u16> = "abc\u{1F4A9}".encode_utf16().collect();
+        let mut dst: Vec<u8> = vec![0; src.len() * 3];
+        let len = ok_size(convert_utf16_to_utf8(&src[..], &mut dst[..]));
+        dst.truncate(len);
+        assert_eq!(&dst[..], "abc\u{1F4A9}".as_bytes());
+        let hello: Vec<u16> = "hello".encode_utf16().collect();
+        let err = err_of(convert_utf16_to_utf8(&hello[..], &mut [0u8; 4]));
+        assert_eq!(
+            err,
+            EncodingError::DestinationTooSmall {
+                required: 15,
+                actual: 4
+            }
+        );
+    }
+
+    #[test]
+    fn convert_utf16_to_utf8_partial_stops_and_resumes() {
+        let text = "ab\u{2603}\u{1F4A9}";
+        let expected = text.as_bytes().to_vec();
+        let src = utf16_units(text);
+        let mut small = vec![0u8; 4];
+        let (r1, w1) = convert_utf16_to_utf8_partial(&src, &mut small);
+        assert!(w1 <= 4);
+        assert!(r1 < src.len());
+        let mut full = vec![0u8; 3 * src.len()];
+        full[..w1].copy_from_slice(&small[..w1]);
+        let (r2, w2) = convert_utf16_to_utf8_partial(&src[r1..], &mut full[w1..]);
+        assert_eq!((r1 + r2, w1 + w2), (src.len(), expected.len()));
+        assert_eq!(&full[..w1 + w2], &expected[..]);
+    }
+
+    #[test]
+    fn convert_utf16_to_utf8_partial_empty() {
+        let (read, written) = convert_utf16_to_utf8_partial(&[], &mut [0u8; 8]);
+        assert_eq!((read, written), (0, 0));
+        assert_eq!(ok_size(convert_utf16_to_utf8(&[], &mut [])), 0);
+    }
+
+    #[test]
+    fn convert_utf16_to_str_writes_valid_utf8() {
+        let text = "a\u{e9}\u{1F4A9}";
+        let src = utf16_units(text);
+        let required = src.len() * 3;
+        let mut holder: String = "\u{0}".repeat(required);
+        let len = ok_size(convert_utf16_to_str(&src, holder.as_mut_str()));
+        assert_eq!(len, text.len());
+        assert_eq!(&holder.as_bytes()[..len], text.as_bytes());
+    }
+
+    #[test]
+    fn convert_utf16_to_str_destination_too_small() {
+        let src = utf16_units("abc");
+        let mut holder: String = "\u{0}".repeat(5);
+        let err = err_of(convert_utf16_to_str(&src, holder.as_mut_str()));
+        assert_eq!(
+            err,
+            EncodingError::DestinationTooSmall {
+                required: 9,
+                actual: 5
+            }
+        );
+    }
+
+    #[test]
+    fn convert_latin1_to_utf8_matches_std() {
+        let src = [0x41u8, 0xE9, 0xFF, 0x80];
+        let mut expected: Vec<u8> = Vec::new();
+        for b in &src {
+            let c = char::from_u32(u32::from(*b));
+            let Some(c) = c else {
+                panic!("{b} has no char");
+            };
+            let mut buf = [0u8; 4];
+            expected.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+        }
+        let mut dst = vec![0u8; src.len() * 2];
+        let written = convert_latin1_to_utf8(&src, &mut dst);
+        assert_eq!(written, expected.len());
+        assert_eq!(&dst[..written], &expected[..]);
+    }
+
+    #[test]
+    fn convert_latin1_to_utf8_partial_room_checks() {
+        assert_eq!(convert_latin1_to_utf8_partial(&[0xE9u8], &mut [0u8; 1]), (0, 0));
+        assert_eq!(convert_latin1_to_utf8_partial(&[0xE9u8], &mut [0u8; 2]), (1, 2));
+        assert_eq!(
+            convert_latin1_to_utf8_partial(&[0xE9u8, 0xE9], &mut [0u8; 3]),
+            (1, 2)
+        );
+        assert_eq!(convert_latin1_to_utf8_partial(&[], &mut [0u8; 4]), (0, 0));
+    }
+
+    #[test]
+    fn decode_latin1_borrows_for_ascii() {
+        let ascii = decode_latin1(b"plain ascii");
+        assert!(matches!(ascii, Cow::Borrowed(_)));
+        assert_eq!(ascii.as_ref(), "plain ascii");
+        let empty = decode_latin1(&[]);
+        assert!(matches!(empty, Cow::Borrowed(_)));
+    }
+
+    #[test]
+    #[should_panic]
+    fn decode_latin1_non_ascii_panics_in_debug_current_behavior() {
+        // Suspected production bug (reported, not fixed): `decode_latin1`
+        // clones the head `vec` to reach its spare capacity (encoding.rs),
+        // but `Vec::clone` allocates exactly `len` capacity, so the spare
+        // slice is empty. The debug assertion in `convert_latin1_to_utf8`
+        // fires; in release the non-ASCII tail would be silently dropped.
+        let owned = decode_latin1(&[0x41u8, 0xE9]);
+        assert_eq!(owned.as_ref(), "A\u{e9}");
+    }
+
+    #[test]
+    fn encode_latin1_lossy_borrows_for_ascii() {
+        let ascii = encode_latin1_lossy("abc");
+        assert!(matches!(ascii, Cow::Borrowed(_)));
+        assert_eq!(ascii.as_ref(), b"abc");
+    }
+
+    #[test]
+    #[should_panic]
+    fn encode_latin1_lossy_non_ascii_panics_in_debug_current_behavior() {
+        // Same `Vec::clone` spare-capacity suspect as `decode_latin1`: the
+        // debug assertion on `written <= spare_capacity.len()` fires because
+        // the clone has no spare capacity.
+        let owned = encode_latin1_lossy("A\u{e9}");
+        assert_eq!(owned.as_ref(), &[0x41u8, 0xE9]);
+    }
+
+    #[test]
+    fn decode_utf8_borrows_valid_input() {
+        let text = "h\u{e9}llo \u{1F4A9}";
+        let out = decode_utf8(text.as_bytes());
+        assert!(matches!(out, Cow::Borrowed(_)));
+        assert_eq!(out.as_ref(), text);
+    }
+
+    #[test]
+    fn convert_latin1_to_str_ok_and_too_small() {
+        let mut holder: String = "\u{0}".repeat(2);
+        let len = ok_size(convert_latin1_to_str(&[0xE9u8], holder.as_mut_str()));
+        assert_eq!(len, 2);
+        assert_eq!(&holder.as_bytes()[..2], "\u{e9}".as_bytes());
+        let mut tiny: String = "\u{0}".to_string();
+        let err = err_of(convert_latin1_to_str(&[0xE9u8], tiny.as_mut_str()));
+        assert_eq!(
+            err,
+            EncodingError::DestinationTooSmall {
+                required: 2,
+                actual: 1
+            }
+        );
+    }
+
+    #[test]
+    fn convert_latin1_to_str_partial_zeroes_tail() {
+        let mut holder: String = "\u{0}".repeat(4);
+        let (read, written) = convert_latin1_to_str_partial(&[0xE9u8], holder.as_mut_str());
+        assert_eq!((read, written), (1, 2));
+        assert_eq!(holder.as_bytes(), [0xC3u8, 0xA9, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn utf16_valid_up_to_covers_pairs_and_strays() {
+        let good = utf16_units("a\u{1F4A9}b");
+        assert_eq!(utf16_valid_up_to(&good), good.len());
+        let lone_high_end = [0x0061u16, 0xD83D];
+        assert_eq!(utf16_valid_up_to(&lone_high_end), 1);
+        let lone_low_first = [0xDEADu16, 0x0061];
+        assert_eq!(utf16_valid_up_to(&lone_low_first), 0);
+        assert_eq!(utf16_valid_up_to(&[]), 0);
+    }
+
+    #[test]
+    fn ensure_utf16_validity_replaces_unpaired_keeps_pairs() {
+        let mut buf = [0x0061u16, 0xD800, 0xD83D, 0xDCA9, 0xDEAD];
+        ensure_utf16_validity(&mut buf);
+        assert_eq!(buf[0], 0x0061);
+        assert_eq!(buf[1], 0xFFFD);
+        assert_eq!(&buf[2..4], &[0xD83D, 0xDCA9]);
+        assert_eq!(buf[4], 0xFFFD);
+    }
+
+    #[test]
+    fn utf8_latin1_up_to_stops_above_latin1_points() {
+        assert_eq!(utf8_latin1_up_to(b"plain"), 5);
+        assert_eq!(utf8_latin1_up_to("caf\u{e9}".as_bytes()), 5);
+        assert_eq!(utf8_latin1_up_to("a\u{e9}\u{2603}".as_bytes()), 3);
+    }
+
+    #[test]
+    fn str_latin1_up_to_reports_char_boundary_prefix() {
+        assert_eq!(str_latin1_up_to("hello"), 5);
+        assert_eq!(str_latin1_up_to("a\u{e9}\u{2603}"), 3);
+        assert_eq!(str_latin1_up_to("\u{2603}"), 0);
+    }
+
+    #[test]
+    fn variant_encoding_is_single_byte_flag() {
+        assert!(LATIN1.variant.is_single_byte());
+        assert!(RUN_ONLY.variant.is_single_byte());
+        assert!(!UTF_8.variant.is_single_byte());
+        assert!(!UTF_16LE.variant.is_single_byte());
+        assert!(!UTF_16BE.variant.is_single_byte());
+    }
 }
