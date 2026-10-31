@@ -783,9 +783,42 @@ mod tests {
     #[test]
     fn unicode_encodings_come_first_in_the_full_list() {
         assert_eq!(ENCODINGS.len(), 31);
-        assert_eq!(ENCODINGS[0].name, "UTF-8");
-        assert_eq!(ENCODINGS[1].name, "UTF-16BE");
-        assert_eq!(ENCODINGS[2].name, "UTF-16LE");
+        let ordered: [&str; 31] = [
+            "UTF-8",
+            "UTF-16BE",
+            "UTF-16LE",
+            "IBM866",
+            "ISO-8859-2",
+            "ISO-8859-3",
+            "ISO-8859-4",
+            "ISO-8859-5",
+            "ISO-8859-6",
+            "ISO-8859-7",
+            "ISO-8859-8",
+            "ISO-8859-8-I",
+            "ISO-8859-10",
+            "ISO-8859-13",
+            "ISO-8859-14",
+            "ISO-8859-15",
+            "ISO-8859-16",
+            "KOI8-R",
+            "KOI8-U",
+            "macintosh",
+            "windows-874",
+            "windows-1250",
+            "windows-1251",
+            "windows-1252",
+            "windows-1253",
+            "windows-1254",
+            "windows-1255",
+            "windows-1256",
+            "windows-1257",
+            "windows-1258",
+            "x-mac-cyrillic",
+        ];
+        for (position, name) in ordered.iter().enumerate() {
+            assert_eq!(ENCODINGS[position].name, *name, "registry position {position}");
+        }
         assert_eq!(&ENCODINGS[3..], &SINGLE_BYTE_ENCODINGS[..]);
     }
 
@@ -824,9 +857,83 @@ mod tests {
     }
 
     #[test]
-    fn lookup_strips_surrounding_ascii_whitespace() {
-        for padded in ["  utf-8", "utf-8  ", "\tutf-8\n", "\r\nutf-8\x0c ", "\u{20}utf-8"] {
-            assert_eq!(for_label(padded).map(|e| e.name), Some("UTF-8"), "{padded:?}");
+    fn lookup_trims_exactly_the_five_whitespace_characters_of_the_standard() {
+        // "Get an encoding" strips leading and trailing ASCII whitespace, which the
+        // standard defines as U+0009, U+000A, U+000C, U+000D and U+0020--U+000B is
+        // deliberately not among them.
+        for filler in ["\t", "\n", "\u{000C}", "\r", " "] {
+            let padded = format!("{filler}{filler}windows-1252{filler}");
+            assert_eq!(
+                for_label(&padded).map(|e| e.name),
+                Some("windows-1252"),
+                "{padded:?}"
+            );
+        }
+        for not_whitespace in ["\u{000B}", "\u{0085}", "\u{00A0}", "\u{2028}", "\u{200B}"] {
+            assert_eq!(
+                lookup(&format!("{not_whitespace}utf-8")),
+                LabelLookup::Unknown,
+                "{not_whitespace:?} leading"
+            );
+            assert_eq!(
+                lookup(&format!("utf-8{not_whitespace}")),
+                LabelLookup::Unknown,
+                "{not_whitespace:?} trailing"
+            );
+        }
+    }
+
+    #[test]
+    fn interior_whitespace_and_untrimmed_padding_are_not_stripped() {
+        for label in [
+            "utf -8",
+            "u tf-8",
+            "utf- 8",
+            "utf 8",
+            "cp125 2",
+            "koi8 -r",
+            "iso-8859 1",
+            "windows-1252 x",
+            "utf-8\0",
+            "\0utf-8",
+        ] {
+            assert_eq!(lookup(label), LabelLookup::Unknown, "{label:?}");
+            assert!(for_label(label).is_none(), "{label:?}");
+        }
+    }
+
+    #[test]
+    fn case_folding_stays_within_ascii() {
+        assert_eq!(lookup("WINDOWS-1252"), LabelLookup::Supported(&WINDOWS_1252));
+        // U+0130 and U+212A fold to "i" and "k" only under Unicode case folding; the
+        // standard matches labels ASCII-case-insensitively, so neither may resolve.
+        assert_eq!(lookup("\u{0130}bm866"), LabelLookup::Unknown);
+        assert_eq!(lookup("\u{212A}oi8-r"), LabelLookup::Unknown);
+        // Non-ASCII letters are never folded, and neither are the digits.
+        assert_eq!(lookup("windows-125２"), LabelLookup::Unknown);
+        for label in ["iso-8859-2", "iso8859-2", "koi8_r", "x-mac-roman"] {
+            let upper = label.to_ascii_uppercase();
+            assert_eq!(lookup(&upper), lookup(label), "{label} and {upper} must agree");
+            assert!(matches!(lookup(&upper), LabelLookup::Supported(_)));
+        }
+    }
+
+    #[test]
+    fn every_label_resolves_the_same_uppercased_and_padded() {
+        for (label, encoding) in &LABELS {
+            let upper = label.to_ascii_uppercase();
+            let found = for_label(&upper).unwrap_or_else(|| panic!("{upper} does not resolve"));
+            assert!(core::ptr::eq(found, *encoding), "{upper}");
+            let padded = format!(" \t{label}\r\n");
+            let found = for_label(&padded).unwrap_or_else(|| panic!("{padded:?}"));
+            assert!(core::ptr::eq(found, *encoding), "{padded:?}");
+        }
+        for label in UNIMPLEMENTED_LABELS {
+            assert_eq!(
+                lookup(&format!(" {label}\u{0009}")),
+                LabelLookup::Unimplemented,
+                "{label}"
+            );
         }
     }
 
@@ -1058,6 +1165,660 @@ mod tests {
                 assert_eq!((read, written), (1, 1), "{name} byte {control:02X}");
                 assert_eq!(out16[0], u16::from(control), "{name} byte {control:02X}");
             }
+        }
+    }
+
+    fn run_of(encoding: &'static Encoding) -> (u16, u8, u8) {
+        let VariantEncoding::SingleByte(_, bmp_offset, byte_offset, length) = encoding.variant else {
+            panic!("{} is not a single-byte encoding", encoding.name);
+        };
+        (bmp_offset, byte_offset, length)
+    }
+
+    fn family_of(name: &str) -> Vec<&'static str> {
+        let mut labels: Vec<&'static str> = LABELS
+            .iter()
+            .filter(|(_, encoding)| encoding.name == name)
+            .map(|(label, _)| *label)
+            .collect();
+        labels.sort_unstable();
+        labels
+    }
+
+    #[test]
+    fn every_label_family_matches_the_standard_exactly() {
+        let expected: [(&str, &[&str]); 31] = [
+            (
+                "UTF-8",
+                &[
+                    "unicode-1-1-utf-8",
+                    "unicode11utf8",
+                    "unicode20utf8",
+                    "utf-8",
+                    "utf8",
+                    "x-unicode20utf8",
+                ],
+            ),
+            ("UTF-16BE", &["unicodefffe", "utf-16be"]),
+            (
+                "UTF-16LE",
+                &[
+                    "csunicode",
+                    "iso-10646-ucs-2",
+                    "ucs-2",
+                    "unicode",
+                    "unicodefeff",
+                    "utf-16",
+                    "utf-16le",
+                ],
+            ),
+            ("IBM866", &["866", "cp866", "csibm866", "ibm866"]),
+            (
+                "ISO-8859-2",
+                &[
+                    "csisolatin2",
+                    "iso-8859-2",
+                    "iso-ir-101",
+                    "iso8859-2",
+                    "iso88592",
+                    "iso_8859-2",
+                    "iso_8859-2:1987",
+                    "l2",
+                    "latin2",
+                ],
+            ),
+            (
+                "ISO-8859-3",
+                &[
+                    "csisolatin3",
+                    "iso-8859-3",
+                    "iso-ir-109",
+                    "iso8859-3",
+                    "iso88593",
+                    "iso_8859-3",
+                    "iso_8859-3:1988",
+                    "l3",
+                    "latin3",
+                ],
+            ),
+            (
+                "ISO-8859-4",
+                &[
+                    "csisolatin4",
+                    "iso-8859-4",
+                    "iso-ir-110",
+                    "iso8859-4",
+                    "iso88594",
+                    "iso_8859-4",
+                    "iso_8859-4:1988",
+                    "l4",
+                    "latin4",
+                ],
+            ),
+            (
+                "ISO-8859-5",
+                &[
+                    "csisolatincyrillic",
+                    "cyrillic",
+                    "iso-8859-5",
+                    "iso-ir-144",
+                    "iso8859-5",
+                    "iso88595",
+                    "iso_8859-5",
+                    "iso_8859-5:1988",
+                ],
+            ),
+            (
+                "ISO-8859-6",
+                &[
+                    "arabic",
+                    "asmo-708",
+                    "csiso88596e",
+                    "csiso88596i",
+                    "csisolatinarabic",
+                    "ecma-114",
+                    "iso-8859-6",
+                    "iso-8859-6-e",
+                    "iso-8859-6-i",
+                    "iso-ir-127",
+                    "iso8859-6",
+                    "iso88596",
+                    "iso_8859-6",
+                    "iso_8859-6:1987",
+                ],
+            ),
+            (
+                "ISO-8859-7",
+                &[
+                    "csisolatingreek",
+                    "ecma-118",
+                    "elot_928",
+                    "greek",
+                    "greek8",
+                    "iso-8859-7",
+                    "iso-ir-126",
+                    "iso8859-7",
+                    "iso88597",
+                    "iso_8859-7",
+                    "iso_8859-7:1987",
+                    "sun_eu_greek",
+                ],
+            ),
+            (
+                "ISO-8859-8",
+                &[
+                    "csiso88598e",
+                    "csisolatinhebrew",
+                    "hebrew",
+                    "iso-8859-8",
+                    "iso-8859-8-e",
+                    "iso-ir-138",
+                    "iso8859-8",
+                    "iso88598",
+                    "iso_8859-8",
+                    "iso_8859-8:1988",
+                    "visual",
+                ],
+            ),
+            ("ISO-8859-8-I", &["csiso88598i", "iso-8859-8-i", "logical"]),
+            (
+                "ISO-8859-10",
+                &[
+                    "csisolatin6",
+                    "iso-8859-10",
+                    "iso-ir-157",
+                    "iso8859-10",
+                    "iso885910",
+                    "l6",
+                    "latin6",
+                ],
+            ),
+            ("ISO-8859-13", &["iso-8859-13", "iso8859-13", "iso885913"]),
+            ("ISO-8859-14", &["iso-8859-14", "iso8859-14", "iso885914"]),
+            (
+                "ISO-8859-15",
+                &[
+                    "csisolatin9",
+                    "iso-8859-15",
+                    "iso8859-15",
+                    "iso885915",
+                    "iso_8859-15",
+                    "l9",
+                ],
+            ),
+            ("ISO-8859-16", &["iso-8859-16"]),
+            ("KOI8-R", &["cskoi8r", "koi", "koi8", "koi8-r", "koi8_r"]),
+            ("KOI8-U", &["koi8-ru", "koi8-u"]),
+            ("macintosh", &["csmacintosh", "mac", "macintosh", "x-mac-roman"]),
+            (
+                "windows-874",
+                &[
+                    "dos-874",
+                    "iso-8859-11",
+                    "iso8859-11",
+                    "iso885911",
+                    "tis-620",
+                    "windows-874",
+                ],
+            ),
+            ("windows-1250", &["cp1250", "windows-1250", "x-cp1250"]),
+            ("windows-1251", &["cp1251", "windows-1251", "x-cp1251"]),
+            (
+                "windows-1252",
+                &[
+                    "ansi_x3.4-1968",
+                    "ascii",
+                    "cp1252",
+                    "cp819",
+                    "csisolatin1",
+                    "ibm819",
+                    "iso-8859-1",
+                    "iso-ir-100",
+                    "iso8859-1",
+                    "iso88591",
+                    "iso_8859-1",
+                    "iso_8859-1:1987",
+                    "l1",
+                    "latin1",
+                    "us-ascii",
+                    "windows-1252",
+                    "x-cp1252",
+                ],
+            ),
+            ("windows-1253", &["cp1253", "windows-1253", "x-cp1253"]),
+            (
+                "windows-1254",
+                &[
+                    "cp1254",
+                    "csisolatin5",
+                    "iso-8859-9",
+                    "iso-ir-148",
+                    "iso8859-9",
+                    "iso88599",
+                    "iso_8859-9",
+                    "iso_8859-9:1989",
+                    "l5",
+                    "latin5",
+                    "windows-1254",
+                    "x-cp1254",
+                ],
+            ),
+            ("windows-1255", &["cp1255", "windows-1255", "x-cp1255"]),
+            ("windows-1256", &["cp1256", "windows-1256", "x-cp1256"]),
+            ("windows-1257", &["cp1257", "windows-1257", "x-cp1257"]),
+            ("windows-1258", &["cp1258", "windows-1258", "x-cp1258"]),
+            ("x-mac-cyrillic", &["x-mac-cyrillic", "x-mac-ukrainian"]),
+        ];
+        let mut total = 0usize;
+        for (name, labels) in expected {
+            let mut want: Vec<&str> = labels.to_vec();
+            want.sort_unstable();
+            assert_eq!(family_of(name), want, "{name}: label family");
+            total += labels.len();
+        }
+        assert_eq!(total, LABELS.len(), "a label is missing from a family");
+        assert_eq!(LABELS.len(), 183);
+    }
+
+    #[test]
+    fn no_label_names_two_encodings() {
+        let mut supported: Vec<&str> = LABELS.iter().map(|(label, _)| *label).collect();
+        let total = supported.len();
+        supported.sort_unstable();
+        supported.dedup();
+        assert_eq!(supported.len(), total, "the same label is listed twice");
+        let mut all = total;
+        all += UNIMPLEMENTED_LABELS.len();
+        let mut merged: Vec<&str> = LABELS.iter().map(|(label, _)| *label).collect();
+        merged.extend_from_slice(&UNIMPLEMENTED_LABELS[..]);
+        merged.sort_unstable();
+        merged.dedup();
+        assert_eq!(merged.len(), all, "a label is both supported and unimplemented");
+        assert_eq!(all, 228, "the standard assigns 228 labels here");
+        for (label, _) in &LABELS {
+            let hits = LABELS
+                .iter()
+                .filter(|(other, _)| other.eq_ignore_ascii_case(label))
+                .count();
+            assert_eq!(hits, 1, "{label}");
+        }
+    }
+
+    #[test]
+    fn every_registry_name_is_itself_a_label() {
+        for &encoding in &ENCODINGS {
+            let lowercase = encoding.name.to_ascii_lowercase();
+            assert_eq!(
+                lookup(&lowercase),
+                LabelLookup::Supported(encoding),
+                "{}",
+                encoding.name
+            );
+        }
+    }
+
+    #[test]
+    fn labels_point_at_the_registry_statics() {
+        for (label, encoding) in &LABELS {
+            match lookup(label) {
+                LabelLookup::Supported(found) => {
+                    assert!(core::ptr::eq(found, *encoding), "{label}");
+                }
+                other => panic!("{label}: {other:?}"),
+            }
+        }
+        // ...and every registry entry is reachable through at least one label.
+        for &encoding in &ENCODINGS {
+            assert!(
+                LABELS
+                    .iter()
+                    .any(|(_, e)| core::ptr::eq(*e, encoding)),
+                "{} has no label",
+                encoding.name
+            );
+        }
+    }
+
+    #[test]
+    fn unregistered_lookalikes_are_unknown() {
+        // The standard registers none of these, so `lookup` must not guess.
+        for label in [
+            "utf-7",
+            "utf-32",
+            "utf-32be",
+            "utf-32le",
+            "ucs-4",
+            "csucs4",
+            "iso-8859-0",
+            "iso-8859-12",
+            "iso-8859-17",
+            "windows-1259",
+            "csiso2022cn",
+            "x-mac-greek",
+            "iso-8859-1:1987",
+            "utf-8bom",
+            "csunicode11",
+        ] {
+            assert_eq!(lookup(label), LabelLookup::Unknown, "{label}");
+            assert!(for_label(label).is_none(), "{label}");
+        }
+    }
+
+    #[test]
+    fn lookup_and_for_label_agree_on_every_candidate() {
+        for label in [
+            "utf-8",
+            "  UTF-8 ",
+            "gb18030",
+            "big5",
+            "tis-620",
+            "iso-8859-1",
+            "utf-7",
+            "",
+            "\t",
+            "x-user-defined",
+            "koi8-ru",
+            "cp1252",
+        ] {
+            let supported = matches!(lookup(label), LabelLookup::Supported(_));
+            assert_eq!(for_label(label).is_some(), supported, "{label:?}");
+            if let LabelLookup::Supported(encoding) = lookup(label) {
+                let found = for_label(label).unwrap_or_else(|| panic!("{label:?}"));
+                assert!(core::ptr::eq(found, encoding), "{label:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn only_utf8_can_encode_everything() {
+        assert!(UTF_8.can_encode_everything());
+        assert!(!UTF_16BE.can_encode_everything());
+        assert!(!UTF_16LE.can_encode_everything());
+        for &encoding in &SINGLE_BYTE_ENCODINGS {
+            assert!(!encoding.can_encode_everything(), "{}", encoding.name);
+        }
+        assert_eq!(
+            ENCODINGS
+                .iter()
+                .filter(|e| e.can_encode_everything())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn variant_shapes_match_the_registry_partition() {
+        assert!(matches!(UTF_8.variant, VariantEncoding::Utf8));
+        assert!(matches!(UTF_16BE.variant, VariantEncoding::Utf16Be));
+        assert!(matches!(UTF_16LE.variant, VariantEncoding::Utf16Le));
+        for &encoding in &SINGLE_BYTE_ENCODINGS {
+            assert!(
+                matches!(encoding.variant, VariantEncoding::SingleByte(..)),
+                "{}",
+                encoding.name
+            );
+            assert!(encoding.variant.is_single_byte(), "{}", encoding.name);
+        }
+        assert_eq!(
+            ENCODINGS
+                .iter()
+                .filter(|e| e.variant.is_single_byte())
+                .count(),
+            SINGLE_BYTE_ENCODINGS.len()
+        );
+    }
+
+    #[test]
+    fn run_parameters_are_the_documented_triples() {
+        let expected: [(&str, u16, u8, u8); 28] = [
+            ("IBM866", 0x0410, 0x00, 48),
+            ("ISO-8859-2", 0x0080, 0x00, 33),
+            ("ISO-8859-3", 0x0080, 0x00, 33),
+            ("ISO-8859-4", 0x0080, 0x00, 33),
+            ("ISO-8859-5", 0x040E, 0x2E, 66),
+            ("ISO-8859-6", 0x0080, 0x00, 33),
+            ("ISO-8859-7", 0x03A3, 0x53, 44),
+            ("ISO-8859-8", 0x0080, 0x00, 33),
+            ("ISO-8859-8-I", 0x0080, 0x00, 33),
+            ("ISO-8859-10", 0x0080, 0x00, 33),
+            ("ISO-8859-13", 0x0080, 0x00, 33),
+            ("ISO-8859-14", 0x0080, 0x00, 33),
+            ("ISO-8859-15", 0x00BF, 0x3F, 65),
+            ("ISO-8859-16", 0x0080, 0x00, 33),
+            ("KOI8-R", 0x2553, 0x24, 15),
+            ("KOI8-U", 0x0418, 0x69, 8),
+            ("macintosh", 0x02D8, 0x79, 3),
+            ("windows-874", 0x0E01, 0x21, 58),
+            ("windows-1250", 0x00B4, 0x34, 5),
+            ("windows-1251", 0x0410, 0x40, 64),
+            ("windows-1252", 0x00A0, 0x20, 96),
+            ("windows-1253", 0x03A3, 0x53, 44),
+            ("windows-1254", 0x00A0, 0x20, 48),
+            ("windows-1255", 0x05D0, 0x60, 27),
+            ("windows-1256", 0x0621, 0x41, 22),
+            ("windows-1257", 0x00B0, 0x30, 8),
+            ("windows-1258", 0x00A0, 0x20, 35),
+            ("x-mac-cyrillic", 0x0410, 0x00, 32),
+        ];
+        for (name, bmp_offset, byte_offset, length) in expected {
+            assert_eq!(run_of(by_name(name)), (bmp_offset, byte_offset, length), "{name}");
+        }
+        assert_eq!(expected.len(), SINGLE_BYTE_ENCODINGS.len());
+    }
+
+    #[test]
+    fn every_run_maps_arithmetically_onto_its_index() {
+        for &encoding in &SINGLE_BYTE_ENCODINGS {
+            let table = table_of(encoding);
+            let (bmp_offset, byte_offset, length) = run_of(encoding);
+            let start = usize::from(byte_offset);
+            let length = usize::from(length);
+            assert!((1..=128).contains(&length), "{}: run length", encoding.name);
+            assert!(
+                start + length <= table.len(),
+                "{}: the run leaves the index",
+                encoding.name
+            );
+            for (offset, &unit) in table[start..start + length].iter().enumerate() {
+                assert_eq!(
+                    unit,
+                    bmp_offset + offset as u16,
+                    "{}: pointer {:02X}",
+                    encoding.name,
+                    0x80 + start + offset
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_run_extends_one_pointer_further() {
+        for &encoding in &SINGLE_BYTE_ENCODINGS {
+            let table = table_of(encoding);
+            let (bmp_offset, byte_offset, length) = run_of(encoding);
+            let start = usize::from(byte_offset);
+            let end = start + usize::from(length);
+            if start > 0 {
+                assert_ne!(
+                    table[start - 1],
+                    bmp_offset - 1,
+                    "{}: the run could start one pointer earlier",
+                    encoding.name
+                );
+            }
+            if end < table.len() {
+                assert_ne!(
+                    table[end],
+                    bmp_offset + length as u16,
+                    "{}: the run could be one pointer longer",
+                    encoding.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_index_has_the_documented_number_of_defined_pointers() {
+        let exceptions: [(&str, usize); 9] = [
+            ("ISO-8859-3", 121),
+            ("ISO-8859-6", 83),
+            ("ISO-8859-7", 125),
+            ("ISO-8859-8", 92),
+            ("ISO-8859-8-I", 92),
+            ("windows-874", 120),
+            ("windows-1253", 125),
+            ("windows-1255", 118),
+            ("windows-1257", 126),
+        ];
+        let mut total = 0usize;
+        for &encoding in &SINGLE_BYTE_ENCODINGS {
+            let want = exceptions
+                .iter()
+                .find(|(name, _)| *name == encoding.name)
+                .map_or(128, |(_, count)| *count);
+            let got = table_of(encoding)
+                .iter()
+                .filter(|unit| **unit != 0)
+                .count();
+            assert_eq!(got, want, "{}", encoding.name);
+            total += got;
+        }
+        assert_eq!(total, 3434, "defined pointers across the registry");
+        assert_eq!(total, 28 * 128 - 150);
+    }
+
+    #[test]
+    fn every_index_is_injective() {
+        for &encoding in &SINGLE_BYTE_ENCODINGS {
+            let mut units: Vec<u16> = table_of(encoding)
+                .iter()
+                .copied()
+                .filter(|unit| *unit != 0)
+                .collect();
+            let count = units.len();
+            units.sort_unstable();
+            units.dedup();
+            assert_eq!(
+                units.len(),
+                count,
+                "{}: two pointers share a code point",
+                encoding.name
+            );
+        }
+    }
+
+    #[test]
+    fn every_index_entry_is_a_bmp_scalar_above_basic_latin() {
+        let mut highest = 0u16;
+        for &encoding in &SINGLE_BYTE_ENCODINGS {
+            for &unit in table_of(encoding) {
+                if unit == 0 {
+                    continue;
+                }
+                assert!(unit >= 0x0080, "{}: maps into basic Latin", encoding.name);
+                assert!(
+                    !matches!(unit, 0xD800..=0xDFFF),
+                    "{}: U+{unit:04X} is a surrogate",
+                    encoding.name
+                );
+                assert!(
+                    !matches!(unit, 0xFFFE | 0xFFFF),
+                    "{}: U+{unit:04X} is not a character",
+                    encoding.name
+                );
+                highest = highest.max(unit);
+            }
+        }
+        assert_eq!(highest, 0xFB02, "the registry's highest pointer");
+    }
+
+    #[test]
+    fn no_break_space_is_at_byte_a0_except_in_five_code_pages() {
+        let exceptions = ["IBM866", "KOI8-R", "KOI8-U", "macintosh", "x-mac-cyrillic"];
+        for &encoding in &SINGLE_BYTE_ENCODINGS {
+            let pointers: Vec<usize> = table_of(encoding)
+                .iter()
+                .enumerate()
+                .filter(|(_, unit)| **unit == 0x00A0)
+                .map(|(pointer, _)| pointer)
+                .collect();
+            assert_eq!(pointers.len(), 1, "{}", encoding.name);
+            let byte = 0x80 + pointers[0] as u16;
+            if exceptions.contains(&encoding.name) {
+                assert_ne!(byte, 0x00A0, "{}", encoding.name);
+            } else {
+                assert_eq!(byte, 0x00A0, "{}", encoding.name);
+            }
+        }
+    }
+
+    #[test]
+    fn the_runs_start_either_at_the_c1_row_or_at_no_break_space() {
+        let c1_row: Vec<&str> = SINGLE_BYTE_ENCODINGS
+            .iter()
+            .filter(|e| run_of(e) == (0x0080, 0x00, 33))
+            .map(|e| e.name)
+            .collect();
+        let nbsp_row: Vec<&str> = SINGLE_BYTE_ENCODINGS
+            .iter()
+            .filter(|e| {
+                let (bmp_offset, byte_offset, _) = run_of(e);
+                (bmp_offset, byte_offset) == (0x00A0, 0x20)
+            })
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(
+            c1_row,
+            [
+                "ISO-8859-2",
+                "ISO-8859-3",
+                "ISO-8859-4",
+                "ISO-8859-6",
+                "ISO-8859-8",
+                "ISO-8859-8-I",
+                "ISO-8859-10",
+                "ISO-8859-13",
+                "ISO-8859-14",
+                "ISO-8859-16",
+            ]
+        );
+        assert_eq!(nbsp_row, ["windows-1252", "windows-1254", "windows-1258"]);
+        // Thirteen indexes reach the no-break space arithmetically: the ten C1 runs
+        // end exactly on it and the three Latin-1 tails begin on it.
+        let in_run = SINGLE_BYTE_ENCODINGS
+            .iter()
+            .filter(|e| {
+                let (_, byte_offset, length) = run_of(e);
+                let start = usize::from(byte_offset);
+                table_of(e)[start..start + usize::from(length)].contains(&0x00A0)
+            })
+            .count();
+        assert_eq!(in_run, 13);
+    }
+
+    #[test]
+    fn only_the_iso_8859_indexes_identity_map_the_c1_row() {
+        let iso: [&str; 13] = [
+            "ISO-8859-2",
+            "ISO-8859-3",
+            "ISO-8859-4",
+            "ISO-8859-5",
+            "ISO-8859-6",
+            "ISO-8859-7",
+            "ISO-8859-8",
+            "ISO-8859-8-I",
+            "ISO-8859-10",
+            "ISO-8859-13",
+            "ISO-8859-14",
+            "ISO-8859-15",
+            "ISO-8859-16",
+        ];
+        for &encoding in &SINGLE_BYTE_ENCODINGS {
+            let identity = table_of(encoding)[..=32]
+                .iter()
+                .enumerate()
+                .all(|(pointer, &unit)| unit == 0x0080 + pointer as u16);
+            assert_eq!(identity, iso.contains(&encoding.name), "{}", encoding.name);
         }
     }
 }
