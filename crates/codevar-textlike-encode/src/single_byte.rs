@@ -289,9 +289,12 @@ impl SingleByteEncoder {
             if let Some(pos) = position(&self.table[32..64], code_unit) {
                 return Some(((128 + 32) + pos) as u8);
             }
-        } else if let Some(pos) = position(&self.table[32..self.run_byte_offset], code_unit) {
+        } else if let Some(pos) = position(&self.table[32..self.run_byte_offset.max(32)], code_unit) {
             // windows-1252, windows-874, ISO-8859-15 and ISO-8859-5
-            // Search second quadrant before the run
+            // Search second quadrant before the run. When the run starts below the
+            // second quadrant (the ISO-8859-x indexes run from pointer 0, which maps
+            // U+0080) there is nothing before it in this quadrant, and the first
+            // quadrant search below covers the whole region.
             return Some(((128 + 32) + pos) as u8);
         }
         // Search first quadrant
@@ -592,5 +595,87 @@ fn checked_div(opt: Option<usize>, num: usize) -> Option<usize> {
         n.checked_div(num)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A table shaped like the ISO-8859-2 index: pointers 0..32 are the C1
+    /// controls, pointer 32 is U+00A0 and the run therefore starts at byte
+    /// offset 0, below the second quadrant.
+    static C1_RUN_TABLE: [u16; 128] = {
+        let mut table = [0u16; 128];
+        let mut i = 0usize;
+        while i < 33 {
+            table[i] = 0x0080u16 + i as u16;
+            i += 1;
+        }
+        table[33] = 0x0104;
+        table[127] = 0x17C6;
+        table
+    };
+
+    #[test]
+    fn unmappable_below_second_quadrant_run_does_not_panic() {
+        let mut encoder = SingleByteEncoder::new(&C1_RUN_TABLE, 0x0080, 0x00, 33);
+        let mut dst = [0u8; 16];
+        let (result, read, written) = encoder.encode_from_utf16_raw(&[0x20AC], &mut dst, true);
+        assert_eq!(result, EncoderResult::Unmappable('\u{20AC}'));
+        assert_eq!((read, written), (1, 0));
+    }
+
+    #[test]
+    fn c1_run_maps_arithmetically() {
+        let mut encoder = SingleByteEncoder::new(&C1_RUN_TABLE, 0x0080, 0x00, 33);
+        let mut dst = [0u8; 16];
+        let (result, read, written) =
+            encoder.encode_from_utf16_raw(&[0x0080, 0x009F, 0x00A0], &mut dst, true);
+        assert_eq!(result, EncoderResult::InputEmpty);
+        assert_eq!((read, written), (3, 3));
+        assert_eq!(&dst[..3], &[0x80, 0x9F, 0xA0]);
+    }
+
+    #[test]
+    fn maps_slots_after_and_before_the_run() {
+        let mut encoder = SingleByteEncoder::new(&C1_RUN_TABLE, 0x0080, 0x00, 33);
+        let mut dst = [0u8; 16];
+        let (result, read, written) = encoder.encode_from_utf16_raw(&[0x0104, 0x17C6], &mut dst, true);
+        assert_eq!(result, EncoderResult::InputEmpty);
+        assert_eq!((read, written), (2, 2));
+        assert_eq!(&dst[..2], &[0xA1, 0xFF]);
+    }
+
+    #[test]
+    fn maps_slots_inside_the_second_quadrant_before_a_later_run() {
+        // windows-1252 shape: the run starts at byte offset 0x20, so U+00A0..U+00BF
+        // sit in the first quadrant and U+20AC sits at pointer 0 in the same slot.
+        static WINDOWS_1252_LIKE: [u16; 128] = {
+            let mut table = [0u16; 128];
+            table[0] = 0x20AC;
+            let mut i = 0usize;
+            while i < 96 {
+                table[0x20 + i] = 0x00A0 + i as u16;
+                i += 1;
+            }
+            table
+        };
+        let mut encoder = SingleByteEncoder::new(&WINDOWS_1252_LIKE, 0x00A0, 0x20, 96);
+        let mut dst = [0u8; 16];
+        let (result, read, written) = encoder.encode_from_utf16_raw(&[0x20AC, 0x00A1], &mut dst, true);
+        assert_eq!(result, EncoderResult::InputEmpty);
+        assert_eq!((read, written), (2, 2));
+        assert_eq!(&dst[..2], &[0x80, 0xA1]);
+    }
+
+    #[test]
+    fn undefined_pointer_decodes_as_malformed() {
+        let mut decoder = SingleByteDecoder { table: &C1_RUN_TABLE };
+        let mut dst = [0u8; 16];
+        // Slot 40 (byte 0xA8) is undefined in the table above.
+        let (result, read, written) = decoder.decode_to_utf8_raw(&[0xA8], &mut dst, true);
+        assert_eq!(result, DecoderResult::Malformed(1, 0));
+        assert_eq!((read, written), (1, 0));
     }
 }
