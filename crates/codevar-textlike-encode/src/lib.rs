@@ -20,6 +20,7 @@ extern crate alloc;
 pub mod ascii;
 pub mod encoding;
 pub mod handles;
+pub mod legacy;
 pub mod single_byte;
 pub mod single_byte_tables;
 pub mod utf16;
