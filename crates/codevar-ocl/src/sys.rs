@@ -162,6 +162,16 @@ handle!(
     /// Opaque, reference-counted handle to an event (`cl_event`).
     EventHandle
 );
+handle!(
+    /// Opaque, reference-counted handle to a semaphore object
+    /// (`cl_semaphore_khr`, `cl_khr_semaphore`).
+    ///
+    /// Semaphores are not part of the core API: the handle is only
+    /// meaningful to a driver that advertises `cl_khr_semaphore`, and every
+    /// entry point accepting it is an extension function pointer resolved
+    /// through [`GetExtensionFunctionAddressForPlatform`].
+    SemaphoreHandle
+);
 
 /// Success status returned by every OpenCL entry point (`CL_SUCCESS`).
 pub const SUCCESS: i32 = 0;
@@ -476,6 +486,174 @@ pub const PROFILING_COMMAND_START: u32 = 0x1282;
 /// Host timestamp: finished on the device (`CL_PROFILING_COMMAND_END`).
 pub const PROFILING_COMMAND_END: u32 = 0x1283;
 
+/// The semaphore object is invalid (`CL_INVALID_SEMAPHORE_KHR`).
+pub const INVALID_SEMAPHORE_KHR: i32 = -1142;
+
+/// Element type of every `*_properties` list (`cl_properties`, an alias of
+/// `cl_ulong` in the Khronos headers).
+///
+/// A property list is a sequence of `(name, value)` pairs of this type,
+/// terminated by a single zero [`Properties`]; a handle or an `int` is
+/// stored in the value slot by casting it to `u64`, exactly as the C
+/// headers cast `cl_device_id` / `HANDLE` / `int` into
+/// `cl_properties`.
+pub type Properties = u64;
+
+/// Properties of `clCreateBufferWithProperties` (`cl_mem_properties`).
+pub type MemProperties = Properties;
+
+/// Properties of `clCreateSemaphoreWithPropertiesKHR`
+/// (`cl_semaphore_properties_khr`).
+pub type SemaphoreProperties = Properties;
+
+/// `cl_semaphore_info_khr` parameter names.
+pub type SemaphoreInfo = u32;
+
+/// Semaphore payload value (`cl_semaphore_payload_khr`).
+pub type SemaphorePayload = u64;
+
+/// Handle type of `cl_khr_external_memory`
+/// (`cl_external_memory_handle_type_khr`).
+pub type ExternalMemoryHandleType = u32;
+
+/// Handle type of `cl_khr_external_semaphore`
+/// (`cl_external_semaphore_handle_type_khr`).
+pub type ExternalSemaphoreHandleType = u32;
+
+/// `cl_khr_device_uuid`: a device UUID is 16 bytes (`CL_UUID_SIZE_KHR`).
+pub const UUID_SIZE_KHR: usize = 16;
+
+/// `cl_khr_device_uuid`: a Windows LUID is 8 bytes (`CL_LUID_SIZE_KHR`).
+pub const LUID_SIZE_KHR: usize = 8;
+
+/// The 16-byte UUID of the device (`CL_DEVICE_UUID_KHR`).
+pub const DEVICE_UUID_KHR: u32 = 0x106A;
+/// The 16-byte UUID of the driver (`CL_DRIVER_UUID_KHR`).
+pub const DRIVER_UUID_KHR: u32 = 0x106B;
+/// Whether the device reports a valid LUID (`CL_DEVICE_LUID_VALID_KHR`).
+pub const DEVICE_LUID_VALID_KHR: u32 = 0x106C;
+/// The 8-byte Windows LUID of the device (`CL_DEVICE_LUID_KHR`).
+pub const DEVICE_LUID_KHR: u32 = 0x106D;
+/// The monitor-node mask of the device (`CL_DEVICE_NODE_MASK_KHR`).
+pub const DEVICE_NODE_MASK_KHR: u32 = 0x106E;
+
+/// Terminated list of external memory handle types the platform can import
+/// (`CL_PLATFORM_EXTERNAL_MEMORY_IMPORT_HANDLE_TYPES_KHR`).
+pub const PLATFORM_EXTERNAL_MEMORY_IMPORT_HANDLE_TYPES_KHR: u32 = 0x2044;
+/// Terminated list of external memory handle types the device can import
+/// (`CL_DEVICE_EXTERNAL_MEMORY_IMPORT_HANDLE_TYPES_KHR`).
+pub const DEVICE_EXTERNAL_MEMORY_IMPORT_HANDLE_TYPES_KHR: u32 = 0x204F;
+/// Handle types that may be imported as linear images
+/// (`CL_DEVICE_EXTERNAL_MEMORY_IMPORT_ASSUME_LINEAR_IMAGES_HANDLE_TYPES_KHR`).
+pub const DEVICE_EXTERNAL_MEMORY_IMPORT_ASSUME_LINEAR_IMAGES_HANDLE_TYPES_KHR: u32 = 0x2052;
+
+/// Property naming the devices an imported memory object is usable on
+/// (`CL_MEM_DEVICE_HANDLE_LIST_KHR`).
+pub const MEM_DEVICE_HANDLE_LIST_KHR: MemProperties = 0x2051;
+/// Terminator of the device handle list (`CL_MEM_DEVICE_HANDLE_LIST_END_KHR`).
+pub const MEM_DEVICE_HANDLE_LIST_END_KHR: MemProperties = 0;
+
+/// Command type of an external-memory acquire (`CL_COMMAND_ACQUIRE_EXTERNAL_MEM_OBJECTS_KHR`).
+pub const COMMAND_ACQUIRE_EXTERNAL_MEM_OBJECTS_KHR: u32 = 0x2047;
+/// Command type of an external-memory release (`CL_COMMAND_RELEASE_EXTERNAL_MEM_OBJECTS_KHR`).
+pub const COMMAND_RELEASE_EXTERNAL_MEM_OBJECTS_KHR: u32 = 0x2048;
+
+/// An `int` file descriptor holding a dma-buf
+/// (`CL_EXTERNAL_MEMORY_HANDLE_DMA_BUF_KHR`).
+pub const EXTERNAL_MEMORY_HANDLE_DMA_BUF_KHR: ExternalMemoryHandleType = 0x2067;
+/// An `int` file descriptor of an opaque posix fd handle
+/// (`CL_EXTERNAL_MEMORY_HANDLE_OPAQUE_FD_KHR`).
+pub const EXTERNAL_MEMORY_HANDLE_OPAQUE_FD_KHR: ExternalMemoryHandleType = 0x2060;
+/// A Win32 `HANDLE` to an NT handle
+/// (`CL_EXTERNAL_MEMORY_HANDLE_OPAQUE_WIN32_KHR`).
+pub const EXTERNAL_MEMORY_HANDLE_OPAQUE_WIN32_KHR: ExternalMemoryHandleType = 0x2061;
+/// A Win32 `HANDLE` to a KMT handle
+/// (`CL_EXTERNAL_MEMORY_HANDLE_OPAQUE_WIN32_KMT_KHR`).
+pub const EXTERNAL_MEMORY_HANDLE_OPAQUE_WIN32_KMT_KHR: ExternalMemoryHandleType = 0x2062;
+/// A Win32 global object *name* rather than a handle
+/// (`CL_EXTERNAL_MEMORY_HANDLE_OPAQUE_WIN32_NAME_KHR`).
+pub const EXTERNAL_MEMORY_HANDLE_OPAQUE_WIN32_NAME_KHR: ExternalMemoryHandleType = 0x2069;
+
+/// Importable semaphore handle types of the platform
+/// (`CL_PLATFORM_SEMAPHORE_IMPORT_HANDLE_TYPES_KHR`).
+pub const PLATFORM_SEMAPHORE_IMPORT_HANDLE_TYPES_KHR: u32 = 0x2037;
+/// Exportable semaphore handle types of the platform
+/// (`CL_PLATFORM_SEMAPHORE_EXPORT_HANDLE_TYPES_KHR`).
+pub const PLATFORM_SEMAPHORE_EXPORT_HANDLE_TYPES_KHR: u32 = 0x2038;
+/// Importable semaphore handle types of the device
+/// (`CL_DEVICE_SEMAPHORE_IMPORT_HANDLE_TYPES_KHR`).
+pub const DEVICE_SEMAPHORE_IMPORT_HANDLE_TYPES_KHR: u32 = 0x204D;
+/// Exportable semaphore handle types of the device
+/// (`CL_DEVICE_SEMAPHORE_EXPORT_HANDLE_TYPES_KHR`).
+pub const DEVICE_SEMAPHORE_EXPORT_HANDLE_TYPES_KHR: u32 = 0x204E;
+
+/// Property listing the handle types a created semaphore may export
+/// (`CL_SEMAPHORE_EXPORT_HANDLE_TYPES_KHR`).
+pub const SEMAPHORE_EXPORT_HANDLE_TYPES_KHR: SemaphoreProperties = 0x203F;
+/// Terminator of that list (`CL_SEMAPHORE_EXPORT_HANDLE_TYPES_LIST_END_KHR`).
+pub const SEMAPHORE_EXPORT_HANDLE_TYPES_LIST_END_KHR: SemaphoreProperties = 0;
+/// Whether the semaphore was created exportable (`CL_SEMAPHORE_EXPORTABLE_KHR`).
+pub const SEMAPHORE_EXPORTABLE_KHR: SemaphoreInfo = 0x2054;
+
+/// Property naming the semaphore type (`CL_SEMAPHORE_TYPE_KHR`).
+pub const SEMAPHORE_TYPE_KHR: SemaphoreProperties = 0x203D;
+/// The binary semaphore type (`CL_SEMAPHORE_TYPE_BINARY_KHR`).
+pub const SEMAPHORE_TYPE_BINARY_KHR: SemaphoreProperties = 1;
+/// Property naming the devices a semaphore is usable on
+/// (`CL_SEMAPHORE_DEVICE_HANDLE_LIST_KHR`).
+pub const SEMAPHORE_DEVICE_HANDLE_LIST_KHR: SemaphoreProperties = 0x2053;
+/// Terminator of that list (`CL_SEMAPHORE_DEVICE_HANDLE_LIST_END_KHR`).
+pub const SEMAPHORE_DEVICE_HANDLE_LIST_END_KHR: SemaphoreProperties = 0;
+/// The context of the semaphore (`CL_SEMAPHORE_CONTEXT_KHR`).
+pub const SEMAPHORE_CONTEXT_KHR: SemaphoreInfo = 0x2039;
+/// Reference count of the semaphore (`CL_SEMAPHORE_REFERENCE_COUNT_KHR`).
+pub const SEMAPHORE_REFERENCE_COUNT_KHR: SemaphoreInfo = 0x203A;
+/// Properties the semaphore was created with (`CL_SEMAPHORE_PROPERTIES_KHR`).
+pub const SEMAPHORE_PROPERTIES_KHR: SemaphoreInfo = 0x203B;
+/// Current payload of the semaphore (`CL_SEMAPHORE_PAYLOAD_KHR`).
+pub const SEMAPHORE_PAYLOAD_KHR: SemaphoreInfo = 0x203C;
+
+/// An `int` file descriptor holding an opaque fd semaphore
+/// (`CL_SEMAPHORE_HANDLE_OPAQUE_FD_KHR`).
+pub const SEMAPHORE_HANDLE_OPAQUE_FD_KHR: ExternalSemaphoreHandleType = 0x2055;
+/// A Win32 `HANDLE` to an NT-handle semaphore
+/// (`CL_SEMAPHORE_HANDLE_OPAQUE_WIN32_KHR`).
+pub const SEMAPHORE_HANDLE_OPAQUE_WIN32_KHR: ExternalSemaphoreHandleType = 0x2056;
+/// A Win32 `HANDLE` to a KMT-handle semaphore
+/// (`CL_SEMAPHORE_HANDLE_OPAQUE_WIN32_KMT_KHR`).
+pub const SEMAPHORE_HANDLE_OPAQUE_WIN32_KMT_KHR: ExternalSemaphoreHandleType = 0x2057;
+/// A `sync_file` descriptor (`CL_SEMAPHORE_HANDLE_SYNC_FD_KHR`).
+pub const SEMAPHORE_HANDLE_SYNC_FD_KHR: ExternalSemaphoreHandleType = 0x2058;
+/// A `HANDLE` to a D3D12 fence (`CL_SEMAPHORE_HANDLE_D3D12_FENCE_KHR`).
+pub const SEMAPHORE_HANDLE_D3D12_FENCE_KHR: ExternalSemaphoreHandleType = 0x2059;
+
+/// Command type of a semaphore wait (`CL_COMMAND_SEMAPHORE_WAIT_KHR`).
+pub const COMMAND_SEMAPHORE_WAIT_KHR: u32 = 0x2042;
+/// Command type of a semaphore signal (`CL_COMMAND_SEMAPHORE_SIGNAL_KHR`).
+pub const COMMAND_SEMAPHORE_SIGNAL_KHR: u32 = 0x2043;
+
+/// Extension name of `cl_khr_device_uuid`, as advertised in the
+/// `CL_DEVICE_EXTENSIONS` / `CL_PLATFORM_EXTENSIONS` strings.
+pub const EXT_DEVICE_UUID: &str = "cl_khr_device_uuid";
+/// Extension name of `cl_khr_external_memory`.
+pub const EXT_EXTERNAL_MEMORY: &str = "cl_khr_external_memory";
+/// Extension name of `cl_khr_external_memory_opaque_fd`.
+pub const EXT_EXTERNAL_MEMORY_OPAQUE_FD: &str = "cl_khr_external_memory_opaque_fd";
+/// Extension name of `cl_khr_external_memory_dma_buf`.
+pub const EXT_EXTERNAL_MEMORY_DMA_BUF: &str = "cl_khr_external_memory_dma_buf";
+/// Extension name of `cl_khr_external_memory_win32`.
+pub const EXT_EXTERNAL_MEMORY_WIN32: &str = "cl_khr_external_memory_win32";
+/// Extension name of `cl_khr_semaphore`.
+pub const EXT_SEMAPHORE: &str = "cl_khr_semaphore";
+/// Extension name of `cl_khr_external_semaphore`.
+pub const EXT_EXTERNAL_SEMAPHORE: &str = "cl_khr_external_semaphore";
+/// Extension name of `cl_khr_external_semaphore_opaque_fd`.
+pub const EXT_EXTERNAL_SEMAPHORE_OPAQUE_FD: &str = "cl_khr_external_semaphore_opaque_fd";
+/// Extension name of `cl_khr_external_semaphore_win32`.
+pub const EXT_EXTERNAL_SEMAPHORE_WIN32: &str = "cl_khr_external_semaphore_win32";
+/// Extension name of `cl_khr_external_semaphore_sync_fd`.
+pub const EXT_EXTERNAL_SEMAPHORE_SYNC_FD: &str = "cl_khr_external_semaphore_sync_fd";
+
 /// Context creation notification callback ([`CreateContext`]).
 pub type ContextNotify = unsafe extern "system" fn(
     errinfo: *const c_char,
@@ -748,6 +926,106 @@ pub type EnqueueFillBuffer = unsafe extern "system" fn(
 /// implementations; only `clXxxKHR`-style extension names resolve.
 pub type GetExtensionFunctionAddress = unsafe extern "system" fn(func_name: *const c_char) -> *mut c_void;
 
+/// Resolves an extension entry point for one platform
+/// (`clGetExtensionFunctionAddressForPlatform`).
+///
+/// The platform-scoped form is the only one an ICD loader may use to reach
+/// into the right vendor implementation, because a generic
+/// [`GetExtensionFunctionAddress`] query has no platform to dispatch to and
+/// returns null on multi-vendor installations.
+pub type GetExtensionFunctionAddressForPlatform =
+    unsafe extern "system" fn(platform: PlatformHandle, func_name: *const c_char) -> *mut c_void;
+
+/// Creates a buffer from a property list (`clCreateBufferWithProperties`,
+/// OpenCL 3.0 core and the entry point `cl_khr_external_memory` imports
+/// foreign memory through).
+pub type CreateBufferWithProperties = unsafe extern "system" fn(
+    context: ContextHandle,
+    properties: *const MemProperties,
+    flags: u64,
+    size: usize,
+    host_ptr: *mut c_void,
+    errcode_ret: *mut i32,
+) -> MemHandle;
+
+/// Takes ownership of imported memory objects for the device
+/// (`clEnqueueAcquireExternalMemObjectsKHR`, `cl_khr_external_memory`).
+pub type EnqueueAcquireExternalMemObjects = unsafe extern "system" fn(
+    command_queue: CommandQueueHandle,
+    num_mem_objects: u32,
+    mem_objects: *const MemHandle,
+    num_events_in_wait_list: u32,
+    event_wait_list: *const EventHandle,
+    event: *mut EventHandle,
+) -> i32;
+
+/// Hands imported memory objects back to their exporter
+/// (`clEnqueueReleaseExternalMemObjectsKHR`, `cl_khr_external_memory`).
+pub type EnqueueReleaseExternalMemObjects = unsafe extern "system" fn(
+    command_queue: CommandQueueHandle,
+    num_mem_objects: u32,
+    mem_objects: *const MemHandle,
+    num_events_in_wait_list: u32,
+    event_wait_list: *const EventHandle,
+    event: *mut EventHandle,
+) -> i32;
+
+/// Creates a semaphore object (`clCreateSemaphoreWithPropertiesKHR`,
+/// `cl_khr_semaphore`).
+pub type CreateSemaphoreWithProperties = unsafe extern "system" fn(
+    context: ContextHandle,
+    properties: *const SemaphoreProperties,
+    errcode_ret: *mut i32,
+) -> SemaphoreHandle;
+
+/// Increments a semaphore's reference count (`clRetainSemaphoreKHR`).
+pub type RetainSemaphore = unsafe extern "system" fn(semaphore: SemaphoreHandle) -> i32;
+
+/// Decrements a semaphore's reference count (`clReleaseSemaphoreKHR`).
+pub type ReleaseSemaphore = unsafe extern "system" fn(semaphore: SemaphoreHandle) -> i32;
+
+/// Queries semaphore attributes (`clGetSemaphoreInfoKHR`).
+pub type GetSemaphoreInfo = unsafe extern "system" fn(
+    semaphore: SemaphoreHandle,
+    param_name: SemaphoreInfo,
+    param_value_size: usize,
+    param_value: *mut c_void,
+    param_value_size_ret: *mut usize,
+) -> i32;
+
+/// Reads the exportable handle of a semaphore
+/// (`clGetSemaphoreHandleForTypeKHR`, `cl_khr_external_semaphore`).
+pub type GetSemaphoreHandleForType = unsafe extern "system" fn(
+    semaphore: SemaphoreHandle,
+    device: DeviceHandle,
+    handle_type: ExternalSemaphoreHandleType,
+    handle_size: usize,
+    handle_ptr: *mut c_void,
+    handle_size_ret: *mut usize,
+) -> i32;
+
+/// Enqueues a wait on semaphore payloads (`clEnqueueWaitSemaphoresKHR`).
+pub type EnqueueWaitSemaphores = unsafe extern "system" fn(
+    command_queue: CommandQueueHandle,
+    num_semaphore_objects: u32,
+    semaphore_objects: *const SemaphoreHandle,
+    semaphore_payloads: *const SemaphorePayload,
+    num_events_in_wait_list: u32,
+    event_wait_list: *const EventHandle,
+    event: *mut EventHandle,
+) -> i32;
+
+/// Enqueues a signal of semaphore payloads (`clEnqueueSignalSemaphoresKHR`).
+pub type EnqueueSignalSemaphores = unsafe extern "system" fn(
+    command_queue: CommandQueueHandle,
+    num_semaphore_objects: u32,
+    semaphore_objects: *const SemaphoreHandle,
+    semaphore_payloads: *const SemaphorePayload,
+    num_events_in_wait_list: u32,
+    event_wait_list: *const EventHandle,
+    event: *mut EventHandle,
+) -> i32;
+
 /// ICD entry point used to enumerate a vendor implementation's platforms
 /// directly (`clIcdGetPlatformIDsKHR`, `cl_khr_icd`).
 pub type IcdGetPlatformIdsKhr = unsafe extern "system" fn(
@@ -831,6 +1109,7 @@ pub const fn error_name(code: i32) -> &'static str {
         INVALID_PIPE_SIZE => "CL_INVALID_PIPE_SIZE",
         INVALID_DEVICE_QUEUE => "CL_INVALID_DEVICE_QUEUE",
         PLATFORM_NOT_FOUND_KHR => "CL_PLATFORM_NOT_FOUND_KHR",
+        INVALID_SEMAPHORE_KHR => "CL_INVALID_SEMAPHORE_KHR",
         _ => "CL_UNKNOWN_ERROR",
     }
 }
@@ -845,6 +1124,7 @@ mod tests {
         assert_eq!(error_name(OUT_OF_RESOURCES), "CL_OUT_OF_RESOURCES");
         assert_eq!(error_name(INVALID_KERNEL_ARGS), "CL_INVALID_KERNEL_ARGS");
         assert_eq!(error_name(PLATFORM_NOT_FOUND_KHR), "CL_PLATFORM_NOT_FOUND_KHR");
+        assert_eq!(error_name(INVALID_SEMAPHORE_KHR), "CL_INVALID_SEMAPHORE_KHR");
         assert_eq!(error_name(1234), "CL_UNKNOWN_ERROR");
         assert_eq!(error_name(-999), "CL_UNKNOWN_ERROR");
     }
@@ -860,6 +1140,12 @@ mod tests {
         let handle = MemHandle::from_raw(raw);
         assert!(!handle.is_null());
         assert_eq!(handle.as_raw(), raw);
+
+        // Semaphores are a distinct handle type: the same raw pointer may be
+        // wrapped, but the type system keeps them apart from `cl_mem`.
+        let semaphore = SemaphoreHandle::from_raw(raw);
+        assert_eq!(semaphore.as_raw(), raw);
+        assert!(SemaphoreHandle::from_raw(core::ptr::null_mut()).is_null());
     }
 
     #[test]
@@ -878,6 +1164,77 @@ mod tests {
             core::mem::size_of::<EnqueueNdRangeKernel>(),
             core::mem::size_of::<*mut c_void>()
         );
+        assert_eq!(
+            core::mem::size_of::<CreateBufferWithProperties>(),
+            core::mem::size_of::<*mut c_void>()
+        );
+        assert_eq!(
+            core::mem::size_of::<EnqueueAcquireExternalMemObjects>(),
+            core::mem::size_of::<*mut c_void>()
+        );
+        assert_eq!(
+            core::mem::size_of::<EnqueueWaitSemaphores>(),
+            core::mem::size_of::<*mut c_void>()
+        );
+        assert_eq!(
+            core::mem::size_of::<GetSemaphoreHandleForType>(),
+            core::mem::size_of::<*mut c_void>()
+        );
+    }
+
+    /// The extension constants are the ABI values of `CL/cl_ext.h`; a typo
+    /// here cannot be caught by a driver, which would simply reject the
+    /// query, so they are pinned against the published numbers.
+    #[test]
+    fn extension_constants_match_the_khr_headers() {
+        assert_eq!(DEVICE_UUID_KHR, 0x106A);
+        assert_eq!(DEVICE_LUID_KHR, 0x106D);
+        assert_eq!(UUID_SIZE_KHR, 16);
+        assert_eq!(LUID_SIZE_KHR, 8);
+        assert_eq!(MEM_DEVICE_HANDLE_LIST_KHR, 0x2051);
+        assert_eq!(EXTERNAL_MEMORY_HANDLE_OPAQUE_FD_KHR, 0x2060);
+        assert_eq!(EXTERNAL_MEMORY_HANDLE_DMA_BUF_KHR, 0x2067);
+        assert_eq!(EXTERNAL_MEMORY_HANDLE_OPAQUE_WIN32_NAME_KHR, 0x2069);
+        assert_eq!(SEMAPHORE_TYPE_KHR, 0x203D);
+        assert_eq!(SEMAPHORE_HANDLE_SYNC_FD_KHR, 0x2058);
+        assert_eq!(SEMAPHORE_HANDLE_OPAQUE_WIN32_KHR, 0x2056);
+        assert_eq!(INVALID_SEMAPHORE_KHR, -1142);
+        assert_eq!(MEM_DEVICE_HANDLE_LIST_END_KHR, 0);
+        assert_eq!(SEMAPHORE_EXPORT_HANDLE_TYPES_LIST_END_KHR, 0);
+    }
+
+    /// Property lists are `(name, value)` pairs of `cl_ulong`, and the value
+    /// slot carries handles, file descriptors and booleans; a narrower type
+    /// alias would silently truncate them.
+    #[test]
+    fn property_lists_widen_handles_without_truncation() {
+        assert_eq!(core::mem::size_of::<Properties>(), core::mem::size_of::<u64>());
+        assert_eq!(
+            core::mem::size_of::<MemProperties>(),
+            core::mem::size_of::<SemaphoreProperties>()
+        );
+        let device = DeviceHandle::from_raw(0x1_0000_0000 as *mut c_void);
+        let widened: Properties = device.as_raw() as Properties;
+        assert_eq!(widened, 0x1_0000_0000);
+    }
+
+    /// The extension names are what `CL_DEVICE_EXTENSIONS` reports verbatim.
+    #[test]
+    fn extension_names_keep_the_cl_prefix() {
+        for name in [
+            EXT_DEVICE_UUID,
+            EXT_EXTERNAL_MEMORY,
+            EXT_EXTERNAL_MEMORY_OPAQUE_FD,
+            EXT_EXTERNAL_MEMORY_DMA_BUF,
+            EXT_EXTERNAL_MEMORY_WIN32,
+            EXT_SEMAPHORE,
+            EXT_EXTERNAL_SEMAPHORE,
+            EXT_EXTERNAL_SEMAPHORE_OPAQUE_FD,
+            EXT_EXTERNAL_SEMAPHORE_WIN32,
+            EXT_EXTERNAL_SEMAPHORE_SYNC_FD,
+        ] {
+            assert!(name.starts_with("cl_khr_"), "{name} is not a KHR name");
+        }
     }
 
     #[test]
