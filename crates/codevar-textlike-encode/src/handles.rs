@@ -427,6 +427,7 @@ impl<'a> Utf16Destination<'a> {
                     self.pos += offset;
                     return Some((source.pos, self.pos));
                 }
+                dst_remaining[offset] = surrogate;
                 dst_remaining[second_pos] = second;
                 offset += 2;
                 continue;
@@ -1964,7 +1965,7 @@ mod tests {
     }
 
     #[test]
-    fn utf16_dest_copy_utf16_valid_pair_leaves_high_slot_unwritten() {
+    fn utf16_dest_copy_utf16_valid_pair_copies_both_units() {
         let bytes = [0x41u8, 0x00, 0x3D, 0xD8, 0x00, 0xDE]; // 'A' U+D83D U+DE00
         let mut src = ByteSource::new(&bytes);
         let mut out = [0u16; 4];
@@ -1973,13 +1974,22 @@ mod tests {
         assert_eq!(src.consumed(), 6);
         assert_eq!(dest.written(), 3);
         assert_eq!(out[0], 0x0041);
-        // BUG relative to upstream encoding_rs: upstream's copy_bmp_to
-        // speculatively writes the high surrogate before reporting it, so the
-        // pair is copied verbatim. Here the surrogate is detected before the
-        // write, and only the low unit is assigned, so a zeroed destination
-        // reports U+0000 where U+D83D should have been passed through.
-        assert_eq!(out[1], 0x0000);
+        // `copy_bmp_to` stops before the lead surrogate without writing it, so
+        // the pair branch has to place both units itself.
+        assert_eq!(out[1], 0xD83D);
         assert_eq!(out[2], 0xDE00);
+    }
+
+    #[test]
+    fn utf16_dest_copy_utf16_swaps_both_units_of_a_big_endian_pair() {
+        let bytes = [0x00u8, 0x41, 0xD8, 0x3D, 0xDE, 0x00]; // 'A' U+1F600, BE
+        let mut src = ByteSource::new(&bytes);
+        let mut out = [0u16; 4];
+        let mut dest = Utf16Destination::new(&mut out);
+        assert_eq!(dest.copy_utf16_from::<BigEndian>(&mut src), None);
+        assert_eq!(src.consumed(), 6);
+        assert_eq!(dest.written(), 3);
+        assert_eq!(&out[..3], [0x0041, 0xD83D, 0xDE00]);
     }
 
     #[test]

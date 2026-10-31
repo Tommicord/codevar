@@ -1884,12 +1884,7 @@ mod tests {
     }
 
     #[test]
-    fn utf16le_decode_to_utf16_astral_drops_high_unit_current_behavior() {
-        // Documents actual behavior: `Utf16Destination::copy_utf16_from`
-        // (handles.rs) writes only the low surrogate of an astral pair into
-        // the destination, leaving the high slot at its initial value.
-        // Spec-conformant output would preserve both units; reported instead
-        // of asserted as correct behavior.
+    fn utf16le_decode_to_utf16_keeps_both_units_of_an_astral_pair() {
         let mut d = UTF_16LE.new_decoder();
         let src: Vec<u8> = utf16_units("a\u{e9}\u{1F4A9}")
             .iter()
@@ -1897,7 +1892,7 @@ mod tests {
             .collect();
         let (units, errors) = decode_all16(&mut d, &src);
         assert!(!errors);
-        assert_eq!(units, [0x0061, 0x00E9, 0x0000, 0xDCA9]);
+        assert_eq!(units, utf16_units("a\u{e9}\u{1F4A9}"));
     }
 
     #[test]
