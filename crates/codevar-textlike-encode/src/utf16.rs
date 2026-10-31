@@ -414,6 +414,7 @@ fn checked_mul(num: usize, opt: Option<usize>) -> Option<usize> {
 mod tests {
     use super::*;
     use crate::encoding::{CoderResult, UTF_16BE, UTF_16LE};
+    use core::str::from_utf8;
 
     // -- tests inherited from the original module ------------------------------
 
@@ -1229,5 +1230,784 @@ mod tests {
         assert_eq!(result, DecoderResult::Malformed(3, 0));
         assert_eq!((read, written), (1, 0));
         assert_eq!(decoder.additional_from_state(), 1);
+    }
+
+    #[test]
+    fn pending_lead_surrogate_is_flushed_by_an_empty_final_chunk() {
+        for big_endian in [false, true] {
+            let mut decoder = Utf16Decoder::new(big_endian);
+            let mut out = [0u8; 8];
+            let src = if big_endian {
+                b"\xD8\x3D".as_slice()
+            } else {
+                b"\x3D\xD8".as_slice()
+            };
+            assert_eq!(
+                decoder.decode_to_utf8_raw(src, &mut out, false),
+                (DecoderResult::InputEmpty, 2, 0)
+            );
+            let (result, read, written) = decoder.decode_to_utf8_raw(b"", &mut out, true);
+            assert_eq!(result, DecoderResult::Malformed(2, 0), "be={big_endian}");
+            assert_eq!((read, written), (0, 0), "be={big_endian}");
+            assert_eq!(decoder.additional_from_state(), 1, "be={big_endian}");
+        }
+    }
+
+    #[test]
+    fn trailing_half_unit_flushed_by_an_empty_final_chunk() {
+        let mut decoder = Utf16Decoder::new(false);
+        let mut out = [0u8; 8];
+        assert_eq!(
+            decoder.decode_to_utf8_raw(b"A\x00\xE9", &mut out, false),
+            (DecoderResult::InputEmpty, 3, 1)
+        );
+        let (result, read, written) = decoder.decode_to_utf8_raw(b"", &mut out[1..], true);
+        assert_eq!(result, DecoderResult::Malformed(1, 0));
+        assert_eq!((read, written), (0, 0));
+        assert_eq!(decoder.additional_from_state(), 1);
+    }
+
+    // -- destination space: UTF-8 ---------------------------------------------
+
+    #[test]
+    fn utf8_destination_needs_four_free_bytes_for_any_output() {
+        // (scalar, its UTF-8 width). Four free bytes is the smallest window the
+        // bulk path accepts; three or none reports OutputFull with zero
+        // progress.
+        // NOTE: `handles.rs:1055` bails out of `convert_unaligned_utf16_to_utf8`
+        // when the destination is shorter than 4 bytes, and the decoder's only
+        // other write is gated on `check_space_astral` (also 4 bytes), so a
+        // one-byte scalar cannot reach a one-, two- or three-byte window.
+        for (text, width) in [
+            ("\u{41}", 1usize),
+            ("\u{E9}", 2),
+            ("\u{2603}", 3),
+            ("\u{1F600}", 4),
+        ] {
+            let src = le(text);
+            let mut tight = [0u8; 4];
+            let (result, read, written) = decode_le_to_utf8(&src, &mut tight, true);
+            assert_eq!(result, DecoderResult::InputEmpty, "text {text:?}");
+            assert_eq!(written, width, "text {text:?}");
+            assert_eq!(&tight[..written], text.as_bytes(), "text {text:?}");
+            assert_eq!(read, src.len(), "text {text:?}");
+
+            for window in [1usize, 2, 3] {
+                let mut small = [0u8; 4];
+                let (result, read, written) = decode_le_to_utf8(&src, &mut small[..window], true);
+                assert_eq!(result, DecoderResult::OutputFull, "text {text:?} window {window}");
+                assert_eq!((read, written), (0, 0), "text {text:?} window {window}");
+                assert_eq!(small, [0u8; 4], "text {text:?} window {window}");
+            }
+        }
+    }
+
+    #[test]
+    fn utf8_destination_exactly_one_astral_scalar_is_input_empty() {
+        // A four-byte window is exactly the right size for one astral scalar:
+        // the high surrogate is held until the trailing surrogate arrives, then
+        // both units become a single 4-byte UTF-8 sequence.
+        let mut out = [0u8; 4];
+        let (result, read, written) = decode_be_to_utf8(&pair_bytes(0xD83D, 0xDE00, true), &mut out, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (4, 4));
+        assert_eq!(&out, "\u{1F600}".as_bytes());
+    }
+
+    #[test]
+    fn utf8_destination_reports_output_full_at_a_scalar_boundary_mid_stream() {
+        // "é" (2 bytes) then 'A': a four-byte window takes the pair and the
+        // 'A' unit, then stops with only two bytes free.
+        let mut out = [0u8; 4];
+        let (result, read, written) = decode_le_to_utf8(b"\xE9\x00\x41\x00", &mut out, true);
+        assert_eq!(result, DecoderResult::OutputFull);
+        assert_eq!((read, written), (2, 2));
+        assert_eq!(&out[..2], "\u{E9}".as_bytes());
+        assert_eq!(out[2], 0);
+        assert_eq!(out[3], 0);
+    }
+
+    #[test]
+    fn utf8_destination_never_writes_past_the_reported_index() {
+        // 'A', 'B' and then U+00E9: a five-byte window fits the two ASCII
+        // bytes only, and the third scalar's two bytes have nowhere to go.
+        let mut out = [0u8; 5];
+        let (result, read, written) = decode_le_to_utf8(b"\x41\x00\x42\x00\xE9\x00", &mut out, true);
+        assert_eq!(result, DecoderResult::OutputFull);
+        assert_eq!((read, written), (4, 2));
+        assert_eq!(&out[..written], b"AB");
+        assert_eq!(&out[written..], &[0, 0, 0]);
+
+        // the same tail in a fresh window does reach the destination, and still
+        // nothing past the reported index is touched
+        let mut rest = [0u8; 5];
+        let (result, read, written) = decode_le_to_utf8(b"\xE9\x00", &mut rest, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (2, 2));
+        assert_eq!(&rest[..2], "\u{E9}".as_bytes());
+        assert_eq!(&rest[2..], &[0, 0, 0]);
+    }
+
+    #[test]
+    fn utf8_destination_drains_with_a_four_byte_refill_window() {
+        let text = "a\u{80}\u{800}\u{10000}z\u{10FFFF}";
+        let src = le(text);
+        let mut out = vec![0u8; src.len() * 2 + 8];
+        let mut decoder = Utf16Decoder::new(false);
+        let (result, read, written) = refill_to_utf8(&mut decoder, &src, 4, &mut out);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!(read, src.len());
+        assert_eq!(from_utf8(&out[..written]), Ok(text));
+    }
+
+    #[test]
+    fn utf8_destination_drains_with_a_five_byte_refill_window_big_endian() {
+        let text = "\u{4E00}\u{4E8C}\u{1F600}x\u{3B1}";
+        let src = be(text);
+        let mut out = vec![0u8; src.len() * 2 + 8];
+        let mut decoder = Utf16Decoder::new(true);
+        let (result, read, written) = refill_to_utf8(&mut decoder, &src, 5, &mut out);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!(read, src.len());
+        assert_eq!(from_utf8(&out[..written]), Ok(text));
+    }
+
+    #[test]
+    fn pending_bmp_needs_three_free_utf8_bytes_to_flush() {
+        let mut decoder = Utf16Decoder::new(false);
+        let mut out = [0u8; 8];
+        assert_eq!(
+            decoder.decode_to_utf8_raw(b"\x3D\xD8", &mut out, false),
+            (DecoderResult::InputEmpty, 2, 0)
+        );
+        assert_eq!(
+            decoder.decode_to_utf8_raw(b"\x41\x00", &mut out, false),
+            (DecoderResult::Malformed(2, 2), 2, 0)
+        );
+        // a two-byte window cannot promise the widest BMP sequence
+        let (result, read, written) = decoder.decode_to_utf8_raw(b"", &mut out[..2], true);
+        assert_eq!(result, DecoderResult::OutputFull);
+        assert_eq!((read, written), (0, 0));
+        assert_eq!(out, [0u8; 8]);
+        // three free bytes admit it and the scalar is one byte wide
+        let (result, read, written) = decoder.decode_to_utf8_raw(b"", &mut out[..3], true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (0, 1));
+        assert_eq!(out[0], b'A');
+    }
+
+    // -- destination space: UTF-16 --------------------------------------------
+
+    #[test]
+    fn utf16_destination_of_one_unit_admits_a_bmp_unit() {
+        let mut dst = [0u16; 1];
+        let (result, read, written) = decode_le_to_utf16(b"\xAC\x20", &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (2, 1));
+        assert_eq!(dst[0], 0x20AC);
+    }
+
+    #[test]
+    fn utf16_destination_of_one_unit_refuses_an_astral_pair() {
+        let mut dst = [0u16; 1];
+        let (result, read, written) = decode_le_to_utf16(b"\x3D\xD8\x00\xDE", &mut dst, true);
+        assert_eq!(result, DecoderResult::OutputFull);
+        assert_eq!((read, written), (0, 0));
+        assert_eq!(dst[0], 0);
+    }
+
+    #[test]
+    fn empty_utf16_destination_reports_output_full() {
+        let mut dst: [u16; 0] = [];
+        let (result, read, written) = decode_be_to_utf16(b"\x00\x41", &mut dst, true);
+        assert_eq!(result, DecoderResult::OutputFull);
+        assert_eq!((read, written), (0, 0));
+    }
+
+    #[test]
+    fn empty_utf8_destination_reports_output_full() {
+        let mut dst: [u8; 0] = [];
+        let (result, read, written) = decode_be_to_utf8(b"\x00\x41", &mut dst, true);
+        assert_eq!(result, DecoderResult::OutputFull);
+        assert_eq!((read, written), (0, 0));
+    }
+
+    #[test]
+    fn utf16_destination_reports_output_full_when_the_last_unit_has_no_room() {
+        // three units of input, two of destination
+        let mut dst = [0u16; 2];
+        let (result, read, written) = decode_le_to_utf16(b"\x41\x00\x42\x00\x43\x00", &mut dst, true);
+        assert_eq!(result, DecoderResult::OutputFull);
+        assert_eq!((read, written), (4, 2));
+        assert_eq!(&dst, &[0x0041, 0x0042]);
+    }
+
+    #[test]
+    fn utf16_destination_fills_from_a_split_astral_pair_without_half_writes() {
+        // NOTE: a one-unit window can never receive an astral scalar here: the
+        // pair is assembled in the slow path, which requires
+        // `check_space_astral` (two free units, `handles.rs:303`), so
+        // `write_surrogate_pair` can never split a pair across calls.
+        let mut decoder = Utf16Decoder::new(false);
+        let mut one = [0u16; 1];
+        let (result, read, written) = decoder.decode_to_utf16_raw(b"\x3D\xD8", &mut one, false);
+        assert_eq!(result, DecoderResult::OutputFull);
+        assert_eq!((read, written), (0, 0));
+        assert_eq!(one, [0]);
+        assert_eq!(decoder.additional_from_state(), 1);
+
+        // the same input into a two-unit window is buffered as a pending lead
+        let mut two = [0u16; 2];
+        let (result, read, written) = decoder.decode_to_utf16_raw(b"\x3D\xD8", &mut two, false);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (2, 0));
+        assert_eq!(decoder.additional_from_state(), 3);
+
+        // the trailing surrogate completes the pair as one two-unit write
+        let (result, read, written) = decoder.decode_to_utf16_raw(b"\x00\xDE", &mut two, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (2, 2));
+        assert_eq!(two, [0xD83D, 0xDE00]);
+    }
+
+    // -- state and buffer length hints ----------------------------------------
+
+    #[test]
+    fn additional_from_state_is_one_for_a_fresh_decoder() {
+        assert_eq!(Utf16Decoder::new(false).additional_from_state(), 1);
+        assert_eq!(Utf16Decoder::new(true).additional_from_state(), 1);
+    }
+
+    #[test]
+    fn additional_from_state_grows_with_buffered_input() {
+        let mut decoder = Utf16Decoder::new(false);
+        let mut dst = [0u16; 8];
+        assert_eq!(decoder.additional_from_state(), 1);
+        let _ = decoder.decode_to_utf16_raw(b"\x41", &mut dst, false);
+        assert_eq!(decoder.additional_from_state(), 2);
+        let _ = decoder.decode_to_utf16_raw(b"\x00", &mut dst, false);
+        assert_eq!(decoder.additional_from_state(), 1);
+        let _ = decoder.decode_to_utf16_raw(b"\x3D\xD8", &mut dst, false);
+        assert_eq!(decoder.additional_from_state(), 3);
+    }
+
+    #[test]
+    fn additional_from_state_returns_to_one_after_a_malformed_flush() {
+        let mut decoder = Utf16Decoder::new(false);
+        let mut dst = [0u16; 8];
+        let _ = decoder.decode_to_utf16_raw(b"\x3D\xD8", &mut dst, false);
+        assert_eq!(decoder.additional_from_state(), 3);
+        let (result, _read, _written) = decoder.decode_to_utf16_raw(b"", &mut dst, true);
+        assert_eq!(result, DecoderResult::Malformed(2, 0));
+        assert_eq!(decoder.additional_from_state(), 1);
+    }
+
+    #[test]
+    fn max_utf16_buffer_length_allows_for_the_half_read_unit() {
+        let decoder = Utf16Decoder::new(false);
+        assert_eq!(decoder.max_utf16_buffer_length(0), Some(1));
+        assert_eq!(decoder.max_utf16_buffer_length(1), Some(2));
+        assert_eq!(decoder.max_utf16_buffer_length(2), Some(2));
+        assert_eq!(decoder.max_utf16_buffer_length(3), Some(3));
+        assert_eq!(decoder.max_utf16_buffer_length(4), Some(3));
+        assert_eq!(decoder.max_utf16_buffer_length(80), Some(41));
+    }
+
+    #[test]
+    fn max_utf8_buffer_length_never_underestimates_the_output() {
+        let decoder = Utf16Decoder::new(false);
+        for len in [0usize, 1, 2, 4, 6, 80] {
+            // every input byte pair can expand to three UTF-8 bytes at worst
+            // plus the one-byte slack, and the decoder only ever writes BMP
+            // sequences of at most three bytes through these helpers
+            assert!(decoder.max_utf8_buffer_length(len).unwrap_or(0) > 3 * (len / 2));
+        }
+        assert_eq!(decoder.max_utf8_buffer_length(0), Some(1));
+        assert_eq!(decoder.max_utf8_buffer_length(2), Some(4));
+        assert_eq!(decoder.max_utf8_buffer_length(4), Some(7));
+    }
+
+    #[test]
+    fn max_utf8_buffer_length_is_the_same_with_and_without_replacement() {
+        let decoder = Utf16Decoder::new(true);
+        for len in [0usize, 1, 2, 5, 64] {
+            assert_eq!(
+                decoder.max_utf8_buffer_length(len),
+                decoder.max_utf8_buffer_length_without_replacement(len),
+                "len {len}"
+            );
+        }
+    }
+
+    #[test]
+    fn buffer_length_hints_grow_with_pending_state() {
+        let mut decoder = Utf16Decoder::new(false);
+        let mut dst = [0u16; 8];
+        let _ = decoder.decode_to_utf16_raw(b"\x41", &mut dst, false);
+        assert_eq!(decoder.additional_from_state(), 2);
+        assert_eq!(decoder.max_utf16_buffer_length(0), Some(2));
+        assert_eq!(decoder.max_utf8_buffer_length(0), Some(4));
+        let _ = decoder.decode_to_utf16_raw(b"\x00\x3D\xD8", &mut dst, false);
+        assert_eq!(decoder.additional_from_state(), 3);
+        assert_eq!(decoder.max_utf16_buffer_length(1), Some(3));
+        assert_eq!(decoder.max_utf8_buffer_length(1), Some(7));
+    }
+
+    #[test]
+    fn max_utf16_buffer_length_overflows_to_none() {
+        let decoder = Utf16Decoder::new(false);
+        assert_eq!(decoder.max_utf16_buffer_length(usize::MAX), None);
+        assert!(
+            decoder
+                .max_utf16_buffer_length(usize::MAX - 1)
+                .is_some()
+        );
+        assert_eq!(
+            decoder.max_utf16_buffer_length(usize::MAX - 1),
+            Some(usize::MAX / 2 + 1)
+        );
+    }
+
+    #[test]
+    fn max_utf8_buffer_length_overflows_to_none() {
+        let decoder = Utf16Decoder::new(false);
+        assert_eq!(decoder.max_utf8_buffer_length(usize::MAX), None);
+        assert_eq!(
+            decoder.max_utf8_buffer_length_without_replacement(usize::MAX),
+            None
+        );
+        assert_eq!(decoder.max_utf8_buffer_length(usize::MAX - 1), None);
+        assert_eq!(
+            decoder.max_utf8_buffer_length_without_replacement(usize::MAX - 1),
+            None
+        );
+    }
+
+    #[test]
+    fn checked_helpers_propagate_none_and_overflow() {
+        assert_eq!(checked_add(1, Some(1)), Some(2));
+        assert_eq!(checked_add(1, None), None);
+        assert_eq!(checked_add(1, Some(usize::MAX)), None);
+        assert_eq!(checked_div(Some(4), 2), Some(2));
+        assert_eq!(checked_div(Some(5), 2), Some(2));
+        assert_eq!(checked_div(None, 2), None);
+        assert_eq!(checked_mul(3, Some(4)), Some(12));
+        assert_eq!(checked_mul(3, None), None);
+        assert_eq!(checked_mul(3, Some(usize::MAX)), None);
+    }
+
+    // -- encoder --------------------------------------------------------------
+
+    #[test]
+    fn encoder_writes_the_declared_order_not_the_host_order() {
+        let src = units("A\u{2603}");
+        let mut le_out = [0u8; 4];
+        let (result, read, written) = Utf16Encoder::new(false).encode_from_utf16_raw(&src, &mut le_out, true);
+        assert_eq!(result, EncoderResult::InputEmpty);
+        assert_eq!((read, written), (2, 4));
+        assert_eq!(le_out, [0x41, 0x00, 0x03, 0x26]);
+
+        let mut be_out = [0u8; 4];
+        let (result, read, written) = Utf16Encoder::new(true).encode_from_utf16_raw(&src, &mut be_out, true);
+        assert_eq!(result, EncoderResult::InputEmpty);
+        assert_eq!((read, written), (2, 4));
+        assert_eq!(be_out, [0x00, 0x41, 0x26, 0x03]);
+    }
+
+    #[test]
+    fn encoder_from_utf8_expands_an_astral_scalar_to_a_pair() {
+        let mut le_out = [0u8; 4];
+        let (result, read, written) =
+            Utf16Encoder::new(false).encode_from_utf8_raw("\u{1F600}", &mut le_out, true);
+        assert_eq!(result, EncoderResult::InputEmpty);
+        assert_eq!((read, written), (4, 4));
+        assert_eq!(le_out, [0x3D, 0xD8, 0x00, 0xDE]);
+
+        let mut be_out = [0u8; 4];
+        let (result, read, written) =
+            Utf16Encoder::new(true).encode_from_utf8_raw("\u{1F600}", &mut be_out, true);
+        assert_eq!(result, EncoderResult::InputEmpty);
+        assert_eq!((read, written), (4, 4));
+        assert_eq!(be_out, [0xD8, 0x3D, 0xDE, 0x00]);
+    }
+
+    #[test]
+    fn encoder_from_utf8_mixes_widths_in_one_destination() {
+        let text = "a\u{E9}\u{2603}\u{1F600}";
+        let mut out = [0u8; 12];
+        let (result, read, written) = Utf16Encoder::new(true).encode_from_utf8_raw(text, &mut out, true);
+        assert_eq!(result, EncoderResult::InputEmpty);
+        // five code units (the astral scalar counts twice) and nothing past them
+        assert_eq!((read, written), (10, 10));
+        assert_eq!(
+            &out[..10],
+            [0x00, 0x61, 0x00, 0xE9, 0x26, 0x03, 0xD8, 0x3D, 0xDE, 0x00]
+        );
+        assert_eq!(&out[10..], &[0, 0]);
+    }
+
+    #[test]
+    fn encoder_from_utf8_reports_read_at_the_char_that_did_not_fit() {
+        let mut out = [0u8; 3];
+        let (result, read, written) =
+            Utf16Encoder::new(false).encode_from_utf8_raw("a\u{1F600}", &mut out, true);
+        assert_eq!(result, EncoderResult::OutputFull);
+        assert_eq!((read, written), (1, 2));
+        assert_eq!(&out[..written], b"a\x00");
+
+        let mut out = [0u8; 3];
+        let (result, read, written) =
+            Utf16Encoder::new(false).encode_from_utf8_raw("\u{1F600}", &mut out, true);
+        assert_eq!(result, EncoderResult::OutputFull);
+        assert_eq!((read, written), (0, 0));
+        assert_eq!(out, [0u8; 3]);
+    }
+
+    #[test]
+    fn encoder_from_utf8_stops_when_only_the_pair_high_unit_fits() {
+        // four free bytes admit the astral scalar, three do not
+        let mut out = [0u8; 4];
+        let (result, read, written) =
+            Utf16Encoder::new(false).encode_from_utf8_raw("\u{1F600}", &mut out, true);
+        assert_eq!(result, EncoderResult::InputEmpty);
+        assert_eq!((read, written), (4, 4));
+    }
+
+    #[test]
+    fn encoder_from_utf16_reports_output_full_on_an_odd_sized_destination() {
+        let src = units("AB");
+        let mut out = [0u8; 3];
+        let (result, read, written) = Utf16Encoder::new(false).encode_from_utf16_raw(&src, &mut out, true);
+        assert_eq!(result, EncoderResult::OutputFull);
+        assert_eq!((read, written), (1, 2));
+        assert_eq!(&out[..2], [0x41, 0x00]);
+        assert_eq!(out[2], 0);
+    }
+
+    #[test]
+    fn encoder_from_utf16_empty_input_and_empty_destination() {
+        let mut out = [0u8; 4];
+        let (result, read, written) = Utf16Encoder::new(true).encode_from_utf16_raw(&[], &mut out, true);
+        assert_eq!(result, EncoderResult::InputEmpty);
+        assert_eq!((read, written), (0, 0));
+
+        let mut empty: [u8; 0] = [];
+        let (result, read, written) =
+            Utf16Encoder::new(true).encode_from_utf16_raw(&[0x0041], &mut empty, true);
+        assert_eq!(result, EncoderResult::OutputFull);
+        assert_eq!((read, written), (0, 0));
+    }
+
+    #[test]
+    fn encoder_from_utf8_empty_input_is_input_empty() {
+        let mut out = [0u8; 4];
+        let (result, read, written) = Utf16Encoder::new(false).encode_from_utf8_raw("", &mut out, true);
+        assert_eq!(result, EncoderResult::InputEmpty);
+        assert_eq!((read, written), (0, 0));
+        assert_eq!(out, [0u8; 4]);
+    }
+
+    #[test]
+    fn encoder_ignores_the_last_flag() {
+        // the UTF-16 encoders hold no state, so `last` changes nothing
+        let text = "a\u{1F600}";
+        let mut out_a = [0u8; 8];
+        let mut out_b = [0u8; 8];
+        let (result_a, read_a, written_a) =
+            Utf16Encoder::new(false).encode_from_utf8_raw(text, &mut out_a, true);
+        let (result_b, read_b, written_b) =
+            Utf16Encoder::new(false).encode_from_utf8_raw(text, &mut out_b, false);
+        assert_eq!(result_a, result_b);
+        assert_eq!((read_a, written_a), (read_b, written_b));
+        assert_eq!(out_a, out_b);
+    }
+
+    #[test]
+    fn encoder_from_utf16_emits_lone_surrogates_verbatim() {
+        // NOTE: `utf16.rs:331` never returns `EncoderResult::Unmappable`, so a
+        // lone surrogate is written as its own code unit. Upstream's `Encoder`
+        // wrapper would emit a numeric character reference for it instead.
+        let src = [0xD83Du16, 0xDE00u16, 0x0041u16];
+        let mut out = [0u8; 6];
+        let (result, read, written) = Utf16Encoder::new(true).encode_from_utf16_raw(&src, &mut out, true);
+        assert_eq!(result, EncoderResult::InputEmpty);
+        assert_eq!((read, written), (3, 6));
+        assert_eq!(out, [0xD8, 0x3D, 0xDE, 0x00, 0x00, 0x41]);
+    }
+
+    #[test]
+    fn encoder_from_utf16_fills_an_exactly_sized_destination() {
+        let src = units("h\u{E9}llo");
+        let mut out = vec![0u8; src.len() * 2];
+        let (result, read, written) = Utf16Encoder::new(false).encode_from_utf16_raw(&src, &mut out, true);
+        assert_eq!(result, EncoderResult::InputEmpty);
+        assert_eq!((read, written), (src.len(), out.len()));
+        assert_eq!(out, le("h\u{E9}llo"));
+    }
+
+    #[test]
+    fn encoder_from_utf16_refills_a_two_byte_window() {
+        let src = units("a\u{2603}\u{1F600}");
+        let mut out = vec![0u8; src.len() * 2];
+        let mut encoder = Utf16Encoder::new(true);
+        let (mut read, mut written) = (0usize, 0usize);
+        while read < src.len() {
+            let (result, r, w) =
+                encoder.encode_from_utf16_raw(&src[read..], &mut out[written..written + 2], true);
+            assert!(r > 0 || w > 0, "stalled at unit {read}");
+            assert_eq!(
+                result,
+                if read + r == src.len() {
+                    EncoderResult::InputEmpty
+                } else {
+                    EncoderResult::OutputFull
+                }
+            );
+            read += r;
+            written += w;
+        }
+        assert_eq!(written, out.len());
+        assert_eq!(out, be("a☃😀"));
+    }
+
+    #[test]
+    fn encoder_max_buffer_length_from_utf16_is_exact_or_none() {
+        let encoder = Utf16Encoder::new(false);
+        assert_eq!(
+            encoder.max_buffer_length_from_utf16_without_replacement(0),
+            Some(0)
+        );
+        assert_eq!(
+            encoder.max_buffer_length_from_utf16_without_replacement(5),
+            Some(10)
+        );
+        assert_eq!(
+            encoder.max_buffer_length_from_utf16_without_replacement(usize::MAX),
+            None
+        );
+        assert_eq!(
+            encoder.max_buffer_length_from_utf16_without_replacement(usize::MAX / 2 + 1),
+            None
+        );
+    }
+
+    #[test]
+    fn encoder_max_buffer_length_from_utf8_is_exact_or_none() {
+        let encoder = Utf16Encoder::new(true);
+        assert_eq!(
+            encoder.max_buffer_length_from_utf8_without_replacement(0),
+            Some(0)
+        );
+        assert_eq!(
+            encoder.max_buffer_length_from_utf8_without_replacement(5),
+            Some(10)
+        );
+        assert_eq!(
+            encoder.max_buffer_length_from_utf8_without_replacement(usize::MAX),
+            None
+        );
+        assert_eq!(
+            encoder.max_buffer_length_from_utf8_without_replacement(usize::MAX / 2 + 1),
+            None
+        );
+    }
+
+    #[test]
+    fn encoder_max_buffer_length_from_utf8_covers_every_scalar_band() {
+        let encoder = Utf16Encoder::new(false);
+        for text in [
+            "a",
+            "\u{7F}",
+            "\u{80}",
+            "\u{7FF}",
+            "\u{800}",
+            "\u{FFFF}",
+            "\u{10000}",
+            "\u{10FFFF}",
+            "a\u{10FFFF}",
+        ] {
+            // NOTE: the hint is two bytes per UTF-8 byte, while the encoder
+            // writes two bytes per *code unit*; the two agree because every
+            // band up to U+FFFF needs at most three UTF-8 bytes for one unit
+            // and an astral scalar needs four for two units.
+            let bound = encoder.max_buffer_length_from_utf8_without_replacement(text.len());
+            assert_eq!(bound, Some(text.len() * 2), "text {text:?}");
+            let mut out = vec![0u8; bound.unwrap_or(0)];
+            let (result, read, written) = encoder
+                .clone()
+                .encode_from_utf8_raw(text, &mut out, true);
+            assert_eq!(result, EncoderResult::InputEmpty, "text {text:?}");
+            assert_eq!(
+                (read, written),
+                (text.len(), units(text).len() * 2),
+                "text {text:?}"
+            );
+            assert!(written <= out.len(), "text {text:?}");
+        }
+    }
+
+    #[test]
+    fn encoder_emits_no_byte_order_mark_of_its_own() {
+        // NOTE: neither the raw encoder nor the `Encoder` wrapper prepends a
+        // BOM, so a stream produced here starts with the first scalar's units.
+        let mut out = [0u8; 2];
+        let (_result, _read, written) = Utf16Encoder::new(true).encode_from_utf8_raw("a", &mut out, true);
+        assert_eq!(written, 2);
+        assert_eq!(out, [0x00, 0x61]);
+    }
+
+    #[test]
+    fn encoding_to_utf16_le_wrapper_round_trips_through_the_raw_decoder() {
+        let mut out = [0u8; 32];
+        let (result, read, written, had_unmappables) =
+            UTF_16LE
+                .new_encoder()
+                .encode_from_utf8("a\u{1F600}", &mut out, true);
+        assert_eq!(result, CoderResult::InputEmpty);
+        assert_eq!((read, written), (5, 6));
+        assert!(!had_unmappables);
+        let mut back = [0u8; 32];
+        let (result, reread, rewrote) = decode_le_to_utf8(&out[..written], &mut back, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((reread, rewrote), (written, 5));
+        assert_eq!(&back[..rewrote], "a\u{1F600}".as_bytes());
+    }
+
+    #[test]
+    fn encoding_to_utf16_be_wrapper_holds_surrogates_and_decodes_back() {
+        // NOTE: `encoding.rs:366` only lets `can_encode_everything()` encodings
+        // use the whole destination, and UTF-16 is not one of them, so the
+        // encoder wrapper keeps `NCR_EXTRA` (10) bytes in reserve and refuses to
+        // start at all when the destination is smaller, even though nothing is
+        // unmappable here.
+        let mut tiny = [0u8; 8];
+        let (result, read, written, had_unmappables) =
+            UTF_16BE
+                .new_encoder()
+                .encode_from_utf8("\u{1F600}", &mut tiny, true);
+        assert_eq!(result, CoderResult::OutputFull);
+        assert_eq!((read, written), (0, 0));
+        assert!(!had_unmappables);
+        assert_eq!(tiny, [0u8; 8]);
+
+        let mut out = [0u8; 16];
+        let (result, read, written, had_unmappables) =
+            UTF_16BE
+                .new_encoder()
+                .encode_from_utf8("\u{1F600}", &mut out, true);
+        assert_eq!(result, CoderResult::InputEmpty);
+        assert_eq!((read, written), (4, 4));
+        assert!(!had_unmappables);
+        assert_eq!(&out[..4], [0xD8, 0x3D, 0xDE, 0x00]);
+
+        let mut back = [0u8; 8];
+        let (result, reread, rewrote) = decode_be_to_utf8(&out[..written], &mut back, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((reread, rewrote), (4, 4));
+        assert_eq!(&back[..rewrote], "\u{1F600}".as_bytes());
+    }
+
+    // -- round trips ----------------------------------------------------------
+
+    #[test]
+    fn round_trip_ascii_through_the_matching_endianness() {
+        for big_endian in [false, true] {
+            let (result, out) = encode_then_decode("Hello, ASCII world!", big_endian, big_endian);
+            assert_eq!(result, DecoderResult::InputEmpty, "be={big_endian}");
+            assert_eq!(from_utf8(&out), Ok("Hello, ASCII world!"), "be={big_endian}");
+        }
+    }
+
+    #[test]
+    fn round_trip_latin_one_range() {
+        for big_endian in [false, true] {
+            let text = "\u{A0}\u{A9}\u{E9}\u{FF}\u{153}";
+            let (result, out) = encode_then_decode(text, big_endian, big_endian);
+            assert_eq!(result, DecoderResult::InputEmpty, "be={big_endian}");
+            assert_eq!(from_utf8(&out), Ok(text), "be={big_endian}");
+        }
+    }
+
+    #[test]
+    fn round_trip_greek_and_cyrillic() {
+        for big_endian in [false, true] {
+            let text = "\u{03B1}\u{03C9}\u{0416}\u{044F}";
+            let (result, out) = encode_then_decode(text, big_endian, big_endian);
+            assert_eq!(result, DecoderResult::InputEmpty, "be={big_endian}");
+            assert_eq!(from_utf8(&out), Ok(text), "be={big_endian}");
+        }
+    }
+
+    #[test]
+    fn round_trip_han_and_fullwidth() {
+        for big_endian in [false, true] {
+            let text = "\u{4E00}\u{4E8C}\u{6F22}\u{FFFD}";
+            let (result, out) = encode_then_decode(text, big_endian, big_endian);
+            assert_eq!(result, DecoderResult::InputEmpty, "be={big_endian}");
+            assert_eq!(from_utf8(&out), Ok(text), "be={big_endian}");
+        }
+    }
+
+    #[test]
+    fn round_trip_astral_emoji() {
+        for big_endian in [false, true] {
+            let text = "\u{1F600}\u{1F4A9}\u{10FFFF}\u{10000}";
+            let (result, out) = encode_then_decode(text, big_endian, big_endian);
+            assert_eq!(result, DecoderResult::InputEmpty, "be={big_endian}");
+            assert_eq!(from_utf8(&out), Ok(text), "be={big_endian}");
+        }
+    }
+
+    #[test]
+    fn round_trip_mixed_bands_matches_std_encoding() {
+        for big_endian in [false, true] {
+            let text = "a\u{A9}\u{4E00}\u{1F600}z";
+            let (result, out) = encode_then_decode(text, big_endian, big_endian);
+            assert_eq!(result, DecoderResult::InputEmpty, "be={big_endian}");
+            assert_eq!(from_utf8(&out), Ok(text), "be={big_endian}");
+            assert_eq!(out, text.as_bytes());
+        }
+    }
+
+    #[test]
+    fn opposite_endian_pair_never_returns_the_input_text() {
+        // NOTE: nothing here sniffs a BOM, so a stream written in one order and
+        // read in the other yields byte-swapped BMP scalars rather than an
+        // error, except where a swapped unit lands in the surrogate range.
+        let (result, out) = encode_then_decode("Hi", false, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!(from_utf8(&out), Ok("\u{4800}\u{6900}"));
+
+        let (result, out) = encode_then_decode("Hi", true, false);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!(from_utf8(&out), Ok("\u{4800}\u{6900}"));
+    }
+
+    #[test]
+    fn opposite_endian_pair_of_a_c1_control_unit_is_malformed() {
+        let (result, out) = encode_then_decode("\u{00D8}", false, true);
+        assert_eq!(result, DecoderResult::Malformed(2, 0));
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn encoder_and_decoder_agree_on_the_bom_unit() {
+        for big_endian in [false, true] {
+            let (result, out) = encode_then_decode("\u{FEFF}", big_endian, big_endian);
+            assert_eq!(result, DecoderResult::InputEmpty, "be={big_endian}");
+            assert_eq!(from_utf8(&out), Ok("\u{FEFF}"), "be={big_endian}");
+        }
+    }
+
+    #[test]
+    fn round_trip_survives_a_narrow_destination_window() {
+        let text = "x\u{E9}\u{2603}\u{1F600}\u{4E00}";
+        let src = be(text);
+        let mut out = vec![0u8; src.len() * 2 + 8];
+        let mut decoder = Utf16Decoder::new(true);
+        let (result, read, written) = refill_to_utf8(&mut decoder, &src, 4, &mut out);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (src.len(), text.len()));
+        assert_eq!(from_utf8(&out[..written]), Ok(text));
     }
 }
