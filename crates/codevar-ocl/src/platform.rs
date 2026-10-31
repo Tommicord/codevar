@@ -256,7 +256,7 @@ impl Device {
         query::query_string(&mut call, "clGetDeviceInfo")
     }
 
-    fn info_u32(&self, param: u32) -> Result<u32> {
+    pub(crate) fn info_u32(&self, param: u32) -> Result<u32> {
         let mut call = |size: usize, value: *mut core::ffi::c_void, size_ret: *mut usize| {
             // SAFETY: see `info_string`.
             unsafe { (self.api.get_device_info)(self.raw, param, size, value, size_ret) }

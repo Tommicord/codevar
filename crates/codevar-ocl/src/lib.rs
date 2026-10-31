@@ -34,6 +34,7 @@ extern crate alloc;
 mod api;
 mod bare;
 mod buffer;
+mod capability;
 mod context;
 mod dispatch;
 mod error;
@@ -50,6 +51,7 @@ mod runtime;
 pub mod sys;
 
 pub use buffer::Buffer;
+pub use capability::Luid;
 pub use context::Context;
 pub use error::{Error, Result};
 pub use event::{CommandState, Event, ProfilingTimestamp};

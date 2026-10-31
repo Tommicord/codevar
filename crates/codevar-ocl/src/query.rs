@@ -24,6 +24,7 @@
 
 use alloc::string::String;
 use alloc::vec;
+use alloc::vec::Vec;
 use bsize::BSize;
 use core::ffi::c_void;
 use core::mem::size_of;
@@ -110,6 +111,60 @@ pub(crate) fn query_pod<T: Copy + Default>(call: &mut QueryCall<'_>, context: &'
     let mut value = T::default();
     status(call(reported, (&mut value as *mut T).cast(), null_mut()), context)?;
     Ok(value)
+}
+
+/// Queries a fixed-size value whose size the driver must report exactly
+/// (a device UUID, a Windows LUID).
+///
+/// Unlike [`query_pod`], a shorter report is an error: half a device
+/// identity would compare equal to a different device, and a longer one
+/// would silently truncate it.
+///
+/// # Errors
+///
+/// Returns [`Error::Status`] when the driver rejects a call or reports a
+/// size other than `size_of::<T>()`.
+pub(crate) fn query_fixed<T: Copy + Default>(call: &mut QueryCall<'_>, context: &'static str) -> Result<T> {
+    let mut reported = 0usize;
+    status(call(0, null_mut(), &mut reported), context)?;
+    if reported != size_of::<T>() {
+        return Err(Error::Status {
+            code: crate::sys::INVALID_VALUE,
+            context,
+        });
+    }
+    let mut value = T::default();
+    status(call(reported, (&mut value as *mut T).cast(), null_mut()), context)?;
+    Ok(value)
+}
+
+/// Queries a zero-terminated list of `u32` tokens — the external handle
+/// type reports of `cl_khr_external_memory` and `cl_khr_semaphore`.
+///
+/// The terminating zero is stripped from the result. The reported size is
+/// bounded by [`MAX_QUERY_BYTES`] and must be a whole number of tokens, so
+/// a corrupt driver cannot trigger an oversized allocation or leave a
+/// partial token in the list.
+///
+/// # Errors
+///
+/// Returns [`Error::Status`] when the driver rejects a call and
+/// [`Error::InvalidArgument`] when the reported size is implausible.
+pub(crate) fn query_u32_list(call: &mut QueryCall<'_>, context: &'static str) -> Result<Vec<u32>> {
+    let mut size = 0usize;
+    status(call(0, null_mut(), &mut size), context)?;
+    if size == 0 {
+        return Ok(Vec::new());
+    }
+    if size > MAX_QUERY_BYTES || !size.is_multiple_of(size_of::<u32>()) {
+        return Err(Error::InvalidArgument { what: context });
+    }
+    let mut values = vec![0u32; size / size_of::<u32>()];
+    status(call(size, values.as_mut_ptr().cast(), null_mut()), context)?;
+    while values.last() == Some(&0) {
+        values.pop();
+    }
+    Ok(values)
 }
 
 /// Queries a `u32` info value (e.g. `CL_DEVICE_MAX_COMPUTE_UNITS`).
@@ -276,5 +331,85 @@ mod tests {
             crate::sys::SUCCESS
         };
         assert_eq!(query_u32(&mut call, "clGetDeviceInfo").ok(), Some(7));
+    }
+
+    /// A fixed-size identity (UUID, LUID) must arrive whole.
+    #[test]
+    fn query_fixed_reads_an_exact_sized_value() {
+        let value = [1u8, 2, 3, 4];
+        let mut call = |size: usize, out: *mut c_void, size_ret: *mut usize| {
+            if out.is_null() {
+                // SAFETY: the caller passes a valid pointer to a usize.
+                unsafe { size_ret.write(value.len()) };
+                return crate::sys::SUCCESS;
+            }
+            if size < value.len() {
+                return crate::sys::INVALID_VALUE;
+            }
+            // SAFETY: `out` is the caller's 4-byte result slot.
+            unsafe { core::ptr::copy_nonoverlapping(value.as_ptr(), out.cast::<u8>(), value.len()) };
+            crate::sys::SUCCESS
+        };
+        assert_eq!(
+            query_fixed::<[u8; 4]>(&mut call, "clGetDeviceInfo").ok(),
+            Some(value)
+        );
+    }
+
+    /// A driver reporting fewer bytes than the type needs must be rejected
+    /// rather than answered with a partly uninitialized identity.
+    #[test]
+    fn query_fixed_rejects_a_truncated_report() {
+        let mut call = |size: usize, out: *mut c_void, size_ret: *mut usize| {
+            let _ = (size, out);
+            if !size_ret.is_null() {
+                // SAFETY: the caller passes a valid pointer to a usize.
+                unsafe { size_ret.write(8) };
+            }
+            crate::sys::SUCCESS
+        };
+        assert!(matches!(
+            query_fixed::<[u8; 16]>(&mut call, "clGetDeviceInfo"),
+            Err(Error::Status { code: -30, .. })
+        ));
+    }
+
+    /// Handle-type lists are zero-terminated; the terminator is not a token.
+    #[test]
+    fn query_u32_list_strips_the_terminator() {
+        let value = [0x2060u32, 0x2067, 0];
+        let mut call = |size: usize, out: *mut c_void, size_ret: *mut usize| {
+            let _ = size;
+            if out.is_null() {
+                // SAFETY: the caller passes a valid pointer to a usize.
+                unsafe { size_ret.write(value.len() * size_of::<u32>()) };
+                return crate::sys::SUCCESS;
+            }
+            // SAFETY: `out` is the caller's buffer of three `u32` slots.
+            unsafe { core::ptr::copy_nonoverlapping(value.as_ptr(), out.cast::<u32>(), value.len()) };
+            crate::sys::SUCCESS
+        };
+        assert_eq!(
+            query_u32_list(&mut call, "clGetDeviceInfo").ok(),
+            Some(Vec::from([0x2060, 0x2067]))
+        );
+    }
+
+    /// A reported size that is not a whole number of tokens must be
+    /// rejected instead of read as a partial token.
+    #[test]
+    fn query_u32_list_rejects_a_misaligned_report() {
+        let mut call = |size: usize, out: *mut c_void, size_ret: *mut usize| {
+            let _ = (size, out);
+            if !size_ret.is_null() {
+                // SAFETY: the caller passes a valid pointer to a usize.
+                unsafe { size_ret.write(6) };
+            }
+            crate::sys::SUCCESS
+        };
+        assert!(matches!(
+            query_u32_list(&mut call, "clGetDeviceInfo"),
+            Err(Error::InvalidArgument { .. })
+        ));
     }
 }
