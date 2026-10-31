@@ -57,9 +57,10 @@
 //! The crate is being built bottom-up. The lane model, the host boundary, the
 //! fiber arena, the hook model, the element vocabulary, keyed reconciliation,
 //! the begin/complete work pass, the commit phases and the root that drives
-//! them are in place. The public surface is [`lane`], [`element`], [`Host`],
-//! [`Key`], [`Props`], [`RenderCtx`], [`State`], [`Dispatch`], [`Transition`],
-//! [`Cleanup`], [`Subscribe`], [`OnStoreChange`], [`Wakeable`] and [`Root`].
+//! them are in place. The public surface is [`lane`], [`element`], [`Context`],
+//! [`Element`], [`Host`], [`Key`], [`Props`], [`RenderCtx`], [`State`],
+//! [`Dispatch`], [`Transition`], [`Cleanup`], [`Subscribe`], [`OnStoreChange`],
+//! [`Wakeable`] and [`Root`].
 //!
 //! The root renders every pending lane before it returns by default, and a
 //! render whose lanes are speculative can be time sliced: [`Root::flush_slice`]
@@ -90,6 +91,13 @@
 //! boundary above it reaches the shell and parks its lanes, so the host keeps
 //! showing the committed tree until an update unblocks them.
 //!
+//! A [`Context`] carries a value to every component below it without the layers
+//! in between passing it along. [`Element::provider`] publishes the value for
+//! the subtree it wraps and [`RenderCtx::use_context`] reads it while a
+//! component renders. A provider that publishes a value it was not rendered
+//! with marks every consumer below it, so a consumer renders again even when
+//! the elements around it did not change.
+//!
 //! # References
 //!
 //! The invariants implemented here follow the React reconciler
@@ -117,7 +125,7 @@ mod root;
 mod wakeable;
 mod work;
 
-pub use element::Element;
+pub use element::{Context, Element};
 pub use hooks::{Cleanup, Dispatch, OnStoreChange, RenderCtx, State, Subscribe, Transition};
 pub use host::{Host, Key, Props, props, props_ref};
 pub use lane::{LANE_COUNT, Lanes, SchedulerPriority};

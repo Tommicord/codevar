@@ -35,7 +35,7 @@
 //!
 //! Mutation is a post-order walk: a child is placed before its parent is.
 //! That is what makes a reorder correct. A node is only "stable" — usable as
-//! an anchor — once it is either already in place or never moves; with the
+//! an anchor, once it is either already in place or never moves; with the
 //! walk running children first, the anchor search simply skips every sibling
 //! that is itself waiting to be placed and appends when none is left. Placing
 //! in pre-order would compute anchors from nodes that are still going to move.
@@ -56,8 +56,8 @@
 //!
 //! Each phase clears the flags it applied ([`Flags::MUTATION_MASK`],
 //! [`Flags::LAYOUT_MASK`], [`Flags::PASSIVE_MASK`]). The finished tree can
-//! share fibers with the committed tree — a subtree with no work is not cloned
-//! — and the commit walks it through those shared fibers, so a flag that
+//! share fibers with the committed tree, a subtree with no work is not cloned and
+//! the commit walks it through those shared fibers, so a flag that
 //! outlived its phase would make a later commit repeat work the host already
 //! saw. Clearing is also what makes "does this tree still have passive work?"
 //! answer no once the passive phase ran.
