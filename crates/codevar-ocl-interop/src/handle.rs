@@ -96,6 +96,16 @@ impl MemoryKind {
         }
     }
 
+    /// Whether a single file descriptor names this kind, which is what the
+    /// `*_fd` entry points of both APIs exchange.
+    ///
+    /// The two Win32 kinds are not: they carry a `HANDLE`, and the entry
+    /// point that would move one is a different extension.
+    #[must_use]
+    pub const fn is_descriptor(self) -> bool {
+        matches!(self, Self::DmaBuf | Self::OpaqueFd)
+    }
+
     /// Whether `device` can import a memory handle of this kind
     /// (`CL_DEVICE_EXTERNAL_MEMORY_IMPORT_HANDLE_TYPES_KHR`).
     ///
@@ -224,6 +234,16 @@ impl SemaphoreKind {
         }
     }
 
+    /// Whether a single file descriptor names this kind, exactly as
+    /// [`MemoryKind::is_descriptor`] does for memory.
+    ///
+    /// `SYNC_FD` is a descriptor too — a `sync_file` — even though the
+    /// object it names is a one-shot signal rather than memory.
+    #[must_use]
+    pub const fn is_descriptor(self) -> bool {
+        matches!(self, Self::OpaqueFd | Self::SyncFd)
+    }
+
     /// Whether `device` can import a semaphore handle of this kind
     /// (`CL_DEVICE_SEMAPHORE_IMPORT_HANDLE_TYPES_KHR`).
     ///
@@ -348,6 +368,28 @@ mod tests {
         );
         assert_eq!(MemoryKind::from_cl_token(0xFFFF), None);
         assert_eq!(SemaphoreKind::from_cl_token(0xFFFF), None);
+    }
+
+    /// Only the descriptor kinds can travel through the `*_fd` entry points
+    /// of either API, and the table is what says which they are.
+    #[test]
+    fn the_descriptor_kinds_are_the_ones_a_file_descriptor_names() {
+        assert!(MemoryKind::DmaBuf.is_descriptor());
+        assert!(MemoryKind::OpaqueFd.is_descriptor());
+        assert!(!MemoryKind::OpaqueWin32.is_descriptor());
+        assert!(!MemoryKind::OpaqueWin32Kmt.is_descriptor());
+        assert!(SemaphoreKind::SyncFd.is_descriptor());
+        assert!(!SemaphoreKind::D3D12Fence.is_descriptor());
+        // A handle reports the kind it wraps, so both lists agree with the
+        // values that actually cross.
+        for handle in [MemoryHandle::DmaBuf(3), MemoryHandle::OpaqueFd(3)] {
+            assert!(handle.kind().is_descriptor());
+        }
+        assert!(
+            !SemaphoreHandle::OpaqueWin32(3)
+                .kind()
+                .is_descriptor()
+        );
     }
 
     /// A descriptor is a signed `int` in both APIs and a `HANDLE` is a

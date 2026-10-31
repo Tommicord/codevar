@@ -47,7 +47,7 @@ use ash::vk;
 use codevar_ocl::Luid;
 
 use crate::error::{Error, Result};
-use crate::handle::{MemoryKind, SemaphoreHandle, SemaphoreKind};
+use crate::handle::{MemoryHandle, MemoryKind, SemaphoreHandle, SemaphoreKind};
 use crate::pair::Identity;
 
 /// One device entry point, identified by the name it is resolved under.
@@ -175,20 +175,27 @@ impl<'a> Vulkan<'a> {
         slot.ok_or(Error::Unsupported { what: T::EXTENSION })
     }
 
-    /// Exports `memory` as a descriptor of `kind` (`vkGetMemoryFdKHR`), the
-    /// value an OpenCL buffer is then created from.
+    /// Exports `memory` as `kind` (`vkGetMemoryFdKHR`), the handle an
+    /// OpenCL buffer is then created from.
     ///
     /// The driver makes a fresh descriptor per call, so the caller owns it:
-    /// hand it to [`MemoryHandle`](crate::MemoryHandle) for the import and
-    /// close it once the other API has taken its own reference.
+    /// import it through [`MemoryHandle::as_opencl`] and close it once the
+    /// other API has taken its own reference.
     ///
     /// # Errors
     ///
     /// - [`Error::Unsupported`] when the device has not enabled
-    ///   `VK_KHR_external_memory_fd`.
-    /// - [`Error::Vulkan`] when the driver refused the export, which is also
-    ///   how a `VK_ERROR_INVALID_EXTERNAL_HANDLE_KHR` answer arrives.
-    pub fn export_memory_fd(&self, memory: vk::DeviceMemory, kind: MemoryKind) -> Result<i32> {
+    ///   `VK_KHR_external_memory_fd`, or when `kind` is one of the Win32
+    ///   handles, which no descriptor names.
+    /// - [`Error::Vulkan`] when the driver refused the export.
+    pub fn export_memory(&self, memory: vk::DeviceMemory, kind: MemoryKind) -> Result<MemoryHandle> {
+        // Decided before the driver is reached: `VkMemoryGetFdInfoKHR`
+        // accepts the two descriptor handle types and nothing else.
+        if !kind.is_descriptor() {
+            return Err(Error::Unsupported {
+                what: "vkGetMemoryFdKHR exports a dma-buf or an opaque descriptor, not a Win32 handle",
+            });
+        }
         let get_memory_fd = Self::entry(self.get_memory_fd)?;
         let info = vk::MemoryGetFdInfoKHR::default()
             .memory(memory)
@@ -201,21 +208,29 @@ impl<'a> Vulkan<'a> {
         // the caller owns, and `fd` is a writable `int`.
         let code = unsafe { get_memory_fd(self.device, &info, &mut fd) };
         Error::check(code, "vkGetMemoryFdKHR")?;
-        Ok(fd)
+        Ok(if kind == MemoryKind::DmaBuf {
+            MemoryHandle::DmaBuf(fd)
+        } else {
+            MemoryHandle::OpaqueFd(fd)
+        })
     }
 
-    /// Exports `semaphore` as a descriptor of `kind`
-    /// (`vkGetSemaphoreFdKHR`), the value an OpenCL semaphore is then
-    /// created from.
+    /// Exports `semaphore` as `kind` (`vkGetSemaphoreFdKHR`), the handle an
+    /// OpenCL semaphore is then created from.
     ///
-    /// Ownership works exactly as in [`export_memory_fd`](Self::export_memory_fd).
+    /// Ownership works exactly as in [`export_memory`](Self::export_memory).
     ///
     /// # Errors
     ///
     /// - [`Error::Unsupported`] when the device has not enabled
-    ///   `VK_KHR_external_semaphore_fd`.
+    ///   `VK_KHR_external_semaphore_fd`, or when `kind` is not a descriptor.
     /// - [`Error::Vulkan`] when the driver refused the export.
-    pub fn export_semaphore_fd(&self, semaphore: vk::Semaphore, kind: SemaphoreKind) -> Result<i32> {
+    pub fn export_semaphore(&self, semaphore: vk::Semaphore, kind: SemaphoreKind) -> Result<SemaphoreHandle> {
+        if !kind.is_descriptor() {
+            return Err(Error::Unsupported {
+                what: "vkGetSemaphoreFdKHR exports an opaque or a sync_file descriptor, not a Win32 handle",
+            });
+        }
         let get_semaphore_fd = Self::entry(self.get_semaphore_fd)?;
         let info = vk::SemaphoreGetFdInfoKHR::default()
             .semaphore(semaphore)
@@ -225,7 +240,11 @@ impl<'a> Vulkan<'a> {
         // `VkSemaphoreGetFdInfoKHR` in place of the memory one.
         let code = unsafe { get_semaphore_fd(self.device, &info, &mut fd) };
         Error::check(code, "vkGetSemaphoreFdKHR")?;
-        Ok(fd)
+        Ok(if kind == SemaphoreKind::SyncFd {
+            SemaphoreHandle::SyncFd(fd)
+        } else {
+            SemaphoreHandle::OpaqueFd(fd)
+        })
     }
 
     /// Makes `semaphore` wait on and signal like `handle`
