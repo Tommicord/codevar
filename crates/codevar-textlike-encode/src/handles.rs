@@ -1214,4 +1214,644 @@ mod tests {
         assert_eq!(read_one(&mut src), Some('b'));
         assert_eq!(read_one(&mut src), None);
     }
+
+    fn read_one_u16(src: &mut Utf16Source<'_>) -> Option<char> {
+        match src.check_available() {
+            Space::Available(handle) => {
+                let (c, unread) = handle.read();
+                unread.commit();
+                Some(c)
+            }
+            Space::Full(_) => None,
+        }
+    }
+
+    fn read_one_byte(src: &mut ByteSource<'_>) -> Option<u8> {
+        match src.check_available() {
+            Space::Available(handle) => {
+                let (b, unread) = handle.read();
+                unread.unread();
+                Some(b)
+            }
+            Space::Full(_) => None,
+        }
+    }
+
+    fn unaligned_over(bytes: &[u8]) -> UnalignedU16Slice {
+        // SAFETY: `ptr` and `len` both derive from the same live slice, so the
+        // window of `bytes.len() / 2` native-order u16 units is in bounds.
+        unsafe { UnalignedU16Slice::new(bytes.as_ptr(), bytes.len() / 2) }
+    }
+
+    // Space boundary tests for `Utf8Destination`: `check_space_bmp` grants a
+    // handle when `pos + 2 < len` (3 free bytes), `check_space_astral` when
+    // `pos + 3 < len` (4 free bytes).
+
+    #[test]
+    fn utf8_destination_bmp_check_is_full_on_one_byte_buffer() {
+        let mut out = [0u8; 1];
+        let mut dest = Utf8Destination::new(&mut out);
+        assert!(matches!(dest.check_space_bmp(), Space::Full(0)));
+    }
+
+    #[test]
+    fn utf8_destination_bmp_check_is_full_on_two_byte_buffer() {
+        let mut out = [0u8; 2];
+        let mut dest = Utf8Destination::new(&mut out);
+        assert!(matches!(dest.check_space_bmp(), Space::Full(0)));
+        assert!(matches!(dest.check_space_astral(), Space::Full(0)));
+    }
+
+    #[test]
+    fn utf8_destination_bmp_check_admits_three_byte_buffer_and_fills_it() {
+        let mut out = [0u8; 3];
+        let mut dest = Utf8Destination::new(&mut out);
+        if let Space::Available(handle) = dest.check_space_bmp() {
+            handle.write_bmp(0x20AC);
+        } else {
+            panic!("three free bytes must admit the widest BMP sequence");
+        }
+        assert!(matches!(dest.check_space_bmp(), Space::Full(3)));
+        assert_eq!(out, [0xE2, 0x82, 0xAC]);
+    }
+
+    #[test]
+    fn utf8_destination_checks_are_full_after_two_of_three_bytes_written() {
+        let mut out = [0u8; 3];
+        let mut dest = Utf8Destination::new(&mut out);
+        if let Space::Available(handle) = dest.check_space_bmp() {
+            handle.write_bmp(0x00E9);
+        } else {
+            panic!("expected space for one 2-byte scalar");
+        }
+        // one slot left over: neither the 3-byte nor the 4-byte check passes
+        assert!(matches!(dest.check_space_bmp(), Space::Full(2)));
+        assert!(matches!(dest.check_space_astral(), Space::Full(2)));
+    }
+
+    #[test]
+    fn utf8_destination_astral_check_admits_four_byte_buffer() {
+        let mut out = [0u8; 4];
+        let mut dest = Utf8Destination::new(&mut out);
+        assert!(matches!(dest.check_space_bmp(), Space::Available(_)));
+        if let Space::Available(handle) = dest.check_space_astral() {
+            handle.write_astral(0x10FFFF);
+        } else {
+            panic!("four free bytes must admit an astral sequence");
+        }
+        assert!(matches!(dest.check_space_astral(), Space::Full(4)));
+        assert_eq!(out, [0xF4, 0x8F, 0xBF, 0xBF]);
+    }
+
+    #[test]
+    fn utf8_destination_three_bytes_written_leaves_room_for_bmp_only() {
+        let mut out = [0u8; 4];
+        let mut dest = Utf8Destination::new(&mut out);
+        if let Space::Available(handle) = dest.check_space_bmp() {
+            handle.write_bmp(0x20AC);
+        } else {
+            panic!("expected space for a 3-byte sequence");
+        }
+        assert!(matches!(dest.check_space_astral(), Space::Full(3)));
+        assert!(matches!(dest.check_space_bmp(), Space::Full(3)));
+    }
+
+    #[test]
+    fn utf8_destination_two_written_leaves_both_space_checks_full() {
+        let mut out = [0u8; 4];
+        let mut dest = Utf8Destination::new(&mut out);
+        if let Space::Available(handle) = dest.check_space_astral() {
+            handle.write_bmp(0x00E9);
+        } else {
+            panic!("expected space for a 2-byte sequence");
+        }
+        // a bmp handle needs room for the widest bmp sequence, so two free
+        // bytes leave both checks full even though an ascii byte would fit
+        assert!(matches!(dest.check_space_astral(), Space::Full(2)));
+        assert!(matches!(dest.check_space_bmp(), Space::Full(2)));
+        assert_eq!(dest.written(), 2);
+        assert_eq!(out, [0xC3, 0xA9, 0, 0]);
+    }
+
+    #[test]
+    fn utf8_destination_astral_check_is_full_on_three_byte_buffer() {
+        let mut out = [0u8; 3];
+        let mut dest = Utf8Destination::new(&mut out);
+        assert!(matches!(dest.check_space_astral(), Space::Full(0)));
+    }
+
+    // Space boundary tests for `Utf16Destination`: bmp needs 1 free unit,
+    // astral needs 2.
+
+    #[test]
+    fn utf16_destination_empty_buffer_reports_full() {
+        let mut out: [u16; 0] = [];
+        let mut dest = Utf16Destination::new(&mut out);
+        assert!(matches!(dest.check_space_bmp(), Space::Full(0)));
+        assert!(matches!(dest.check_space_astral(), Space::Full(0)));
+    }
+
+    #[test]
+    fn utf16_destination_one_unit_admits_bmp_but_not_astral() {
+        let mut out = [0u16; 1];
+        let mut dest = Utf16Destination::new(&mut out);
+        assert!(matches!(dest.check_space_astral(), Space::Full(0)));
+        if let Space::Available(handle) = dest.check_space_bmp() {
+            handle.write_bmp(0x20AC);
+        } else {
+            panic!("one free unit must admit the bmp handle");
+        }
+        assert!(matches!(dest.check_space_bmp(), Space::Full(1)));
+        assert_eq!(out, [0x20AC]);
+    }
+
+    #[test]
+    fn utf16_destination_second_unit_makes_astral_full() {
+        let mut out = [0u16; 2];
+        let mut dest = Utf16Destination::new(&mut out);
+        if let Space::Available(handle) = dest.check_space_astral() {
+            handle.write_ascii(b'A');
+        } else {
+            panic!("two free units must admit the astral handle");
+        }
+        assert!(matches!(dest.check_space_astral(), Space::Full(1)));
+        if let Space::Available(handle) = dest.check_space_bmp() {
+            handle.write_bmp(0x42);
+        } else {
+            panic!("expected the last unit to be available");
+        }
+        assert_eq!(out, [0x41, 0x42]);
+    }
+
+    #[test]
+    fn utf16_destination_astral_check_reports_intermediate_written_count() {
+        let mut out = [0u16; 2];
+        let mut dest = Utf16Destination::new(&mut out);
+        if let Space::Available(handle) = dest.check_space_bmp() {
+            handle.write_ascii(b'A');
+        } else {
+            panic!("expected space");
+        }
+        assert!(matches!(dest.check_space_astral(), Space::Full(1)));
+    }
+
+    // Writing through the handles.
+
+    #[test]
+    fn utf8_bmp_handle_write_bmp_selects_sequence_width() {
+        let mut out = [0u8; 4];
+        let mut dest = Utf8Destination::new(&mut out);
+        if let Space::Available(handle) = dest.check_space_bmp() {
+            handle.write_bmp(0x41);
+        } else {
+            panic!("expected space");
+        }
+        if let Space::Available(handle) = dest.check_space_bmp() {
+            handle.write_bmp(0x00E9);
+        } else {
+            panic!("expected space");
+        }
+        assert_eq!(&out[..3], [0x41, 0xC3, 0xA9]);
+    }
+
+    #[test]
+    fn utf8_mid_bmp_encoding_boundaries() {
+        let mut out = [0u8; 5];
+        let mut dest = Utf8Destination::new(&mut out);
+        if let Space::Available(handle) = dest.check_space_bmp() {
+            handle.write_bmp(0x80);
+        } else {
+            panic!("expected space");
+        }
+        if let Space::Available(handle) = dest.check_space_bmp() {
+            handle.write_bmp(0x7FF);
+        } else {
+            panic!("expected space");
+        }
+        assert_eq!(dest.written(), 4);
+        assert_eq!(&out[..4], [0xC2, 0x80, 0xDF, 0xBF]);
+    }
+
+    #[test]
+    fn utf8_upper_bmp_encoding_boundaries() {
+        let mut out = [0u8; 6];
+        let mut dest = Utf8Destination::new(&mut out);
+        if let Space::Available(handle) = dest.check_space_bmp() {
+            handle.write_bmp(0x800);
+        } else {
+            panic!("expected space");
+        }
+        if let Space::Available(handle) = dest.check_space_bmp() {
+            handle.write_bmp(0xFFFF);
+        } else {
+            panic!("expected space");
+        }
+        assert_eq!(out, [0xE0, 0xA0, 0x80, 0xEF, 0xBF, 0xBF]);
+    }
+
+    #[test]
+    fn utf8_bmp_excl_ascii_handles_mid_and_upper_ranges() {
+        let mut out = [0u8; 5];
+        let mut dest = Utf8Destination::new(&mut out);
+        if let Space::Available(handle) = dest.check_space_bmp() {
+            handle.write_bmp_excl_ascii(0x00FC);
+        } else {
+            panic!("expected space");
+        }
+        if let Space::Available(handle) = dest.check_space_bmp() {
+            handle.write_bmp_excl_ascii(0x0416);
+        } else {
+            panic!("expected space");
+        }
+        assert_eq!(dest.written(), 4);
+        assert_eq!(out, [0xC3, 0xBC, 0xD0, 0x96, 0x00]);
+    }
+
+    #[test]
+    fn utf8_astral_handle_pair_encoding_matches_astral_scalar() {
+        let mut via_pair = [0u8; 4];
+        {
+            let mut dest = Utf8Destination::new(&mut via_pair);
+            if let Space::Available(handle) = dest.check_space_astral() {
+                handle.write_surrogate_pair(0xD83D, 0xDE00);
+            } else {
+                panic!("expected space for a pair");
+            }
+        }
+        let mut via_astral = [0u8; 4];
+        {
+            let mut dest = Utf8Destination::new(&mut via_astral);
+            if let Space::Available(handle) = dest.check_space_astral() {
+                handle.write_astral(0x1F600);
+            } else {
+                panic!("expected space for an astral scalar");
+            }
+        }
+        assert_eq!(via_pair, [0xF0, 0x9F, 0x98, 0x80]);
+        assert_eq!(via_pair, via_astral);
+    }
+
+    #[test]
+    fn utf8_astral_handle_writes_bmp_and_then_blocks_astral() {
+        let mut out = [0u8; 4];
+        let mut dest = Utf8Destination::new(&mut out);
+        if let Space::Available(handle) = dest.check_space_astral() {
+            assert_eq!(handle.written(), 0);
+            handle.write_bmp(0x20AC);
+        } else {
+            panic!("expected astral space");
+        }
+        assert!(matches!(dest.check_space_astral(), Space::Full(3)));
+        assert_eq!(&out[..3], [0xE2, 0x82, 0xAC]);
+    }
+
+    #[test]
+    fn utf8_bmp_handle_write_astral_fills_four_byte_buffer() {
+        // The bmp handle exposes `write_astral`, which only fits buffers with
+        // 4 free bytes; `check_space_bmp` itself merely promises 3, so codecs
+        // must not rely on this. A 4-byte destination happens to fit it.
+        let mut out = [0u8; 4];
+        let mut dest = Utf8Destination::new(&mut out);
+        if let Space::Available(handle) = dest.check_space_bmp() {
+            handle.write_astral(0x1F600);
+        } else {
+            panic!("expected space");
+        }
+        assert!(matches!(dest.check_space_bmp(), Space::Full(4)));
+        assert_eq!(out, [0xF0, 0x9F, 0x98, 0x80]);
+    }
+
+    #[test]
+    fn utf16_astral_handle_pair_writes_equal_units() {
+        let mut out = [0u16; 2];
+        let mut dest = Utf16Destination::new(&mut out);
+        if let Space::Available(handle) = dest.check_space_astral() {
+            handle.write_astral(0x1F600);
+        } else {
+            panic!("expected space");
+        }
+        assert_eq!(out, [0xD83D, 0xDE00]);
+        let mut pair_out = [0u16; 2];
+        let mut dest = Utf16Destination::new(&mut pair_out);
+        if let Space::Available(handle) = dest.check_space_astral() {
+            handle.write_surrogate_pair(0xD83D, 0xDE00);
+        } else {
+            panic!("expected space");
+        }
+        assert_eq!(pair_out, out);
+    }
+
+    #[test]
+    fn utf16_handles_write_single_units() {
+        let mut out = [0u16; 3];
+        let mut dest = Utf16Destination::new(&mut out);
+        if let Space::Available(handle) = dest.check_space_bmp() {
+            handle.write_ascii(b'A');
+        } else {
+            panic!("expected space");
+        }
+        if let Space::Available(handle) = dest.check_space_bmp() {
+            handle.write_bmp_excl_ascii(0x00E9);
+        } else {
+            panic!("expected space");
+        }
+        if let Space::Available(handle) = dest.check_space_bmp() {
+            handle.write_bmp(0x20AC);
+        } else {
+            panic!("expected space");
+        }
+        assert!(matches!(dest.check_space_bmp(), Space::Full(3)));
+        assert_eq!(out, [0x0041, 0x00E9, 0x20AC]);
+    }
+
+    #[test]
+    fn utf16_bmp_handle_write_astral_fills_two_unit_buffer() {
+        // Like the UTF-8 bmp handle, the UTF-16 bmp handle exposes
+        // `write_astral` even though `check_space_bmp` only guarantees one
+        // free unit; using it on a one-unit window would be out of bounds.
+        let mut out = [0u16; 2];
+        let mut dest = Utf16Destination::new(&mut out);
+        if let Space::Available(handle) = dest.check_space_bmp() {
+            handle.write_astral(0x1F600);
+        } else {
+            panic!("expected space");
+        }
+        assert!(matches!(dest.check_space_bmp(), Space::Full(2)));
+        assert_eq!(out, [0xD83D, 0xDE00]);
+    }
+
+    // ByteSource handle protocol.
+
+    #[test]
+    fn byte_source_check_available_on_empty_source_reports_consumed() {
+        let mut src = ByteSource::new(b"");
+        assert!(matches!(src.check_available(), Space::Full(0)));
+        assert_eq!(src.consumed(), 0);
+    }
+
+    #[test]
+    fn byte_source_read_handle_reports_position_before_reading() {
+        let mut src = ByteSource::new(b"Hi");
+        if let Space::Available(handle) = src.check_available() {
+            assert_eq!(handle.consumed(), 0);
+            let (b, unread) = handle.read();
+            assert_eq!(b, b'H');
+            assert_eq!(unread.consumed(), 1);
+            assert_eq!(unread.commit().consumed(), 1);
+        } else {
+            panic!("expected one available byte");
+        }
+        assert_eq!(src.consumed(), 1);
+    }
+
+    #[test]
+    fn byte_source_unread_restores_position_and_reports_rewound_from() {
+        let mut src = ByteSource::new(b"ab");
+        if let Space::Available(handle) = src.check_available() {
+            let (b, unread) = handle.read();
+            assert_eq!(b, b'a');
+            assert_eq!(unread.unread(), 1);
+        } else {
+            panic!("expected available input");
+        }
+        assert_eq!(src.consumed(), 0);
+        // peeking with read + unread never advances the source
+        assert_eq!(read_one_byte(&mut src), Some(b'a'));
+        assert_eq!(src.consumed(), 0);
+    }
+
+    #[test]
+    fn byte_source_commit_leaves_position_advanced_for_next_handle() {
+        let mut src = ByteSource::new(b"xy");
+        if let Space::Available(handle) = src.check_available() {
+            let (_b, unread) = handle.read();
+            assert_eq!(unread.commit().consumed(), 1);
+        } else {
+            panic!("expected available input");
+        }
+        if let Space::Available(handle) = src.check_available() {
+            let (b, unread) = handle.read();
+            assert_eq!(b, b'y');
+            assert_eq!(unread.commit().consumed(), 2);
+        } else {
+            panic!("expected available input");
+        }
+        assert!(matches!(src.check_available(), Space::Full(2)));
+    }
+
+    #[test]
+    fn byte_source_consumed_is_monotonic_across_sequential_handles() {
+        let mut src = ByteSource::new(b"abc");
+        let mut marks = Vec::new();
+        while let Space::Available(handle) = src.check_available() {
+            let (_b, unread) = handle.read();
+            // go through the reborrow from `commit`: the scrutinee borrow of
+            // `src` stays live for the whole body in edition 2024
+            let src_ref = unread.commit();
+            marks.push(src_ref.consumed());
+        }
+        assert_eq!(marks, vec![1, 2, 3]);
+    }
+
+    // copy_ascii_from_check_space_bmp on a UTF-16 destination.
+
+    #[test]
+    fn utf16_copy_ascii_reports_input_empty_when_ascii_source_is_shorter() {
+        let mut src = ByteSource::new(b"AB");
+        let mut out = [0u16; 4];
+        let mut dest = Utf16Destination::new(&mut out);
+        assert!(matches!(
+            dest.copy_ascii_from_check_space_bmp(&mut src),
+            CopyAsciiResult::Stop((DecoderResult::InputEmpty, 2, 2))
+        ));
+        assert_eq!(src.consumed(), 2);
+        assert_eq!(dest.written(), 2);
+        assert_eq!(&out[..2], [0x41, 0x42]);
+    }
+
+    #[test]
+    fn utf16_copy_ascii_reports_output_full_when_destination_is_shorter() {
+        let mut src = ByteSource::new(b"ABCD");
+        let mut out = [0u16; 2];
+        let mut dest = Utf16Destination::new(&mut out);
+        assert!(matches!(
+            dest.copy_ascii_from_check_space_bmp(&mut src),
+            CopyAsciiResult::Stop((DecoderResult::OutputFull, 2, 2))
+        ));
+        assert_eq!(out, [0x41, 0x42]);
+    }
+
+    #[test]
+    fn utf16_copy_ascii_equal_lengths_count_as_input_empty() {
+        let mut src = ByteSource::new(b"AB");
+        let mut out = [0u16; 2];
+        let mut dest = Utf16Destination::new(&mut out);
+        assert!(matches!(
+            dest.copy_ascii_from_check_space_bmp(&mut src),
+            CopyAsciiResult::Stop((DecoderResult::InputEmpty, 2, 2))
+        ));
+    }
+
+    #[test]
+    fn utf16_copy_ascii_empty_source_and_empty_destination_still_stop_differently() {
+        let mut src = ByteSource::new(b"");
+        let mut roomy = [0u16; 2];
+        let mut dest = Utf16Destination::new(&mut roomy);
+        assert!(matches!(
+            dest.copy_ascii_from_check_space_bmp(&mut src),
+            CopyAsciiResult::Stop((DecoderResult::InputEmpty, 0, 0))
+        ));
+        let mut src2 = ByteSource::new(b"A");
+        let mut empty: [u16; 0] = [];
+        let mut dest2 = Utf16Destination::new(&mut empty);
+        assert!(matches!(
+            dest2.copy_ascii_from_check_space_bmp(&mut src2),
+            CopyAsciiResult::Stop((DecoderResult::OutputFull, 0, 0))
+        ));
+    }
+
+    #[test]
+    fn utf16_copy_ascii_non_ascii_at_position_zero_goes_on_without_writing() {
+        let mut src = ByteSource::new(b"\xC3\xA9");
+        let mut out = [0u16; 2];
+        let mut dest = Utf16Destination::new(&mut out);
+        if let CopyAsciiResult::GoOn((byte, handle)) = dest.copy_ascii_from_check_space_bmp(&mut src) {
+            assert_eq!(byte, 0xC3);
+            assert_eq!(handle.written(), 0);
+            handle.commit();
+        } else {
+            panic!("expected the non-ASCII byte to stop the ascii run at zero");
+        }
+        // the non-ASCII byte is consumed (skipped) but nothing was written
+        assert_eq!(src.consumed(), 1);
+        assert_eq!(dest.written(), 0);
+    }
+
+    #[test]
+    fn utf16_copy_ascii_non_ascii_last_byte_goes_on_after_prefix() {
+        let mut src = ByteSource::new(b"AB\xE2");
+        let mut out = [0u16; 4];
+        let mut dest = Utf16Destination::new(&mut out);
+        if let CopyAsciiResult::GoOn((byte, handle)) = dest.copy_ascii_from_check_space_bmp(&mut src) {
+            assert_eq!(byte, 0xE2);
+            handle.write_bmp(0x20AC);
+        } else {
+            panic!("expected a non-ASCII tail byte");
+        }
+        assert_eq!(src.consumed(), 3);
+        assert_eq!(dest.written(), 3);
+        assert_eq!(&out[..3], [0x41, 0x42, 0x20AC]);
+    }
+
+    #[test]
+    fn utf16_copy_ascii_non_ascii_in_middle_goes_on_and_drains_afterwards() {
+        let mut src = ByteSource::new(b"AY\xC2B");
+        let mut out = [0u16; 4];
+        let mut dest = Utf16Destination::new(&mut out);
+        if let CopyAsciiResult::GoOn((byte, handle)) = dest.copy_ascii_from_check_space_bmp(&mut src) {
+            assert_eq!(byte, 0xC2);
+            handle.write_bmp(0x00A2);
+        } else {
+            panic!("expected a mid-stream non-ASCII byte");
+        }
+        assert!(matches!(
+            dest.copy_ascii_from_check_space_bmp(&mut src),
+            CopyAsciiResult::Stop((DecoderResult::InputEmpty, 4, 4))
+        ));
+        assert_eq!(out, [0x41, 0x59, 0x00A2, 0x42]);
+    }
+
+    // copy_ascii_from_check_space_bmp on a UTF-8 destination.
+
+    #[test]
+    fn utf8_copy_ascii_reports_input_empty_when_ascii_source_is_shorter() {
+        let mut src = ByteSource::new(b"AB");
+        let mut out = [0u8; 4];
+        let mut dest = Utf8Destination::new(&mut out);
+        assert!(matches!(
+            dest.copy_ascii_from_check_space_bmp(&mut src),
+            CopyAsciiResult::Stop((DecoderResult::InputEmpty, 2, 2))
+        ));
+        assert_eq!(&out[..2], b"AB");
+    }
+
+    #[test]
+    fn utf8_copy_ascii_reports_output_full_when_destination_is_shorter() {
+        let mut src = ByteSource::new(b"ABCDEFGHIJKL");
+        let mut out = [0u8; 8];
+        let mut dest = Utf8Destination::new(&mut out);
+        assert!(matches!(
+            dest.copy_ascii_from_check_space_bmp(&mut src),
+            CopyAsciiResult::Stop((DecoderResult::OutputFull, 8, 8))
+        ));
+        assert_eq!(out, *b"ABCDEFGH");
+        assert_eq!(src.consumed(), 8);
+    }
+
+    #[test]
+    fn utf8_copy_ascii_empty_source_or_empty_destination_stops_without_progress() {
+        let mut src = ByteSource::new(b"");
+        let mut out = [0u8; 2];
+        let mut dest = Utf8Destination::new(&mut out);
+        assert!(matches!(
+            dest.copy_ascii_from_check_space_bmp(&mut src),
+            CopyAsciiResult::Stop((DecoderResult::InputEmpty, 0, 0))
+        ));
+        let mut src2 = ByteSource::new(b"A");
+        let mut empty: [u8; 0] = [];
+        let mut dest2 = Utf8Destination::new(&mut empty);
+        assert!(matches!(
+            dest2.copy_ascii_from_check_space_bmp(&mut src2),
+            CopyAsciiResult::Stop((DecoderResult::OutputFull, 0, 0))
+        ));
+    }
+
+    #[test]
+    fn utf8_copy_ascii_non_ascii_at_zero_goes_on_when_room_remains() {
+        let mut src = ByteSource::new(b"\xC3\xA9");
+        let mut out = [0u8; 4];
+        let mut dest = Utf8Destination::new(&mut out);
+        if let CopyAsciiResult::GoOn((byte, handle)) = dest.copy_ascii_from_check_space_bmp(&mut src) {
+            assert_eq!(byte, 0xC3);
+            handle.write_bmp(0x00E9);
+        } else {
+            panic!("expected a go-on at position zero");
+        }
+        // only the lead byte was consumed; the trail byte waits for the next round
+        assert_eq!(src.consumed(), 1);
+        assert_eq!(dest.written(), 2);
+        assert_eq!(out, [0xC3, 0xA9, 0, 0]);
+    }
+
+    #[test]
+    fn utf8_copy_ascii_non_ascii_without_three_free_bytes_stops_unconsumed() {
+        let mut src = ByteSource::new(b"A\xC3");
+        let mut out = [0u8; 2];
+        let mut dest = Utf8Destination::new(&mut out);
+        assert!(matches!(
+            dest.copy_ascii_from_check_space_bmp(&mut src),
+            CopyAsciiResult::Stop((DecoderResult::OutputFull, 1, 1))
+        ));
+        // unlike the UTF-16 variant, the non-ASCII lead byte stays unread
+        assert_eq!(read_one_byte(&mut src), Some(0xC3));
+        assert_eq!(src.consumed(), 1);
+        assert_eq!(out, [0x41, 0]);
+    }
+
+    #[test]
+    fn utf8_copy_ascii_non_ascii_last_byte_with_room_goes_on() {
+        let mut src = ByteSource::new(b"A\xC3");
+        let mut out = [0u8; 4];
+        let mut dest = Utf8Destination::new(&mut out);
+        if let CopyAsciiResult::GoOn((byte, handle)) = dest.copy_ascii_from_check_space_bmp(&mut src) {
+            assert_eq!(byte, 0xC3);
+            assert_eq!(handle.written(), 1);
+            handle.commit();
+        } else {
+            panic!("expected a go-on after the ascii prefix");
+        }
+        assert_eq!(src.consumed(), 2);
+        assert_eq!(dest.written(), 1);
+    }
+
 }
