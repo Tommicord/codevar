@@ -666,40 +666,77 @@ mod tests {
     }
 
     #[test]
-    fn undefined_pointer_counts_match_the_standard() {
-        let expected: [(&str, usize); 8] = [
-            ("ISO-8859-3", 7),
-            ("ISO-8859-6", 45),
-            ("ISO-8859-7", 3),
-            ("ISO-8859-8", 36),
-            ("windows-874", 8),
-            ("windows-1253", 3),
-            ("windows-1255", 10),
-            ("windows-1257", 2),
+    fn undefined_pointers_are_exactly_the_documented_hole_sets() {
+        // The blank pointer ranges the standard's index files leave undefined, as byte
+        // ranges. Every other registry index is total, and the encoder's reverse lookup
+        // must therefore never emit these bytes.
+        let expected: [(&str, &[(u8, u8)]); 9] = [
+            (
+                "ISO-8859-3",
+                &[
+                    (0xA5, 0xA5),
+                    (0xAE, 0xAE),
+                    (0xBE, 0xBE),
+                    (0xC3, 0xC3),
+                    (0xD0, 0xD0),
+                    (0xE3, 0xE3),
+                    (0xF0, 0xF0),
+                ],
+            ),
+            (
+                "ISO-8859-6",
+                &[
+                    (0xA1, 0xA3),
+                    (0xA5, 0xAB),
+                    (0xAE, 0xBA),
+                    (0xBC, 0xBE),
+                    (0xC0, 0xC0),
+                    (0xDB, 0xDF),
+                    (0xF3, 0xFF),
+                ],
+            ),
+            ("ISO-8859-7", &[(0xAE, 0xAE), (0xD2, 0xD2), (0xFF, 0xFF)]),
+            (
+                "ISO-8859-8",
+                &[(0xA1, 0xA1), (0xBF, 0xDE), (0xFB, 0xFC), (0xFF, 0xFF)],
+            ),
+            (
+                "ISO-8859-8-I",
+                &[(0xA1, 0xA1), (0xBF, 0xDE), (0xFB, 0xFC), (0xFF, 0xFF)],
+            ),
+            ("windows-1253", &[(0xAA, 0xAA), (0xD2, 0xD2), (0xFF, 0xFF)]),
+            ("windows-1255", &[(0xD9, 0xDF), (0xFB, 0xFC), (0xFF, 0xFF)]),
+            ("windows-1257", &[(0xA1, 0xA1), (0xA5, 0xA5)]),
+            ("windows-874", &[(0xDB, 0xDE), (0xFC, 0xFF)]),
         ];
-        for (name, count) in expected {
-            let encoding = by_name(name);
-            assert_eq!(
-                table_of(encoding)
-                    .iter()
-                    .filter(|&&v| v == 0)
-                    .count(),
-                count,
-                "{name}: undefined pointers"
-            );
+        let mut holes = 0usize;
+        for (name, ranges) in expected {
+            let table = table_of(by_name(name));
+            let want: Vec<u8> = ranges
+                .iter()
+                .flat_map(|&(lo, hi)| lo..=hi)
+                .collect();
+            let got: Vec<u8> = table
+                .iter()
+                .enumerate()
+                .filter(|(_, unit)| **unit == 0)
+                .map(|(pointer, _)| 0x80u8 + pointer as u8)
+                .collect();
+            assert_eq!(got, want, "{name}: undefined pointers");
+            holes += got.len();
         }
-        for &encoding in SINGLE_BYTE_ENCODINGS.iter() {
-            let name = encoding.name;
-            if expected.iter().any(|&(n, _)| n == name) || name == "ISO-8859-8-I" {
+        assert_eq!(holes, 150, "the hole sets above do not add up");
+        for &encoding in &SINGLE_BYTE_ENCODINGS {
+            if expected
+                .iter()
+                .any(|(name, _)| *name == encoding.name)
+            {
                 continue;
             }
-            assert_eq!(
-                table_of(encoding)
-                    .iter()
-                    .filter(|&&v| v == 0)
-                    .count(),
-                0,
-                "{name}: should be total"
+            assert!(
+                table_of(encoding).iter().all(|unit| *unit != 0),
+                "{}: unexpectedly holds an undefined pointer",
+                encoding.name
             );
         }
     }
