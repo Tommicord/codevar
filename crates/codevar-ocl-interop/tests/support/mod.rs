@@ -19,6 +19,10 @@
 //! Every entry point here answers `None`, or an empty list, when the machine
 //! has no loader, no driver or no device that offers the extension, so a test
 //! that needs hardware skips instead of failing on a headless runner.
+//!
+//! The module is compiled into every integration target, and no single one of
+//! them uses the whole of it.
+#![allow(dead_code)]
 
 use std::ffi::{CStr, CString};
 use std::os::fd::{FromRawFd, OwnedFd};
