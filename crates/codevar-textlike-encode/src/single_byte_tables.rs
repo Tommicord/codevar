@@ -403,3 +403,624 @@ pub static INDEX_X_MAC_CYRILLIC: [u16; 128] = [
     0x0438, 0x0439, 0x043A, 0x043B, 0x043C, 0x043D, 0x043E, 0x043F, 0x0440, 0x0441, 0x0442, 0x0443, 0x0444,
     0x0445, 0x0446, 0x0447, 0x0448, 0x0449, 0x044A, 0x044B, 0x044C, 0x044D, 0x044E, 0x20AC,
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pointers the standard leaves undefined in `table`, i.e. the slots
+    /// holding the `0` sentinel. A mis-sorted or mistyped row shows up here.
+    fn undefined_pointers(table: &[u16; 128]) -> Vec<usize> {
+        table
+            .iter()
+            .enumerate()
+            .filter(|(_, value)| **value == 0)
+            .map(|(pointer, _)| pointer)
+            .collect()
+    }
+
+    /// Sum and position-weighted sum of every entry: two invariants that
+    /// pin the whole table against the normative index without pasting 128
+    /// literals again. The weighted sum also catches transposed rows that
+    /// leave the plain sum unchanged.
+    fn check_checksums(table: &[u16; 128], name: &str, sum: u64, weighted: u64) {
+        let actual: u64 = table.iter().map(|&value| u64::from(value)).sum();
+        assert_eq!(actual, sum, "{name}: code-point sum");
+        let actual_weighted: u64 = table
+            .iter()
+            .enumerate()
+            .map(|(pointer, &value)| (pointer as u64 + 1) * u64::from(value))
+            .sum();
+        assert_eq!(actual_weighted, weighted, "{name}: position-weighted sum");
+    }
+
+    /// Scalar-range and injectivity invariants: every defined pointer maps
+    /// to a scalar below the surrogate range, at or above the ASCII guard
+    /// band (the arrays only cover bytes 0x80..=0xFF, so an off-by-one shift
+    /// would leak a value below U+0080), and no code point appears twice -
+    /// a duplicate would corrupt the encoder's reverse lookup.
+    fn check_value_integrity(table: &[u16; 128], name: &str) {
+        let mut seen = Vec::with_capacity(128);
+        for (pointer, &value) in table.iter().enumerate() {
+            if value == 0 {
+                continue;
+            }
+            assert!(
+                value >= 0x0080,
+                "{name}: pointer {pointer:#04X} maps below the guard band"
+            );
+            assert!(
+                !matches!(value, 0xD800..=0xDFFF),
+                "{name}: pointer {pointer:#04X} maps to a surrogate"
+            );
+            assert!(!seen.contains(&value), "{name}: U+{value:04X} mapped twice");
+            seen.push(value);
+        }
+        assert_eq!(seen.len() + undefined_pointers(table).len(), 128, "{name}");
+    }
+
+    /// Pointer positions where two tables differ; used to prove that no two
+    /// normative indexes were copy-pasted over each other.
+    fn differing_positions(a: &[u16; 128], b: &[u16; 128]) -> Vec<usize> {
+        a.iter()
+            .zip(b.iter())
+            .enumerate()
+            .filter(|(_, (x, y))| x != y)
+            .map(|(pointer, _)| pointer)
+            .collect()
+    }
+
+    fn defined_count(table: &[u16; 128]) -> usize {
+        table.iter().filter(|&&value| value != 0).count()
+    }
+
+    #[test]
+    fn ibm866_defined_count_and_undefined_pointers() {
+        // IBM866: index-ibm866.txt defines 128 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_IBM866), 128);
+        assert!(
+            undefined_pointers(&INDEX_IBM866).is_empty(),
+            "all pointers defined"
+        );
+    }
+
+    #[test]
+    fn ibm866_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-ibm866.txt.
+        assert_eq!(INDEX_IBM866[0x00], 0x0410, "first defined pointer");
+        assert_eq!(INDEX_IBM866[0x7F], 0x00A0, "last defined pointer");
+        check_checksums(&INDEX_IBM866, "IBM866", 572178, 41871282);
+    }
+
+    #[test]
+    fn ibm866_value_integrity() {
+        check_value_integrity(&INDEX_IBM866, "IBM866");
+    }
+
+    #[test]
+    fn iso_8859_2_defined_count_and_undefined_pointers() {
+        // ISO-8859-2: index-iso-8859-2.txt defines 128 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_ISO_8859_2), 128);
+        assert!(
+            undefined_pointers(&INDEX_ISO_8859_2).is_empty(),
+            "all pointers defined"
+        );
+    }
+
+    #[test]
+    fn iso_8859_2_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-iso-8859-2.txt.
+        assert_eq!(INDEX_ISO_8859_2[0x00], 0x0080, "first defined pointer");
+        assert_eq!(INDEX_ISO_8859_2[0x7F], 0x02D9, "last defined pointer");
+        check_checksums(&INDEX_ISO_8859_2, "ISO-8859-2", 33345, 2361556);
+    }
+
+    #[test]
+    fn iso_8859_2_value_integrity() {
+        check_value_integrity(&INDEX_ISO_8859_2, "ISO-8859-2");
+    }
+
+    #[test]
+    fn iso_8859_3_defined_count_and_undefined_pointers() {
+        // ISO-8859-3: index-iso-8859-3.txt defines 121 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_ISO_8859_3), 121);
+        assert_eq!(
+            undefined_pointers(&INDEX_ISO_8859_3),
+            [0x25, 0x2E, 0x3E, 0x43, 0x50, 0x63, 0x70usize,]
+        );
+    }
+
+    #[test]
+    fn iso_8859_3_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-iso-8859-3.txt.
+        assert_eq!(INDEX_ISO_8859_3[0x00], 0x0080, "first defined pointer");
+        assert_eq!(INDEX_ISO_8859_3[0x7F], 0x02D9, "last defined pointer");
+        check_checksums(&INDEX_ISO_8859_3, "ISO-8859-3", 27014, 1918664);
+    }
+
+    #[test]
+    fn iso_8859_3_value_integrity() {
+        check_value_integrity(&INDEX_ISO_8859_3, "ISO-8859-3");
+    }
+
+    #[test]
+    fn iso_8859_4_defined_count_and_undefined_pointers() {
+        // ISO-8859-4: index-iso-8859-4.txt defines 128 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_ISO_8859_4), 128);
+        assert!(
+            undefined_pointers(&INDEX_ISO_8859_4).is_empty(),
+            "all pointers defined"
+        );
+    }
+
+    #[test]
+    fn iso_8859_4_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-iso-8859-4.txt.
+        assert_eq!(INDEX_ISO_8859_4[0x00], 0x0080, "first defined pointer");
+        assert_eq!(INDEX_ISO_8859_4[0x7F], 0x02D9, "last defined pointer");
+        check_checksums(&INDEX_ISO_8859_4, "ISO-8859-4", 31296, 2237146);
+    }
+
+    #[test]
+    fn iso_8859_4_value_integrity() {
+        check_value_integrity(&INDEX_ISO_8859_4, "ISO-8859-4");
+    }
+
+    #[test]
+    fn iso_8859_5_defined_count_and_undefined_pointers() {
+        // ISO-8859-5: index-iso-8859-5.txt defines 128 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_ISO_8859_5), 128);
+        assert!(
+            undefined_pointers(&INDEX_ISO_8859_5).is_empty(),
+            "all pointers defined"
+        );
+    }
+
+    #[test]
+    fn iso_8859_5_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-iso-8859-5.txt.
+        assert_eq!(INDEX_ISO_8859_5[0x00], 0x0080, "first defined pointer");
+        assert_eq!(INDEX_ISO_8859_5[0x7F], 0x045F, "last defined pointer");
+        check_checksums(&INDEX_ISO_8859_5, "ISO-8859-5", 112144, 9077170);
+    }
+
+    #[test]
+    fn iso_8859_5_value_integrity() {
+        check_value_integrity(&INDEX_ISO_8859_5, "ISO-8859-5");
+    }
+
+    #[test]
+    fn iso_8859_6_defined_count_and_undefined_pointers() {
+        // ISO-8859-6: index-iso-8859-6.txt defines 83 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_ISO_8859_6), 83);
+        assert_eq!(
+            undefined_pointers(&INDEX_ISO_8859_6),
+            [
+                0x21, 0x22, 0x23, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2E, 0x2F, 0x30, 0x31, 0x32,
+                0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x3C, 0x3D, 0x3E, 0x40, 0x5B, 0x5C, 0x5D,
+                0x5E, 0x5F, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E,
+                0x7Fusize,
+            ]
+        );
+    }
+
+    #[test]
+    fn iso_8859_6_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-iso-8859-6.txt.
+        assert_eq!(INDEX_ISO_8859_6[0x00], 0x0080, "first defined pointer");
+        assert_eq!(INDEX_ISO_8859_6[0x72], 0x0652, "last defined pointer");
+        check_checksums(&INDEX_ISO_8859_6, "ISO-8859-6", 81457, 6831930);
+    }
+
+    #[test]
+    fn iso_8859_6_value_integrity() {
+        check_value_integrity(&INDEX_ISO_8859_6, "ISO-8859-6");
+    }
+
+    #[test]
+    fn iso_8859_7_defined_count_and_undefined_pointers() {
+        // ISO-8859-7: index-iso-8859-7.txt defines 125 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_ISO_8859_7), 125);
+        assert_eq!(undefined_pointers(&INDEX_ISO_8859_7), [0x2E, 0x52, 0x7Fusize,]);
+    }
+
+    #[test]
+    fn iso_8859_7_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-iso-8859-7.txt.
+        assert_eq!(INDEX_ISO_8859_7[0x00], 0x0080, "first defined pointer");
+        assert_eq!(INDEX_ISO_8859_7[0x7E], 0x03CE, "last defined pointer");
+        check_checksums(&INDEX_ISO_8859_7, "ISO-8859-7", 116263, 7957263);
+    }
+
+    #[test]
+    fn iso_8859_7_value_integrity() {
+        check_value_integrity(&INDEX_ISO_8859_7, "ISO-8859-7");
+    }
+
+    #[test]
+    fn iso_8859_8_defined_count_and_undefined_pointers() {
+        // ISO-8859-8: index-iso-8859-8.txt defines 92 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_ISO_8859_8), 92);
+        assert_eq!(
+            undefined_pointers(&INDEX_ISO_8859_8),
+            [
+                0x21, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x4B, 0x4C,
+                0x4D, 0x4E, 0x4F, 0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A, 0x5B,
+                0x5C, 0x5D, 0x5E, 0x7B, 0x7C, 0x7Fusize,
+            ]
+        );
+    }
+
+    #[test]
+    fn iso_8859_8_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-iso-8859-8.txt.
+        assert_eq!(INDEX_ISO_8859_8[0x00], 0x0080, "first defined pointer");
+        assert_eq!(INDEX_ISO_8859_8[0x7E], 0x200F, "last defined pointer");
+        check_checksums(&INDEX_ISO_8859_8, "ISO-8859-8", 75117, 7665929);
+    }
+
+    #[test]
+    fn iso_8859_8_value_integrity() {
+        check_value_integrity(&INDEX_ISO_8859_8, "ISO-8859-8");
+    }
+
+    #[test]
+    fn iso_8859_10_defined_count_and_undefined_pointers() {
+        // ISO-8859-10: index-iso-8859-10.txt defines 128 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_ISO_8859_10), 128);
+        assert!(
+            undefined_pointers(&INDEX_ISO_8859_10).is_empty(),
+            "all pointers defined"
+        );
+    }
+
+    #[test]
+    fn iso_8859_10_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-iso-8859-10.txt.
+        assert_eq!(INDEX_ISO_8859_10[0x00], 0x0080, "first defined pointer");
+        assert_eq!(INDEX_ISO_8859_10[0x7F], 0x0138, "last defined pointer");
+        check_checksums(&INDEX_ISO_8859_10, "ISO-8859-10", 37801, 2586454);
+    }
+
+    #[test]
+    fn iso_8859_10_value_integrity() {
+        check_value_integrity(&INDEX_ISO_8859_10, "ISO-8859-10");
+    }
+
+    #[test]
+    fn iso_8859_13_defined_count_and_undefined_pointers() {
+        // ISO-8859-13: index-iso-8859-13.txt defines 128 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_ISO_8859_13), 128);
+        assert!(
+            undefined_pointers(&INDEX_ISO_8859_13).is_empty(),
+            "all pointers defined"
+        );
+    }
+
+    #[test]
+    fn iso_8859_13_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-iso-8859-13.txt.
+        assert_eq!(INDEX_ISO_8859_13[0x00], 0x0080, "first defined pointer");
+        assert_eq!(INDEX_ISO_8859_13[0x7F], 0x2019, "last defined pointer");
+        check_checksums(&INDEX_ISO_8859_13, "ISO-8859-13", 61443, 4217228);
+    }
+
+    #[test]
+    fn iso_8859_13_value_integrity() {
+        check_value_integrity(&INDEX_ISO_8859_13, "ISO-8859-13");
+    }
+
+    #[test]
+    fn iso_8859_14_defined_count_and_undefined_pointers() {
+        // ISO-8859-14: index-iso-8859-14.txt defines 128 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_ISO_8859_14), 128);
+        assert!(
+            undefined_pointers(&INDEX_ISO_8859_14).is_empty(),
+            "all pointers defined"
+        );
+    }
+
+    #[test]
+    fn iso_8859_14_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-iso-8859-14.txt.
+        assert_eq!(INDEX_ISO_8859_14[0x00], 0x0080, "first defined pointer");
+        assert_eq!(INDEX_ISO_8859_14[0x7F], 0x00FF, "last defined pointer");
+        check_checksums(&INDEX_ISO_8859_14, "ISO-8859-14", 192701, 11217019);
+    }
+
+    #[test]
+    fn iso_8859_14_value_integrity() {
+        check_value_integrity(&INDEX_ISO_8859_14, "ISO-8859-14");
+    }
+
+    #[test]
+    fn iso_8859_15_defined_count_and_undefined_pointers() {
+        // ISO-8859-15: index-iso-8859-15.txt defines 128 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_ISO_8859_15), 128);
+        assert!(
+            undefined_pointers(&INDEX_ISO_8859_15).is_empty(),
+            "all pointers defined"
+        );
+    }
+
+    #[test]
+    fn iso_8859_15_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-iso-8859-15.txt.
+        assert_eq!(INDEX_ISO_8859_15[0x00], 0x0080, "first defined pointer");
+        assert_eq!(INDEX_ISO_8859_15[0x7F], 0x00FF, "last defined pointer");
+        check_checksums(&INDEX_ISO_8859_15, "ISO-8859-15", 33968, 2126122);
+    }
+
+    #[test]
+    fn iso_8859_15_value_integrity() {
+        check_value_integrity(&INDEX_ISO_8859_15, "ISO-8859-15");
+    }
+
+    #[test]
+    fn iso_8859_16_defined_count_and_undefined_pointers() {
+        // ISO-8859-16: index-iso-8859-16.txt defines 128 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_ISO_8859_16), 128);
+        assert!(
+            undefined_pointers(&INDEX_ISO_8859_16).is_empty(),
+            "all pointers defined"
+        );
+    }
+
+    #[test]
+    fn iso_8859_16_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-iso-8859-16.txt.
+        assert_eq!(INDEX_ISO_8859_16[0x00], 0x0080, "first defined pointer");
+        assert_eq!(INDEX_ISO_8859_16[0x7F], 0x00FF, "last defined pointer");
+        check_checksums(&INDEX_ISO_8859_16, "ISO-8859-16", 54152, 3164658);
+    }
+
+    #[test]
+    fn iso_8859_16_value_integrity() {
+        check_value_integrity(&INDEX_ISO_8859_16, "ISO-8859-16");
+    }
+
+    #[test]
+    fn koi8_r_defined_count_and_undefined_pointers() {
+        // KOI8-R: index-koi8-r.txt defines 128 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_KOI8_R), 128);
+        assert!(
+            undefined_pointers(&INDEX_KOI8_R).is_empty(),
+            "all pointers defined"
+        );
+    }
+
+    #[test]
+    fn koi8_r_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-koi8-r.txt.
+        assert_eq!(INDEX_KOI8_R[0x00], 0x2500, "first defined pointer");
+        assert_eq!(INDEX_KOI8_R[0x7F], 0x042A, "last defined pointer");
+        check_checksums(&INDEX_KOI8_R, "KOI8-R", 602074, 23636351);
+    }
+
+    #[test]
+    fn koi8_r_value_integrity() {
+        check_value_integrity(&INDEX_KOI8_R, "KOI8-R");
+    }
+
+    #[test]
+    fn koi8_u_defined_count_and_undefined_pointers() {
+        // KOI8-U: index-koi8-u.txt defines 128 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_KOI8_U), 128);
+        assert!(
+            undefined_pointers(&INDEX_KOI8_U).is_empty(),
+            "all pointers defined"
+        );
+    }
+
+    #[test]
+    fn koi8_u_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-koi8-u.txt.
+        assert_eq!(INDEX_KOI8_U[0x00], 0x2500, "first defined pointer");
+        assert_eq!(INDEX_KOI8_U[0x7F], 0x042A, "last defined pointer");
+        check_checksums(&INDEX_KOI8_U, "KOI8-U", 517312, 19412804);
+    }
+
+    #[test]
+    fn koi8_u_value_integrity() {
+        check_value_integrity(&INDEX_KOI8_U, "KOI8-U");
+    }
+
+    #[test]
+    fn macintosh_defined_count_and_undefined_pointers() {
+        // macintosh: index-macintosh.txt defines 128 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_MACINTOSH), 128);
+        assert!(
+            undefined_pointers(&INDEX_MACINTOSH).is_empty(),
+            "all pointers defined"
+        );
+    }
+
+    #[test]
+    fn macintosh_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-macintosh.txt.
+        assert_eq!(INDEX_MACINTOSH[0x00], 0x00C4, "first defined pointer");
+        assert_eq!(INDEX_MACINTOSH[0x7F], 0x02C7, "last defined pointer");
+        check_checksums(&INDEX_MACINTOSH, "macintosh", 472827, 39718983);
+    }
+
+    #[test]
+    fn macintosh_value_integrity() {
+        check_value_integrity(&INDEX_MACINTOSH, "macintosh");
+    }
+
+    #[test]
+    fn windows_874_defined_count_and_undefined_pointers() {
+        // windows-874: index-windows-874.txt defines 120 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_WINDOWS_874), 120);
+        assert_eq!(
+            undefined_pointers(&INDEX_WINDOWS_874),
+            [0x5B, 0x5C, 0x5D, 0x5E, 0x7C, 0x7D, 0x7E, 0x7Fusize,]
+        );
+    }
+
+    #[test]
+    fn windows_874_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-windows-874.txt.
+        assert_eq!(INDEX_WINDOWS_874[0x00], 0x20AC, "first defined pointer");
+        assert_eq!(INDEX_WINDOWS_874[0x7B], 0x0E5B, "last defined pointer");
+        check_checksums(&INDEX_WINDOWS_874, "windows-874", 393324, 26122587);
+    }
+
+    #[test]
+    fn windows_874_value_integrity() {
+        check_value_integrity(&INDEX_WINDOWS_874, "windows-874");
+    }
+
+    #[test]
+    fn windows_1250_defined_count_and_undefined_pointers() {
+        // windows-1250: index-windows-1250.txt defines 128 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_WINDOWS_1250), 128);
+        assert!(
+            undefined_pointers(&INDEX_WINDOWS_1250).is_empty(),
+            "all pointers defined"
+        );
+    }
+
+    #[test]
+    fn windows_1250_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-windows-1250.txt.
+        assert_eq!(INDEX_WINDOWS_1250[0x00], 0x20AC, "first defined pointer");
+        assert_eq!(INDEX_WINDOWS_1250[0x7F], 0x02D9, "last defined pointer");
+        check_checksums(&INDEX_WINDOWS_1250, "windows-1250", 171434, 4356256);
+    }
+
+    #[test]
+    fn windows_1250_value_integrity() {
+        check_value_integrity(&INDEX_WINDOWS_1250, "windows-1250");
+    }
+
+    #[test]
+    fn windows_1251_defined_count_and_undefined_pointers() {
+        // windows-1251: index-windows-1251.txt defines 128 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_WINDOWS_1251), 128);
+        assert!(
+            undefined_pointers(&INDEX_WINDOWS_1251).is_empty(),
+            "all pointers defined"
+        );
+    }
+
+    #[test]
+    fn windows_1251_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-windows-1251.txt.
+        assert_eq!(INDEX_WINDOWS_1251[0x00], 0x0402, "first defined pointer");
+        assert_eq!(INDEX_WINDOWS_1251[0x7F], 0x044F, "last defined pointer");
+        check_checksums(&INDEX_WINDOWS_1251, "windows-1251", 252370, 10539701);
+    }
+
+    #[test]
+    fn windows_1251_value_integrity() {
+        check_value_integrity(&INDEX_WINDOWS_1251, "windows-1251");
+    }
+
+    #[test]
+    fn windows_1252_defined_count_and_undefined_pointers() {
+        // windows-1252: index-windows-1252.txt defines 128 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_WINDOWS_1252), 128);
+        assert!(
+            undefined_pointers(&INDEX_WINDOWS_1252).is_empty(),
+            "all pointers defined"
+        );
+    }
+
+    #[test]
+    fn windows_1252_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-windows-1252.txt.
+        assert_eq!(INDEX_WINDOWS_1252[0x00], 0x20AC, "first defined pointer");
+        assert_eq!(INDEX_WINDOWS_1252[0x7F], 0x00FF, "last defined pointer");
+        check_checksums(&INDEX_WINDOWS_1252, "windows-1252", 165226, 3860234);
+    }
+
+    #[test]
+    fn windows_1252_value_integrity() {
+        check_value_integrity(&INDEX_WINDOWS_1252, "windows-1252");
+    }
+
+    #[test]
+    fn windows_1253_defined_count_and_undefined_pointers() {
+        // windows-1253: index-windows-1253.txt defines 125 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_WINDOWS_1253), 125);
+        assert_eq!(undefined_pointers(&INDEX_WINDOWS_1253), [0x2A, 0x52, 0x7Fusize,]);
+    }
+
+    #[test]
+    fn windows_1253_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-windows-1253.txt.
+        assert_eq!(INDEX_WINDOWS_1253[0x00], 0x20AC, "first defined pointer");
+        assert_eq!(INDEX_WINDOWS_1253[0x7E], 0x03CE, "last defined pointer");
+        check_checksums(&INDEX_WINDOWS_1253, "windows-1253", 221161, 8780591);
+    }
+
+    #[test]
+    fn windows_1253_value_integrity() {
+        check_value_integrity(&INDEX_WINDOWS_1253, "windows-1253");
+    }
+
+    #[test]
+    fn windows_1254_defined_count_and_undefined_pointers() {
+        // windows-1254: index-windows-1254.txt defines 128 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_WINDOWS_1254), 128);
+        assert!(
+            undefined_pointers(&INDEX_WINDOWS_1254).is_empty(),
+            "all pointers defined"
+        );
+    }
+
+    #[test]
+    fn windows_1254_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-windows-1254.txt.
+        assert_eq!(INDEX_WINDOWS_1254[0x00], 0x20AC, "first defined pointer");
+        assert_eq!(INDEX_WINDOWS_1254[0x7F], 0x00FF, "last defined pointer");
+        check_checksums(&INDEX_WINDOWS_1254, "windows-1254", 165248, 3900167);
+    }
+
+    #[test]
+    fn windows_1254_value_integrity() {
+        check_value_integrity(&INDEX_WINDOWS_1254, "windows-1254");
+    }
+
+    #[test]
+    fn windows_1255_defined_count_and_undefined_pointers() {
+        // windows-1255: index-windows-1255.txt defines 118 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_WINDOWS_1255), 118);
+        assert_eq!(
+            undefined_pointers(&INDEX_WINDOWS_1255),
+            [0x59, 0x5A, 0x5B, 0x5C, 0x5D, 0x5E, 0x5F, 0x7B, 0x7C, 0x7Fusize,]
+        );
+    }
+
+    #[test]
+    fn windows_1255_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-windows-1255.txt.
+        assert_eq!(INDEX_WINDOWS_1255[0x00], 0x20AC, "first defined pointer");
+        assert_eq!(INDEX_WINDOWS_1255[0x7E], 0x200F, "last defined pointer");
+        check_checksums(&INDEX_WINDOWS_1255, "windows-1255", 251612, 12116030);
+    }
+}
