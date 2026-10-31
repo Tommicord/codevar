@@ -1,0 +1,227 @@
+//! Copyright 2026 Codevar Project
+//! Licensed under the Apache License, Version 2.0 (the
+//! "License"); you may not use this file except in
+//! compliance with the License. You may obtain a copy of the
+//! License at
+//!
+//!   https://www.apache.org/licenses/LICENSE-2.0
+//!
+//! Unless required by applicable law or agreed to in
+//! writing, software distributed under the License is
+//! distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+//! CONDITIONS OF ANY KIND, either express or implied. See
+//! the License for the specific language governing
+//! permissions and limitations under the License.
+
+//! A share whose ownership window cannot be forgotten.
+//!
+//! Importing a Vulkan allocation into OpenCL does not hand it over: the
+//! OpenCL commands of a queue may only read or write it between
+//! `clEnqueueAcquireExternalMemObjectsKHR` and the matching release, and a
+//! command that touches it outside that window races the Vulkan device that
+//! still owns it. Neither driver detects the race, so the window is the
+//! thing this module models: [`SharedBuffer::acquire`] opens it and returns
+//! a [`Share`] that closes it again when the scope ends.
+//!
+//! The descriptors themselves are never owned here. A handle exported by
+//! [`Vulkan`](crate::Vulkan) stays owned by the exporter, which closes it
+//! once [`import`](SharedBuffer::import) has read it — the same rule both
+//! drivers document, and the reason no type in this crate takes an `i32`
+//! it might have to close.
+
+use core::slice;
+
+use codevar_logger::log_warn;
+use codevar_ocl::{Buffer, CommandQueue, Context, Event};
+
+use crate::error::Result;
+use crate::handle::{MemoryHandle, MemoryKind};
+
+/// A buffer of an OpenCL context that stands on memory a Vulkan device
+/// allocated.
+pub struct SharedBuffer {
+    buffer: Buffer,
+    kind: MemoryKind,
+}
+
+impl SharedBuffer {
+    /// Imports the allocation `handle` names as a buffer of `context`.
+    ///
+    /// `handle` is what [`Vulkan::export_memory`](crate::Vulkan::export_memory)
+    /// returned for the allocation, and `size` is the size of the buffer to
+    /// create over it — the descriptor carries no length, so a `size`
+    /// larger than the allocation is a driver-side error at best and out-
+    /// of-bounds writes by OpenCL at worst.
+    ///
+    /// The descriptor stays owned by the exporter: this call only reads it,
+    /// and closing it is the caller's job.
+    ///
+    /// # Errors
+    ///
+    /// - [`crate::Error::OpenCl`] when the driver refuses the import, which
+    ///   is also how a context without `cl_khr_external_memory`, a handle
+    ///   from another device and a size beyond the allocation are reported.
+    pub fn import(context: &Context, size: usize, handle: MemoryHandle) -> Result<Self> {
+        let buffer = Buffer::from_external(context, size, handle.as_opencl())?;
+        Ok(Self {
+            buffer,
+            kind: handle.kind(),
+        })
+    }
+
+    /// The OpenCL buffer, for the enqueue calls of a
+    /// [`CommandQueue`].
+    ///
+    /// Reading or writing it is only legal while a [`Share`] of the same
+    /// buffer is alive.
+    #[must_use]
+    pub fn buffer(&self) -> &Buffer {
+        &self.buffer
+    }
+
+    /// The handle kind the allocation was imported as.
+    #[must_use]
+    pub const fn kind(&self) -> MemoryKind {
+        self.kind
+    }
+
+    /// Takes ownership of the allocation for `queue`, in the same scope that
+    /// gives it back.
+    ///
+    /// See [`Share`] for the release; the acquire event it carries is the
+    /// command that every OpenCL read or writing to the buffer must wait on.
+    ///
+    /// # Errors
+    ///
+    /// - [`crate::Error::OpenCl`] for every refusal of this side, which is
+    ///   also how a driver without `clEnqueueAcquireExternalMemObjectsKHR`
+    ///   answers.
+    pub fn acquire<'q>(&self, queue: &'q CommandQueue) -> Result<Share<'_, 'q>> {
+        Share::new(slice::from_ref(&self.buffer), queue)
+    }
+}
+
+/// The window in which one OpenCL queue owns a shared allocation.
+///
+/// The value borrows the buffers it guards, so no buffer can be dropped,
+/// re-imported or moved to another context while the window is open, and
+/// the window cannot outlive the queue that opened it.
+pub struct Share<'b, 'q> {
+    buffers: &'b [Buffer],
+    queue: &'q CommandQueue,
+    event: Event,
+}
+
+impl<'b, 'q> Share<'b, 'q> {
+    /// Acquires `buffers` on `queue`.
+    ///
+    /// # Errors
+    ///
+    /// As [`SharedBuffer::acquire`], which is how a caller reaches this, plus
+    /// [`crate::Error::OpenCl`] carrying the wrapper's own invalid-argument
+    /// error for an empty list: `Share` is checked before the queue is asked,
+    /// so a hand-built window over nothing never reaches the driver.
+    pub fn new(buffers: &'b [Buffer], queue: &'q CommandQueue) -> Result<Self> {
+        let event = queue.acquire_external_memory(buffers)?;
+        Ok(Self {
+            buffers,
+            queue,
+            event,
+        })
+    }
+
+    /// The acquire command.
+    #[must_use]
+    pub fn event(&self) -> &Event {
+        &self.event
+    }
+
+    /// The queue that holds the allocation.
+    #[must_use]
+    pub fn queue(&self) -> &CommandQueue {
+        self.queue
+    }
+
+    /// The buffers under guard.
+    #[must_use]
+    pub fn buffers(&self) -> &[Buffer] {
+        self.buffers
+    }
+}
+
+impl Drop for Share<'_, '_> {
+    fn drop(&mut self) {
+        // Releasing is what hands the allocation back to Vulkan; a driver
+        // that refuses it leaves the memory owned by nobody, which the
+        // caller cannot see from a `Drop`, so it goes to the log.
+        if let Err(error) = self.queue.release_external_memory(self.buffers) {
+            log_warn!("clEnqueueReleaseExternalMemObjectsKHR failed with {error}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codevar_ocl::{Device, Runtime};
+
+    /// A context on the installed driver or the built-in CPU one, whichever
+    /// answers first, with the device it was built from and a queue for it.
+    fn queue() -> Option<(Device, Context, CommandQueue)> {
+        let runtime = Runtime::load().ok()?;
+        let device = runtime
+            .platforms()
+            .first()
+            .and_then(|platform| platform.all_devices().ok())
+            .and_then(|devices| devices.into_iter().next())?;
+        let context = Context::new(&device).ok()?;
+        let queue = CommandQueue::new(&context, &device).ok()?;
+        Some((device, context, queue))
+    }
+
+    /// A driver without `cl_khr_external_memory` has to refuse an import,
+    /// and a bogus descriptor has to be refused by the driver that does
+    /// have it: neither may panic, and neither may pretend the buffer is
+    /// shared. Both answers arrive as an OpenCL error, because the OpenCL
+    /// side is the one that reads the handle.
+    #[test]
+    fn an_import_only_succeeds_on_a_driver_that_can_take_the_handle() {
+        let Some((_, context, _)) = queue() else { return };
+        let imported = SharedBuffer::import(&context, 64, MemoryHandle::DmaBuf(-1));
+        assert!(
+            matches!(imported, Err(crate::Error::OpenCl(_))),
+            "a dma_buf descriptor of -1 cannot name an allocation"
+        );
+    }
+
+    /// The guard only ever claims buffers of the queue's own context, which
+    /// the wrapper checks by identity and not by device: a second context
+    /// over the same GPU is still foreign, so a hand-built share cannot hand
+    /// back memory another queue holds.
+    #[test]
+    fn a_guard_over_a_foreign_buffer_is_refused_before_the_driver() {
+        let Some((device, _, queue)) = queue() else { return };
+        let Ok(other) = Context::new(&device) else {
+            return;
+        };
+        let Ok(buffer) = Buffer::new(&other, 64) else {
+            return;
+        };
+        assert!(matches!(
+            Share::new(slice::from_ref(&buffer), &queue),
+            Err(crate::Error::OpenCl(codevar_ocl::Error::ContextMismatch { .. }))
+        ));
+    }
+
+    /// An empty list never reaches the driver either: the guard is refused by
+    /// the wrapper that checks it, so a hand-built window over nothing cannot
+    /// leave a queue holding nothing.
+    #[test]
+    fn a_guard_over_no_buffers_is_refused_before_the_driver() {
+        let Some((_, _, queue)) = queue() else { return };
+        assert!(matches!(
+            Share::new(&[], &queue),
+            Err(crate::Error::OpenCl(codevar_ocl::Error::InvalidArgument { .. }))
+        ));
+    }
+}
