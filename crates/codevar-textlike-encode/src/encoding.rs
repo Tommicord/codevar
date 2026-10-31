@@ -2719,6 +2719,45 @@ mod tests {
     }
 
     #[test]
+    fn decode_to_utf8_withholds_a_replacement_that_does_not_fit() {
+        // A replacement character is three bytes, so a destination without room
+        // for the whole sequence reports the offending bytes back as unread and
+        // the caller retries with room instead of losing them.
+        let mut decoder = UTF_8.new_decoder_without_bom_handling();
+        let mut dst = [0u8; 3];
+        let (result, read, written, had_errors) = decoder.decode_to_utf8(b"AB\xE2\x98", &mut dst, true);
+        assert_eq!(
+            (result, read, written, had_errors),
+            (CoderResult::OutputFull, 2, 2, false)
+        );
+        assert_eq!(&dst[..written], b"AB");
+
+        // The withheld bytes are retried, not lost.
+        let mut decoder = UTF_8.new_decoder_without_bom_handling();
+        let mut dst = [0u8; 6];
+        let (result, read, written, had_errors) = decoder.decode_to_utf8(b"AB\xE2\x98", &mut dst, true);
+        assert_eq!(
+            (result, read, written, had_errors),
+            (CoderResult::InputEmpty, 4, 5, true)
+        );
+        assert_eq!(&dst[..written], b"AB\xEF\xBF\xBD");
+    }
+
+    #[test]
+    fn decode_to_utf16_withholds_a_replacement_that_does_not_fit() {
+        // The utf-16 destination holds one code unit, which the decoder fills
+        // before it reaches the truncated sequence, so the bad bytes stay
+        // unread and no error is claimed for a replacement never emitted.
+        let mut decoder = UTF_8.new_decoder_without_bom_handling();
+        let mut dst = [0u16; 1];
+        let (result, read, written, had_errors) =
+            decoder.decode_to_utf16(b"\x41\xF0\x9F\x92", &mut dst, true);
+        assert_eq!((result, read, written), (CoderResult::OutputFull, 1, 1));
+        assert!(!had_errors, "the replacement is owed, not written");
+        assert_eq!(dst[0], 0x0041);
+    }
+
+    #[test]
     fn single_byte_encode_destination_below_ncr_reserve_is_output_full() {
         let mut e = LATIN1.new_encoder();
         let mut dst = [0u8; 9];
