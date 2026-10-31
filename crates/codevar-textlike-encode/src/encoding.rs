@@ -17,14 +17,12 @@ use crate::ascii::{ascii_to_ascii, ascii_to_basic_latin, ascii_valid_up_to, vali
 use crate::single_byte::{SingleByteDecoder, SingleByteEncoder};
 use crate::utf8::{
     Utf8Decoder, Utf8Encoder, convert_utf16_to_utf8_partial_inner, convert_utf16_to_utf8_partial_tail,
-    utf8_valid_up_to,
 };
 use crate::utf16::{Utf16Decoder, Utf16Encoder};
 use alloc::borrow::Cow;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::cmp::PartialEq;
-use core::slice;
 
 pub const NCR_EXTRA: usize = 10;
 
@@ -785,52 +783,49 @@ pub static UTF_16LE: Encoding = Encoding {
 };
 
 pub fn decode_latin1(bytes: &[u8]) -> Cow<'_, str> {
-    unsafe {
-        let up_to = ascii_valid_up_to(bytes);
-        if up_to >= bytes.len() {
-            return Cow::Borrowed(::core::str::from_utf8_unchecked(bytes));
-        }
-        let (head, tail) = bytes.split_at(up_to);
-        let capacity = head.len() + tail.len() * 2;
-        let mut vec = Vec::with_capacity(capacity);
-        vec.extend_from_slice(head);
-        let old_len = vec.len();
-        let mut spare_temp = vec.clone();
-        let spare_capacity = minimally_init(spare_temp.spare_capacity_mut());
-        debug_assert_eq!(old_len, up_to);
-        let written = convert_latin1_to_utf8(tail, spare_capacity.assume_init_mut());
-        debug_assert!(written <= spare_capacity.len());
-        let new_len = old_len + written;
-        debug_assert!(new_len <= vec.capacity());
-        let new_len = new_len.min(vec.capacity());
-        vec.set_len(new_len);
-        Cow::Owned(String::from_utf8_unchecked(vec))
+    let up_to = ascii_valid_up_to(bytes);
+    if up_to >= bytes.len() {
+        // Safety: every byte below `up_to` is ASCII, and `up_to` is the whole
+        // input on this path, so the view is valid UTF-8.
+        return Cow::Borrowed(unsafe { ::core::str::from_utf8_unchecked(bytes) });
     }
+    let (head, tail) = bytes.split_at(up_to);
+    let capacity = head.len() + tail.len() * 2;
+    let mut vec = Vec::with_capacity(capacity);
+    vec.extend_from_slice(head);
+    let old_len = vec.len();
+    // The conversion fills the spare capacity in place; the borrow has to end
+    // before `set_len`, so it lives in its own scope rather than in a clone of
+    // the head, whose spare capacity is empty.
+    let written = {
+        let spare = minimally_init(vec.spare_capacity_mut());
+        debug_assert_eq!(spare.len(), capacity - old_len);
+        convert_latin1_to_utf8(tail, unsafe { spare.assume_init_mut() })
+    };
+    debug_assert!(written <= capacity - old_len);
+    unsafe { vec.set_len(old_len + written) };
+    Cow::Owned(unsafe { String::from_utf8_unchecked(vec) })
 }
 
 pub fn encode_latin1_lossy(string: &str) -> Cow<'_, [u8]> {
-    unsafe {
-        let bytes = string.as_bytes();
-        let up_to = ascii_valid_up_to(bytes);
-        if up_to >= bytes.len() {
-            return Cow::Borrowed(bytes);
-        }
-        let (head, tail) = bytes.split_at(up_to);
-        let capacity = bytes.len();
-        let mut vec = Vec::with_capacity(capacity);
-        vec.extend_from_slice(head);
-        let old_len = vec.len();
-        let mut spare_temp = vec.clone();
-        let spare_capacity = minimally_init(spare_temp.spare_capacity_mut());
-        debug_assert_eq!(old_len, up_to);
-        let written = convert_utf8_to_latin1_lossy(tail, spare_capacity.assume_init_mut());
-        debug_assert!(written <= spare_capacity.len());
-        let new_len = old_len + written;
-        debug_assert!(new_len <= vec.capacity());
-        let new_len = new_len.min(vec.capacity());
-        vec.set_len(new_len);
-        Cow::Owned(vec)
+    let bytes = string.as_bytes();
+    let up_to = ascii_valid_up_to(bytes);
+    if up_to >= bytes.len() {
+        return Cow::Borrowed(bytes);
     }
+    let (head, tail) = bytes.split_at(up_to);
+    let capacity = bytes.len();
+    let mut vec = Vec::with_capacity(capacity);
+    vec.extend_from_slice(head);
+    let old_len = vec.len();
+    let written = {
+        let spare = minimally_init(vec.spare_capacity_mut());
+        debug_assert_eq!(spare.len(), capacity - old_len);
+        convert_utf8_to_latin1_lossy(tail, unsafe { spare.assume_init_mut() })
+    };
+    debug_assert!(written <= capacity - old_len);
+    unsafe { vec.set_len(old_len + written) };
+    Cow::Owned(vec)
 }
 
 pub fn convert_utf8_to_latin1_lossy(src: &[u8], dst: &mut [u8]) -> usize {
@@ -1050,42 +1045,11 @@ pub fn convert_latin1_to_str(src: &[u8], dst: &mut str) -> Result<usize, Encodin
     Ok(written)
 }
 
+/// Decode `bytes` as UTF-8, replacing each maximal invalid subpart with
+/// U+FFFD. Valid input is borrowed; only input that needs replacement chars is
+/// allocated.
 pub fn decode_utf8(bytes: &[u8]) -> Cow<'_, str> {
-    unsafe {
-        let up_to = utf8_valid_up_to(bytes);
-        if up_to >= bytes.len() {
-            return Cow::Borrowed(str::from_utf8_unchecked(bytes));
-        }
-        let (head, tail) = bytes.split_at(up_to);
-        let capacity = head.len() + tail.len() * 3;
-        let mut vec = Vec::with_capacity(capacity);
-        vec.extend_from_slice(head);
-        let old_len = vec.len();
-        let mut spare_temp = vec.clone();
-        let spare_capacity = minimally_init(spare_temp.spare_capacity_mut());
-        debug_assert_eq!(old_len, up_to);
-        let bytes_len = spare_capacity.len() / 2;
-        let written = match convert_utf8_to_utf16(
-            tail,
-            slice::from_raw_parts_mut(spare_capacity.as_mut_ptr() as *mut u16, bytes_len),
-        ) {
-            Ok(written) => written,
-            Err(_) => {
-                debug_assert!(false, "decode_utf8 buffer sizing guarantees conversion succeeds");
-                // Fail safe without panicking: return only the validated
-                // prefix rather than risk inconsistent lengths below.
-                return Cow::Borrowed(str::from_utf8_unchecked(head));
-            }
-        };
-        debug_assert!(written <= spare_capacity.len());
-        let new_len = old_len + written;
-        debug_assert!(new_len <= vec.capacity());
-        let new_len = new_len.min(vec.capacity());
-        vec.set_len(new_len);
-        let mut bytes = str::from_utf8_unchecked(spare_capacity[..new_len].assume_init_mut()).to_string();
-        bytes.shrink_to_fit();
-        Cow::Owned(bytes)
-    }
+    String::from_utf8_lossy(bytes)
 }
 
 pub fn ensure_utf16_validity(buffer: &mut [u16]) {
@@ -1292,6 +1256,7 @@ pub fn convert_utf16_to_str(src: &[u16], dst: &mut str) -> Result<usize, Encodin
 mod tests {
     use super::*;
     use alloc::format;
+    use alloc::string::ToString;
 
     const fn latin1_table() -> [u16; 128] {
         let mut t = [0u16; 128];
@@ -2587,15 +2552,19 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
-    fn decode_latin1_non_ascii_panics_in_debug_current_behavior() {
-        // Suspected production bug (reported, not fixed): `decode_latin1`
-        // clones the head `vec` to reach its spare capacity (encoding.rs),
-        // but `Vec::clone` allocates exactly `len` capacity, so the spare
-        // slice is empty. The debug assertion in `convert_latin1_to_utf8`
-        // fires; in release the non-ASCII tail would be silently dropped.
+    fn decode_latin1_converts_the_non_ascii_tail_into_the_head_buffer() {
+        // The conversion writes into the head vec's own spare capacity; an
+        // earlier version reached for the spare capacity of a *clone*, which
+        // has none and silently dropped everything after the ASCII run.
         let owned = decode_latin1(&[0x41u8, 0xE9]);
+        assert!(matches!(owned, Cow::Owned(_)));
         assert_eq!(owned.as_ref(), "A\u{e9}");
+        let all_bytes: Vec<u8> = (0x80u8..=0xFF).collect();
+        let expected: String = all_bytes.iter().map(|b| char::from(*b)).collect();
+        let owned = decode_latin1(&all_bytes);
+        assert_eq!(owned.as_ref(), expected);
+        assert_eq!(decode_latin1(b"\xE9").as_ref(), "\u{e9}");
+        assert_eq!(decode_latin1(&[0x41, 0x00, 0xFF]).as_ref(), "A\u{0}\u{FF}");
     }
 
     #[test]
@@ -2606,13 +2575,13 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
-    fn encode_latin1_lossy_non_ascii_panics_in_debug_current_behavior() {
-        // Same `Vec::clone` spare-capacity suspect as `decode_latin1`: the
-        // debug assertion on `written <= spare_capacity.len()` fires because
-        // the clone has no spare capacity.
+    fn encode_latin1_lossy_folds_the_non_ascii_tail_into_the_head_buffer() {
         let owned = encode_latin1_lossy("A\u{e9}");
+        assert!(matches!(owned, Cow::Owned(_)));
         assert_eq!(owned.as_ref(), &[0x41u8, 0xE9]);
+        let text: String = (0x80u8..=0xFF).map(char::from).collect();
+        let owned = encode_latin1_lossy(&text);
+        assert_eq!(owned.as_ref(), &(0x80u8..=0xFF).collect::<Vec<u8>>()[..]);
     }
 
     #[test]
@@ -2621,6 +2590,19 @@ mod tests {
         let out = decode_utf8(text.as_bytes());
         assert!(matches!(out, Cow::Borrowed(_)));
         assert_eq!(out.as_ref(), text);
+    }
+
+    #[test]
+    fn decode_utf8_replaces_each_maximal_invalid_subpart() {
+        // The head stays valid; only the rejected bytes become replacements, so
+        // the result is what the replacing decoder would have produced.
+        assert_eq!(decode_utf8(b"a\xFFb").as_ref(), "a\u{FFFD}b");
+        assert_eq!(decode_utf8(b"\xC3\x28").as_ref(), "\u{FFFD}(");
+        assert_eq!(decode_utf8(b"\xE2\x98\x83\xE2").as_ref(), "\u{2603}\u{FFFD}");
+        assert_eq!(decode_utf8(b"\xF0\x9F\x92\xA9").as_ref(), "\u{1F4A9}");
+        assert_eq!(decode_utf8("h\u{e9}llo".as_bytes()).as_ref(), "h\u{e9}llo");
+        let bad = [0xEDu8, 0xA0, 0x80]; // an utf-8 encoded surrogate
+        assert_eq!(decode_utf8(&bad).as_ref(), "\u{FFFD}\u{FFFD}\u{FFFD}");
     }
 
     #[test]
