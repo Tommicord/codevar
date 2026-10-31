@@ -36,9 +36,11 @@
 //!
 //! A payload is what distinguishes a binary from a timeline semaphore,
 //! and this extension defines only the binary type
-//! (`CL_SEMAPHORE_TYPE_BINARY_KHR`), whose payload is `0` for the unset
-//! and `1` for the set side. The wait and signal commands therefore take
-//! semaphores rather than semaphore/payload pairs.
+//! (`CL_SEMAPHORE_TYPE_BINARY_KHR`), which has no payload to choose: it is
+//! either unsignaled or signaled. The wait and signal commands therefore
+//! take semaphores rather than semaphore/payload pairs, and pass a null
+//! payload list — the form the specification allows for a semaphore that
+//! requires no payload.
 //!
 //! # Examples
 //!
@@ -72,13 +74,16 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use core::fmt;
+use core::ptr::null_mut;
 
 use codevar_logger::log_warn;
 
 use crate::api::Api;
 use crate::context::Context;
 use crate::error::{self, Error, Result};
+use crate::event::Event;
 use crate::properties::{self, PropertyList};
+use crate::queue::CommandQueue;
 use crate::sys;
 
 /// A handle to a semaphore exported by another API.
@@ -302,6 +307,115 @@ impl Semaphore {
     pub fn context(&self) -> &Context {
         &self.inner.context
     }
+
+    /// Returns the raw driver handle.
+    pub(crate) fn raw(&self) -> sys::SemaphoreHandle {
+        self.inner.raw
+    }
+}
+
+/// The exchange of signals: a Vulkan endpoint signals a semaphore this
+/// queue waits on, or an OpenCL command signals one Vulkan waits on.
+impl CommandQueue {
+    /// Validates `semaphores` for a semaphore command and collects their
+    /// driver handles in the order the driver expects.
+    fn semaphore_handles(&self, semaphores: &[Semaphore]) -> Result<Vec<sys::SemaphoreHandle>> {
+        if semaphores.is_empty() {
+            return Err(Error::InvalidArgument {
+                what: "a semaphore command must name at least one semaphore",
+            });
+        }
+        for semaphore in semaphores {
+            self.check_context(
+                semaphore.context(),
+                "a signaled semaphore belongs to a different context",
+            )?;
+        }
+        Ok(semaphores.iter().map(Semaphore::raw).collect())
+    }
+
+    /// Runs the commands submitted before it, then blocks this queue until
+    /// every semaphore in `semaphores` is signaled
+    /// (`clEnqueueWaitSemaphoresKHR`).
+    ///
+    /// The command consumes the signal: it does not return until each
+    /// binary semaphore is back in the state that lets it be signaled
+    /// again, so exactly one wait belongs to each signal. Waiting twice on
+    /// one semaphore without a signal in between is undefined, which is
+    /// why this is a command on a queue rather than a peek at a flag.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidArgument`] when `semaphores` is empty,
+    /// [`Error::ContextMismatch`] when a semaphore came from another
+    /// context, [`Error::Unsupported`] when the driver does not export the
+    /// entry point, and [`Error::Status`] / [`Error::NullHandle`] on driver
+    /// failures.
+    pub fn wait_semaphores(&self, semaphores: &[Semaphore]) -> Result<Event> {
+        let handles = self.semaphore_handles(semaphores)?;
+        let wait = Api::optional(
+            self.context().extensions().wait_semaphores,
+            "clEnqueueWaitSemaphoresKHR",
+        )?;
+        let mut event = sys::EventHandle::from_raw(null_mut());
+        // SAFETY: `handles` are the live `cl_semaphore_khr` values of this
+        // queue's own context, which `semaphore_handles` just checked, and
+        // the vector outlives the call; the payload list is null, which the
+        // specification allows because a binary semaphore requires no
+        // payload; the wait list is empty and `event` is a valid
+        // out-pointer.
+        let code = unsafe {
+            wait(
+                self.raw(),
+                handles.len() as u32,
+                handles.as_ptr(),
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                &mut event,
+            )
+        };
+        let raw = error::creation(event, code, "clEnqueueWaitSemaphoresKHR")?;
+        Ok(Event::new(self, raw))
+    }
+
+    /// Runs the commands submitted before it, then signals every semaphore
+    /// in `semaphores` (`clEnqueueSignalSemaphoresKHR`).
+    ///
+    /// The signal is a queue command, not an instant flag write: a Vulkan
+    /// endpoint waiting on it is released when the *command* completes, so
+    /// work enqueued on this queue earlier is finished by then. A semaphore
+    /// that is already signaled stays signaled — the binary type has no
+    /// count — so a signal without the matching wait on the other side
+    /// leaves the flag set.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`wait_semaphores`](Self::wait_semaphores).
+    pub fn signal_semaphores(&self, semaphores: &[Semaphore]) -> Result<Event> {
+        let handles = self.semaphore_handles(semaphores)?;
+        let signal = Api::optional(
+            self.context().extensions().signal_semaphores,
+            "clEnqueueSignalSemaphoresKHR",
+        )?;
+        let mut event = sys::EventHandle::from_raw(null_mut());
+        // SAFETY: as for the wait above — the handles are live, belong to
+        // this queue's context and outlive the call, no semaphore requires
+        // a payload, and `event` is a valid out-pointer.
+        let code = unsafe {
+            signal(
+                self.raw(),
+                handles.len() as u32,
+                handles.as_ptr(),
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                &mut event,
+            )
+        };
+        let raw = error::creation(event, code, "clEnqueueSignalSemaphoresKHR")?;
+        Ok(Event::new(self, raw))
+    }
 }
 
 impl fmt::Debug for Semaphore {
@@ -424,9 +538,48 @@ mod tests {
         };
         if let Ok(semaphore) = Semaphore::new(&context) {
             let clone = semaphore.clone();
+            assert_eq!(semaphore.raw(), clone.raw());
             assert!(semaphore.context().same_as(clone.context()));
         } else {
             assert!(!context.supports_semaphores());
         }
+    }
+
+    /// The arguments of a semaphore command are checked before the driver
+    /// is asked, so a malformed request answers the same way whether or not
+    /// the driver exports `cl_khr_semaphore` at all.
+    #[test]
+    fn semaphore_commands_validate_their_arguments_first() {
+        let Some(context) = context() else {
+            return;
+        };
+        let Ok(queue) = CommandQueue::new(&context, context.device()) else {
+            return;
+        };
+        assert!(matches!(
+            queue.wait_semaphores(&[]),
+            Err(Error::InvalidArgument { .. })
+        ));
+        assert!(matches!(
+            queue.signal_semaphores(&[]),
+            Err(Error::InvalidArgument { .. })
+        ));
+        // A second context over the same device is still a foreign
+        // context, and a semaphore of that context cannot be waited on
+        // here — the driver tracks the signal per context.
+        let Ok(other) = Context::new(context.device()) else {
+            return;
+        };
+        let Ok(foreign) = Semaphore::new(&other) else {
+            return;
+        };
+        assert!(matches!(
+            queue.wait_semaphores(&[foreign.clone()]),
+            Err(Error::ContextMismatch { .. })
+        ));
+        assert!(matches!(
+            queue.signal_semaphores(&[foreign]),
+            Err(Error::ContextMismatch { .. })
+        ));
     }
 }
