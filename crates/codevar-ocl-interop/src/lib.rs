@@ -46,3 +46,9 @@
 
 #![cfg_attr(not(test), no_std)]
 #![warn(missing_docs)]
+
+mod error;
+mod handle;
+
+pub use error::{Error, Result};
+pub use handle::{MemoryHandle, MemoryKind, SemaphoreHandle, SemaphoreKind};
