@@ -605,7 +605,7 @@ pub fn for_bom(bytes: &[u8]) -> Option<&'static Encoding> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::encoding::{DecoderResult, EncoderResult};
+    use crate::encoding::{CoderResult, Decoder, DecoderResult, EncoderResult, NCR_EXTRA};
 
     fn by_name(name: &str) -> &'static Encoding {
         ENCODINGS
@@ -1173,6 +1173,37 @@ mod tests {
             panic!("{} is not a single-byte encoding", encoding.name);
         };
         (bmp_offset, byte_offset, length)
+    }
+
+    fn decode_all(decoder: &mut Decoder, bytes: &[u8]) -> Vec<u16> {
+        // A single-byte decoding emits at most one code unit per input byte, the
+        // replacement characters of undefined pointers included.
+        let mut dst = vec![0u16; bytes.len() + 4];
+        let (result, read, written, _had_errors) = decoder.decode_to_utf16(bytes, &mut dst, true);
+        assert_eq!(result, CoderResult::InputEmpty, "{} bytes in", bytes.len());
+        assert_eq!(read, bytes.len());
+        dst.truncate(written);
+        dst
+    }
+
+    fn units(encoding: &'static Encoding, bytes: &[u8]) -> Vec<u16> {
+        decode_all(&mut encoding.new_decoder_without_bom_handling(), bytes)
+    }
+
+    fn encode_unit(encoding: &'static Encoding, unit: u16) -> Result<u8, EncoderResult> {
+        let mut dst = [0u8; 4];
+        let mut encoder = encoding.new_encoder();
+        let (result, read, written) = encoder.encode_from_utf16_without_replacement(&[unit], &mut dst, true);
+        match result {
+            EncoderResult::InputEmpty => {
+                assert_eq!((read, written), (1, 1), "{}: U+{unit:04X}", encoding.name);
+                Ok(dst[0])
+            }
+            other => {
+                assert_eq!((read, written), (1, 0), "{}: U+{unit:04X}", encoding.name);
+                Err(other)
+            }
+        }
     }
 
     fn family_of(name: &str) -> Vec<&'static str> {
@@ -1820,5 +1851,629 @@ mod tests {
                 .all(|(pointer, &unit)| unit == 0x0080 + pointer as u16);
             assert_eq!(identity, iso.contains(&encoding.name), "{}", encoding.name);
         }
+    }
+
+    #[test]
+    fn windows_1252_is_latin1_exact_from_no_break_space_onward() {
+        let table = table_of(&WINDOWS_1252);
+        for (offset, &unit) in table[0x20..].iter().enumerate() {
+            assert_eq!(unit, 0x00A0 + offset as u16, "byte {:02X}", 0xA0 + offset);
+        }
+        assert_eq!(run_of(&WINDOWS_1252), (0x00A0, 0x20, 96));
+        assert_ne!(table[0x00], 0x0080, "cp1252 replaces the C1 controls");
+    }
+
+    #[test]
+    fn windows_1254_tracks_latin1_only_to_byte_cf() {
+        let table = table_of(&WINDOWS_1254);
+        for (offset, &unit) in table[0x20..0x50].iter().enumerate() {
+            assert_eq!(unit, 0x00A0 + offset as u16, "byte {:02X}", 0xA0 + offset);
+        }
+        assert_ne!(table[0x50], 0x00D0, "byte D0: Latin-1 diverges here");
+        assert_eq!(run_of(&WINDOWS_1254), (0x00A0, 0x20, 48));
+    }
+
+    #[test]
+    fn koi8_u_and_koi8_r_differ_only_in_the_screen_graphics_row() {
+        let r = table_of(&KOI8_R);
+        let u = table_of(&KOI8_U);
+        let diffs: Vec<u16> = (0..r.len())
+            .filter(|&pointer| r[pointer] != u[pointer])
+            .map(|pointer| 0x80 + pointer as u16)
+            .collect();
+        assert_eq!(diffs.len(), 10);
+        assert!(
+            diffs
+                .iter()
+                .all(|&byte| (0xA4..=0xBE).contains(&byte)),
+            "{diffs:?}"
+        );
+        assert_eq!(&r[..0x24], &u[..0x24], "bytes 80..=A3");
+        assert_eq!(&r[0x40..], &u[0x40..], "bytes C0..=FF");
+        assert_ne!(run_of(&KOI8_R), run_of(&KOI8_U));
+    }
+
+    #[test]
+    fn windows_1253_and_iso_8859_7_share_their_greek_run() {
+        assert_eq!(run_of(&WINDOWS_1253), run_of(&ISO_8859_7));
+        let (bmp_offset, byte_offset, length) = run_of(&WINDOWS_1253);
+        assert_eq!((bmp_offset, byte_offset, length), (0x03A3, 0x53, 44));
+        let windows = table_of(&WINDOWS_1253);
+        let greek = table_of(&ISO_8859_7);
+        assert_eq!(&windows[0x37..], &greek[0x37..], "bytes B7..=FF");
+        let diffs = (0..greek.len())
+            .filter(|&pointer| greek[pointer] != windows[pointer])
+            .count();
+        assert_eq!(diffs, 26);
+    }
+
+    #[test]
+    fn iso_8859_6_has_the_most_undefined_pointers() {
+        let counts: Vec<(&str, usize)> = SINGLE_BYTE_ENCODINGS
+            .iter()
+            .map(|&e| {
+                (
+                    e.name,
+                    table_of(e)
+                        .iter()
+                        .filter(|unit| **unit == 0)
+                        .count(),
+                )
+            })
+            .collect();
+        let max = counts
+            .iter()
+            .map(|(_, count)| *count)
+            .max()
+            .unwrap_or_default();
+        assert_eq!(max, 45);
+        let winners: Vec<&str> = counts
+            .iter()
+            .filter(|(_, count)| *count == max)
+            .map(|(name, _)| *name)
+            .collect();
+        assert_eq!(winners, ["ISO-8859-6"]);
+    }
+
+    #[test]
+    fn only_the_two_hebrew_entries_share_an_index_table() {
+        let mut shared = 0usize;
+        for (position, &first) in SINGLE_BYTE_ENCODINGS.iter().enumerate() {
+            for &second in &SINGLE_BYTE_ENCODINGS[position + 1..] {
+                if core::ptr::eq(table_of(first), table_of(second)) {
+                    shared += 1;
+                    assert_eq!((first.name, second.name), ("ISO-8859-8", "ISO-8859-8-I"));
+                }
+            }
+        }
+        assert_eq!(shared, 1);
+    }
+
+    #[test]
+    fn registry_names_are_unique() {
+        let mut names: Vec<&str> = ENCODINGS.iter().map(|e| e.name).collect();
+        let total = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), total);
+    }
+
+    #[test]
+    fn every_basic_latin_byte_decodes_to_its_own_code_point() {
+        let ascii: Vec<u8> = (0u8..0x80).collect();
+        let want: Vec<u16> = (0u16..0x80).collect();
+        for &encoding in &SINGLE_BYTE_ENCODINGS {
+            assert_eq!(units(encoding, &ascii), want, "{}", encoding.name);
+        }
+        // The C0 controls below U+0020 are no exception, and neither is NUL.
+        assert_eq!(
+            units(&WINDOWS_1252, &[0x00, 0x1F, 0x20, 0x7F]),
+            vec![0x0000u16, 0x001F, 0x0020, 0x007F]
+        );
+    }
+
+    #[test]
+    fn every_basic_latin_char_encodes_to_its_own_byte() {
+        for &encoding in &SINGLE_BYTE_ENCODINGS {
+            for code in 0u16..0x80 {
+                assert_eq!(
+                    encode_unit(encoding, code),
+                    Ok(code as u8),
+                    "{}: U+{code:04X}",
+                    encoding.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_batch_decode_matches_byte_by_byte_decoding() {
+        let batch: Vec<u8> = (0x80u8..=0xFF).collect();
+        for &encoding in &SINGLE_BYTE_ENCODINGS {
+            let one_by_one: Vec<u16> = batch
+                .iter()
+                .flat_map(|&byte| units(encoding, &[byte]))
+                .collect();
+            assert_eq!(units(encoding, &batch), one_by_one, "{}", encoding.name);
+        }
+    }
+
+    #[test]
+    fn decoding_continues_when_the_destination_fills() {
+        let batch: Vec<u8> = (0x80u8..=0xFF).collect();
+        for &encoding in &SINGLE_BYTE_ENCODINGS {
+            let whole = units(encoding, &batch);
+            for chunk in [1usize, 2, 3, 7] {
+                let mut out = Vec::new();
+                let mut decoder = encoding.new_decoder_without_bom_handling();
+                let mut src = &batch[..];
+                while !src.is_empty() {
+                    let mut dst = vec![0u16; chunk];
+                    let (result, read, written, _) = decoder.decode_to_utf16(src, &mut dst, true);
+                    assert!(
+                        matches!(result, CoderResult::InputEmpty | CoderResult::OutputFull),
+                        "{}: {result:?}",
+                        encoding.name
+                    );
+                    assert!(
+                        read > 0,
+                        "{}: no progress with a {chunk}-unit destination",
+                        encoding.name
+                    );
+                    out.extend_from_slice(&dst[..written]);
+                    src = &src[read..];
+                }
+                assert_eq!(out, whole, "{}: chunk {chunk}", encoding.name);
+            }
+        }
+    }
+
+    #[test]
+    fn the_utf8_encode_path_agrees_with_the_utf16_path() {
+        for &encoding in &SINGLE_BYTE_ENCODINGS {
+            for &unit in table_of(encoding) {
+                if unit == 0 {
+                    continue;
+                }
+                let ch = char::from_u32(u32::from(unit)).unwrap_or(char::REPLACEMENT_CHARACTER);
+                let mut dst = [0u8; 4];
+                let mut encoder = encoding.new_encoder();
+                let text = ch.to_string();
+                let (result, read, written) =
+                    encoder.encode_from_utf8_without_replacement(&text, &mut dst, true);
+                assert_eq!(result, EncoderResult::InputEmpty, "{}: {ch:?}", encoding.name);
+                assert_eq!((read, written), (text.len(), 1), "{}: {ch:?}", encoding.name);
+                let want = match encode_unit(encoding, unit) {
+                    Ok(byte) => byte,
+                    Err(result) => panic!("{}: U+{unit:04X} should be defined: {result:?}", encoding.name),
+                };
+                assert_eq!(dst[0], want, "{}: {ch:?}", encoding.name);
+            }
+        }
+    }
+
+    #[test]
+    fn the_encoder_is_the_exact_reverse_of_its_index() {
+        for &encoding in &SINGLE_BYTE_ENCODINGS {
+            let table = table_of(encoding);
+            let mut reverse = vec![0u16; 0x1_0000];
+            for (pointer, &unit) in table.iter().enumerate() {
+                if unit != 0 {
+                    reverse[unit as usize] = pointer as u16 + 1;
+                }
+            }
+            for unit in 0x0080u16..=0xFFFF {
+                let pointer = reverse[unit as usize];
+                let expected = if pointer == 0 {
+                    let ch = char::from_u32(u32::from(unit)).unwrap_or(char::REPLACEMENT_CHARACTER);
+                    Err(EncoderResult::Unmappable(ch))
+                } else {
+                    Ok(0x80 + (pointer - 1) as u8)
+                };
+                assert_eq!(
+                    encode_unit(encoding, unit),
+                    expected,
+                    "{}: U+{unit:04X}",
+                    encoding.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn chars_absent_from_an_index_are_unmappable() {
+        let cases: [(&str, u16); 18] = [
+            ("windows-1252", 0x0540),
+            ("windows-1252", 0x2008),
+            ("windows-1252", 0x0410),
+            ("ISO-8859-2", 0x0180),
+            ("ISO-8859-3", 0x0170),
+            ("ISO-8859-4", 0x04E9),
+            ("ISO-8859-5", 0x04C0),
+            ("ISO-8859-6", 0x0670),
+            ("ISO-8859-7", 0x03F0),
+            ("ISO-8859-8", 0x2763),
+            ("ISO-8859-10", 0x01A2),
+            ("ISO-8859-13", 0x01B0),
+            ("ISO-8859-14", 0x0C80),
+            ("ISO-8859-15", 0x01C0),
+            ("windows-1251", 0x0400),
+            ("windows-1253", 0x03F0),
+            ("windows-1255", 0x0540),
+            ("macintosh", 0x1400),
+        ];
+        for (name, unit) in cases {
+            let encoding = by_name(name);
+            assert_eq!(
+                table_of(encoding).iter().position(|&u| u == unit),
+                None,
+                "{name}: U+{unit:04X} is in the index"
+            );
+            let ch = char::from_u32(u32::from(unit)).unwrap_or(char::REPLACEMENT_CHARACTER);
+            assert_eq!(
+                encode_unit(encoding, unit),
+                Err(EncoderResult::Unmappable(ch)),
+                "{name}"
+            );
+            let mut dst = [0u8; 4];
+            let mut encoder = encoding.new_encoder();
+            let text = ch.to_string();
+            let (result, read, written) = encoder.encode_from_utf8_without_replacement(&text, &mut dst, true);
+            assert_eq!(result, EncoderResult::Unmappable(ch), "{name}: {ch:?}");
+            assert_eq!((read, written), (text.len(), 0), "{name}: {ch:?}");
+        }
+    }
+
+    #[test]
+    fn astral_input_is_unmappable_for_every_legacy_code_page() {
+        let astral = '\u{104E0}';
+        let pair: Vec<u16> = astral.to_string().encode_utf16().collect();
+        assert_eq!(pair.len(), 2);
+        for &encoding in &SINGLE_BYTE_ENCODINGS {
+            let mut dst = [0u8; 4];
+            let mut encoder = encoding.new_encoder();
+            let (result, read, written) =
+                encoder.encode_from_utf16_without_replacement(&pair, &mut dst, true);
+            assert_eq!(result, EncoderResult::Unmappable(astral), "{}", encoding.name);
+            assert_eq!((read, written), (2, 0), "{}", encoding.name);
+            let text = astral.to_string();
+            let (result, read, written) = encoder.encode_from_utf8_without_replacement(&text, &mut dst, true);
+            assert_eq!(result, EncoderResult::Unmappable(astral), "{}", encoding.name);
+            assert_eq!((read, written), (text.len(), 0), "{}", encoding.name);
+        }
+    }
+
+    #[test]
+    fn the_default_encode_path_replaces_unmappables_with_ncrs() {
+        let mut dst = [0u8; NCR_EXTRA + 8];
+        let mut encoder = WINDOWS_1252.new_encoder();
+        let (result, read, written, had_unmappables) = encoder.encode_from_utf8("\u{0540}", &mut dst, true);
+        assert_eq!(result, CoderResult::InputEmpty);
+        assert!(had_unmappables);
+        // One Armenian capital alone fills the eight-byte working space.
+        assert_eq!((read, written), (2, 7), "U+0540 is 1344 in decimal");
+        assert_eq!(&dst[..written], b"&#1344;");
+
+        let mut encoder = WINDOWS_1252.new_encoder();
+        let (result, read, written, had_unmappables) = encoder.encode_from_utf8("a\u{0540}", &mut dst, true);
+        assert_eq!(result, CoderResult::InputEmpty);
+        assert!(had_unmappables);
+        assert_eq!((read, written), (3, 8));
+        assert_eq!(&dst[..written], b"a&#1344;");
+
+        // Astral code points get the same treatment from the UTF-16 side.
+        let mut encoder = MACINTOSH.new_encoder();
+        let pair: Vec<u16> = "\u{10000}".encode_utf16().collect();
+        let (result, read, written, had_unmappables) = encoder.encode_from_utf16(&pair, &mut dst, true);
+        assert_eq!(result, CoderResult::InputEmpty);
+        assert!(had_unmappables);
+        assert_eq!((read, written), (2, 8));
+        assert_eq!(&dst[..written], b"&#65536;");
+
+        // A buffer below the reservation is refused instead of truncated.
+        let mut tiny = [0u8; NCR_EXTRA - 1];
+        let (result, read, written, had) = WINDOWS_1252
+            .new_encoder()
+            .encode_from_utf8("a", &mut tiny, true);
+        assert_eq!(
+            (result, read, written, had),
+            (CoderResult::OutputFull, 0, 0, false)
+        );
+        let (result, read, written, had) = WINDOWS_1252
+            .new_encoder()
+            .encode_from_utf8("", &mut tiny, true);
+        assert_eq!(
+            (result, read, written, had),
+            (CoderResult::InputEmpty, 0, 0, false)
+        );
+    }
+
+    #[test]
+    fn decoding_through_the_replacing_wrapper_flags_errors() {
+        let batch: Vec<u8> = (0x80u8..=0xFF).collect();
+        for &encoding in &SINGLE_BYTE_ENCODINGS {
+            let holes = table_of(encoding)
+                .iter()
+                .filter(|unit| **unit == 0)
+                .count();
+            let mut dst = vec![0u16; batch.len()];
+            let (result, read, written, had_errors) = encoding
+                .new_decoder_without_bom_handling()
+                .decode_to_utf16(&batch, &mut dst, true);
+            assert_eq!(result, CoderResult::InputEmpty, "{}", encoding.name);
+            assert_eq!((read, written), (128, 128), "{}", encoding.name);
+            assert_eq!(had_errors, holes > 0, "{}", encoding.name);
+            let replacements = dst.iter().filter(|&&unit| unit == 0xFFFD).count();
+            assert_eq!(replacements, holes, "{}", encoding.name);
+        }
+    }
+
+    #[test]
+    fn decoder_buffer_reservations_are_exact_for_single_byte() {
+        for &encoding in &SINGLE_BYTE_ENCODINGS {
+            let decoder = encoding.new_decoder_without_bom_handling();
+            assert_eq!(
+                decoder.max_utf16_buffer_length(128),
+                Some(128),
+                "{}",
+                encoding.name
+            );
+            assert_eq!(
+                decoder.max_utf8_buffer_length(128),
+                Some(384),
+                "{}",
+                encoding.name
+            );
+            assert_eq!(
+                decoder.max_utf8_buffer_length_without_replacement(128),
+                Some(384),
+                "{}",
+                encoding.name
+            );
+            assert_eq!(decoder.max_utf16_buffer_length(0), Some(0), "{}", encoding.name);
+        }
+    }
+
+    #[test]
+    fn encoder_buffer_reservations_reserve_the_ncr_extra() {
+        for &encoding in &SINGLE_BYTE_ENCODINGS {
+            let encoder = encoding.new_encoder();
+            assert_eq!(
+                encoder.max_buffer_length_from_utf8_without_replacement(64),
+                Some(64),
+                "{}",
+                encoding.name
+            );
+            assert_eq!(
+                encoder.max_buffer_length_from_utf8_if_no_unmappables(64),
+                Some(64 + NCR_EXTRA),
+                "{}",
+                encoding.name
+            );
+            assert_eq!(
+                encoder.max_buffer_length_from_utf16_if_no_unmappables(64),
+                Some(64 + NCR_EXTRA),
+                "{}",
+                encoding.name
+            );
+        }
+        let encoder = UTF_8.new_encoder();
+        assert_eq!(
+            encoder.max_buffer_length_from_utf8_if_no_unmappables(64),
+            Some(64),
+            "UTF-8 encodes everything, so it needs no NCR reserve"
+        );
+        assert_eq!(
+            encoder.max_buffer_length_from_utf16_without_replacement(64),
+            Some(192)
+        );
+    }
+
+    #[test]
+    fn a_full_pointer_batch_needs_three_utf8_bytes_per_byte() {
+        let batch: Vec<u8> = (0x80u8..=0xFF).collect();
+        for &encoding in &SINGLE_BYTE_ENCODINGS {
+            let mut dst = vec![0u8; batch.len() * 3];
+            let (result, read, written, _) = encoding
+                .new_decoder_without_bom_handling()
+                .decode_to_utf8(&batch, &mut dst, true);
+            assert_eq!(result, CoderResult::InputEmpty, "{}", encoding.name);
+            assert_eq!(read, batch.len(), "{}", encoding.name);
+            let text = String::from_utf8(dst[..written].to_vec())
+                .unwrap_or_else(|e| panic!("{}: {e}", encoding.name));
+            assert_eq!(text.chars().count(), batch.len(), "{}", encoding.name);
+            assert_eq!(
+                written,
+                text.chars().map(char::len_utf8).sum::<usize>(),
+                "{}",
+                encoding.name
+            );
+        }
+    }
+
+    #[test]
+    fn each_undefined_pointer_yields_exactly_one_replacement() {
+        let mut holey = 0usize;
+        for &encoding in &SINGLE_BYTE_ENCODINGS {
+            let holes: Vec<u8> = table_of(encoding)
+                .iter()
+                .enumerate()
+                .filter(|(_, unit)| **unit == 0)
+                .map(|(pointer, _)| 0x80 + pointer as u8)
+                .collect();
+            if holes.is_empty() {
+                continue;
+            }
+            holey += holes.len();
+            let mut dst = vec![0u8; holes.len() * 3];
+            let (result, read, written, had_errors) = encoding
+                .new_decoder_without_bom_handling()
+                .decode_to_utf8(&holes, &mut dst, true);
+            assert_eq!(result, CoderResult::InputEmpty, "{}", encoding.name);
+            assert_eq!(read, holes.len(), "{}", encoding.name);
+            assert_eq!(written, holes.len() * 3, "{}", encoding.name);
+            assert!(had_errors, "{}", encoding.name);
+            assert!(
+                dst.chunks(3)
+                    .all(|chunk| chunk == [0xEF, 0xBF, 0xBD]),
+                "{}",
+                encoding.name
+            );
+            assert_eq!(
+                units(encoding, &holes),
+                vec![char::REPLACEMENT_CHARACTER as u16; holes.len()],
+                "{}",
+                encoding.name
+            );
+        }
+        assert_eq!(holey, 150, "undefined pointers across the registry");
+    }
+
+    #[test]
+    fn decoding_resumes_after_an_undefined_pointer() {
+        let mut out = [0u16; 4];
+        for &encoding in &SINGLE_BYTE_ENCODINGS {
+            let holes: Vec<u8> = table_of(encoding)
+                .iter()
+                .enumerate()
+                .filter(|(_, unit)| **unit == 0)
+                .map(|(pointer, _)| 0x80 + pointer as u8)
+                .collect();
+            if holes.is_empty() {
+                continue;
+            }
+            let first = holes[0];
+            let mut decoder = encoding.new_decoder_without_bom_handling();
+            for byte in [0x41u8, first, 0x42] {
+                let (result, read, written) =
+                    decoder.decode_to_utf16_without_replacement(&[byte], &mut out, true);
+                if byte == first {
+                    assert_eq!(result, DecoderResult::Malformed(1, 0), "{}", encoding.name);
+                    assert_eq!((read, written), (1, 0), "{}", encoding.name);
+                } else {
+                    assert_eq!(result, DecoderResult::InputEmpty, "{}", encoding.name);
+                    assert_eq!((read, written), (1, 1), "{}", encoding.name);
+                    assert_eq!(out[0], u16::from(byte), "{}", encoding.name);
+                }
+            }
+            let (result, read, written) =
+                decoder.decode_to_utf16_without_replacement(&[0x43, first, 0x44], &mut out, true);
+            assert_eq!(result, DecoderResult::Malformed(1, 0), "{}", encoding.name);
+            assert_eq!((read, written), (2, 1), "{}", encoding.name);
+            assert_eq!(out[0], 0x0043, "{}", encoding.name);
+            let (result, read, written) =
+                decoder.decode_to_utf16_without_replacement(&[0x45], &mut out, true);
+            assert_eq!(result, DecoderResult::InputEmpty, "{}", encoding.name);
+            assert_eq!((read, written), (1, 1), "{}", encoding.name);
+            assert_eq!(out[0], 0x0045, "{}", encoding.name);
+        }
+    }
+
+    #[test]
+    fn splitting_the_input_never_changes_the_output() {
+        let batch: Vec<u8> = (0x80u8..=0xFF).collect();
+        for &encoding in &SINGLE_BYTE_ENCODINGS {
+            let whole = units(encoding, &batch);
+            for split in [1usize, 40, 41, 42, 127] {
+                let mut out = Vec::new();
+                let mut decoder = encoding.new_decoder_without_bom_handling();
+                for (part, last) in [(&batch[..split], false), (&batch[split..], true)] {
+                    let mut dst = vec![0u16; part.len() + 4];
+                    let (result, read, written, _) = decoder.decode_to_utf16(part, &mut dst, last);
+                    assert_eq!(result, CoderResult::InputEmpty, "{}", encoding.name);
+                    assert_eq!(read, part.len(), "{}", encoding.name);
+                    out.extend_from_slice(&dst[..written]);
+                }
+                assert_eq!(out, whole, "{}: split at {split}", encoding.name);
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_coders_hold_no_pending_state() {
+        let mut dst = [0u8; 16];
+        for &encoding in &ENCODINGS {
+            let mut encoder = encoding.new_encoder();
+            assert!(!encoder.has_pending_state(), "{}", encoding.name);
+            // Basic Latin plus the first pointer of the index, which every registry
+            // index defines: both code points always encode, even with last = false.
+            let (units, want_written) = match encoding.variant {
+                VariantEncoding::SingleByte(table, ..) => ([0x0041u16, table[0]], 2),
+                VariantEncoding::Utf8 => ([0x0041u16, 0x0042], 2),
+                VariantEncoding::Utf16Be | VariantEncoding::Utf16Le => ([0x0041u16, 0x0042], 4),
+            };
+            let (result, read, written) =
+                encoder.encode_from_utf16_without_replacement(&units, &mut dst, false);
+            assert_eq!(result, EncoderResult::InputEmpty, "{}", encoding.name);
+            assert_eq!((read, written), (2, want_written), "{}", encoding.name);
+            assert!(!encoder.has_pending_state(), "{}", encoding.name);
+        }
+    }
+
+    #[test]
+    fn coder_accessors_name_their_encoding() {
+        for &encoding in &ENCODINGS {
+            assert!(
+                core::ptr::eq(encoding.new_decoder().encoding(), encoding),
+                "{}",
+                encoding.name
+            );
+            assert!(
+                core::ptr::eq(encoding.new_decoder_with_bom_removal().encoding(), encoding),
+                "{}",
+                encoding.name
+            );
+            assert!(
+                core::ptr::eq(encoding.new_encoder().encoding(), encoding),
+                "{}",
+                encoding.name
+            );
+            assert!(core::ptr::eq(encoding.encoding(), encoding), "{}", encoding.name);
+        }
+    }
+
+    #[test]
+    fn bom_handling_is_a_no_op_for_every_legacy_code_page() {
+        let input = [0xEF, 0xBB, 0xBF, 0x68, 0x69];
+        for &encoding in &SINGLE_BYTE_ENCODINGS {
+            let plain = units(encoding, &input);
+            let default = decode_all(&mut encoding.new_decoder(), &input);
+            let removal = decode_all(&mut encoding.new_decoder_with_bom_removal(), &input);
+            assert_eq!(plain.len(), 5, "{}", encoding.name);
+            assert_eq!(default, plain, "{}: new_decoder", encoding.name);
+            assert_eq!(removal, plain, "{}: with_bom_removal", encoding.name);
+        }
+        // UTF-8 is where the constructors ought to differ, and they do not: the
+        // `BomHandling` mode only records a `life_cycle` (`encoding.rs:548-562`) that
+        // neither `decode_to_utf8` nor `decode_to_utf16` ever reads, so the mark
+        // decodes as U+FEFF whichever handle is used.
+        let plain = decode_all(&mut UTF_8.new_decoder_without_bom_handling(), &input);
+        let default = decode_all(&mut UTF_8.new_decoder(), &input);
+        let removal = decode_all(&mut UTF_8.new_decoder_with_bom_removal(), &input);
+        assert_eq!(default, plain, "new_decoder is the no-handling constructor");
+        assert_eq!(removal, default, "the removal flag changes nothing");
+        assert_eq!(plain, vec![0xFEFFu16, 0x0068, 0x0069]);
+    }
+
+    #[test]
+    fn for_bom_never_selects_a_legacy_encoding() {
+        for byte in 0x00u8..=0xFF {
+            for candidate in [
+                vec![byte],
+                vec![byte, byte],
+                vec![byte, byte, byte],
+                vec![byte, 0xBB, 0xBF],
+                vec![byte, 0xFF],
+                vec![byte, 0xFE],
+            ] {
+                let found = for_bom(&candidate);
+                assert!(
+                    found.map_or(true, |e| matches!(e.name, "UTF-8" | "UTF-16BE" | "UTF-16LE")),
+                    "{candidate:?} -> {}",
+                    found.map_or("nothing", |e| e.name)
+                );
+            }
+        }
+        assert_eq!(for_bom(&[0xC0, 0x80]), None, "a legacy overlong start is no mark");
     }
 }
