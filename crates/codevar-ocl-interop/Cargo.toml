@@ -1,0 +1,20 @@
+[package]
+name = "codevar-ocl-interop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared buffers and semaphores between a Codevar OpenCL and a Vulkan device"
+
+[lib]
+name = "codevar_ocl_interop"
+
+[dependencies]
+ash = { workspace = true }
+codevar-ocl = { workspace = true }
+codevar-logger = { workspace = true }
+
+[lints]
+workspace = true
