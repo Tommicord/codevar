@@ -45,6 +45,7 @@ mod kernel;
 mod loader;
 mod platform;
 mod program;
+mod properties;
 mod query;
 mod queue;
 mod runtime;
