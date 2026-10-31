@@ -49,8 +49,10 @@
 
 mod error;
 mod handle;
+mod pair;
 mod vk;
 
 pub use error::{Error, Result};
 pub use handle::{MemoryHandle, MemoryKind, SemaphoreHandle, SemaphoreKind};
+pub use pair::Identity;
 pub use vk::Vulkan;

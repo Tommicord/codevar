@@ -44,9 +44,11 @@
 use core::ffi::{CStr, c_int};
 
 use ash::vk;
+use codevar_ocl::Luid;
 
 use crate::error::{Error, Result};
 use crate::handle::{MemoryKind, SemaphoreHandle, SemaphoreKind};
+use crate::pair::Identity;
 
 /// One device entry point, identified by the name it is resolved under.
 trait Entry: Copy {
@@ -254,6 +256,33 @@ impl<'a> Vulkan<'a> {
         // for and `info` names a live semaphore of that device.
         let code = unsafe { import_semaphore_fd(self.device, &info) };
         Error::check(code, "vkImportSemaphoreFdKHR")
+    }
+
+    /// Reads the identity the physical device reports for itself
+    /// (`VkPhysicalDeviceIDProperties`).
+    ///
+    /// A driver that cannot name its hardware answers with a block of
+    /// zeros, which is kept as it is: [`Identity::pairs_with`] decides what
+    /// a placeholder means, so no pairing rule lives in two places.
+    #[must_use]
+    pub fn identity(&self) -> Identity {
+        let mut id = vk::PhysicalDeviceIDProperties::default();
+        let mut properties = vk::PhysicalDeviceProperties2::default().push_next(&mut id);
+        // SAFETY: `physical` is the physical device of the borrowed
+        // instance, and the structure chain is well-formed and lives until
+        // the end of this block; the driver only writes into it.
+        unsafe {
+            self.instance
+                .get_physical_device_properties2(self.physical, &mut properties)
+        };
+        Identity {
+            device_uuid: id.device_uuid,
+            driver_uuid: id.driver_uuid,
+            luid: (id.device_luid_valid == vk::TRUE).then_some(Luid {
+                bytes: id.device_luid,
+                node_mask: id.device_node_mask,
+            }),
+        }
     }
 
     /// Whether a buffer used as storage can be exported as `kind`
