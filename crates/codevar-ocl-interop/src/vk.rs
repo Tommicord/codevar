@@ -266,9 +266,15 @@ impl<'a> Vulkan<'a> {
         let import_semaphore_fd = Self::entry(self.import_semaphore_fd)?;
         let info = vk::ImportSemaphoreFdInfoKHR::default()
             .semaphore(semaphore)
-            // Without `TEMPORARY` the import is permanent, which is what a
-            // share that outlives this call needs.
-            .flags(vk::SemaphoreImportFlags::empty())
+            // An opaque share is imported permanently, which is what a share
+            // that outlives this call needs. A `sync_file` has no permanent
+            // form: the extension supports only a temporary import of it, and
+            // a driver that validates the flags refuses anything else.
+            .flags(if kind == SemaphoreKind::SyncFd {
+                vk::SemaphoreImportFlags::TEMPORARY
+            } else {
+                vk::SemaphoreImportFlags::empty()
+            })
             .handle_type(kind.vk_flag())
             .fd(fd);
         // SAFETY: `self.device` is the device the entry point was resolved
