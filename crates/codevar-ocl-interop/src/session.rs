@@ -32,8 +32,9 @@
 //!
 //! The descriptors themselves are never owned here. A handle exported by
 //! [`Vulkan`](crate::Vulkan) stays owned by the exporter, which closes it
-//! once [`import`](SharedBuffer::import) has read it — the same rule both
-//! drivers document, and the reason no type in this crate takes an `i32`
+//! once [`import`](SharedBuffer::import) has read it, while the descriptor a
+//! Vulkan semaphore import takes is given to that driver, as its
+//! specification requires. Either way, no type in this crate holds an `i32`
 //! it might have to close.
 
 use core::slice;
@@ -232,9 +233,9 @@ impl SharedSemaphore {
     /// The handle a Vulkan device imports with
     /// [`Vulkan::import_semaphore_fd`](crate::Vulkan::import_semaphore_fd).
     ///
-    /// The driver answers with a copy of what it holds, so the descriptor
-    /// this returns is the caller's to close once the Vulkan import has taken
-    /// its own reference.
+    /// The driver answers with a copy of what it holds, so a failed import
+    /// leaves the descriptor here for the caller to close — but a successful
+    /// one hands it to Vulkan, which takes ownership of the descriptor itself.
     ///
     /// # Errors
     ///

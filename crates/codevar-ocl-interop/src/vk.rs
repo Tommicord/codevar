@@ -218,7 +218,9 @@ impl<'a> Vulkan<'a> {
     /// Exports `semaphore` as `kind` (`vkGetSemaphoreFdKHR`), the handle an
     /// OpenCL semaphore is then created from.
     ///
-    /// Ownership works exactly as in [`export_memory`](Self::export_memory).
+    /// The driver makes a fresh descriptor per call, so this side owns it:
+    /// OpenCL only reads it, and closing it stays with the caller — unless
+    /// [`import_semaphore_fd`](Self::import_semaphore_fd) takes it over.
     ///
     /// # Errors
     ///
@@ -251,14 +253,18 @@ impl<'a> Vulkan<'a> {
     /// (`vkImportSemaphoreFdKHR`), which is how a semaphore created by
     /// OpenCL is signaled into a Vulkan submission.
     ///
-    /// Importing does not consume the descriptor: the driver takes its own
-    /// reference, and the caller closes the one it passed.
+    /// A successful import takes the descriptor over: the specification
+    /// transfers ownership of it to the implementation, so the caller must
+    /// not close it afterwards — doing so closes whatever the driver has
+    /// since put in that slot. Only a failed import leaves the descriptor
+    /// with the caller, and this call reports the failure before touching it.
     ///
     /// # Errors
     ///
     /// - [`Error::Unsupported`] for a handle that is not a descriptor, and
     ///   for a device without `VK_KHR_external_semaphore_fd`.
-    /// - [`Error::Vulkan`] when the driver refused the handle.
+    /// - [`Error::Vulkan`] when the driver refused the handle; `handle` is
+    ///   then still the caller's to close.
     pub fn import_semaphore_fd(&self, semaphore: vk::Semaphore, handle: SemaphoreHandle) -> Result<()> {
         let (kind, fd) = fd_of(handle).ok_or(Error::Unsupported {
             what: "vkImportSemaphoreFdKHR takes a file descriptor, not a Win32 handle",
