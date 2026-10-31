@@ -682,9 +682,10 @@ impl Utf8Decoder {
                             self.bytes_seen = 0;
                             self.lower_boundary = 0x80;
                             self.upper_boundary = 0xBF;
+                            unread_handle.unread();
                             return (
                                 DecoderResult::Malformed(bad_bytes, 0),
-                                unread_handle.unread(),
+                                source.consumed(),
                                 destination_handle.written(),
                             );
                         }
@@ -793,9 +794,10 @@ impl Utf8Decoder {
                             self.bytes_seen = 0;
                             self.lower_boundary = 0x80;
                             self.upper_boundary = 0xBF;
+                            unread_handle.unread();
                             return (
                                 DecoderResult::Malformed(bad_bytes, 0),
-                                unread_handle.unread(),
+                                source.consumed(),
                                 destination_handle.written(),
                             );
                         }
@@ -1078,5 +1080,34 @@ mod tests {
         let (read, written) = convert_utf16_to_utf8_partial_inner(&src, &mut dst);
         assert_eq!(read, src.len());
         assert_eq!(&dst[..written], "abc\u{1F4A9}".as_bytes());
+    }
+
+    #[test]
+    fn a_broken_sequence_reports_the_reprocessed_byte_position() {
+        // WHATWG puts the non-continuation byte back so the caller sees it
+        // again; the raw step must not count it as consumed
+        let mut decoder = Utf8Decoder::new_inner();
+        let mut dst = [0u8; 16];
+        let (result, read, written) = decoder.decode_to_utf8_raw(b"\xF4!", &mut dst, true);
+        assert_eq!(result, DecoderResult::Malformed(1, 0));
+        assert_eq!((read, written), (1, 0));
+
+        let mut decoder = Utf8Decoder::new_inner();
+        let mut dst = [0u8; 16];
+        let (result, read, written) = decoder.decode_to_utf8_raw(b"ok\xF4!", &mut dst, true);
+        assert_eq!(result, DecoderResult::Malformed(1, 0));
+        assert_eq!((read, written), (3, 2));
+    }
+
+    #[test]
+    fn replacing_decode_reprocesses_the_byte_after_a_broken_sequence() {
+        let mut dst = [0u8; 32];
+        let (result, read, written, had_errors) = UTF_8
+            .new_decoder()
+            .decode_to_utf8(b"ok\xF4!", &mut dst, true);
+        assert_eq!(result, CoderResult::InputEmpty);
+        assert_eq!((read, written), (4, 6));
+        assert_eq!(&dst[..written], "ok\u{FFFD}!".as_bytes());
+        assert!(had_errors);
     }
 }
