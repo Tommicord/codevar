@@ -678,4 +678,794 @@ mod tests {
         assert_eq!(result, DecoderResult::Malformed(1, 0));
         assert_eq!((read, written), (1, 0));
     }
+
+    // ---------------------------------------------------------------------
+    // Fixtures for the tests below.
+    //
+    // The tables are written out here instead of importing
+    // `crate::single_byte_tables` so that each case pins one behaviour and the
+    // module stays self-contained. The `*_INDEX` tables are literal copies of
+    // the normative WHATWG indexes and are used where realistic data matters
+    // (round trips and markup decoding).
+    // ---------------------------------------------------------------------
+
+    /// Decoder fixture with pointers in every UTF-8 width plus holes:
+    /// `0x80` is the C1 control U+0080, `0x81` U+00E9 (two UTF-8 bytes),
+    /// `0x82` U+2020 and `0x83` U+FFFF (three bytes), `0x84` U+00A0 and
+    /// `0x88` U+00B7. Every other pointer is undefined.
+    static WIDTHS_TABLE: [u16; 128] = {
+        let mut table = [0u16; 128];
+        table[0] = 0x0080;
+        table[1] = 0x00E9;
+        table[2] = 0x2020;
+        table[3] = 0xFFFF;
+        table[4] = 0x00A0;
+        table[8] = 0x00B7;
+        table
+    };
+
+    /// Encoder fixture with one defined pointer per search region: first
+    /// quadrant (`0x80`, `0x88`), second quadrant (`0xB0`, `0xB8`), third
+    /// quadrant before the run (`0xC0`, `0xC6`), an eight-unit run starting at
+    /// pointer `0xD0` and a tail after the run (`0xD8`, `0xFF`).
+    static QUADRANT_TABLE: [u16; 128] = {
+        let mut table = [0u16; 128];
+        table[0] = 0x00A0;
+        table[8] = 0x00B0;
+        table[32] = 0x00C0;
+        table[40] = 0x00D0;
+        table[64] = 0x00E0;
+        table[70] = 0x00F0;
+        table[100] = 0x2000;
+        table[127] = 0x3000;
+        let mut i = 0usize;
+        while i < 8 {
+            table[80 + i] = 0x1000 + i as u16;
+            i += 1;
+        }
+        table
+    };
+
+    /// Same shape as [`QUADRANT_TABLE`] but with code points deliberately
+    /// present in more than one region, so that the search *order*
+    /// (tail, third quadrant, second quadrant, first quadrant) is observable.
+    static DUPLICATE_TABLE: [u16; 128] = {
+        let mut table = [0u16; 128];
+        table[80] = 0x1000;
+        table[81] = 0x1001;
+        table[5] = 0x00FF;
+        table[40] = 0x00FF;
+        table[70] = 0x00FF;
+        table[6] = 0x01FF;
+        table[100] = 0x01FF;
+        table
+    };
+
+    /// Like [`DUPLICATE_TABLE`], but with the run starting below the third
+    /// quadrant (pointer `0x30`), which is the `windows-1252` / `ISO-8859-15`
+    /// shape: the region searched before the run is the second quadrant.
+    static LOW_RUN_DUPLICATE_TABLE: [u16; 128] = {
+        let mut table = [0u16; 128];
+        table[48] = 0x1000;
+        table[49] = 0x1001;
+        table[5] = 0x00FF;
+        table[40] = 0x00FF;
+        table[6] = 0x01FF;
+        table[90] = 0x01FF;
+        table
+    };
+
+    /// The windows-1252 index (`index-windows-1252.txt`): 128 of 128 pointers
+    /// defined, encoder run of 96 code points from U+00A0 at pointer 0x20.
+    static WINDOWS_1252_INDEX: [u16; 128] = [
+        0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039,
+        0x0152, 0x008D, 0x017D, 0x008F, 0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+        0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178, 0x00A0, 0x00A1, 0x00A2, 0x00A3,
+        0x00A4, 0x00A5, 0x00A6, 0x00A7, 0x00A8, 0x00A9, 0x00AA, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x00AF,
+        0x00B0, 0x00B1, 0x00B2, 0x00B3, 0x00B4, 0x00B5, 0x00B6, 0x00B7, 0x00B8, 0x00B9, 0x00BA, 0x00BB,
+        0x00BC, 0x00BD, 0x00BE, 0x00BF, 0x00C0, 0x00C1, 0x00C2, 0x00C3, 0x00C4, 0x00C5, 0x00C6, 0x00C7,
+        0x00C8, 0x00C9, 0x00CA, 0x00CB, 0x00CC, 0x00CD, 0x00CE, 0x00CF, 0x00D0, 0x00D1, 0x00D2, 0x00D3,
+        0x00D4, 0x00D5, 0x00D6, 0x00D7, 0x00D8, 0x00D9, 0x00DA, 0x00DB, 0x00DC, 0x00DD, 0x00DE, 0x00DF,
+        0x00E0, 0x00E1, 0x00E2, 0x00E3, 0x00E4, 0x00E5, 0x00E6, 0x00E7, 0x00E8, 0x00E9, 0x00EA, 0x00EB,
+        0x00EC, 0x00ED, 0x00EE, 0x00EF, 0x00F0, 0x00F1, 0x00F2, 0x00F3, 0x00F4, 0x00F5, 0x00F6, 0x00F7,
+        0x00F8, 0x00F9, 0x00FA, 0x00FB, 0x00FC, 0x00FD, 0x00FE, 0x00FF,
+    ];
+
+    /// The ISO-8859-15 index (`index-iso-8859-15.txt`): 128 of 128 pointers
+    /// defined, encoder run of 65 code points from U+00BF at pointer 0x3F.
+    /// The euro sign sits at pointer 0xA4, in the second quadrant *before* the
+    /// run, which is what makes this index interesting for the encoder search.
+    static ISO_8859_15_INDEX: [u16; 128] = [
+        0x0080, 0x0081, 0x0082, 0x0083, 0x0084, 0x0085, 0x0086, 0x0087, 0x0088, 0x0089, 0x008A, 0x008B,
+        0x008C, 0x008D, 0x008E, 0x008F, 0x0090, 0x0091, 0x0092, 0x0093, 0x0094, 0x0095, 0x0096, 0x0097,
+        0x0098, 0x0099, 0x009A, 0x009B, 0x009C, 0x009D, 0x009E, 0x009F, 0x00A0, 0x00A1, 0x00A2, 0x00A3,
+        0x20AC, 0x00A5, 0x0160, 0x00A7, 0x0161, 0x00A9, 0x00AA, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x00AF,
+        0x00B0, 0x00B1, 0x00B2, 0x00B3, 0x017D, 0x00B5, 0x00B6, 0x00B7, 0x017E, 0x00B9, 0x00BA, 0x00BB,
+        0x0152, 0x0153, 0x0178, 0x00BF, 0x00C0, 0x00C1, 0x00C2, 0x00C3, 0x00C4, 0x00C5, 0x00C6, 0x00C7,
+        0x00C8, 0x00C9, 0x00CA, 0x00CB, 0x00CC, 0x00CD, 0x00CE, 0x00CF, 0x00D0, 0x00D1, 0x00D2, 0x00D3,
+        0x00D4, 0x00D5, 0x00D6, 0x00D7, 0x00D8, 0x00D9, 0x00DA, 0x00DB, 0x00DC, 0x00DD, 0x00DE, 0x00DF,
+        0x00E0, 0x00E1, 0x00E2, 0x00E3, 0x00E4, 0x00E5, 0x00E6, 0x00E7, 0x00E8, 0x00E9, 0x00EA, 0x00EB,
+        0x00EC, 0x00ED, 0x00EE, 0x00EF, 0x00F0, 0x00F1, 0x00F2, 0x00F3, 0x00F4, 0x00F5, 0x00F6, 0x00F7,
+        0x00F8, 0x00F9, 0x00FA, 0x00FB, 0x00FC, 0x00FD, 0x00FE, 0x00FF,
+    ];
+
+    /// The KOI8-R index (`index-koi8-r.txt`): 128 of 128 pointers defined,
+    /// encoder run of 15 code points from U+2553 at pointer 0x24. KOI8-R is
+    /// neither quadrant-aligned nor Latin, so it exercises the tail search.
+    static KOI8_R_INDEX: [u16; 128] = [
+        0x2500, 0x2502, 0x250C, 0x2510, 0x2514, 0x2518, 0x251C, 0x2524, 0x252C, 0x2534, 0x253C, 0x2580,
+        0x2584, 0x2588, 0x258C, 0x2590, 0x2591, 0x2592, 0x2593, 0x2320, 0x25A0, 0x2219, 0x221A, 0x2248,
+        0x2264, 0x2265, 0x00A0, 0x2321, 0x00B0, 0x00B2, 0x00B7, 0x00F7, 0x2550, 0x2551, 0x2552, 0x0451,
+        0x2553, 0x2554, 0x2555, 0x2556, 0x2557, 0x2558, 0x2559, 0x255A, 0x255B, 0x255C, 0x255D, 0x255E,
+        0x255F, 0x2560, 0x2561, 0x0401, 0x2562, 0x2563, 0x2564, 0x2565, 0x2566, 0x2567, 0x2568, 0x2569,
+        0x256A, 0x256B, 0x256C, 0x00A9, 0x044E, 0x0430, 0x0431, 0x0446, 0x0434, 0x0435, 0x0444, 0x0433,
+        0x0445, 0x0438, 0x0439, 0x043A, 0x043B, 0x043C, 0x043D, 0x043E, 0x043F, 0x044F, 0x0440, 0x0441,
+        0x0442, 0x0443, 0x0436, 0x0432, 0x044C, 0x044B, 0x0437, 0x0448, 0x044D, 0x0449, 0x0447, 0x044A,
+        0x042E, 0x0410, 0x0411, 0x0426, 0x0414, 0x0415, 0x0424, 0x0413, 0x0425, 0x0418, 0x0419, 0x041A,
+        0x041B, 0x041C, 0x041D, 0x041E, 0x041F, 0x042F, 0x0420, 0x0421, 0x0422, 0x0423, 0x0416, 0x0412,
+        0x042C, 0x042B, 0x0417, 0x0428, 0x042D, 0x0429, 0x0427, 0x042A,
+    ];
+
+    /// The windows-1251 index (`index-windows-1251.txt`): 128 of 128 pointers
+    /// defined, encoder run of 64 code points from U+0410 at pointer 0x40. The
+    /// run starts exactly at the third quadrant, so `run_byte_offset >= 64`.
+    static WINDOWS_1251_INDEX: [u16; 128] = [
+        0x0402, 0x0403, 0x201A, 0x0453, 0x201E, 0x2026, 0x2020, 0x2021, 0x20AC, 0x2030, 0x0409, 0x2039,
+        0x040A, 0x040C, 0x040B, 0x040F, 0x0452, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+        0x0098, 0x2122, 0x0459, 0x203A, 0x045A, 0x045C, 0x045B, 0x045F, 0x00A0, 0x040E, 0x045E, 0x0408,
+        0x00A4, 0x0490, 0x00A6, 0x00A7, 0x0401, 0x00A9, 0x0404, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x0407,
+        0x00B0, 0x00B1, 0x0406, 0x0456, 0x0491, 0x00B5, 0x00B6, 0x00B7, 0x0451, 0x2116, 0x0454, 0x00BB,
+        0x0458, 0x0405, 0x0455, 0x0457, 0x0410, 0x0411, 0x0412, 0x0413, 0x0414, 0x0415, 0x0416, 0x0417,
+        0x0418, 0x0419, 0x041A, 0x041B, 0x041C, 0x041D, 0x041E, 0x041F, 0x0420, 0x0421, 0x0422, 0x0423,
+        0x0424, 0x0425, 0x0426, 0x0427, 0x0428, 0x0429, 0x042A, 0x042B, 0x042C, 0x042D, 0x042E, 0x042F,
+        0x0430, 0x0431, 0x0432, 0x0433, 0x0434, 0x0435, 0x0436, 0x0437, 0x0438, 0x0439, 0x043A, 0x043B,
+        0x043C, 0x043D, 0x043E, 0x043F, 0x0440, 0x0441, 0x0442, 0x0443, 0x0444, 0x0445, 0x0446, 0x0447,
+        0x0448, 0x0449, 0x044A, 0x044B, 0x044C, 0x044D, 0x044E, 0x044F,
+    ];
+
+    /// The ISO-8859-2 index (`index-iso-8859-2.txt`): 128 of 128 pointers
+    /// defined, encoder run of 33 code points from U+0080 at pointer 0x00 —
+    /// a run that starts before the second quadrant.
+    static ISO_8859_2_INDEX: [u16; 128] = [
+        0x0080, 0x0081, 0x0082, 0x0083, 0x0084, 0x0085, 0x0086, 0x0087, 0x0088, 0x0089, 0x008A, 0x008B,
+        0x008C, 0x008D, 0x008E, 0x008F, 0x0090, 0x0091, 0x0092, 0x0093, 0x0094, 0x0095, 0x0096, 0x0097,
+        0x0098, 0x0099, 0x009A, 0x009B, 0x009C, 0x009D, 0x009E, 0x009F, 0x00A0, 0x0104, 0x02D8, 0x0141,
+        0x00A4, 0x013D, 0x015A, 0x00A7, 0x00A8, 0x0160, 0x015E, 0x0164, 0x0179, 0x00AD, 0x017D, 0x017B,
+        0x00B0, 0x0105, 0x02DB, 0x0142, 0x00B4, 0x013E, 0x015B, 0x02C7, 0x00B8, 0x0161, 0x015F, 0x0165,
+        0x017A, 0x02DD, 0x017E, 0x017C, 0x0154, 0x00C1, 0x00C2, 0x0102, 0x00C4, 0x0139, 0x0106, 0x00C7,
+        0x010C, 0x00C9, 0x0118, 0x00CB, 0x011A, 0x00CD, 0x00CE, 0x010E, 0x0110, 0x0143, 0x0147, 0x00D3,
+        0x00D4, 0x0150, 0x00D6, 0x00D7, 0x0158, 0x016E, 0x00DA, 0x0170, 0x00DC, 0x00DD, 0x0162, 0x00DF,
+        0x0155, 0x00E1, 0x00E2, 0x0103, 0x00E4, 0x013A, 0x0107, 0x00E7, 0x010D, 0x00E9, 0x0119, 0x00EB,
+        0x011B, 0x00ED, 0x00EE, 0x010F, 0x0111, 0x0144, 0x0148, 0x00F3, 0x00F4, 0x0151, 0x00F6, 0x00F7,
+        0x0159, 0x016F, 0x00FA, 0x0171, 0x00FC, 0x00FD, 0x0163, 0x02D9,
+    ];
+
+    /// The ISO-8859-7 index (`index-iso-8859-7.txt`): 125 of 128 pointers
+    /// defined (0xA0, 0xD4 and 0xFF are undefined), encoder run of 44 code
+    /// points from U+03A3 at pointer 0x53.
+    static ISO_8859_7_INDEX: [u16; 128] = [
+        0x0080, 0x0081, 0x0082, 0x0083, 0x0084, 0x0085, 0x0086, 0x0087, 0x0088, 0x0089, 0x008A, 0x008B,
+        0x008C, 0x008D, 0x008E, 0x008F, 0x0090, 0x0091, 0x0092, 0x0093, 0x0094, 0x0095, 0x0096, 0x0097,
+        0x0098, 0x0099, 0x009A, 0x009B, 0x009C, 0x009D, 0x009E, 0x009F, 0x00A0, 0x2018, 0x2019, 0x00A3,
+        0x20AC, 0x20AF, 0x00A6, 0x00A7, 0x00A8, 0x00A9, 0x037A, 0x00AB, 0x00AC, 0x00AD, 0x0000, 0x2015,
+        0x00B0, 0x00B1, 0x00B2, 0x00B3, 0x0384, 0x0385, 0x0386, 0x00B7, 0x0388, 0x0389, 0x038A, 0x00BB,
+        0x038C, 0x00BD, 0x038E, 0x038F, 0x0390, 0x0391, 0x0392, 0x0393, 0x0394, 0x0395, 0x0396, 0x0397,
+        0x0398, 0x0399, 0x039A, 0x039B, 0x039C, 0x039D, 0x039E, 0x039F, 0x03A0, 0x03A1, 0x0000, 0x03A3,
+        0x03A4, 0x03A5, 0x03A6, 0x03A7, 0x03A8, 0x03A9, 0x03AA, 0x03AB, 0x03AC, 0x03AD, 0x03AE, 0x03AF,
+        0x03B0, 0x03B1, 0x03B2, 0x03B3, 0x03B4, 0x03B5, 0x03B6, 0x03B7, 0x03B8, 0x03B9, 0x03BA, 0x03BB,
+        0x03BC, 0x03BD, 0x03BE, 0x03BF, 0x03C0, 0x03C1, 0x03C2, 0x03C3, 0x03C4, 0x03C5, 0x03C6, 0x03C7,
+        0x03C8, 0x03C9, 0x03CA, 0x03CB, 0x03CC, 0x03CD, 0x03CE, 0x0000,
+    ];
+
+    /// A table in which no pointer is defined: every non-ASCII byte is malformed.
+    static UNDEFINED_TABLE: [u16; 128] = [0u16; 128];
+
+    /// Encodes one code unit with `table` and the given run, into a buffer that
+    /// is large enough for any single-byte result.
+    fn encode_one(
+        table: &'static [u16; 128],
+        run_bmp_offset: u16,
+        run_byte_offset: u8,
+        run_length: u8,
+        code_unit: u16,
+    ) -> (EncoderResult, usize, usize, u8) {
+        let mut encoder = SingleByteEncoder::new(table, run_bmp_offset, run_byte_offset, run_length);
+        let mut dst = [0u8; 8];
+        let (result, read, written) = encoder.encode_from_utf16_raw(&[code_unit], &mut dst, true);
+        (result, read, written, dst[0])
+    }
+
+    #[test]
+    fn ascii_only_input_decodes_byte_for_byte_to_utf8() {
+        // Pure ASCII never reaches the innermost punctuation loop: the
+        // accelerator in `copy_ascii_from_check_space_bmp` copies it all.
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let src = b"plain ascii text";
+        let mut dst = [0u8; 32];
+        let (result, read, written) = decoder.decode_to_utf8_raw(src, &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (src.len(), src.len()));
+        assert_eq!(&dst[..written], src);
+    }
+
+    #[test]
+    fn empty_utf8_input_with_room_left_is_input_empty() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst = [0u8; 16];
+        let (result, read, written) = decoder.decode_to_utf8_raw(b"", &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (0, 0));
+    }
+
+    #[test]
+    fn empty_utf8_input_with_empty_destination_is_input_empty() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst: [u8; 0] = [];
+        let (result, read, written) = decoder.decode_to_utf8_raw(b"", &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (0, 0));
+    }
+
+    #[test]
+    fn ascii_input_into_empty_destination_reports_output_full() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst: [u8; 0] = [];
+        let (result, read, written) = decoder.decode_to_utf8_raw(b"abc", &mut dst, true);
+        assert_eq!(result, DecoderResult::OutputFull);
+        assert_eq!((read, written), (0, 0));
+    }
+
+    #[test]
+    fn ascii_input_one_byte_short_of_destination_reports_output_full() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst = [0u8; 3];
+        let (result, read, written) = decoder.decode_to_utf8_raw(b"abcd", &mut dst, true);
+        assert_eq!(result, DecoderResult::OutputFull);
+        assert_eq!((read, written), (3, 3));
+        assert_eq!(&dst[..], b"abc");
+    }
+
+    #[test]
+    fn single_non_ascii_byte_decodes_to_two_utf8_bytes() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst = [0u8; 16];
+        // 0x81 -> U+00E9, which is two bytes in UTF-8 (C3 A9).
+        let (result, read, written) = decoder.decode_to_utf8_raw(&[0x81], &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (1, 2));
+        assert_eq!(&dst[..2], &[0xC3, 0xA9]);
+    }
+
+    #[test]
+    fn c1_pointer_decodes_to_two_utf8_bytes() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst = [0u8; 16];
+        // 0x80 -> U+0080, the C1 range, which is *not* ASCII and takes two bytes.
+        let (result, read, written) = decoder.decode_to_utf8_raw(&[0x80], &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (1, 2));
+        assert_eq!(&dst[..2], &[0xC2, 0x80]);
+    }
+
+    #[test]
+    fn undefined_c1_pointer_reports_malformed() {
+        // A table whose C1 slot is undefined must report the byte as malformed
+        // rather than decoding it as the control character.
+        let mut decoder = SingleByteDecoder {
+            table: &UNDEFINED_TABLE,
+        };
+        let mut dst = [0u8; 16];
+        let (result, read, written) = decoder.decode_to_utf8_raw(&[0x80], &mut dst, true);
+        assert_eq!(result, DecoderResult::Malformed(1, 0));
+        assert_eq!((read, written), (1, 0));
+        assert_eq!(dst[0], 0, "nothing may be written for a bad byte");
+    }
+
+    #[test]
+    fn three_byte_pointer_decodes_when_three_bytes_are_reserved() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        // 0x82 -> U+2020 (E2 80 A0). The reservation check only asks for two
+        // free bytes, but the strict `pos + 2 < len` comparison always leaves
+        // room for the third.
+        let mut dst = [0u8; 3];
+        let (result, read, written) = decoder.decode_to_utf8_raw(&[0x82], &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (1, 3));
+        assert_eq!(&dst[..], &[0xE2, 0x80, 0xA0]);
+    }
+
+    #[test]
+    fn three_byte_pointer_is_not_written_into_two_byte_destination() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst = [0u8; 2];
+        let (result, read, written) = decoder.decode_to_utf8_raw(&[0x82], &mut dst, true);
+        assert_eq!(result, DecoderResult::OutputFull);
+        assert_eq!((read, written), (0, 0), "the bad byte stays unread");
+        assert_eq!(&dst[..], &[0, 0]);
+    }
+
+    #[test]
+    fn non_ascii_byte_is_unread_when_only_one_destination_byte_is_free() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst = [0u8; 1];
+        let (result, read, written) = decoder.decode_to_utf8_raw(&[0x81], &mut dst, true);
+        assert_eq!(result, DecoderResult::OutputFull);
+        assert_eq!((read, written), (0, 0));
+    }
+
+    #[test]
+    fn ascii_before_non_ascii_decodes_to_utf8() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst = [0u8; 16];
+        let (result, read, written) = decoder.decode_to_utf8_raw(b"a\x81", &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (2, 3));
+        assert_eq!(&dst[..3], b"a\xC3\xA9");
+    }
+
+    #[test]
+    fn punctuation_below_angle_bracket_stays_on_the_fast_path_to_utf8() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst = [0u8; 16];
+        // '!' is 0x21 < 60, so it is written by the innermost punctuation loop
+        // instead of re-entering the ASCII accelerator.
+        let (result, read, written) = decoder.decode_to_utf8_raw(&[0x81, b'!'], &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (2, 3));
+        assert_eq!(&dst[..3], &[0xC3, 0xA9, b'!']);
+    }
+
+    #[test]
+    fn markup_at_angle_bracket_restarts_the_accelerator_to_utf8() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst = [0u8; 16];
+        // '<' is exactly 60, which is markup: the loop breaks out to the
+        // accelerator for the rest of the run.
+        let (result, read, written) = decoder.decode_to_utf8_raw(&[0x81, b'<', b'a', b'>'], &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (4, 5));
+        assert_eq!(&dst[..5], &[0xC3, 0xA9, b'<', b'a', b'>']);
+    }
+
+    #[test]
+    fn uppercase_letter_counts_as_markup_in_utf8_input() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst = [0u8; 16];
+        let (result, read, written) = decoder.decode_to_utf8_raw(&[0x81, b'A', b'!'], &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (3, 4));
+        assert_eq!(&dst[..4], &[0xC3, 0xA9, b'A', b'!']);
+    }
+
+    #[test]
+    fn alternating_non_ascii_and_punctuation_decodes_to_utf8() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst = [0u8; 16];
+        let (result, read, written) = decoder.decode_to_utf8_raw(&[0x81, b'!', 0x81], &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (3, 5));
+        assert_eq!(&dst[..5], &[0xC3, 0xA9, b'!', 0xC3, 0xA9]);
+    }
+
+    #[test]
+    fn trailing_non_ascii_ends_the_input_after_a_punctuation_run_to_utf8() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst = [0u8; 16];
+        // Two C1/upper-BMP pointers around one punctuation byte.
+        let (result, read, written) = decoder.decode_to_utf8_raw(&[0x80, b'.', 0x83], &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (3, 6));
+        assert_eq!(&dst[..6], &[0xC2, 0x80, b'.', 0xEF, 0xBF, 0xBF]);
+    }
+
+    #[test]
+    fn undefined_pointer_after_ascii_is_malformed_but_counts_ascii_to_utf8() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst = [0u8; 16];
+        // 0x90 has no pointer in the fixture: read includes the bad byte,
+        // written stops before it.
+        let (result, read, written) = decoder.decode_to_utf8_raw(b"a\x90", &mut dst, true);
+        assert_eq!(result, DecoderResult::Malformed(1, 0));
+        assert_eq!((read, written), (2, 1));
+        assert_eq!(&dst[..1], b"a");
+    }
+
+    #[test]
+    fn only_the_first_undefined_pointer_is_reported_to_utf8() {
+        let mut decoder = SingleByteDecoder {
+            table: &UNDEFINED_TABLE,
+        };
+        let mut dst = [0u8; 16];
+        let (result, read, written) = decoder.decode_to_utf8_raw(&[0x90, 0x91, 0x92], &mut dst, true);
+        assert_eq!(result, DecoderResult::Malformed(1, 0));
+        assert_eq!((read, written), (1, 0), "one bad byte per call");
+    }
+
+    #[test]
+    fn every_non_ascii_byte_is_malformed_for_a_fully_undefined_table() {
+        for byte in 0x80u16..=0xFF {
+            let mut decoder = SingleByteDecoder {
+                table: &UNDEFINED_TABLE,
+            };
+            let mut dst = [0u8; 8];
+            let (result, read, written) = decoder.decode_to_utf8_raw(&[byte as u8], &mut dst, true);
+            assert_eq!(
+                (result, read, written),
+                (DecoderResult::Malformed(1, 0), 1, 0),
+                "byte {byte:#04x}"
+            );
+        }
+    }
+
+    #[test]
+    fn utf8_output_full_position_points_before_the_failed_write() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        // Two bytes fit, the second pointer's two-byte sequence does not.
+        let mut dst = [0u8; 3];
+        let (result, read, written) = decoder.decode_to_utf8_raw(&[0x81, 0x81], &mut dst, true);
+        assert_eq!(result, DecoderResult::OutputFull);
+        assert_eq!((read, written), (1, 2));
+        assert_eq!(&dst[..2], &[0xC3, 0xA9]);
+    }
+
+    #[test]
+    fn two_free_utf8_bytes_are_still_output_full_before_a_punctuation_write() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        // After U+00E9 and '!' the destination has two bytes left, yet
+        // `check_space_bmp` demands three so that the loop can keep writing
+        // without re-checking: the remaining input byte is reported unread.
+        let mut dst = [0u8; 5];
+        let (result, read, written) = decoder.decode_to_utf8_raw(&[0x81, b'!', b'x'], &mut dst, true);
+        assert_eq!(result, DecoderResult::OutputFull);
+        assert_eq!((read, written), (2, 3));
+        assert_eq!(&dst[..3], &[0xC3, 0xA9, b'!']);
+    }
+
+    #[test]
+    fn last_flag_does_not_change_the_utf8_decoding_result() {
+        // Single-byte decoding is stateless: no partial sequence can be open.
+        let src = [0x81u8, b'!', 0x83, b'-', 0x90];
+        let mut first = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut second = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst_a = [0u8; 32];
+        let mut dst_b = [0u8; 32];
+        let (result_a, read_a, written_a) = first.decode_to_utf8_raw(&src, &mut dst_a, true);
+        let (result_b, read_b, written_b) = second.decode_to_utf8_raw(&src, &mut dst_b, false);
+        assert_eq!((result_a, read_a, written_a), (result_b, read_b, written_b));
+        assert_eq!(&dst_a[..written_a], &dst_b[..written_b]);
+    }
+
+    #[test]
+    fn windows_1252_markup_decodes_to_utf8() {
+        let mut decoder = SingleByteDecoder {
+            table: &WINDOWS_1252_INDEX,
+        };
+        // "U+201C U+00EB U+201D" quoted in ASCII markup.
+        let src = b"<p>\x93\xEB\x94</p>";
+        let mut dst = [0u8; 32];
+        let (result, read, written) = decoder.decode_to_utf8_raw(src, &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (src.len(), 15));
+        assert_eq!(&dst[..written], b"<p>\xE2\x80\x9C\xC3\xAB\xE2\x80\x9D</p>");
+    }
+
+    #[test]
+    fn decoder_new_returns_a_single_byte_variant_decoder() {
+        let mut variant = SingleByteDecoder::new(&WIDTHS_TABLE);
+        assert!(matches!(variant, VariantDecoder::SingleByte(_)));
+        assert_eq!(variant.max_utf16_buffer_length(7), Some(7));
+
+        let mut dst = [0u16; 8];
+        let (result, read, written) = variant.decode_to_utf16_raw(&[0x81], &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (1, 1));
+        assert_eq!(dst[0], 0x00E9);
+    }
+
+    #[test]
+    fn ascii_only_input_decodes_byte_for_byte_to_utf16() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let src = b"abc!<>~ text";
+        let mut dst = [0u16; 32];
+        let (result, read, written) = decoder.decode_to_utf16_raw(src, &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (src.len(), src.len()));
+        let expected: [u16; 12] = core::array::from_fn(|i| u16::from(src[i]));
+        assert_eq!(&dst[..written], &expected[..]);
+    }
+
+    #[test]
+    fn empty_utf16_input_is_input_empty() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst = [0u16; 8];
+        let (result, read, written) = decoder.decode_to_utf16_raw(b"", &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (0, 0));
+    }
+
+    #[test]
+    fn empty_utf16_destination_with_ascii_input_reports_output_full() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst: [u16; 0] = [];
+        let (result, read, written) = decoder.decode_to_utf16_raw(b"abc", &mut dst, true);
+        assert_eq!(result, DecoderResult::OutputFull);
+        assert_eq!((read, written), (0, 0));
+    }
+
+    #[test]
+    fn non_ascii_first_byte_decodes_to_one_utf16_unit() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst = [0u16; 8];
+        let (result, read, written) = decoder.decode_to_utf16_raw(&[0x81], &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (1, 1));
+        assert_eq!(dst[0], 0x00E9);
+    }
+
+    #[test]
+    fn c1_pointer_decodes_to_the_control_unit_in_utf16() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst = [0u16; 8];
+        let (result, read, written) = decoder.decode_to_utf16_raw(&[0x80], &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (1, 1));
+        assert_eq!(dst[0], 0x0080);
+    }
+
+    #[test]
+    fn undefined_c1_pointer_reports_malformed_in_utf16() {
+        let mut decoder = SingleByteDecoder {
+            table: &UNDEFINED_TABLE,
+        };
+        let mut dst = [0u16; 8];
+        let (result, read, written) = decoder.decode_to_utf16_raw(&[0x80], &mut dst, true);
+        assert_eq!(result, DecoderResult::Malformed(1, 0));
+        assert_eq!((read, written), (1, 0));
+        assert_eq!(dst[0], 0);
+    }
+
+    #[test]
+    fn punctuation_below_angle_bracket_stays_on_the_fast_path_to_utf16() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst = [0u16; 8];
+        let (result, read, written) = decoder.decode_to_utf16_raw(&[0x81, b'!'], &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (2, 2));
+        assert_eq!(&dst[..2], &[0x00E9, u16::from(b'!')]);
+    }
+
+    #[test]
+    fn markup_at_angle_bracket_restarts_the_accelerator_to_utf16() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst = [0u16; 8];
+        let (result, read, written) = decoder.decode_to_utf16_raw(&[0x81, b'<', b'a', b'>'], &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (4, 4));
+        assert_eq!(
+            &dst[..4],
+            &[0x00E9, u16::from(b'<'), u16::from(b'a'), u16::from(b'>')]
+        );
+    }
+
+    #[test]
+    fn alternating_non_ascii_and_punctuation_decodes_to_utf16() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst = [0u16; 8];
+        let (result, read, written) = decoder.decode_to_utf16_raw(&[0x81, b'!', 0x81], &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (3, 3));
+        assert_eq!(&dst[..3], &[0x00E9, u16::from(b'!'), 0x00E9]);
+    }
+
+    #[test]
+    fn non_ascii_last_input_byte_decodes_to_utf16() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst = [0u16; 8];
+        let (result, read, written) = decoder.decode_to_utf16_raw(b"xy\x83", &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (3, 3));
+        assert_eq!(&dst[..3], &[u16::from(b'x'), u16::from(b'y'), 0xFFFF]);
+    }
+
+    #[test]
+    fn undefined_pointer_after_ascii_is_malformed_in_utf16() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst = [0u16; 8];
+        let (result, read, written) = decoder.decode_to_utf16_raw(b"a\x90", &mut dst, true);
+        assert_eq!(result, DecoderResult::Malformed(1, 0));
+        assert_eq!((read, written), (2, 1));
+        assert_eq!(&dst[..1], &[u16::from(b'a')]);
+    }
+
+    #[test]
+    fn only_the_first_undefined_pointer_is_reported_to_utf16() {
+        let mut decoder = SingleByteDecoder {
+            table: &UNDEFINED_TABLE,
+        };
+        let mut dst = [0u16; 8];
+        let (result, read, written) = decoder.decode_to_utf16_raw(&[0x90, 0x91, 0x92], &mut dst, true);
+        assert_eq!(result, DecoderResult::Malformed(1, 0));
+        assert_eq!((read, written), (1, 0));
+    }
+
+    #[test]
+    fn every_non_ascii_byte_is_malformed_for_a_fully_undefined_table_in_utf16() {
+        for byte in 0x80u16..=0xFF {
+            let mut decoder = SingleByteDecoder {
+                table: &UNDEFINED_TABLE,
+            };
+            let mut dst = [0u16; 4];
+            let (result, read, written) = decoder.decode_to_utf16_raw(&[byte as u8], &mut dst, true);
+            assert_eq!(
+                (result, read, written),
+                (DecoderResult::Malformed(1, 0), 1, 0),
+                "byte {byte:#04x}"
+            );
+        }
+    }
+
+    #[test]
+    fn utf16_destination_one_unit_short_of_ascii_input_reports_output_full() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst = [0u16; 3];
+        let (result, read, written) = decoder.decode_to_utf16_raw(b"abcd", &mut dst, true);
+        assert_eq!(result, DecoderResult::OutputFull);
+        assert_eq!((read, written), (3, 3));
+        assert_eq!(&dst[..], &[u16::from(b'a'), u16::from(b'b'), u16::from(b'c')]);
+    }
+
+    #[test]
+    fn utf16_non_ascii_beyond_capacity_is_left_unread() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        // One unit of room: the ASCII byte is written, the pointer byte is not read.
+        let mut dst = [0u16; 1];
+        let (result, read, written) = decoder.decode_to_utf16_raw(b"a\x81", &mut dst, true);
+        assert_eq!(result, DecoderResult::OutputFull);
+        assert_eq!((read, written), (1, 1));
+        assert_eq!(dst[0], u16::from(b'a'));
+    }
+
+    #[test]
+    fn utf16_output_full_stops_before_the_unread_unit_after_punctuation() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        // The punctuation byte fills the destination, so `length` is reached in
+        // the innermost loop and the trailing byte stays unread.
+        let mut dst = [0u16; 2];
+        let (result, read, written) = decoder.decode_to_utf16_raw(&[0x81, b'!', b'x'], &mut dst, true);
+        assert_eq!(result, DecoderResult::OutputFull);
+        assert_eq!((read, written), (2, 2));
+        assert_eq!(&dst[..], &[0x00E9, u16::from(b'!')]);
+    }
+
+    #[test]
+    fn utf16_destination_exactly_the_input_size_reports_input_empty() {
+        let mut decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst = [0u16; 2];
+        let (result, read, written) = decoder.decode_to_utf16_raw(&[0x81, b'A'], &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (2, 2));
+    }
+
+    #[test]
+    fn last_flag_does_not_change_the_utf16_decoding_result() {
+        let src = [0x81u8, b'!', 0x83, b'-', 0x90];
+        let mut first = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut second = SingleByteDecoder { table: &WIDTHS_TABLE };
+        let mut dst_a = [0u16; 32];
+        let mut dst_b = [0u16; 32];
+        let (result_a, read_a, written_a) = first.decode_to_utf16_raw(&src, &mut dst_a, true);
+        let (result_b, read_b, written_b) = second.decode_to_utf16_raw(&src, &mut dst_b, false);
+        assert_eq!((result_a, read_a, written_a), (result_b, read_b, written_b));
+        assert_eq!(&dst_a[..written_a], &dst_b[..written_b]);
+    }
+
+    #[test]
+    fn koi8_r_cyrillic_word_decodes_to_utf16() {
+        let mut decoder = SingleByteDecoder { table: &KOI8_R_INDEX };
+        // "привет" in KOI8-R.
+        let src = [0xD0u8, 0xD2, 0xC9, 0xD7, 0xC5, 0xD4];
+        let mut dst = [0u16; 8];
+        let (result, read, written) = decoder.decode_to_utf16_raw(&src, &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (6, 6));
+        assert_eq!(&dst[..6], &[0x043F, 0x0440, 0x0438, 0x0432, 0x0435, 0x0442]);
+    }
+
+    #[test]
+    fn full_pointer_range_decodes_to_utf16_pointer_for_pointer() {
+        // The normative contract: entry `i` of the index is the code point for
+        // byte `0x80 + i`.
+        let mut decoder = SingleByteDecoder { table: &KOI8_R_INDEX };
+        let src: [u8; 128] = core::array::from_fn(|i| 0x80 + i as u8);
+        let mut dst = [0u16; 128];
+        let (result, read, written) = decoder.decode_to_utf16_raw(&src[..], &mut dst[..], true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (128, 128));
+        assert_eq!(&dst[..], &KOI8_R_INDEX[..]);
+    }
+
+    #[test]
+    fn max_utf16_buffer_length_is_one_unit_per_input_byte() {
+        let decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        assert_eq!(decoder.max_utf16_buffer_length(0), Some(0));
+        assert_eq!(decoder.max_utf16_buffer_length(1), Some(1));
+        assert_eq!(decoder.max_utf16_buffer_length(128), Some(128));
+    }
+
+    #[test]
+    fn max_utf8_buffer_length_triples_the_input_length() {
+        let decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        assert_eq!(decoder.max_utf8_buffer_length(0), Some(0));
+        assert_eq!(decoder.max_utf8_buffer_length(5), Some(15));
+        assert_eq!(decoder.max_utf8_buffer_length_without_replacement(5), Some(15));
+        // Replacement code points are three bytes, so both reservations agree.
+        assert_eq!(
+            decoder.max_utf8_buffer_length(1024),
+            decoder.max_utf8_buffer_length_without_replacement(1024)
+        );
+    }
+
+    #[test]
+    fn max_utf8_buffer_length_returns_none_on_overflow() {
+        let decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        assert_eq!(decoder.max_utf8_buffer_length(usize::MAX), None);
+        assert_eq!(
+            decoder.max_utf8_buffer_length_without_replacement(usize::MAX),
+            None
+        );
+        // The smallest length whose triple wraps.
+        let just_over = usize::MAX / 3 + 1;
+        assert_eq!(decoder.max_utf8_buffer_length(just_over), None);
+        let largest_ok = usize::MAX / 3;
+        assert_eq!(
+            decoder.max_utf8_buffer_length(largest_ok),
+            largest_ok.checked_mul(3)
+        );
+    }
+
+    #[test]
+    fn max_utf16_buffer_length_does_not_saturate_on_overflow() {
+        // The current implementation is a plain identity, so `usize::MAX` is
+        // echoed back rather than rejected. Pinned because the UTF-8 helpers
+        // above do return `None` for the same input.
+        let decoder = SingleByteDecoder { table: &WIDTHS_TABLE };
+        assert_eq!(decoder.max_utf16_buffer_length(usize::MAX), Some(usize::MAX));
+    }
+
+    #[test]
+    fn encoder_max_buffer_lengths_are_one_byte_per_input_unit() {
+        let encoder = SingleByteEncoder::new(&WIDTHS_TABLE, 0x00E9, 1, 1);
+        assert_eq!(
+            encoder.max_buffer_length_from_utf16_without_replacement(0),
+            Some(0)
+        );
+        assert_eq!(
+            encoder.max_buffer_length_from_utf16_without_replacement(7),
+            Some(7)
+        );
+        assert_eq!(
+            encoder.max_buffer_length_from_utf8_without_replacement(0),
+            Some(0)
+        );
+        assert_eq!(
+            encoder.max_buffer_length_from_utf8_without_replacement(7),
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn encoder_max_buffer_lengths_echo_usize_max_instead_of_none() {
+        // A surrogate pair is two units for one character, and the astral
+        // character never encodes, so one byte per unit is still an upper
+        // bound; the helpers are identities and therefore overflow-silent.
+        let encoder = SingleByteEncoder::new(&WIDTHS_TABLE, 0x00E9, 1, 1);
+        assert_eq!(
+            encoder.max_buffer_length_from_utf16_without_replacement(usize::MAX),
+            Some(usize::MAX)
+        );
+        assert_eq!(
+            encoder.max_buffer_length_from_utf8_without_replacement(usize::MAX),
+            Some(usize::MAX)
+        );
+    }
 }
