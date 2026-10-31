@@ -15,11 +15,10 @@
 
 //! One handle, followed across the border between the two drivers.
 //!
-//! Both tests here start from a Vulkan device and end inside OpenCL, so they
-//! only run on a machine where the two name the same hardware: the pairing
-//! question is answered from the drivers themselves, and a machine whose
-//! OpenCL and Vulkan drivers describe different devices — or nothing at all —
-//! has no exchange to check and returns early.
+//! Every test here starts from the pairing question the drivers themselves
+//! answer, so it only runs on a machine whose OpenCL and Vulkan drivers
+//! describe the same hardware — a machine where they do not, or where one of
+//! the two is missing, has no exchange to check and returns early.
 
 #![cfg(unix)]
 
@@ -160,8 +159,54 @@ fn a_shared_signal_imports_as_the_opencl_semaphore_it_crosses_as() {
             Err(error) => panic!("a device that imports the handle refused it: {error}"),
         }
         // The descriptor is left open on purpose: the semaphore side of
-        // `cl_khr_external_semaphore` does not document that an import only
-        // reads it, and a test that guessed wrong would close a descriptor
-        // the driver has since reused.
+        // `cl_khr_external_semaphore` never says the import only reads it,
+        // and a test that closes a descriptor the driver kept open closes
+        // whatever file has since taken that slot.
+    }
+}
+
+/// The other direction, and the reason the export carries its kind: a signal
+/// made by OpenCL for export is imported by the Vulkan endpoint, which then
+/// owns the descriptor it was handed.
+#[test]
+fn a_signal_made_by_opencl_is_imported_by_the_vulkan_endpoint() {
+    let Some((machine, device)) = pair() else {
+        return;
+    };
+    let endpoint = machine.endpoint();
+    let Ok(context) = Context::new(&device) else {
+        return;
+    };
+    let Ok(queue) = CommandQueue::new(&context, &device) else {
+        return;
+    };
+    for kind in [SemaphoreKind::OpaqueFd, SemaphoreKind::SyncFd] {
+        if !endpoint.can_import_semaphore(kind) {
+            continue;
+        }
+        let Ok(shared) = SharedSemaphore::exportable(&context, kind) else {
+            continue;
+        };
+        // The payload is signaled before it crosses, so the importing
+        // semaphore has something to wait on and the driver's destroy of it
+        // returns instead of blocking forever.
+        if shared.signal(&queue).is_err() || queue.finish().is_err() {
+            continue;
+        }
+        let Ok(handle) = shared.handle() else {
+            continue;
+        };
+        let Some(importer) = machine.semaphore(None) else {
+            // SAFETY: nothing took this descriptor, so it is still ours.
+            unsafe { close_descriptor(handle.raw() as i32) };
+            continue;
+        };
+        if let Err(error) = endpoint.import_semaphore_fd(importer.handle(), handle) {
+            // SAFETY: a refused import leaves the descriptor with the caller.
+            unsafe { close_descriptor(handle.raw() as i32) };
+            panic!("the device advertised {kind:?} as importable: {error}");
+        }
+        // On the success path the driver took the descriptor over, which is
+        // why there is no close here.
     }
 }
