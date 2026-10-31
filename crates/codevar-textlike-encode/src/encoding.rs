@@ -914,12 +914,13 @@ pub fn convert_utf8_to_utf16(src: &[u8], dst: &mut [u16]) -> Result<usize, Encod
                 // error instead of panicking.
                 return Err(EncodingError::OutputFull);
             }
-            DecoderResult::Malformed(_, _) => unsafe {
-                *dst.as_mut_ptr()
-                    .wrapping_add(total_written)
-                    .cast::<u32>() = 0xFFFD;
+            DecoderResult::Malformed(_, _) => {
+                let Some(slot) = dst.get_mut(total_written) else {
+                    return Err(EncodingError::OutputFull);
+                };
+                *slot = 0xFFFD;
                 total_written += 1;
-            },
+            }
         }
     }
 }
@@ -2406,6 +2407,53 @@ mod tests {
                 actual: 3
             }
         );
+    }
+
+    #[test]
+    fn convert_utf8_to_utf16_replaces_a_bad_lead_byte_without_clobbering_the_next_unit() {
+        // A malformed sequence writes exactly one replacement unit: the unit
+        // that follows it must still be the decoded next character, not the
+        // zero half of a widened write.
+        let src = b"\xFFa\xFFb";
+        let mut dst = vec![0u16; src.len() + 1];
+        let len = ok_size(convert_utf8_to_utf16(src, &mut dst));
+        dst.truncate(len);
+        assert_eq!(dst, [0xFFFDu16, 0x61, 0xFFFD, 0x62]);
+    }
+
+    #[test]
+    fn convert_utf8_to_utf16_replaces_a_truncated_tail_once() {
+        for truncated in [b"\xC3".as_slice(), b"\xE2\x98", b"\xF0\x9F\x92", b"ok\xED\xA0"] {
+            let mut dst = vec![0u16; truncated.len() + 1];
+            let len = ok_size(convert_utf8_to_utf16(truncated, &mut dst));
+            assert!(len <= dst.len(), "{truncated:?} overran the destination");
+            dst.truncate(len);
+            let tail = &dst[dst.len() - 1..];
+            assert_eq!(tail, [0xFFFDu16], "{truncated:?}");
+        }
+    }
+
+    #[test]
+    fn convert_utf8_to_utf16_reprocesses_a_bad_trail_byte_as_a_lead() {
+        // The decoder reports the offending trail byte without consuming it, so
+        // the conversion sees the 0x28 twice: once as the error and once as the
+        // valid ascii character it is.
+        let src = b"\xC3\x28";
+        let mut dst = vec![0u16; src.len() + 1];
+        let len = ok_size(convert_utf8_to_utf16(src, &mut dst));
+        dst.truncate(len);
+        assert_eq!(dst, [0xFFFDu16, 0x28]);
+    }
+
+    #[test]
+    fn convert_utf8_to_utf16_stays_inside_the_destination_for_all_malformed_input() {
+        let src = [0xEDu8, 0xA0, 0x80, 0xC0, 0x80, 0xF5, 0xFF];
+        let mut dst = vec![0u16; src.len() + 1];
+        let len = ok_size(convert_utf8_to_utf16(&src, &mut dst));
+        assert!(len <= dst.len());
+        dst.truncate(len);
+        assert_eq!(dst, vec![0xFFFDu16; src.len()]);
+        assert_eq!(len, src.len());
     }
 
     #[test]
