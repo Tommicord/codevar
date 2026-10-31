@@ -34,8 +34,9 @@
 //! [`Buffer`] drop calls `clReleaseMemObject` and nothing else, so the
 //! exporter keeps its own reference and decides when the allocation is
 //! finally released. Ownership *of the memory for command execution* is a
-//! separate, per-command question answered by `clEnqueueAcquire…KHR` and
-//! `clEnqueueRelease…KHR`, wrapped in [`crate::queue`] as the next step.
+//! separate, per-command question answered by
+//! [`CommandQueue::acquire_external_memory`] and
+//! [`CommandQueue::release_external_memory`].
 //!
 //! # Examples
 //!
@@ -82,7 +83,9 @@ use crate::api::Api;
 use crate::buffer::Buffer;
 use crate::context::Context;
 use crate::error::{self, Error, Result};
+use crate::event::Event;
 use crate::properties::{self, PropertyList};
+use crate::queue::CommandQueue;
 use crate::sys;
 
 /// A handle to memory exported by another API, in the driver's own
@@ -144,8 +147,8 @@ impl Buffer {
     /// `handle` is only read during this call and this crate never closes
     /// or frees it, so the exporter keeps its own reference for as long as
     /// it needs the memory. The buffer may not be used by a command queue
-    /// until that queue has taken ownership of it with the external-memory
-    /// acquire command of `cl_khr_external_memory`.
+    /// until that queue has taken ownership of it with
+    /// [`CommandQueue::acquire_external_memory`].
     ///
     /// # Errors
     ///
@@ -224,6 +227,110 @@ impl Buffer {
     }
 }
 
+/// The ownership half of sharing memory: an imported buffer may only be
+/// read, written or bound to a kernel between an acquire and the matching
+/// release on the queue running those commands.
+impl CommandQueue {
+    /// Validates `buffers` for an ownership command and collects their
+    /// driver handles in the order the driver expects.
+    fn imported_handles(&self, buffers: &[Buffer]) -> Result<Vec<sys::MemHandle>> {
+        if buffers.is_empty() {
+            return Err(Error::InvalidArgument {
+                what: "an external-memory command must name at least one buffer",
+            });
+        }
+        for buffer in buffers {
+            self.check_context(
+                buffer.context(),
+                "an imported buffer belongs to a different context",
+            )?;
+        }
+        Ok(buffers.iter().map(Buffer::raw).collect())
+    }
+
+    /// Takes ownership of every buffer in `buffers` for this queue's
+    /// device (`clEnqueueAcquireExternalMemObjectsKHR`).
+    ///
+    /// The memory stays the exporter's until this command runs, and the
+    /// command runs at its place in the queue — after everything submitted
+    /// before it. Between [`Buffer::from_external`] and this call a kernel
+    /// reading the buffer sees whatever the exporter left there.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidArgument`] when `buffers` is empty,
+    /// [`Error::ContextMismatch`] when a buffer came from another context,
+    /// [`Error::Unsupported`] when the driver does not export the entry
+    /// point, and [`Error::Status`] / [`Error::NullHandle`] on driver
+    /// failures — the driver refuses a buffer that was not imported with
+    /// `CL_INVALID_OPERATION`.
+    pub fn acquire_external_memory(&self, buffers: &[Buffer]) -> Result<Event> {
+        let handles = self.imported_handles(buffers)?;
+        let acquire = Api::optional(
+            self.context()
+                .extensions()
+                .acquire_external_mem_objects,
+            "clEnqueueAcquireExternalMemObjectsKHR",
+        )?;
+        let mut event = sys::EventHandle::from_raw(null_mut());
+        // SAFETY: `handles` are the live `cl_mem` values of this queue's
+        // own context, which `imported_handles` just checked, and the
+        // vector outlives the call; the wait list is empty and `event` is
+        // a valid out-pointer.
+        let code = unsafe {
+            acquire(
+                self.raw(),
+                handles.len() as u32,
+                handles.as_ptr(),
+                0,
+                core::ptr::null(),
+                &mut event,
+            )
+        };
+        let raw = error::creation(event, code, "clEnqueueAcquireExternalMemObjectsKHR")?;
+        Ok(Event::new(self, raw))
+    }
+
+    /// Hands every buffer in `buffers` back to its exporter
+    /// (`clEnqueueReleaseExternalMemObjectsKHR`).
+    ///
+    /// Every command this queue still has to run on those buffers must be
+    /// submitted *before* the release; after the released command completes
+    /// the exporter may read or free the memory again. Releasing a buffer
+    /// the queue never acquired is an error the driver reports as
+    /// [`Error::Status`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as
+    /// [`acquire_external_memory`](Self::acquire_external_memory).
+    pub fn release_external_memory(&self, buffers: &[Buffer]) -> Result<Event> {
+        let handles = self.imported_handles(buffers)?;
+        let release = Api::optional(
+            self.context()
+                .extensions()
+                .release_external_mem_objects,
+            "clEnqueueReleaseExternalMemObjectsKHR",
+        )?;
+        let mut event = sys::EventHandle::from_raw(null_mut());
+        // SAFETY: as for the acquire above — the handles are live, belong
+        // to this queue's context and outlive the call, and `event` is a
+        // valid out-pointer.
+        let code = unsafe {
+            release(
+                self.raw(),
+                handles.len() as u32,
+                handles.as_ptr(),
+                0,
+                core::ptr::null(),
+                &mut event,
+            )
+        };
+        let raw = error::creation(event, code, "clEnqueueReleaseExternalMemObjectsKHR")?;
+        Ok(Event::new(self, raw))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,5 +405,34 @@ mod tests {
         assert!(imported.is_err(), "a closed descriptor must not import");
         let imported = Buffer::from_external(&context, 4096, ExternalMemoryHandle::DmaBuf(i32::MAX));
         assert!(imported.is_err(), "a descriptor out of range must not import");
+    }
+
+    /// The arguments of an ownership command are checked before the driver
+    /// is asked, so a malformed request answers the same way on a driver
+    /// that exports `cl_khr_external_memory` and on one that does not.
+    #[test]
+    fn ownership_commands_validate_their_arguments_first() {
+        let Some(context) = context() else {
+            return;
+        };
+        let Ok(queue) = CommandQueue::new(&context, context.device()) else {
+            return;
+        };
+        assert!(matches!(
+            queue.acquire_external_memory(&[]),
+            Err(Error::InvalidArgument { .. })
+        ));
+        // A second context over the same device is still a foreign
+        // context, because the driver tracks ownership per context.
+        let Ok(other) = Context::new(context.device()) else {
+            return;
+        };
+        let Ok(foreign) = Buffer::new(&other, 16) else {
+            return;
+        };
+        assert!(matches!(
+            queue.release_external_memory(&[foreign]),
+            Err(Error::ContextMismatch { .. })
+        ));
     }
 }

@@ -339,8 +339,13 @@ impl CommandQueue {
         &self.inner.api
     }
 
+    /// Returns the raw driver handle.
+    pub(crate) fn raw(&self) -> sys::CommandQueueHandle {
+        self.inner.raw
+    }
+
     /// Fails when `other` is not the queue's own context.
-    fn check_context(&self, other: &Context, what: &'static str) -> Result<()> {
+    pub(crate) fn check_context(&self, other: &Context, what: &'static str) -> Result<()> {
         if self.inner.context.same_as(other) {
             Ok(())
         } else {

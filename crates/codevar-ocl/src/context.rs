@@ -107,6 +107,12 @@ impl Context {
         &self.inner.api
     }
 
+    /// Returns the `cl_khr_*` entry points resolved for this context's
+    /// platform, cached at creation.
+    pub(crate) fn extensions(&self) -> &Extensions {
+        &self.inner.extensions
+    }
+
     /// Whether this context's driver can import memory exported by another
     /// API (Vulkan) and take ownership of it on a command queue
     /// (`cl_khr_external_memory`).
