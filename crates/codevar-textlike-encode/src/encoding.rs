@@ -1844,4 +1844,572 @@ mod tests {
         assert_eq!(out, "\u{1F4A9}".as_bytes());
         assert_eq!(read, src.len());
     }
+
+    #[test]
+    fn utf16be_astral_pair_decodes_to_utf8() {
+        let mut d = UTF_16BE.new_decoder();
+        let src: Vec<u8> = utf16_units("\u{1F4A9}")
+            .iter()
+            .flat_map(|u| u.to_be_bytes())
+            .collect();
+        let (out, _, errors) = decode_all(&mut d, &src);
+        assert!(!errors);
+        assert_eq!(out, "\u{1F4A9}".as_bytes());
+    }
+
+    #[test]
+    fn utf16_endianness_changes_meaning() {
+        let src = [0x41u8, 0x00];
+        let mut le = UTF_16LE.new_decoder();
+        let mut be = UTF_16BE.new_decoder();
+        let (le_out, _, le_err) = decode_all(&mut le, &src);
+        let (be_out, _, be_err) = decode_all(&mut be, &src);
+        assert!(!le_err && !be_err);
+        assert_eq!(le_out, *b"A");
+        // The same bytes as BE are U+4100, a three-byte UTF-8 sequence.
+        assert_eq!(be_out, "\u{4100}".as_bytes());
+        assert_ne!(le_out, be_out);
+    }
+
+    #[test]
+    fn utf16le_decode_to_utf16_bmp_units_preserved() {
+        let mut d = UTF_16LE.new_decoder();
+        let src: Vec<u8> = utf16_units("ab\u{e9}")
+            .iter()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        let (units, errors) = decode_all16(&mut d, &src);
+        assert!(!errors);
+        assert_eq!(units, utf16_units("ab\u{e9}"));
+    }
+
+    #[test]
+    fn utf16le_decode_to_utf16_astral_drops_high_unit_current_behavior() {
+        // Documents actual behavior: `Utf16Destination::copy_utf16_from`
+        // (handles.rs) writes only the low surrogate of an astral pair into
+        // the destination, leaving the high slot at its initial value.
+        // Spec-conformant output would preserve both units; reported instead
+        // of asserted as correct behavior.
+        let mut d = UTF_16LE.new_decoder();
+        let src: Vec<u8> = utf16_units("a\u{e9}\u{1F4A9}")
+            .iter()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        let (units, errors) = decode_all16(&mut d, &src);
+        assert!(!errors);
+        assert_eq!(units, [0x0061, 0x00E9, 0x0000, 0xDCA9]);
+    }
+
+    #[test]
+    fn utf16_decode_output_full_then_resume() {
+        let mut d = UTF_16LE.new_decoder();
+        let src = [0x61u8, 0x00, 0x62, 0x00];
+        let mut dst = [0u16; 1];
+        let (res, read, written, _) = d.decode_to_utf16(&src, &mut dst, true);
+        assert_eq!(res, CoderResult::OutputFull);
+        assert_eq!((read, written), (2, 1));
+        assert_eq!(dst[0], 0x0061);
+        let mut dst2 = [0u16; 2];
+        let (res2, read2, written2, _) = d.decode_to_utf16(&src[read..], &mut dst2, true);
+        assert_eq!(res2, CoderResult::InputEmpty);
+        assert_eq!((read2, written2), (2, 1));
+        assert_eq!(dst2[0], 0x0062);
+    }
+
+    #[test]
+    fn utf16_exactly_fitting_destination_is_input_empty() {
+        let mut d = UTF_16BE.new_decoder();
+        let mut dst = [0u16; 1];
+        let (res, read, written, errors) = d.decode_to_utf16(&[0x00u8, 0x61], &mut dst, true);
+        assert_eq!(res, CoderResult::InputEmpty);
+        assert_eq!((read, written, errors), (2, 1, false));
+        assert_eq!(dst[0], 0x0061);
+    }
+
+    #[test]
+    fn utf16_decode_empty_input_and_empty_destination() {
+        let mut d = UTF_16LE.new_decoder();
+        let mut dst = [0u16; 4];
+        let (res, read, written, errors) = d.decode_to_utf16(&[], &mut dst, true);
+        assert_eq!(
+            (res, read, written, errors),
+            (CoderResult::InputEmpty, 0, 0, false)
+        );
+        let mut empty: [u16; 0] = [];
+        let (res2, _, _) = d.decode_to_utf16_without_replacement(&[0x61, 0x00], &mut empty, true);
+        assert_eq!(res2, DecoderResult::OutputFull);
+    }
+
+    #[test]
+    fn utf8_encoder_str_roundtrip_identity() {
+        let mut e = UTF_8.new_encoder();
+        let src = "a\u{e9}\u{2603}\u{1F4A9}";
+        let (out, read, had) = encode_all(&mut e, src);
+        assert_eq!(out, src.as_bytes());
+        assert_eq!(read, src.len());
+        assert!(!had);
+    }
+
+    #[test]
+    fn utf8_encoder_empty_input() {
+        let mut e = UTF_8.new_encoder();
+        let mut dst = [0u8; 8];
+        let (res, read, written, had) = e.encode_from_utf8("", &mut dst, true);
+        assert_eq!((res, read, written, had), (CoderResult::InputEmpty, 0, 0, false));
+    }
+
+    #[test]
+    fn utf8_encoder_from_utf16_matches_std_bytes() {
+        let mut e = UTF_8.new_encoder();
+        let src = utf16_units("h\u{e9}\u{1F4A9}");
+        let (out, had) = encode16_all(&mut e, &src);
+        assert!(!had);
+        let reference: String = core::char::decode_utf16(src.clone())
+            .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER))
+            .collect();
+        assert_eq!(out, reference.as_bytes());
+    }
+
+    #[test]
+    fn utf8_encoder_small_destination_needs_no_ncr_reserve() {
+        // UTF-8 can encode everything, so unlike other encodings it does not
+        // require `NCR_EXTRA` spare bytes before attempting progress.
+        let mut e = UTF_8.new_encoder();
+        let mut dst = [0u8; 5];
+        let (res, read, written, _) = e.encode_from_utf8("abcdefghij", &mut dst, true);
+        assert_eq!(res, CoderResult::OutputFull);
+        assert!(written > 0 && written <= 5);
+        assert!(read >= written);
+    }
+
+    #[test]
+    fn utf16le_encoder_ascii_bytes_are_little_endian() {
+        let mut e = UTF_16LE.new_encoder();
+        let (out, read, had) = encode_all(&mut e, "a");
+        assert_eq!(out, [0x61u8, 0x00]);
+        assert_eq!(read, 1);
+        assert!(!had);
+    }
+
+    #[test]
+    fn utf16be_encoder_ascii_bytes_are_big_endian() {
+        let mut e = UTF_16BE.new_encoder();
+        let (out, _, had) = encode_all(&mut e, "a");
+        assert_eq!(out, [0x00u8, 0x61]);
+        assert!(!had);
+    }
+
+    #[test]
+    fn utf16le_encoder_from_utf8_astral_produces_pair() {
+        let mut e = UTF_16LE.new_encoder();
+        let (out, _, had) = encode_all(&mut e, "\u{1F4A9}");
+        assert!(!had);
+        let expected: Vec<u8> = utf16_units("\u{1F4A9}")
+            .iter()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn utf16be_encoder_from_utf16_astral_produces_pair() {
+        let mut e = UTF_16BE.new_encoder();
+        let src = utf16_units("\u{1F600}");
+        let (out, had) = encode16_all(&mut e, &src);
+        assert!(!had);
+        let expected: Vec<u8> = src.iter().flat_map(|u| u.to_be_bytes()).collect();
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn encoder_encoding_accessor_and_pending_state() {
+        let e = UTF_16BE.new_encoder();
+        assert!(core::ptr::eq(e.encoding(), &UTF_16BE));
+        assert!(!e.has_pending_state());
+        let mut sb = LATIN1.new_encoder();
+        let mut dst = vec![0u8; 4];
+        let (res, _, _, _) = sb.encode_from_utf8("abcdefgh", &mut dst, false);
+        assert!(matches!(res, CoderResult::OutputFull));
+        assert!(!sb.has_pending_state());
+    }
+
+    #[test]
+    fn utf8_if_no_unmappables_equals_without_replacement() {
+        let e = UTF_8.new_encoder();
+        assert_eq!(
+            e.max_buffer_length_from_utf8_if_no_unmappables(10),
+            e.max_buffer_length_from_utf8_without_replacement(10)
+        );
+        assert_eq!(
+            e.max_buffer_length_from_utf16_if_no_unmappables(10),
+            e.max_buffer_length_from_utf16_without_replacement(10)
+        );
+    }
+
+    #[test]
+    fn non_utf8_if_no_unmappables_adds_ncr_extra() {
+        for enc in [&UTF_16LE, &UTF_16BE, &LATIN1] {
+            let e = enc.new_encoder();
+            let without = e.max_buffer_length_from_utf8_without_replacement(8);
+            assert_eq!(
+                e.max_buffer_length_from_utf8_if_no_unmappables(8),
+                without.map(|v| v + NCR_EXTRA)
+            );
+            let without16 = e.max_buffer_length_from_utf16_without_replacement(8);
+            assert_eq!(
+                e.max_buffer_length_from_utf16_if_no_unmappables(8),
+                without16.map(|v| v + NCR_EXTRA)
+            );
+        }
+    }
+
+    #[test]
+    fn encoder_max_buffer_length_overflow_is_none() {
+        let e = UTF_16LE.new_encoder();
+        assert_eq!(
+            e.max_buffer_length_from_utf8_without_replacement(usize::MAX),
+            None
+        );
+        assert_eq!(e.max_buffer_length_from_utf8_if_no_unmappables(usize::MAX), None);
+        let sb = LATIN1.new_encoder();
+        assert_eq!(sb.max_buffer_length_from_utf8_if_no_unmappables(usize::MAX), None);
+    }
+
+    #[test]
+    fn variant_encoder_and_decoder_passthrough() {
+        let mut vd = VariantEncoding::Utf8.new_variant_decoder();
+        let mut dst = [0u8; 8];
+        let (res, read, written) = vd.decode_to_utf8_raw(b"hi", &mut dst, true);
+        assert_eq!(res, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (2, 2));
+        assert_eq!(
+            vd.max_utf8_buffer_length(10),
+            UTF_8.new_decoder().max_utf8_buffer_length(10)
+        );
+        let mut ve = VariantEncoder::Utf8(Utf8Encoder);
+        assert_eq!(
+            ve.max_buffer_length_from_utf8_without_replacement(10),
+            UTF_8
+                .new_encoder()
+                .max_buffer_length_from_utf8_without_replacement(10)
+        );
+        assert!(!ve.has_pending_state());
+        let (res, _, _) = ve.encode_from_utf8_raw("", &mut dst, true);
+        assert_eq!(res, EncoderResult::InputEmpty);
+    }
+
+    #[test]
+    fn ncr_extra_constant() {
+        assert_eq!(NCR_EXTRA, 10);
+    }
+
+    #[test]
+    fn single_byte_decode_ascii_passthrough() {
+        let mut d = LATIN1.new_decoder();
+        let (out, read, errors) = decode_all(&mut d, b"Hello");
+        assert_eq!(out, *b"Hello");
+        assert_eq!(read, 5);
+        assert!(!errors);
+    }
+
+    #[test]
+    fn single_byte_decode_full_mapped_range() {
+        let src: Vec<u8> = (0x80u8..=0xFF).collect();
+        let mut expected: Vec<u8> = Vec::new();
+        for b in &src {
+            let c = char::from_u32(u32::from(*b));
+            let mut buf = [0u8; 4];
+            expected.extend_from_slice(
+                c.unwrap_or(char::REPLACEMENT_CHARACTER)
+                    .encode_utf8(&mut buf)
+                    .as_bytes(),
+            );
+        }
+        let mut d = LATIN1.new_decoder();
+        let (out, read, errors) = decode_all(&mut d, &src);
+        assert!(!errors);
+        assert_eq!(read, src.len());
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn single_byte_unmapped_table_entry_raw_is_malformed() {
+        let mut d = BAD_LATIN1.new_decoder();
+        // 0xC1 = 0x80 + 0x41, the entry zeroed in the table.
+        let (res, _, _) = decode_raw(&mut d, &[0xC1], true);
+        assert_eq!(res, DecoderResult::Malformed(1, 0));
+    }
+
+    #[test]
+    fn single_byte_malformed_at_start_with_replacement() {
+        let mut d = BAD_LATIN1.new_decoder();
+        let (out, read, errors) = decode_all(&mut d, &[0xC1u8, 0x41]);
+        assert!(errors);
+        assert_eq!(out, [0xEFu8, 0xBF, 0xBD, 0x41]);
+        assert_eq!(read, 2);
+    }
+
+    #[test]
+    fn single_byte_malformed_at_end_with_replacement() {
+        let mut d = BAD_LATIN1.new_decoder();
+        let (out, read, errors) = decode_all(&mut d, &[0x41u8, 0xC1]);
+        assert!(errors);
+        assert_eq!(out, [0x41u8, 0xEF, 0xBF, 0xBD]);
+        assert_eq!(read, 2);
+    }
+
+    #[test]
+    fn run_only_encoder_uses_run_map_from_utf16() {
+        // The forward table is all zeroes, so a successful non-ASCII encode
+        // can only come from the run map (U+E000..U+E00F -> bytes
+        // 128 + run_byte_offset(32) + offset = 0xA0..0xAF).
+        let mut e = RUN_ONLY.new_encoder();
+        let src = utf16_units("\u{E000}\u{E007}\u{E00F}");
+        let (out, had) = encode16_all(&mut e, &src);
+        assert!(!had);
+        assert_eq!(out, [0xA0u8, 0xA7, 0xAF]);
+    }
+
+    #[test]
+    fn run_only_encoder_char_past_run_end_is_unmappable() {
+        // U+E00F is the last code point in the run; U+E010 sits one past it
+        // and the all-zero table has no entry either.
+        let mut e = RUN_ONLY.new_encoder();
+        let src = utf16_units("\u{E010}");
+        let (out, had) = encode16_all(&mut e, &src);
+        assert!(had);
+        assert_eq!(out, format!("&#{};", '\u{E010}' as u32).into_bytes());
+    }
+
+    #[test]
+    fn single_byte_encoder_run_below_the_second_quadrant_stays_in_bounds() {
+        // The second-quadrant reverse search starts at the run's byte offset, so
+        // a run that begins below pointer 0x20 (the ISO-8859-x indexes run from
+        // pointer 0) must clamp that range instead of slicing `table[32..0]`.
+        let mut e = ZERO_RUN_LATIN1.new_encoder();
+        let src = utf16_units("\u{4E2D}");
+        let (out, had) = encode16_all(&mut e, &src);
+        assert!(had);
+        assert_eq!(out, format!("&#{};", '\u{4E2D}' as u32).into_bytes());
+
+        let mut in_run = ZERO_RUN_LATIN1.new_encoder();
+        let src = utf16_units("\u{00E9}");
+        let (out, had) = encode16_all(&mut in_run, &src);
+        assert!(!had);
+        assert_eq!(out, [0xE9u8]);
+    }
+
+    #[test]
+    fn single_byte_encode_ascii_passthrough() {
+        let mut e = LATIN1.new_encoder();
+        let (out, read, had) = encode_all(&mut e, "abc");
+        assert_eq!(out, [0x61u8, 0x62, 0x63]);
+        assert_eq!(read, 3);
+        assert!(!had);
+    }
+
+    #[test]
+    fn single_byte_encode_run_map_from_utf8() {
+        let mut e = LATIN1.new_encoder();
+        let (out, _, had) = encode_all(&mut e, "caf\u{e9}");
+        assert!(!had);
+        assert_eq!(out, [0x63u8, 0x61, 0x66, 0xE9]);
+    }
+
+    #[test]
+    fn single_byte_encode_unmappable_bmp_produces_ncr() {
+        // The UTF-16 input path consumes the unmappable unit and reports it,
+        // so the NCR appears exactly once.
+        let mut e = LATIN1.new_encoder();
+        let src = utf16_units("\u{4E2D}");
+        let (out, had) = encode16_all(&mut e, &src);
+        assert!(had);
+        let expected = format!("&#{};", '\u{4E2D}' as u32);
+        assert_eq!(out, expected.as_bytes());
+    }
+
+    #[test]
+    fn single_byte_encode_unmappable_astral_produces_six_digit_ncr() {
+        let mut e = LATIN1.new_encoder();
+        let src = utf16_units("\u{1D11E}");
+        let (out, had) = encode16_all(&mut e, &src);
+        assert!(had);
+        let expected = format!("&#{};", 0x1D11Eu32);
+        assert_eq!(out, expected.as_bytes());
+        assert_eq!(expected.len(), 9);
+    }
+
+    #[test]
+    fn single_byte_encode_ncr_between_ascii_bytes() {
+        let mut e = LATIN1.new_encoder();
+        let src = utf16_units("a\u{4E2D}b");
+        let (out, had) = encode16_all(&mut e, &src);
+        assert!(had);
+        let mut expected = vec![b'a'];
+        expected.extend_from_slice(format!("&#{};", '\u{4E2D}' as u32).as_bytes());
+        expected.push(b'b');
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn single_byte_unmappable_from_utf8_raw_does_not_consume_current_behavior() {
+        // Documents actual behavior (reported suspect): the single-byte
+        // encoder's UTF-8 path returns `Unmappable` with read = 0, never
+        // advancing past the offending character, unlike the UTF-16 path.
+        let mut e = LATIN1.new_encoder();
+        let mut dst = [0u8; 40];
+        let (res, read, written) = e.encode_from_utf8_without_replacement("\u{4E2D}", &mut dst, true);
+        assert_eq!(res, EncoderResult::Unmappable('\u{4E2D}'));
+        assert_eq!((read, written), (0, 0));
+    }
+
+    #[test]
+    fn single_byte_encode_from_utf8_unmappable_stalls_to_output_full_current_behavior() {
+        // Because the UTF-8 raw path above never consumes the unmappable
+        // char, the replacement-char NCR loop in `encode_from_utf8` rewrites
+        // the same NCR until the effective destination is exhausted.
+        let mut e = LATIN1.new_encoder();
+        let mut dst = [0u8; 64];
+        let (res, _, written, had) = e.encode_from_utf8("\u{4E2D}", &mut dst, true);
+        assert!(had);
+        assert_eq!(res, CoderResult::OutputFull);
+        assert!(written >= 7);
+    }
+
+    #[test]
+    fn single_byte_encode_destination_below_ncr_reserve_is_output_full() {
+        let mut e = LATIN1.new_encoder();
+        let mut dst = [0u8; 9];
+        let (res, read, written, had) = e.encode_from_utf8("a", &mut dst, true);
+        assert_eq!(res, CoderResult::OutputFull);
+        assert_eq!((read, written, had), (0, 0, false));
+    }
+
+    #[test]
+    fn single_byte_encode_empty_src_small_dst_is_input_empty() {
+        let mut e = LATIN1.new_encoder();
+        let mut dst = [0u8; 4];
+        let (res, read, written, had) = e.encode_from_utf8("", &mut dst, false);
+        assert_eq!((res, read, written, had), (CoderResult::InputEmpty, 0, 0, false));
+        let (res2, read2, written2, had2) = e.encode_from_utf16(&[], &mut dst, true);
+        assert_eq!(
+            (res2, read2, written2, had2),
+            (CoderResult::InputEmpty, 0, 0, false)
+        );
+    }
+
+    #[test]
+    fn single_byte_decode_encode_roundtrip_all_mapped_bytes() {
+        let mut d = LATIN1.new_decoder();
+        let mut e = LATIN1.new_encoder();
+        for b in 0x80u8..=0xFF {
+            let (utf8, _, errors) = decode_all(&mut d, &[b]);
+            assert!(!errors);
+            let s = core::str::from_utf8(&utf8);
+            let text = match s {
+                Ok(t) => t,
+                Err(_) => panic!("decoder emitted invalid UTF-8 for byte {b:02X}"),
+            };
+            let (back, _, had) = encode_all(&mut e, text);
+            assert!(!had);
+            assert_eq!(back, [b]);
+        }
+    }
+
+    #[test]
+    fn write_ncr_matches_decimal_reference_at_digit_boundaries() {
+        let points = [10u32, 99, 100, 999, 1000, 9999, 10000, 99999, 100000, 1114111];
+        for p in points {
+            let c = char::from_u32(p);
+            let Some(c) = c else {
+                panic!("{p} is not a char");
+            };
+            let reference = format!("&#{p};");
+            let mut dst = [0u8; 16];
+            let len = write_ncr(c, &mut dst);
+            assert_eq!(len, reference.len());
+            assert_eq!(&dst[..len], reference.as_bytes());
+        }
+    }
+
+    #[test]
+    fn write_ncr_single_digit_leaves_interior_byte_current_behavior() {
+        // Documents actual behavior: for a code point below 100 the fixed
+        // 5-byte layout only fills two digit slots, so a one-digit value
+        // leaves the interior byte untouched (suspect noted in `write_ncr`,
+        // unreachable from the encoders because ASCII never unmaps).
+        let mut dst = [0u8; 16];
+        let len = write_ncr('\u{1}', &mut dst);
+        assert_eq!(len, 5);
+        assert_eq!(&dst[..len], &[b'&', b'#', 0, b'1', b';']);
+    }
+
+    #[test]
+    fn encoder_result_unmappable_from_bmp_helpers() {
+        assert_eq!(
+            EncoderResult::unmappable_from_bmp(0x4E2D),
+            EncoderResult::Unmappable('\u{4E2D}')
+        );
+        // Lone surrogates cannot become chars; they degrade to U+FFFD.
+        assert_eq!(
+            EncoderResult::unmappable_from_bmp(0xD800),
+            EncoderResult::Unmappable(char::REPLACEMENT_CHARACTER)
+        );
+        assert_eq!(
+            EncoderResult::unmappable_from_bmp(0xDFFF),
+            EncoderResult::Unmappable(char::REPLACEMENT_CHARACTER)
+        );
+    }
+
+    #[test]
+    fn coder_enum_variants_equality() {
+        assert_eq!(CoderResult::InputEmpty, CoderResult::InputEmpty);
+        assert_ne!(CoderResult::InputEmpty, CoderResult::OutputFull);
+        assert_ne!(DecoderResult::Malformed(1, 0), DecoderResult::Malformed(0, 1));
+        assert_eq!(DecoderResult::Malformed(2, 2), DecoderResult::Malformed(2, 2));
+        assert_ne!(EncoderResult::OutputFull, EncoderResult::InputEmpty);
+        assert_eq!(EncoderResult::Unmappable('a'), EncoderResult::Unmappable('a'));
+        assert_ne!(EncoderResult::Unmappable('a'), EncoderResult::Unmappable('b'));
+    }
+
+    #[test]
+    fn encoding_error_display_and_equality() {
+        let small = EncodingError::DestinationTooSmall {
+            required: 3,
+            actual: 2,
+        };
+        assert_eq!(
+            format!("{small}"),
+            "destination buffer too small: requires 3 elements, got 2"
+        );
+        assert_eq!(small, small.clone());
+        assert_ne!(small, EncodingError::OutputFull);
+        assert_eq!(
+            format!("{}", EncodingError::OutputFull),
+            "destination buffer filled before conversion completed"
+        );
+    }
+
+    #[test]
+    fn convert_utf8_to_utf16_valid_mixed_planes() {
+        let src = "abc\u{1F4A9}\u{2603}";
+        let mut dst = vec![0u16; src.len() + 1];
+        let len = ok_size(convert_utf8_to_utf16(src.as_bytes(), &mut dst));
+        dst.truncate(len);
+        assert_eq!(dst, utf16_units(src));
+    }
+
+    #[test]
+    fn convert_utf8_to_utf16_destination_must_exceed_source_len() {
+        let src = b"abc";
+        let mut dst = vec![0u16; 3];
+        let err = err_of(convert_utf8_to_utf16(src, &mut dst));
+        assert_eq!(
+            err,
+            EncodingError::DestinationTooSmall {
+                required: 4,
+                actual: 3
+            }
+        );
+    }
 }
