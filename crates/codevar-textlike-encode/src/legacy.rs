@@ -601,3 +601,426 @@ pub fn for_bom(bytes: &[u8]) -> Option<&'static Encoding> {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::encoding::{DecoderResult, EncoderResult};
+
+    fn by_name(name: &str) -> &'static Encoding {
+        ENCODINGS
+            .iter()
+            .copied()
+            .find(|encoding| encoding.name == name)
+            .unwrap_or_else(|| panic!("{name} is not in the registry"))
+    }
+
+    fn table_of(encoding: &'static Encoding) -> &'static [u16; 128] {
+        let VariantEncoding::SingleByte(table, _, _, _) = encoding.variant else {
+            panic!("{} is not a single-byte encoding", encoding.name);
+        };
+        table
+    }
+
+    #[test]
+    fn every_defined_pointer_round_trips() {
+        let mut out16 = [0u16; 1];
+        let mut out8 = [0u8; 1];
+        for &encoding in SINGLE_BYTE_ENCODINGS.iter() {
+            let mut decoder = encoding.new_decoder_without_bom_handling();
+            let mut encoder = encoding.new_encoder();
+            for (pointer, &expected) in table_of(encoding).iter().enumerate() {
+                let byte = 0x80u8 + pointer as u8;
+                let (result, read, written) =
+                    decoder.decode_to_utf16_without_replacement(&[byte], &mut out16, true);
+                if expected == 0 {
+                    assert_eq!(
+                        result,
+                        DecoderResult::Malformed(1, 0),
+                        "{}: byte {byte:02X} is a defined pointer",
+                        encoding.name
+                    );
+                    assert_eq!((read, written), (1, 0), "{}: byte {byte:02X}", encoding.name);
+                    continue;
+                }
+                assert_eq!(
+                    result,
+                    DecoderResult::InputEmpty,
+                    "{}: byte {byte:02X}",
+                    encoding.name
+                );
+                assert_eq!((read, written), (1, 1), "{}: byte {byte:02X}", encoding.name);
+                assert_eq!(out16[0], expected, "{}: byte {byte:02X}", encoding.name);
+                let (result, read, written) =
+                    encoder.encode_from_utf16_without_replacement(&[expected], &mut out8, true);
+                assert_eq!(
+                    result,
+                    EncoderResult::InputEmpty,
+                    "{}: U+{expected:04X} should encode",
+                    encoding.name
+                );
+                assert_eq!((read, written), (1, 1), "{}: U+{expected:04X}", encoding.name);
+                assert_eq!(out8[0], byte, "{}: U+{expected:04X}", encoding.name);
+            }
+        }
+    }
+
+    #[test]
+    fn undefined_pointer_counts_match_the_standard() {
+        let expected: [(&str, usize); 8] = [
+            ("ISO-8859-3", 7),
+            ("ISO-8859-6", 45),
+            ("ISO-8859-7", 3),
+            ("ISO-8859-8", 36),
+            ("windows-874", 8),
+            ("windows-1253", 3),
+            ("windows-1255", 10),
+            ("windows-1257", 2),
+        ];
+        for (name, count) in expected {
+            let encoding = by_name(name);
+            assert_eq!(
+                table_of(encoding)
+                    .iter()
+                    .filter(|&&v| v == 0)
+                    .count(),
+                count,
+                "{name}: undefined pointers"
+            );
+        }
+        for &encoding in SINGLE_BYTE_ENCODINGS.iter() {
+            let name = encoding.name;
+            if expected.iter().any(|&(n, _)| n == name) || name == "ISO-8859-8-I" {
+                continue;
+            }
+            assert_eq!(
+                table_of(encoding)
+                    .iter()
+                    .filter(|&&v| v == 0)
+                    .count(),
+                0,
+                "{name}: should be total"
+            );
+        }
+    }
+
+    #[test]
+    fn registry_holds_the_single_byte_encodings_of_the_standard() {
+        assert_eq!(SINGLE_BYTE_ENCODINGS.len(), 28);
+        let mut names = SINGLE_BYTE_ENCODINGS.iter().map(|e| e.name);
+        for name in [
+            "IBM866",
+            "ISO-8859-2",
+            "ISO-8859-3",
+            "ISO-8859-4",
+            "ISO-8859-5",
+            "ISO-8859-6",
+            "ISO-8859-7",
+            "ISO-8859-8",
+            "ISO-8859-8-I",
+            "ISO-8859-10",
+            "ISO-8859-13",
+            "ISO-8859-14",
+            "ISO-8859-15",
+            "ISO-8859-16",
+            "KOI8-R",
+            "KOI8-U",
+            "macintosh",
+            "windows-874",
+            "windows-1250",
+            "windows-1251",
+            "windows-1252",
+            "windows-1253",
+            "windows-1254",
+            "windows-1255",
+            "windows-1256",
+            "windows-1257",
+            "windows-1258",
+            "x-mac-cyrillic",
+        ] {
+            assert!(names.by_ref().any(|n| n == name), "{name} is missing");
+        }
+        assert_eq!(names.count(), 0, "unexpected extra entry");
+    }
+
+    #[test]
+    fn unicode_encodings_come_first_in_the_full_list() {
+        assert_eq!(ENCODINGS.len(), 31);
+        assert_eq!(ENCODINGS[0].name, "UTF-8");
+        assert_eq!(ENCODINGS[1].name, "UTF-16BE");
+        assert_eq!(ENCODINGS[2].name, "UTF-16LE");
+        assert_eq!(&ENCODINGS[3..], &SINGLE_BYTE_ENCODINGS[..]);
+    }
+
+    #[test]
+    fn every_table_label_resolves_to_its_encoding() {
+        for (label, encoding) in &LABELS {
+            let found = for_label(label).unwrap_or_else(|| panic!("{label} does not resolve"));
+            assert_eq!(found.name, encoding.name, "{label}");
+        }
+    }
+
+    #[test]
+    fn lookup_resolves_the_unicode_labels() {
+        for (label, name) in [
+            ("utf-8", "UTF-8"),
+            ("UTF8", "UTF-8"),
+            ("unicode-1-1-utf-8", "UTF-8"),
+            ("utf-16be", "UTF-16BE"),
+            ("unicodefffe", "UTF-16BE"),
+            ("utf-16le", "UTF-16LE"),
+            ("utf-16", "UTF-16LE"),
+            ("unicode", "UTF-16LE"),
+            ("csunicode", "UTF-16LE"),
+        ] {
+            assert_eq!(for_label(label).map(|e| e.name), Some(name), "{label}");
+        }
+    }
+
+    #[test]
+    fn lookup_is_ascii_case_insensitive() {
+        assert_eq!(for_label("WINDOWS-1252").map(|e| e.name), Some("windows-1252"));
+        assert_eq!(for_label("Windows-1252").map(|e| e.name), Some("windows-1252"));
+        assert_eq!(for_label("wInDoWs-1252").map(|e| e.name), Some("windows-1252"));
+        assert_eq!(for_label("KOI8-R").map(|e| e.name), Some("KOI8-R"));
+        assert_eq!(for_label("koi8_r").map(|e| e.name), Some("KOI8-R"));
+    }
+
+    #[test]
+    fn lookup_strips_surrounding_ascii_whitespace() {
+        for padded in ["  utf-8", "utf-8  ", "\tutf-8\n", "\r\nutf-8\x0c ", "\u{20}utf-8"] {
+            assert_eq!(for_label(padded).map(|e| e.name), Some("UTF-8"), "{padded:?}");
+        }
+    }
+
+    #[test]
+    fn latin1_and_ascii_labels_alias_windows_1252() {
+        for label in [
+            "iso-8859-1",
+            "latin1",
+            "l1",
+            "csisolatin1",
+            "ansi_x3.4-1968",
+            "ascii",
+            "us-ascii",
+            "ibm819",
+            "cp819",
+            "iso_8859-1:1987",
+        ] {
+            assert_eq!(for_label(label).map(|e| e.name), Some("windows-1252"), "{label}");
+        }
+    }
+
+    #[test]
+    fn iso_8859_11_and_tis_620_alias_windows_874() {
+        for label in ["iso-8859-11", "iso8859-11", "iso885911", "tis-620", "dos-874"] {
+            assert_eq!(for_label(label).map(|e| e.name), Some("windows-874"), "{label}");
+        }
+    }
+
+    #[test]
+    fn iso_8859_9_aliases_windows_1254() {
+        for label in ["iso-8859-9", "iso-ir-148", "l5", "latin5", "csisolatin5"] {
+            assert_eq!(for_label(label).map(|e| e.name), Some("windows-1254"), "{label}");
+        }
+    }
+
+    #[test]
+    fn hebrew_logical_and_visual_share_an_index() {
+        let visual = for_label("iso-8859-8").expect("visual");
+        let logical = for_label("iso-8859-8-i").expect("logical");
+        assert_eq!(visual.name, "ISO-8859-8");
+        assert_eq!(logical.name, "ISO-8859-8-I");
+        assert_eq!(table_of(visual), table_of(logical));
+        for label in ["visual", "hebrew", "csiso88598e"] {
+            assert_eq!(for_label(label).map(|e| e.name), Some("ISO-8859-8"), "{label}");
+        }
+        for label in ["logical", "csiso88598i"] {
+            assert_eq!(for_label(label).map(|e| e.name), Some("ISO-8859-8-I"), "{label}");
+        }
+    }
+
+    #[test]
+    fn mac_roman_and_mac_cyrillic_labels() {
+        assert_eq!(for_label("x-mac-roman").map(|e| e.name), Some("macintosh"));
+        assert_eq!(for_label("csmacintosh").map(|e| e.name), Some("macintosh"));
+        assert_eq!(for_label("mac").map(|e| e.name), Some("macintosh"));
+        assert_eq!(
+            for_label("x-mac-ukrainian").map(|e| e.name),
+            Some("x-mac-cyrillic")
+        );
+    }
+
+    #[test]
+    fn every_unimplemented_label_is_reported_as_such() {
+        for label in UNIMPLEMENTED_LABELS {
+            assert_eq!(lookup(label), LabelLookup::Unimplemented, "{label}");
+            assert_eq!(
+                lookup(&label.to_uppercase()),
+                LabelLookup::Unimplemented,
+                "{label}"
+            );
+            assert!(for_label(label).is_none(), "{label} must not resolve");
+        }
+        assert_eq!(UNIMPLEMENTED_LABELS.len(), 45);
+    }
+
+    #[test]
+    fn multi_byte_labels_do_not_fall_back_to_single_byte() {
+        for label in [
+            "gbk",
+            "gb18030",
+            "big5",
+            "euc-jp",
+            "iso-2022-jp",
+            "shift_jis",
+            "euc-kr",
+        ] {
+            assert_eq!(lookup(label), LabelLookup::Unimplemented, "{label}");
+        }
+    }
+
+    #[test]
+    fn unknown_labels_are_unknown() {
+        for label in [
+            "",
+            " ",
+            "utf-7",
+            "iso-8859-12",
+            "windows-1259",
+            "utf_8",
+            "x-unknown",
+        ] {
+            assert_eq!(lookup(label), LabelLookup::Unknown, "{label:?}");
+        }
+    }
+
+    #[test]
+    fn a_label_of_a_defined_encoding_is_never_unknown() {
+        assert_eq!(lookup("  IBM866\t"), LabelLookup::Supported(by_name("IBM866")));
+        assert_eq!(lookup("koi8-ru"), LabelLookup::Supported(by_name("KOI8-U")));
+        assert_eq!(lookup("866"), LabelLookup::Supported(by_name("IBM866")));
+        assert_eq!(lookup("cp1258"), LabelLookup::Supported(by_name("windows-1258")));
+    }
+
+    #[test]
+    fn bom_sniffing_finds_the_three_unicode_marks() {
+        assert_eq!(for_bom(&[0xEF, 0xBB, 0xBF]).map(|e| e.name), Some("UTF-8"));
+        assert_eq!(for_bom(&[0xFE, 0xFF]).map(|e| e.name), Some("UTF-16BE"));
+        assert_eq!(for_bom(&[0xFF, 0xFE]).map(|e| e.name), Some("UTF-16LE"));
+        assert_eq!(
+            for_bom(&[0xEF, 0xBB, 0xBF, 0x68, 0x69]).map(|e| e.name),
+            Some("UTF-8")
+        );
+        assert_eq!(for_bom(&[0xFF, 0xFE, 0x00]).map(|e| e.name), Some("UTF-16LE"));
+    }
+
+    #[test]
+    fn bom_sniffing_rejects_lookalikes() {
+        for bytes in [
+            &[][..],
+            &[0xEF][..],
+            &[0xEF, 0xBB][..],
+            &[0xBF, 0xBB, 0xEF][..],
+            &[0xFE][..],
+            &[0xFF][..],
+            &[0xFE, 0xFE][..],
+            &[0xFF, 0xFF][..],
+            &[0x00, 0xFE, 0xFF][..],
+            &[0x48, 0x69][..],
+        ] {
+            assert_eq!(for_bom(bytes), None, "{bytes:?}");
+        }
+    }
+
+    #[test]
+    fn spot_decodes_match_the_standard() {
+        let cases: [(&str, u8, u16); 16] = [
+            ("windows-1252", 0x80, 0x20AC),
+            ("windows-1252", 0x91, 0x2018),
+            ("windows-1252", 0x99, 0x2122),
+            ("windows-1252", 0xD0, 0x00D0),
+            ("ISO-8859-15", 0xA4, 0x20AC),
+            ("KOI8-R", 0xF2, 0x0420),
+            ("KOI8-R", 0xD2, 0x0440),
+            ("macintosh", 0xA5, 0x2022),
+            ("macintosh", 0x8A, 0x00E4),
+            ("ISO-8859-7", 0xE1, 0x03B1),
+            ("windows-1251", 0xCF, 0x041F),
+            ("ISO-8859-5", 0xD0, 0x0430),
+            ("ISO-8859-8", 0xE0, 0x05D0),
+            ("IBM866", 0x80, 0x0410),
+            ("windows-874", 0xA1, 0x0E01),
+            ("ISO-8859-16", 0xBF, 0x017C),
+        ];
+        let mut out16 = [0u16; 1];
+        for (name, byte, expected) in cases {
+            let mut decoder = by_name(name).new_decoder_without_bom_handling();
+            let (result, read, written) =
+                decoder.decode_to_utf16_without_replacement(&[byte], &mut out16, true);
+            assert_eq!(result, DecoderResult::InputEmpty, "{name} byte {byte:02X}");
+            assert_eq!((read, written), (1, 1), "{name} byte {byte:02X}");
+            assert_eq!(out16[0], expected, "{name} byte {byte:02X}");
+        }
+    }
+
+    #[test]
+    fn undefined_pointers_decode_spot_checked() {
+        let mut out16 = [0u16; 1];
+        for (name, byte) in [
+            ("ISO-8859-3", 0xA5u8),
+            ("ISO-8859-3", 0xF0),
+            ("ISO-8859-6", 0xA1),
+            ("ISO-8859-6", 0xFF),
+            ("ISO-8859-7", 0xAE),
+            ("ISO-8859-7", 0xFF),
+            ("ISO-8859-8", 0xA1),
+            ("ISO-8859-8", 0xFB),
+            ("windows-874", 0xDB),
+            ("windows-874", 0xFF),
+            ("windows-1253", 0xAA),
+            ("windows-1253", 0xD2),
+            ("windows-1255", 0xD9),
+            ("windows-1255", 0xFF),
+            ("windows-1257", 0xA1),
+            ("windows-1257", 0xA5),
+        ] {
+            let mut decoder = by_name(name).new_decoder_without_bom_handling();
+            let (result, read, written) =
+                decoder.decode_to_utf16_without_replacement(&[byte], &mut out16, true);
+            assert_eq!(result, DecoderResult::Malformed(1, 0), "{name} byte {byte:02X}");
+            assert_eq!((read, written), (1, 0), "{name} byte {byte:02X}");
+        }
+    }
+
+    #[test]
+    fn iso_8859_indexes_map_the_c1_controls_to_themselves() {
+        // Unlike cp1252 and the other legacy code pages, the ISO-8859-n indexes
+        // of the standard begin by carrying U+0080..U+009F through unchanged.
+        let mut out16 = [0u16; 1];
+        for name in [
+            "ISO-8859-2",
+            "ISO-8859-3",
+            "ISO-8859-4",
+            "ISO-8859-5",
+            "ISO-8859-6",
+            "ISO-8859-7",
+            "ISO-8859-8",
+            "ISO-8859-8-I",
+            "ISO-8859-10",
+            "ISO-8859-13",
+            "ISO-8859-14",
+            "ISO-8859-15",
+            "ISO-8859-16",
+        ] {
+            let mut decoder = by_name(name).new_decoder_without_bom_handling();
+            for control in 0x80u8..=0x9F {
+                let (result, read, written) =
+                    decoder.decode_to_utf16_without_replacement(&[control], &mut out16, true);
+                assert_eq!(result, DecoderResult::InputEmpty, "{name} byte {control:02X}");
+                assert_eq!((read, written), (1, 1), "{name} byte {control:02X}");
+                assert_eq!(out16[0], u16::from(control), "{name} byte {control:02X}");
+            }
+        }
+    }
+}
