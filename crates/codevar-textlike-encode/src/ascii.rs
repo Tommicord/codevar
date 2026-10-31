@@ -141,6 +141,51 @@ fn basic_latin_to_ascii_stride(
     Some(pack_stride_tail(src_stride, dst_stride))
 }
 
+/// Continues the pair of strides started by the first stride of a chunk, so
+/// the accelerated loop retires two `STRIDE`-wide chunks per iteration. The
+/// position of the second stride is reported relative to the pair.
+#[cfg(feature = "simd-accel")]
+fn ascii_to_ascii_double_stride(
+    src_strides: &[[u8; STRIDE]; 2],
+    dst_strides: &mut [[u8; STRIDE]; 2],
+) -> Option<(u8, usize)> {
+    if let Some(pair) = ascii_to_ascii_stride(&src_strides[0], &mut dst_strides[0]) {
+        return Some(pair);
+    }
+    if let Some((c, pos)) = ascii_to_ascii_stride(&src_strides[1], &mut dst_strides[1]) {
+        return Some((c, STRIDE + pos));
+    }
+    None
+}
+
+#[cfg(feature = "simd-accel")]
+fn ascii_to_basic_latin_double_stride(
+    src_strides: &[[u8; STRIDE]; 2],
+    dst_strides: &mut [[u16; STRIDE]; 2],
+) -> Option<(u8, usize)> {
+    if let Some(pair) = ascii_to_basic_latin_stride(&src_strides[0], &mut dst_strides[0]) {
+        return Some(pair);
+    }
+    if let Some((c, pos)) = ascii_to_basic_latin_stride(&src_strides[1], &mut dst_strides[1]) {
+        return Some((c, STRIDE + pos));
+    }
+    None
+}
+
+#[cfg(feature = "simd-accel")]
+fn basic_latin_to_ascii_double_stride(
+    src_strides: &[[u16; STRIDE]; 2],
+    dst_strides: &mut [[u8; STRIDE]; 2],
+) -> Option<(u16, usize)> {
+    if let Some(pair) = basic_latin_to_ascii_stride(&src_strides[0], &mut dst_strides[0]) {
+        return Some(pair);
+    }
+    if let Some((c, pos)) = basic_latin_to_ascii_stride(&src_strides[1], &mut dst_strides[1]) {
+        return Some((c, STRIDE + pos));
+    }
+    None
+}
+
 fn validate_ascii_stride(stride: &[u8; STRIDE]) -> Option<(u8, usize)> {
     if is_ascii(stride) {
         return None;
