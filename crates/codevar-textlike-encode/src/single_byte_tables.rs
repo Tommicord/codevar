@@ -1023,4 +1023,420 @@ mod tests {
         assert_eq!(INDEX_WINDOWS_1255[0x7E], 0x200F, "last defined pointer");
         check_checksums(&INDEX_WINDOWS_1255, "windows-1255", 251612, 12116030);
     }
+
+    #[test]
+    fn windows_1255_value_integrity() {
+        check_value_integrity(&INDEX_WINDOWS_1255, "windows-1255");
+    }
+
+    #[test]
+    fn windows_1256_defined_count_and_undefined_pointers() {
+        // windows-1256: index-windows-1256.txt defines 128 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_WINDOWS_1256), 128);
+        assert!(
+            undefined_pointers(&INDEX_WINDOWS_1256).is_empty(),
+            "all pointers defined"
+        );
+    }
+
+    #[test]
+    fn windows_1256_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-windows-1256.txt.
+        assert_eq!(INDEX_WINDOWS_1256[0x00], 0x20AC, "first defined pointer");
+        assert_eq!(INDEX_WINDOWS_1256[0x7F], 0x06D2, "last defined pointer");
+        check_checksums(&INDEX_WINDOWS_1256, "windows-1256", 280033, 12760196);
+    }
+
+    #[test]
+    fn windows_1256_value_integrity() {
+        check_value_integrity(&INDEX_WINDOWS_1256, "windows-1256");
+    }
+
+    #[test]
+    fn windows_1257_defined_count_and_undefined_pointers() {
+        // windows-1257: index-windows-1257.txt defines 126 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_WINDOWS_1257), 126);
+        assert_eq!(undefined_pointers(&INDEX_WINDOWS_1257), [0x21, 0x25usize,]);
+    }
+
+    #[test]
+    fn windows_1257_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-windows-1257.txt.
+        assert_eq!(INDEX_WINDOWS_1257[0x00], 0x20AC, "first defined pointer");
+        assert_eq!(INDEX_WINDOWS_1257[0x7F], 0x02D9, "last defined pointer");
+        check_checksums(&INDEX_WINDOWS_1257, "windows-1257", 168515, 4319193);
+    }
+
+    #[test]
+    fn windows_1257_value_integrity() {
+        check_value_integrity(&INDEX_WINDOWS_1257, "windows-1257");
+    }
+
+    #[test]
+    fn windows_1258_defined_count_and_undefined_pointers() {
+        // windows-1258: index-windows-1258.txt defines 128 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_WINDOWS_1258), 128);
+        assert!(
+            undefined_pointers(&INDEX_WINDOWS_1258).is_empty(),
+            "all pointers defined"
+        );
+    }
+
+    #[test]
+    fn windows_1258_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-windows-1258.txt.
+        assert_eq!(INDEX_WINDOWS_1258[0x00], 0x20AC, "first defined pointer");
+        assert_eq!(INDEX_WINDOWS_1258[0x7F], 0x00FF, "last defined pointer");
+        check_checksums(&INDEX_WINDOWS_1258, "windows-1258", 176189, 5233522);
+    }
+
+    #[test]
+    fn windows_1258_value_integrity() {
+        check_value_integrity(&INDEX_WINDOWS_1258, "windows-1258");
+    }
+
+    #[test]
+    fn x_mac_cyrillic_defined_count_and_undefined_pointers() {
+        // x-mac-cyrillic: index-x-mac-cyrillic.txt defines 128 of 128 pointers.
+        assert_eq!(defined_count(&INDEX_X_MAC_CYRILLIC), 128);
+        assert!(
+            undefined_pointers(&INDEX_X_MAC_CYRILLIC).is_empty(),
+            "all pointers defined"
+        );
+    }
+
+    #[test]
+    fn x_mac_cyrillic_boundaries_and_checksums() {
+        // First and last defined pointer plus the two sums derived from
+        // index-x-mac-cyrillic.txt.
+        assert_eq!(INDEX_X_MAC_CYRILLIC[0x00], 0x0410, "first defined pointer");
+        assert_eq!(INDEX_X_MAC_CYRILLIC[0x7F], 0x20AC, "last defined pointer");
+        check_checksums(&INDEX_X_MAC_CYRILLIC, "x-mac-cyrillic", 272521, 18553395);
+    }
+
+    #[test]
+    fn x_mac_cyrillic_value_integrity() {
+        check_value_integrity(&INDEX_X_MAC_CYRILLIC, "x-mac-cyrillic");
+    }
+
+    // -----------------------------------------------------------------
+    // Pinned deviations of the standard and cross-table distinctness.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn euro_sign_iso_8859_15() {
+        // The latin9 rewrite: U+20AC replaces the not-sign at byte 0xA4.
+        assert_eq!(INDEX_ISO_8859_15[0x24], 0x20AC);
+        assert_eq!(INDEX_ISO_8859_15[0x26], 0x0160);
+        assert_eq!(INDEX_ISO_8859_15[0x27], 0x00A7);
+    }
+
+    #[test]
+    fn euro_sign_iso_8859_7() {
+        // The documented deviation: the Greek index also puts the euro at
+        // byte 0xA4 even though ISO 8859-7 itself leaves it out.
+        assert_eq!(INDEX_ISO_8859_7[0x24], 0x20AC);
+        assert_eq!(INDEX_ISO_8859_7[0x25], 0x20AF);
+    }
+
+    #[test]
+    fn euro_sign_windows_at_pointer_0x00() {
+        // Every windows table except windows-1251 starts with the euro at
+        // byte 0x80 (pointer 0x00), replacing the cp1250-family hole.
+        for (name, table) in [
+            ("INDEX_WINDOWS_874", &INDEX_WINDOWS_874),
+            ("INDEX_WINDOWS_1250", &INDEX_WINDOWS_1250),
+            ("INDEX_WINDOWS_1252", &INDEX_WINDOWS_1252),
+            ("INDEX_WINDOWS_1253", &INDEX_WINDOWS_1253),
+            ("INDEX_WINDOWS_1254", &INDEX_WINDOWS_1254),
+            ("INDEX_WINDOWS_1255", &INDEX_WINDOWS_1255),
+            ("INDEX_WINDOWS_1256", &INDEX_WINDOWS_1256),
+            ("INDEX_WINDOWS_1257", &INDEX_WINDOWS_1257),
+            ("INDEX_WINDOWS_1258", &INDEX_WINDOWS_1258),
+        ] {
+            assert_eq!(table[0x00], 0x20AC, "{name}");
+        }
+        // The standard deviates for windows-1251: byte 0x80 is U+0402 there
+        // and the euro sits at byte 0x88 instead.
+        assert_eq!(INDEX_WINDOWS_1251[0x00], 0x0402);
+        assert_eq!(INDEX_WINDOWS_1251[0x08], 0x20AC);
+    }
+
+    #[test]
+    fn windows_1252_defines_every_pointer_including_the_holes() {
+        // The five slots other cp125x tables leave undefined map to the C1
+        // controls themselves in windows-1252.
+        assert_eq!(defined_count(&INDEX_WINDOWS_1252), 128);
+        for (pointer, expected) in [
+            (0x01usize, 0x0081u16),
+            (0x0D, 0x008D),
+            (0x0F, 0x008F),
+            (0x10, 0x0090),
+            (0x1D, 0x009D),
+        ] {
+            assert_eq!(
+                INDEX_WINDOWS_1252[pointer],
+                expected,
+                "byte {:02X}",
+                pointer + 0x80
+            );
+        }
+    }
+
+    #[test]
+    fn iso_8859_c1_controls_map_to_themselves() {
+        // All thirteen ISO-8859-n indexes start by carrying U+0080..U+009F
+        // through unchanged; the windows tables do not.
+        for (name, table) in [
+            ("ISO-8859-2", &INDEX_ISO_8859_2),
+            ("ISO-8859-3", &INDEX_ISO_8859_3),
+            ("ISO-8859-4", &INDEX_ISO_8859_4),
+            ("ISO-8859-5", &INDEX_ISO_8859_5),
+            ("ISO-8859-6", &INDEX_ISO_8859_6),
+            ("ISO-8859-7", &INDEX_ISO_8859_7),
+            ("ISO-8859-8", &INDEX_ISO_8859_8),
+            ("ISO-8859-10", &INDEX_ISO_8859_10),
+            ("ISO-8859-13", &INDEX_ISO_8859_13),
+            ("ISO-8859-14", &INDEX_ISO_8859_14),
+            ("ISO-8859-15", &INDEX_ISO_8859_15),
+            ("ISO-8859-16", &INDEX_ISO_8859_16),
+        ] {
+            for (pointer, &value) in table.iter().enumerate().take(32) {
+                assert_eq!(value, 0x0080 + pointer as u16, "{name}: pointer {pointer:#04X}");
+            }
+        }
+    }
+
+    #[test]
+    fn koi8_r_cyrillic_blocks_are_inverse_alphabetical() {
+        // KOI8 orders Cyrillic by phonetic class, not Unicode: Yu first,
+        // then the rest, and the capitals mirror the smalls at -0x20.
+        assert_eq!(INDEX_KOI8_R[0x40], 0x044E, "byte 0xC0");
+        assert_eq!(INDEX_KOI8_R[0x41], 0x0430, "byte 0xC1");
+        assert_eq!(INDEX_KOI8_R[0x60], 0x042E, "byte 0xE0");
+        assert_eq!(INDEX_KOI8_R[0x61], 0x0410, "byte 0xE1");
+        for pointer in 0x60..=0x7F {
+            assert_eq!(
+                INDEX_KOI8_R[pointer - 0x20],
+                INDEX_KOI8_R[pointer] + 0x20,
+                "pointer {pointer:#04X}",
+            );
+        }
+    }
+
+    #[test]
+    fn koi8_u_cyrillic_tail_matches_koi8_r() {
+        // KOI8-U only rewrites the Ukrainian letters in the box-drawing
+        // quadrant; the Cyrillic letters keep the KOI8-R placement.
+        assert_eq!(INDEX_KOI8_U[0x40], 0x044E);
+        assert_eq!(INDEX_KOI8_U[0x60], 0x042E);
+        for pointer in 0x40..=0x7F {
+            assert_eq!(
+                INDEX_KOI8_U[pointer], INDEX_KOI8_R[pointer],
+                "pointer {pointer:#04X}"
+            );
+        }
+    }
+
+    #[test]
+    fn ibm866_cyrillic_and_box_drawing_runs() {
+        // Pointers 0x00..=0x1F are the capitals in order and 0x20..=0x2F the
+        // first sixteen smalls, then the box-drawing block starts at the
+        // light shade; the remaining smalls return at 0x60..=0x6F.
+        for (pointer, &value) in INDEX_IBM866.iter().enumerate().take(32) {
+            assert_eq!(value, 0x0410 + pointer as u16, "pointer {pointer:#04X}");
+        }
+        for (pointer, &value) in INDEX_IBM866.iter().enumerate().skip(32).take(16) {
+            assert_eq!(value, 0x0430 + (pointer - 32) as u16);
+        }
+        for (pointer, &value) in INDEX_IBM866
+            .iter()
+            .enumerate()
+            .skip(0x60)
+            .take(16)
+        {
+            assert_eq!(value, 0x0440 + (pointer - 0x60) as u16);
+        }
+        assert_eq!(INDEX_IBM866[0x30], 0x2591, "light shade at byte 0xB0");
+        assert_eq!(INDEX_IBM866[0x3E], 0x255B, "byte 0xBE");
+    }
+
+    #[test]
+    fn macintosh_private_use_and_x_mac_cyrillic_euro() {
+        // The macintosh index carries the Apple private-use scalar at
+        // pointer 0x70 (byte 0xF0); x-mac-cyrillic ends with the euro.
+        assert_eq!(INDEX_MACINTOSH[0x70], 0xF8FF);
+        assert_eq!(INDEX_X_MAC_CYRILLIC[0x7F], 0x20AC);
+        assert_eq!(INDEX_X_MAC_CYRILLIC[0x00], 0x0410);
+        for (pointer, &value) in INDEX_X_MAC_CYRILLIC.iter().enumerate().take(32) {
+            assert_eq!(value, 0x0410 + pointer as u16);
+        }
+    }
+
+    #[test]
+    fn iso_8859_2_is_not_windows_1250() {
+        // INDEX_ISO_8859_2 and INDEX_WINDOWS_1250 are commonly confused; the exact pointer
+        // positions where the normative indexes differ are pinned.
+        assert_eq!(
+            differing_positions(&INDEX_ISO_8859_2, &INDEX_WINDOWS_1250).len(),
+            42
+        );
+        assert_ne!(&INDEX_ISO_8859_2[..], &INDEX_WINDOWS_1250[..]);
+    }
+
+    #[test]
+    fn iso_8859_5_is_not_x_mac_cyrillic() {
+        // INDEX_ISO_8859_5 and INDEX_X_MAC_CYRILLIC are commonly confused; the exact pointer
+        // positions where the normative indexes differ are pinned.
+        assert_eq!(
+            differing_positions(&INDEX_ISO_8859_5, &INDEX_X_MAC_CYRILLIC).len(),
+            128
+        );
+        assert_ne!(&INDEX_ISO_8859_5[..], &INDEX_X_MAC_CYRILLIC[..]);
+    }
+
+    #[test]
+    fn ibm866_is_not_x_mac_cyrillic() {
+        // INDEX_IBM866 and INDEX_X_MAC_CYRILLIC are commonly confused; the exact pointer
+        // positions where the normative indexes differ are pinned.
+        assert_eq!(
+            differing_positions(&INDEX_IBM866, &INDEX_X_MAC_CYRILLIC).len(),
+            96
+        );
+        assert_ne!(&INDEX_IBM866[..], &INDEX_X_MAC_CYRILLIC[..]);
+    }
+
+    #[test]
+    fn koi8_r_is_not_koi8_u() {
+        // INDEX_KOI8_R and INDEX_KOI8_U are commonly confused; the exact pointer
+        // positions where the normative indexes differ are pinned.
+        assert_eq!(
+            differing_positions(&INDEX_KOI8_R, &INDEX_KOI8_U),
+            [0x24, 0x26, 0x27, 0x2D, 0x2E, 0x34, 0x36, 0x37, 0x3D, 0x3Eusize,]
+        );
+    }
+
+    #[test]
+    fn macintosh_is_not_x_mac_cyrillic() {
+        // INDEX_MACINTOSH and INDEX_X_MAC_CYRILLIC are commonly confused; the exact pointer
+        // positions where the normative indexes differ are pinned.
+        assert_eq!(
+            differing_positions(&INDEX_MACINTOSH, &INDEX_X_MAC_CYRILLIC).len(),
+            97
+        );
+        assert_ne!(&INDEX_MACINTOSH[..], &INDEX_X_MAC_CYRILLIC[..]);
+    }
+
+    #[test]
+    fn iso_8859_13_is_not_windows_1257() {
+        // INDEX_ISO_8859_13 and INDEX_WINDOWS_1257 are commonly confused; the exact pointer
+        // positions where the normative indexes differ are pinned.
+        assert_eq!(
+            differing_positions(&INDEX_ISO_8859_13, &INDEX_WINDOWS_1257).len(),
+            26
+        );
+        assert_ne!(&INDEX_ISO_8859_13[..], &INDEX_WINDOWS_1257[..]);
+    }
+
+    #[test]
+    fn iso_8859_15_is_not_windows_1252() {
+        // INDEX_ISO_8859_15 and INDEX_WINDOWS_1252 are commonly confused; the exact pointer
+        // positions where the normative indexes differ are pinned.
+        assert_eq!(
+            differing_positions(&INDEX_ISO_8859_15, &INDEX_WINDOWS_1252).len(),
+            35
+        );
+        assert_ne!(&INDEX_ISO_8859_15[..], &INDEX_WINDOWS_1252[..]);
+    }
+
+    #[test]
+    fn all_twenty_seven_tables_are_pairwise_distinct() {
+        let tables: [(&str, &[u16; 128]); 27] = [
+            ("IBM866", &INDEX_IBM866),
+            ("ISO-8859-2", &INDEX_ISO_8859_2),
+            ("ISO-8859-3", &INDEX_ISO_8859_3),
+            ("ISO-8859-4", &INDEX_ISO_8859_4),
+            ("ISO-8859-5", &INDEX_ISO_8859_5),
+            ("ISO-8859-6", &INDEX_ISO_8859_6),
+            ("ISO-8859-7", &INDEX_ISO_8859_7),
+            ("ISO-8859-8", &INDEX_ISO_8859_8),
+            ("ISO-8859-10", &INDEX_ISO_8859_10),
+            ("ISO-8859-13", &INDEX_ISO_8859_13),
+            ("ISO-8859-14", &INDEX_ISO_8859_14),
+            ("ISO-8859-15", &INDEX_ISO_8859_15),
+            ("ISO-8859-16", &INDEX_ISO_8859_16),
+            ("KOI8-R", &INDEX_KOI8_R),
+            ("KOI8-U", &INDEX_KOI8_U),
+            ("macintosh", &INDEX_MACINTOSH),
+            ("windows-874", &INDEX_WINDOWS_874),
+            ("windows-1250", &INDEX_WINDOWS_1250),
+            ("windows-1251", &INDEX_WINDOWS_1251),
+            ("windows-1252", &INDEX_WINDOWS_1252),
+            ("windows-1253", &INDEX_WINDOWS_1253),
+            ("windows-1254", &INDEX_WINDOWS_1254),
+            ("windows-1255", &INDEX_WINDOWS_1255),
+            ("windows-1256", &INDEX_WINDOWS_1256),
+            ("windows-1257", &INDEX_WINDOWS_1257),
+            ("windows-1258", &INDEX_WINDOWS_1258),
+            ("x-mac-cyrillic", &INDEX_X_MAC_CYRILLIC),
+        ];
+        for i in 0..27 {
+            for j in (i + 1)..27 {
+                assert_ne!(
+                    &tables[i].1[..],
+                    &tables[j].1[..],
+                    "{} and {} are identical",
+                    tables[i].0,
+                    tables[j].0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn defined_values_are_bmp_scalars_at_or_above_u0080() {
+        // The arrays cover pointers 0x00..=0x7F only (bytes 0x80..=0xFF),
+        // so no defined entry may fall inside the ASCII band. u16 already
+        // bounds them below 0x10000, so only the lower edge is checkable.
+        let tables: [&[u16; 128]; 27] = [
+            &INDEX_IBM866,
+            &INDEX_ISO_8859_2,
+            &INDEX_ISO_8859_3,
+            &INDEX_ISO_8859_4,
+            &INDEX_ISO_8859_5,
+            &INDEX_ISO_8859_6,
+            &INDEX_ISO_8859_7,
+            &INDEX_ISO_8859_8,
+            &INDEX_ISO_8859_10,
+            &INDEX_ISO_8859_13,
+            &INDEX_ISO_8859_14,
+            &INDEX_ISO_8859_15,
+            &INDEX_ISO_8859_16,
+            &INDEX_KOI8_R,
+            &INDEX_KOI8_U,
+            &INDEX_MACINTOSH,
+            &INDEX_WINDOWS_874,
+            &INDEX_WINDOWS_1250,
+            &INDEX_WINDOWS_1251,
+            &INDEX_WINDOWS_1252,
+            &INDEX_WINDOWS_1253,
+            &INDEX_WINDOWS_1254,
+            &INDEX_WINDOWS_1255,
+            &INDEX_WINDOWS_1256,
+            &INDEX_WINDOWS_1257,
+            &INDEX_WINDOWS_1258,
+            &INDEX_X_MAC_CYRILLIC,
+        ];
+        for table in tables {
+            for &value in table.iter() {
+                assert!(
+                    value == 0 || value >= 0x0080,
+                    "U+{value:04X} below the guard band"
+                );
+            }
+        }
+    }
 }
