@@ -89,14 +89,7 @@ impl Buffer {
             (api.create_buffer)(context.raw(), sys::MEM_READ_WRITE, size, null_mut(), &mut errcode)
         };
         let raw = error::creation(raw, errcode, "clCreateBuffer")?;
-        Ok(Self {
-            inner: Arc::new(BufferInner {
-                api,
-                context: context.clone(),
-                raw,
-                size,
-            }),
-        })
+        Ok(Self::from_raw(context, raw, size))
     }
 
     /// Creates a read/write buffer initialised with a copy of `data`.
@@ -130,14 +123,20 @@ impl Buffer {
             )
         };
         let raw = error::creation(raw, errcode, "clCreateBuffer")?;
-        Ok(Self {
+        Ok(Self::from_raw(context, raw, size))
+    }
+
+    /// Wraps a live `cl_mem` returned by a creation call through
+    /// `context`'s driver.
+    pub(crate) fn from_raw(context: &Context, raw: sys::MemHandle, size: usize) -> Self {
+        Self {
             inner: Arc::new(BufferInner {
-                api,
+                api: context.api().clone(),
                 context: context.clone(),
                 raw,
                 size,
             }),
-        })
+        }
     }
 
     /// Returns the buffer size in bytes.
