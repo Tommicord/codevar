@@ -23,6 +23,13 @@
 //! thing this module models: [`SharedBuffer::acquire`] opens it and returns
 //! a [`Share`] that closes it again when the scope ends.
 //!
+//! A signal crosses the same border in both directions, and its invariant is
+//! a balanced pair rather than a window: exactly one wait belongs to each
+//! signal, on whichever side created the semaphore. [`SharedSemaphore`]
+//! carries one OpenCL semaphore with the handle kind it crosses as, so the
+//! export asks for that kind and the queue commands name that semaphore
+//! instead of a list a caller has to keep straight.
+//!
 //! The descriptors themselves are never owned here. A handle exported by
 //! [`Vulkan`](crate::Vulkan) stays owned by the exporter, which closes it
 //! once [`import`](SharedBuffer::import) has read it — the same rule both
@@ -32,10 +39,10 @@
 use core::slice;
 
 use codevar_logger::log_warn;
-use codevar_ocl::{Buffer, CommandQueue, Context, Event};
+use codevar_ocl::{Buffer, CommandQueue, Context, Event, Semaphore};
 
 use crate::error::Result;
-use crate::handle::{MemoryHandle, MemoryKind};
+use crate::handle::{MemoryHandle, MemoryKind, SemaphoreHandle, SemaphoreKind};
 
 /// A buffer of an OpenCL context that stands on memory a Vulkan device
 /// allocated.
@@ -160,6 +167,124 @@ impl Drop for Share<'_, '_> {
     }
 }
 
+/// One OpenCL semaphore that crosses to or from a Vulkan device.
+///
+/// The value holds a single semaphore, which is what makes the pair
+/// checkable: a wait and the signal that releases it name the same object,
+/// and the handle kind is fixed when the semaphore is made rather than
+/// guessed at the export.
+pub struct SharedSemaphore {
+    semaphore: Semaphore,
+    kind: SemaphoreKind,
+}
+
+impl SharedSemaphore {
+    /// Imports the signal `handle` names as a semaphore of `context`.
+    ///
+    /// `handle` is what
+    /// [`Vulkan::export_semaphore`](crate::Vulkan::export_semaphore)
+    /// returned for a Vulkan semaphore; the export stays owned by the side
+    /// that made it, and the caller closes it once this call has read it.
+    ///
+    /// # Errors
+    ///
+    /// - [`crate::Error::OpenCl`] for every refusal of this side, which is
+    ///   also how a context without `cl_khr_external_semaphore` and a handle
+    ///   the device cannot import are reported.
+    pub fn import(context: &Context, handle: SemaphoreHandle) -> Result<Self> {
+        let semaphore = Semaphore::from_external(context, handle.as_opencl())?;
+        Ok(Self {
+            semaphore,
+            kind: handle.kind(),
+        })
+    }
+
+    /// Creates an OpenCL semaphore that may be exported as `kind`.
+    ///
+    /// The type has to be named at creation:
+    /// `clGetSemaphoreHandleForTypeKHR` refuses a type the semaphore was not
+    /// built for, so a signal destined for a Vulkan submission is made here
+    /// rather than converted afterwards. Ask
+    /// [`Vulkan::can_import_semaphore`](crate::Vulkan::can_import_semaphore)
+    /// which kind the other side takes before choosing it.
+    ///
+    /// # Errors
+    ///
+    /// - [`crate::Error::OpenCl`] when the driver refuses the creation, which
+    ///   is also how a driver without `cl_khr_semaphore` answers.
+    pub fn exportable(context: &Context, kind: SemaphoreKind) -> Result<Self> {
+        let semaphore = Semaphore::exportable(context, &[kind.cl_token()])?;
+        Ok(Self { semaphore, kind })
+    }
+
+    /// The OpenCL semaphore, for the enqueue calls of a [`CommandQueue`].
+    #[must_use]
+    pub fn semaphore(&self) -> &Semaphore {
+        &self.semaphore
+    }
+
+    /// The handle kind this semaphore crosses as.
+    #[must_use]
+    pub const fn kind(&self) -> SemaphoreKind {
+        self.kind
+    }
+
+    /// The handle a Vulkan device imports with
+    /// [`Vulkan::import_semaphore_fd`](crate::Vulkan::import_semaphore_fd).
+    ///
+    /// The driver answers with a copy of what it holds, so the descriptor
+    /// this returns is the caller's to close once the Vulkan import has taken
+    /// its own reference.
+    ///
+    /// # Errors
+    ///
+    /// - [`crate::Error::OpenCl`] when the driver does not export
+    ///   `clGetSemaphoreHandleForTypeKHR` or refuses this kind, which cannot
+    ///   happen for a semaphore built by
+    ///   [`exportable`](Self::exportable) but does for one
+    ///   [`import`](Self::import)ed from the other side — an imported
+    ///   semaphore is not an exportable one.
+    pub fn handle(&self) -> Result<SemaphoreHandle> {
+        let token = self.kind.cl_token();
+        let handle = match self.kind {
+            SemaphoreKind::OpaqueFd => SemaphoreHandle::OpaqueFd(self.semaphore.export_descriptor(token)?),
+            SemaphoreKind::SyncFd => SemaphoreHandle::SyncFd(self.semaphore.export_descriptor(token)?),
+            SemaphoreKind::OpaqueWin32 => SemaphoreHandle::OpaqueWin32(self.semaphore.export_handle(token)?),
+            SemaphoreKind::OpaqueWin32Kmt => {
+                SemaphoreHandle::OpaqueWin32Kmt(self.semaphore.export_handle(token)?)
+            }
+            SemaphoreKind::D3D12Fence => SemaphoreHandle::D3D12Fence(self.semaphore.export_handle(token)?),
+        };
+        Ok(handle)
+    }
+
+    /// Runs the commands submitted before it, then blocks `queue` until this
+    /// signal arrives.
+    ///
+    /// The wait consumes the signal, so exactly one belongs to each
+    /// [`signal`](Self::signal); a second wait with no signal in between is
+    /// undefined by the extension.
+    ///
+    /// # Errors
+    ///
+    /// - [`crate::Error::OpenCl`] when the queue refuses the command — a
+    ///   driver without `clEnqueueWaitSemaphoresKHR` answers this way, and so
+    ///   does a queue of another context.
+    pub fn wait(&self, queue: &CommandQueue) -> Result<Event> {
+        Ok(queue.wait_semaphores(slice::from_ref(&self.semaphore))?)
+    }
+
+    /// Signals this semaphore from `queue`, after the commands already
+    /// submitted to it have run.
+    ///
+    /// # Errors
+    ///
+    /// As [`wait`](Self::wait), for `clEnqueueSignalSemaphoresKHR`.
+    pub fn signal(&self, queue: &CommandQueue) -> Result<Event> {
+        Ok(queue.signal_semaphores(slice::from_ref(&self.semaphore))?)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,5 +348,40 @@ mod tests {
             Share::new(&[], &queue),
             Err(crate::Error::OpenCl(codevar_ocl::Error::InvalidArgument { .. }))
         ));
+    }
+
+    /// The OpenCL side is the one that reads a semaphore handle, so a
+    /// descriptor that names no signal is refused there rather than
+    /// wrapping something that only looks shared.
+    #[test]
+    fn a_semaphore_imported_from_a_bogus_descriptor_is_refused() {
+        let Some((_, context, _)) = queue() else { return };
+        assert!(
+            matches!(
+                SharedSemaphore::import(&context, SemaphoreHandle::SyncFd(-1)),
+                Err(crate::Error::OpenCl(_))
+            ),
+            "a sync_file descriptor of -1 cannot name a signal"
+        );
+    }
+
+    /// A semaphore made for one kind is exported as that kind: the value and
+    /// the enumerant come out of the same match, so a handle the Vulkan side
+    /// would misread shows up here. A driver without `cl_khr_semaphore` never
+    /// gets that far and says so as an OpenCL error, which is the only other
+    /// legal answer.
+    #[test]
+    fn an_exportable_semaphore_is_exported_as_the_kind_it_was_made_for() {
+        let Some((_, context, _)) = queue() else { return };
+        match SharedSemaphore::exportable(&context, SemaphoreKind::OpaqueFd) {
+            Ok(shared) => assert!(
+                matches!(shared.handle(), Ok(SemaphoreHandle::OpaqueFd(_))),
+                "the export must answer with the kind the semaphore was built for"
+            ),
+            Err(error) => assert!(
+                matches!(error, crate::Error::OpenCl(_)),
+                "only the OpenCL side can refuse the creation: {error}"
+            ),
+        }
     }
 }
