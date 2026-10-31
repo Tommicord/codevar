@@ -2216,28 +2216,30 @@ mod tests {
     }
 
     #[test]
-    fn single_byte_unmappable_from_utf8_raw_does_not_consume_current_behavior() {
-        // Documents actual behavior (reported suspect): the single-byte
-        // encoder's UTF-8 path returns `Unmappable` with read = 0, never
-        // advancing past the offending character, unlike the UTF-16 path.
+    fn single_byte_unmappable_from_utf8_raw_consumes_the_character() {
+        // The single-byte utf-8 path reports the offending character as
+        // consumed, like the utf-16 path, so the replacing encoder below can
+        // write its numeric character reference and move to the next one.
         let mut e = LATIN1.new_encoder();
         let mut dst = [0u8; 40];
         let (res, read, written) = e.encode_from_utf8_without_replacement("\u{4E2D}", &mut dst, true);
         assert_eq!(res, EncoderResult::Unmappable('\u{4E2D}'));
-        assert_eq!((read, written), (0, 0));
+        assert_eq!((read, written), (3, 0));
     }
 
     #[test]
-    fn single_byte_encode_from_utf8_unmappable_stalls_to_output_full_current_behavior() {
-        // Because the UTF-8 raw path above never consumes the unmappable
-        // char, the replacement-char NCR loop in `encode_from_utf8` rewrites
-        // the same NCR until the effective destination is exhausted.
+    fn single_byte_encode_from_utf8_emits_one_ncr_per_unmappable() {
+        // The previous behavior rewrote the same reference until the
+        // destination filled, because the raw path never advanced past the
+        // character it refused.
         let mut e = LATIN1.new_encoder();
         let mut dst = [0u8; 64];
-        let (res, _, written, had) = e.encode_from_utf8("\u{4E2D}", &mut dst, true);
+        let expected = format!("&#{};", '\u{4E2D}' as u32);
+        let (res, read, written, had) = e.encode_from_utf8("\u{4E2D}", &mut dst, true);
         assert!(had);
-        assert_eq!(res, CoderResult::OutputFull);
-        assert!(written >= 7);
+        assert_eq!(res, CoderResult::InputEmpty);
+        assert_eq!((read, written), (3, expected.len()));
+        assert_eq!(&dst[..written], expected.as_bytes());
     }
 
     #[test]

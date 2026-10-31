@@ -473,16 +473,20 @@ impl SingleByteEncoder {
                 continue;
             }
             let cp = ch as u32;
+            // The unmappable character is reported as consumed, like the utf-16
+            // path above, so `Encoder::encode_from_utf8` can write its numeric
+            // character reference and move on instead of re-reading it forever.
+            let consumed = i + ch.len_utf8();
             if cp > 0xFFFF {
-                return (EncoderResult::Unmappable(ch), i, written);
+                return (EncoderResult::Unmappable(ch), consumed, written);
             }
             match self.encode_u16(cp as u16) {
                 Some(byte) => {
                     dst[written] = byte;
                     written += 1;
-                    read = i + ch.len_utf8();
+                    read = consumed;
                 }
-                None => return (EncoderResult::Unmappable(ch), i, written),
+                None => return (EncoderResult::Unmappable(ch), consumed, written),
             }
         }
         (EncoderResult::InputEmpty, read, written)
