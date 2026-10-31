@@ -601,6 +601,9 @@ fn checked_div(opt: Option<usize>, num: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encoding::{CoderResult, Encoding};
+    use crate::legacy;
+    use crate::single_byte_tables;
 
     /// A table shaped like the ISO-8859-2 index: pointers 0..32 are the C1
     /// controls, pointer 32 is U+00A0 and the run therefore starts at byte
@@ -1467,5 +1470,194 @@ mod tests {
             encoder.max_buffer_length_from_utf8_without_replacement(usize::MAX),
             Some(usize::MAX)
         );
+    }
+
+    // Registry-driven cases: these run against the real WHATWG index tables
+    // rather than fixtures shaped like them.
+
+    fn decode_units(encoding: &'static Encoding, src: &[u8]) -> Vec<u16> {
+        let mut dst = [0u16; 64];
+        let (result, read, written) = encoding
+            .new_decoder()
+            .decode_to_utf16_without_replacement(src, &mut dst, true);
+        assert_eq!(result, DecoderResult::InputEmpty);
+        assert_eq!(read, src.len());
+        assert!(written <= dst.len());
+        dst[..written].to_vec()
+    }
+
+    #[test]
+    fn windows_1252_round_trips_the_euro_through_its_first_pointer() {
+        assert_eq!(decode_units(&legacy::WINDOWS_1252, &[0x80]), vec![0x20AC]);
+        let mut dst = [0u8; 16];
+        let (result, read, written, _unmappables) = legacy::WINDOWS_1252
+            .new_encoder()
+            .encode_from_utf8("\u{20AC}", &mut dst, true);
+        assert_eq!(result, CoderResult::InputEmpty);
+        assert_eq!((read, written), (3, 1));
+        assert_eq!(dst[0], 0x80);
+    }
+
+    // The WHATWG index for ISO 8859-7 deviates from the published ISO standard and
+    // fills the same 0xA4 slot with the euro sign that ISO 8859-15 uses.
+    #[test]
+    fn greek_index_shares_the_euro_pointer_with_iso_8859_15() {
+        assert_eq!(decode_units(&legacy::ISO_8859_7, &[0xA4]), vec![0x20AC]);
+        let mut dst = [0u8; 16];
+        let (result, read, written, _unmappables) = legacy::ISO_8859_7
+            .new_encoder()
+            .encode_from_utf8("\u{20AC}", &mut dst, true);
+        assert_eq!(result, CoderResult::InputEmpty);
+        assert_eq!((read, written), (3, 1));
+        assert_eq!(dst[0], 0xA4);
+    }
+
+    #[test]
+    fn iso_8859_15_encodes_the_euro_at_a_different_pointer() {
+        assert_eq!(decode_units(&legacy::ISO_8859_15, &[0xA4]), vec![0x20AC]);
+        let mut dst = [0u8; 16];
+        let (result, _read, written, _unmappables) = legacy::ISO_8859_15
+            .new_encoder()
+            .encode_from_utf8("\u{20AC}", &mut dst, true);
+        assert_eq!(result, CoderResult::InputEmpty);
+        assert_eq!(written, 1);
+        assert_eq!(dst[0], 0xA4);
+    }
+
+    #[test]
+    fn koi8_r_round_trips_a_cyrillic_word() {
+        let src = [0xD2u8, 0xCF, 0xC4];
+        let units = decode_units(&legacy::KOI8_R, &src);
+        assert_eq!(units.len(), 3);
+        let mut dst = [0u8; 16];
+        let (result, read, written, _unmappables) = legacy::KOI8_R
+            .new_encoder()
+            .encode_from_utf16(&units, &mut dst, true);
+        assert_eq!(result, CoderResult::InputEmpty);
+        assert_eq!((read, written), (3, 3));
+        assert_eq!(&dst[..written], &src[..]);
+    }
+
+    #[test]
+    fn windows_1252_fills_the_cp1252_holes_with_control_characters() {
+        // Microsoft's CP1252 leaves 0x81, 0x8D, 0x8F, 0x90 and 0x9D undefined, but
+        // the WHATWG index maps them to the matching C1 control character, so none
+        // of these bytes is ever malformed.
+        for byte in [0x81u8, 0x8D, 0x8F, 0x90, 0x9D] {
+            assert_eq!(
+                decode_units(&legacy::WINDOWS_1252, &[byte]),
+                vec![u16::from(byte)],
+                "byte {byte:02X}"
+            );
+        }
+    }
+
+    #[test]
+    fn undefined_pointers_are_malformed_and_their_code_points_unmappable() {
+        let cases: [(&'static Encoding, u8); 5] = [
+            (&legacy::ISO_8859_3, 0xA5),
+            (&legacy::ISO_8859_3, 0xC3),
+            (&legacy::ISO_8859_3, 0xF0),
+            (&legacy::WINDOWS_1257, 0xA1),
+            (&legacy::WINDOWS_1257, 0xA5),
+        ];
+        for (encoding, byte) in cases {
+            let mut dst = [0u16; 4];
+            let (result, read, written) = encoding
+                .new_decoder()
+                .decode_to_utf16_without_replacement(&[byte], &mut dst, true);
+            assert_eq!(result, DecoderResult::Malformed(1, 0), "byte {byte:02X}");
+            assert_eq!((read, written), (1, 0), "byte {byte:02X}");
+
+            let mut out = [0u8; 4];
+            let (result, read, written) = encoding
+                .new_encoder()
+                .encode_from_utf16_without_replacement(&[u16::from(byte)], &mut out, true);
+            let expected = match char::from_u32(u32::from(byte)) {
+                Some(ch) => ch,
+                None => panic!("every single-byte pointer is below the surrogates"),
+            };
+            assert_eq!(result, EncoderResult::Unmappable(expected), "byte {byte:02X}");
+            assert_eq!((read, written), (1, 0), "byte {byte:02X}");
+        }
+    }
+
+    #[test]
+    fn iso_8859_2_round_trips_its_c1_run() {
+        for byte in 0x80u8..=0x9F {
+            let units = decode_units(&legacy::ISO_8859_2, &[byte]);
+            assert_eq!(units, vec![u16::from(byte)], "byte {byte:02X}");
+            let mut dst = [0u8; 16];
+            let (result, _read, written, _unmappables) = legacy::ISO_8859_2
+                .new_encoder()
+                .encode_from_utf16(&units, &mut dst, true);
+            assert_eq!(result, CoderResult::InputEmpty, "byte {byte:02X}");
+            assert_eq!(dst[0], byte, "byte {byte:02X}");
+            assert_eq!(written, 1);
+        }
+    }
+
+    #[test]
+    fn the_raw_encoder_reports_the_astral_scalar_it_cannot_map() {
+        let mut encoder = SingleByteEncoder::new(&single_byte_tables::INDEX_WINDOWS_1252, 0x00A0, 0x20, 96);
+        let mut dst = [0u8; 8];
+        let (result, read, written) = encoder.encode_from_utf16_raw(&[0xD83D, 0xDE00], &mut dst, true);
+        assert_eq!(result, EncoderResult::Unmappable('\u{1F600}'));
+        assert_eq!((read, written), (2, 0));
+    }
+
+    #[test]
+    fn the_raw_encoder_reports_an_unpaired_surrogate_as_unmappable() {
+        let mut encoder = SingleByteEncoder::new(&single_byte_tables::INDEX_WINDOWS_1252, 0x00A0, 0x20, 96);
+        let mut dst = [0u8; 8];
+        let (high, _rh, _wh) = encoder.encode_from_utf16_raw(&[0xD83D], &mut dst, true);
+        let (low, _rl, _wl) = encoder.encode_from_utf16_raw(&[0xDE00], &mut dst, true);
+        assert!(matches!(high, EncoderResult::Unmappable(_)));
+        assert!(matches!(low, EncoderResult::Unmappable(_)));
+    }
+
+    #[test]
+    fn the_decoder_refills_a_destination_shorter_than_the_input() {
+        let src = b"KOI8-R text that is longer than the destination";
+        let mut decoder = legacy::KOI8_R.new_decoder_without_bom_handling();
+        let mut chunk = [0u16; 16];
+        let mut out = Vec::new();
+        let mut read_total = 0usize;
+        let mut rounds = 0usize;
+        loop {
+            rounds += 1;
+            assert!(rounds < 16, "the decoder stopped making progress");
+            let (result, read, written) =
+                decoder.decode_to_utf16_without_replacement(&src[read_total..], &mut chunk, true);
+            read_total += read;
+            out.extend_from_slice(&chunk[..written]);
+            match result {
+                DecoderResult::OutputFull => assert!(written > 0, "stalled on a full destination"),
+                DecoderResult::InputEmpty => break,
+                DecoderResult::Malformed(bad, _second) => {
+                    panic!("ascii input reported malformed({bad})")
+                }
+            }
+        }
+        assert_eq!(read_total, src.len());
+        assert_eq!(out.len(), src.len());
+        assert_eq!(
+            out,
+            src.iter()
+                .map(|&b| u16::from(b))
+                .collect::<Vec<u16>>()
+        );
+    }
+
+    #[test]
+    fn an_encoder_needs_room_for_the_replacement_before_it_starts() {
+        // the replacing encoder reserves NCR_EXTRA bytes for a numeric character
+        // reference, so a tiny destination reports OutputFull instead of writing
+        let mut dst = [0u8; 4];
+        let (result, read, written, _unmappables) = legacy::ISO_8859_7
+            .new_encoder()
+            .encode_from_utf8("\u{03A3}", &mut dst, true);
+        assert_eq!(result, CoderResult::OutputFull);
+        assert_eq!((read, written), (0, 0));
     }
 }
