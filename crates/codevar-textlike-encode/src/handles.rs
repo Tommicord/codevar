@@ -1854,4 +1854,667 @@ mod tests {
         assert_eq!(dest.written(), 1);
     }
 
+    #[test]
+    fn utf8_copy_ascii_astral_variant_requires_four_free_bytes() {
+        let mut src = ByteSource::new(b"A\xF0");
+        let mut out = [0u8; 4];
+        let mut dest = Utf8Destination::new(&mut out);
+        // after copying 'A' only three bytes remain, so the astral handle is
+        // withheld and the lead byte stays unread
+        assert!(matches!(
+            dest.copy_ascii_from_check_space_astral(&mut src),
+            CopyAsciiResult::Stop((DecoderResult::OutputFull, 1, 1))
+        ));
+        assert_eq!(src.consumed(), 1);
+        let mut src2 = ByteSource::new(b"A\xF0");
+        let mut out2 = [0u8; 5];
+        let mut dest2 = Utf8Destination::new(&mut out2);
+        if let CopyAsciiResult::GoOn((byte, handle)) = dest2.copy_ascii_from_check_space_astral(&mut src2) {
+            assert_eq!(byte, 0xF0);
+            assert_eq!(handle.written(), 1);
+            handle.commit();
+        } else {
+            panic!("four free bytes must admit the astral handle");
+        }
+        assert_eq!(src2.consumed(), 2);
+    }
+
+    // Utf16Destination::copy_utf16_from.
+
+    #[test]
+    fn utf16_dest_copy_utf16_le_copies_bmp_run_and_drains_source() {
+        let bytes = [0x41u8, 0x00, 0x42, 0x00];
+        let mut src = ByteSource::new(&bytes);
+        let mut out = [0u16; 4];
+        let mut dest = Utf16Destination::new(&mut out);
+        assert_eq!(dest.copy_utf16_from::<LittleEndian>(&mut src), None);
+        assert_eq!(src.consumed(), 4);
+        assert_eq!(dest.written(), 2);
+        assert_eq!(&out[..2], [0x0041, 0x0042]);
+    }
+
+    #[test]
+    fn utf16_dest_copy_utf16_be_swaps_units() {
+        let bytes = [0x00u8, 0x41, 0x00, 0x42];
+        let mut src = ByteSource::new(&bytes);
+        let mut out = [0u16; 2];
+        let mut dest = Utf16Destination::new(&mut out);
+        assert_eq!(dest.copy_utf16_from::<BigEndian>(&mut src), None);
+        assert_eq!(out, [0x0041, 0x0042]);
+        assert_eq!(src.consumed(), 4);
+    }
+
+    #[test]
+    fn utf16_dest_copy_utf16_odd_length_source_leaves_stray_byte() {
+        let bytes = [0x41u8, 0x00, 0x42];
+        let mut src = ByteSource::new(&bytes);
+        let mut out = [0u16; 4];
+        let mut dest = Utf16Destination::new(&mut out);
+        assert_eq!(dest.copy_utf16_from::<LittleEndian>(&mut src), None);
+        // the half code unit is not consumed
+        assert_eq!(src.consumed(), 2);
+        assert_eq!(dest.written(), 1);
+        assert_eq!(read_one_byte(&mut src), Some(0x42));
+    }
+
+    #[test]
+    fn utf16_dest_copy_utf16_uses_destination_room_as_window() {
+        let bytes = [0x41u8, 0x00, 0x42, 0x00, 0x43, 0x00];
+        let mut src = ByteSource::new(&bytes);
+        let mut out = [0u16; 2];
+        let mut dest = Utf16Destination::new(&mut out);
+        assert_eq!(dest.copy_utf16_from::<LittleEndian>(&mut src), None);
+        assert_eq!(out, [0x0041, 0x0042]);
+        assert_eq!(src.consumed(), 4);
+        // the rest lands in a fresh destination on the next round
+        let mut out2 = [0u16; 1];
+        let mut dest2 = Utf16Destination::new(&mut out2);
+        assert_eq!(dest2.copy_utf16_from::<LittleEndian>(&mut src), None);
+        assert_eq!(out2, [0x0043]);
+        assert_eq!(src.consumed(), 6);
+    }
+
+    #[test]
+    fn utf16_dest_copy_utf16_empty_window_returns_none_without_progress() {
+        let mut src = ByteSource::new(b"");
+        let mut out = [0u16; 2];
+        let mut dest = Utf16Destination::new(&mut out);
+        assert_eq!(dest.copy_utf16_from::<LittleEndian>(&mut src), None);
+        assert_eq!(dest.written(), 0);
+        // also when the source has data but the destination is full
+        let bytes = [0x41u8, 0x00];
+        let mut src2 = ByteSource::new(&bytes);
+        let mut full: [u16; 0] = [];
+        let mut dest2 = Utf16Destination::new(&mut full);
+        assert_eq!(dest2.copy_utf16_from::<LittleEndian>(&mut src2), None);
+        assert_eq!(src2.consumed(), 0);
+    }
+
+    #[test]
+    fn utf16_dest_copy_utf16_trailing_high_surrogate_is_trimmed_and_left_unread() {
+        let bytes = [0x41u8, 0x00, 0x3D, 0xD8]; // 'A' then U+D83D in native order
+        let mut src = ByteSource::new(&bytes);
+        let mut out = [0u16; 4];
+        let mut dest = Utf16Destination::new(&mut out);
+        assert_eq!(dest.copy_utf16_from::<LittleEndian>(&mut src), None);
+        // the lead surrogate may pair with the next chunk, so it is trimmed
+        assert_eq!(src.consumed(), 2);
+        assert_eq!(dest.written(), 1);
+        assert_eq!(out[0], 0x0041);
+    }
+
+    #[test]
+    fn utf16_dest_copy_utf16_valid_pair_leaves_high_slot_unwritten() {
+        let bytes = [0x41u8, 0x00, 0x3D, 0xD8, 0x00, 0xDE]; // 'A' U+D83D U+DE00
+        let mut src = ByteSource::new(&bytes);
+        let mut out = [0u16; 4];
+        let mut dest = Utf16Destination::new(&mut out);
+        assert_eq!(dest.copy_utf16_from::<LittleEndian>(&mut src), None);
+        assert_eq!(src.consumed(), 6);
+        assert_eq!(dest.written(), 3);
+        assert_eq!(out[0], 0x0041);
+        // BUG relative to upstream encoding_rs: upstream's copy_bmp_to
+        // speculatively writes the high surrogate before reporting it, so the
+        // pair is copied verbatim. Here the surrogate is detected before the
+        // write, and only the low unit is assigned, so a zeroed destination
+        // reports U+0000 where U+D83D should have been passed through.
+        assert_eq!(out[1], 0x0000);
+        assert_eq!(out[2], 0xDE00);
+    }
+
+    #[test]
+    fn utf16_dest_copy_utf16_low_surrogate_reports_malformed_positions() {
+        let bytes = [0x41u8, 0x00, 0x00, 0xDE]; // 'A' then a lone low surrogate
+        let mut src = ByteSource::new(&bytes);
+        let mut out = [0u16; 4];
+        let mut dest = Utf16Destination::new(&mut out);
+        assert_eq!(dest.copy_utf16_from::<LittleEndian>(&mut src), Some((4, 1)));
+        assert_eq!(src.consumed(), 4);
+        assert_eq!(dest.written(), 1);
+        assert_eq!(out[0], 0x0041);
+    }
+
+    #[test]
+    fn utf16_dest_copy_utf16_unpaired_high_surrogate_reports_malformed_positions() {
+        let bytes = [0x3Du8, 0xD8, 0x42, 0x00]; // lead surrogate then 'B' (not low)
+        let mut src = ByteSource::new(&bytes);
+        let mut out = [0u16; 4];
+        let mut dest = Utf16Destination::new(&mut out);
+        assert_eq!(dest.copy_utf16_from::<LittleEndian>(&mut src), Some((2, 0)));
+        assert_eq!(src.consumed(), 2);
+        assert_eq!(dest.written(), 0);
+    }
+
+    // Utf8Destination::copy_utf16_from.
+
+    #[test]
+    fn utf8_dest_copy_utf16_reencodes_bmp_run() {
+        let bytes = [0x41u8, 0x00, 0xE9, 0x00]; // 'A' U+00E9 in native order
+        let mut src = ByteSource::new(&bytes);
+        let mut out = [0u8; 8];
+        let mut dest = Utf8Destination::new(&mut out);
+        assert_eq!(dest.copy_utf16_from::<LittleEndian>(&mut src), None);
+        assert_eq!(src.consumed(), 4);
+        assert_eq!(dest.written(), 3);
+        assert_eq!(&out[..3], [0x41, 0xC3, 0xA9]);
+    }
+
+    #[test]
+    fn utf8_dest_copy_utf16_reencodes_astral_pair() {
+        let bytes = [0x3Du8, 0xD8, 0x00, 0xDE]; // U+1F600 as a surrogate pair
+        let mut src = ByteSource::new(&bytes);
+        let mut out = [0u8; 4];
+        let mut dest = Utf8Destination::new(&mut out);
+        assert_eq!(dest.copy_utf16_from::<LittleEndian>(&mut src), None);
+        assert_eq!(src.consumed(), 4);
+        assert_eq!(dest.written(), 4);
+        assert_eq!(out, [0xF0, 0x9F, 0x98, 0x80]);
+    }
+
+    #[test]
+    fn utf8_dest_copy_utf16_big_endian_source_swaps_before_encoding() {
+        let bytes = [0x00u8, 0x41, 0xD8, 0x3D, 0xDE, 0x00]; // 'A' U+1F600, BE
+        let mut src = ByteSource::new(&bytes);
+        let mut out = [0u8; 5];
+        let mut dest = Utf8Destination::new(&mut out);
+        assert_eq!(dest.copy_utf16_from::<BigEndian>(&mut src), None);
+        assert_eq!(src.consumed(), 6);
+        assert_eq!(dest.written(), 5);
+        assert_eq!(out, [0x41, 0xF0, 0x9F, 0x98, 0x80]);
+    }
+
+    #[test]
+    fn utf8_dest_copy_utf16_stops_when_non_ascii_cannot_fit_three_free_bytes() {
+        let bytes = [0x41u8, 0x00, 0x42, 0x00, 0xE9, 0x00];
+        let mut src = ByteSource::new(&bytes);
+        let mut out = [0u8; 4];
+        let mut dest = Utf8Destination::new(&mut out);
+        assert_eq!(dest.copy_utf16_from::<LittleEndian>(&mut src), None);
+        // exactly two units (and three bytes) were taken; the non-ASCII
+        // unit stays unread until a roomier destination arrives
+        assert_eq!(dest.written(), 2);
+        assert_eq!(src.consumed(), 4);
+        let mut out2 = [0u8; 8];
+        let mut dest2 = Utf8Destination::new(&mut out2);
+        assert_eq!(dest2.copy_utf16_from::<LittleEndian>(&mut src), None);
+        assert_eq!(&out2[..2], [0xC3, 0xA9]);
+        assert_eq!(src.consumed(), 6);
+    }
+
+    #[test]
+    fn utf8_dest_copy_utf16_reports_malformed_unpaired_high_surrogate() {
+        let bytes = [0x3Du8, 0xD8, 0x42, 0x00]; // lead surrogate then 'B'
+        let mut src = ByteSource::new(&bytes);
+        let mut out = [0u8; 8];
+        let mut dest = Utf8Destination::new(&mut out);
+        assert_eq!(dest.copy_utf16_from::<LittleEndian>(&mut src), Some((2, 0)));
+        assert_eq!(src.consumed(), 2);
+        assert_eq!(dest.written(), 0);
+    }
+
+    #[test]
+    fn utf8_dest_copy_utf16_malformed_low_surrogate_counts_as_consumed() {
+        // U+1F600 followed by a lone low surrogate: the error marker is
+        // reported after the offending unit was counted as read
+        let bytes = [0x3Du8, 0xD8, 0x00, 0xDE, 0x01, 0xDD];
+        let mut src = ByteSource::new(&bytes);
+        let mut out = [0u8; 8];
+        let mut dest = Utf8Destination::new(&mut out);
+        assert_eq!(dest.copy_utf16_from::<LittleEndian>(&mut src), Some((6, 4)));
+        assert_eq!(src.consumed(), 6);
+        assert_eq!(dest.written(), 4);
+        assert_eq!(&out[..4], [0xF0, 0x9F, 0x98, 0x80]);
+    }
+
+    // UnalignedU16Slice.
+
+    #[test]
+    fn unaligned_slice_reads_units_and_reports_emptiness() {
+        let empty = unaligned_over(&[]);
+        assert!(empty.is_empty());
+        assert_eq!(empty.len(), 0);
+        let units: [u16; 3] = [0x0041, 0x20AC, 0xD83D];
+        // SAFETY: the pointer and length both come from the live `units` array.
+        let slice = unsafe { UnalignedU16Slice::new(units.as_ptr().cast::<u8>(), units.len()) };
+        assert!(!slice.is_empty());
+        assert_eq!(slice.len(), 3);
+        assert_eq!(slice.at(0), 0x0041);
+        assert_eq!(slice.at(2), 0xD83D);
+    }
+
+    #[test]
+    fn unaligned_slice_tail_windows_from_offset() {
+        let bytes = [0x41u8, 0x00, 0x42, 0x00];
+        let slice = unaligned_over(&bytes);
+        let tail = slice.tail(1);
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail.at(0), 0x0042);
+        assert!(slice.tail(2).is_empty());
+    }
+
+    #[test]
+    fn unaligned_slice_trim_last_shortens_window() {
+        let bytes = [0x41u8, 0x00, 0x3D, 0xD8];
+        let mut slice = unaligned_over(&bytes);
+        slice.trim_last();
+        assert_eq!(slice.len(), 1);
+        assert_eq!(slice.at(0), 0x0041);
+    }
+
+    #[test]
+    fn unaligned_slice_copy_bmp_writes_all_units_and_returns_none() {
+        let bytes = [0x41u8, 0x00, 0xAC, 0x20];
+        let slice = unaligned_over(&bytes);
+        let mut out = [0u16; 2];
+        assert_eq!(slice.copy_bmp_to::<LittleEndian>(&mut out), None);
+        assert_eq!(out, [0x0041, 0x20AC]);
+    }
+
+    #[test]
+    fn unaligned_slice_copy_bmp_byte_swaps_for_opposite_endian() {
+        let bytes = [0x00u8, 0x41, 0x20, 0xAC]; // big-endian wire order
+        let slice = unaligned_over(&bytes);
+        let mut out = [0u16; 2];
+        assert_eq!(slice.copy_bmp_to::<BigEndian>(&mut out), None);
+        assert_eq!(out, [0x0041, 0x20AC]);
+    }
+
+    #[test]
+    fn unaligned_slice_copy_bmp_stops_before_high_surrogate_without_writing_it() {
+        let bytes = [0x41u8, 0x00, 0x3D, 0xD8, 0xAC, 0x20];
+        let slice = unaligned_over(&bytes);
+        let mut out = [0u16; 3];
+        out[1] = 0xFFFF; // poison: unlike upstream, this copy never speculatively writes
+        assert_eq!(slice.copy_bmp_to::<LittleEndian>(&mut out), Some((0xD83D, 1)));
+        assert_eq!(out, [0x0041, 0xFFFF, 0x0000]);
+        assert_eq!(
+            slice
+                .tail(1)
+                .copy_bmp_to::<LittleEndian>(&mut [0u16; 1]),
+            Some((0xD83D, 0))
+        );
+    }
+
+    #[test]
+    fn unaligned_slice_copy_bmp_stops_before_low_surrogate_too() {
+        let bytes = [0x41u8, 0x00, 0x00, 0xDE];
+        let slice = unaligned_over(&bytes);
+        let mut out = [0u16; 2];
+        assert_eq!(slice.copy_bmp_to::<LittleEndian>(&mut out), Some((0xDE00, 1)));
+        assert_eq!(out[0], 0x0041);
+    }
+
+    #[test]
+    fn unaligned_slice_copy_bmp_truncates_when_destination_is_shorter() {
+        let bytes = [0x41u8, 0x00, 0x42, 0x00, 0x43, 0x00];
+        let slice = unaligned_over(&bytes);
+        let mut out = [0u16; 2];
+        assert_eq!(slice.copy_bmp_to::<LittleEndian>(&mut out), None);
+        assert_eq!(out, [0x0041, 0x0042]);
+        // a surrogate beyond the destination window is not seen
+        let with_surrogate = [0x41u8, 0x00, 0x3D, 0xD8];
+        let slice2 = unaligned_over(&with_surrogate);
+        let mut out2 = [0u16; 1];
+        assert_eq!(slice2.copy_bmp_to::<LittleEndian>(&mut out2), None);
+        assert_eq!(out2, [0x0041]);
+    }
+
+    // Unicode / NonAscii enums.
+
+    #[test]
+    fn unicode_ascii_variant_equality_and_matching() {
+        let value = Unicode::Ascii(b'A');
+        assert_eq!(value, Unicode::Ascii(b'A'));
+        assert_ne!(value, Unicode::Ascii(b'B'));
+        match value {
+            Unicode::Ascii(byte) => assert_eq!(byte, b'A'),
+            Unicode::NonAscii(_) => panic!("expected the ascii variant"),
+        }
+    }
+
+    #[test]
+    fn unicode_non_ascii_variants_carry_code_unit_and_char() {
+        let bmp = Unicode::NonAscii(NonAscii::BmpExclAscii(0x20AC));
+        let astral = Unicode::NonAscii(NonAscii::Astral('\u{1F600}'));
+        assert_ne!(bmp, astral);
+        match bmp {
+            Unicode::NonAscii(NonAscii::BmpExclAscii(unit)) => assert_eq!(unit, 0x20AC),
+            _ => panic!("expected a bmp-excluding-ascii code unit"),
+        }
+        match astral {
+            Unicode::NonAscii(NonAscii::Astral(c)) => assert_eq!(c, '\u{1F600}'),
+            _ => panic!("expected an astral character"),
+        }
+    }
+
+    #[test]
+    fn non_ascii_variants_are_not_equal_across_representations() {
+        assert_ne!(NonAscii::BmpExclAscii(0x80), NonAscii::Astral('\u{0080}'));
+        assert_eq!(NonAscii::Astral('\u{1F600}'), NonAscii::Astral('\u{1F600}'));
+        assert_eq!(NonAscii::BmpExclAscii(0xD800), NonAscii::BmpExclAscii(0xD800));
+    }
+
+    #[test]
+    fn unicode_variants_reproduce_the_codec_handoff_shape() {
+        // codecs signal one non-ASCII scalar per round; both storage shapes
+        // must survive a match round-trip without lossy conversion
+        let cases = [
+            Unicode::NonAscii(NonAscii::BmpExclAscii(0xA5)),
+            Unicode::NonAscii(NonAscii::Astral('\u{10FFFF}')),
+        ];
+        for case in cases {
+            match &case {
+                Unicode::NonAscii(NonAscii::BmpExclAscii(unit)) => {
+                    assert_eq!(Unicode::NonAscii(NonAscii::BmpExclAscii(*unit)), case);
+                }
+                Unicode::NonAscii(NonAscii::Astral(c)) => {
+                    assert_eq!(Unicode::NonAscii(NonAscii::Astral(*c)), case);
+                }
+                Unicode::Ascii(_) => panic!("expected a non-ascii case"),
+            }
+        }
+    }
+
+    // Utf16Source reading.
+
+    #[test]
+    fn utf16_source_empty_reports_full_consumed() {
+        let mut src = Utf16Source::new(&[]);
+        assert!(matches!(src.check_available(), Space::Full(0)));
+        assert_eq!(read_one_u16(&mut src), None);
+    }
+
+    #[test]
+    fn utf16_source_reads_ascii_units_one_at_a_time() {
+        let mut src = Utf16Source::new(&[0x0041, 0x0042]);
+        assert_eq!(read_one_u16(&mut src), Some('A'));
+        assert_eq!(read_one_u16(&mut src), Some('B'));
+        assert!(matches!(src.check_available(), Space::Full(2)));
+    }
+
+    #[test]
+    fn utf16_source_reads_bmp_scalars() {
+        let mut src = Utf16Source::new(&[0x20AC, 0xD7FF]);
+        assert_eq!(read_one_u16(&mut src), Some('\u{20AC}'));
+        assert_eq!(read_one_u16(&mut src), Some('\u{D7FF}'));
+        assert_eq!(src.consumed(), 2);
+    }
+
+    #[test]
+    fn utf16_source_combines_surrogate_pairs_and_advances_two_units() {
+        let mut src = Utf16Source::new(&[0xD83D, 0xDE00]);
+        assert_eq!(read_one_u16(&mut src), Some('\u{1F600}'));
+        assert_eq!(src.consumed(), 2);
+        assert!(matches!(src.check_available(), Space::Full(2)));
+    }
+
+    #[test]
+    fn utf16_source_unpaired_high_surrogate_yields_replacement_advancing_one() {
+        let mut src = Utf16Source::new(&[0xD83D, 0x0041]);
+        if let Space::Available(handle) = src.check_available() {
+            let (c, unread) = handle.read();
+            assert_eq!(c, core::char::REPLACEMENT_CHARACTER);
+            // only the lead surrogate itself was stepped over, not its follower
+            assert_eq!(unread.consumed(), 1);
+            assert_eq!(unread.unread(), 1);
+        } else {
+            panic!("expected available input");
+        }
+        assert_eq!(src.consumed(), 0);
+        assert_eq!(read_one_u16(&mut src), Some(core::char::REPLACEMENT_CHARACTER));
+        assert_eq!(read_one_u16(&mut src), Some('A'));
+    }
+
+    #[test]
+    fn utf16_source_high_surrogate_at_end_yields_replacement_advancing_one() {
+        let mut src = Utf16Source::new(&[0xD83D]);
+        assert_eq!(read_one_u16(&mut src), Some(core::char::REPLACEMENT_CHARACTER));
+        assert_eq!(src.consumed(), 1);
+    }
+
+    #[test]
+    fn utf16_source_lone_low_surrogate_yields_replacement() {
+        let mut src = Utf16Source::new(&[0xDE00]);
+        assert_eq!(read_one_u16(&mut src), Some(core::char::REPLACEMENT_CHARACTER));
+        assert_eq!(src.consumed(), 1);
+    }
+
+    #[test]
+    fn utf16_source_unread_restores_pair_position() {
+        let mut src = Utf16Source::new(&[0xD83D, 0xDE00, 0x0041]);
+        if let Space::Available(handle) = src.check_available() {
+            let (c, unread) = handle.read();
+            assert_eq!(c, '\u{1F600}');
+            assert_eq!(unread.unread(), 2);
+        } else {
+            panic!("expected available input");
+        }
+        assert_eq!(src.consumed(), 0);
+        assert_eq!(read_one_u16(&mut src), Some('\u{1F600}'));
+        assert_eq!(read_one_u16(&mut src), Some('A'));
+    }
+
+    #[test]
+    fn utf16_source_consumed_never_moves_back_without_unread() {
+        let mut src = Utf16Source::new(&[0x0041, 0x0042, 0x0043]);
+        let mut marks = Vec::new();
+        while let Space::Available(handle) = src.check_available() {
+            let (_c, unread) = handle.read();
+            let src_ref = unread.commit();
+            marks.push(src_ref.consumed());
+        }
+        assert_eq!(marks, vec![1, 2, 3]);
+    }
+
+    // Utf8Source reading (beyond the existing tests).
+
+    #[test]
+    fn utf8_source_check_available_reports_consumed_when_exhausted() {
+        let mut src = Utf8Source::new("a\u{1F600}");
+        while let Space::Available(handle) = src.check_available() {
+            let (_c, unread) = handle.read();
+            unread.commit();
+        }
+        let total = src.consumed();
+        assert_eq!(total, "a\u{1F600}".len());
+        assert!(matches!(src.check_available(), Space::Full(_)));
+    }
+
+    #[test]
+    fn utf8_source_unread_of_multibyte_scalar_reports_end_position() {
+        let mut src = Utf8Source::new("\u{1F600}A");
+        if let Space::Available(handle) = src.check_available() {
+            let (c, unread) = handle.read();
+            assert_eq!(c, '\u{1F600}');
+            assert_eq!(unread.consumed(), 4);
+            assert_eq!(unread.unread(), 4);
+        } else {
+            panic!("expected available input");
+        }
+        assert_eq!(src.consumed(), 0);
+        assert_eq!(read_one(&mut src), Some('\u{1F600}'));
+        assert_eq!(read_one(&mut src), Some('A'));
+    }
+
+    #[test]
+    fn utf8_source_rewound_handle_yields_the_same_scalar_again() {
+        let mut src = Utf8Source::new("\u{20AC}");
+        let (first, rewind_pos) = if let Space::Available(handle) = src.check_available() {
+            let (c, unread) = handle.read();
+            (c, unread.unread())
+        } else {
+            panic!("expected available input");
+        };
+        assert_eq!(first, '\u{20AC}');
+        assert_eq!(rewind_pos, 3);
+        assert_eq!(src.consumed(), 0);
+        assert_eq!(read_one(&mut src), Some('\u{20AC}'));
+        assert_eq!(src.consumed(), 3);
+    }
+
+    // copy_unaligned_basic_latin_to_ascii.
+
+    #[test]
+    fn copy_basic_latin_stops_after_copying_fully_ascii_window() {
+        let units: [u16; 2] = [0x0041, 0x0042];
+        // SAFETY: pointer and length come from the live `units` array.
+        let src = unsafe { UnalignedU16Slice::new(units.as_ptr().cast::<u8>(), units.len()) };
+        let mut out = [0u8; 2];
+        assert_eq!(
+            copy_unaligned_basic_latin_to_ascii::<LittleEndian>(src, &mut out),
+            CopyAsciiResult::Stop(2)
+        );
+        assert_eq!(out, [0x41, 0x42]);
+    }
+
+    #[test]
+    fn copy_basic_latin_goes_on_at_first_non_ascii() {
+        let units: [u16; 3] = [0x0041, 0x00E9, 0x0042];
+        // SAFETY: pointer and length come from the live `units` array.
+        let src = unsafe { UnalignedU16Slice::new(units.as_ptr().cast::<u8>(), units.len()) };
+        let mut out = [0u8; 3];
+        assert_eq!(
+            copy_unaligned_basic_latin_to_ascii::<LittleEndian>(src, &mut out),
+            CopyAsciiResult::GoOn((0x00E9, 1))
+        );
+        assert_eq!(out[0], 0x41);
+        assert_eq!(out[1], 0);
+    }
+
+    #[test]
+    fn copy_basic_latin_byte_swaps_for_opposite_endian() {
+        let bytes = [0x00u8, 0x41, 0x00, 0x42]; // big-endian wire order
+        let src = unaligned_over(&bytes);
+        let mut out = [0u8; 2];
+        assert_eq!(
+            copy_unaligned_basic_latin_to_ascii::<BigEndian>(src, &mut out),
+            CopyAsciiResult::Stop(2)
+        );
+        assert_eq!(out, [0x41, 0x42]);
+    }
+
+    #[test]
+    fn copy_basic_latin_truncates_at_destination_window() {
+        let units: [u16; 3] = [0x0041, 0x0042, 0x00E9];
+        // SAFETY: pointer and length come from the live `units` array.
+        let src = unsafe { UnalignedU16Slice::new(units.as_ptr().cast::<u8>(), units.len()) };
+        let mut out = [0u8; 2];
+        assert_eq!(
+            copy_unaligned_basic_latin_to_ascii::<LittleEndian>(src, &mut out),
+            CopyAsciiResult::Stop(2)
+        );
+        assert_eq!(out, [0x41, 0x42]);
+    }
+
+    #[test]
+    fn copy_basic_latin_empty_source_or_destination_stops_at_zero() {
+        let empty = unaligned_over(&[]);
+        let mut out = [0u8; 2];
+        assert_eq!(
+            copy_unaligned_basic_latin_to_ascii::<LittleEndian>(empty, &mut out),
+            CopyAsciiResult::Stop(0)
+        );
+        let units: [u16; 1] = [0x0041];
+        // SAFETY: pointer and length come from the live `units` array.
+        let src = unsafe { UnalignedU16Slice::new(units.as_ptr().cast::<u8>(), units.len()) };
+        let mut no_room: [u8; 0] = [];
+        assert_eq!(
+            copy_unaligned_basic_latin_to_ascii::<LittleEndian>(src, &mut no_room),
+            CopyAsciiResult::Stop(0)
+        );
+    }
+
+    // convert_unaligned_utf16_to_utf8 boundaries.
+
+    #[test]
+    fn convert_unaligned_utf16_returns_zero_for_undersized_destination() {
+        let bytes = [0x41u8, 0x00];
+        let src = unaligned_over(&bytes);
+        let mut out = [0u8; 3];
+        assert_eq!(
+            convert_unaligned_utf16_to_utf8::<LittleEndian>(src, &mut out),
+            (0, 0, false)
+        );
+    }
+
+    #[test]
+    fn convert_unaligned_utf16_needs_four_bytes_to_attempt_non_ascii() {
+        // with 5 bytes (dst_len - 3 == 2) only the first non-ASCII fits
+        let bytes = [0xE9u8, 0x00, 0xE9, 0x00]; // two U+00E9 units
+        let src = unaligned_over(&bytes);
+        let mut out = [0u8; 5];
+        let (read, written, err) = convert_unaligned_utf16_to_utf8::<LittleEndian>(src, &mut out);
+        assert_eq!((read, written, err), (1, 2, false));
+        assert_eq!(out, [0xC3, 0xA9, 0, 0, 0]);
+        // the remainder is taken on the next round with a fresh destination
+        let mut out2 = [0u8; 4];
+        let (read2, written2, err2) = convert_unaligned_utf16_to_utf8::<LittleEndian>(src.tail(1), &mut out2);
+        assert_eq!((read2, written2, err2), (1, 2, false));
+        assert_eq!(&out2[..2], [0xC3, 0xA9]);
+    }
+
+    // validate_bmp_stride.
+
+    #[test]
+    fn validate_bmp_stride_accepts_surrogate_free_run() {
+        let stride = [0x20ACu16; 16];
+        assert_eq!(validate_bmp_stride(&stride), None);
+    }
+
+    #[test]
+    fn validate_bmp_stride_finds_surrogates_at_edges_and_middle() {
+        let mut stride = [0x0041u16; 16];
+        stride[0] = 0xD800;
+        assert_eq!(validate_bmp_stride(&stride), Some(0));
+        let mut stride = [0x0041u16; 16];
+        stride[15] = 0xDFFF;
+        assert_eq!(validate_bmp_stride(&stride), Some(15));
+        let mut stride = [0x0041u16; 16];
+        stride[7] = 0xDC00;
+        assert_eq!(validate_bmp_stride(&stride), Some(7));
+    }
+
+    #[test]
+    fn validate_bmp_stride_rejects_values_just_outside_surrogate_range() {
+        let mut stride = [0x0041u16; 16];
+        stride[3] = 0xD7FF;
+        assert_eq!(validate_bmp_stride(&stride), None);
+        let mut stride = [0x0041u16; 16];
+        stride[3] = 0xE000;
+        assert_eq!(validate_bmp_stride(&stride), None);
+    }
+
+    #[test]
+    fn validate_latin1_str_stride_never_flags_any_byte() {
+        // The `all` guard (`b & 0xC0 != 0x80 || b <= 0xC3`) holds for every
+        // possible u8: continuation bytes (0x80..=0xBF) pass via `<= 0xC3`,
+        // everything else never matches `0x80`. So the function reports `None`
+        // for every stride and its scan loop is dead code. Pinned as-is.
+        let all_high = [0xFFu8; 16];
+        assert_eq!(validate_latin1_str_stride(&all_high), None);
+        let continuations = [0x80u8; 16];
+        assert_eq!(validate_latin1_str_stride(&continuations), None);
+        let ascii = [0x41u8; 16];
+        assert_eq!(validate_latin1_str_stride(&ascii), None);
+    }
 }
