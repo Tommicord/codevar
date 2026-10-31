@@ -228,9 +228,19 @@ pub static X_MAC_CYRILLIC: Encoding = Encoding {
     variant: VariantEncoding::SingleByte(&single_byte_tables::INDEX_X_MAC_CYRILLIC, 0x0410, 0x00, 32),
 };
 
-/// Every encoding implemented by this crate, Unicode ones first, then the
-/// single-byte ones in the order the standard lists them.
-pub static ENCODINGS: [&Encoding; 31] = [
+/// The `x-user-defined` encoding of the Encoding Standard: the INDEX_X_USER_DEFINED table,
+/// with the encoder run of 128 code points from U+F780 at pointer 0x00. The standard
+/// defines its index arithmetically instead of shipping a table file, so the run covers
+/// the whole index and the encoding has no undefined pointer.
+pub static X_USER_DEFINED: Encoding = Encoding {
+    name: "x-user-defined",
+    variant: VariantEncoding::SingleByte(&single_byte_tables::INDEX_X_USER_DEFINED, 0xF780, 0x00, 128),
+};
+
+/// Every encoding implemented by this crate: the Unicode ones first, then the
+/// single-byte ones in the order the standard lists them, and `x-user-defined` last
+/// because the standard files it under the legacy miscellaneous encodings.
+pub static ENCODINGS: [&Encoding; 32] = [
     &UTF_8,
     &UTF_16BE,
     &UTF_16LE,
@@ -262,6 +272,7 @@ pub static ENCODINGS: [&Encoding; 31] = [
     &WINDOWS_1257,
     &WINDOWS_1258,
     &X_MAC_CYRILLIC,
+    &X_USER_DEFINED,
 ];
 
 /// Every single-byte encoding implemented by this crate, in the order the
@@ -299,7 +310,7 @@ pub static SINGLE_BYTE_ENCODINGS: [&Encoding; 28] = [
 
 /// Every label of an encoding implemented by this crate, in the order the
 /// standard lists them and already ASCII-lowercased as its labels are.
-static LABELS: [(&str, &Encoding); 183] = [
+static LABELS: [(&str, &Encoding); 184] = [
     ("unicode-1-1-utf-8", &UTF_8),
     ("unicode11utf8", &UTF_8),
     ("unicode20utf8", &UTF_8),
@@ -483,15 +494,16 @@ static LABELS: [(&str, &Encoding); 183] = [
     ("unicodefeff", &UTF_16LE),
     ("utf-16", &UTF_16LE),
     ("utf-16le", &UTF_16LE),
+    ("x-user-defined", &X_USER_DEFINED),
 ];
 
 /// Labels the standard assigns to encodings this crate does not implement
 /// yet: the legacy multi-byte encodings (GBK, gb18030, Big5, EUC-JP,
-/// ISO-2022-JP, Shift_JIS, EUC-KR), the replacement encoding and
-/// x-user-defined. `lookup` reports them separately from labels the
+/// ISO-2022-JP, Shift_JIS, EUC-KR) and the replacement encoding. `lookup`
+/// reports them separately from labels the
 /// standard does not know at all, so a caller can tell the two apart
 /// instead of silently substituting another encoding.
-const UNIMPLEMENTED_LABELS: [&str; 45] = [
+const UNIMPLEMENTED_LABELS: [&str; 44] = [
     "chinese",
     "csgb2312",
     "csiso58gb231280",
@@ -536,7 +548,6 @@ const UNIMPLEMENTED_LABELS: [&str; 45] = [
     "iso-2022-cn-ext",
     "iso-2022-kr",
     "replacement",
-    "x-user-defined",
 ];
 
 /// The outcome of matching a label against the name table of the standard.
@@ -545,8 +556,7 @@ pub enum LabelLookup {
     /// The label names an encoding implemented by this crate.
     Supported(&'static Encoding),
     /// The label names an encoding the standard defines but this crate does not
-    /// implement yet: a legacy multi-byte encoding, the replacement encoding or
-    /// x-user-defined.
+    /// implement yet: a legacy multi-byte encoding or the replacement encoding.
     Unimplemented,
     /// No encoding in the standard carries this label.
     Unknown,
@@ -782,8 +792,8 @@ mod tests {
 
     #[test]
     fn unicode_encodings_come_first_in_the_full_list() {
-        assert_eq!(ENCODINGS.len(), 31);
-        let ordered: [&str; 31] = [
+        assert_eq!(ENCODINGS.len(), 32);
+        let ordered: [&str; 32] = [
             "UTF-8",
             "UTF-16BE",
             "UTF-16LE",
@@ -815,11 +825,14 @@ mod tests {
             "windows-1257",
             "windows-1258",
             "x-mac-cyrillic",
+            "x-user-defined",
         ];
         for (position, name) in ordered.iter().enumerate() {
             assert_eq!(ENCODINGS[position].name, *name, "registry position {position}");
         }
-        assert_eq!(&ENCODINGS[3..], &SINGLE_BYTE_ENCODINGS[..]);
+        // The 28 legacy single-byte pages follow the Unicode ones in the order the
+        // standard lists them; x-user-defined closes the list.
+        assert_eq!(&ENCODINGS[3..31], &SINGLE_BYTE_ENCODINGS[..]);
     }
 
     #[test]
@@ -1006,7 +1019,7 @@ mod tests {
             );
             assert!(for_label(label).is_none(), "{label} must not resolve");
         }
-        assert_eq!(UNIMPLEMENTED_LABELS.len(), 45);
+        assert_eq!(UNIMPLEMENTED_LABELS.len(), 44);
     }
 
     #[test]
@@ -1218,7 +1231,7 @@ mod tests {
 
     #[test]
     fn every_label_family_matches_the_standard_exactly() {
-        let expected: [(&str, &[&str]); 31] = [
+        let expected: [(&str, &[&str]); 32] = [
             (
                 "UTF-8",
                 &[
@@ -1439,6 +1452,7 @@ mod tests {
             ("windows-1257", &["cp1257", "windows-1257", "x-cp1257"]),
             ("windows-1258", &["cp1258", "windows-1258", "x-cp1258"]),
             ("x-mac-cyrillic", &["x-mac-cyrillic", "x-mac-ukrainian"]),
+            ("x-user-defined", &["x-user-defined"]),
         ];
         let mut total = 0usize;
         for (name, labels) in expected {
@@ -1448,7 +1462,7 @@ mod tests {
             total += labels.len();
         }
         assert_eq!(total, LABELS.len(), "a label is missing from a family");
-        assert_eq!(LABELS.len(), 183);
+        assert_eq!(LABELS.len(), 184);
     }
 
     #[test]
@@ -1590,18 +1604,21 @@ mod tests {
             );
             assert!(encoding.variant.is_single_byte(), "{}", encoding.name);
         }
+        // `x-user-defined` is the twenty-ninth single-byte shape: the standard indexes
+        // it like the legacy pages but lists it among the miscellaneous encodings, so
+        // it is not one of the 28 in SINGLE_BYTE_ENCODINGS.
         assert_eq!(
             ENCODINGS
                 .iter()
                 .filter(|e| e.variant.is_single_byte())
                 .count(),
-            SINGLE_BYTE_ENCODINGS.len()
+            SINGLE_BYTE_ENCODINGS.len() + 1
         );
     }
 
     #[test]
     fn run_parameters_are_the_documented_triples() {
-        let expected: [(&str, u16, u8, u8); 28] = [
+        let expected: [(&str, u16, u8, u8); 29] = [
             ("IBM866", 0x0410, 0x00, 48),
             ("ISO-8859-2", 0x0080, 0x00, 33),
             ("ISO-8859-3", 0x0080, 0x00, 33),
@@ -1630,11 +1647,12 @@ mod tests {
             ("windows-1257", 0x00B0, 0x30, 8),
             ("windows-1258", 0x00A0, 0x20, 35),
             ("x-mac-cyrillic", 0x0410, 0x00, 32),
+            ("x-user-defined", 0xF780, 0x00, 128),
         ];
         for (name, bmp_offset, byte_offset, length) in expected {
             assert_eq!(run_of(by_name(name)), (bmp_offset, byte_offset, length), "{name}");
         }
-        assert_eq!(expected.len(), SINGLE_BYTE_ENCODINGS.len());
+        assert_eq!(expected.len(), SINGLE_BYTE_ENCODINGS.len() + 1);
     }
 
     #[test]
@@ -2475,5 +2493,62 @@ mod tests {
             }
         }
         assert_eq!(for_bom(&[0xC0, 0x80]), None, "a legacy overlong start is no mark");
+    }
+
+    #[test]
+    fn x_user_defined_is_a_total_index_over_the_private_use_run() {
+        // The standard derives this index arithmetically instead of shipping a table
+        // file, so pointer i maps U+F780 + i and the encoder run covers all 128
+        // pointers without leaving a hole for the decoder to replace.
+        for (pointer, &unit) in table_of(&X_USER_DEFINED).iter().enumerate() {
+            assert_eq!(unit, 0xF780 + pointer as u16, "pointer {pointer:02X}");
+        }
+        assert!(
+            !X_USER_DEFINED.can_encode_everything(),
+            "only Basic Latin and the private use run are encodable"
+        );
+        for byte in 0x80u8..=0xFF {
+            let unit = u16::from(byte) - 0x80 + 0xF780;
+            assert_eq!(units(&X_USER_DEFINED, &[byte]), vec![unit], "byte {byte:02X}");
+            assert_eq!(encode_unit(&X_USER_DEFINED, unit), Ok(byte), "U+{unit:04X}");
+        }
+        for byte in [0x00u8, 0x20, 0x7F] {
+            assert_eq!(units(&X_USER_DEFINED, &[byte]), vec![u16::from(byte)]);
+            assert_eq!(encode_unit(&X_USER_DEFINED, u16::from(byte)), Ok(byte));
+        }
+    }
+
+    #[test]
+    fn x_user_defined_resolves_by_its_only_label() {
+        assert_eq!(lookup("x-user-defined"), LabelLookup::Supported(&X_USER_DEFINED));
+        assert_eq!(
+            lookup("X-User-Defined\t"),
+            LabelLookup::Supported(&X_USER_DEFINED)
+        );
+        assert!(
+            !UNIMPLEMENTED_LABELS.contains(&"x-user-defined"),
+            "the label left the unimplemented list with its encoding"
+        );
+    }
+
+    #[test]
+    fn x_user_defined_writes_a_reference_for_a_code_point_outside_its_run() {
+        let reference = format!("&#{};", '\u{4E2D}' as u32);
+        let mut encoder = X_USER_DEFINED.new_encoder();
+        let mut dst = [0u8; 32];
+        let (result, read, written, had) = encoder.encode_from_utf8("a\u{4E2D}", &mut dst, true);
+        assert_eq!(result, CoderResult::InputEmpty);
+        assert!(had, "U+4E2D is outside the private use run");
+        assert_eq!((read, written), (4, 1 + reference.len()));
+        assert_eq!(&dst[..written], format!("a{reference}").as_bytes());
+
+        let units: Vec<u16> = "\u{F780}\u{4E2D}".encode_utf16().collect();
+        let mut encoder = X_USER_DEFINED.new_encoder();
+        let (result, read, written, had) = encoder.encode_from_utf16(&units, &mut dst, true);
+        assert_eq!(result, CoderResult::InputEmpty);
+        assert!(had);
+        assert_eq!((read, written), (2, 1 + reference.len()));
+        assert_eq!(dst[0], 0x80, "U+F780 is the first pointer");
+        assert_eq!(&dst[1..written], reference.as_bytes());
     }
 }
