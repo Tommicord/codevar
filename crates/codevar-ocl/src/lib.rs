@@ -50,6 +50,7 @@ mod properties;
 mod query;
 mod queue;
 mod runtime;
+mod semaphore;
 pub mod sys;
 
 pub use buffer::Buffer;
@@ -63,3 +64,4 @@ pub use platform::{Device, DeviceKind, Platform};
 pub use program::Program;
 pub use queue::{CommandQueue, QueueProperties};
 pub use runtime::Runtime;
+pub use semaphore::{ExternalSemaphoreHandle, Semaphore};

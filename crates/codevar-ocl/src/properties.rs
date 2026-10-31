@@ -39,14 +39,10 @@ use alloc::vec::Vec;
 use crate::sys;
 
 /// A `cl_properties` list under construction.
-// The import calls that build a list land with the external-memory and
-// semaphore modules; until then the builder is read only by the tests.
-#[allow(dead_code)]
 pub(crate) struct PropertyList {
     words: Vec<sys::Properties>,
 }
 
-#[allow(dead_code)]
 impl PropertyList {
     /// Starts an empty list.
     pub(crate) const fn new() -> Self {
@@ -57,6 +53,19 @@ impl PropertyList {
     pub(crate) fn pair(&mut self, name: sys::Properties, value: sys::Properties) {
         self.words.push(name);
         self.words.push(value);
+    }
+
+    /// Appends one `(name, sub-list)` pair.
+    ///
+    /// A property such as the export handle-type list of a semaphore carries
+    /// several values instead of one, and the driver reads them until it
+    /// meets `end`. That terminator belongs to the sub-list, so the outer
+    /// list keeps going afterwards and the zero from
+    /// [`build`](Self::build) is still what ends everything.
+    pub(crate) fn list(&mut self, name: sys::Properties, values: &[sys::Properties], end: sys::Properties) {
+        self.words.push(name);
+        self.words.extend_from_slice(values);
+        self.words.push(end);
     }
 
     /// Ends the list with the zero terminator the driver reads.
@@ -71,15 +80,12 @@ impl PropertyList {
 /// The widening sign-extends, which is what the C headers do for a
 /// descriptor: a driver that receives `-1` in a `cl_properties` word
 /// casts it back to `int` and reads `-1` again.
-// Used by the external-memory import path, which lands next.
-#[allow(dead_code)]
 pub(crate) const fn from_int(value: i32) -> sys::Properties {
     value as sys::Properties
 }
 
 /// The value slot for a pointer property, such as a `HANDLE`, a device
 /// handle or a wide string.
-#[allow(dead_code)]
 pub(crate) fn from_ptr<T>(ptr: *const T) -> sys::Properties {
     ptr as usize as sys::Properties
 }
@@ -104,6 +110,16 @@ mod tests {
     #[test]
     fn an_empty_list_is_a_bare_terminator() {
         assert_eq!(PropertyList::new().build(), [0]);
+    }
+
+    /// A sub-list stops at its own terminator, not at the end of the whole
+    /// array, so a property can follow it.
+    #[test]
+    fn a_sub_list_ends_before_the_rest_of_the_properties() {
+        let mut list = PropertyList::new();
+        list.pair(0x203D, 1);
+        list.list(0x203F, &[0x2055, 0x2058], 0);
+        assert_eq!(list.build(), [0x203D, 1, 0x203F, 0x2055, 0x2058, 0, 0]);
     }
 
     /// A negative descriptor must keep its value through the widening:
