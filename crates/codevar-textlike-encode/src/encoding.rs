@@ -1290,61 +1290,558 @@ pub fn convert_utf16_to_str(src: &[u16], dst: &mut str) -> Result<usize, Encodin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::format;
 
-    #[test]
-    fn test_convert_utf8_to_utf16() {
-        let src = "abc\u{1F4A9}\u{2603}";
-        let mut dst: Vec<u16> = vec![0; src.len() + 1];
-        let len = convert_utf8_to_utf16(src.as_bytes(), &mut dst[..]).unwrap();
-        dst.truncate(len);
-        let reference: Vec<u16> = src.encode_utf16().collect();
-        assert_eq!(dst, reference);
+    const fn latin1_table() -> [u16; 128] {
+        let mut t = [0u16; 128];
+        let mut i = 0usize;
+        while i < 128 {
+            t[i] = 0x80 + i as u16;
+            i += 1;
+        }
+        t
+    }
+
+    const fn bad_latin1_table() -> [u16; 128] {
+        let mut t = latin1_table();
+        // Byte 0xC1 (= 0x80 + 0x41) has no mapping, so decoding it is malformed.
+        t[0x41] = 0;
+        t
+    }
+
+    static LATIN1_TABLE: [u16; 128] = latin1_table();
+    static BAD_TABLE: [u16; 128] = bad_latin1_table();
+    static ZERO_TABLE: [u16; 128] = [0u16; 128];
+
+    // A latin-1-shaped identity encoding (byte N <-> U+00NN for N >= 0x80).
+    // The run is deliberately empty (`run_length = 0`, byte offset 64): the
+    // encoder then resolves every non-ASCII unit through the reverse table
+    // search.
+    static LATIN1: Encoding = Encoding {
+        name: "latin1-test",
+        variant: VariantEncoding::SingleByte(&LATIN1_TABLE, 0x80, 64, 0),
+    };
+    static LATIN1_DUP: Encoding = Encoding {
+        name: "latin1-dup",
+        variant: VariantEncoding::SingleByte(&LATIN1_TABLE, 0x80, 64, 0),
+    };
+    static BAD_LATIN1: Encoding = Encoding {
+        name: "bad-latin1",
+        variant: VariantEncoding::SingleByte(&BAD_TABLE, 0x80, 64, 0),
+    };
+    // A run-only encoding: the forward table is all zeroes (nothing decodes),
+    // so any successful non-ASCII encode must come from the run map:
+    // U+E000..U+E00F -> bytes 0xC0..0xCF.
+    static RUN_ONLY: Encoding = Encoding {
+        name: "run-only",
+        variant: VariantEncoding::SingleByte(&ZERO_TABLE, 0xE000, 32, 16),
+    };
+    // Same table as LATIN1 but with the run covering the whole index from
+    // `run_byte_offset = 0`, so a char outside the run must fall through every
+    // quadrant search.
+    static ZERO_RUN_LATIN1: Encoding = Encoding {
+        name: "zero-run-latin1",
+        variant: VariantEncoding::SingleByte(&LATIN1_TABLE, 0x80, 0, 0x80),
+    };
+
+    fn ok_size(res: Result<usize, EncodingError>) -> usize {
+        match res {
+            Ok(n) => n,
+            Err(e) => panic!("conversion unexpectedly failed: {e:?}"),
+        }
+    }
+
+    fn err_of(res: Result<usize, EncodingError>) -> EncodingError {
+        match res {
+            Err(e) => e,
+            Ok(n) => panic!("conversion unexpectedly succeeded with {n}"),
+        }
+    }
+
+    fn decode_all(d: &mut Decoder, src: &[u8]) -> (Vec<u8>, usize, bool) {
+        let mut dst = vec![0u8; src.len() * 4 + 32];
+        let (res, read, written, errors) = d.decode_to_utf8(src, &mut dst, true);
+        assert!(
+            matches!(res, CoderResult::InputEmpty),
+            "decode did not finish: {src:?}"
+        );
+        dst.truncate(written);
+        (dst, read, errors)
+    }
+
+    fn decode_all16(d: &mut Decoder, src: &[u8]) -> (Vec<u16>, bool) {
+        let mut dst = vec![0u16; src.len() * 2 + 16];
+        let (res, read, written, errors) = d.decode_to_utf16(src, &mut dst, true);
+        assert!(
+            matches!(res, CoderResult::InputEmpty),
+            "decode16 did not finish: {src:?}"
+        );
+        assert_eq!(read, src.len());
+        dst.truncate(written);
+        (dst, errors)
+    }
+
+    fn decode_raw(d: &mut Decoder, src: &[u8], last: bool) -> (DecoderResult, usize, usize) {
+        let mut dst = vec![0u8; src.len() * 4 + 32];
+        d.decode_to_utf8_without_replacement(src, &mut dst, last)
+    }
+
+    fn encode_all(e: &mut Encoder, src: &str) -> (Vec<u8>, usize, bool) {
+        let mut dst = vec![0u8; src.len() * 4 + 64];
+        let (res, read, written, had) = e.encode_from_utf8(src, &mut dst, true);
+        assert!(
+            matches!(res, CoderResult::InputEmpty),
+            "encode did not finish: {src:?}"
+        );
+        dst.truncate(written);
+        (dst, read, had)
+    }
+
+    fn encode16_all(e: &mut Encoder, src: &[u16]) -> (Vec<u8>, bool) {
+        let mut dst = vec![0u8; src.len() * 4 + 64];
+        let (res, read, written, had) = e.encode_from_utf16(src, &mut dst, true);
+        assert!(
+            matches!(res, CoderResult::InputEmpty),
+            "encode16 did not finish: {src:?}"
+        );
+        assert_eq!(read, src.len());
+        dst.truncate(written);
+        (dst, had)
+    }
+
+    fn utf16_units(s: &str) -> Vec<u16> {
+        s.encode_utf16().collect()
     }
 
     #[test]
-    fn test_convert_str_to_utf16() {
-        let src = "abc\u{1F4A9}";
-        let mut dst: Vec<u16> = vec![0; src.len()];
-        let len = convert_str_to_utf16(src, &mut dst[..]).unwrap();
-        dst.truncate(len);
-        let reference: Vec<u16> = src.encode_utf16().collect();
-        assert_eq!(dst, reference);
+    fn utf8_encoding_metadata() {
+        assert_eq!(UTF_8.name, "UTF-8");
+        assert_eq!(UTF_8.variant, VariantEncoding::Utf8);
+        assert!(UTF_8.can_encode_everything());
     }
 
     #[test]
-    fn test_convert_utf16_to_utf8() {
-        let src: Vec<u16> = "abc\u{1F4A9}".encode_utf16().collect();
-        let mut dst: Vec<u8> = vec![0; src.len() * 3];
-        let len = convert_utf16_to_utf8(&src[..], &mut dst[..]).unwrap();
-        dst.truncate(len);
-        assert_eq!(&dst[..], "abc\u{1F4A9}".as_bytes());
+    fn utf16_encoding_metadata() {
+        assert_eq!(UTF_16LE.name, "UTF-16LE");
+        assert_eq!(UTF_16BE.name, "UTF-16BE");
+        assert_eq!(UTF_16LE.variant, VariantEncoding::Utf16Le);
+        assert_eq!(UTF_16BE.variant, VariantEncoding::Utf16Be);
+        assert!(!UTF_16LE.can_encode_everything());
+        assert!(!UTF_16BE.can_encode_everything());
     }
 
     #[test]
-    fn test_convert_str_to_utf16_destination_too_small() {
-        let src = "abc";
-        let mut dst: Vec<u16> = vec![0; 2];
-        let err = convert_str_to_utf16(src, &mut dst[..]).unwrap_err();
+    fn single_byte_can_encode_everything_is_false() {
+        assert!(!LATIN1.can_encode_everything());
+        assert!(matches!(LATIN1.variant, VariantEncoding::SingleByte(..)));
+    }
+
+    #[test]
+    fn encoding_returns_static_self() {
+        assert!(core::ptr::eq(UTF_8.encoding(), &UTF_8));
+        assert!(core::ptr::eq(LATIN1.encoding(), &LATIN1));
+    }
+
+    // The `PartialEq<Encoding> for &Encoding` impl requires the reference on
+    // the left; clippy's op_ref suggestion (`LATIN1 == LATIN1_DUP`) would
+    // switch to the derived impl, which also compares names, changing the
+    // meaning of the assertions.
+    #[allow(clippy::op_ref)]
+    #[test]
+    fn encoding_eq_compares_variant_not_name() {
+        assert!(&LATIN1 == LATIN1_DUP);
+        assert!(&UTF_8 == UTF_8);
+        assert_ne!(&UTF_8, UTF_16BE);
+        assert_ne!(&UTF_16LE, UTF_16BE);
+        assert_ne!(&LATIN1, UTF_8);
+    }
+
+    #[test]
+    fn new_decoder_starts_converting() {
+        assert_eq!(UTF_8.new_decoder().life_cycle, DecoderLifeCycle::Converting);
         assert_eq!(
-            err,
-            EncodingError::DestinationTooSmall {
-                required: 3,
-                actual: 2
-            }
+            UTF_8
+                .new_decoder_without_bom_handling()
+                .life_cycle,
+            DecoderLifeCycle::Converting
+        );
+        assert_eq!(UTF_16LE.new_decoder().life_cycle, DecoderLifeCycle::Converting);
+    }
+
+    #[test]
+    fn bom_removal_life_cycle_by_encoding() {
+        assert_eq!(
+            UTF_8.new_decoder_with_bom_removal().life_cycle,
+            DecoderLifeCycle::AtUtf8Start
+        );
+        assert_eq!(
+            UTF_16BE.new_decoder_with_bom_removal().life_cycle,
+            DecoderLifeCycle::AtUtf16BeStart
+        );
+        assert_eq!(
+            UTF_16LE.new_decoder_with_bom_removal().life_cycle,
+            DecoderLifeCycle::AtUtf16LeStart
+        );
+        // Non-UTF encodings skip straight to Converting even with removal.
+        assert_eq!(
+            LATIN1.new_decoder_with_bom_removal().life_cycle,
+            DecoderLifeCycle::Converting
         );
     }
 
     #[test]
-    fn test_convert_utf16_to_utf8_destination_too_small() {
-        let src: Vec<u16> = "hello".encode_utf16().collect();
-        let mut dst: Vec<u8> = vec![0; 4];
-        let err = convert_utf16_to_utf8(&src[..], &mut dst[..]).unwrap_err();
-        assert_eq!(
-            err,
-            EncodingError::DestinationTooSmall {
-                required: 15,
-                actual: 4
-            }
+    fn bom_sniff_life_cycle_is_at_start() {
+        let d = Decoder::new(
+            &UTF_8,
+            VariantEncoding::Utf8.new_variant_decoder(),
+            BomHandling::Sniff,
         );
+        assert_eq!(d.life_cycle, DecoderLifeCycle::AtStart);
+        assert!(d.max_utf8_buffer_length(16).is_none());
+        assert!(
+            d.max_utf8_buffer_length_without_replacement(16)
+                .is_none()
+        );
+        assert!(d.max_utf16_buffer_length(16).is_none());
+    }
+
+    #[test]
+    fn decoder_life_cycle_variants_are_distinct() {
+        assert_eq!(DecoderLifeCycle::AtUtf8Start, DecoderLifeCycle::AtUtf8Start);
+        assert_ne!(DecoderLifeCycle::SeenUtf8First, DecoderLifeCycle::Converting);
+        assert_ne!(DecoderLifeCycle::Finished, DecoderLifeCycle::AtStart);
+        assert_ne!(
+            DecoderLifeCycle::ConvertingWithPendingBB,
+            DecoderLifeCycle::Converting
+        );
+        assert_ne!(DecoderLifeCycle::AtUtf16BeStart, DecoderLifeCycle::AtUtf16LeStart);
+        assert_ne!(
+            DecoderLifeCycle::SeenUtf16BeFirst,
+            DecoderLifeCycle::SeenUtf16LeFirst
+        );
+        assert_ne!(DecoderLifeCycle::AtStart, DecoderLifeCycle::SeenUtf8Second);
+    }
+
+    #[test]
+    fn utf8_decoder_max_buffer_lengths_some_while_converting() {
+        let d = UTF_8.new_decoder();
+        assert!(d.max_utf8_buffer_length(10).is_some());
+        assert!(
+            d.max_utf8_buffer_length_without_replacement(10)
+                .is_some()
+        );
+        assert!(d.max_utf16_buffer_length(10).is_some());
+    }
+
+    #[test]
+    fn single_byte_decoder_max_lengths() {
+        let d = LATIN1.new_decoder();
+        assert_eq!(d.max_utf16_buffer_length(7), Some(7));
+        assert_eq!(d.max_utf8_buffer_length(7), Some(21));
+        assert_eq!(d.max_utf8_buffer_length_without_replacement(7), Some(21));
+        // Multiplication overflow must be reported as `None`.
+        assert_eq!(d.max_utf8_buffer_length(usize::MAX), None);
+        assert_eq!(d.max_utf8_buffer_length(usize::MAX / 2,), None);
+        assert_eq!(d.max_utf16_buffer_length(usize::MAX), Some(usize::MAX));
+    }
+
+    #[test]
+    fn bom_removal_decoder_answers_max_lengths_like_plain() {
+        let d = UTF_8.new_decoder_with_bom_removal();
+        assert_eq!(
+            d.max_utf8_buffer_length(4),
+            UTF_8.new_decoder().max_utf8_buffer_length(4)
+        );
+        assert!(d.max_utf16_buffer_length(0).is_some());
+    }
+
+    #[test]
+    fn decoder_encoding_accessor() {
+        assert!(core::ptr::eq(UTF_16LE.new_decoder().encoding(), &UTF_16LE));
+        assert!(core::ptr::eq(LATIN1.new_decoder().encoding(), &LATIN1));
+    }
+
+    #[test]
+    fn utf8_bom_is_not_removed_by_current_impl() {
+        // Documents actual behavior: `new_decoder_with_bom_removal` only moves
+        // the life cycle; the decode path forwards to the variant decoder, so
+        // the BOM survives in the output.
+        let mut d = UTF_8.new_decoder_with_bom_removal();
+        let src = [0xEFu8, 0xBB, 0xBF, b'a'];
+        let (out, read, errors) = decode_all(&mut d, &src);
+        assert_eq!(out, src);
+        assert_eq!(read, 4);
+        assert!(!errors);
+    }
+
+    #[test]
+    fn utf8_bom_split_across_calls_is_preserved() {
+        let mut d = UTF_8.new_decoder_with_bom_removal();
+        let mut dst = vec![0u8; 16];
+        let (res1, _, written1, _) = d.decode_to_utf8(&[0xEF], &mut dst, false);
+        assert!(matches!(res1, CoderResult::InputEmpty));
+        let rest = [0xBBu8, 0xBF, b'a'];
+        let (res2, _, written2, _) = d.decode_to_utf8(&rest, &mut dst[written1..], true);
+        assert!(matches!(res2, CoderResult::InputEmpty));
+        assert_eq!(&dst[..written1 + written2], b"\xEF\xBB\xBFa");
+    }
+
+    #[test]
+    fn utf16le_bom_survives_removal_decoder() {
+        let mut d = UTF_16LE.new_decoder_with_bom_removal();
+        // FF FE is U+FEFF in LE; decoded output is its UTF-8 form, so the BOM
+        // survives (the current implementation does not strip it).
+        let src = [0xFFu8, 0xFE, 0x61, 0x00];
+        let (out, _, errors) = decode_all(&mut d, &src);
+        assert_eq!(out, [0xEFu8, 0xBB, 0xBF, 0x61]);
+        assert!(!errors);
+    }
+
+    #[test]
+    fn utf16be_fe_ff_decodes_to_replacement_order_bom_char() {
+        // `FE FF` read as UTF-16BE is U+FEFF (the BOM character), which the
+        // decoder emits as its UTF-8 encoding rather than stripping.
+        let mut d = UTF_16BE.new_decoder_with_bom_removal();
+        let src = [0xFEu8, 0xFF, 0x00, 0x61];
+        let (out, _, errors) = decode_all(&mut d, &src);
+        assert_eq!(out, [0xEFu8, 0xBB, 0xBF, 0x61]);
+        assert!(!errors);
+    }
+
+    #[test]
+    fn utf8_decode_empty_input() {
+        let mut d = UTF_8.new_decoder();
+        let mut dst = [0u8; 8];
+        let (res, read, written, errors) = d.decode_to_utf8(&[], &mut dst, true);
+        assert_eq!(
+            (res, read, written, errors),
+            (CoderResult::InputEmpty, 0, 0, false)
+        );
+    }
+
+    #[test]
+    fn utf8_decode_empty_destination_reports_output_full() {
+        let mut d = UTF_8.new_decoder();
+        let mut dst: [u8; 0] = [];
+        let (res, read, written) = d.decode_to_utf8_without_replacement(b"a", &mut dst, true);
+        assert_eq!(res, DecoderResult::OutputFull);
+        assert_eq!((read, written), (0, 0));
+    }
+
+    #[test]
+    fn utf8_decode_multibyte_identity() {
+        let mut d = UTF_8.new_decoder();
+        let src = "a\u{e9}\u{2603}\u{1F4A9}";
+        let (out, read, errors) = decode_all(&mut d, src.as_bytes());
+        assert_eq!(out, src.as_bytes());
+        assert_eq!(read, src.len());
+        assert!(!errors);
+    }
+
+    #[test]
+    fn utf8_decode_truncated_two_byte_last_is_malformed() {
+        let mut d = UTF_8.new_decoder();
+        let (res, _, _) = decode_raw(&mut d, &[0xC3], true);
+        assert!(matches!(res, DecoderResult::Malformed(..)));
+    }
+
+    #[test]
+    fn utf8_decode_truncated_two_byte_with_replacement() {
+        let mut d = UTF_8.new_decoder();
+        let (out, read, errors) = decode_all(&mut d, &[0x41u8, 0xC3]);
+        assert!(errors);
+        assert_eq!(out, [0x41u8, 0xEF, 0xBF, 0xBD]);
+        assert_eq!(read, 2);
+    }
+
+    #[test]
+    fn utf8_decode_truncated_two_byte_not_last_pends_until_final() {
+        let mut d = UTF_8.new_decoder();
+        let mut dst = vec![0u8; 16];
+        let (res1, _, written1, errors1) = d.decode_to_utf8(&[0x41u8, 0xC3], &mut dst, false);
+        assert!(matches!(res1, CoderResult::InputEmpty));
+        assert!(!errors1);
+        let (res2, _, written2, errors2) = d.decode_to_utf8(&[0xA9u8], &mut dst[written1..], true);
+        assert!(matches!(res2, CoderResult::InputEmpty));
+        assert!(!errors2);
+        assert_eq!(&dst[..written1 + written2], b"A\xC3\xA9");
+    }
+
+    #[test]
+    fn utf8_decode_lone_continuation_is_malformed() {
+        let mut d = UTF_8.new_decoder();
+        let (res, _, _) = decode_raw(&mut d, &[0xA9], true);
+        assert!(matches!(res, DecoderResult::Malformed(..)));
+    }
+
+    #[test]
+    fn utf8_decode_overlong_sequence_is_malformed() {
+        let mut d = UTF_8.new_decoder();
+        let (res, _, _) = decode_raw(&mut d, &[0xC0, 0xAF], true);
+        assert!(matches!(res, DecoderResult::Malformed(..)));
+    }
+
+    #[test]
+    fn utf8_decode_surrogate_encoding_is_malformed() {
+        let mut d = UTF_8.new_decoder();
+        // ED A0 80 would decode to U+D800, a surrogate: forbidden by the spec.
+        let (res, _, _) = decode_raw(&mut d, &[0xED, 0xA0, 0x80], true);
+        assert!(matches!(res, DecoderResult::Malformed(..)));
+    }
+
+    #[test]
+    fn utf8_decode_d7ff_is_valid() {
+        let mut d = UTF_8.new_decoder();
+        // ED 9F BF is U+D7FF, the last valid non-surrogate three-byte point.
+        let (res, _, _) = decode_raw(&mut d, &[0xED, 0x9F, 0xBF], true);
+        assert_eq!(res, DecoderResult::InputEmpty);
+    }
+
+    #[test]
+    fn utf8_decode_invalid_lead_f5_is_malformed() {
+        let mut d = UTF_8.new_decoder();
+        let (res, _, _) = decode_raw(&mut d, &[0xF5, 0x80, 0x80, 0x80], true);
+        assert!(matches!(res, DecoderResult::Malformed(..)));
+    }
+
+    #[test]
+    fn utf8_decode_bad_second_byte_of_three_is_malformed() {
+        let mut d = UTF_8.new_decoder();
+        let (res, _, _) = decode_raw(&mut d, &[0xE2, 0x41], true);
+        assert!(matches!(res, DecoderResult::Malformed(..)));
+    }
+
+    #[test]
+    fn utf8_decode_max_valid_point_succeeds() {
+        let mut d = UTF_8.new_decoder();
+        let (res, read, written) = decode_raw(&mut d, &[0xF4, 0x8F, 0xBF, 0xBF], true);
+        assert_eq!(res, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (4, 4));
+    }
+
+    #[test]
+    fn utf8_decode_malformed_position_between_ascii() {
+        let mut d = UTF_8.new_decoder();
+        let (out, read, errors) = decode_all(&mut d, &[0x41u8, 0xFF, 0x42]);
+        assert!(errors);
+        assert_eq!(out, [0x41u8, 0xEF, 0xBF, 0xBD, 0x42]);
+        assert_eq!(read, 3);
+    }
+
+    #[test]
+    fn utf8_decode_to_utf16_astral_pair() {
+        let mut d = UTF_8.new_decoder();
+        let src = "\u{1F4A9}".as_bytes();
+        let (units, errors) = decode_all16(&mut d, src);
+        assert!(!errors);
+        assert_eq!(units, utf16_units("\u{1F4A9}"));
+    }
+
+    #[test]
+    fn utf8_decode_to_utf16_malformed_replacement_unit() {
+        let mut d = UTF_8.new_decoder();
+        let (units, errors) = decode_all16(&mut d, &[0x41u8, 0xFF]);
+        assert!(errors);
+        assert_eq!(units, [0x0041, 0xFFFD]);
+    }
+
+    #[test]
+    fn utf8_decode_to_utf16_output_full_on_tiny_destination() {
+        let astral = "\u{1F4A9}";
+        let mut d = UTF_8.new_decoder();
+        let mut dst = [0u16; 1];
+        let (res, _, _, _) = d.decode_to_utf16(astral.as_bytes(), &mut dst, true);
+        assert_eq!(res, CoderResult::OutputFull);
+    }
+
+    #[test]
+    fn utf16le_decode_ascii_to_utf8() {
+        let mut d = UTF_16LE.new_decoder();
+        let (out, read, errors) = decode_all(&mut d, b"a\x00b\x00");
+        assert_eq!(out, *b"ab");
+        assert_eq!(read, 4);
+        assert!(!errors);
+    }
+
+    #[test]
+    fn utf16be_decode_ascii_to_utf8() {
+        let mut d = UTF_16BE.new_decoder();
+        let (out, read, errors) = decode_all(&mut d, b"\x00a\x00b");
+        assert_eq!(out, *b"ab");
+        assert_eq!(read, 4);
+        assert!(!errors);
+    }
+
+    #[test]
+    fn utf16le_odd_byte_not_last_pends_then_completes() {
+        let mut d = UTF_16LE.new_decoder();
+        let mut dst = vec![0u8; 16];
+        let (res1, written1, _) = {
+            let (res, _, written, errors) = d.decode_to_utf8(&[0x61u8], &mut dst, false);
+            (res, written, errors)
+        };
+        assert!(matches!(res1, CoderResult::InputEmpty));
+        assert_eq!(written1, 0);
+        let (res2, _, written2, _) = d.decode_to_utf8(&[0x00u8], &mut dst[written1..], true);
+        assert!(matches!(res2, CoderResult::InputEmpty));
+        assert_eq!(&dst[..written1 + written2], b"a");
+    }
+
+    #[test]
+    fn utf16le_final_odd_byte_is_malformed() {
+        let mut d = UTF_16LE.new_decoder();
+        let (res, _, _) = decode_raw(&mut d, &[0x61u8, 0x00, 0x62], true);
+        assert!(matches!(res, DecoderResult::Malformed(..)));
+    }
+
+    #[test]
+    fn utf16be_final_odd_byte_is_malformed() {
+        let mut d = UTF_16BE.new_decoder();
+        let (res, _, _) = decode_raw(&mut d, &[0x00, 0x61u8, 0x00], true);
+        assert!(matches!(res, DecoderResult::Malformed(..)));
+    }
+
+    #[test]
+    fn utf16le_lone_high_surrogate_raw_is_malformed() {
+        let mut d = UTF_16LE.new_decoder();
+        let (res, _, _) = decode_raw(&mut d, &[0x3D, 0xD8], true);
+        assert!(matches!(res, DecoderResult::Malformed(..)));
+    }
+
+    #[test]
+    fn utf16le_lone_low_surrogate_raw_is_malformed() {
+        let mut d = UTF_16LE.new_decoder();
+        let (res, _, _) = decode_raw(&mut d, &[0xA9, 0xDC], true);
+        assert!(matches!(res, DecoderResult::Malformed(..)));
+    }
+
+    #[test]
+    fn utf16le_lone_surrogate_with_replacement() {
+        let mut d = UTF_16LE.new_decoder();
+        let (out, read, errors) = decode_all(&mut d, &[0x3D, 0xD8, 0x61, 0x00]);
+        assert!(errors);
+        assert_eq!(out, [0xEFu8, 0xBF, 0xBD, 0x61]);
+        assert_eq!(read, 4);
+    }
+
+    #[test]
+    fn utf16be_lone_surrogate_with_replacement() {
+        let mut d = UTF_16BE.new_decoder();
+        let (out, _, errors) = decode_all(&mut d, &[0xD8, 0x3D, 0x00, 0x61]);
+        assert!(errors);
+        assert_eq!(out, [0xEFu8, 0xBF, 0xBD, 0x61]);
+    }
+
+    #[test]
+    fn utf16le_astral_pair_decodes_to_utf8() {
+        let mut d = UTF_16LE.new_decoder();
+        let src: Vec<u8> = utf16_units("\u{1F4A9}")
+            .iter()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        let (out, read, errors) = decode_all(&mut d, &src);
+        assert!(!errors);
+        assert_eq!(out, "\u{1F4A9}".as_bytes());
+        assert_eq!(read, src.len());
     }
 }
