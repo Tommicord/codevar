@@ -73,16 +73,19 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use core::ffi::c_void;
 use core::fmt;
+use core::mem::size_of;
 use core::ptr::null_mut;
 
 use codevar_logger::log_warn;
 
 use crate::api::Api;
 use crate::context::Context;
-use crate::error::{self, Error, Result};
+use crate::error::{self, Error, Result, status};
 use crate::event::Event;
 use crate::properties::{self, PropertyList};
+use crate::query;
 use crate::queue::CommandQueue;
 use crate::sys;
 
@@ -311,6 +314,136 @@ impl Semaphore {
     /// Returns the raw driver handle.
     pub(crate) fn raw(&self) -> sys::SemaphoreHandle {
         self.inner.raw
+    }
+
+    /// Reads one semaphore attribute through `clGetSemaphoreInfoKHR`.
+    fn info<T>(
+        &self,
+        param: sys::SemaphoreInfo,
+        read: impl FnOnce(&mut query::QueryCall<'_>, &'static str) -> Result<T>,
+    ) -> Result<T> {
+        let get_info = Api::optional(
+            self.context().extensions().get_semaphore_info,
+            "clGetSemaphoreInfoKHR",
+        )?;
+        let raw = self.inner.raw;
+        let mut call = |size: usize, value: *mut c_void, size_ret: *mut usize| {
+            // SAFETY: `raw` is a live semaphore of the driver that
+            // resolved `get_info`, and the query helpers only pass a buffer
+            // of the size the driver reported plus a valid size out-pointer.
+            unsafe { get_info(raw, param, size, value, size_ret) }
+        };
+        read(&mut call, "clGetSemaphoreInfoKHR")
+    }
+
+    /// Returns the payload a timeline semaphore would carry
+    /// (`CL_SEMAPHORE_PAYLOAD_KHR`).
+    ///
+    /// The only type this extension defines is binary, so the answer is
+    /// `0` while the semaphore is unsignaled and `1` once it is signaled.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Unsupported`] when the driver does not export the
+    /// entry point, and [`Error::Status`] on driver failures.
+    pub fn payload(&self) -> Result<sys::SemaphorePayload> {
+        self.info(sys::SEMAPHORE_PAYLOAD_KHR, query::query_pod)
+    }
+
+    /// Returns the driver-side reference count
+    /// (`CL_SEMAPHORE_REFERENCE_COUNT_KHR`).
+    ///
+    /// This counts the driver's references, one of which this crate holds
+    /// per shared object — clones of a [`Semaphore`] share that reference
+    /// rather than retaining the handle again.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`payload`](Self::payload).
+    pub fn reference_count(&self) -> Result<u32> {
+        self.info(sys::SEMAPHORE_REFERENCE_COUNT_KHR, query::query_u32)
+    }
+
+    /// Whether the semaphore was created so that it may be exported to
+    /// another API (`CL_SEMAPHORE_EXPORTABLE_KHR`).
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`payload`](Self::payload).
+    pub fn is_exportable(&self) -> Result<bool> {
+        self.info(sys::SEMAPHORE_EXPORTABLE_KHR, query::query_bool)
+    }
+
+    /// Reads the exported handle of this semaphore for `handle_type`
+    /// (`clGetSemaphoreHandleForTypeKHR`) as the `T` the platform stores
+    /// it in.
+    ///
+    /// The handle is a copy of what the exporter holds: this crate does not
+    /// take ownership of it, so closing it is the caller's — or the other
+    /// API's — job.
+    fn export_as<T: Copy + Default>(&self, handle_type: sys::ExternalSemaphoreHandleType) -> Result<T> {
+        let get_handle = Api::optional(
+            self.context()
+                .extensions()
+                .get_semaphore_handle_for_type,
+            "clGetSemaphoreHandleForTypeKHR",
+        )?;
+        let (raw, device) = (self.inner.raw, self.context().device().raw());
+        let mut reported = 0usize;
+        // SAFETY: `raw` and `device` are live handles of the driver that
+        // resolved `get_handle` and belong together, because the device is
+        // the one of the context the semaphore was created from; a null
+        // buffer with a valid size out-pointer is the first half of the
+        // two-call protocol.
+        let code = unsafe { get_handle(raw, device, handle_type, 0, null_mut(), &mut reported) };
+        status(code, "clGetSemaphoreHandleForTypeKHR")?;
+        if reported != size_of::<T>() {
+            return Err(Error::Status {
+                code: sys::INVALID_VALUE,
+                context: "clGetSemaphoreHandleForTypeKHR",
+            });
+        }
+        let mut value = T::default();
+        // SAFETY: `value` is a `T` and the driver is told to write exactly
+        // `reported == size_of::<T>()` bytes into it.
+        let code = unsafe {
+            get_handle(
+                raw,
+                device,
+                handle_type,
+                reported,
+                (&mut value as *mut T).cast(),
+                null_mut(),
+            )
+        };
+        status(code, "clGetSemaphoreHandleForTypeKHR")?;
+        Ok(value)
+    }
+
+    /// Exports this semaphore as a POSIX file descriptor
+    /// (`CL_SEMAPHORE_HANDLE_OPAQUE_FD_KHR`, `CL_SEMAPHORE_HANDLE_SYNC_FD_KHR`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Unsupported`] when the driver does not export
+    /// `clGetSemaphoreHandleForTypeKHR` — which includes a semaphore
+    /// created without the matching export handle type — and
+    /// [`Error::Status`] when the driver refuses the handle or reports it
+    /// with a size other than an `int`.
+    pub fn export_descriptor(&self, handle_type: sys::ExternalSemaphoreHandleType) -> Result<i32> {
+        self.export_as(handle_type)
+    }
+
+    /// Exports this semaphore as a platform handle value
+    /// (`CL_SEMAPHORE_HANDLE_OPAQUE_WIN32_KHR` and friends, a D3D12 fence).
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as
+    /// [`export_descriptor`](Self::export_descriptor), with the size the
+    /// platform stores a `HANDLE` in instead of an `int`.
+    pub fn export_handle(&self, handle_type: sys::ExternalSemaphoreHandleType) -> Result<usize> {
+        self.export_as(handle_type)
     }
 }
 
@@ -574,12 +707,64 @@ mod tests {
             return;
         };
         assert!(matches!(
-            queue.wait_semaphores(&[foreign.clone()]),
+            queue.wait_semaphores(core::slice::from_ref(&foreign)),
             Err(Error::ContextMismatch { .. })
         ));
         assert!(matches!(
             queue.signal_semaphores(&[foreign]),
             Err(Error::ContextMismatch { .. })
         ));
+    }
+
+    /// The information queries describe the object that was just created:
+    /// unsignaled, held once, and not exportable — which is also why no
+    /// descriptor may be read from it.
+    #[test]
+    fn a_fresh_semaphore_is_unsignaled_and_not_exportable() {
+        let Some(context) = context() else {
+            return;
+        };
+        if !context.supports_semaphores() {
+            return;
+        }
+        let Ok(semaphore) = Semaphore::new(&context) else {
+            return;
+        };
+        assert_eq!(semaphore.payload(), Ok(0));
+        assert_eq!(semaphore.reference_count(), Ok(1));
+        assert_eq!(semaphore.is_exportable(), Ok(false));
+        assert!(
+            semaphore
+                .export_descriptor(sys::SEMAPHORE_HANDLE_OPAQUE_FD_KHR)
+                .is_err()
+        );
+    }
+
+    /// A semaphore created for one handle type is reported as exportable
+    /// and hands out that handle; a type it was not created for stays
+    /// refused, because the creation list is the only thing the driver
+    /// agrees to export later.
+    #[test]
+    fn an_exportable_semaphore_names_its_handle_type() {
+        let Some(context) = context() else {
+            return;
+        };
+        if !context.supports_semaphores() || !context.supports_semaphore_handles() {
+            return;
+        }
+        let Ok(semaphore) = Semaphore::exportable(&context, &[sys::SEMAPHORE_HANDLE_SYNC_FD_KHR]) else {
+            return;
+        };
+        assert_eq!(semaphore.is_exportable(), Ok(true));
+        assert!(
+            semaphore
+                .export_descriptor(sys::SEMAPHORE_HANDLE_SYNC_FD_KHR)
+                .is_ok()
+        );
+        assert!(
+            semaphore
+                .export_descriptor(sys::SEMAPHORE_HANDLE_OPAQUE_FD_KHR)
+                .is_err()
+        );
     }
 }
