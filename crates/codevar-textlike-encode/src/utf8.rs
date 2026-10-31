@@ -2605,4 +2605,152 @@ mod tests {
         assert_eq!(&dst[..written], "ok\u{FFFD}!".as_bytes());
         assert!(had_errors);
     }
+
+    // Differential properties: the replacing paths must agree with the
+    // maximal-subpart rule the standard library implements, must never write
+    // past the destination they were handed, and must always advance. The
+    // generator below is a splitmix64 stream so a failure reproduces exactly.
+
+    fn splitmix(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_10EB);
+        z ^ (z >> 31)
+    }
+
+    /// Half the rolls push a raw byte, half push a well-formed sequence for a
+    /// random scalar, so streams mix valid text with every malformed shape.
+    fn mixed_bytes(state: &mut u64, len: usize) -> Vec<u8> {
+        let mut out = Vec::with_capacity(len + 4);
+        while out.len() < len {
+            let roll = splitmix(state);
+            if roll & 1 == 0 {
+                out.push((roll >> 1) as u8);
+            } else {
+                let ch = match char::from_u32(((roll >> 3) % 0x11_0000) as u32) {
+                    Some(ch) => ch,
+                    // A surrogate half is not a scalar: fall back to pushing the
+                    // raw byte so the stream keeps every malformed shape.
+                    None => {
+                        out.push((roll >> 3) as u8);
+                        continue;
+                    }
+                };
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn replacing_decode_matches_the_maximal_subpart_rule() {
+        let mut state = 0x1234_5678_9ABC_DEF0u64;
+        for round in 0..512usize {
+            let src = mixed_bytes(&mut state, 1 + round % 24);
+            let mut dst = vec![0u8; src.len() * 3 + 8];
+            let (result, read, written, _had_errors) = UTF_8
+                .new_decoder()
+                .decode_to_utf8(&src, &mut dst, true);
+            assert_eq!(result, CoderResult::InputEmpty, "input {src:?}");
+            assert_eq!(read, src.len(), "input {src:?}");
+            assert_eq!(
+                &dst[..written],
+                alloc::string::String::from_utf8_lossy(&src).as_bytes(),
+                "input {src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn replacing_decode_drains_a_destination_smaller_than_the_input() {
+        let mut state = 0x0BAD_C0FF_EE00_0DEDu64;
+        for round in 0..256usize {
+            let src = mixed_bytes(&mut state, 1 + round % 20);
+            let expected = alloc::string::String::from_utf8_lossy(&src)
+                .as_bytes()
+                .to_vec();
+            let cap = 4 + round % 13;
+            let mut chunk = vec![0u8; cap];
+            let mut out = Vec::new();
+            let mut decoder = UTF_8.new_decoder();
+            let mut offset = 0usize;
+            let mut steps = 0usize;
+            loop {
+                steps += 1;
+                assert!(steps < 512, "no progress for {src:?} into {cap} bytes");
+                let (result, read, written, _had_errors) =
+                    decoder.decode_to_utf8(&src[offset..], &mut chunk, true);
+                assert!(written <= cap, "wrote {written} into {cap} bytes");
+                out.extend_from_slice(&chunk[..written]);
+                offset += read;
+                match result {
+                    CoderResult::OutputFull => assert!(read > 0 || written > 0, "stalled"),
+                    CoderResult::InputEmpty => break,
+                }
+            }
+            assert_eq!(offset, src.len(), "input {src:?}");
+            assert_eq!(out, expected, "input {src:?}");
+        }
+    }
+
+    #[test]
+    fn malformed_input_reports_the_error_and_keeps_the_valid_prefix() {
+        let mut state = 0xDEAD_BEEF_CAFE_BABEu64;
+        for round in 0..256usize {
+            let src = mixed_bytes(&mut state, 1 + round % 24);
+            let mut dst = vec![0u8; src.len() * 3 + 8];
+            let (result, read, written, had_errors) = UTF_8
+                .new_decoder()
+                .decode_to_utf8(&src, &mut dst, true);
+            assert_eq!(result, CoderResult::InputEmpty, "input {src:?}");
+            assert_eq!(read, src.len(), "input {src:?}");
+            assert!(written <= dst.len(), "wrote {written} past the destination");
+            assert_eq!(
+                had_errors,
+                alloc::string::String::from_utf8_lossy(&src).contains('\u{FFFD}'),
+                "input {src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn encoding_random_utf16_matches_lossy_surrogate_decoding() {
+        let mut state = 0x5EED_1234_ABCD_9876u64;
+        for round in 0..512usize {
+            let units: Vec<u16> = (0..1 + round % 20)
+                .map(|_| (splitmix(&mut state) >> 16) as u16)
+                .collect();
+            let mut dst = vec![0u8; units.len() * 4 + 8];
+            let (result, read, written, _had_unmappables) = UTF_8
+                .new_encoder()
+                .encode_from_utf16(&units, &mut dst, true);
+            assert_eq!(result, CoderResult::InputEmpty, "units {units:?}");
+            assert_eq!(read, units.len(), "units {units:?}");
+            let expected: String = core::char::decode_utf16(units.iter().copied())
+                .map(|decoded| decoded.unwrap_or('\u{FFFD}'))
+                .collect();
+            assert_eq!(&dst[..written], expected.as_bytes(), "units {units:?}");
+        }
+    }
+
+    #[test]
+    fn the_raw_decoder_never_consumes_a_byte_it_did_not_look_at() {
+        let mut state = 0xA11C_0DE7_1234_5678u64;
+        for round in 0..512usize {
+            let src = mixed_bytes(&mut state, 1 + round % 16);
+            let mut dst = vec![0u8; src.len() * 3 + 8];
+            let mut decoder = Utf8Decoder::new_inner();
+            let (result, read, _written) = decoder.decode_to_utf8_raw(&src, &mut dst, false);
+            assert!(read <= src.len(), "read {read} of {src:?}");
+            match result {
+                DecoderResult::InputEmpty => assert_eq!(read, src.len(), "input {src:?}"),
+                DecoderResult::Malformed(bad, _second) => {
+                    assert!(bad >= 1, "malformed(0) for {src:?}");
+                }
+                DecoderResult::OutputFull => {}
+            }
+        }
+    }
 }
