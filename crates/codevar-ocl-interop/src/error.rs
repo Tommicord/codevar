@@ -69,6 +69,21 @@ impl From<ClError> for Error {
     }
 }
 
+impl Error {
+    /// Reads the code one Vulkan call answered with.
+    ///
+    /// Only `VK_SUCCESS` is a success: the other positive codes belong to
+    /// the `fenceGetStatus`-style queries, and none of the entry points here
+    /// is allowed to return one.
+    pub(crate) fn check(code: vk::Result, context: &'static str) -> Result<()> {
+        if code == vk::Result::SUCCESS {
+            Ok(())
+        } else {
+            Err(Self::Vulkan { code, context })
+        }
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -117,5 +132,21 @@ mod tests {
             format!("{error}").contains("CL_INVALID_OPERATION"),
             "the opencl code must stay readable: {error}"
         );
+    }
+
+    /// A positive code other than success is an error here: `VK_NOT_READY`
+    /// would otherwise read as a share that worked.
+    #[test]
+    fn only_success_is_a_success() {
+        assert_eq!(Error::check(vk::Result::SUCCESS, "vkGetMemoryFdKHR"), Ok(()));
+        for code in [vk::Result::NOT_READY, vk::Result::INCOMPLETE] {
+            assert_eq!(
+                Error::check(code, "vkGetMemoryFdKHR"),
+                Err(Error::Vulkan {
+                    code,
+                    context: "vkGetMemoryFdKHR"
+                })
+            );
+        }
     }
 }

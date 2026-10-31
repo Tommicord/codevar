@@ -49,6 +49,8 @@
 
 mod error;
 mod handle;
+mod vk;
 
 pub use error::{Error, Result};
 pub use handle::{MemoryHandle, MemoryKind, SemaphoreHandle, SemaphoreKind};
+pub use vk::Vulkan;
