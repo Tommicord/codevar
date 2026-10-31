@@ -38,9 +38,18 @@ impl Encoding {
         self
     }
 
+    /// Whether every Unicode scalar value has an encoding in this encoding.
+    ///
+    /// The `utf-8`, `utf-16be` and `utf-16le` encode handlers of the standard
+    /// are total, so their encoders never emit a numeric character reference
+    /// and may use a destination of any size; the legacy single-byte encodings
+    /// reserve [`NCR_EXTRA`] bytes for the reference they substitute.
     #[inline]
     pub fn can_encode_everything(&self) -> bool {
-        matches!(self.variant, VariantEncoding::Utf8)
+        matches!(
+            self.variant,
+            VariantEncoding::Utf8 | VariantEncoding::Utf16Be | VariantEncoding::Utf16Le
+        )
     }
 
     /// Creates a decoder that removes a leading byte order mark, the
@@ -1561,8 +1570,8 @@ mod tests {
         assert_eq!(UTF_16BE.name, "UTF-16BE");
         assert_eq!(UTF_16LE.variant, VariantEncoding::Utf16Le);
         assert_eq!(UTF_16BE.variant, VariantEncoding::Utf16Be);
-        assert!(!UTF_16LE.can_encode_everything());
-        assert!(!UTF_16BE.can_encode_everything());
+        assert!(UTF_16LE.can_encode_everything());
+        assert!(UTF_16BE.can_encode_everything());
     }
 
     #[test]
@@ -2487,20 +2496,37 @@ mod tests {
     }
 
     #[test]
-    fn non_utf8_if_no_unmappables_adds_ncr_extra() {
-        for enc in [&UTF_16LE, &UTF_16BE, &LATIN1] {
+    fn total_encoders_do_not_reserve_for_a_reference() {
+        for enc in [&UTF_8, &UTF_16LE, &UTF_16BE] {
             let e = enc.new_encoder();
-            let without = e.max_buffer_length_from_utf8_without_replacement(8);
             assert_eq!(
                 e.max_buffer_length_from_utf8_if_no_unmappables(8),
-                without.map(|v| v + NCR_EXTRA)
+                e.max_buffer_length_from_utf8_without_replacement(8),
+                "{}",
+                enc.name
             );
-            let without16 = e.max_buffer_length_from_utf16_without_replacement(8);
             assert_eq!(
                 e.max_buffer_length_from_utf16_if_no_unmappables(8),
-                without16.map(|v| v + NCR_EXTRA)
+                e.max_buffer_length_from_utf16_without_replacement(8),
+                "{}",
+                enc.name
             );
         }
+    }
+
+    #[test]
+    fn single_byte_if_no_unmappables_adds_ncr_extra() {
+        let e = LATIN1.new_encoder();
+        let without = e.max_buffer_length_from_utf8_without_replacement(8);
+        assert_eq!(
+            e.max_buffer_length_from_utf8_if_no_unmappables(8),
+            without.map(|v| v + NCR_EXTRA)
+        );
+        let without16 = e.max_buffer_length_from_utf16_without_replacement(8);
+        assert_eq!(
+            e.max_buffer_length_from_utf16_if_no_unmappables(8),
+            without16.map(|v| v + NCR_EXTRA)
+        );
     }
 
     #[test]

@@ -1875,20 +1875,18 @@ mod tests {
 
     #[test]
     fn encoding_to_utf16_be_wrapper_holds_surrogates_and_decodes_back() {
-        // NOTE: `encoding.rs:366` only lets `can_encode_everything()` encodings
-        // use the whole destination, and UTF-16 is not one of them, so the
-        // encoder wrapper keeps `NCR_EXTRA` (10) bytes in reserve and refuses to
-        // start at all when the destination is smaller, even though nothing is
-        // unmappable here.
+        // The utf-16be encode handler is total, so the wrapper uses the whole
+        // destination: no numeric character reference is ever substituted and
+        // nothing is withheld from a destination that can hold a code unit.
         let mut tiny = [0u8; 8];
         let (result, read, written, had_unmappables) =
             UTF_16BE
                 .new_encoder()
                 .encode_from_utf8("\u{1F600}", &mut tiny, true);
-        assert_eq!(result, CoderResult::OutputFull);
-        assert_eq!((read, written), (0, 0));
+        assert_eq!(result, CoderResult::InputEmpty);
+        assert_eq!((read, written), (4, 4));
         assert!(!had_unmappables);
-        assert_eq!(tiny, [0u8; 8]);
+        assert_eq!(&tiny[..4], [0xD8, 0x3D, 0xDE, 0x00]);
 
         let mut out = [0u8; 16];
         let (result, read, written, had_unmappables) =
@@ -1905,6 +1903,52 @@ mod tests {
         assert_eq!(result, DecoderResult::InputEmpty);
         assert_eq!((reread, rewrote), (4, 4));
         assert_eq!(&back[..rewrote], "\u{1F600}".as_bytes());
+    }
+
+    #[test]
+    fn utf16_be_encoder_fills_a_destination_smaller_than_its_input() {
+        // Six code units need 12 bytes; an 8-byte destination must take four of
+        // them and report the rest, or a caller that reuses the buffer never
+        // finishes. The reserve for a substituted reference used to make this
+        // return (0, 0) forever.
+        let src = [0xBDA2u16, 0x5180, 0x7A87, 0x071C, 0xF7BF, 0xBAF0];
+        let mut chunk = [0u8; 8];
+        let mut e = UTF_16BE.new_encoder();
+        let (result, read, written, had_unmappables) = e.encode_from_utf16(&src, &mut chunk, true);
+        assert_eq!(result, CoderResult::OutputFull);
+        assert_eq!((read, written), (4, 8));
+        assert!(!had_unmappables);
+        assert_eq!(chunk, [0xBD, 0xA2, 0x51, 0x80, 0x7A, 0x87, 0x07, 0x1C]);
+
+        let (result, read, written, _) = e.encode_from_utf16(&src[4..], &mut chunk[..4], true);
+        assert_eq!(result, CoderResult::InputEmpty);
+        assert_eq!((read, written), (2, 4));
+        assert_eq!(&chunk[..4], [0xF7, 0xBF, 0xBA, 0xF0]);
+    }
+
+    #[test]
+    fn utf16_le_encoder_fills_a_destination_smaller_than_its_input() {
+        let src = [0x0061u16, 0xD83D, 0xDE00, 0x7A87, 0x071C];
+        let mut e = UTF_16LE.new_encoder();
+        let mut acc = [0u8; 10];
+        let mut total = 0usize;
+        let mut off = 0usize;
+        let mut steps = 0usize;
+        loop {
+            steps += 1;
+            let free = (acc.len() - total).min(4);
+            let (result, read, written, _) =
+                e.encode_from_utf16(&src[off..], &mut acc[total..total + free], true);
+            assert!(steps < 32, "the encoder must drain the input into 10 bytes");
+            off += read;
+            total += written;
+            if result == CoderResult::InputEmpty {
+                break;
+            }
+            assert!(read > 0 || written > 0, "no progress at step {steps}");
+        }
+        assert_eq!((off, total), (5, 10));
+        assert_eq!(acc, [0x61, 0x00, 0x3D, 0xD8, 0x00, 0xDE, 0x87, 0x7A, 0x1C, 0x07]);
     }
 
     // -- round trips ----------------------------------------------------------

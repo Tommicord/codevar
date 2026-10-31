@@ -1575,10 +1575,10 @@ mod tests {
     }
 
     #[test]
-    fn only_utf8_can_encode_everything() {
+    fn only_the_total_encoders_can_encode_everything() {
         assert!(UTF_8.can_encode_everything());
-        assert!(!UTF_16BE.can_encode_everything());
-        assert!(!UTF_16LE.can_encode_everything());
+        assert!(UTF_16BE.can_encode_everything());
+        assert!(UTF_16LE.can_encode_everything());
         for &encoding in &SINGLE_BYTE_ENCODINGS {
             assert!(!encoding.can_encode_everything(), "{}", encoding.name);
         }
@@ -1586,8 +1586,9 @@ mod tests {
             ENCODINGS
                 .iter()
                 .filter(|e| e.can_encode_everything())
-                .count(),
-            1
+                .map(|e| e.name)
+                .collect::<Vec<_>>(),
+            ["UTF-8", "UTF-16BE", "UTF-16LE"]
         );
     }
 
