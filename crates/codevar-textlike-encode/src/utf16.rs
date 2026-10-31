@@ -722,27 +722,24 @@ mod tests {
     }
 
     #[test]
-    fn replacing_decoder_handle_does_not_remove_a_utf16_byte_order_mark() {
-        // NOTE: upstream `Decoder::decode` consumes the leading BOM when the
-        // encoding was created with BOM removal; here the life cycle recorded
-        // by `Decoder::new` is never consulted by `decode_to_utf8`, so the BOM
-        // reaches the output as U+FEFF.
+    fn replacing_decoder_handle_removes_a_utf16_byte_order_mark() {
+        // Upstream `Decoder::decode` consumes the leading BOM in BOM removal
+        // mode; the life cycle recorded by `Decoder::new` drives the removal
+        // in `encoding.rs`, so the BOM never reaches the output.
         let mut out = [0u8; 16];
         let (result, read, written, had_errors) = UTF_16LE
             .new_decoder_with_bom_removal()
             .decode_to_utf8(b"\xFF\xFE\x68\x00\x69\x00", &mut out, true);
         assert_eq!(result, CoderResult::InputEmpty);
-        assert_eq!((read, written), (6, 5));
+        assert_eq!((read, written), (6, 2));
         assert!(!had_errors);
-        assert_eq!(&out[..written], "\u{FEFF}hi".as_bytes());
+        assert_eq!(&out[..written], "hi".as_bytes());
     }
 
     #[test]
-    fn bom_removal_flag_does_not_change_the_decoded_output() {
-        // NOTE: `encoding.rs:548-562` records `AtUtf16LeStart` for the removal
-        // mode, but neither `decode_to_utf8` (`encoding.rs:614`) nor
-        // `decode_to_utf16` (`encoding.rs:657`) ever reads `life_cycle`, so the
-        // two handles behave identically and the BOM is never consumed.
+    fn bom_removal_flag_changes_the_decoded_output() {
+        // `new_decoder_with_bom_removal` consumes the leading BOM; the
+        // `without_bom_handling` decoder emits U+FEFF for the same bytes.
         let mut removing = [0u8; 16];
         let removal = UTF_16LE
             .new_decoder_with_bom_removal()
@@ -751,11 +748,12 @@ mod tests {
         let no_removal = UTF_16LE
             .new_decoder_without_bom_handling()
             .decode_to_utf8(b"\xFF\xFE\x41\x00", &mut plain, true);
-        assert_eq!(removal, no_removal);
-        assert_eq!((removal.1, removal.2), (4, 4));
+        assert_ne!(removal, no_removal);
+        assert_eq!((removal.1, removal.2), (4, 1));
         assert!(!removal.3);
-        assert_eq!(&removing[..4], "\u{FEFF}A".as_bytes());
-        assert_eq!(plain, removing);
+        assert_eq!(&removing[..1], "A".as_bytes());
+        assert_eq!((no_removal.1, no_removal.2), (4, 4));
+        assert_eq!(&plain[..4], "\u{FEFF}A".as_bytes());
     }
 
     #[test]
@@ -773,16 +771,18 @@ mod tests {
     }
 
     #[test]
-    fn the_bom_start_life_cycle_is_never_left() {
+    fn the_bom_start_life_cycle_is_left_after_removal() {
         let mut decoder = UTF_16BE.new_decoder_with_bom_removal();
         assert_eq!(decoder.max_utf16_buffer_length(4), Some(3));
         let mut dst = [0u16; 8];
+        // The FE FF prefix is consumed as the BOM; only 00 41 decodes.
         assert_eq!(
             decoder.decode_to_utf16(b"\xFE\xFF\x00\x41", &mut dst, true),
-            (CoderResult::InputEmpty, 4, 2, false)
+            (CoderResult::InputEmpty, 4, 1, false)
         );
-        assert_eq!(&dst[..2], &[0xFEFF, 0x0041]);
-        // the decoder still answers as if it were at the start of the stream
+        assert_eq!(&dst[..1], &[0x0041]);
+        // The BOM decision does not change the max-length answers: a
+        // converting decoder answers like one at the start of the stream.
         assert_eq!(decoder.max_utf16_buffer_length(4), Some(3));
         assert_eq!(decoder.max_utf8_buffer_length(4), Some(7));
         assert_eq!(decoder.max_utf8_buffer_length_without_replacement(4), Some(7));

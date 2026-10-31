@@ -43,16 +43,22 @@ impl Encoding {
         matches!(self.variant, VariantEncoding::Utf8)
     }
 
+    /// Creates a decoder that removes a leading byte order mark, the
+    /// default per the WHATWG Encoding Standard.
     #[inline]
     pub fn new_decoder(&'static self) -> Decoder {
-        Decoder::new(self, self.variant.new_variant_decoder(), BomHandling::Off)
+        Decoder::new(self, self.variant.new_variant_decoder(), BomHandling::Remove)
     }
 
+    /// Explicit spelling of [`Encoding::new_decoder`]: a leading byte
+    /// order mark is removed.
     #[inline]
     pub fn new_decoder_with_bom_removal(&'static self) -> Decoder {
         Decoder::new(self, self.variant.new_variant_decoder(), BomHandling::Remove)
     }
 
+    /// Creates a decoder that never removes a byte order mark; a leading
+    /// BOM decodes as the U+FEFF character.
     #[inline]
     pub fn new_decoder_without_bom_handling(&'static self) -> Decoder {
         Decoder::new(self, self.variant.new_variant_decoder(), BomHandling::Off)
@@ -115,6 +121,15 @@ pub struct Decoder {
     encoding: &'static Encoding,
     variant: VariantDecoder,
     life_cycle: DecoderLifeCycle,
+    /// Strict prefix of the encoding's byte order mark withheld from the
+    /// variant decoder while `life_cycle` is one of the `At…Start` /
+    /// `Seen…` states, or replayed through it after the prefix proved not
+    /// to be a BOM. Only the first `pending_bom_len` entries are
+    /// meaningful; at most two bytes are ever withheld (the UTF-8 BOM's
+    /// `EF BB` prefix is the longest strict prefix).
+    pending_bom: [u8; 2],
+    /// Number of valid bytes at the head of `pending_bom`.
+    pending_bom_len: u8,
 }
 
 #[derive(PartialEq, Debug, Copy, Clone)]
@@ -560,7 +575,146 @@ impl Decoder {
                     }
                 }
             },
+            pending_bom: [0u8; 2],
+            pending_bom_len: 0,
         }
+    }
+
+    /// Whether `life_cycle` still expects a leading byte order mark, so
+    /// the decode entry points must run the BOM state machine.
+    #[inline]
+    fn bom_gathering_active(&self) -> bool {
+        matches!(
+            self.life_cycle,
+            DecoderLifeCycle::AtUtf8Start
+                | DecoderLifeCycle::SeenUtf8First
+                | DecoderLifeCycle::SeenUtf8Second
+                | DecoderLifeCycle::AtUtf16BeStart
+                | DecoderLifeCycle::SeenUtf16BeFirst
+                | DecoderLifeCycle::AtUtf16LeStart
+                | DecoderLifeCycle::SeenUtf16LeFirst
+        )
+    }
+
+    /// Advances the BOM-removal state machine over the head of `src`,
+    /// consuming matching prefix bytes into `pending_bom` (counted in
+    /// `gathered`, relative to the caller's slice). On a match of the
+    /// full BOM the buffered bytes are dropped; on a mismatch — or when
+    /// `last` ends the stream on a strict prefix — the buffered bytes
+    /// stay in `pending_bom` for the caller to replay through the variant
+    /// decoder, and the mismatching byte is left at the head of `src`.
+    /// Returns `true` only when the stream ended undecided (`last` is
+    /// `false`), meaning the caller must report `InputEmpty` and wait.
+    fn bom_gather(&mut self, src: &mut &[u8], last: bool, gathered: &mut usize) -> bool {
+        loop {
+            let (expected, completes_bom) = match self.life_cycle {
+                DecoderLifeCycle::AtUtf8Start => (0xEFu8, false),
+                DecoderLifeCycle::SeenUtf8First => (0xBBu8, false),
+                DecoderLifeCycle::SeenUtf8Second => (0xBFu8, true),
+                DecoderLifeCycle::AtUtf16BeStart => (0xFEu8, false),
+                DecoderLifeCycle::SeenUtf16BeFirst => (0xFFu8, true),
+                DecoderLifeCycle::AtUtf16LeStart => (0xFFu8, false),
+                DecoderLifeCycle::SeenUtf16LeFirst => (0xFEu8, true),
+                _ => return false,
+            };
+            let Some(&byte) = src.first() else {
+                if last {
+                    // End of stream on a strict BOM prefix: the buffered
+                    // bytes are ordinary input and the decision is made.
+                    self.life_cycle = DecoderLifeCycle::Converting;
+                }
+                return !last;
+            };
+            if byte != expected {
+                // The buffered prefix cannot become a BOM; it is ordinary
+                // input. The mismatching byte stays in `src` so that the
+                // replay feeds the exact original byte order.
+                self.life_cycle = DecoderLifeCycle::Converting;
+                return false;
+            }
+            *src = &src[1..];
+            *gathered += 1;
+            if completes_bom {
+                // The BOM matched: drop the buffered prefix entirely.
+                self.life_cycle = DecoderLifeCycle::Converting;
+                self.pending_bom_len = 0;
+                return false;
+            }
+            let index = usize::from(self.pending_bom_len);
+            self.pending_bom[index] = byte;
+            self.pending_bom_len = (index + 1) as u8;
+            self.life_cycle = match self.life_cycle {
+                DecoderLifeCycle::AtUtf8Start => DecoderLifeCycle::SeenUtf8First,
+                DecoderLifeCycle::SeenUtf8First => DecoderLifeCycle::SeenUtf8Second,
+                DecoderLifeCycle::AtUtf16BeStart => DecoderLifeCycle::SeenUtf16BeFirst,
+                DecoderLifeCycle::AtUtf16LeStart => DecoderLifeCycle::SeenUtf16LeFirst,
+                _ => DecoderLifeCycle::Converting,
+            };
+        }
+    }
+
+    /// Consumes any withheld BOM prefix by replaying it through
+    /// `decode_to_utf8_raw` before the caller's remaining input, keeping
+    /// `read` relative to the caller's slice.
+    fn drain_pending_to_utf8(
+        &mut self,
+        rest: &[u8],
+        dst: &mut [u8],
+        last: bool,
+    ) -> (DecoderResult, usize, usize) {
+        let pending = usize::from(self.pending_bom_len);
+        if pending == 0 {
+            return self.variant.decode_to_utf8_raw(rest, dst, last);
+        }
+        let buffered = self.pending_bom;
+        let (result, read, written) =
+            self.variant
+                .decode_to_utf8_raw(&buffered[..pending], dst, last && rest.is_empty());
+        debug_assert!(read <= pending);
+        let left = pending - read;
+        let mut shifted = buffered;
+        shifted[..pending].copy_within(read..pending, 0);
+        self.pending_bom = shifted;
+        self.pending_bom_len = left as u8;
+        if left != 0 || !matches!(result, DecoderResult::InputEmpty) {
+            return (result, 0, written);
+        }
+        let (result, read, written2) = self
+            .variant
+            .decode_to_utf8_raw(rest, &mut dst[written..], last);
+        (result, read, written + written2)
+    }
+
+    /// Consumes any withheld BOM prefix by replaying it through
+    /// `decode_to_utf16_raw` before the caller's remaining input, keeping
+    /// `read` relative to the caller's slice.
+    fn drain_pending_to_utf16(
+        &mut self,
+        rest: &[u8],
+        dst: &mut [u16],
+        last: bool,
+    ) -> (DecoderResult, usize, usize) {
+        let pending = usize::from(self.pending_bom_len);
+        if pending == 0 {
+            return self.variant.decode_to_utf16_raw(rest, dst, last);
+        }
+        let buffered = self.pending_bom;
+        let (result, read, written) =
+            self.variant
+                .decode_to_utf16_raw(&buffered[..pending], dst, last && rest.is_empty());
+        debug_assert!(read <= pending);
+        let left = pending - read;
+        let mut shifted = buffered;
+        shifted[..pending].copy_within(read..pending, 0);
+        self.pending_bom = shifted;
+        self.pending_bom_len = left as u8;
+        if left != 0 || !matches!(result, DecoderResult::InputEmpty) {
+            return (result, 0, written);
+        }
+        let (result, read, written2) = self
+            .variant
+            .decode_to_utf16_raw(rest, &mut dst[written..], last);
+        (result, read, written + written2)
     }
 
     #[inline]
@@ -649,7 +803,13 @@ impl Decoder {
         dst: &mut [u8],
         last: bool,
     ) -> (DecoderResult, usize, usize) {
-        self.variant.decode_to_utf8_raw(src, dst, last)
+        let mut gathered = 0usize;
+        let mut rest = src;
+        if self.bom_gathering_active() && self.bom_gather(&mut rest, last, &mut gathered) {
+            return (DecoderResult::InputEmpty, gathered, 0);
+        }
+        let (result, read, written) = self.drain_pending_to_utf8(rest, dst, last);
+        (result, gathered + read, written)
     }
 
     pub fn decode_to_utf16(
@@ -688,7 +848,13 @@ impl Decoder {
         dst: &mut [u16],
         last: bool,
     ) -> (DecoderResult, usize, usize) {
-        self.variant.decode_to_utf16_raw(src, dst, last)
+        let mut gathered = 0usize;
+        let mut rest = src;
+        if self.bom_gathering_active() && self.bom_gather(&mut rest, last, &mut gathered) {
+            return (DecoderResult::InputEmpty, gathered, 0);
+        }
+        let (result, read, written) = self.drain_pending_to_utf16(rest, dst, last);
+        (result, gathered + read, written)
     }
 }
 
@@ -1426,15 +1592,25 @@ mod tests {
     }
 
     #[test]
-    fn new_decoder_starts_converting() {
-        assert_eq!(UTF_8.new_decoder().life_cycle, DecoderLifeCycle::Converting);
+    fn new_decoder_defaults_to_bom_removal_state() {
+        // `new_decoder` performs BOM removal, so a UTF encoding starts at
+        // its BOM state; only `without_bom_handling` starts converting.
+        assert_eq!(UTF_8.new_decoder().life_cycle, DecoderLifeCycle::AtUtf8Start);
+        assert_eq!(
+            UTF_16BE.new_decoder().life_cycle,
+            DecoderLifeCycle::AtUtf16BeStart
+        );
+        assert_eq!(
+            UTF_16LE.new_decoder().life_cycle,
+            DecoderLifeCycle::AtUtf16LeStart
+        );
         assert_eq!(
             UTF_8
                 .new_decoder_without_bom_handling()
                 .life_cycle,
             DecoderLifeCycle::Converting
         );
-        assert_eq!(UTF_16LE.new_decoder().life_cycle, DecoderLifeCycle::Converting);
+        assert_eq!(LATIN1.new_decoder().life_cycle, DecoderLifeCycle::Converting);
     }
 
     #[test]
@@ -1531,50 +1707,350 @@ mod tests {
     }
 
     #[test]
-    fn utf8_bom_is_not_removed_by_current_impl() {
-        // Documents actual behavior: `new_decoder_with_bom_removal` only moves
-        // the life cycle; the decode path forwards to the variant decoder, so
-        // the BOM survives in the output.
+    fn utf8_bom_is_removed() {
         let mut d = UTF_8.new_decoder_with_bom_removal();
         let src = [0xEFu8, 0xBB, 0xBF, b'a'];
         let (out, read, errors) = decode_all(&mut d, &src);
-        assert_eq!(out, src);
+        assert_eq!(out, *b"a");
+        assert_eq!(read, 4);
+        assert!(!errors);
+        assert_eq!(d.life_cycle, DecoderLifeCycle::Converting);
+    }
+
+    #[test]
+    fn utf8_bom_split_across_calls_is_removed() {
+        let mut d = UTF_8.new_decoder_with_bom_removal();
+        let mut dst = vec![0u8; 16];
+        let (res1, read1, written1, _) = d.decode_to_utf8(&[0xEF], &mut dst, false);
+        assert!(matches!(res1, CoderResult::InputEmpty));
+        assert_eq!((read1, written1), (1, 0));
+        let rest = [0xBBu8, 0xBF, b'a'];
+        let (res2, read2, written2, errors) = d.decode_to_utf8(&rest, &mut dst, true);
+        assert!(matches!(res2, CoderResult::InputEmpty));
+        assert!(!errors);
+        // The second call consumed the final two BOM bytes plus the 'a'.
+        assert_eq!(read2, 3);
+        assert_eq!(&dst[..written2], b"a");
+    }
+
+    #[test]
+    fn utf16le_bom_is_removed() {
+        let mut d = UTF_16LE.new_decoder_with_bom_removal();
+        // FF FE is the UTF-16LE BOM; after removal only the 'a' survives.
+        let src = [0xFFu8, 0xFE, 0x61, 0x00];
+        let (out, read, errors) = decode_all(&mut d, &src);
+        assert_eq!(out, [0x61u8]);
         assert_eq!(read, 4);
         assert!(!errors);
     }
 
     #[test]
-    fn utf8_bom_split_across_calls_is_preserved() {
-        let mut d = UTF_8.new_decoder_with_bom_removal();
-        let mut dst = vec![0u8; 16];
-        let (res1, _, written1, _) = d.decode_to_utf8(&[0xEF], &mut dst, false);
-        assert!(matches!(res1, CoderResult::InputEmpty));
-        let rest = [0xBBu8, 0xBF, b'a'];
-        let (res2, _, written2, _) = d.decode_to_utf8(&rest, &mut dst[written1..], true);
-        assert!(matches!(res2, CoderResult::InputEmpty));
-        assert_eq!(&dst[..written1 + written2], b"\xEF\xBB\xBFa");
-    }
-
-    #[test]
-    fn utf16le_bom_survives_removal_decoder() {
-        let mut d = UTF_16LE.new_decoder_with_bom_removal();
-        // FF FE is U+FEFF in LE; decoded output is its UTF-8 form, so the BOM
-        // survives (the current implementation does not strip it).
-        let src = [0xFFu8, 0xFE, 0x61, 0x00];
-        let (out, _, errors) = decode_all(&mut d, &src);
-        assert_eq!(out, [0xEFu8, 0xBB, 0xBF, 0x61]);
-        assert!(!errors);
-    }
-
-    #[test]
-    fn utf16be_fe_ff_decodes_to_replacement_order_bom_char() {
-        // `FE FF` read as UTF-16BE is U+FEFF (the BOM character), which the
-        // decoder emits as its UTF-8 encoding rather than stripping.
+    fn utf16be_bom_is_removed() {
+        // `FE FF` is the UTF-16BE BOM and is consumed, not decoded.
         let mut d = UTF_16BE.new_decoder_with_bom_removal();
         let src = [0xFEu8, 0xFF, 0x00, 0x61];
-        let (out, _, errors) = decode_all(&mut d, &src);
-        assert_eq!(out, [0xEFu8, 0xBB, 0xBF, 0x61]);
+        let (out, read, errors) = decode_all(&mut d, &src);
+        assert_eq!(out, [0x61u8]);
+        assert_eq!(read, 4);
         assert!(!errors);
+    }
+
+    #[test]
+    fn utf8_non_bom_prefix_is_decoded_not_dropped() {
+        // EF BC is a strict prefix that mismatches at the second byte, so
+        // the whole sequence must reach the variant decoder in order.
+        let mut d = UTF_8.new_decoder_with_bom_removal();
+        let src = [0xEFu8, 0xBC, 0x83]; // U+FF03
+        let (out, read, errors) = decode_all(&mut d, &src);
+        assert_eq!(out, src);
+        assert_eq!(read, 3);
+        assert!(!errors);
+    }
+
+    #[test]
+    fn utf8_non_bom_prefix_raw_counts_refer_to_caller_slice() {
+        let mut d = UTF_8.new_decoder_with_bom_removal();
+        // The withheld EF is replayed before the rest, so the caller sees
+        // every byte accounted for exactly once.
+        let (res, read, written) = decode_raw(&mut d, &[0xEFu8, 0xBC, 0x83], true);
+        assert_eq!(res, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (3, 3));
+    }
+
+    #[test]
+    fn utf8_bom_split_across_three_calls_is_removed() {
+        let mut d = UTF_8.new_decoder_with_bom_removal();
+        let mut dst = vec![0u8; 8];
+        let (_, read1, w1, _) = d.decode_to_utf8(&[0xEF], &mut dst, false);
+        let (_, read2, w2, _) = d.decode_to_utf8(&[0xBB], &mut dst[w1..], false);
+        let (res3, read3, w3, errors) = d.decode_to_utf8(&[0xBFu8, b'a'], &mut dst[w1 + w2..], true);
+        assert!(matches!(res3, CoderResult::InputEmpty));
+        assert!(!errors);
+        assert_eq!((read1, read2, read3), (1, 1, 2));
+        assert_eq!(&dst[..w1 + w2 + w3], b"a");
+    }
+
+    #[test]
+    fn utf8_bom_boundary_between_second_and_third_byte_is_removed() {
+        let mut d = UTF_8.new_decoder_with_bom_removal();
+        let mut dst = vec![0u8; 8];
+        let (_, read1, w1, _) = d.decode_to_utf8(&[0xEFu8, 0xBB], &mut dst, false);
+        assert_eq!((read1, w1), (2, 0));
+        assert_eq!(d.life_cycle, DecoderLifeCycle::SeenUtf8Second);
+        let (res2, read2, w2, errors) = d.decode_to_utf8(&[0xBFu8, b'a'], &mut dst[w1..], true);
+        assert!(matches!(res2, CoderResult::InputEmpty));
+        assert!(!errors);
+        assert_eq!((read2, w2), (2, 1));
+        assert_eq!(&dst[..w1 + w2], b"a");
+    }
+
+    #[test]
+    fn utf8_partial_bom_prefix_with_last_decodes_as_input() {
+        // A lone EF at end of stream is ordinary input: one U+FFFD, no
+        // silently dropped byte.
+        let mut d = UTF_8.new_decoder_with_bom_removal();
+        let (out, read, errors) = decode_all(&mut d, &[0xEFu8]);
+        assert!(errors);
+        assert_eq!(out, [0xEFu8, 0xBF, 0xBD]);
+        assert_eq!(read, 1);
+        assert_eq!(d.life_cycle, DecoderLifeCycle::Converting);
+    }
+
+    #[test]
+    fn utf8_two_byte_bom_prefix_with_last_decodes_as_input() {
+        let mut d = UTF_8.new_decoder_with_bom_removal();
+        let (out, read, errors) = decode_all(&mut d, &[0xEFu8, 0xBB]);
+        assert!(errors);
+        assert_eq!(out, [0xEFu8, 0xBF, 0xBD]);
+        assert_eq!(read, 2);
+    }
+
+    #[test]
+    fn utf8_partial_prefix_not_last_buffers_and_waits() {
+        let mut d = UTF_8.new_decoder_with_bom_removal();
+        let (res, read, written) = decode_raw(&mut d, &[0xEFu8], false);
+        assert_eq!(res, DecoderResult::InputEmpty);
+        assert_eq!((read, written), (1, 0));
+        assert_eq!(d.life_cycle, DecoderLifeCycle::SeenUtf8First);
+        assert_eq!(d.pending_bom_len, 1);
+    }
+
+    #[test]
+    fn utf8_second_bom_is_not_removed() {
+        let mut d = UTF_8.new_decoder_with_bom_removal();
+        let src = [0xEFu8, 0xBB, 0xBF, 0xEF, 0xBB, 0xBF, b'a'];
+        let (out, read, errors) = decode_all(&mut d, &src);
+        assert!(!errors);
+        assert_eq!(read, 7);
+        // The first BOM is removed; the second decodes as U+FEFF.
+        assert_eq!(out, [0xEFu8, 0xBB, 0xBF, 0x61]);
+    }
+
+    #[test]
+    fn utf8_midstream_bom_decodes_as_feff() {
+        let mut d = UTF_8.new_decoder_with_bom_removal();
+        let src = [0x41u8, 0xEF, 0xBB, 0xBF, 0x42];
+        let (out, read, errors) = decode_all(&mut d, &src);
+        assert!(!errors);
+        assert_eq!(read, 5);
+        assert_eq!(out, src);
+    }
+
+    #[test]
+    fn new_decoder_removes_utf8_bom() {
+        let mut d = UTF_8.new_decoder();
+        let (out, read, errors) = decode_all(&mut d, &[0xEFu8, 0xBB, 0xBF, b'a']);
+        assert!(!errors);
+        assert_eq!(out, *b"a");
+        assert_eq!(read, 4);
+    }
+
+    #[test]
+    fn new_decoder_removes_utf16_boms() {
+        let mut be = UTF_16BE.new_decoder();
+        let (out, _, errors) = decode_all(&mut be, &[0xFEu8, 0xFF, 0x00, 0x61]);
+        assert!(!errors);
+        assert_eq!(out, [0x61u8]);
+        let mut le = UTF_16LE.new_decoder();
+        let (out, _, errors) = decode_all(&mut le, &[0xFFu8, 0xFE, 0x61, 0x00]);
+        assert!(!errors);
+        assert_eq!(out, [0x61u8]);
+    }
+
+    #[test]
+    fn without_bom_handling_keeps_utf8_bom() {
+        let mut d = UTF_8.new_decoder_without_bom_handling();
+        let (out, read, errors) = decode_all(&mut d, &[0xEFu8, 0xBB, 0xBF, b'a']);
+        assert!(!errors);
+        assert_eq!(read, 4);
+        assert_eq!(out, [0xEFu8, 0xBB, 0xBF, 0x61]);
+    }
+
+    #[test]
+    fn without_bom_handling_keeps_utf16le_bom() {
+        let mut d = UTF_16LE.new_decoder_without_bom_handling();
+        // FF FE without removal decodes to U+FEFF.
+        let (out, read, errors) = decode_all(&mut d, &[0xFFu8, 0xFE, 0x61, 0x00]);
+        assert!(!errors);
+        assert_eq!(read, 4);
+        assert_eq!(out, [0xEFu8, 0xBB, 0xBF, 0x61]);
+    }
+
+    #[test]
+    fn without_bom_handling_keeps_utf16be_bom() {
+        let mut d = UTF_16BE.new_decoder_without_bom_handling();
+        // FE FF without removal decodes to U+FEFF.
+        let (out, read, errors) = decode_all(&mut d, &[0xFEu8, 0xFF, 0x00, 0x61]);
+        assert!(!errors);
+        assert_eq!(read, 4);
+        assert_eq!(out, [0xEFu8, 0xBB, 0xBF, 0x61]);
+    }
+
+    #[test]
+    fn latin1_never_removes_bom() {
+        let mut d = LATIN1.new_decoder_with_bom_removal();
+        assert_eq!(d.life_cycle, DecoderLifeCycle::Converting);
+        // EF BB BF decode as the three latin-1 characters ï»¿.
+        let (out, read, errors) = decode_all(&mut d, &[0xEFu8, 0xBB, 0xBF]);
+        assert!(!errors);
+        assert_eq!(read, 3);
+        assert_eq!(out, "ï»¿".as_bytes());
+    }
+
+    #[test]
+    fn bom_removal_lifecycle_transitions() {
+        let mut d = UTF_8.new_decoder_with_bom_removal();
+        assert_eq!(d.life_cycle, DecoderLifeCycle::AtUtf8Start);
+        decode_all(&mut d, b"x");
+        // The decision is made at the first byte and never revisited.
+        assert_eq!(d.life_cycle, DecoderLifeCycle::Converting);
+
+        let mut d = UTF_8.new_decoder_with_bom_removal();
+        let _ = decode_raw(&mut d, &[0xEFu8], false);
+        assert_eq!(d.life_cycle, DecoderLifeCycle::SeenUtf8First);
+        let _ = decode_raw(&mut d, &[0xBBu8], false);
+        assert_eq!(d.life_cycle, DecoderLifeCycle::SeenUtf8Second);
+        let _ = decode_raw(&mut d, &[0xBFu8], false);
+        assert_eq!(d.life_cycle, DecoderLifeCycle::Converting);
+    }
+
+    #[test]
+    fn empty_input_not_last_stays_at_start() {
+        let mut d = UTF_8.new_decoder_with_bom_removal();
+        let mut dst = [0u8; 8];
+        let (res, read, written, _) = d.decode_to_utf8(&[], &mut dst, false);
+        assert_eq!((res, read, written), (CoderResult::InputEmpty, 0, 0));
+        assert_eq!(d.life_cycle, DecoderLifeCycle::AtUtf8Start);
+    }
+
+    #[test]
+    fn utf16be_bom_split_across_calls_is_removed() {
+        let mut d = UTF_16BE.new_decoder_with_bom_removal();
+        let mut dst = vec![0u8; 8];
+        let (_, read1, w1, _) = d.decode_to_utf8(&[0xFE], &mut dst, false);
+        assert_eq!((read1, w1), (1, 0));
+        assert_eq!(d.life_cycle, DecoderLifeCycle::SeenUtf16BeFirst);
+        let (res2, read2, w2, errors) = d.decode_to_utf8(&[0xFFu8, 0x00, 0x61], &mut dst[w1..], true);
+        assert!(matches!(res2, CoderResult::InputEmpty));
+        assert!(!errors);
+        assert_eq!((read2, w2), (3, 1));
+        assert_eq!(&dst[..w1 + w2], b"a");
+    }
+
+    #[test]
+    fn utf16be_mismatched_order_is_not_removed() {
+        // FF FE is the LE BOM; a BE decoder must not remove it. Read as
+        // BE it is U+FFFE, the byte-order-reversed BOM character.
+        let mut d = UTF_16BE.new_decoder_with_bom_removal();
+        let (out, read, errors) = decode_all(&mut d, &[0xFFu8, 0xFE, 0x00, 0x61]);
+        assert!(!errors);
+        assert_eq!(read, 4);
+        assert_eq!(out, "\u{FFFE}\u{0061}".as_bytes());
+    }
+
+    #[test]
+    fn utf16le_mismatched_order_is_not_removed() {
+        // FE FF is the BE BOM; an LE decoder must not remove it. Read as
+        // LE the first unit is U+FFFE again.
+        let mut d = UTF_16LE.new_decoder_with_bom_removal();
+        let (out, read, errors) = decode_all(&mut d, &[0xFEu8, 0xFF, 0x00, 0x61]);
+        assert!(!errors);
+        assert_eq!(read, 4);
+        // FE FF as LE is U+FFFE; 00 61 as LE is U+6100.
+        assert_eq!(out, "\u{FFFE}\u{6100}".as_bytes());
+    }
+
+    #[test]
+    fn utf16le_partial_ff_with_last_is_malformed() {
+        // A lone FF at end of stream is one dangling LE lead byte: it must
+        // be decoded (as a replacement), not dropped.
+        let mut d = UTF_16LE.new_decoder_with_bom_removal();
+        let (out, read, errors) = decode_all(&mut d, &[0xFFu8]);
+        assert!(errors);
+        assert_eq!(read, 1);
+        assert_eq!(out, [0xEFu8, 0xBF, 0xBD]);
+    }
+
+    #[test]
+    fn utf16be_partial_fe_with_last_is_malformed() {
+        let mut d = UTF_16BE.new_decoder_with_bom_removal();
+        let (out, read, errors) = decode_all(&mut d, &[0xFEu8]);
+        assert!(errors);
+        assert_eq!(read, 1);
+        assert_eq!(out, [0xEFu8, 0xBF, 0xBD]);
+    }
+
+    #[test]
+    fn utf8_bom_removed_when_decoding_to_utf16() {
+        let mut d = UTF_8.new_decoder_with_bom_removal();
+        let (units, errors) = decode_all16(&mut d, &[0xEFu8, 0xBB, 0xBF, 0x61]);
+        assert!(!errors);
+        assert_eq!(units, [0x0061u16]);
+    }
+
+    #[test]
+    fn utf16be_second_bom_is_not_removed() {
+        let mut d = UTF_16BE.new_decoder_with_bom_removal();
+        let src = [0xFEu8, 0xFF, 0x00, 0x41, 0xFE, 0xFF];
+        let (out, read, errors) = decode_all(&mut d, &src);
+        assert!(!errors);
+        assert_eq!(read, 6);
+        // First BOM removed; the trailing FE FF decodes as U+FEFF.
+        assert_eq!(out, [0x41u8, 0xEF, 0xBB, 0xBF]);
+    }
+
+    #[test]
+    fn output_full_during_prefix_replay_preserves_every_byte() {
+        let mut d = UTF_8.new_decoder_with_bom_removal();
+        let mut tiny: [u8; 0] = [];
+        // The EF is withheld, then the BC mismatch forces a replay that
+        // cannot fit: only the buffered EF counts as consumed.
+        let (res, read, written) =
+            d.decode_to_utf8_without_replacement(&[0xEF, 0xBC, 0x83], &mut tiny, false);
+        assert_eq!(res, DecoderResult::OutputFull);
+        assert_eq!((read, written), (1, 0));
+        // The remaining caller bytes complete the withheld sequence with
+        // no loss: U+FF03 decodes to its own three UTF-8 bytes.
+        let (res2, read2, written2) =
+            d.decode_to_utf8_without_replacement(&[0xBCu8, 0x83], &mut [0u8; 8], true);
+        assert_eq!(res2, DecoderResult::InputEmpty);
+        assert_eq!((read2, written2), (2, 3));
+        assert_eq!(d.life_cycle, DecoderLifeCycle::Converting);
+    }
+
+    #[test]
+    fn deciding_bom_keeps_max_buffer_lengths_available() {
+        let mut d = UTF_8.new_decoder_with_bom_removal();
+        // The At…Start states answer like a plain decoder.
+        assert!(d.max_utf8_buffer_length(4).is_some());
+        decode_all(&mut d, &[0xEFu8, 0xBB, 0xBF, b'a']);
+        assert_eq!(d.life_cycle, DecoderLifeCycle::Converting);
+        assert!(d.max_utf8_buffer_length(4).is_some());
+        assert!(d.max_utf16_buffer_length(4).is_some());
+        assert!(
+            d.max_utf8_buffer_length_without_replacement(4)
+                .is_some()
+        );
     }
 
     #[test]

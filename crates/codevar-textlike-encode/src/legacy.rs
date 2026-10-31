@@ -2451,7 +2451,7 @@ mod tests {
     }
 
     #[test]
-    fn bom_handling_is_a_no_op_for_every_legacy_code_page() {
+    fn bom_removal_is_a_no_op_for_every_legacy_code_page() {
         let input = [0xEF, 0xBB, 0xBF, 0x68, 0x69];
         for &encoding in &SINGLE_BYTE_ENCODINGS {
             let plain = units(encoding, &input);
@@ -2461,16 +2461,19 @@ mod tests {
             assert_eq!(default, plain, "{}: new_decoder", encoding.name);
             assert_eq!(removal, plain, "{}: with_bom_removal", encoding.name);
         }
-        // UTF-8 is where the constructors ought to differ, and they do not: the
-        // `BomHandling` mode only records a `life_cycle` (`encoding.rs:548-562`) that
-        // neither `decode_to_utf8` nor `decode_to_utf16` ever reads, so the mark
-        // decodes as U+FEFF whichever handle is used.
+        // Only the Unicode encodings carry a byte order mark, so their removal
+        // constructors differ from the no-handling one while a legacy page keeps
+        // decoding the three bytes as its own characters.
         let plain = decode_all(&mut UTF_8.new_decoder_without_bom_handling(), &input);
         let default = decode_all(&mut UTF_8.new_decoder(), &input);
         let removal = decode_all(&mut UTF_8.new_decoder_with_bom_removal(), &input);
-        assert_eq!(default, plain, "new_decoder is the no-handling constructor");
-        assert_eq!(removal, default, "the removal flag changes nothing");
-        assert_eq!(plain, vec![0xFEFFu16, 0x0068, 0x0069]);
+        assert_eq!(
+            plain,
+            vec![0xFEFFu16, 0x0068, 0x0069],
+            "without handling the mark is a character"
+        );
+        assert_eq!(default, vec![0x0068u16, 0x0069], "new_decoder removes it");
+        assert_eq!(removal, default, "the explicit removal handle agrees");
     }
 
     #[test]
