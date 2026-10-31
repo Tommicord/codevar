@@ -272,7 +272,7 @@ macro_rules! ascii_copy_impl_double {
 macro_rules! ascii_copy_impl_single {
     ($name:ident, $stride:ident, $double_stride:ident, $src_unit:ty, $dst_unit:ty) => {
         #[inline(always)]
-        pub fn $name(src: &[$src_unit], dst: &mut [$dst_unit]) -> Option<($src_unit, usize)> {
+        pub(crate) fn $name(src: &[$src_unit], dst: &mut [$dst_unit]) -> Option<($src_unit, usize)> {
             // Make both the same length here to have the chunks and tail match.
             let len = core::cmp::min(src.len(), dst.len());
             let mut consumed = 0usize;
