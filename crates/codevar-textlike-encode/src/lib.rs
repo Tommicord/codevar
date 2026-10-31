@@ -21,5 +21,6 @@ pub mod ascii;
 pub mod encoding;
 pub mod handles;
 pub mod single_byte;
+pub mod single_byte_tables;
 pub mod utf16;
 pub mod utf8;
