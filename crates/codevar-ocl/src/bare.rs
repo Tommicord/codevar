@@ -190,10 +190,13 @@ fn api() -> Api {
         get_event_info: entry!(bare_api::clGetEventInfo, sys::GetEventInfo),
         get_event_profiling_info: entry!(bare_api::clGetEventProfilingInfo, sys::GetEventProfilingInfo),
         create_program_with_il: Some(entry!(bare_api::clCreateProgramWithIL, sys::CreateProgramWithIL)),
-        // The embedded profile has neither a fill command nor extension
-        // entry points.
+        // The embedded profile has neither a fill command, nor extension
+        // entry points, nor the external-memory and semaphore creation
+        // paths, so interop surfaces as `Error::Unsupported`.
         enqueue_fill_buffer: None,
+        create_buffer_with_properties: None,
         get_extension_function_address: None,
+        get_extension_function_address_for_platform: None,
     }
 }
 

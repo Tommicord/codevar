@@ -35,6 +35,7 @@ use codevar_logger::log_warn;
 
 use crate::api::Api;
 use crate::error::{self, Result};
+use crate::extension::Extensions;
 use crate::platform::Device;
 use crate::sys;
 
@@ -47,6 +48,9 @@ pub struct Context {
 struct ContextInner {
     api: Arc<Api>,
     device: Device,
+    /// The `cl_khr_*` entry points of this context's platform, looked up
+    /// once here because every resolution is a driver call.
+    extensions: Extensions,
     raw: sys::ContextHandle,
 }
 
@@ -87,10 +91,12 @@ impl Context {
         let raw =
             unsafe { (api.create_context)(null(), 1, &handle, None, core::ptr::null_mut(), &mut errcode) };
         let raw = error::creation(raw, errcode, "clCreateContext")?;
+        let extensions = Extensions::resolve(&api, device.platform());
         Ok(Self {
             inner: Arc::new(ContextInner {
                 api,
                 device: device.clone(),
+                extensions,
                 raw,
             }),
         })
@@ -99,6 +105,38 @@ impl Context {
     /// Returns the resolved entry points of the owning driver.
     pub(crate) fn api(&self) -> &Arc<Api> {
         &self.inner.api
+    }
+
+    /// Whether this context's driver can import memory exported by another
+    /// API (Vulkan) and take ownership of it on a command queue
+    /// (`cl_khr_external_memory`).
+    ///
+    /// Always `false` for a driver without the extension; querying it never
+    /// touches the driver.
+    #[must_use]
+    pub fn supports_external_memory(&self) -> bool {
+        self.inner.extensions.has_external_memory()
+    }
+
+    /// Whether this context's driver exposes the whole `cl_khr_semaphore`
+    /// object surface, including the wait and signal commands.
+    ///
+    /// Always `false` for a driver without the extension; querying it never
+    /// touches the driver.
+    #[must_use]
+    pub fn supports_semaphores(&self) -> bool {
+        self.inner.extensions.has_semaphores()
+    }
+
+    /// Whether a semaphore created through this context can be exported to,
+    /// or imported from, a handle of another API
+    /// (`cl_khr_external_semaphore`).
+    ///
+    /// Always `false` for a driver without the extension; querying it never
+    /// touches the driver.
+    #[must_use]
+    pub fn supports_semaphore_handles(&self) -> bool {
+        self.inner.extensions.semaphore_handle()
     }
 
     /// Returns the raw driver handle.

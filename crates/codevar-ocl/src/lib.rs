@@ -38,6 +38,7 @@ mod context;
 mod dispatch;
 mod error;
 mod event;
+mod extension;
 mod icd;
 mod kernel;
 mod loader;

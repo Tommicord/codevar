@@ -187,8 +187,12 @@ define_api! {
     optional: [
         create_program_with_il: CreateProgramWithIL => "clCreateProgramWithIL",
         enqueue_fill_buffer: EnqueueFillBuffer => "clEnqueueFillBuffer",
+        create_buffer_with_properties: CreateBufferWithProperties
+            => "clCreateBufferWithProperties",
         get_extension_function_address: GetExtensionFunctionAddress
             => "clGetExtensionFunctionAddress",
+        get_extension_function_address_for_platform: GetExtensionFunctionAddressForPlatform
+            => "clGetExtensionFunctionAddressForPlatform",
     ]
 }
 
@@ -205,31 +209,74 @@ impl Api {
         value.ok_or(Error::Unsupported { symbol })
     }
 
-    /// Resolves an extension entry point by its `clXxxKHR` name.
+    /// Resolves a `clXxxKHR` extension entry point of one platform.
     ///
-    /// Core names return `None`, as mandated by the ICD specification (and
-    /// verified against Intel's driver): only extension names resolve.
+    /// The platform-scoped query is tried first: under an ICD loader the
+    /// unscoped [`GetExtensionFunctionAddress`] has no implementation to
+    /// dispatch to and returns null on multi-vendor installations, while the
+    /// scoped form reaches the vendor that owns `platform`. Core names return
+    /// `None` from both forms, as mandated by the specification.
     ///
     /// # Safety
     ///
-    /// The returned pointer must only be called with the signature the
-    /// extension defines, and only while the driver library that provided
-    /// this [`Api`] stays loaded.
-    #[allow(dead_code)] // reserved for the planned extension-call surface
-    pub(crate) unsafe fn extension_function(&self, name: &CStr) -> Option<*mut c_void> {
-        let get = self.get_extension_function_address?;
-        // SAFETY: the caller upholds the driver-lifetime requirement; this
-        // only forwards the name to the driver, which returns either null
-        // or a pointer to the requested extension function.
-        let function = unsafe { get(name.as_ptr()) };
+    /// `platform` must be a platform handle of the implementation this
+    /// [`Api`] was resolved from, and the returned pointer must only be
+    /// called with the signature the extension defines, and only while the
+    /// driver library that provided this [`Api`] stays loaded.
+    pub(crate) unsafe fn extension_function(
+        &self,
+        platform: sys::PlatformHandle,
+        name: &CStr,
+    ) -> Option<*mut c_void> {
+        // SAFETY: the caller upholds the handle-identity and lifetime
+        // requirements; a null result simply means "not supported".
+        let function = unsafe {
+            match self.get_extension_function_address_for_platform {
+                Some(get) => get(platform, name.as_ptr()),
+                // Pre-1.2 drivers only export the unscoped form; using it
+                // keeps single-implementation installations working.
+                None => match self.get_extension_function_address {
+                    Some(get) => get(name.as_ptr()),
+                    None => return None,
+                },
+            }
+        };
         (!function.is_null()).then_some(function)
+    }
+
+    /// Resolves the extension entry point named by `name` as the typed
+    /// function pointer `T`.
+    ///
+    /// Returns `None` when the implementation does not export it; callers
+    /// turn absence into [`Error::Unsupported`] with the extension name.
+    ///
+    /// # Safety
+    ///
+    /// `T` must be the entry-point type declared in [`sys`] for the function
+    /// named by `name`, and `platform` must satisfy the requirements of
+    /// [`Self::extension_function`].
+    pub(crate) unsafe fn extension_fn<T: Copy>(
+        &self,
+        platform: sys::PlatformHandle,
+        name: &CStr,
+    ) -> Option<T> {
+        let raw = unsafe { self.extension_function(platform, name) }?;
+        let address = raw as usize;
+        debug_assert_eq!(size_of::<T>(), size_of::<*mut c_void>());
+        // SAFETY: `T` is the entry-point type of the function named by
+        // `name` (caller's obligation) and every entry-point type in [`sys`]
+        // is a plain, pointer-wide function pointer, so copying
+        // `size_of::<T>()` bytes out of `address` reproduces the pointer
+        // that `extension_function` returned.
+        Some(unsafe { core::mem::transmute_copy::<usize, T>(&address) })
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use alloc::boxed::Box;
+    use core::ffi::c_char;
 
     #[test]
     fn optional_reports_unsupported_entry_points() {
@@ -261,6 +308,124 @@ mod tests {
             ),
             "expected the first required slot to be reported, got {error:?}"
         );
+    }
+
+    /// The address a fake driver hands back for a resolved extension.
+    const SENTINEL: usize = 0xdead_beef;
+
+    /// The address of `function`, as the raw slot value a dispatch table
+    /// stores.
+    const fn slot_of(function: *const ()) -> *mut c_void {
+        function as *mut c_void
+    }
+
+    /// The platform handle the fake resolvers are called with; the stubs
+    /// ignore it and the tests never dereference it.
+    pub(crate) fn api_platform() -> sys::PlatformHandle {
+        sys::PlatformHandle::from_raw(core::ptr::dangling_mut::<c_void>())
+    }
+
+    /// A platform-scoped resolver that only knows the semaphore entry
+    /// points, like a driver without `cl_khr_external_memory`.
+    unsafe extern "system" fn scoped_stub(
+        _platform: sys::PlatformHandle,
+        name: *const c_char,
+    ) -> *mut c_void {
+        // SAFETY: `extension_fn` always passes the pointer of a `c"…"`
+        // literal, which stays valid for the duration of the call.
+        let text = unsafe { CStr::from_ptr(name) };
+        let known = text == c"clCreateSemaphoreWithPropertiesKHR"
+            || text == c"clEnqueueWaitSemaphoresKHR"
+            || text == c"clRetainSemaphoreKHR"
+            || text == c"clReleaseSemaphoreKHR";
+        if known {
+            SENTINEL as *mut c_void
+        } else {
+            core::ptr::null_mut()
+        }
+    }
+
+    /// The legacy unscoped resolver, used only when the platform-scoped
+    /// slot is absent.
+    unsafe extern "system" fn unscoped_stub(name: *const c_char) -> *mut c_void {
+        // SAFETY: as for `scoped_stub`.
+        let text = unsafe { CStr::from_ptr(name) };
+        if text == c"clEnqueueWaitSemaphoresKHR" {
+            SENTINEL as *mut c_void
+        } else {
+            core::ptr::null_mut()
+        }
+    }
+
+    /// A live function used to fill the slots the tests never call, so that
+    /// every required slot of the fake table is non-null.
+    unsafe extern "system" fn filler() -> i32 {
+        sys::SUCCESS
+    }
+
+    /// Builds an [`Api`] from a synthetic dispatch table whose required
+    /// slots are non-null and whose resolver slots (65 and 107 of
+    /// `cl_icd_dispatch`) are set on demand.
+    pub(crate) fn api_with_fake_dispatch(scoped: bool, unscoped: bool) -> Api {
+        let filler_slot = slot_of(filler as *const ());
+        let mut slots = [filler_slot; 150];
+        slots[65] = if unscoped {
+            slot_of(unscoped_stub as *const ())
+        } else {
+            core::ptr::null_mut()
+        };
+        slots[107] = if scoped {
+            slot_of(scoped_stub as *const ())
+        } else {
+            core::ptr::null_mut()
+        };
+        // SAFETY: the array is 150 pointer-wide slots, the exact layout of
+        // `IcdDispatch` (asserted by `dispatch::tests`), and each value is
+        // either null or the address of a live `extern "system"` function.
+        // The typed slots are never called, only copied into the `Api`.
+        unsafe { Api::from_dispatch(slots.as_ptr().cast()) }
+            .expect("a table with non-null required slots must resolve")
+    }
+
+    /// A driver that exports the platform-scoped resolver must be queried
+    /// through it: that is the only form an ICD loader dispatches correctly.
+    #[test]
+    fn extension_resolution_prefers_the_platform_scoped_resolver() {
+        let api = api_with_fake_dispatch(true, false);
+        // Only the scoped stub answers this name, so a hit proves which slot
+        // was called.
+        let resolved: Option<sys::CreateSemaphoreWithProperties> =
+            unsafe { api.extension_fn(api_platform(), c"clCreateSemaphoreWithPropertiesKHR") };
+        assert!(resolved.is_some());
+    }
+
+    /// Without the scoped slot the legacy resolver still has to work.
+    #[test]
+    fn extension_resolution_falls_back_to_the_unscoped_resolver() {
+        let api = api_with_fake_dispatch(false, true);
+        let resolved: Option<sys::EnqueueWaitSemaphores> =
+            unsafe { api.extension_fn(api_platform(), c"clEnqueueWaitSemaphoresKHR") };
+        assert!(resolved.is_some());
+    }
+
+    /// An unknown extension name must resolve to `None`, not a wild pointer.
+    #[test]
+    fn extension_resolution_reports_unknown_names_as_none() {
+        let api = api_with_fake_dispatch(true, true);
+        let resolved: Option<sys::EnqueueAcquireExternalMemObjects> =
+            unsafe { api.extension_fn(api_platform(), c"clEnqueueAcquireExternalMemObjectsKHR") };
+        assert!(resolved.is_none());
+    }
+
+    /// The typed wrapper must hand back exactly the pointer the driver
+    /// returned — a lost or truncated address would crash on first use.
+    #[test]
+    fn extension_resolution_keeps_the_driver_pointer() {
+        let api = api_with_fake_dispatch(true, false);
+        let raw = unsafe { api.extension_function(api_platform(), c"clEnqueueWaitSemaphoresKHR") };
+        // SAFETY: reading a pointer's address is exactly what this test
+        // checks; the value is the sentinel the stub returned, never called.
+        assert_eq!(raw.expect("the stub resolves this name") as usize, SENTINEL);
     }
 
     #[test]

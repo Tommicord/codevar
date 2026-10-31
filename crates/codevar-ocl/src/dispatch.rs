@@ -49,12 +49,13 @@ use core::ffi::c_void;
 use core::mem::{offset_of, size_of};
 
 use crate::sys::{
-    BuildProgram, CreateBuffer, CreateCommandQueue, CreateContext, CreateKernel, CreateProgramWithIL,
-    CreateProgramWithSource, EnqueueCopyBuffer, EnqueueFillBuffer, EnqueueNdRangeKernel, EnqueueReadBuffer,
-    EnqueueWriteBuffer, Finish, Flush, GetDeviceIds, GetDeviceInfo, GetEventInfo, GetEventProfilingInfo,
-    GetExtensionFunctionAddress, GetKernelInfo, GetKernelWorkGroupInfo, GetPlatformIds, GetPlatformInfo,
-    GetProgramBuildInfo, GetProgramInfo, PlatformHandle, ReleaseCommandQueue, ReleaseContext, ReleaseEvent,
-    ReleaseKernel, ReleaseMemObject, ReleaseProgram, SetKernelArg, WaitForEvents,
+    BuildProgram, CreateBuffer, CreateBufferWithProperties, CreateCommandQueue, CreateContext, CreateKernel,
+    CreateProgramWithIL, CreateProgramWithSource, EnqueueCopyBuffer, EnqueueFillBuffer, EnqueueNdRangeKernel,
+    EnqueueReadBuffer, EnqueueWriteBuffer, Finish, Flush, GetDeviceIds, GetDeviceInfo, GetEventInfo,
+    GetEventProfilingInfo, GetExtensionFunctionAddress, GetExtensionFunctionAddressForPlatform,
+    GetKernelInfo, GetKernelWorkGroupInfo, GetPlatformIds, GetPlatformInfo, GetProgramBuildInfo,
+    GetProgramInfo, PlatformHandle, ReleaseCommandQueue, ReleaseContext, ReleaseEvent, ReleaseKernel,
+    ReleaseMemObject, ReleaseProgram, SetKernelArg, WaitForEvents,
 };
 
 /// The vendor ICD dispatch table (`cl_icd_dispatch` in `CL/cl_icd.h`).
@@ -277,8 +278,8 @@ pub(crate) struct IcdDispatch {
     pub(crate) enqueue_marker_with_wait_list: *mut c_void,
     /// Slot 106: `clEnqueueBarrierWithWaitList` (unused).
     pub(crate) enqueue_barrier_with_wait_list: *mut c_void,
-    /// Slot 107: `clGetExtensionFunctionAddressForPlatform` (unused).
-    pub(crate) get_extension_function_address_for_platform: *mut c_void,
+    /// Slot 107: `clGetExtensionFunctionAddressForPlatform`.
+    pub(crate) get_extension_function_address_for_platform: Option<GetExtensionFunctionAddressForPlatform>,
     /// Slot 108: `clCreateFromGLTexture` (unused).
     pub(crate) create_from_gl_texture: *mut c_void,
     /// Slot 109 (unused).
@@ -356,8 +357,8 @@ pub(crate) struct IcdDispatch {
     pub(crate) set_program_release_callback: *mut c_void,
     /// Slot 145: `clSetProgramSpecializationConstant` (unused).
     pub(crate) set_program_specialization_constant: *mut c_void,
-    /// Slot 146: `clCreateBufferWithProperties` (unused).
-    pub(crate) create_buffer_with_properties: *mut c_void,
+    /// Slot 146: `clCreateBufferWithProperties`.
+    pub(crate) create_buffer_with_properties: Option<CreateBufferWithProperties>,
     /// Slot 147: `clCreateImageWithProperties` (unused).
     pub(crate) create_image_with_properties: *mut c_void,
     /// Slot 148: `clSetContextDestructorCallback` (unused).
@@ -436,6 +437,11 @@ mod tests {
         assert_eq!(offset_of!(IcdDispatch, enqueue_copy_buffer), 50 * SLOT);
         assert_eq!(offset_of!(IcdDispatch, enqueue_nd_range_kernel), 59 * SLOT);
         assert_eq!(offset_of!(IcdDispatch, get_extension_function_address), 65 * SLOT);
+        assert_eq!(
+            offset_of!(IcdDispatch, get_extension_function_address_for_platform),
+            107 * SLOT
+        );
+        assert_eq!(offset_of!(IcdDispatch, create_buffer_with_properties), 146 * SLOT);
         assert_eq!(offset_of!(IcdDispatch, enqueue_fill_buffer), 102 * SLOT);
         assert_eq!(offset_of!(IcdDispatch, create_program_with_il), 138 * SLOT);
         assert_eq!(offset_of!(IcdDispatch, enqueue_marker_with_wait_list), 105 * SLOT);

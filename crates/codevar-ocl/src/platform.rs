@@ -184,7 +184,7 @@ impl Platform {
         handles.retain(|handle| !handle.is_null());
         Ok(handles
             .into_iter()
-            .map(|raw| Device::new(self.api.clone(), raw))
+            .map(|raw| Device::new(self.api.clone(), self.raw, raw))
             .collect())
     }
 
@@ -212,6 +212,11 @@ impl fmt::Debug for Platform {
 #[derive(Clone)]
 pub struct Device {
     pub(crate) api: Arc<Api>,
+    /// The platform `raw` was enumerated from. Extension entry points are
+    /// resolved per platform (`clGetExtensionFunctionAddressForPlatform`),
+    /// so a device that lost its platform could not reach its own
+    /// extensions under an ICD loader.
+    pub(crate) platform: PlatformHandle,
     pub(crate) raw: DeviceHandle,
 }
 
@@ -223,13 +228,18 @@ unsafe impl Sync for Device {}
 
 impl Device {
     /// Wraps an already-enumerated device handle.
-    pub(crate) fn new(api: Arc<Api>, raw: DeviceHandle) -> Self {
-        Self { api, raw }
+    pub(crate) fn new(api: Arc<Api>, platform: PlatformHandle, raw: DeviceHandle) -> Self {
+        Self { api, platform, raw }
     }
 
     /// Returns the resolved entry points of the owning driver.
     pub(crate) fn api(&self) -> &Arc<Api> {
         &self.api
+    }
+
+    /// Returns the platform handle this device was enumerated from.
+    pub(crate) const fn platform(&self) -> PlatformHandle {
+        self.platform
     }
 
     /// Returns the raw driver handle.
