@@ -790,3 +790,494 @@ fn end(interaction: &InteractionSource, claim: &DragClaim, on_finish: &Option<Sl
         handler();
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::{KeyEvent, PointerEvent};
+    use crate::node::{self, Node};
+    use crate::paint::{DrawList, PaintStyle, RectOp};
+    use crate::theme::Theme;
+    use crate::widgets::{ScrollAxes, ScrollState, Viewport};
+    use core::cell::Cell;
+
+    /// The box a test slider is placed in, in window coordinates.
+    const BOX: Rect = Rect::from_min_size(Offset::ZERO, 100.0, 20.0);
+
+    /// The point a tap on the middle of the track answers.
+    const MIDDLE: Offset = Offset::new(50.0, 10.0);
+
+    /// The center of the thumb at the start of the range.
+    const START: Offset = Offset::new(10.0, 10.0);
+
+    /// The center of the thumb at the end of the range.
+    const END: Offset = Offset::new(90.0, 10.0);
+
+    /// A point no track of a [`BOX`] contains.
+    const OUTSIDE: Offset = Offset::new(150.0, 10.0);
+
+    /// A tree of one slider, with the state dispatching an event needs.
+    struct Harness {
+        theme: Theme,
+        node: Node,
+        focus: Option<Vec<usize>>,
+    }
+
+    impl Harness {
+        /// A tree of `slider`, measured and placed in [`BOX`].
+        fn new(slider: Slider) -> Self {
+            let theme = Theme::light();
+            let mut node = Node::new(slider);
+            node.measure(&theme, Constraints::tight(Size::new(100.0, 20.0)));
+            node.place(BOX);
+            Self {
+                theme,
+                node,
+                focus: None,
+            }
+        }
+
+        /// Offers `event` to the tree and reports what it answered.
+        fn offer(&mut self, event: &Event) -> EventResult {
+            let mut path = Vec::new();
+            node::dispatch_event(&mut self.node, &self.theme, &mut path, &mut self.focus, event)
+        }
+
+        /// Offers a pointer event of `kind` at `position` to the tree.
+        fn pointer(&mut self, kind: PointerEventKind, position: Offset) -> EventResult {
+            self.offer(&Event::Pointer(PointerEvent::new(kind, position)))
+        }
+
+        /// Offers the press of `key` to the tree.
+        fn press(&mut self, key: Key) -> EventResult {
+            self.offer(&Event::Key(KeyEvent::new(key, true)))
+        }
+
+        /// The slider as it paints itself right now.
+        fn canvas(&mut self) -> Canvas {
+            let mut list = DrawList::new();
+            self.node.draw(&self.theme, &mut list);
+            Canvas::of(&list)
+        }
+    }
+
+    /// The filled shapes a draw list recorded, in the order it recorded them.
+    #[derive(Default)]
+    struct Canvas {
+        /// The fills: the rail, the active bar, the ticks, the thumb, the layer.
+        fills: Vec<(Rect, Color)>,
+    }
+
+    impl Canvas {
+        /// The recorded fills of `list`.
+        fn of(list: &DrawList) -> Self {
+            let mut canvas = Self::default();
+            for op in list.ops() {
+                let any: &dyn core::any::Any = op;
+                if let Some(rect) = any.downcast_ref::<RectOp>()
+                    && matches!(rect.paint.style, PaintStyle::Fill)
+                {
+                    canvas.fills.push((rect.rect, rect.paint.color));
+                }
+            }
+            canvas
+        }
+    }
+
+    /// A slider, the value state it writes and the number of reports it made.
+    struct Counted {
+        value: MutableState<f32>,
+        changes: Rc<Cell<usize>>,
+        finishes: Rc<Cell<usize>>,
+    }
+
+    impl Counted {
+        /// A continuous slider over `0.0 ..= 1.0` counting what it reports.
+        fn slider(&self) -> Slider {
+            let changes = Rc::clone(&self.changes);
+            let finishes = Rc::clone(&self.finishes);
+            Slider::new(self.value.clone())
+                .on_change(move |_| changes.set(changes.get() + 1))
+                .on_finish(move || finishes.set(finishes.get() + 1))
+        }
+    }
+
+    fn counted(start: f32) -> Counted {
+        Counted {
+            value: MutableState::new(start),
+            changes: Rc::new(Cell::new(0)),
+            finishes: Rc::new(Cell::new(0)),
+        }
+    }
+
+    #[test]
+    fn a_slider_takes_the_width_it_is_given_and_the_height_of_its_thumb() {
+        let theme = Theme::light();
+        let mut node = Node::new(Slider::new(MutableState::new(0.0)));
+        assert_eq!(
+            node.measure(&theme, Constraints::new(0.0, 120.0, 0.0, f32::INFINITY)),
+            Size::new(120.0, 20.0)
+        );
+        assert_eq!(
+            node.measure(&theme, Constraints::unbounded()),
+            Size::new(defaults::PREFERRED_WIDTH, defaults::THUMB_HEIGHT)
+        );
+    }
+
+    #[test]
+    fn a_tap_on_the_track_moves_the_thumb_to_the_tap() {
+        let counted = counted(0.0);
+        let value = counted.value.clone();
+        let mut harness = Harness::new(counted.slider());
+        harness.pointer(PointerEventKind::Down, MIDDLE);
+        assert_eq!(value.get(), 0.5, "the thumb lands under the finger");
+        assert!(
+            harness
+                .pointer(PointerEventKind::Up, MIDDLE)
+                .is_consumed()
+        );
+        assert_eq!(counted.changes.get(), 1, "the release settled on the same value");
+        assert_eq!(
+            counted.finishes.get(),
+            1,
+            "the tap is a gesture that ends, and ends once"
+        );
+    }
+
+    #[test]
+    fn a_drag_moves_the_thumb_to_where_the_pointer_is() {
+        let counted = counted(0.0);
+        let value = counted.value.clone();
+        let mut harness = Harness::new(counted.slider());
+        harness.pointer(PointerEventKind::Down, START);
+        assert_eq!(value.get(), 0.0);
+        let dragged = Offset::new(50.0, 10.0);
+        assert!(
+            harness
+                .pointer(PointerEventKind::Move, dragged)
+                .is_consumed(),
+            "a drag the slider owns stops there: the ancestor does not scroll with it"
+        );
+        assert_eq!(value.get(), 0.5);
+        assert!(
+            harness
+                .pointer(PointerEventKind::Move, END)
+                .is_consumed()
+        );
+        assert_eq!(value.get(), 1.0);
+        assert_eq!(counted.changes.get(), 2);
+        assert!(
+            harness
+                .pointer(PointerEventKind::Up, END)
+                .is_consumed()
+        );
+        assert_eq!(counted.finishes.get(), 1);
+    }
+
+    #[test]
+    fn a_pointer_past_the_end_of_the_track_lands_the_thumb_on_the_end() {
+        let counted = counted(0.5);
+        let value = counted.value.clone();
+        let mut harness = Harness::new(counted.slider());
+        harness.pointer(PointerEventKind::Down, MIDDLE);
+        harness.pointer(PointerEventKind::Move, Offset::new(300.0, 10.0));
+        assert_eq!(value.get(), 1.0);
+        harness.pointer(PointerEventKind::Up, Offset::new(300.0, 10.0));
+        harness.pointer(PointerEventKind::Down, MIDDLE);
+        harness.pointer(PointerEventKind::Move, Offset::new(-80.0, 10.0));
+        assert_eq!(value.get(), 0.0);
+    }
+
+    #[test]
+    fn the_press_of_a_slider_is_reported_but_not_taken() {
+        let source = InteractionSource::new();
+        let value = MutableState::new(0.0);
+        let mut harness = Harness::new(Slider::new(value.clone()).interaction_with(source.clone()));
+        assert!(
+            !harness
+                .pointer(PointerEventKind::Down, MIDDLE)
+                .is_consumed(),
+            "an ancestor has to see the down to be able to scroll with it"
+        );
+        assert!(source.state().contains(InteractionState::PRESSED));
+        // A move of the axis the track does not run along is left to the
+        // ancestor, and the press the slider held goes with it.
+        assert!(
+            !harness
+                .pointer(PointerEventKind::Move, Offset::new(50.0, 2.0))
+                .is_consumed(),
+            "the vertical move is the list's, not the track's"
+        );
+        assert!(!source.state().contains(InteractionState::PRESSED));
+        assert!(!source.state().contains(InteractionState::HOVERED));
+        assert_eq!(value.get(), 0.5, "the press wrote before the drag left");
+    }
+
+    #[test]
+    fn a_release_outside_the_track_keeps_the_value_the_press_took() {
+        let counted = counted(0.0);
+        let value = counted.value.clone();
+        let mut harness = Harness::new(counted.slider().focusable(false));
+        harness.pointer(PointerEventKind::Down, MIDDLE);
+        assert!(
+            harness
+                .pointer(PointerEventKind::Up, OUTSIDE)
+                .is_consumed()
+        );
+        assert_eq!(value.get(), 0.5, "the thumb of a slider stays where it was left");
+        assert_eq!(counted.finishes.get(), 1);
+        // The press is gone with the gesture: nothing shades the thumb now.
+        assert_eq!(
+            harness.canvas().fills,
+            [
+                rail(Theme::light().colors.surface_variant),
+                active(40.0, Theme::light().colors.primary),
+                thumb(50.0, Theme::light().colors.primary),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_drag_that_went_down_the_list_is_left_to_the_list() {
+        let offset = ScrollState::new(ScrollAxes::VERTICAL);
+        let counted = counted(0.5);
+        let value = counted.value.clone();
+        let theme = Theme::light();
+        // The box of the viewport is shorter than the slider it holds, so
+        // there is a range to scroll and the list has somewhere to go.
+        let mut node = Node::new(Viewport::new().scroll(offset.clone())).child(Node::new(counted.slider()));
+        node.measure(&theme, Constraints::tight(Size::new(100.0, 10.0)));
+        node.place(Rect::from_min_size(Offset::ZERO, 100.0, 10.0));
+        let mut focus = None;
+        let mut offer = |event: &Event| {
+            let mut path = Vec::new();
+            node::dispatch_event(&mut node, &theme, &mut path, &mut focus, event)
+        };
+        let at =
+            |x: f32, y: f32| Event::Pointer(PointerEvent::new(PointerEventKind::Move, Offset::new(x, y)));
+        offer(&Event::Pointer(PointerEvent::new(
+            PointerEventKind::Down,
+            Offset::new(50.0, 5.0),
+        )));
+        assert!(
+            offer(&at(50.0, 0.0)).is_consumed(),
+            "the list answers the drag the slider gave up"
+        );
+        assert_eq!(offset.offset().y, 5.0);
+        assert_eq!(value.get(), 0.5);
+        // The decision is sticky: a move that turns sideways afterwards does
+        // not take the gesture back from the list that has it.
+        assert!(!offer(&at(80.0, 0.0)).is_consumed());
+        assert_eq!(value.get(), 0.5);
+        offer(&Event::Pointer(PointerEvent::new(
+            PointerEventKind::Up,
+            Offset::new(80.0, 0.0),
+        )));
+        assert_eq!(counted.changes.get(), 0);
+        assert_eq!(
+            counted.finishes.get(),
+            0,
+            "the gesture that ended belonged to the list, not to the track"
+        );
+    }
+
+    #[test]
+    fn a_key_press_steps_the_focused_slider() {
+        let counted = counted(0.0);
+        let value = counted.value.clone();
+        let mut harness = Harness::new(counted.slider());
+        // The press is what takes the focus, so the keyboard answers the
+        // slider the pointer last touched rather than the root of the tree.
+        harness.pointer(PointerEventKind::Down, START);
+        harness.pointer(PointerEventKind::Up, START);
+        assert_eq!(value.get(), 0.0);
+        assert!(harness.press(Key::ArrowRight).is_consumed());
+        assert_eq!(value.get(), 0.1);
+        assert!(harness.press(Key::ArrowRight).is_consumed());
+        assert_eq!(value.get(), 0.2);
+        assert!(harness.press(Key::ArrowLeft).is_consumed());
+        assert_eq!(value.get(), 0.1);
+        // A key held down repeats, and the thumb runs with it: the release of
+        // the same key is not a second step.
+        assert!(
+            !harness
+                .offer(&Event::Key(KeyEvent::new(Key::ArrowRight, false)))
+                .is_consumed()
+        );
+        assert_eq!(value.get(), 0.1);
+        assert!(harness.press(Key::End).is_consumed());
+        assert_eq!(value.get(), 1.0);
+        assert!(harness.press(Key::Home).is_consumed());
+        assert_eq!(value.get(), 0.0);
+        assert_eq!(
+            counted.changes.get(),
+            5,
+            "the press that changed nothing is not counted, the five keys that moved the thumb are"
+        );
+    }
+
+    #[test]
+    fn a_slider_answers_only_the_keys_of_its_own_axis_and_only_when_it_is_focused() {
+        let counted = counted(0.5);
+        let value = counted.value.clone();
+        let mut harness = Harness::new(counted.slider().focusable(false));
+        // Without the focus the slider is not the keyboard's to move.
+        harness.pointer(PointerEventKind::Down, MIDDLE);
+        assert!(!harness.press(Key::ArrowRight).is_consumed());
+        assert_eq!(value.get(), 0.5);
+        // The vertical keys belong to whatever scrolls.
+        let mut harness = Harness::new(Slider::new(value));
+        harness.pointer(PointerEventKind::Down, MIDDLE);
+        assert!(!harness.press(Key::ArrowDown).is_consumed());
+        assert!(!harness.press(Key::Tab).is_consumed());
+    }
+
+    #[test]
+    fn a_disabled_slider_answers_nothing() {
+        let counted = counted(0.5);
+        let value = counted.value.clone();
+        let mut harness = Harness::new(counted.slider().enabled(false));
+        assert!(
+            !harness.node.hit_testable(),
+            "the press falls through to whatever can still answer it"
+        );
+        assert!(
+            !harness
+                .pointer(PointerEventKind::Down, START)
+                .is_consumed()
+        );
+        assert!(
+            !harness
+                .pointer(PointerEventKind::Move, END)
+                .is_consumed()
+        );
+        assert!(
+            !harness
+                .pointer(PointerEventKind::Up, END)
+                .is_consumed()
+        );
+        assert!(!harness.press(Key::End).is_consumed());
+        assert_eq!(value.get(), 0.5);
+        assert_eq!(counted.changes.get(), 0);
+    }
+
+    #[test]
+    fn an_application_write_moves_the_thumb_without_a_report() {
+        let counted = counted(0.0);
+        let value = counted.value.clone();
+        let mut harness = Harness::new(counted.slider());
+        value.set(0.5);
+        assert_eq!(
+            harness.canvas().fills,
+            [
+                rail(Theme::light().colors.surface_variant),
+                active(40.0, Theme::light().colors.primary),
+                thumb(50.0, Theme::light().colors.primary),
+            ],
+            "the thumb of a written value is the thumb of a dragged one"
+        );
+        assert_eq!(counted.changes.get(), 0);
+    }
+
+    #[test]
+    fn the_track_is_painted_in_two_colors_up_to_the_thumb() {
+        let mut harness = Harness::new(Slider::new(MutableState::new(0.25)));
+        let scheme = Theme::light().colors;
+        assert_eq!(
+            harness.canvas().fills,
+            [
+                rail(scheme.surface_variant),
+                active(20.0, scheme.primary),
+                thumb(30.0, scheme.primary),
+            ]
+        );
+        // A thumb at the start of the range has no active track at all: the
+        // bar is drawn only once it has something to cover.
+        let mut harness = Harness::new(Slider::new(MutableState::new(0.0)));
+        assert_eq!(
+            harness.canvas().fills,
+            [rail(scheme.surface_variant), thumb(10.0, scheme.primary)]
+        );
+    }
+
+    #[test]
+    fn the_halo_shades_the_thumb_of_a_held_slider() {
+        let mut harness = Harness::new(Slider::new(MutableState::new(0.5)).focusable(false));
+        harness.pointer(PointerEventKind::Down, MIDDLE);
+        let canvas = harness.canvas();
+        let halo = defaults::HALO;
+        assert_eq!(
+            canvas.fills[0].0,
+            Rect::from_min_size(Offset::new(30.0, 10.0 - halo / 2.0), halo, halo),
+            "the layer is a circle over the center of the thumb"
+        );
+        assert!(
+            (canvas.fills[0].1.alpha - defaults::PRESSED_ALPHA).abs() < 0.001,
+            "{:?}",
+            canvas.fills[0].1
+        );
+    }
+
+    #[test]
+    fn a_disabled_slider_paints_the_disabled_alphas() {
+        let mut harness = Harness::new(Slider::new(MutableState::new(0.5)).enabled(false));
+        let scheme = Theme::light().colors;
+        assert_eq!(
+            harness.canvas().fills,
+            [
+                rail(
+                    scheme
+                        .surface_variant
+                        .with_alpha(defaults::DISABLED_INACTIVE_ALPHA)
+                ),
+                active(
+                    40.0,
+                    scheme
+                        .on_surface
+                        .with_alpha(defaults::DISABLED_ACTIVE_ALPHA)
+                ),
+                thumb(
+                    50.0,
+                    scheme
+                        .on_surface_variant
+                        .with_alpha(defaults::DISABLED_THUMB_ALPHA)
+                ),
+            ]
+        );
+    }
+
+    /// The inactive rail of a [`BOX`], in the space of the widget.
+    fn rail(color: Color) -> (Rect, Color) {
+        (
+            Rect::from_min_size(
+                Offset::new(defaults::TRACK_INSET, 10.0 - defaults::TRACK / 2.0),
+                80.0,
+                defaults::TRACK,
+            ),
+            color,
+        )
+    }
+
+    /// The active bar of a [`BOX`] `width` pixels along the rail.
+    fn active(width: f32, color: Color) -> (Rect, Color) {
+        (
+            Rect::from_min_size(
+                Offset::new(defaults::TRACK_INSET, 10.0 - defaults::TRACK / 2.0),
+                width,
+                defaults::TRACK,
+            ),
+            color,
+        )
+    }
+
+    /// The thumb of a [`BOX`] centered at local `x`.
+    fn thumb(x: f32, color: Color) -> (Rect, Color) {
+        (
+            Rect::from_min_size(
+                Offset::new(x - defaults::THUMB_WIDTH / 2.0, 0.0),
+                defaults::THUMB_WIDTH,
+                defaults::THUMB_HEIGHT,
+            ),
+            color,
+        )
+    }
+}
