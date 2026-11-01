@@ -17,11 +17,12 @@
 //! table the gestures are dispatched through.
 //!
 //! A viewport shows a part of content that is larger than the space it
-//! has: it measures the content at the size the content wants, places it
-//! shifted by the scroll offset, and clips it to its own box. What makes
-//! it a *reactive* viewport rather than a static scroller is that the
-//! offset is state — a wheel, a drag or a fling writes it, and the tree
-//! that reads it moves.
+//! has: it measures the content at the size the content wants along the
+//! axes it scrolls, places it shifted by the scroll offset, and lets the
+//! clip of its own modifier chain cut what falls outside the box. What
+//! makes it a *reactive* viewport rather than a static scroller is that
+//! the offset is state — a wheel, a drag or a fling writes it, and the
+//! tree that reads it moves.
 //!
 //! # The state outlives the render
 //!
@@ -44,8 +45,9 @@ use core::cell::RefCell;
 use codevar_kuitui_control::Timestamp;
 
 use crate::event::{Event, EventResult, PointerButton, PointerEvent, PointerEventKind, ScrollEvent};
-use crate::geometry::{Offset, Rect, Size};
+use crate::geometry::{Constraints, Offset, Rect, Size};
 use crate::state::MutableState;
+use crate::widget::{EventScope, MeasureScope, PlaceScope, Widget};
 
 /// The axes a viewport scrolls along.
 ///
@@ -1141,6 +1143,205 @@ fn past_slop(position: Offset, origin: Offset) -> bool {
     (position.x - origin.x).abs() > TOUCH_SLOP || (position.y - origin.y).abs() > TOUCH_SLOP
 }
 
+/// The widget that shows a part of a content larger than its box.
+///
+/// A viewport measures its content with the size the content asks for
+/// along the axes it scrolls — an unbounded height for a vertical
+/// viewport — and places it shifted by the offset its gestures write. It
+/// holds one content, the way `verticalScroll` of Compose does: a list is
+/// a [`Column`](crate::widgets::Column) inside the viewport, not several
+/// children of it.
+///
+/// The viewport does not clip. Clipping belongs to the chain of the node
+/// it sits in — `Viewport(modifier: Modifier::new().clip(), …)` — because
+/// the framework only cuts the painting a modifier chain asks to be cut,
+/// and a scroller that paints outside its own box is still a scroller.
+///
+/// # The gestures
+///
+/// Every pointer and wheel event that falls inside the box is folded into
+/// gestures by the [`GestureRegion`] of the viewport and answered by its
+/// [`ViewportDispatch`] table. For the gestures the table leaves empty the
+/// viewport has a built-in answer:
+///
+/// | Gesture | What the viewport does |
+/// | --- | --- |
+/// | [`Drag`] | moves the offset *against* the pointer, so content follows the finger |
+/// | [`Fling`] | starts [`ScrollState::start_fling`] with that same negated speed |
+/// | [`ScrollY`], [`ScrollX`] | moves the offset *with* the wheel |
+/// | the rest | nothing; the event keeps travelling |
+///
+/// A gesture that moved nothing is not consumed, so a viewport that is
+/// already at its end lets the wheel reach its parent: nested scrolling
+/// falls out of the leftover the state reports.
+///
+/// A fling needs a frame to run in. The loop calls [`ScrollState::advance`]
+/// with the time since the frame before, and the content keeps moving until
+/// the speed dies or an edge stops it.
+///
+/// [`Drag`]: Gesture::Drag
+/// [`Fling`]: Gesture::Fling
+/// [`ScrollY`]: Gesture::ScrollY
+/// [`ScrollX`]: Gesture::ScrollX
+#[derive(Clone)]
+pub struct Viewport {
+    /// The offset the gestures write and the layout reads.
+    state: ScrollState,
+    /// The region that turns the events of the box into gestures.
+    region: GestureRegion,
+    /// The box the viewport was last placed in, in window coordinates.
+    ///
+    /// A widget is handed no bounds when an event reaches it, so the
+    /// viewport records the rectangle it was placed in: the region needs
+    /// it to decide which events belong to it.
+    bounds: Rect,
+}
+
+impl Viewport {
+    /// A viewport that scrolls its content vertically.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            state: ScrollState::new(ScrollAxes::VERTICAL),
+            region: GestureRegion::new(ViewportDispatch::default()),
+            bounds: Rect::ZERO,
+        }
+    }
+
+    /// The viewport that scrolls with `state`.
+    ///
+    /// The state is a handle, so the application keeps the offset across
+    /// the recompositions that rebuild the widget: a content closure
+    /// creates it once with
+    /// [`use_state`](codevar_kuitui_rea::RenderCtx::use_state) and hands
+    /// the same handle to the viewport every render.
+    #[must_use]
+    pub fn scroll(mut self, state: ScrollState) -> Self {
+        self.state = state;
+        self
+    }
+
+    /// The viewport that answers the gestures its table names.
+    ///
+    /// A slot of the table overrides the built-in answer of that one
+    /// gesture and keeps the others, so a viewport that has to report
+    /// where a drag ended writes [`on_drag`](ViewportDispatch::on_drag)
+    /// and still scrolls.
+    #[must_use]
+    pub fn dispatch(mut self, table: ViewportDispatch) -> Self {
+        self.region = GestureRegion::new(table);
+        self
+    }
+
+    /// The state the viewport scrolls.
+    #[inline]
+    #[must_use]
+    pub const fn state(&self) -> &ScrollState {
+        &self.state
+    }
+
+    /// Whether a press is held inside the viewport.
+    ///
+    /// A widget that paints the pressed state of its own background reads
+    /// this instead of keeping an [`InteractionSource`](crate::effect::InteractionSource)
+    /// of its own, because the region already folds the press for it.
+    #[must_use]
+    pub fn is_pressed(&self) -> bool {
+        self.region.is_pressed()
+    }
+}
+
+impl Default for Viewport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Widget for Viewport {
+    /// Reports the size of the box, having measured the content at the
+    /// size it asks for.
+    ///
+    /// The axes the viewport scrolls are relaxed for the content — both
+    /// the minimum and the maximum of them — so content smaller than the
+    /// box stays small and content larger than it is measured whole; the
+    /// other axes keep the constraints of the parent, so a horizontal
+    /// viewport is as tall as it was asked to be.
+    fn measure(&mut self, scope: &mut MeasureScope<'_>, constraints: Constraints) -> Size {
+        let axes = self.state.axes();
+        let bounded = |scrolls: bool, min: f32, max: f32| {
+            if scrolls { (0.0, f32::INFINITY) } else { (min, max) }
+        };
+        let (min_width, max_width) = bounded(
+            axes.contains(ScrollAxes::HORIZONTAL),
+            constraints.min_width,
+            constraints.max_width,
+        );
+        let (min_height, max_height) = bounded(
+            axes.contains(ScrollAxes::VERTICAL),
+            constraints.min_height,
+            constraints.max_height,
+        );
+        let content = Constraints::new(min_width, max_width, min_height, max_height);
+        let mut size = Size::ZERO;
+        for index in 0..scope.child_count() {
+            let child = scope.measure_child(index, content);
+            size = Size::new(size.width.max(child.width), size.height.max(child.height));
+        }
+        let viewport = constraints.enforce(size);
+        self.state.set_layout(viewport, size);
+        viewport
+    }
+
+    /// Places the content shifted by the offset, and records the box the
+    /// gestures are recognized inside.
+    fn place(&mut self, scope: &mut PlaceScope<'_>, bounds: Rect) {
+        self.bounds = bounds;
+        let offset = self.state.offset();
+        let shift = Offset::new(-offset.x, -offset.y);
+        for index in 0..scope.child_count() {
+            scope.place_child(index, shift);
+        }
+    }
+
+    fn on_event(&mut self, scope: &mut EventScope<'_>, event: &Event) -> EventResult {
+        let _ = scope;
+        let state = self.state.clone();
+        self.region
+            .on_event(event, self.bounds, move |gesture| match gesture {
+                Gesture::Drag { delta } => scrolled(&state, Offset::new(-delta.x, -delta.y)),
+                Gesture::Fling { velocity } => {
+                    if *velocity == Offset::ZERO {
+                        return EventResult::Ignored;
+                    }
+                    state.start_fling(Offset::new(-velocity.x, -velocity.y));
+                    EventResult::Consumed
+                }
+                Gesture::ScrollY { delta } => scrolled(&state, Offset::new(0.0, *delta)),
+                Gesture::ScrollX { delta } => scrolled(&state, Offset::new(*delta, 0.0)),
+                _ => EventResult::Ignored,
+            })
+    }
+
+    /// The viewport reads the pointer: an event inside its box is its
+    /// gesture to make, even when none of its children takes it.
+    fn hit_testable(&self) -> bool {
+        true
+    }
+}
+
+/// Whether an offset move of `asked` reached the state at all.
+///
+/// The state hands back what it could not consume, so a move that came
+/// back whole is a move the viewport has no use for — and the event keeps
+/// travelling to a parent that may.
+fn scrolled(state: &ScrollState, asked: Offset) -> EventResult {
+    if state.scroll_by(asked) == asked {
+        EventResult::Ignored
+    } else {
+        EventResult::Consumed
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::event::PointerButtons;
@@ -1667,5 +1868,160 @@ mod tests {
         // One pixel per millisecond is the slope of every sample kept.
         let velocity = tracker.velocity();
         assert!((velocity.x - 1_000.0).abs() < 1.0, "{velocity:?}");
+    }
+
+    use crate::compose::Composition;
+    use crate::node::Node;
+    use crate::theme::Theme;
+
+    /// A page of content of a fixed size, to scroll inside a viewport.
+    struct Page {
+        size: Size,
+    }
+
+    impl Widget for Page {
+        fn measure(&mut self, _scope: &mut MeasureScope<'_>, constraints: Constraints) -> Size {
+            constraints.enforce(self.size)
+        }
+    }
+
+    /// A laid-out composition of a viewport box showing a page of `content`.
+    fn scrolling(state: ScrollState, box_size: Size, content: Size) -> Composition<'static> {
+        let mut composition = Composition::new(Theme::light());
+        composition.set_content(move |_| {
+            Node::new(Viewport::new().scroll(state.clone())).child(Node::new(Page { size: content }))
+        });
+        composition.recompose(true);
+        composition.layout(box_size, true);
+        composition
+    }
+
+    /// The window a test viewport is laid out in.
+    const WINDOW: Size = Size::new(100.0, 40.0);
+
+    #[test]
+    fn a_viewport_reports_its_box_and_measures_its_content_whole() {
+        let state = ScrollState::new(ScrollAxes::VERTICAL);
+        let composition = scrolling(state.clone(), WINDOW, Size::new(300.0, 400.0));
+        assert_eq!(composition.root().size(), WINDOW);
+        // The page is cut to the width the viewport was given, but is
+        // measured at the height it asks for: that is what there is to
+        // scroll through.
+        assert_eq!(state.content(), Size::new(100.0, 400.0));
+        assert_eq!(state.viewport(), WINDOW);
+        assert_eq!(state.max(), Offset::new(0.0, 360.0));
+    }
+
+    #[test]
+    fn a_wheel_inside_the_box_scrolls_the_content() {
+        let state = ScrollState::new(ScrollAxes::VERTICAL);
+        let mut composition = scrolling(state.clone(), WINDOW, Size::new(300.0, 400.0));
+        let result = composition.handle_event(&wheel(Offset::new(0.0, 20.0), Offset::new(50.0, 20.0), 1_000));
+        assert!(result.is_consumed());
+        assert_eq!(state.offset().y, 20.0);
+        composition.layout(WINDOW, true);
+        // The page sits above the top of the box by the offset: the box
+        // shows the part of it the offset reached.
+        assert_eq!(
+            composition.root().children()[0].bounds().origin,
+            Offset::new(0.0, -20.0)
+        );
+    }
+
+    #[test]
+    fn a_wheel_outside_the_box_is_not_the_viewports_business() {
+        let state = ScrollState::new(ScrollAxes::VERTICAL);
+        let mut composition = scrolling(state.clone(), WINDOW, Size::new(300.0, 400.0));
+        let result =
+            composition.handle_event(&wheel(Offset::new(0.0, 20.0), Offset::new(500.0, 500.0), 1_000));
+        assert!(!result.is_consumed());
+        assert_eq!(state.offset(), Offset::ZERO);
+    }
+
+    #[test]
+    fn a_drag_moves_the_content_with_the_finger() {
+        let state = ScrollState::new(ScrollAxes::VERTICAL);
+        let mut composition = scrolling(state.clone(), WINDOW, Size::new(300.0, 400.0));
+        composition.handle_event(&pointer(PointerEventKind::Down, Offset::new(50.0, 30.0), 1_000));
+        composition.handle_event(&pointer(PointerEventKind::Move, Offset::new(50.0, 20.0), 2_000));
+        composition.handle_event(&pointer(PointerEventKind::Up, Offset::new(50.0, 20.0), 3_000));
+        // The finger went up, so the content followed it and the offset
+        // grew: the opposite of the pointer is the direction of a scroll.
+        assert_eq!(state.offset().y, 10.0);
+    }
+
+    #[test]
+    fn a_drag_past_the_end_of_the_content_is_left_to_the_parent() {
+        let state = ScrollState::new(ScrollAxes::VERTICAL);
+        let mut composition = scrolling(state.clone(), WINDOW, Size::new(300.0, 400.0));
+        state.scroll_by(Offset::new(0.0, 360.0));
+        composition.handle_event(&pointer(PointerEventKind::Down, Offset::new(50.0, 30.0), 1_000));
+        let result =
+            composition.handle_event(&pointer(PointerEventKind::Move, Offset::new(50.0, 10.0), 10_000));
+        // Already at the end: the whole ask came back, so the viewport did
+        // not take the event and whoever is outside it still can.
+        assert!(!result.is_consumed());
+        assert_eq!(state.offset().y, 360.0);
+    }
+
+    #[test]
+    fn a_fling_throws_the_content_the_way_the_drag_was_moving() {
+        let state = ScrollState::new(ScrollAxes::VERTICAL);
+        let mut composition = scrolling(state.clone(), WINDOW, Size::new(300.0, 400.0));
+        composition.handle_event(&pointer(PointerEventKind::Down, Offset::new(50.0, 35.0), 1_000));
+        for step in 1..=3u32 {
+            composition.handle_event(&pointer(
+                PointerEventKind::Move,
+                Offset::new(50.0, 35.0 - step as f32 * 8.0),
+                u64::from(step) * 4_000,
+            ));
+        }
+        composition.handle_event(&pointer(PointerEventKind::Up, Offset::new(50.0, 11.0), 13_000));
+        assert!(state.is_flinging());
+        let after_drag = state.offset().y;
+        assert!(state.advance(Timestamp::from_micros(8_000)));
+        // Thrown the way the finger went: the content keeps rising after
+        // the release.
+        assert!(state.offset().y > after_drag, "{:?}", state.offset());
+    }
+
+    #[test]
+    fn a_horizontal_viewport_leaves_the_vertical_wheel_alone() {
+        let state = ScrollState::new(ScrollAxes::HORIZONTAL);
+        let mut composition = scrolling(state.clone(), WINDOW, Size::new(400.0, 300.0));
+        let result = composition.handle_event(&wheel(Offset::new(0.0, 20.0), Offset::new(50.0, 20.0), 1_000));
+        assert!(!result.is_consumed());
+        assert_eq!(state.offset(), Offset::ZERO);
+        let result = composition.handle_event(&wheel(Offset::new(20.0, 0.0), Offset::new(50.0, 20.0), 2_000));
+        assert!(result.is_consumed());
+        assert_eq!(state.offset().x, 20.0);
+    }
+
+    #[test]
+    fn a_viewport_answers_the_gesture_its_table_names() {
+        let clicks = Rc::new(core::cell::Cell::new(0_u32));
+        let observed = Rc::clone(&clicks);
+        let table = ViewportDispatch::new().on_click(move |_position| {
+            observed.set(observed.get() + 1);
+            EventResult::Consumed
+        });
+        let state = ScrollState::new(ScrollAxes::VERTICAL);
+        let mut composition = Composition::new(Theme::light());
+        composition.set_content(move |_| {
+            Node::new(
+                Viewport::new()
+                    .scroll(state.clone())
+                    .dispatch(table.clone()),
+            )
+            .child(Node::new(Page {
+                size: Size::new(300.0, 400.0),
+            }))
+        });
+        composition.recompose(true);
+        composition.layout(WINDOW, true);
+        composition.handle_event(&pointer(PointerEventKind::Down, Offset::new(50.0, 20.0), 1_000));
+        let result = composition.handle_event(&pointer(PointerEventKind::Up, Offset::new(50.0, 20.0), 2_000));
+        assert!(result.is_consumed());
+        assert_eq!(clicks.get(), 1);
     }
 }

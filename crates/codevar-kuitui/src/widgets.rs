@@ -42,7 +42,7 @@ pub use crate::window::{ResizeEdge, ResizeHandle, TitleBar, WindowButton, Window
 pub use text::{ColorableText, Text};
 pub use viewport::{
     FLING_FRICTION, FLING_STOP_VELOCITY, Gesture, GestureHandler, GestureRegion, ScrollAxes, ScrollState,
-    TOUCH_SLOP, VELOCITY_WINDOW, VelocityTracker, ViewportDispatch,
+    TOUCH_SLOP, VELOCITY_WINDOW, VelocityTracker, Viewport, ViewportDispatch,
 };
 
 /// Lays its children out one below the other.
