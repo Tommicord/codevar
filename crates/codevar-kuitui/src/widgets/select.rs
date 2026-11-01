@@ -1154,3 +1154,529 @@ fn draw_caret(scope: &mut DrawScope<'_>, field: Rect, open: bool, color: Color) 
     scope.draw_line(first, middle, color, defaults::CARET_STROKE);
     scope.draw_line(middle, last, color, defaults::CARET_STROKE);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::{PointerEvent, ScrollEvent};
+    use crate::node::{self, Node};
+    use crate::theme::Theme;
+    use alloc::string::String;
+    use core::cell::RefCell;
+
+    /// The chrome a field is wider than its own text by: the padding of both
+    /// edges and the box of the trailing icon.
+    const CHROME: f32 = 2.0 * defaults::PADDING + defaults::ICON_BOX;
+
+    /// A point inside the field of every select a test lays out.
+    const FIELD: Offset = Offset::new(28.0, 28.0);
+
+    /// A point no field, row or list of any size contains.
+    const OUTSIDE: Offset = Offset::new(10_000.0, 10_000.0);
+
+    /// The label wide enough to outmeasure the numbered options a test builds.
+    const WIDE: &str = "the widest option of them all";
+
+    /// Four options whose widest label is the last of them.
+    const COLORS: [&str; 4] = ["Red", "Green", "Blue", "Yellow"];
+
+    /// Whether two lengths agree to within a hundredth of a pixel.
+    fn near(actual: f32, expected: f32) -> bool {
+        (actual - expected).abs() < 0.01
+    }
+
+    /// The center of the row `index` of an open list, in window coordinates.
+    fn row_center(index: usize) -> Offset {
+        Offset::new(
+            28.0,
+            defaults::FIELD_HEIGHT + (index as f32 + 0.5) * defaults::ITEM_HEIGHT,
+        )
+    }
+
+    /// `count` options labelled `00`, `01`, …, the one at `widest` carrying
+    /// the label no other of them can outmeasure.
+    fn options(count: usize, widest: usize) -> SelectOptions {
+        let names: Vec<String> = (0..count)
+            .map(|index| {
+                if index == widest {
+                    String::from(WIDE)
+                } else {
+                    alloc::format!("{index:02}")
+                }
+            })
+            .collect();
+        let labels: Vec<&str> = names.iter().map(String::as_str).collect();
+        SelectOptions::new(&labels)
+    }
+
+    /// What one call of the change handler saw.
+    struct Report {
+        /// The position the handler was given.
+        index: usize,
+        /// The option the field showed when it ran.
+        chosen: Option<usize>,
+        /// Whether the list was still open when it ran.
+        opening: bool,
+    }
+
+    /// A tree of one select: the state the widget writes and the test reads,
+    /// and the constraints it is laid out under.
+    struct Harness {
+        theme: Theme,
+        node: Node,
+        focus: Option<Vec<usize>>,
+        constraints: Constraints,
+        selection: MutableState<Option<usize>>,
+        mode: MutableState<SelectMode>,
+        scroll: ScrollState,
+        interaction: InteractionSource,
+        reports: Rc<RefCell<Vec<Report>>>,
+    }
+
+    impl Harness {
+        /// A tree of `select`, measured for `constraints` and placed at the
+        /// origin, with a change handler that records every report it makes.
+        fn new(constraints: Constraints, select: Select) -> Self {
+            let theme = Theme::light();
+            let selection = select.selection().clone();
+            let mode = select.mode().clone();
+            let scroll = select.scroll_state().clone();
+            let interaction = select.interaction().clone();
+            let reports = Rc::new(RefCell::new(Vec::new()));
+            let seen = Rc::clone(&reports);
+            let chosen = selection.clone();
+            let opening = mode.clone();
+            let select = select.on_change(move |index| {
+                seen.borrow_mut().push(Report {
+                    index,
+                    chosen: chosen.get(),
+                    opening: opening.get().is_open(),
+                });
+            });
+            let mut node = Node::new(select);
+            let size = node.measure(&theme, constraints);
+            node.place(Rect::from_min_size(Offset::ZERO, size.width, size.height));
+            Self {
+                theme,
+                node,
+                focus: None,
+                constraints,
+                selection,
+                mode,
+                scroll,
+                interaction,
+                reports,
+            }
+        }
+
+        /// A select over `options` whose list shows `rows` of them at a time,
+        /// with the whole page unbounded.
+        fn list(options: SelectOptions, rows: usize) -> Self {
+            let select = Select::new()
+                .options(options)
+                .max_height(rows as f32 * defaults::ITEM_HEIGHT);
+            Self::new(Constraints::unbounded(), select)
+        }
+
+        /// Lays the tree out again: what a recomposition does once the list
+        /// has opened and the widget asks for the height of its rows.
+        fn relayout(&mut self) {
+            let size = self.node.measure(&self.theme, self.constraints);
+            self.node
+                .place(Rect::from_min_size(Offset::ZERO, size.width, size.height));
+        }
+
+        /// Opens the list the way a pointer does and lays out its rows.
+        fn open(&mut self) {
+            self.pointer(PointerEventKind::Down, FIELD);
+            self.pointer(PointerEventKind::Up, FIELD);
+            self.relayout();
+        }
+
+        /// Offers `event` to the tree and reports what it answered.
+        fn offer(&mut self, event: &Event) -> EventResult {
+            let mut path = Vec::new();
+            node::dispatch_event(&mut self.node, &self.theme, &mut path, &mut self.focus, event)
+        }
+
+        /// Offers a pointer event of `kind` at `position`.
+        fn pointer(&mut self, kind: PointerEventKind, position: Offset) -> EventResult {
+            self.offer(&Event::Pointer(PointerEvent::new(kind, position)))
+        }
+
+        /// Offers a pointer event of `kind` at `position` that the backend
+        /// observed at `micros`, which is what makes a speed measurable.
+        fn pointer_at(&mut self, kind: PointerEventKind, position: Offset, micros: u64) -> EventResult {
+            self.offer(&Event::Pointer(
+                PointerEvent::new(kind, position).with_time(Timestamp::from_micros(micros)),
+            ))
+        }
+
+        /// Offers the wheel `delta` under `position`.
+        fn wheel(&mut self, delta: Offset, position: Offset) -> EventResult {
+            self.offer(&Event::Scroll(ScrollEvent::new(delta, position)))
+        }
+    }
+
+    #[test]
+    fn a_select_measures_its_field_and_the_widest_row_it_shows() {
+        let theme = Theme::light();
+        let harness = Harness::new(
+            Constraints::unbounded(),
+            Select::new().options(SelectOptions::new(&COLORS)),
+        );
+        let widest = theme
+            .metrics
+            .as_ref()
+            .advance("Yellow", &theme.typography.label)
+            + 2.0 * defaults::PADDING;
+        assert!(
+            widest > CHROME,
+            "the labels of the test ask for more room than the chrome of the field"
+        );
+        assert!(
+            near(harness.node.size().width, widest),
+            "the row that needs the most room sets the width of the field"
+        );
+        assert_eq!(harness.node.size().height, defaults::FIELD_HEIGHT);
+    }
+
+    #[test]
+    fn the_width_is_measured_over_the_window_of_rows_around_the_choice() {
+        let theme = Theme::light();
+        let widest = theme
+            .metrics
+            .as_ref()
+            .advance(WIDE, &theme.typography.label)
+            + 2.0 * defaults::PADDING;
+        let field_of = |index: usize| {
+            theme
+                .metrics
+                .as_ref()
+                .advance(&alloc::format!("{index:02}"), &theme.typography.body)
+                + CHROME
+        };
+        let mut harness = Harness::new(Constraints::unbounded(), Select::new().options(options(40, 39)));
+        assert!(
+            near(harness.node.size().width, CHROME),
+            "with nothing chosen the window of rows measured is the first fifteen"
+        );
+        harness.selection.set(Some(20));
+        harness.relayout();
+        assert!(
+            near(harness.node.size().width, field_of(20)),
+            "the window from the choice runs 20 .. 35, so the label at 39 cannot widen it"
+        );
+        harness.selection.set(Some(30));
+        harness.relayout();
+        assert!(
+            near(harness.node.size().width, widest),
+            "the rows the forward run could not reach are measured backwards"
+        );
+    }
+
+    #[test]
+    fn an_open_list_adds_its_rows_to_the_height_of_the_field() {
+        let mut harness = Harness::list(SelectOptions::new(&COLORS), 4);
+        assert_eq!(harness.node.size().height, defaults::FIELD_HEIGHT);
+        harness.open();
+        assert_eq!(
+            harness.node.size().height,
+            defaults::FIELD_HEIGHT + 4.0 * defaults::ITEM_HEIGHT,
+            "the list is part of the layout: it pushes the page rather than covering it"
+        );
+        harness.pointer(PointerEventKind::Down, FIELD);
+        harness.pointer(PointerEventKind::Up, FIELD);
+        harness.relayout();
+        assert_eq!(harness.node.size().height, defaults::FIELD_HEIGHT);
+    }
+
+    #[test]
+    fn the_menu_is_cut_to_the_room_the_page_leaves_before_the_list_opens() {
+        let mut harness = Harness::new(
+            Constraints::new(0.0, f32::INFINITY, 0.0, 100.0),
+            Select::new().options(options(20, usize::MAX)),
+        );
+        assert_eq!(
+            harness.node.size().height,
+            defaults::FIELD_HEIGHT,
+            "a closed select takes no room for the list it is not showing"
+        );
+        assert!(
+            near(harness.scroll.viewport().height, 100.0 - defaults::FIELD_HEIGHT),
+            "the list learns the window it will get while it is still closed, so the row it \
+             points at is on screen the frame it appears"
+        );
+        assert!(near(
+            harness.scroll.content().height,
+            20.0 * defaults::ITEM_HEIGHT
+        ));
+        harness.open();
+        assert_eq!(
+            harness.node.size().height,
+            100.0,
+            "the field plus the room the page left under it"
+        );
+    }
+
+    #[test]
+    fn a_select_with_no_options_never_opens() {
+        let mut harness = Harness::new(Constraints::unbounded(), Select::new());
+        assert!(
+            !harness
+                .pointer(PointerEventKind::Down, FIELD)
+                .is_consumed(),
+            "the press of a field with no list is still reported and not taken"
+        );
+        assert!(
+            harness
+                .pointer(PointerEventKind::Up, FIELD)
+                .is_consumed(),
+            "the field still answers the click it holds"
+        );
+        assert!(
+            !harness.mode.get().is_open(),
+            "a list with no row has nothing to show"
+        );
+    }
+
+    #[test]
+    fn a_click_on_the_field_opens_the_list_and_the_next_puts_it_away() {
+        let mut harness = Harness::list(SelectOptions::new(&COLORS), 4);
+        harness.pointer(PointerEventKind::Down, FIELD);
+        assert!(
+            harness
+                .interaction
+                .state()
+                .contains(InteractionState::PRESSED),
+            "the field reports the button it is holding"
+        );
+        harness.open();
+        assert_eq!(harness.mode.get(), SelectMode::Open { highlight: 0 });
+        assert!(
+            !harness
+                .pointer(PointerEventKind::Down, FIELD)
+                .is_consumed(),
+            "the down is left to the page so an ancestor can drag with it"
+        );
+        assert!(
+            harness
+                .pointer(PointerEventKind::Up, FIELD)
+                .is_consumed()
+        );
+        assert_eq!(harness.mode.get(), SelectMode::Closed);
+    }
+
+    #[test]
+    fn opening_points_at_the_chosen_row_and_pulls_it_onto_the_screen() {
+        let mut harness = Harness::list(options(20, usize::MAX), 2);
+        harness.selection.set(Some(17));
+        harness.relayout();
+        harness.open();
+        assert_eq!(harness.mode.get(), SelectMode::Open { highlight: 17 });
+        assert!(
+            near(
+                harness.scroll.offset().y,
+                17.0 * defaults::ITEM_HEIGHT + defaults::ITEM_HEIGHT - harness.scroll.viewport().height
+            ),
+            "the chosen row is scrolled the shortest distance that leaves it on screen"
+        );
+    }
+
+    #[test]
+    fn a_press_on_the_field_is_reported_and_a_drag_leaves_it() {
+        let mut harness = Harness::list(SelectOptions::new(&COLORS), 4);
+        harness.pointer(PointerEventKind::Down, FIELD);
+        assert!(
+            harness
+                .interaction
+                .state()
+                .contains(InteractionState::PRESSED)
+        );
+        assert!(
+            !harness
+                .pointer(PointerEventKind::Move, Offset::new(28.0, 40.0))
+                .is_consumed(),
+            "a pointer that travelled past the slop is the page's drag, not a click"
+        );
+        assert!(
+            !harness
+                .interaction
+                .state()
+                .contains(InteractionState::PRESSED),
+            "the field lets go of a press that will never become a click"
+        );
+        harness.pointer(PointerEventKind::Up, Offset::new(28.0, 40.0));
+        assert!(!harness.mode.get().is_open());
+    }
+
+    #[test]
+    fn a_release_outside_the_field_ends_the_press_and_opens_nothing() {
+        let mut harness = Harness::list(SelectOptions::new(&COLORS), 4);
+        harness.pointer(PointerEventKind::Down, FIELD);
+        assert!(
+            harness
+                .pointer(PointerEventKind::Up, OUTSIDE)
+                .is_consumed(),
+            "the region that held the press still ends it, even when nothing completed"
+        );
+        assert!(
+            !harness.mode.get().is_open(),
+            "a pointer that left the box before releasing pressed no field"
+        );
+        assert!(
+            !harness
+                .interaction
+                .state()
+                .contains(InteractionState::PRESSED)
+        );
+    }
+
+    #[test]
+    fn a_click_on_a_row_chooses_it_writes_and_then_dismisses() {
+        let mut harness = Harness::list(SelectOptions::new(&COLORS), 4);
+        harness.open();
+        assert!(
+            !harness
+                .pointer(PointerEventKind::Down, row_center(2))
+                .is_consumed()
+        );
+        assert_eq!(harness.mode.get(), SelectMode::Open { highlight: 2 });
+        assert!(
+            harness
+                .pointer(PointerEventKind::Up, row_center(2))
+                .is_consumed()
+        );
+        assert_eq!(harness.selection.get(), Some(2));
+        assert!(
+            !harness.mode.get().is_open(),
+            "the list is dismissed after the choice"
+        );
+        let reports = harness.reports.borrow();
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].index, 2);
+        assert_eq!(
+            reports[0].chosen,
+            Some(2),
+            "the handler is told about the choice the field already shows"
+        );
+        assert!(
+            reports[0].opening,
+            "the handler runs before the list is put away, as the platform orders them"
+        );
+    }
+
+    #[test]
+    fn choosing_the_option_already_chosen_reports_nothing_but_still_closes() {
+        let mut harness = Harness::list(SelectOptions::new(&COLORS), 4);
+        harness.selection.set(Some(1));
+        harness.open();
+        harness.pointer(PointerEventKind::Down, row_center(1));
+        assert!(
+            harness
+                .pointer(PointerEventKind::Up, row_center(1))
+                .is_consumed()
+        );
+        assert_eq!(harness.selection.get(), Some(1));
+        assert!(
+            harness.reports.borrow().is_empty(),
+            "a tap on the option already chosen is an answer, not a change"
+        );
+        assert!(!harness.mode.get().is_open());
+    }
+
+    #[test]
+    fn a_drag_that_travelled_never_answers_for_the_option_it_passed_over() {
+        let mut harness = Harness::list(options(20, usize::MAX), 2);
+        harness.open();
+        harness.pointer(PointerEventKind::Down, row_center(1));
+        harness.pointer(PointerEventKind::Move, row_center(0));
+        harness.pointer(PointerEventKind::Up, row_center(0));
+        assert!(
+            harness.selection.get().is_none(),
+            "the finger travelled over the rows, so it chose none of them"
+        );
+        assert!(harness.reports.borrow().is_empty());
+        assert!(harness.mode.get().is_open(), "the list stayed on screen");
+    }
+
+    #[test]
+    fn a_drag_scrolls_the_rows_and_hands_the_page_what_they_cannot_use() {
+        let mut harness = Harness::list(options(20, usize::MAX), 2);
+        harness.open();
+        harness.pointer(PointerEventKind::Down, Offset::new(28.0, 140.0));
+        assert!(
+            !harness
+                .pointer(PointerEventKind::Move, Offset::new(28.0, 170.0))
+                .is_consumed(),
+            "a drag that would pull the list past its first row belongs to the page"
+        );
+        assert!(near(harness.scroll.offset().y, 0.0));
+        assert!(
+            harness
+                .pointer(PointerEventKind::Move, Offset::new(28.0, 110.0))
+                .is_consumed(),
+            "the other way the rows have room, and they take the drag"
+        );
+        assert!(near(harness.scroll.offset().y, 60.0));
+        harness.pointer(PointerEventKind::Up, Offset::new(28.0, 110.0));
+    }
+
+    #[test]
+    fn the_wheel_moves_the_axis_the_list_can_scroll() {
+        let mut harness = Harness::list(options(20, usize::MAX), 2);
+        harness.open();
+        assert!(
+            harness
+                .wheel(Offset::new(0.0, 40.0), row_center(0))
+                .is_consumed()
+        );
+        assert!(near(harness.scroll.offset().y, 40.0));
+        assert!(
+            !harness
+                .wheel(Offset::new(30.0, 0.0), row_center(0))
+                .is_consumed(),
+            "a list that only runs down leaves the sideways part of the wheel to the page"
+        );
+        assert!(
+            !harness
+                .wheel(Offset::new(0.0, 10.0), FIELD)
+                .is_consumed()
+        );
+        assert!(
+            near(harness.scroll.offset().y, 40.0),
+            "the wheel under the field is not the list's"
+        );
+    }
+
+    #[test]
+    fn a_fast_release_throws_the_list_and_the_next_press_catches_it() {
+        let mut harness = Harness::list(options(20, usize::MAX), 2);
+        harness.open();
+        harness.pointer_at(PointerEventKind::Down, Offset::new(28.0, 140.0), 0);
+        harness.pointer_at(PointerEventKind::Move, Offset::new(28.0, 120.0), 8_000);
+        harness.pointer_at(PointerEventKind::Move, Offset::new(28.0, 90.0), 16_000);
+        assert!(
+            harness
+                .pointer_at(PointerEventKind::Up, Offset::new(28.0, 90.0), 16_000)
+                .is_consumed()
+        );
+        assert!(
+            harness.scroll.is_flinging(),
+            "a release the backend timed is fast enough to carry the rows"
+        );
+        let thrown = harness.scroll.offset().y;
+        harness
+            .scroll
+            .advance(Timestamp::from_micros(16_000));
+        assert!(
+            harness.scroll.offset().y > thrown,
+            "the fling keeps moving the content after the pointer left it"
+        );
+        harness.pointer(PointerEventKind::Down, Offset::new(28.0, 100.0));
+        assert!(
+            !harness.scroll.is_flinging(),
+            "the pointer that came down owns the content from here"
+        );
+    }
+}
