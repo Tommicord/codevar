@@ -1356,8 +1356,10 @@ impl Widget for Viewport {
 ///
 /// The state hands back what it could not consume, so a move that came
 /// back whole is a move the viewport has no use for — and the event keeps
-/// travelling to a parent that may.
-fn scrolled(state: &ScrollState, asked: Offset) -> EventResult {
+/// travelling to a parent that may. A widget that scrolls a region of its
+/// own — the list of a [`Select`](super::Select) — answers with the same
+/// leftover, so a drag the rows cannot use reaches the page that can.
+pub(super) fn scrolled(state: &ScrollState, asked: Offset) -> EventResult {
     if state.scroll_by(asked) == asked {
         EventResult::Ignored
     } else {
