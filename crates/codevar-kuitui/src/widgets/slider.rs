@@ -1,0 +1,792 @@
+//! Copyright 2026 Codevar Project
+//! Licensed under the Apache License, Version 2.0 (the
+//! "License"); you may not use this file except in
+//! compliance with the License. You may obtain a copy of the
+//! License at
+//!
+//!   https://www.apache.org/licenses/LICENSE-2.0
+//!
+//! Unless required by applicable law or agreed to in
+//! writing, software distributed under the License is
+//! distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+//! CONDITIONS OF ANY KIND, either express or implied. See the
+//! License for the specific language governing permissions and
+//! limitations under the License.
+
+//! The slider: a [`MutableState`] of `f32` written by a drag along a track.
+//!
+//! A slider is the third answer the [`GestureRegion`] gives — after the
+//! viewport that scrolls its content and the button that flips a value, the
+//! widget that *tracks the pointer*. That is what makes it the hardest of
+//! the three: the value is not a state to toggle but a position to follow,
+//! so every move of a drag it owns has to be turned into a number, and the
+//! claim on those moves has to be settled without stealing the scroll of the
+//! list that holds it.
+//!
+//! # The claim a drag makes
+//!
+//! A press inside the slider moves the thumb to where the finger landed —
+//! the way a track bar answers a tap — and is reported to the interaction
+//! source but *not* consumed, so an ancestor viewport takes the same down
+//! and can scroll with it. The first drag past the slop is what the two
+//! contend over, and the axis that travelled further wins: a slider is a
+//! horizontal control, so a finger that came down on the track and went
+//! sideways drags the thumb while one that went down the list scrolls it.
+//! The decision is sticky for the rest of the press, which is the rule a
+//! horizontal drag carries in the platform: once the ancestor has the
+//! gesture, a move that happens to turn sideways does not take it back.
+//!
+//! The claim is state, not a field: writing the value marks the state dirty,
+//! the recomposition that follows rebuilds the widget, and a claim kept in a
+//! plain field would be lost in the middle of the drag that made it.
+//! [`DragClaim`] is therefore a handle over a cell, shared by every copy of
+//! the slider, the way the region keeps its recognition shared.
+//!
+//! # The value of a position
+//!
+//! A position, not a delta, decides the value: the platform computes the
+//! thumb from where the finger is rather than from how far the last report
+//! said it moved, so a drag that skips pixels still lands the thumb under the
+//! finger and no rounding drifts along the way.
+//!
+//! The two handlers split the way a check box splits its value from its
+//! report: [`Slider::on_change`] sees every value the *user* moved the thumb
+//! to, one call per move that changed it, while [`Slider::on_finish`] sees
+//! the end of the gesture. An application that writes the state itself
+//! triggers neither — it changes what the slider paints, which is the same
+//! rule Compose draws between `value` and `onValueChange`.
+//!
+//! # Why the thumb is a bar
+//!
+//! Material 3 gave the slider a thumb 4 pixels wide and 20 tall rather than
+//! the disc of the previous version, and the track a height of 4, so the
+//! drawing here reserves 10 pixels at each end — half the height of the thumb
+//! — for its center to travel in. The state layer is a circle of 40 pixels
+//! over that center, which is why the widget measures only 20 tall and lets
+//! the layer overflow it: the platform reserves the height of the thumb, not
+//! the height of the halo.
+
+use alloc::rc::Rc;
+use core::cell::Cell;
+use core::ops::{BitOr, BitOrAssign};
+
+use crate::color::{Color, ColorScheme};
+use crate::effect::{InteractionSource, InteractionState};
+use crate::event::{Event, EventResult, Key, PointerEventKind};
+use crate::geometry::{Constraints, Offset, Rect, Size};
+use crate::paint::CornerRadii;
+use crate::state::MutableState;
+use crate::widget::{DrawScope, EventScope, MeasureScope, PlaceScope, Widget};
+use crate::widgets::{Gesture, GestureRegion, ViewportDispatch};
+
+/// The handler a slider calls with each value the user dragged to.
+pub type SliderChange = Rc<dyn Fn(f32)>;
+
+/// The handler a slider calls when the gesture that moved it ended.
+pub type SliderFinished = Rc<dyn Fn()>;
+
+/// The geometry and the alphas of the Material 3 slider.
+pub mod defaults {
+    /// The height of the track.
+    pub const TRACK: f32 = 4.0;
+
+    /// The height of the thumb — and the height the slider measures.
+    pub const THUMB_HEIGHT: f32 = 20.0;
+
+    /// The width of the thumb.
+    ///
+    /// Material 3 made the thumb a bar the width of the track rather than
+    /// the disc of Material 2, which is why one constant serves both.
+    pub const THUMB_WIDTH: f32 = 4.0;
+
+    /// The distance each end of the track keeps for the center of the thumb.
+    ///
+    /// Half the height of the thumb, so the bar stands fully inside the box
+    /// at both ends of the range.
+    pub const TRACK_INSET: f32 = 10.0;
+
+    /// The diameter of the state layer drawn over the thumb.
+    pub const HALO: f32 = 40.0;
+
+    /// The width a slider asks for when nothing bounds it.
+    pub const PREFERRED_WIDTH: f32 = 200.0;
+
+    /// The alpha of the state layer while the pointer is over the slider.
+    pub const HOVER_ALPHA: f32 = 0.08;
+
+    /// The alpha of the state layer while a drag holds the thumb.
+    pub const PRESSED_ALPHA: f32 = 0.10;
+
+    /// The alpha of the state layer while the slider has the keyboard focus.
+    pub const FOCUSED_ALPHA: f32 = 0.12;
+
+    /// The alpha of the active track of a slider that answers nothing.
+    pub const DISABLED_ACTIVE_ALPHA: f32 = 0.38;
+
+    /// The alpha of the inactive track of a slider that answers nothing.
+    pub const DISABLED_INACTIVE_ALPHA: f32 = 0.12;
+
+    /// The alpha of the thumb and the ticks of a disabled slider.
+    pub const DISABLED_THUMB_ALPHA: f32 = 0.38;
+
+    /// The share of the range a key moves a continuous slider by.
+    pub const KEY_FRACTION: f32 = 0.1;
+}
+
+/// What a slider does, as a set of options instead of booleans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct SliderFlags(u8);
+
+impl SliderFlags {
+    /// The slider only paints the value it is given.
+    pub const NONE: SliderFlags = SliderFlags(0);
+    /// The slider answers a drag, a tap and a key. Clearing this bit is how
+    /// a slider is disabled: the pointer never moves the thumb, the press is
+    /// never reported, and the track is drawn with the disabled alphas.
+    pub const ENABLED: SliderFlags = SliderFlags(1 << 0);
+    /// The slider takes the keyboard focus when a button is pressed inside
+    /// it, and reports [`InteractionState::FOCUSED`] to its source.
+    pub const FOCUSABLE: SliderFlags = SliderFlags(1 << 1);
+    /// An enabled slider that takes the focus: what the platform component
+    /// is when the caller leaves every parameter defaulted.
+    pub const STANDARD: SliderFlags = SliderFlags(Self::ENABLED.0 | Self::FOCUSABLE.0);
+
+    /// The underlying bits.
+    #[inline]
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// Whether every bit of `other` is set.
+    #[inline]
+    #[must_use]
+    pub const fn contains(self, other: SliderFlags) -> bool {
+        (self.0 & other.0) == other.0
+    }
+
+    /// Whether no option at all is selected.
+    #[inline]
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// The set with the bits of `other` added.
+    #[inline]
+    #[must_use]
+    pub const fn union(self, other: SliderFlags) -> Self {
+        SliderFlags(self.0 | other.0)
+    }
+
+    /// The set with the bits of `other` removed.
+    #[inline]
+    #[must_use]
+    pub const fn without(self, other: SliderFlags) -> Self {
+        SliderFlags(self.0 & !other.0)
+    }
+}
+
+impl BitOr for SliderFlags {
+    type Output = SliderFlags;
+
+    #[inline]
+    fn bitor(self, rhs: SliderFlags) -> SliderFlags {
+        SliderFlags(self.0 | rhs.0)
+    }
+}
+
+impl BitOrAssign for SliderFlags {
+    #[inline]
+    fn bitor_assign(&mut self, rhs: SliderFlags) {
+        self.0 |= rhs.0;
+    }
+}
+
+/// The colors of the track, the thumb, the ticks and the state layer.
+///
+/// Four colors decided together: the active part of the track and the thumb
+/// carry the value, the inactive part carries the range, and the two disagree
+/// on purpose — the half the thumb has not reached is drawn in the color of
+/// the surface it sits on, which is what lets a track read as a distance
+/// still to travel rather than as one solid bar.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SliderColors {
+    /// The track from its start to the thumb.
+    pub active: Color,
+    /// The track from the thumb to its end.
+    pub inactive: Color,
+    /// The thumb.
+    pub thumb: Color,
+    /// The color the state layer is tinted with.
+    pub state_layer: Color,
+}
+
+impl SliderColors {
+    /// The colors of a slider that is — or is not — enabled in `scheme`.
+    ///
+    /// The colors do not depend on the value: the thumb decides which of the
+    /// two track colors each half of the track is drawn in, so writing the
+    /// value recomposes the drawing without recomputing the palette.
+    #[must_use]
+    pub const fn for_enabled(scheme: &ColorScheme, flags: SliderFlags) -> Self {
+        if flags.contains(SliderFlags::ENABLED) {
+            Self {
+                active: scheme.primary,
+                inactive: scheme.surface_variant,
+                thumb: scheme.primary,
+                state_layer: scheme.primary,
+            }
+        } else {
+            let thumb = scheme
+                .on_surface_variant
+                .with_alpha(defaults::DISABLED_THUMB_ALPHA);
+            Self {
+                active: scheme
+                    .on_surface
+                    .with_alpha(defaults::DISABLED_ACTIVE_ALPHA),
+                inactive: scheme
+                    .surface_variant
+                    .with_alpha(defaults::DISABLED_INACTIVE_ALPHA),
+                thumb,
+                state_layer: scheme.on_surface,
+            }
+        }
+    }
+
+    /// The state layer of a slider in `interaction`.
+    ///
+    /// The layers of Material 3 do not add up: the strongest one that
+    /// applies is what shows, so a slider that is focused and hovered is no
+    /// darker than a focused one. A slider in no state at all returns a fully
+    /// transparent color, which the drawing code skips.
+    #[must_use]
+    pub const fn overlay_for(&self, interaction: InteractionState) -> Color {
+        let mut alpha = 0.0;
+        if interaction.contains(InteractionState::HOVERED) && defaults::HOVER_ALPHA > alpha {
+            alpha = defaults::HOVER_ALPHA;
+        }
+        if interaction.contains(InteractionState::PRESSED) && defaults::PRESSED_ALPHA > alpha {
+            alpha = defaults::PRESSED_ALPHA;
+        }
+        if interaction.contains(InteractionState::FOCUSED) && defaults::FOCUSED_ALPHA > alpha {
+            alpha = defaults::FOCUSED_ALPHA;
+        }
+        self.state_layer.with_alpha(alpha)
+    }
+}
+
+/// Who owns the moves of the press a slider is holding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Claim {
+    /// No drag has passed the slop yet.
+    #[default]
+    Undecided,
+    /// The slider drags its thumb with the pointer.
+    Mine,
+    /// The pointer went the ancestor's way, and the ancestor keeps the
+    /// gesture for the rest of the press.
+    Ancestors,
+}
+
+/// The claim of the drag a slider is holding, shared with every copy of it.
+///
+/// The slider is rebuilt by the recomposition its own drag causes, so the
+/// claim cannot be a field of the widget: it is a handle over a cell, the way
+/// [`GestureRegion`] keeps its recognition.
+#[derive(Clone, Default)]
+struct DragClaim(Rc<Cell<Claim>>);
+
+impl DragClaim {
+    /// The claim of the drag right now.
+    #[inline]
+    fn get(&self) -> Claim {
+        self.0.get()
+    }
+
+    /// The claim the next moves are answered under.
+    #[inline]
+    fn set(&self, claim: Claim) {
+        self.0.set(claim);
+    }
+}
+
+/// The box a value is computed from, in the coordinates of the window.
+///
+/// The geometry of the track and the range of the value live together because
+/// every conversion the slider makes needs both: a position becomes a
+/// fraction of the usable track, and that fraction becomes a value in the
+/// range. A copy of it is handed to the gesture closure, which is what keeps
+/// the math off the widget the closure cannot borrow.
+#[derive(Clone, Copy)]
+struct Track {
+    /// The window coordinate the track starts at.
+    left: f32,
+    /// The distance the center of the thumb travels along.
+    width: f32,
+    /// The value at the start of the range.
+    from: f32,
+    /// The value at the end of the range.
+    to: f32,
+}
+
+impl Track {
+    /// The fraction of the range `x` sits at, with the ends clamped in.
+    ///
+    /// A track with no room for the thumb to travel has no fraction to
+    /// report, so it answers the start of the range.
+    #[inline]
+    fn fraction_at(&self, x: f32) -> f32 {
+        if self.width <= 0.0 {
+            return 0.0;
+        }
+        ((x - self.left - defaults::TRACK_INSET) / self.width).clamp(0.0, 1.0)
+    }
+
+    /// The value at `x`, with the ends of the range clamped in.
+    #[inline]
+    fn value_at(&self, x: f32) -> f32 {
+        self.from + self.fraction_at(x) * (self.to - self.from)
+    }
+
+    /// The window coordinate of the center of the thumb holding `value`.
+    #[inline]
+    fn position_of(&self, value: f32) -> f32 {
+        self.left + defaults::TRACK_INSET + self.fraction_of(value) * self.width
+    }
+
+    /// The share of the track `value` sits at.
+    #[inline]
+    fn fraction_of(&self, value: f32) -> f32 {
+        let span = self.to - self.from;
+        if span == 0.0 {
+            0.0
+        } else {
+            ((value - self.from) / span).clamp(0.0, 1.0)
+        }
+    }
+}
+
+/// A track that holds a value and drags it with the pointer.
+///
+/// The slider fills the width it is given and is as tall as its thumb, and
+/// writes the [`MutableState`] it was handed: a volume bar, a zoom level or a
+/// preference all read the same state and repaint from it.
+///
+/// ```text
+/// let volume = ctx.use_state(|| MutableState::new(0.5_f32));
+/// Slider::new(volume.clone()).range(0.0, 1.0)
+///     .on_change(move |value| mixer.set(value))
+/// ```
+#[derive(Clone)]
+pub struct Slider {
+    /// The value the thumb shows and a drag writes.
+    value: MutableState<f32>,
+    /// The value at the start of the track.
+    from: f32,
+    /// The value at the end of the track.
+    to: f32,
+    /// What the slider answers to.
+    flags: SliderFlags,
+    /// The region that turns the events of the track into gestures.
+    region: GestureRegion,
+    /// The interaction states the application observes.
+    interaction: InteractionSource,
+    /// The handler called with each value the *user* dragged to.
+    on_change: Option<SliderChange>,
+    /// The handler called when the gesture that dragged ended.
+    on_finish: Option<SliderFinished>,
+    /// Who owns the moves of the press the slider is holding.
+    claim: DragClaim,
+    /// The box the track was last placed in, in window coordinates.
+    ///
+    /// A widget is handed no bounds when an event reaches it, so the slider
+    /// records the rectangle it was placed in: the position of the thumb is a
+    /// fraction of that box.
+    bounds: Rect,
+}
+
+impl Slider {
+    /// The slider that shows and writes `value` over `0.0 ..= 1.0`.
+    #[must_use]
+    pub fn new(value: MutableState<f32>) -> Self {
+        Self {
+            value,
+            from: 0.0,
+            to: 1.0,
+            flags: SliderFlags::STANDARD,
+            region: GestureRegion::new(ViewportDispatch::default()),
+            interaction: InteractionSource::new(),
+            on_change: None,
+            on_finish: None,
+            claim: DragClaim::default(),
+            bounds: Rect::ZERO,
+        }
+    }
+
+    /// The slider over `from ..= to`.
+    ///
+    /// The range is not reordered: a slider whose end equals its start holds
+    /// one value, and every position on it reads that value.
+    #[must_use]
+    pub const fn range(mut self, from: f32, to: f32) -> Self {
+        self.from = from;
+        self.to = to;
+        self
+    }
+
+    /// The slider that answers the gestures its table names.
+    ///
+    /// A slot of the table observes or overrides that one gesture and keeps
+    /// the built-in answer of the others, so a slider that has to log where a
+    /// drag ended writes [`on_drop`](ViewportDispatch::on_drop) and still
+    /// drags.
+    #[must_use]
+    pub fn dispatch(mut self, table: ViewportDispatch) -> Self {
+        self.region = GestureRegion::new(table);
+        self
+    }
+
+    /// The slider that reports each value the user dragged to.
+    #[must_use]
+    pub fn on_change(mut self, handler: impl Fn(f32) + 'static) -> Self {
+        self.on_change = Some(Rc::new(handler));
+        self
+    }
+
+    /// The slider that reports the end of the gesture that dragged.
+    ///
+    /// A drag writes the value on every move and this once, which is how a
+    /// caller commits an expensive change — a seek, a save — without paying
+    /// for it on each of the moves.
+    #[must_use]
+    pub fn on_finish(mut self, handler: impl Fn() + 'static) -> Self {
+        self.on_finish = Some(Rc::new(handler));
+        self
+    }
+
+    /// The slider that reports its interaction states to `source`.
+    ///
+    /// The source is a handle, so the application keeps observing the same
+    /// states across the recompositions that rebuilt the slider — which is how
+    /// a row that dims its label while its slider is held reads it.
+    #[must_use]
+    pub fn interaction_with(mut self, source: InteractionSource) -> Self {
+        self.interaction = source;
+        self
+    }
+
+    /// The slider that answers — or, with `on` cleared, ignores — the pointer
+    /// and the keyboard.
+    #[must_use]
+    pub fn enabled(mut self, on: bool) -> Self {
+        self.set(SliderFlags::ENABLED, on);
+        self
+    }
+
+    /// The slider that takes — or, with `on` cleared, gives up — the keyboard
+    /// focus.
+    #[must_use]
+    pub fn focusable(mut self, on: bool) -> Self {
+        self.set(SliderFlags::FOCUSABLE, on);
+        self
+    }
+
+    /// Turns `bits` on when `on` names them, and off when it does not.
+    fn set(&mut self, bits: SliderFlags, on: bool) {
+        self.flags = if on {
+            self.flags.union(bits)
+        } else {
+            self.flags.without(bits)
+        };
+    }
+
+    /// The value the slider shows.
+    #[inline]
+    #[must_use]
+    pub const fn state(&self) -> &MutableState<f32> {
+        &self.value
+    }
+
+    /// The options the slider was built with.
+    #[inline]
+    #[must_use]
+    pub const fn flags(&self) -> SliderFlags {
+        self.flags
+    }
+
+    /// The interaction states of the slider.
+    #[inline]
+    #[must_use]
+    pub const fn interaction(&self) -> &InteractionSource {
+        &self.interaction
+    }
+
+    /// Whether a press is held inside the slider.
+    #[inline]
+    #[must_use]
+    pub fn is_pressed(&self) -> bool {
+        self.region.is_pressed()
+    }
+
+    /// Whether a drag of this slider owns the moves of the pointer.
+    #[inline]
+    #[must_use]
+    pub fn is_tracking(&self) -> bool {
+        self.claim.get() == Claim::Mine
+    }
+
+    /// The geometry the value of the slider is read and written from.
+    fn track(&self) -> Track {
+        Track {
+            left: self.bounds.left(),
+            width: (self.bounds.size.width - 2.0 * defaults::TRACK_INSET).max(0.0),
+            from: self.from,
+            to: self.to,
+        }
+    }
+
+    /// The share of the range a single key press moves the value by.
+    ///
+    /// A continuous slider has no mark to step on, so it moves by a tenth of
+    /// its range.
+    fn key_step(&self) -> f32 {
+        (self.to - self.from) * defaults::KEY_FRACTION
+    }
+
+    /// Writes `value` and reports it, and says whether it moved.
+    fn write(&self, value: f32) -> bool {
+        write(&self.value, &self.on_change, value)
+    }
+}
+
+/// Writes the value and reports it, and says whether it moved.
+///
+/// A value that did not change is not written and not reported: the
+/// recomposition a write costs is only worth paying for a thumb that moved,
+/// and a handler that heard a move that changed nothing would be a lie.
+/// The gesture closure and the widget both answer through this, so the rule
+/// is stated once.
+fn write(value: &MutableState<f32>, on_change: &Option<SliderChange>, next: f32) -> bool {
+    if value.get() == next {
+        return false;
+    }
+    value.set(next);
+    if let Some(handler) = on_change {
+        handler(next);
+    }
+    true
+}
+
+impl Widget for Slider {
+    /// Reports the height of the thumb and the whole width it is given.
+    ///
+    /// A slider is a bar: it never asks for less than the space it is in, and
+    /// with nothing bounding it it takes the width the platform defaults to.
+    /// The state layer is wider and taller than the box and is not clipped by
+    /// it, which is why the box is the height of the thumb rather than of the
+    /// halo over it.
+    fn measure(&mut self, _scope: &mut MeasureScope<'_>, constraints: Constraints) -> Size {
+        let width = if constraints.has_bounded_width() {
+            constraints.max_width
+        } else {
+            defaults::PREFERRED_WIDTH
+        };
+        constraints.enforce(Size::new(width, defaults::THUMB_HEIGHT))
+    }
+
+    /// Records the box the value of the thumb is measured against.
+    fn place(&mut self, _scope: &mut PlaceScope<'_>, bounds: Rect) {
+        self.bounds = bounds;
+    }
+
+    fn draw(&mut self, scope: &mut DrawScope<'_>, bounds: Rect) {
+        let value = self.value.get();
+        let colors = SliderColors::for_enabled(&scope.theme().colors, self.flags);
+        let overlay = colors.overlay_for(self.interaction.state());
+        let track = self.track();
+        let center_y = bounds.size.height / 2.0;
+        // Everything below is in the space of the widget: the scope starts at
+        // the corner the slider was placed in, so the window coordinate of
+        // the thumb is only ever a subtraction away.
+        let thumb = track.position_of(value) - bounds.left();
+        let radii = CornerRadii::uniform(defaults::TRACK / 2.0);
+        // The layer first: it sits under the thumb it announces, and the thumb
+        // is drawn over it rather than mixed into it.
+        if overlay.alpha > 0.0 {
+            let halo = defaults::HALO;
+            scope.fill_rounded_rect(
+                Rect::from_min_size(Offset::new(thumb - halo / 2.0, center_y - halo / 2.0), halo, halo),
+                CornerRadii::uniform(halo / 2.0),
+                overlay,
+            );
+        }
+        let rail = Rect::from_min_size(
+            Offset::new(defaults::TRACK_INSET, center_y - defaults::TRACK / 2.0),
+            track.width,
+            defaults::TRACK,
+        );
+        if colors.inactive.alpha > 0.0 && track.width > 0.0 {
+            scope.fill_rounded_rect(rail, radii, colors.inactive);
+        }
+        let active = (thumb - defaults::TRACK_INSET).max(0.0);
+        if active > 0.0 && colors.active.alpha > 0.0 {
+            scope.fill_rounded_rect(
+                Rect::from_min_size(
+                    Offset::new(defaults::TRACK_INSET, rail.origin.y),
+                    active,
+                    defaults::TRACK,
+                ),
+                radii,
+                colors.active,
+            );
+        }
+        scope.fill_rounded_rect(
+            Rect::from_min_size(
+                Offset::new(
+                    thumb - defaults::THUMB_WIDTH / 2.0,
+                    center_y - defaults::THUMB_HEIGHT / 2.0,
+                ),
+                defaults::THUMB_WIDTH,
+                defaults::THUMB_HEIGHT,
+            ),
+            CornerRadii::uniform(defaults::THUMB_WIDTH / 2.0),
+            colors.thumb,
+        );
+    }
+
+    /// The slider reads the pointer only while it is enabled: a disabled
+    /// slider lets the press fall through to whatever can still answer it,
+    /// which is what lets a list scroll over its disabled rows.
+    fn hit_testable(&self) -> bool {
+        self.flags.contains(SliderFlags::ENABLED)
+    }
+
+    fn on_event(&mut self, scope: &mut EventScope<'_>, event: &Event) -> EventResult {
+        if !self.flags.contains(SliderFlags::ENABLED) {
+            return EventResult::Ignored;
+        }
+        if matches!(event, Event::Pointer(pointer) if pointer.kind == PointerEventKind::Down)
+            && self.flags.contains(SliderFlags::FOCUSABLE)
+        {
+            scope.request_focus();
+            self.interaction.set(InteractionState::FOCUSED);
+        }
+        if let Event::Key(key) = event {
+            // A slider answers a key *press*, not a release: an arrow held
+            // down repeats, and the thumb of a slider is expected to run with
+            // it. Only the horizontal keys are the slider's; the vertical ones
+            // belong to whatever scrolls.
+            if !key.pressed || !scope.is_focused() {
+                return EventResult::Ignored;
+            }
+            let step = self.key_step();
+            let value = self.value.get();
+            let next = match key.key {
+                Key::ArrowLeft => value - step,
+                Key::ArrowRight => value + step,
+                Key::Home => self.from,
+                Key::End => self.to,
+                _ => return EventResult::Ignored,
+            };
+            self.write(next.clamp(self.from.min(self.to), self.from.max(self.to)));
+            return EventResult::Consumed;
+        }
+        // The gesture of a drag is a delta, but the thumb of a slider is a
+        // position, so the value is read off where the pointer is.
+        let position = match event {
+            Event::Pointer(pointer) => Some(pointer.position),
+            Event::Scroll(wheel) => Some(wheel.position),
+            _ => None,
+        };
+        let interaction = self.interaction.clone();
+        let value = self.value.clone();
+        let on_change = self.on_change.clone();
+        let on_finish = self.on_finish.clone();
+        let claim = self.claim.clone();
+        let track = self.track();
+        self.region
+            .on_event(event, self.bounds, move |gesture| {
+                match gesture {
+                    Gesture::Press { position } => {
+                        interaction.set(InteractionState::PRESSED);
+                        // A tap on the track moves the thumb to the tap, and the
+                        // press is reported rather than taken: an ancestor has to
+                        // see the same down to scroll with it.
+                        write(&value, &on_change, track.value_at(position.x));
+                        EventResult::Ignored
+                    }
+                    Gesture::Drag { delta } => {
+                        let Some(current) = position else {
+                            return EventResult::Ignored;
+                        };
+                        if claim.get() == Claim::Undecided {
+                            if delta.x.abs() > delta.y.abs() {
+                                claim.set(Claim::Mine);
+                            } else {
+                                // The pointer went the ancestor's way, and it keeps
+                                // the gesture for the rest of this press: the thumb
+                                // gives up the press it was holding.
+                                claim.set(Claim::Ancestors);
+                                interaction.clear(InteractionState::PRESSED);
+                                return EventResult::Ignored;
+                            }
+                        }
+                        if claim.get() != Claim::Mine {
+                            return EventResult::Ignored;
+                        }
+                        write(&value, &on_change, track.value_at(current.x));
+                        EventResult::Consumed
+                    }
+                    Gesture::Hover { inside: true } => {
+                        interaction.set(InteractionState::HOVERED);
+                        EventResult::Ignored
+                    }
+                    Gesture::Hover { .. } => {
+                        interaction.clear(InteractionState::HOVERED | InteractionState::PRESSED);
+                        claim.set(Claim::Undecided);
+                        EventResult::Ignored
+                    }
+                    Gesture::Cancel => {
+                        // The press is over without a gesture that ended: the
+                        // thumb keeps the value the press gave it and the
+                        // caller is told the changing is done, the way the
+                        // platform reports the end of a cancelled drag.
+                        end(&interaction, &claim, &on_finish);
+                        EventResult::Ignored
+                    }
+                    Gesture::Click { position } => {
+                        // The release settles the thumb where the finger left it,
+                        // then reports the end of the gesture.
+                        write(&value, &on_change, track.value_at(position.x));
+                        end(&interaction, &claim, &on_finish);
+                        EventResult::Consumed
+                    }
+                    Gesture::Drop { .. } => {
+                        if claim.get() == Claim::Ancestors {
+                            // The drag belonged to an ancestor, so the release
+                            // that ended it is its to answer; the slider only
+                            // gives up the decision it made.
+                            claim.set(Claim::Undecided);
+                            return EventResult::Ignored;
+                        }
+                        end(&interaction, &claim, &on_finish);
+                        EventResult::Consumed
+                    }
+                    _ => EventResult::Ignored,
+                }
+            })
+    }
+}
+
+/// Lets go of the press and reports that the gesture that dragged has ended.
+///
+/// The claim is given up with the press, so the next drag of the next press
+/// is free to be decided again.
+fn end(interaction: &InteractionSource, claim: &DragClaim, on_finish: &Option<SliderFinished>) {
+    interaction.clear(InteractionState::PRESSED);
+    claim.set(Claim::Undecided);
+    if let Some(handler) = on_finish {
+        handler();
+    }
+}
