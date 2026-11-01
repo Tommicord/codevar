@@ -1896,6 +1896,32 @@ mod tests {
         }
     }
 
+    /// A page that takes the release of a press inside it, the way the
+    /// check box of a scrolling list does.
+    struct Taker {
+        size: Size,
+    }
+
+    impl Widget for Taker {
+        fn measure(&mut self, _scope: &mut MeasureScope<'_>, constraints: Constraints) -> Size {
+            constraints.enforce(self.size)
+        }
+
+        fn on_event(&mut self, _scope: &mut EventScope<'_>, event: &Event) -> EventResult {
+            if matches!(
+                event,
+                Event::Pointer(pointer) if pointer.kind == PointerEventKind::Up
+            ) {
+                return EventResult::Consumed;
+            }
+            EventResult::Ignored
+        }
+
+        fn hit_testable(&self) -> bool {
+            true
+        }
+    }
+
     /// A laid-out composition of a viewport box showing a page of `content`.
     fn scrolling(state: ScrollState, box_size: Size, content: Size) -> Composition<'static> {
         let mut composition = Composition::new(Theme::light());
@@ -1981,6 +2007,34 @@ mod tests {
         // The finger went up, so the content followed it and the offset
         // grew: the opposite of the pointer is the direction of a scroll.
         assert_eq!(state.offset().y, 10.0);
+    }
+
+    #[test]
+    fn a_release_a_child_takes_ends_the_press_of_the_viewport() {
+        let state = ScrollState::new(ScrollAxes::VERTICAL);
+        let built = state.clone();
+        let mut composition = Composition::new(Theme::light());
+        composition.set_content(move |_| {
+            Node::new(Viewport::new().scroll(built.clone())).child(Node::new(Taker {
+                size: Size::new(100.0, 400.0),
+            }))
+        });
+        composition.recompose(true);
+        composition.layout(WINDOW, true);
+        composition.handle_event(&pointer(PointerEventKind::Down, Offset::new(50.0, 30.0), 1_000));
+        composition.handle_event(&pointer(PointerEventKind::Up, Offset::new(50.0, 30.0), 2_000));
+        // The child consumed the release, so the region of the viewport was
+        // never offered it; the cancel the dispatch gives back to the
+        // ancestor is what ends the press it still held. Without it the
+        // move below would drag the content instead of hovering it.
+        composition.handle_event(&pointer(PointerEventKind::Move, Offset::new(50.0, 10.0), 3_000));
+        assert_eq!(state.offset(), Offset::ZERO);
+        // The region still scrolls: the press was forgotten, not the
+        // viewport's hold on its own gestures.
+        composition.handle_event(&pointer(PointerEventKind::Down, Offset::new(50.0, 30.0), 4_000));
+        composition.handle_event(&pointer(PointerEventKind::Move, Offset::new(50.0, 10.0), 5_000));
+        composition.handle_event(&pointer(PointerEventKind::Up, Offset::new(50.0, 10.0), 6_000));
+        assert_eq!(state.offset().y, 20.0);
     }
 
     #[test]

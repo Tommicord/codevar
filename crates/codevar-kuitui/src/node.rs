@@ -52,7 +52,7 @@ use codevar_kuitui_control::Timestamp;
 
 use crate::color::Color;
 use crate::effect::{Effect, Gradient, InteractionSource, InteractionState};
-use crate::event::{Event, EventResult, PointerEventKind};
+use crate::event::{Event, EventResult, PointerEvent, PointerEventKind};
 use crate::geometry::{Alignment, Constraints, EdgeInsets, Offset, Rect, Size};
 use crate::input::mouse::{BoundId, GeometryCache, VertexBounds};
 use crate::paint::{CornerRadii, DrawList, Paint};
@@ -1476,6 +1476,48 @@ fn focused_child(path: &[usize], focus: Option<&[usize]>) -> Option<usize> {
     focus.get(path.len()).copied()
 }
 
+/// Whether `event` is the release that ends a press.
+fn ended_a_press(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Pointer(pointer)
+            if matches!(pointer.kind, PointerEventKind::Up | PointerEventKind::Cancel)
+    )
+}
+
+/// Tells a node that the press its child took is over.
+///
+/// A child that consumes a release stops it at its own box, so the
+/// ancestor that was offered the down never learns the up happened: the
+/// region it tracks stays in its held phase, and the next move of a
+/// hover drags the content the release put down. The platform answers
+/// the same hole by handing an ancestor whose child claimed the gesture
+/// a *cancel* instead of the child's release, and the same event is
+/// synthesized here.
+///
+/// The states of the chain are released by the real event — the button
+/// did go up, at that position, so a hover the pointer still holds is
+/// kept — while the widget is offered the cancel, so the release logic
+/// of its own kind (a click it would report, a drop it would answer)
+/// does not run a second time out of one press. Neither the `selectable`
+/// nor the click handler of the chain is offered anything: a click
+/// belongs to the child that took the press.
+fn cancel_press_of_ancestor(
+    node: &mut Node,
+    theme: &Theme,
+    path: &[usize],
+    focus: &mut Option<Vec<usize>>,
+    event: &Event,
+    position: Offset,
+) {
+    let inside = node.pointer_hits(position);
+    node.modifier.track_interaction(event, inside);
+    let cancel = Event::Pointer(PointerEvent::new(PointerEventKind::Cancel, position));
+    let Node { widget, children, .. } = node;
+    let mut scope = EventScope::new(children, theme, path.to_vec(), focus);
+    let _ = widget.on_event(&mut scope, &cancel);
+}
+
 /// Offers an event to the tree rooted at `node`.
 ///
 /// The deepest child whose shape contains the pointer is offered the
@@ -1511,6 +1553,9 @@ pub(crate) fn dispatch_event(
             let result = dispatch_event(&mut node.children[index], theme, path, focus, event);
             path.pop();
             if result.is_consumed() {
+                if ended_a_press(event) {
+                    cancel_press_of_ancestor(node, theme, path, focus, event, position);
+                }
                 return result;
             }
         }
@@ -1636,9 +1681,8 @@ impl Widget for Identified {
 mod tests {
     use super::*;
     use crate::effect::EffectKinds;
-    use crate::event::PointerEvent;
     use crate::paint::RectOp;
-    use core::cell::Cell;
+    use core::cell::{Cell, RefCell};
 
     /// A widget that fills the rectangle it is given.
     struct Filler;
@@ -2598,5 +2642,91 @@ mod tests {
         let result = dispatch_event(&mut node, &theme, &mut path, &mut focus, &space());
         assert!(result.is_consumed());
         assert_eq!((focused.get(), root.get()), (1, 1));
+    }
+
+    /// A widget that records the pointer kinds offered to it and, when it
+    /// takes the release, consumes it.
+    ///
+    /// It stacks its children over itself, so a point inside the child is
+    /// inside both and a press reaches the pair the way it reaches a
+    /// check box inside a scrolling list.
+    struct Watcher {
+        /// The kinds offered to this widget, in the order they arrived.
+        log: Rc<RefCell<Vec<PointerEventKind>>>,
+        /// Whether the release of a press is this widget's business.
+        takes_release: bool,
+    }
+
+    impl Widget for Watcher {
+        fn measure(&mut self, scope: &mut MeasureScope<'_>, constraints: Constraints) -> Size {
+            for index in 0..scope.child_count() {
+                let _ = scope.measure_child(index, constraints);
+            }
+            constraints.enforce(Size::new(10.0, 10.0))
+        }
+
+        fn place(&mut self, scope: &mut PlaceScope<'_>, _bounds: Rect) {
+            for index in 0..scope.child_count() {
+                scope.place_child(index, Offset::ZERO);
+            }
+        }
+
+        fn on_event(&mut self, _scope: &mut EventScope<'_>, event: &Event) -> EventResult {
+            let Event::Pointer(pointer) = event else {
+                return EventResult::Ignored;
+            };
+            self.log.borrow_mut().push(pointer.kind);
+            if self.takes_release && pointer.kind == PointerEventKind::Up {
+                return EventResult::Consumed;
+            }
+            EventResult::Ignored
+        }
+
+        fn hit_testable(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn the_press_of_an_ancestor_ends_when_a_child_takes_the_release() {
+        let theme = Theme::light();
+        let outer = Rc::new(RefCell::new(Vec::new()));
+        let inner = Rc::new(RefCell::new(Vec::new()));
+        let source = InteractionSource::new();
+        let mut node = Node::new(Watcher {
+            log: Rc::clone(&outer),
+            takes_release: false,
+        })
+        .modifier(Modifier::none().hoverable(source.clone()))
+        .child(Node::new(Watcher {
+            log: Rc::clone(&inner),
+            takes_release: true,
+        }));
+        node.measure(&theme, Constraints::unbounded());
+        node.place(Rect::from_min_size(Offset::ZERO, 10.0, 10.0));
+        let mut focus = None;
+        let mut path = Vec::new();
+        let position = Offset::new(5.0, 5.0);
+        for kind in [PointerEventKind::Down, PointerEventKind::Up] {
+            dispatch_event(
+                &mut node,
+                &theme,
+                &mut path,
+                &mut focus,
+                &Event::Pointer(PointerEvent::new(kind, position)),
+            );
+        }
+        assert_eq!(*inner.borrow(), [PointerEventKind::Down, PointerEventKind::Up]);
+        // The ancestor is told the press it took is over instead of being
+        // left holding it, which is what keeps the next hover from
+        // becoming the drag of a press that already ended.
+        assert_eq!(
+            *outer.borrow(),
+            [PointerEventKind::Down, PointerEventKind::Cancel]
+        );
+        // The states of the chain are released by the real release, so the
+        // hover the pointer still holds survives the cancel.
+        assert!(!source.state().contains(InteractionState::PRESSED));
+        assert!(source.state().contains(InteractionState::HOVERED));
     }
 }
