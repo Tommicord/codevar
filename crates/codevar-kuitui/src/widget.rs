@@ -464,6 +464,19 @@ impl<'a> DrawScope<'a> {
             .push_clip(Rect::new(self.origin.add(rect.origin), rect.size));
     }
 
+    /// Restricts the following operations to `rect`, cut to the rounded
+    /// box of `radii` inside it.
+    ///
+    /// The rectangle and the radii are relative to the widget being drawn,
+    /// the same way every other operation of the scope is. A widget that
+    /// scrolls content inside a rounded container needs this rather than
+    /// [`Self::push_clip`]: the rows that run past the corner would
+    /// otherwise paint over the rounding the container was drawn with.
+    pub fn push_rounded_clip(&mut self, rect: Rect, radii: CornerRadii) {
+        self.list
+            .push_rounded_clip(Rect::new(self.origin.add(rect.origin), rect.size), radii);
+    }
+
     /// Ends the innermost clip.
     pub fn pop_clip(&mut self) {
         self.list.pop_clip();
@@ -651,5 +664,22 @@ mod tests {
             .downcast_ref::<crate::paint::RectOp>()
             .expect("expected a rectangle");
         assert_eq!(rect.rect.origin, Offset::new(10.0, 20.0));
+    }
+
+    #[test]
+    fn a_widget_clips_to_a_rounded_box_of_its_own() {
+        let theme = Theme::light();
+        let mut list = DrawList::new();
+        let radii = CornerRadii::uniform(4.0);
+        {
+            let mut scope = DrawScope::new(&mut list, &theme, Offset::new(10.0, 20.0));
+            scope.push_rounded_clip(Rect::from_min_size(Offset::new(5.0, 5.0), 40.0, 40.0), radii);
+        }
+        assert_eq!(
+            list.current_clip(),
+            Some(Rect::from_min_size(Offset::new(15.0, 25.0), 40.0, 40.0)),
+            "the clip moves with the widget, not with the window"
+        );
+        assert_eq!(list.current_clip_radii(), radii);
     }
 }
