@@ -13,8 +13,8 @@
 //! License for the specific language governing permissions and
 //! limitations under the License.
 
-//! The scroll state of a viewport, the gestures a pointer makes over it,
-//! and the table those gestures are dispatched through.
+//! The scrolling viewport, the region that reads its gestures and the
+//! table the gestures are dispatched through.
 //!
 //! A viewport shows a part of content that is larger than the space it
 //! has: it measures the content at the size the content wants, places it
@@ -43,8 +43,8 @@ use core::cell::RefCell;
 
 use codevar_kuitui_control::Timestamp;
 
-use crate::event::EventResult;
-use crate::geometry::{Offset, Size};
+use crate::event::{Event, EventResult, PointerButton, PointerEvent, PointerEventKind, ScrollEvent};
+use crate::geometry::{Offset, Rect, Size};
 use crate::state::MutableState;
 
 /// The axes a viewport scrolls along.
@@ -810,10 +810,341 @@ impl ViewportDispatch {
         }));
         self
     }
+
+    /// The handler the table names for `gesture`, if it names one.
+    fn handler_for(&self, gesture: &Gesture) -> Option<&GestureHandler> {
+        match gesture {
+            Gesture::Press { .. } => self.on_press.as_ref(),
+            Gesture::Drag { .. } => self.on_drag.as_ref(),
+            Gesture::Drop { .. } => self.on_drop.as_ref(),
+            Gesture::Fling { .. } => self.on_fling.as_ref(),
+            Gesture::Click { .. } => self.on_click.as_ref(),
+            Gesture::ScrollY { .. } => self.on_scroll_y.as_ref(),
+            Gesture::ScrollX { .. } => self.on_scroll_x.as_ref(),
+            Gesture::Hover { .. } => self.on_hover.as_ref(),
+            Gesture::Cancel => self.on_cancel.as_ref(),
+        }
+    }
+}
+
+/// What a region made of an event.
+enum Outcome {
+    /// A gesture the table has to answer.
+    Gesture(Gesture),
+    /// The release of a drag: the content is put down and, when the release
+    /// was fast enough, thrown.
+    DropAndFling {
+        /// The speed the release was measured at.
+        velocity: Offset,
+    },
+    /// The wheel moved: every axis it moved along is a gesture of its own.
+    Wheel {
+        /// The distance the wheel reported.
+        delta: Offset,
+    },
+    /// An event of a press the region already owns, with nothing to report
+    /// yet — it is consumed so no ancestor starts a gesture of its own.
+    Owned,
+    /// An event the region has nothing to say about.
+    None,
+}
+
+/// The state a region keeps between the events of one press.
+///
+/// It is shared through an `Rc` so that a recomposition in the middle of a
+/// drag cannot restart it: the handle the new widget copies points at the
+/// same state the old one was folding its events into.
+#[derive(Debug, Default)]
+struct Recognition {
+    /// What the pointer is doing.
+    phase: Phase,
+    /// Whether the last hover report put the pointer inside the box.
+    hovered: bool,
+    /// The moves of the press in flight, for the speed of its release.
+    tracker: VelocityTracker,
+}
+
+/// What the pointer of a region is doing.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+enum Phase {
+    /// No button is held inside the region.
+    #[default]
+    Idle,
+    /// A button is held and the pointer has not passed the slop, so the
+    /// press is still a click candidate.
+    Held {
+        /// Where the press went down.
+        origin: Offset,
+        /// Where the pointer was last reported.
+        last: Offset,
+    },
+    /// A button is held and the pointer has passed the slop, so its moves
+    /// drag the content.
+    Dragging {
+        /// Where the pointer was last reported.
+        last: Offset,
+    },
+}
+
+/// The rectangle of the tree a widget answers the pointer in.
+///
+/// The region is the piece that turns the raw stream of pointer and wheel
+/// events into the gestures of a [`ViewportDispatch`] table: it tracks the
+/// press, decides when a move is a drag rather than a shake, measures the
+/// speed of a release and hands the result to the table. It holds no
+/// behavior of its own — the widget that owns it supplies the built-in
+/// answer to each gesture, and the table overrides the ones it names.
+///
+/// Recognition follows the rules the platform gestures use, because a
+/// gesture that fires against them reads as a bug:
+///
+/// * a press that has not travelled [`TOUCH_SLOP`] pixels is still a press,
+///   so a click and a drag cannot both start from one down event;
+/// * a release ends the drag *or* answers the click candidate — one of
+///   them, never both;
+/// * a fling needs the speed of the release, which needs the clock, so a
+///   backend that reports no [`Timestamp`] drags but never flings;
+/// * a cancel drops the press: no click and no drop is reported.
+///
+/// [`Timestamp`]: codevar_kuitui_control::Timestamp
+#[derive(Clone, Default)]
+pub struct GestureRegion {
+    /// The table the gestures are dispatched through.
+    dispatch: ViewportDispatch,
+    /// The state of the press in flight.
+    recognition: Rc<RefCell<Recognition>>,
+}
+
+impl GestureRegion {
+    /// The region that dispatches through `dispatch`.
+    #[must_use]
+    pub fn new(dispatch: ViewportDispatch) -> Self {
+        Self {
+            dispatch,
+            recognition: Rc::new(RefCell::new(Recognition::default())),
+        }
+    }
+
+    /// The table the region dispatches through.
+    #[inline]
+    #[must_use]
+    pub const fn dispatch(&self) -> &ViewportDispatch {
+        &self.dispatch
+    }
+
+    /// The press the region is tracking, for a widget that draws it.
+    #[inline]
+    #[must_use]
+    pub fn is_pressed(&self) -> bool {
+        !matches!(self.recognition.borrow().phase, Phase::Idle)
+    }
+
+    /// Folds `event` into the gestures of the region and answers them.
+    ///
+    /// `bounds` is the box of the widget in the coordinate space of the
+    /// window; an event outside it is not the region's business. `default`
+    /// is the built-in answer of the widget, used for every gesture the
+    /// table leaves unnamed.
+    ///
+    /// A press the region owns consumes its moves even when no handler
+    /// answered them, which is what keeps an ancestor of the widget from
+    /// starting a second gesture out of the same drag.
+    pub fn on_event<F>(&self, event: &Event, bounds: Rect, mut default: F) -> EventResult
+    where
+        F: FnMut(&Gesture) -> EventResult,
+    {
+        let outcome = match event {
+            Event::Pointer(pointer) => self.recognize_pointer(pointer, bounds),
+            Event::Scroll(wheel) => self.recognize_scroll(wheel, bounds),
+            _ => Outcome::None,
+        };
+        match outcome {
+            Outcome::None => EventResult::Ignored,
+            Outcome::Owned => EventResult::Consumed,
+            Outcome::Gesture(gesture) => self.answer(&gesture, &mut default),
+            Outcome::DropAndFling { velocity } => {
+                // A release both puts the content down and — if it was
+                // moving — throws it, so the table can answer the drop and
+                // the fling separately.
+                let dropped = self.answer(&Gesture::Drop { velocity }, &mut default);
+                let thrown = velocity.x.abs() > FLING_STOP_VELOCITY || velocity.y.abs() > FLING_STOP_VELOCITY;
+                if !thrown {
+                    return dropped;
+                }
+                combine(dropped, self.answer(&Gesture::Fling { velocity }, &mut default))
+            }
+            Outcome::Wheel { delta } => {
+                let mut result = EventResult::Ignored;
+                if delta.y != 0.0 {
+                    result = self.answer(&Gesture::ScrollY { delta: delta.y }, &mut default);
+                }
+                if delta.x != 0.0 {
+                    result = combine(
+                        result,
+                        self.answer(&Gesture::ScrollX { delta: delta.x }, &mut default),
+                    );
+                }
+                result
+            }
+        }
+    }
+
+    /// The table's answer to `gesture`, or the widget's built-in one when
+    /// the table names no handler for it.
+    fn answer<F>(&self, gesture: &Gesture, default: &mut F) -> EventResult
+    where
+        F: FnMut(&Gesture) -> EventResult,
+    {
+        match self.dispatch.handler_for(gesture) {
+            Some(handler) => handler(gesture),
+            None => default(gesture),
+        }
+    }
+
+    /// The gesture `event` completed, with the press state folded in.
+    fn recognize_pointer(&self, event: &PointerEvent, bounds: Rect) -> Outcome {
+        let inside = bounds.contains(event.position);
+        let mut recognition = self.recognition.borrow_mut();
+        match event.kind {
+            PointerEventKind::Down => {
+                if !inside || event.button != PointerButton::Primary {
+                    return Outcome::None;
+                }
+                recognition.phase = Phase::Held {
+                    origin: event.position,
+                    last: event.position,
+                };
+                recognition.hovered = true;
+                recognition.tracker.reset();
+                recognition
+                    .tracker
+                    .add(event.position, event.time);
+                Outcome::Gesture(Gesture::Press {
+                    position: event.position,
+                })
+            }
+            PointerEventKind::Move => match recognition.phase {
+                Phase::Idle => {
+                    if inside == recognition.hovered {
+                        return Outcome::None;
+                    }
+                    recognition.hovered = inside;
+                    Outcome::Gesture(Gesture::Hover { inside })
+                }
+                Phase::Held { origin, last } => {
+                    recognition
+                        .tracker
+                        .add(event.position, event.time);
+                    let delta = Offset::new(event.position.x - last.x, event.position.y - last.y);
+                    if past_slop(event.position, origin) {
+                        recognition.phase = Phase::Dragging { last: event.position };
+                        Outcome::Gesture(Gesture::Drag { delta })
+                    } else {
+                        recognition.phase = Phase::Held {
+                            origin,
+                            last: event.position,
+                        };
+                        // The press is the region's, but it has not become
+                        // anything yet.
+                        Outcome::Owned
+                    }
+                }
+                Phase::Dragging { last } => {
+                    recognition
+                        .tracker
+                        .add(event.position, event.time);
+                    recognition.phase = Phase::Dragging { last: event.position };
+                    Outcome::Gesture(Gesture::Drag {
+                        delta: Offset::new(event.position.x - last.x, event.position.y - last.y),
+                    })
+                }
+            },
+            PointerEventKind::Up => {
+                let velocity = recognition.tracker.velocity();
+                recognition.tracker.reset();
+                match recognition.phase {
+                    Phase::Dragging { .. } => {
+                        recognition.phase = Phase::Idle;
+                        recognition.hovered = inside;
+                        Outcome::DropAndFling { velocity }
+                    }
+                    Phase::Held { origin, .. } => {
+                        recognition.phase = Phase::Idle;
+                        recognition.hovered = inside;
+                        if past_slop(event.position, origin) || !inside {
+                            // The press left the box without being a drag:
+                            // neither a click nor a drag ended, so nothing
+                            // is reported beyond the press being over.
+                            return Outcome::Owned;
+                        }
+                        Outcome::Gesture(Gesture::Click {
+                            position: event.position,
+                        })
+                    }
+                    Phase::Idle => {
+                        if inside == recognition.hovered {
+                            return Outcome::None;
+                        }
+                        recognition.hovered = inside;
+                        Outcome::Gesture(Gesture::Hover { inside })
+                    }
+                }
+            }
+            PointerEventKind::Enter | PointerEventKind::Leave => {
+                if recognition.phase != Phase::Idle {
+                    return Outcome::Owned;
+                }
+                if inside == recognition.hovered {
+                    return Outcome::None;
+                }
+                recognition.hovered = inside;
+                Outcome::Gesture(Gesture::Hover { inside })
+            }
+            PointerEventKind::Cancel => {
+                if matches!(recognition.phase, Phase::Idle) {
+                    return Outcome::None;
+                }
+                recognition.phase = Phase::Idle;
+                recognition.tracker.reset();
+                Outcome::Gesture(Gesture::Cancel)
+            }
+        }
+    }
+
+    /// The wheel gestures of `event`, in the order the axes are reported.
+    fn recognize_scroll(&self, event: &ScrollEvent, bounds: Rect) -> Outcome {
+        if !bounds.contains(event.position) {
+            return Outcome::None;
+        }
+        if event.delta == Offset::ZERO {
+            return Outcome::None;
+        }
+        Outcome::Wheel { delta: event.delta }
+    }
+}
+
+/// Whether either of two answers took the event.
+fn combine(first: EventResult, second: EventResult) -> EventResult {
+    if first.is_consumed() || second.is_consumed() {
+        EventResult::Consumed
+    } else {
+        EventResult::Ignored
+    }
+}
+
+/// Whether the pointer travelled far enough from `origin` to be dragging.
+///
+/// The slop is measured along each axis rather than as the distance, the
+/// way a drag decides its direction: a shake that moves 2 pixels in both
+/// axes is still a shake, and a move of 5 pixels along one is a drag.
+fn past_slop(position: Offset, origin: Offset) -> bool {
+    (position.x - origin.x).abs() > TOUCH_SLOP || (position.y - origin.y).abs() > TOUCH_SLOP
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::event::PointerButtons;
+
     use super::*;
 
     /// A state over a window of `viewport` showing content of `content`.
@@ -965,6 +1296,339 @@ mod tests {
         tracker.add(Offset::new(0.0, 5.0), Timestamp::from_micros(910_000));
         let velocity = tracker.velocity();
         assert!(velocity.y.abs() < 200.0, "{velocity:?} is a resting pointer");
+    }
+
+    /// The box of the widget a test region answers inside.
+    const BOX: Rect = Rect::new(Offset::new(10.0, 10.0), Size::new(100.0, 100.0));
+
+    /// The name a test gives a gesture.
+    fn name_of(gesture: &Gesture) -> &'static str {
+        match gesture {
+            Gesture::Press { .. } => "press",
+            Gesture::Drag { .. } => "drag",
+            Gesture::Drop { .. } => "drop",
+            Gesture::Fling { .. } => "fling",
+            Gesture::Click { .. } => "click",
+            Gesture::ScrollY { .. } => "scroll-y",
+            Gesture::ScrollX { .. } => "scroll-x",
+            Gesture::Hover { .. } => "hover",
+            Gesture::Cancel => "cancel",
+        }
+    }
+
+    /// A logger of the gestures a region reports, shared by handle.
+    #[derive(Clone, Default)]
+    struct Log(Rc<RefCell<Vec<&'static str>>>);
+
+    impl Log {
+        /// The closure that writes the name of every gesture it is given.
+        fn recorder(&self) -> impl Fn(&Gesture) -> EventResult {
+            let seen = Rc::clone(&self.0);
+            move |gesture| {
+                seen.borrow_mut().push(name_of(gesture));
+                EventResult::Ignored
+            }
+        }
+
+        /// The gestures reported so far.
+        fn seen(&self) -> Vec<&'static str> {
+            self.0.borrow().clone()
+        }
+    }
+
+    /// A pointer event of a press sequence, with the button held.
+    fn pointer(kind: PointerEventKind, position: Offset, micros: u64) -> Event {
+        let buttons = if kind == PointerEventKind::Up {
+            PointerButtons::NONE
+        } else {
+            PointerButtons::PRIMARY
+        };
+        Event::Pointer(
+            PointerEvent::new(kind, position)
+                .with_buttons(buttons)
+                .with_time(Timestamp::from_micros(micros)),
+        )
+    }
+
+    /// The wheel moving `delta` under `position`.
+    fn wheel(delta: Offset, position: Offset, micros: u64) -> Event {
+        Event::Scroll(ScrollEvent::new(delta, position).with_time(Timestamp::from_micros(micros)))
+    }
+
+    #[test]
+    fn a_press_that_never_left_the_slop_is_a_click_and_nothing_else() {
+        let log = Log::default();
+        let region = GestureRegion::new(ViewportDispatch::new());
+        region.on_event(
+            &pointer(PointerEventKind::Down, Offset::new(20.0, 20.0), 0),
+            BOX,
+            log.recorder(),
+        );
+        region.on_event(
+            &pointer(PointerEventKind::Move, Offset::new(22.0, 21.0), 1_000),
+            BOX,
+            log.recorder(),
+        );
+        region.on_event(
+            &pointer(PointerEventKind::Up, Offset::new(22.0, 21.0), 2_000),
+            BOX,
+            log.recorder(),
+        );
+        assert_eq!(log.seen(), ["press", "click"]);
+    }
+
+    #[test]
+    fn a_move_past_the_slop_turns_the_press_into_a_drag() {
+        let log = Log::default();
+        let region = GestureRegion::new(ViewportDispatch::new());
+        region.on_event(
+            &pointer(PointerEventKind::Down, Offset::new(20.0, 20.0), 0),
+            BOX,
+            log.recorder(),
+        );
+        region.on_event(
+            &pointer(PointerEventKind::Move, Offset::new(20.0, 40.0), 10_000),
+            BOX,
+            log.recorder(),
+        );
+        // The pointer then creeps: one pixel every 40 milliseconds is 25
+        // pixels per second, under the speed a fling is asked for. The
+        // trailing window of the tracker is measured from the newest
+        // sample, so the fast move that started the drag has left it.
+        region.on_event(
+            &pointer(PointerEventKind::Move, Offset::new(20.0, 41.0), 250_000),
+            BOX,
+            log.recorder(),
+        );
+        region.on_event(
+            &pointer(PointerEventKind::Move, Offset::new(20.0, 42.0), 290_000),
+            BOX,
+            log.recorder(),
+        );
+        region.on_event(
+            &pointer(PointerEventKind::Up, Offset::new(20.0, 42.0), 300_000),
+            BOX,
+            log.recorder(),
+        );
+        assert_eq!(log.seen(), ["press", "drag", "drag", "drag", "drop"]);
+    }
+
+    #[test]
+    fn a_fast_release_is_a_drop_and_a_fling() {
+        let log = Log::default();
+        let region = GestureRegion::new(ViewportDispatch::new());
+        region.on_event(
+            &pointer(PointerEventKind::Down, Offset::new(20.0, 20.0), 0),
+            BOX,
+            log.recorder(),
+        );
+        // A fling is the slope of a *sequence* of moves: one sample carries
+        // no speed to measure. Three moves 40 pixels apart every 4
+        // milliseconds is the 10_000 pixels per second a fling is asked for.
+        for step in 1..=3u32 {
+            region.on_event(
+                &pointer(
+                    PointerEventKind::Move,
+                    Offset::new(20.0, 20.0 + step as f32 * 40.0),
+                    u64::from(step) * 4_000,
+                ),
+                BOX,
+                log.recorder(),
+            );
+        }
+        region.on_event(
+            &pointer(PointerEventKind::Up, Offset::new(20.0, 140.0), 15_000),
+            BOX,
+            log.recorder(),
+        );
+        assert_eq!(log.seen(), ["press", "drag", "drag", "drag", "drop", "fling"]);
+    }
+
+    #[test]
+    fn a_drag_reports_the_move_it_was_given() {
+        let travelled = Rc::new(RefCell::new(Offset::ZERO));
+        let table = {
+            let travelled = Rc::clone(&travelled);
+            ViewportDispatch::new().on_drag(move |delta| {
+                let mut sum = travelled.borrow_mut();
+                *sum = Offset::new(sum.x + delta.x, sum.y + delta.y);
+                EventResult::Ignored
+            })
+        };
+        let region = GestureRegion::new(table);
+        let log = Log::default();
+        region.on_event(
+            &pointer(PointerEventKind::Down, Offset::new(20.0, 20.0), 0),
+            BOX,
+            log.recorder(),
+        );
+        for step in 1..=10u32 {
+            region.on_event(
+                &pointer(
+                    PointerEventKind::Move,
+                    Offset::new(20.0, 20.0 + step as f32 * 20.0),
+                    u64::from(step) * 10_000,
+                ),
+                BOX,
+                log.recorder(),
+            );
+        }
+        // The slop of the first move is not a scroll: only the moves that
+        // followed the drag are counted.
+        assert_eq!(travelled.borrow().y, 20.0 * 9.0 + (20.0 - 0.0));
+    }
+
+    #[test]
+    fn a_press_that_ended_outside_the_box_is_neither_a_click_nor_a_drop() {
+        let log = Log::default();
+        let region = GestureRegion::new(ViewportDispatch::new());
+        region.on_event(
+            &pointer(PointerEventKind::Down, Offset::new(20.0, 20.0), 0),
+            BOX,
+            log.recorder(),
+        );
+        let result = region.on_event(
+            &pointer(PointerEventKind::Up, Offset::new(400.0, 400.0), 1_000),
+            BOX,
+            log.recorder(),
+        );
+        assert_eq!(log.seen(), ["press"]);
+        // The press still belonged to the region, so the event is consumed.
+        assert_eq!(result, EventResult::Consumed);
+    }
+
+    #[test]
+    fn a_cancel_reports_the_cancel_and_no_release() {
+        let log = Log::default();
+        let region = GestureRegion::new(ViewportDispatch::new());
+        region.on_event(
+            &pointer(PointerEventKind::Down, Offset::new(20.0, 20.0), 0),
+            BOX,
+            log.recorder(),
+        );
+        region.on_event(
+            &pointer(PointerEventKind::Cancel, Offset::new(20.0, 20.0), 1_000),
+            BOX,
+            log.recorder(),
+        );
+        assert_eq!(log.seen(), ["press", "cancel"]);
+        assert!(!region.is_pressed());
+    }
+
+    #[test]
+    fn the_wheel_moves_the_axis_it_moved_along() {
+        let log = Log::default();
+        let region = GestureRegion::new(ViewportDispatch::new());
+        region.on_event(
+            &wheel(Offset::new(0.0, 12.0), Offset::new(50.0, 50.0), 1),
+            BOX,
+            log.recorder(),
+        );
+        region.on_event(
+            &wheel(Offset::new(5.0, 0.0), Offset::new(50.0, 50.0), 2),
+            BOX,
+            log.recorder(),
+        );
+        region.on_event(
+            &wheel(Offset::new(5.0, 7.0), Offset::new(50.0, 50.0), 3),
+            BOX,
+            log.recorder(),
+        );
+        assert_eq!(log.seen(), ["scroll-y", "scroll-x", "scroll-y", "scroll-x"]);
+    }
+
+    #[test]
+    fn a_wheel_outside_the_box_is_not_the_regions_business() {
+        let log = Log::default();
+        let region = GestureRegion::new(ViewportDispatch::new());
+        let result = region.on_event(
+            &wheel(Offset::new(0.0, 12.0), Offset::new(500.0, 500.0), 1),
+            BOX,
+            log.recorder(),
+        );
+        assert_eq!(result, EventResult::Ignored);
+        assert!(log.seen().is_empty());
+    }
+
+    #[test]
+    fn the_hover_of_a_pointer_is_reported_only_when_it_changes() {
+        let log = Log::default();
+        let region = GestureRegion::new(ViewportDispatch::new());
+        for position in [Offset::new(50.0, 50.0), Offset::new(51.0, 51.0)] {
+            region.on_event(&pointer(PointerEventKind::Move, position, 1), BOX, log.recorder());
+        }
+        region.on_event(
+            &pointer(PointerEventKind::Move, Offset::new(500.0, 500.0), 2),
+            BOX,
+            log.recorder(),
+        );
+        assert_eq!(log.seen(), ["hover", "hover"]);
+    }
+
+    #[test]
+    fn a_press_consumes_its_moves_before_it_becomes_a_drag() {
+        let region = GestureRegion::new(ViewportDispatch::new());
+        let log = Log::default();
+        region.on_event(
+            &pointer(PointerEventKind::Down, Offset::new(20.0, 20.0), 0),
+            BOX,
+            log.recorder(),
+        );
+        let result = region.on_event(
+            &pointer(PointerEventKind::Move, Offset::new(21.0, 20.0), 1_000),
+            BOX,
+            log.recorder(),
+        );
+        assert_eq!(result, EventResult::Consumed);
+        assert_eq!(log.seen(), ["press"]);
+    }
+
+    #[test]
+    fn the_table_answers_the_gesture_it_names_and_the_default_the_rest() {
+        let tabled = Log::default();
+        let fallback = Log::default();
+        let table = {
+            let seen = Rc::clone(&tabled.0);
+            ViewportDispatch::new().on_click(move |_| {
+                seen.borrow_mut().push("click");
+                EventResult::Consumed
+            })
+        };
+        let region = GestureRegion::new(table);
+        let answer = region.on_event(
+            &pointer(PointerEventKind::Down, Offset::new(20.0, 20.0), 0),
+            BOX,
+            fallback.recorder(),
+        );
+        assert_eq!(answer, EventResult::Ignored);
+        let answer = region.on_event(
+            &pointer(PointerEventKind::Up, Offset::new(20.0, 20.0), 1_000),
+            BOX,
+            fallback.recorder(),
+        );
+        assert_eq!(answer, EventResult::Consumed);
+        assert_eq!(tabled.seen(), ["click"]);
+        assert_eq!(fallback.seen(), ["press"]);
+    }
+
+    #[test]
+    fn an_event_of_another_kind_is_not_recognized() {
+        let log = Log::default();
+        let region = GestureRegion::new(ViewportDispatch::new());
+        let result = region.on_event(&Event::Text('x'), BOX, log.recorder());
+        assert_eq!(result, EventResult::Ignored);
+        assert!(log.seen().is_empty());
+    }
+
+    #[test]
+    fn a_press_of_another_button_is_not_a_gesture() {
+        let log = Log::default();
+        let region = GestureRegion::new(ViewportDispatch::new());
+        let mut event = PointerEvent::new(PointerEventKind::Down, Offset::new(20.0, 20.0));
+        event.button = PointerButton::Secondary;
+        let result = region.on_event(&Event::Pointer(event), BOX, log.recorder());
+        assert_eq!(result, EventResult::Ignored);
+        assert!(log.seen().is_empty());
     }
 
     #[test]
