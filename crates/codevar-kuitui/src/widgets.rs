@@ -32,6 +32,7 @@
 
 mod checkbox;
 mod radio;
+pub mod select;
 mod slider;
 pub mod text;
 mod viewport;
@@ -44,6 +45,7 @@ use crate::widget::{MeasureScope, PlaceScope, Widget};
 pub use crate::window::{ResizeEdge, ResizeHandle, TitleBar, WindowButton, WindowFrame};
 pub use checkbox::{CheckChange, CheckState, Checkbox, CheckboxColors, CheckboxFlags};
 pub use radio::{Radio, RadioChange, RadioColors, RadioFlags, RadioGroup};
+pub use select::{SelectChange, SelectColors, SelectFlags, SelectMode, SelectOptions};
 pub use slider::{Slider, SliderChange, SliderColors, SliderFinished, SliderFlags};
 pub use text::{ColorableText, Text};
 pub use viewport::{
