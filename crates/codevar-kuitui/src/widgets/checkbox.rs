@@ -695,3 +695,403 @@ fn draw_glyph(scope: &mut DrawScope<'_>, rect: Rect, state: CheckState, color: C
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::{KeyEvent, PointerEvent};
+    use crate::node::{self, Node};
+    use crate::paint::{DrawList, LineOp, PaintStyle, RectOp};
+    use crate::theme::Theme;
+    use crate::widgets::{ScrollAxes, ScrollState, Viewport};
+    use core::cell::Cell;
+
+    /// The square a test box is placed in, in window coordinates.
+    const TARGET: Rect = Rect::from_min_size(Offset::ZERO, 40.0, 40.0);
+
+    /// The center of [`TARGET`], where a press belongs to the box.
+    const CENTER: Offset = Offset::new(20.0, 20.0);
+
+    /// A point no box of a [`TARGET`] contains.
+    const OUTSIDE: Offset = Offset::new(70.0, 70.0);
+
+    /// A tree of one check box, with the state dispatching an event needs.
+    struct Harness {
+        theme: Theme,
+        node: Node,
+        focus: Option<Vec<usize>>,
+    }
+
+    impl Harness {
+        /// A tree of `checkbox`, measured and placed in [`TARGET`].
+        fn new(checkbox: Checkbox) -> Self {
+            let theme = Theme::light();
+            let mut node = Node::new(checkbox);
+            node.measure(&theme, Constraints::unbounded());
+            node.place(TARGET);
+            Self {
+                theme,
+                node,
+                focus: None,
+            }
+        }
+
+        /// Offers `event` to the tree and reports what it answered.
+        fn offer(&mut self, event: &Event) -> EventResult {
+            let mut path = Vec::new();
+            node::dispatch_event(&mut self.node, &self.theme, &mut path, &mut self.focus, event)
+        }
+
+        /// Offers a pointer event of `kind` at `position` to the tree.
+        fn pointer(&mut self, kind: PointerEventKind, position: Offset) -> EventResult {
+            self.offer(&Event::Pointer(PointerEvent::new(kind, position)))
+        }
+
+        /// Offers the release of `key` to the tree.
+        fn release(&mut self, key: Key) -> EventResult {
+            self.offer(&Event::Key(KeyEvent::new(key, false)))
+        }
+
+        /// The box as it paints itself right now.
+        fn canvas(&mut self) -> Canvas {
+            let mut list = DrawList::new();
+            self.node.draw(&self.theme, &mut list);
+            Canvas::of(&list)
+        }
+    }
+
+    /// The shapes a draw list recorded, split by how they were painted.
+    #[derive(Default)]
+    struct Canvas {
+        /// The filled rectangles.
+        fills: Vec<(Rect, Color)>,
+        /// The outlined rectangles.
+        outlines: Vec<(Rect, Color)>,
+        /// The strokes of the glyph: their ends and their color.
+        lines: Vec<(Offset, Offset, Color)>,
+    }
+
+    impl Canvas {
+        /// The recorded shapes of `list`, in the order it recorded them.
+        fn of(list: &DrawList) -> Self {
+            let mut canvas = Self::default();
+            for op in list.ops() {
+                let any: &dyn core::any::Any = op;
+                if let Some(rect) = any.downcast_ref::<RectOp>() {
+                    match rect.paint.style {
+                        PaintStyle::Fill => canvas.fills.push((rect.rect, rect.paint.color)),
+                        PaintStyle::Stroke(_) => canvas
+                            .outlines
+                            .push((rect.rect, rect.paint.color)),
+                    }
+                } else if let Some(line) = any.downcast_ref::<LineOp>() {
+                    canvas
+                        .lines
+                        .push((line.from, line.to, line.paint.color));
+                }
+            }
+            canvas
+        }
+    }
+
+    /// Whether `actual` is `expected` to within a hundredth of a pixel.
+    fn close(actual: Offset, expected: Offset) -> bool {
+        (actual.x - expected.x).abs() < 0.01 && (actual.y - expected.y).abs() < 0.01
+    }
+
+    #[test]
+    fn a_check_box_measures_to_its_touch_target() {
+        let harness = Harness::new(Checkbox::new());
+        assert_eq!(harness.node.size(), Size::new(40.0, 40.0));
+    }
+
+    #[test]
+    fn a_click_toggles_the_value_and_reports_it() {
+        let value = MutableState::new(CheckState::Unchecked);
+        let seen = Rc::new(Cell::new(None));
+        let reported = Rc::clone(&seen);
+        let mut harness = Harness::new(
+            Checkbox::new()
+                .toggle(value.clone())
+                .on_change(move |state| reported.set(Some(state))),
+        );
+        harness.pointer(PointerEventKind::Down, CENTER);
+        assert!(
+            harness
+                .pointer(PointerEventKind::Up, CENTER)
+                .is_consumed(),
+            "a press completed inside the box is the box's click"
+        );
+        assert_eq!(value.get(), CheckState::Checked);
+        assert_eq!(seen.get(), Some(CheckState::Checked));
+        harness.pointer(PointerEventKind::Down, CENTER);
+        harness.pointer(PointerEventKind::Up, CENTER);
+        assert_eq!(value.get(), CheckState::Unchecked);
+        assert_eq!(seen.get(), Some(CheckState::Unchecked));
+    }
+
+    #[test]
+    fn the_press_of_a_box_is_reported_but_not_taken() {
+        let source = InteractionSource::new();
+        let mut harness = Harness::new(Checkbox::new().interaction_with(source.clone()));
+        assert!(
+            !harness
+                .pointer(PointerEventKind::Down, CENTER)
+                .is_consumed()
+        );
+        assert!(source.state().contains(InteractionState::PRESSED));
+        // The leave of the pointer ends the press the way it ends the
+        // hover: a button held in a box the pointer left is not a click.
+        harness.pointer(PointerEventKind::Move, OUTSIDE);
+        assert!(!source.state().contains(InteractionState::PRESSED));
+        assert!(!source.state().contains(InteractionState::HOVERED));
+    }
+
+    #[test]
+    fn a_release_outside_the_target_is_not_a_click() {
+        let value = MutableState::new(CheckState::Unchecked);
+        let mut harness = Harness::new(Checkbox::new().toggle(value.clone()));
+        harness.pointer(PointerEventKind::Down, CENTER);
+        // The press still belongs to the box, so the release is its to
+        // answer — and answering it is not the same as completing a click.
+        assert!(
+            harness
+                .pointer(PointerEventKind::Up, OUTSIDE)
+                .is_consumed()
+        );
+        assert_eq!(value.get(), CheckState::Unchecked);
+    }
+
+    #[test]
+    fn a_press_that_travelled_never_becomes_a_click() {
+        let value = MutableState::new(CheckState::Unchecked);
+        let source = InteractionSource::new();
+        let mut harness = Harness::new(
+            Checkbox::new()
+                .toggle(value.clone())
+                .interaction_with(source.clone()),
+        );
+        harness.pointer(PointerEventKind::Down, CENTER);
+        let travelled = Offset::new(20.0, 30.0);
+        assert!(
+            !harness
+                .pointer(PointerEventKind::Move, travelled)
+                .is_consumed(),
+            "a drag that started on a box is left to the list that holds it"
+        );
+        assert!(!source.state().contains(InteractionState::PRESSED));
+        harness.pointer(PointerEventKind::Up, travelled);
+        assert_eq!(value.get(), CheckState::Unchecked);
+    }
+
+    #[test]
+    fn a_tri_state_box_cycles_through_the_bar() {
+        let value = MutableState::new(CheckState::Unchecked);
+        let mut harness = Harness::new(
+            Checkbox::new()
+                .toggle(value.clone())
+                .tri_state(true),
+        );
+        for expected in [
+            CheckState::Checked,
+            CheckState::Indeterminate,
+            CheckState::Unchecked,
+        ] {
+            harness.pointer(PointerEventKind::Down, CENTER);
+            harness.pointer(PointerEventKind::Up, CENTER);
+            assert_eq!(value.get(), expected);
+        }
+    }
+
+    #[test]
+    fn a_disabled_box_answers_nothing() {
+        let value = MutableState::new(CheckState::Unchecked);
+        let mut harness = Harness::new(
+            Checkbox::new()
+                .toggle(value.clone())
+                .enabled(false),
+        );
+        assert!(
+            !harness.node.hit_testable(),
+            "the press falls through to whatever can still answer it"
+        );
+        assert!(
+            !harness
+                .pointer(PointerEventKind::Down, CENTER)
+                .is_consumed()
+        );
+        assert!(
+            !harness
+                .pointer(PointerEventKind::Up, CENTER)
+                .is_consumed()
+        );
+        assert!(!harness.release(Key::Space).is_consumed());
+        assert_eq!(value.get(), CheckState::Unchecked);
+    }
+
+    #[test]
+    fn a_key_release_toggles_the_box_that_has_the_focus() {
+        let value = MutableState::new(CheckState::Unchecked);
+        let mut harness = Harness::new(Checkbox::new().toggle(value.clone()));
+        // The press is what takes the focus, so the keyboard answers the
+        // box the pointer last touched rather than the root of the tree.
+        harness.pointer(PointerEventKind::Down, CENTER);
+        harness.pointer(PointerEventKind::Up, CENTER);
+        assert_eq!(value.get(), CheckState::Checked);
+        assert!(harness.release(Key::Space).is_consumed());
+        assert_eq!(value.get(), CheckState::Unchecked);
+        assert!(harness.release(Key::Enter).is_consumed());
+        assert_eq!(value.get(), CheckState::Checked);
+        // The press of the same key is not the release of it: a key held
+        // down repeats, and a box that flipped on every repeat would
+        // flicker under a finger that rests on the bar.
+        assert!(
+            !harness
+                .offer(&Event::Key(KeyEvent::new(Key::Space, true)))
+                .is_consumed()
+        );
+        assert_eq!(value.get(), CheckState::Checked);
+    }
+
+    #[test]
+    fn an_unchecked_box_paints_its_outline_only() {
+        let mut harness = Harness::new(Checkbox::new().focusable(false));
+        let canvas = harness.canvas();
+        assert!(canvas.fills.is_empty(), "no container and no layer at rest");
+        assert!(canvas.lines.is_empty());
+        assert_eq!(
+            canvas.outlines,
+            [(
+                Rect::from_min_size(Offset::new(10.0, 10.0), 20.0, 20.0),
+                Theme::light().colors.on_surface_variant
+            )]
+        );
+    }
+
+    #[test]
+    fn a_checked_box_paints_its_container_and_its_mark() {
+        let value = MutableState::new(CheckState::Checked);
+        let mut harness = Harness::new(Checkbox::new().toggle(value));
+        let canvas = harness.canvas();
+        assert_eq!(
+            canvas.fills,
+            [(
+                Rect::from_min_size(Offset::new(11.0, 11.0), 18.0, 18.0),
+                Theme::light().colors.primary
+            )]
+        );
+        assert!(
+            canvas.outlines.is_empty(),
+            "the frame of a checked box is its container"
+        );
+        assert_eq!(canvas.lines.len(), 2, "the mark is two strokes");
+        // The vertices of the mark are the Material ones, measured from
+        // the 20-pixel frame the box paints its glyph in.
+        assert!(close(canvas.lines[0].0, Offset::new(14.08, 20.54)));
+        assert!(close(canvas.lines[0].1, Offset::new(17.74, 24.20)));
+        assert!(close(canvas.lines[1].1, Offset::new(26.22, 15.72)));
+    }
+
+    #[test]
+    fn an_indeterminate_box_keeps_its_frame_and_paints_a_bar() {
+        let value = MutableState::new(CheckState::Indeterminate);
+        let mut harness = Harness::new(Checkbox::new().toggle(value));
+        let canvas = harness.canvas();
+        assert_eq!(canvas.outlines.len(), 1, "the frame of the group stays");
+        assert!(canvas.fills.is_empty());
+        assert_eq!(canvas.lines.len(), 1);
+        assert_eq!(canvas.lines[0].0.y, canvas.lines[0].1.y, "the bar is level");
+        assert!((canvas.lines[0].1.x - canvas.lines[0].0.x - 10.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_disabled_box_paints_the_disabled_roles() {
+        let value = MutableState::new(CheckState::Checked);
+        let mut harness = Harness::new(Checkbox::new().toggle(value).enabled(false));
+        let canvas = harness.canvas();
+        let scheme = Theme::light().colors;
+        assert_eq!(
+            canvas.fills[0].1,
+            scheme
+                .on_surface
+                .with_alpha(defaults::DISABLED_CONTAINER_ALPHA)
+        );
+        assert_eq!(
+            canvas.lines[0].2,
+            scheme
+                .on_surface
+                .with_alpha(defaults::DISABLED_CONTENT_ALPHA)
+        );
+    }
+
+    #[test]
+    fn the_state_layer_shades_the_target_of_a_held_box() {
+        let mut harness = Harness::new(Checkbox::new().focusable(false));
+        harness.pointer(PointerEventKind::Down, CENTER);
+        let canvas = harness.canvas();
+        assert_eq!(canvas.fills[0].0, TARGET, "the layer is the target");
+        assert!(
+            (canvas.fills[0].1.alpha - defaults::PRESSED_ALPHA).abs() < 0.001,
+            "{:?}",
+            canvas.fills[0].1
+        );
+    }
+
+    #[test]
+    fn a_drag_from_a_box_still_scrolls_its_list() {
+        let offset = ScrollState::new(ScrollAxes::VERTICAL);
+        let value = MutableState::new(CheckState::Unchecked);
+        let theme = Theme::light();
+        let mut node = Node::new(Viewport::new().scroll(offset.clone()))
+            .child(Node::new(Checkbox::new().toggle(value.clone())));
+        node.measure(&theme, Constraints::tight(Size::new(40.0, 20.0)));
+        node.place(Rect::from_min_size(Offset::ZERO, 40.0, 20.0));
+        let mut focus = None;
+        let mut offer = |event: &Event| {
+            let mut path = Vec::new();
+            node::dispatch_event(&mut node, &theme, &mut path, &mut focus, event)
+        };
+        let start = Offset::new(20.0, 10.0);
+        offer(&Event::Pointer(PointerEvent::new(PointerEventKind::Down, start)));
+        assert!(
+            offer(&Event::Pointer(PointerEvent::new(
+                PointerEventKind::Move,
+                Offset::new(20.0, 5.0)
+            )))
+            .is_consumed(),
+            "the list answers the drag the box left to it"
+        );
+        assert_eq!(offset.offset().y, 5.0);
+        offer(&Event::Pointer(PointerEvent::new(
+            PointerEventKind::Up,
+            Offset::new(20.0, 5.0),
+        )));
+        assert_eq!(value.get(), CheckState::Unchecked, "a drag is not a click");
+    }
+
+    #[test]
+    fn the_hover_after_a_click_does_not_scroll_the_list() {
+        let offset = ScrollState::new(ScrollAxes::VERTICAL);
+        let value = MutableState::new(CheckState::Unchecked);
+        let theme = Theme::light();
+        let mut node = Node::new(Viewport::new().scroll(offset.clone()))
+            .child(Node::new(Checkbox::new().toggle(value.clone())));
+        node.measure(&theme, Constraints::tight(Size::new(40.0, 20.0)));
+        node.place(Rect::from_min_size(Offset::ZERO, 40.0, 20.0));
+        let mut focus = None;
+        let mut offer = |event: &Event| {
+            let mut path = Vec::new();
+            node::dispatch_event(&mut node, &theme, &mut path, &mut focus, event)
+        };
+        let start = Offset::new(20.0, 10.0);
+        offer(&Event::Pointer(PointerEvent::new(PointerEventKind::Down, start)));
+        offer(&Event::Pointer(PointerEvent::new(PointerEventKind::Up, start)));
+        assert_eq!(value.get(), CheckState::Checked);
+        // The box took the release, so the list was told its press ended
+        // rather than left holding it: this move is a hover, not a drag.
+        offer(&Event::Pointer(PointerEvent::new(
+            PointerEventKind::Move,
+            Offset::new(20.0, 0.0),
+        )));
+        assert_eq!(offset.offset(), Offset::ZERO);
+    }
+}
