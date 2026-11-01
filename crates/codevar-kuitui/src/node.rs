@@ -1436,8 +1436,8 @@ impl Node {
 /// A wheel event belongs to the widget under the pointer the same way a
 /// click does, so it descends the tree to the same node. An event of any
 /// other kind — a key, a change of the focus, of the window — is not about
-/// a place, and reaches the widget it was offered to without looking for a
-/// deeper one.
+/// a place; a key is routed by the focus instead, and the rest reach the
+/// widget they were offered to without looking for a deeper one.
 fn event_position(event: &Event) -> Option<Offset> {
     match event {
         Event::Pointer(pointer) => Some(pointer.position),
@@ -1461,6 +1461,21 @@ fn reacts(node: &mut Node, position: Offset) -> bool {
             .any(|child| child.pointer_hits(position) && reacts(child, position))
 }
 
+/// The child of a node that the path to the focused widget runs through.
+///
+/// A keystroke is not about a place, so containment cannot find the widget
+/// it belongs to: the focus names that widget by its path from the root, and
+/// the descent follows the path. `None` when this node is not on it, or when
+/// the path ends here — the focused widget is this node itself, and it is
+/// offered the event below.
+fn focused_child(path: &[usize], focus: Option<&[usize]>) -> Option<usize> {
+    let focus = focus?;
+    if !focus.starts_with(path) {
+        return None;
+    }
+    focus.get(path.len()).copied()
+}
+
 /// Offers an event to the tree rooted at `node`.
 ///
 /// The deepest child whose shape contains the pointer is offered the
@@ -1470,6 +1485,9 @@ fn reacts(node: &mut Node, position: Offset) -> bool {
 /// A child that asked for a higher `z_index` is offered the pointer
 /// before its siblings, the way it paints above them: the topmost node
 /// under the pointer is the one that reacts to it.
+///
+/// A key or a typed character is offered to the widget the focus names,
+/// walked to through [`focused_child`] rather than by containment.
 pub(crate) fn dispatch_event(
     node: &mut Node,
     theme: &Theme,
@@ -1495,6 +1513,15 @@ pub(crate) fn dispatch_event(
             if result.is_consumed() {
                 return result;
             }
+        }
+    } else if matches!(event, Event::Key(_) | Event::Text(_))
+        && let Some(index) = focused_child(path, focus.as_deref())
+    {
+        path.push(index);
+        let result = dispatch_event(&mut node.children[index], theme, path, focus, event);
+        path.pop();
+        if result.is_consumed() {
+            return result;
         }
     }
     // Measured once for the event, from the shape the node paints: the
@@ -2464,5 +2491,112 @@ mod tests {
             &Event::Pointer(PointerEvent::new(PointerEventKind::Down, Offset::new(5.0, 5.0))),
         );
         assert_eq!(hits.get(), 1, "the child painted on top takes the press");
+    }
+
+    /// A widget that counts the keys it was offered.
+    struct Tally(Rc<Cell<u32>>);
+
+    impl Widget for Tally {
+        fn measure(&mut self, _scope: &mut MeasureScope<'_>, constraints: Constraints) -> Size {
+            constraints.enforce(Size::new(10.0, 10.0))
+        }
+
+        fn on_event(&mut self, _scope: &mut EventScope<'_>, event: &Event) -> EventResult {
+            if matches!(event, Event::Key(_) | Event::Text(_)) {
+                self.0.set(self.0.get() + 1);
+                EventResult::Consumed
+            } else {
+                EventResult::Ignored
+            }
+        }
+    }
+
+    /// The event every focus test offers: a key that no widget contains.
+    fn space() -> Event {
+        Event::Key(crate::event::KeyEvent::new(crate::event::Key::Space, true))
+    }
+
+    #[test]
+    fn a_key_is_offered_to_the_widget_the_focus_names() {
+        let theme = Theme::light();
+        let left = Rc::new(Cell::new(0_u32));
+        let right = Rc::new(Cell::new(0_u32));
+        let mut node = Node::new(Filler)
+            .child(Node::new(Tally(Rc::clone(&left))))
+            .child(Node::new(Tally(Rc::clone(&right))));
+        node.measure(&theme, Constraints::unbounded());
+        node.place(Rect::from_min_size(Offset::ZERO, 20.0, 10.0));
+        let mut focus = Some(vec![1]);
+        let mut path = Vec::new();
+        let result = dispatch_event(&mut node, &theme, &mut path, &mut focus, &space());
+        assert!(result.is_consumed());
+        assert_eq!((left.get(), right.get()), (0, 1));
+        // The path the widget was reached by is the one the focus names, so
+        // a widget that takes the focus with request_focus lands on itself.
+        assert_eq!(focus, Some(vec![1]));
+    }
+
+    #[test]
+    fn a_focus_path_walks_to_the_leaf_it_ends_at() {
+        let theme = Theme::light();
+        let branch = Rc::new(Cell::new(0_u32));
+        let leaf = Rc::new(Cell::new(0_u32));
+        let mut node = Node::new(Filler).child(
+            Node::new(Tally(Rc::clone(&branch)))
+                .child(Node::new(Filler))
+                .child(Node::new(Tally(Rc::clone(&leaf)))),
+        );
+        node.measure(&theme, Constraints::unbounded());
+        node.place(Rect::from_min_size(Offset::ZERO, 10.0, 10.0));
+        let mut focus = Some(vec![0, 1]);
+        let mut path = Vec::new();
+        dispatch_event(&mut node, &theme, &mut path, &mut focus, &space());
+        assert_eq!((branch.get(), leaf.get()), (0, 1));
+    }
+
+    #[test]
+    fn a_key_with_no_focus_reaches_the_root_and_no_child() {
+        let theme = Theme::light();
+        let root = Rc::new(Cell::new(0_u32));
+        let child = Rc::new(Cell::new(0_u32));
+        let mut node = Node::new(Tally(Rc::clone(&root))).child(Node::new(Tally(Rc::clone(&child))));
+        node.measure(&theme, Constraints::unbounded());
+        node.place(Rect::from_min_size(Offset::ZERO, 10.0, 10.0));
+        let mut focus = None;
+        let mut path = Vec::new();
+        let result = dispatch_event(&mut node, &theme, &mut path, &mut focus, &space());
+        assert!(result.is_consumed());
+        assert_eq!((root.get(), child.get()), (1, 0));
+    }
+
+    #[test]
+    fn a_key_the_focused_widget_leaves_travels_up_to_its_ancestors() {
+        let theme = Theme::light();
+        let root = Rc::new(Cell::new(0_u32));
+        let focused = Rc::new(Cell::new(0_u32));
+        // The same tally, but it leaves the key alone: the ancestors have to
+        // be offered what the focused widget did not take, the way they are
+        // offered a pointer a child ignored.
+        struct PassThrough(Rc<Cell<u32>>);
+        impl Widget for PassThrough {
+            fn measure(&mut self, _scope: &mut MeasureScope<'_>, constraints: Constraints) -> Size {
+                constraints.enforce(Size::new(10.0, 10.0))
+            }
+
+            fn on_event(&mut self, _scope: &mut EventScope<'_>, event: &Event) -> EventResult {
+                if matches!(event, Event::Key(_)) {
+                    self.0.set(self.0.get() + 1);
+                }
+                EventResult::Ignored
+            }
+        }
+        let mut node = Node::new(Tally(Rc::clone(&root))).child(Node::new(PassThrough(Rc::clone(&focused))));
+        node.measure(&theme, Constraints::unbounded());
+        node.place(Rect::from_min_size(Offset::ZERO, 10.0, 10.0));
+        let mut focus = Some(vec![0]);
+        let mut path = Vec::new();
+        let result = dispatch_event(&mut node, &theme, &mut path, &mut focus, &space());
+        assert!(result.is_consumed());
+        assert_eq!((focused.get(), root.get()), (1, 1));
     }
 }
