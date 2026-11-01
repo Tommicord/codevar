@@ -1327,6 +1327,16 @@ impl Widget for Viewport {
     fn hit_testable(&self) -> bool {
         true
     }
+
+    /// Runs the fling the region started, so a release keeps carrying the
+    /// content after the pointer left it.
+    ///
+    /// Reports whether the offset moved, which is what tells the frame
+    /// loop that the tree has to be laid out again — and, once the decay
+    /// has settled, that it no longer does.
+    fn advance(&mut self, elapsed: Timestamp) -> bool {
+        self.state.advance(elapsed)
+    }
 }
 
 /// Whether an offset move of `asked` reached the state at all.
@@ -1900,6 +1910,28 @@ mod tests {
     /// The window a test viewport is laid out in.
     const WINDOW: Size = Size::new(100.0, 40.0);
 
+    /// Throws a page of `composition` upward: `steps` moves of 8 pixels
+    /// every 4 milliseconds, then the release that ends the drag.
+    ///
+    /// The sequence starts inside the 40-pixel box and stays inside it, so
+    /// every event of the flick belongs to the viewport.
+    fn flick(composition: &mut Composition<'_>, steps: u32) {
+        composition.handle_event(&pointer(PointerEventKind::Down, Offset::new(50.0, 35.0), 1_000));
+        for step in 1..=steps {
+            composition.handle_event(&pointer(
+                PointerEventKind::Move,
+                Offset::new(50.0, 35.0 - step as f32 * 8.0),
+                u64::from(step) * 4_000,
+            ));
+        }
+        let end = 35.0 - steps as f32 * 8.0;
+        composition.handle_event(&pointer(
+            PointerEventKind::Up,
+            Offset::new(50.0, end),
+            u64::from(steps) * 4_000 + 1_000,
+        ));
+    }
+
     #[test]
     fn a_viewport_reports_its_box_and_measures_its_content_whole() {
         let state = ScrollState::new(ScrollAxes::VERTICAL);
@@ -1969,21 +2001,40 @@ mod tests {
     fn a_fling_throws_the_content_the_way_the_drag_was_moving() {
         let state = ScrollState::new(ScrollAxes::VERTICAL);
         let mut composition = scrolling(state.clone(), WINDOW, Size::new(300.0, 400.0));
-        composition.handle_event(&pointer(PointerEventKind::Down, Offset::new(50.0, 35.0), 1_000));
-        for step in 1..=3u32 {
-            composition.handle_event(&pointer(
-                PointerEventKind::Move,
-                Offset::new(50.0, 35.0 - step as f32 * 8.0),
-                u64::from(step) * 4_000,
-            ));
-        }
-        composition.handle_event(&pointer(PointerEventKind::Up, Offset::new(50.0, 11.0), 13_000));
+        flick(&mut composition, 3);
         assert!(state.is_flinging());
         let after_drag = state.offset().y;
         assert!(state.advance(Timestamp::from_micros(8_000)));
         // Thrown the way the finger went: the content keeps rising after
         // the release.
         assert!(state.offset().y > after_drag, "{:?}", state.offset());
+    }
+
+    #[test]
+    fn a_fling_runs_when_the_frame_advances() {
+        let state = ScrollState::new(ScrollAxes::VERTICAL);
+        let mut composition = scrolling(state.clone(), WINDOW, Size::new(300.0, 400.0));
+        flick(&mut composition, 3);
+        let after_drag = state.offset().y;
+        // The hook, not an event, is what moves the content now: the
+        // pointer is gone and the release still carries.
+        assert!(
+            composition
+                .root_mut()
+                .advance(Timestamp::from_micros(8_000))
+        );
+        assert!(state.offset().y > after_drag, "{:?}", state.offset());
+        // Run the decay out, and the frame loop is told to stop laying the
+        // tree out for a fling that has settled.
+        composition
+            .root_mut()
+            .advance(Timestamp::from_micros(60_000_000));
+        assert!(!state.is_flinging());
+        assert!(
+            !composition
+                .root_mut()
+                .advance(Timestamp::from_micros(8_000))
+        );
     }
 
     #[test]
