@@ -24,7 +24,7 @@
 //! ```ignore
 //! let mut driver = FrameDriver::open(&mut control, composition)?;
 //! loop {
-//!     let report = driver.frame(size, false);
+//!     let report = driver.frame(size, clock.now(), false);
 //!     if report.closed {
 //!         break;
 //!     }
@@ -58,7 +58,11 @@
 //! 4. [`FrameComposition::handle_event`] for each of them — a widget that writes a
 //!    state marks the composition dirty here, which is why this step runs
 //!    before the tree is rebuilt.
-//! 5. [`FrameComposition::recompose`] and [`FrameComposition::layout`] — both skip their
+//! 5. [`FrameComposition::advance`] — a widget that animates by itself, like a
+//!    viewport still carrying a fling, is handed the time since the last
+//!    frame. It writes the same states a handler writes, so it runs before
+//!    the rebuild too.
+//! 6. [`FrameComposition::recompose`] and [`FrameComposition::layout`] — both skip their
 //!    work when nothing is dirty, so an idle frame costs the drain alone.
 //!
 //! The driver never registers a callback with the pump and never holds a list
@@ -74,8 +78,9 @@
 //! [`frame`](FrameDriver::frame).
 
 use alloc::vec::Vec;
+use core::mem;
 
-use codevar_kuitui_control::{Backend, Control, ControlError};
+use codevar_kuitui_control::{Backend, Control, ControlError, Timestamp};
 
 use crate::compose::{Composition, Recomposition};
 use crate::event::{Event, EventResult};
@@ -99,6 +104,8 @@ pub struct FrameReport {
     pub consumed: u32,
     /// Whether the tree was rebuilt.
     pub recomposed: bool,
+    /// Whether a widget moved the tree by itself, without an event.
+    pub animated: bool,
     /// Whether the input stream ended.
     pub closed: bool,
 }
@@ -107,10 +114,11 @@ impl FrameReport {
     /// Whether the frame changed nothing at all.
     ///
     /// An application uses this to skip a redraw: no event arrived, no tree was
-    /// rebuilt, and no widget consumed an event.
+    /// rebuilt, no widget consumed an event, and no animation carried the tree
+    /// forward on its own.
     #[must_use]
     pub const fn is_idle(&self) -> bool {
-        self.delivered == 0 && !self.recomposed && self.consumed == 0
+        self.delivered == 0 && !self.recomposed && self.consumed == 0 && !self.animated
     }
 }
 
@@ -128,6 +136,21 @@ pub trait FrameComposition {
     /// from a skipped one, which is why the composition's own result is the
     /// one the trait returns.
     fn recompose(&mut self, force: bool) -> Recomposition;
+
+    /// Runs the per-frame work of the widgets and reports whether any of
+    /// them moved the tree.
+    ///
+    /// `elapsed` is the time between this frame and the one before. A
+    /// widget that animates by itself — a viewport carrying a fling — only
+    /// moves when it is handed that time, so the driver lays the tree out
+    /// again when the answer is `true`.
+    ///
+    /// The default moves nothing, which is what a composition without an
+    /// animating widget needs.
+    fn advance(&mut self, elapsed: Timestamp) -> bool {
+        let _ = elapsed;
+        false
+    }
 
     /// Measures and places the tree inside `size`, skipping when nothing
     /// changed and `force` is false.
@@ -155,6 +178,10 @@ impl FrameComposition for Composition<'_> {
         Composition::recompose(self, force)
     }
 
+    fn advance(&mut self, elapsed: Timestamp) -> bool {
+        Composition::advance(self, elapsed)
+    }
+
     fn layout(&mut self, size: Size, force: bool) {
         Composition::layout(self, size, force);
     }
@@ -171,6 +198,10 @@ impl FrameComposition for Composition<'_> {
 impl FrameComposition for ReactiveComposition {
     fn recompose(&mut self, force: bool) -> Recomposition {
         ReactiveComposition::recompose(self, force)
+    }
+
+    fn advance(&mut self, elapsed: Timestamp) -> bool {
+        ReactiveComposition::advance(self, elapsed)
     }
 
     fn layout(&mut self, size: Size, force: bool) {
@@ -206,6 +237,9 @@ pub struct FrameDriver<'device, C: FrameComposition> {
     draw: DrawList,
     /// The pointer totals of the last finished frame.
     pointer: Option<PointerSnapshot>,
+    /// The timestamp of the last frame, which the next one subtracts to
+    /// hand the widgets the time that passed.
+    frame_time: Timestamp,
     /// Whether the tree has been built, which the first frame has to do before
     /// it offers events to it.
     booted: bool,
@@ -221,6 +255,7 @@ impl<'device, C: FrameComposition> FrameDriver<'device, C> {
             events: Vec::new(),
             draw: DrawList::new(),
             pointer: None,
+            frame_time: Timestamp::UNSPECIFIED,
             booted: false,
         }
     }
@@ -254,7 +289,20 @@ impl<'device, C: FrameComposition> FrameDriver<'device, C> {
     /// observe; it also lays the tree out again. The size is handed to the
     /// layout every frame, and the layout skips while the size is unchanged and
     /// the tree was not rebuilt.
-    pub fn frame(&mut self, size: Size, force: bool) -> FrameReport {
+    ///
+    /// `time` is the clock of this frame: the driver subtracts the timestamp of
+    /// the frame before it and hands the difference to the widgets, which is
+    /// what a viewport carrying a fling needs to move on its own. A backend
+    /// that reports no time passes [`Timestamp::UNSPECIFIED`], and then nothing
+    /// animates.
+    pub fn frame(&mut self, size: Size, time: Timestamp, force: bool) -> FrameReport {
+        let previous = mem::replace(&mut self.frame_time, time);
+        let elapsed = if previous.is_specified() && time.is_specified() {
+            Timestamp::from_micros(time.micros().saturating_sub(previous.micros()))
+        } else {
+            Timestamp::UNSPECIFIED
+        };
+
         let drain = self.pump.pump();
         self.pointer = Some(self.pump.finish_frame());
 
@@ -273,12 +321,17 @@ impl<'device, C: FrameComposition> FrameDriver<'device, C> {
             }
         }
 
+        // A widget that moves by itself writes the same states a handler
+        // writes, so the animation runs before the rebuild: the content of
+        // this frame is rendered from the position the fling reached.
+        let animated = elapsed.is_specified() && self.composition.advance(elapsed);
+
         // The boot build above never sees the events of this frame, so the
         // tree is recomposed again here: a handler that wrote a state has to
         // be reflected in the same frame it was handled in.
         let rebuilt = matches!(self.composition.recompose(force), Recomposition::Recomposed);
         let recomposed = booted || rebuilt;
-        self.composition.layout(size, force);
+        self.composition.layout(size, force || animated);
 
         FrameReport {
             delivered: drain.delivered,
@@ -287,6 +340,7 @@ impl<'device, C: FrameComposition> FrameDriver<'device, C> {
             events: self.events.len() as u32,
             consumed,
             recomposed,
+            animated,
             closed: drain.closed,
         }
     }
@@ -545,7 +599,7 @@ mod tests {
         backend.publish(press(PointerButton::Primary));
         backend.publish(text("hi"));
 
-        let report = driver.frame(Size::new(10.0, 10.0), false);
+        let report = driver.frame(Size::new(10.0, 10.0), Timestamp::UNSPECIFIED, false);
         assert_eq!(report.delivered, 4);
         assert_eq!(report.events, 5);
         assert_eq!(report.consumed, 0);
@@ -568,9 +622,9 @@ mod tests {
     fn a_frame_with_nothing_to_do_reports_itself_idle() {
         let log = Log::default();
         let (_backend, _control, mut driver) = harness(log.clone(), None, false);
-        driver.frame(Size::new(10.0, 10.0), true);
+        driver.frame(Size::new(10.0, 10.0), Timestamp::UNSPECIFIED, true);
         log.take();
-        let report = driver.frame(Size::new(10.0, 10.0), false);
+        let report = driver.frame(Size::new(10.0, 10.0), Timestamp::UNSPECIFIED, false);
         assert!(report.is_idle());
         assert!(log.take().is_empty());
     }
@@ -582,7 +636,7 @@ mod tests {
         let (backend, _control, mut driver) = harness(log, Some(Rc::clone(&state)), false);
         backend.publish(key(KeyCode::Tab));
 
-        let report = driver.frame(Size::new(10.0, 10.0), false);
+        let report = driver.frame(Size::new(10.0, 10.0), Timestamp::UNSPECIFIED, false);
         assert_eq!(state.get(), 1);
         assert!(report.recomposed);
         assert!(!driver.composition().is_dirty());
@@ -594,12 +648,16 @@ mod tests {
         let (backend, control, mut driver) = harness(log, None, true);
         backend.publish(text("ok"));
 
-        let report = driver.frame(Size::new(10.0, 10.0), false);
+        let report = driver.frame(Size::new(10.0, 10.0), Timestamp::UNSPECIFIED, false);
         assert_eq!(report.events, 2);
         assert_eq!(report.consumed, 2);
 
         drop(control);
-        assert!(driver.frame(Size::new(10.0, 10.0), false).closed);
+        assert!(
+            driver
+                .frame(Size::new(10.0, 10.0), Timestamp::UNSPECIFIED, false)
+                .closed
+        );
         assert!(driver.pump().is_closed());
     }
 
@@ -610,7 +668,7 @@ mod tests {
         backend.publish(motion(4.0, 5.0));
         backend.publish(motion(1.0, 1.0));
 
-        let report = driver.frame(Size::new(10.0, 10.0), false);
+        let report = driver.frame(Size::new(10.0, 10.0), Timestamp::UNSPECIFIED, false);
         assert_eq!(report.coalesced, 1);
         assert_eq!(report.events, 1);
         assert_eq!(driver.pointer().unwrap().delta, Offset::new(5.0, 6.0));
@@ -621,7 +679,7 @@ mod tests {
     fn deliver_reaches_the_tree_without_the_stream() {
         let log = Log::default();
         let (_backend, _control, mut driver) = harness(log.clone(), None, false);
-        driver.frame(Size::new(10.0, 10.0), false);
+        driver.frame(Size::new(10.0, 10.0), Timestamp::UNSPECIFIED, false);
         log.take();
 
         let event = Event::Window(WindowEvent::CloseRequested);
@@ -652,9 +710,72 @@ mod tests {
         let (_backend, _control, mut driver) = harness(log, None, false);
         assert!(driver.render().is_empty());
 
-        driver.frame(Size::new(10.0, 10.0), true);
+        driver.frame(Size::new(10.0, 10.0), Timestamp::UNSPECIFIED, true);
         assert_eq!(driver.composition().size(), Size::new(10.0, 10.0));
         assert!(!driver.render().is_empty());
+    }
+
+    /// A widget that reports a fixed size, so a viewport has content taller
+    /// than its window to scroll through.
+    struct Page;
+
+    impl Widget for Page {
+        fn measure(&mut self, _scope: &mut MeasureScope<'_>, constraints: Constraints) -> Size {
+            constraints.enforce(Size::new(10.0, 40.0))
+        }
+    }
+
+    #[test]
+    fn the_frame_clock_runs_a_fling_the_state_started() {
+        use crate::widgets::{ScrollAxes, ScrollState, Viewport};
+
+        let state = ScrollState::new(ScrollAxes::VERTICAL);
+        let backend = TestBackend::default();
+        let mut control = Control::new(backend.clone());
+        let subscription = control
+            .open_many_with_capacity(ClassSet::POINTER, 16)
+            .unwrap();
+        let keyboard = Box::leak(Box::new(KeyboardState::new()));
+        let pointer = Box::leak(Box::new(PointerState::new()));
+        let pump = InputPump::new(subscription, keyboard, pointer, 16);
+
+        let built = state.clone();
+        let mut composition = Composition::new(Theme::light());
+        composition
+            .set_content(move |_| Node::new(Viewport::new().scroll(built.clone())).child(Node::new(Page)));
+        let mut driver = FrameDriver::new(pump, composition);
+
+        // The boot frame has no frame before it, so it advances nothing even
+        // though the clock is already running.
+        let first = driver.frame(Size::new(10.0, 10.0), Timestamp::from_micros(1_000), false);
+        assert!(!first.animated);
+        assert_eq!(state.offset().y, 0.0);
+
+        state.start_fling(Offset::new(0.0, 500.0));
+        let report = driver.frame(Size::new(10.0, 10.0), Timestamp::from_micros(17_000), false);
+        assert!(report.animated);
+        assert!(!report.is_idle());
+        // 500 px/s decayed over 16 ms is about 8 px, and the tree is laid out
+        // at that position: the child is shifted up by the offset.
+        let moved = state.offset().y;
+        assert!(moved > 6.0 && moved < 10.0, "offset was {moved}");
+        assert_eq!(
+            driver.composition().root().children()[0]
+                .bounds()
+                .origin,
+            Offset::new(0.0, -moved)
+        );
+
+        let report = driver.frame(Size::new(10.0, 10.0), Timestamp::from_micros(33_000), false);
+        assert!(report.animated);
+        assert!(state.offset().y > moved);
+
+        // The fling ends against the bound of the content, and an idle clock
+        // then leaves the tree alone.
+        state.start_fling(Offset::new(0.0, 5_000.0));
+        driver.frame(Size::new(10.0, 10.0), Timestamp::from_micros(49_000), false);
+        assert_eq!(state.offset().y, 30.0);
+        assert!(!state.is_flinging());
     }
 
     #[test]
@@ -699,13 +820,13 @@ mod tests {
         // widget have bounds an event can be hit-tested against.
         assert!(
             driver
-                .frame(Size::new(10.0, 10.0), false)
+                .frame(Size::new(10.0, 10.0), Timestamp::UNSPECIFIED, false)
                 .recomposed
         );
 
         backend.publish(move_to(Point::new(5.0, 5.0)));
         backend.publish(press(PointerButton::Primary));
-        let report = driver.frame(Size::new(10.0, 10.0), false);
+        let report = driver.frame(Size::new(10.0, 10.0), Timestamp::UNSPECIFIED, false);
 
         // The handler wrote the state while the events were offered, and the
         // frame recomposed the tree again before it laid it out.

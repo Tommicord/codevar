@@ -72,6 +72,7 @@ use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::mem;
 
+use codevar_kuitui_control::Timestamp;
 use codevar_kuitui_rea::{Element, RenderCtx, Root};
 
 use crate::compose::Recomposition;
@@ -240,6 +241,17 @@ impl ReactiveComposition {
             self.layout_dirty = true;
         }
         flushed
+    }
+
+    /// Runs the per-frame work of the tree and reports whether a widget
+    /// moved it.
+    ///
+    /// A viewport that carries a fling writes a state, so the animation
+    /// reaches the tree the next [`recompose`](Self::recompose) builds; the
+    /// answer here is what makes the caller lay the tree out again even when
+    /// the render was skipped.
+    pub fn advance(&mut self, elapsed: Timestamp) -> bool {
+        self.tree.advance(elapsed)
     }
 
     /// Measures and places the tree inside `size`.

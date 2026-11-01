@@ -49,6 +49,8 @@ use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::any::Any;
 
+use codevar_kuitui_control::Timestamp;
+
 use crate::event::{Event, EventResult};
 use crate::geometry::{Constraints, Offset, Rect, Size};
 use crate::node::{Node, dispatch_event};
@@ -294,6 +296,18 @@ impl<'a> Composition<'a> {
         self.state.clear_dirty();
         self.layout_dirty = true;
         Recomposition::Recomposed
+    }
+
+    /// Runs the per-frame work of the tree and reports whether a widget
+    /// moved it.
+    ///
+    /// `elapsed` is the time since the frame before; a widget that animates
+    /// by itself, like a viewport still carrying a fling, only moves when it
+    /// is handed it. The answer is what makes a caller lay the tree out
+    /// again even though nothing was rebuilt.
+    pub fn advance(&mut self, elapsed: Timestamp) -> bool {
+        let root = &mut self.root;
+        root.advance(elapsed)
     }
 
     /// Measures and places the tree inside `size`.
