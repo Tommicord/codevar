@@ -29,6 +29,20 @@
 //! their position, and the framework then places each child in turn.
 //! Because the position of a child is known before the child is
 //! placed, a child never has to ask where it is.
+//!
+//! # The hit test
+//!
+//! Dispatch offers a pointer to the child whose *shape* contains it, not
+//! to the child whose rectangle does. A node whose modifier names no
+//! rounding has no shape of its own: it is its rectangle, and the pointer
+//! test is the rectangle test. A node that names one — a rounded
+//! background, a rounded border, a clip or a gradient — is interactive
+//! over the rectangle rounded the same way it paints, so the corner the
+//! arc cut away lets the pointer fall through to the nodes below.
+//!
+//! The shape is built when the node is placed and its index is kept on the
+//! node, so a hover that moves across a rounded button measures the same
+//! geometry frame after frame instead of rasterizing it per event.
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;
@@ -38,6 +52,7 @@ use crate::color::Color;
 use crate::effect::{Effect, Gradient, InteractionSource, InteractionState};
 use crate::event::{Event, EventResult, PointerEventKind};
 use crate::geometry::{Alignment, Constraints, EdgeInsets, Offset, Rect, Size};
+use crate::input::mouse::{BoundId, GeometryCache, VertexBounds};
 use crate::paint::{CornerRadii, DrawList, Paint};
 use crate::theme::Theme;
 use crate::widget::{Children, DrawScope, EventScope, Key, MeasureScope, PlaceScope, Widget};
@@ -735,6 +750,37 @@ impl Modifier {
         })
     }
 
+    /// The corners the pointer of the node is tested against.
+    ///
+    /// A node is interactive over the shape it paints, so every rounding
+    /// the chain names contributes: the clip that cuts the content, the
+    /// container filled by a background, a gradient or a blur, and the
+    /// border drawn over the box. The widest radius asked for a corner
+    /// wins, because the intersection of two rounded boxes of the same
+    /// rectangle is the box rounded by the wider one — the shape that
+    /// covers less.
+    ///
+    /// The radius of the box of the node, not of the narrower rectangle its
+    /// content is drawn in: a container paints on that box, so the pointer
+    /// is tested against what is drawn there. A clip that rounds the
+    /// content of a padded node is therefore applied to the whole box,
+    /// which leaves the few pixels of corner between the two boxes
+    /// interactive rather than cutting them out.
+    fn hit_radii(&self) -> CornerRadii {
+        let clip = self.clip_radii().unwrap_or(CornerRadii::ZERO);
+        let container = self.container_radii();
+        let border = self
+            .border_paint()
+            .map_or(CornerRadii::ZERO, |(_, _, radii)| radii);
+        let widest = |corner: [f32; 3]| corner[0].max(corner[1]).max(corner[2]);
+        CornerRadii::new(
+            widest([clip.top_left, container.top_left, border.top_left]),
+            widest([clip.top_right, container.top_right, border.top_right]),
+            widest([clip.bottom_right, container.bottom_right, border.bottom_right]),
+            widest([clip.bottom_left, container.bottom_left, border.bottom_left]),
+        )
+    }
+
     /// The click handler of the widget, if any.
     fn click_handler(&self) -> Option<ClickHandler> {
         self.ops.iter().rev().find_map(|op| match op {
@@ -778,8 +824,9 @@ impl Modifier {
     /// Reports the pointer to the interaction sources of the modifier.
     ///
     /// Reporting never consumes: the same move is a hover for this node
-    /// and a hover for the node under it.
-    fn track_interaction(&self, bounds: Rect, event: &Event) {
+    /// and a hover for the node under it. `inside` is the answer of the
+    /// geometry of the node, measured once for the event.
+    fn track_interaction(&self, event: &Event, inside: bool) {
         for op in &self.ops {
             let source = match op {
                 ModifierOp::Hoverable(source) => source,
@@ -788,14 +835,14 @@ impl Modifier {
                 } => source,
                 _ => continue,
             };
-            report_pointer(source, bounds, event);
+            report_pointer(source, event, inside);
         }
     }
 
     /// Flips the choice of the widget when the event releases a button
-    /// inside it.
-    fn select(&self, bounds: Rect, event: &Event) -> Option<EventResult> {
-        if !released_inside(bounds, event) {
+    /// inside the shape of the node.
+    fn select(&self, event: &Event, inside: bool) -> Option<EventResult> {
+        if !released_inside(event, inside) {
             return None;
         }
         self.ops.iter().rev().find_map(|op| match op {
@@ -898,16 +945,19 @@ fn aspect(outer: Constraints, ratio: f32) -> Constraints {
 
 /// Applies one pointer event to the states of `source`.
 ///
-/// The pointer is tested against `bounds` because the tree reports the
-/// position in window coordinates, and a move that leaves a node is the
-/// event that clears its hover — no enter or leave event is required,
-/// which is what lets the same rule work on a backend that coalesces
-/// motion and on one that does not.
-fn report_pointer(source: &InteractionSource, bounds: Rect, event: &Event) {
+/// `inside` says whether the pointer is over the shape the node paints;
+/// the dispatch path measures it once per event, from the geometry of the
+/// node rather than from each source, so a chain that holds several
+/// sources asks for the shape only once.
+///
+/// The tree reports the position in window coordinates, and a move that
+/// leaves a node is the event that clears its hover — no enter or leave
+/// event is required, which is what lets the same rule work on a backend
+/// that coalesces motion and on one that does not.
+fn report_pointer(source: &InteractionSource, event: &Event, inside: bool) {
     let Event::Pointer(pointer) = event else {
         return;
     };
-    let inside = bounds.contains(pointer.position);
     match pointer.kind {
         PointerEventKind::Move | PointerEventKind::Enter | PointerEventKind::Leave => {
             if inside {
@@ -933,10 +983,31 @@ fn report_pointer(source: &InteractionSource, bounds: Rect, event: &Event) {
     }
 }
 
-/// Whether `event` releases a button inside `bounds`.
-fn released_inside(bounds: Rect, event: &Event) -> bool {
-    matches!(event, Event::Pointer(pointer)
-        if pointer.kind == PointerEventKind::Up && bounds.contains(pointer.position))
+/// Whether `event` releases a button inside the shape of the node.
+fn released_inside(event: &Event, inside: bool) -> bool {
+    inside
+        && matches!(
+            event,
+            Event::Pointer(pointer) if pointer.kind == PointerEventKind::Up
+        )
+}
+
+/// The shape a pointer is tested against, with the index that caches it.
+///
+/// A node only holds one when its modifier names a rounding: a plain
+/// rectangle needs no shape and no index, so the common node pays for
+/// neither. The index travels with the node across frames, which is what
+/// keeps the rasterization of the 8x8 grid a per-layout cost rather than
+/// a per-event one.
+struct HitGeometry {
+    /// The convex shape of the node, cut to the rounding it paints with.
+    shape: VertexBounds,
+    /// The rectangle the shape was built from.
+    bounds: Rect,
+    /// The radii the shape was built from.
+    radii: CornerRadii,
+    /// The index of the shape, kept so a frame does not rasterize twice.
+    cache: GeometryCache,
 }
 
 /// A node of the widget tree.
@@ -960,6 +1031,12 @@ pub struct Node {
     layout: Rect,
     /// The rectangle the node was placed in.
     pub(crate) bounds: Rect,
+    /// The geometry the pointer is tested against, when the node rounds.
+    ///
+    /// `None` for a node that paints a plain rectangle: its hit test is
+    /// the rectangle test of [`Node::bounds`], and it allocates nothing.
+    /// The box keeps the common node exactly the size it was.
+    hit: Option<Box<HitGeometry>>,
 }
 
 impl Node {
@@ -974,6 +1051,7 @@ impl Node {
             measured: Size::ZERO,
             layout: Rect::ZERO,
             bounds: Rect::ZERO,
+            hit: None,
         }
     }
 
@@ -991,6 +1069,7 @@ impl Node {
             measured: Size::ZERO,
             layout: Rect::ZERO,
             bounds: Rect::ZERO,
+            hit: None,
         }
     }
 
@@ -1087,6 +1166,67 @@ impl Node {
         self.widget.hit_testable() || self.modifier.interacts()
     }
 
+    /// Rebuilds the geometry the pointer is tested against.
+    ///
+    /// A node whose chain names no rounding has no geometry at all: the
+    /// rectangle test is its hit test, and it pays for nothing else. A
+    /// node that does names one gets the convex shape of a rectangle
+    /// rounded the way it paints, and the shape is only rebuilt when the
+    /// box or the radii moved — so placing an unchanged tree costs one
+    /// read of the chain, and the index of the shape survives the frame.
+    fn update_hit_geometry(&mut self) {
+        let radii = self.modifier.hit_radii();
+        if radii.is_zero() {
+            self.hit = None;
+            return;
+        }
+        let unchanged = self
+            .hit
+            .as_ref()
+            .is_some_and(|geometry| geometry.bounds == self.bounds && geometry.radii == radii);
+        if unchanged {
+            return;
+        }
+        let bounds = self.bounds;
+        // One shape per node, and the index of a node is only ever asked
+        // about that shape, so the hit needs no name beyond the first one.
+        self.hit = VertexBounds::rounded_rect(BoundId::new(0), bounds, radii).map(|shape| {
+            Box::new(HitGeometry {
+                shape,
+                bounds,
+                radii,
+                cache: GeometryCache::new(),
+            })
+        });
+    }
+
+    /// Whether `position` lies inside the shape the node paints.
+    ///
+    /// A node with no rounding answers with the rectangle test of its box,
+    /// the common case, and never reaches a polygon. A rounded node
+    /// answers through the index cached on the node, which re-rasterizes
+    /// only when the geometry or the point changed, so a hover that moves
+    /// across a button measures the same shape frame after frame.
+    fn pointer_hits(&mut self, position: Offset) -> bool {
+        if self
+            .hit
+            .as_ref()
+            .is_some_and(|geometry| geometry.bounds != self.bounds)
+        {
+            // A box that moved without the node being placed again; the
+            // shape follows the box it is drawn in.
+            self.update_hit_geometry();
+        }
+        match self.hit.as_mut() {
+            None => self.bounds.contains(position),
+            Some(geometry) => {
+                let shape = geometry.shape;
+                let bounds = geometry.bounds;
+                geometry.cache.covers(&[shape], bounds, position)
+            }
+        }
+    }
+
     /// The share of the free space the node claims in a row or column.
     ///
     /// The weight of the modifier chain takes precedence over the one
@@ -1156,9 +1296,14 @@ impl Node {
     /// offset of the modifier chain moves the node and everything it
     /// contains from there; the rectangle it was laid out in is kept, so
     /// placing the tree again does not accumulate the offset.
+    ///
+    /// Placing also refreshes the shape the pointer is tested against, so
+    /// the geometry of a rounded node is built once per layout rather
+    /// than once per event.
     pub fn place(&mut self, bounds: Rect) {
         self.layout = bounds;
         self.bounds = bounds.translate(self.modifier.placement_offset());
+        self.update_hit_geometry();
         let inner = self.content_rect(self.bounds);
         {
             let Node { widget, children, .. } = self;
@@ -1267,28 +1412,30 @@ impl Node {
     }
 }
 
+/// Whether `node` or a descendant under `position` reacts to a pointer.
+///
+/// A node that does not react is transparent: the pointer falls through it
+/// to the nodes below, which is what lets an event inside a container reach
+/// the interactive child the container holds. The containment of a child is
+/// measured by its own shape, so a child that paints rounded corners is
+/// transparent in the corner the rounding cut away.
+fn reacts(node: &mut Node, position: Offset) -> bool {
+    node.hit_testable()
+        || node
+            .children
+            .iter_mut()
+            .any(|child| child.pointer_hits(position) && reacts(child, position))
+}
+
 /// Offers an event to the tree rooted at `node`.
 ///
-/// The deepest child that contains the pointer is offered the event
-/// first; the widget of a node is offered it only when no child
+/// The deepest child whose shape contains the pointer is offered the
+/// event first; the widget of a node is offered it only when no child
 /// consumed it. The click handler of the modifier is offered it last.
 ///
 /// A child that asked for a higher `z_index` is offered the pointer
 /// before its siblings, the way it paints above them: the topmost node
 /// under the pointer is the one that reacts to it.
-/// Whether `node` or a descendant under `position` reacts to a pointer.
-///
-/// A node that does not react is transparent: the pointer falls through it
-/// to the nodes below, which is what lets an event inside a container reach
-/// the interactive child the container holds.
-fn reacts(node: &Node, position: Offset) -> bool {
-    node.hit_testable()
-        || node
-            .children
-            .iter()
-            .any(|child| child.bounds.contains(position) && reacts(child, position))
-}
-
 pub(crate) fn dispatch_event(
     node: &mut Node,
     theme: &Theme,
@@ -1298,8 +1445,8 @@ pub(crate) fn dispatch_event(
 ) -> EventResult {
     if let Event::Pointer(pointer) = event {
         let mut target: Option<(i32, usize)> = None;
-        for (index, child) in node.children.iter().enumerate() {
-            if !child.bounds.contains(pointer.position) || !reacts(child, pointer.position) {
+        for (index, child) in node.children.iter_mut().enumerate() {
+            if !child.pointer_hits(pointer.position) || !reacts(child, pointer.position) {
                 continue;
             }
             let order = (child.z_index(), index);
@@ -1316,9 +1463,15 @@ pub(crate) fn dispatch_event(
             }
         }
     }
+    // Measured once for the event, from the shape the node paints: the
+    // hover of a chain and the release inside it agree on the corner the
+    // rounding cut away.
+    let inside = match event {
+        Event::Pointer(pointer) => node.pointer_hits(pointer.position),
+        _ => false,
+    };
     let handler = node.modifier.click_handler();
-    node.modifier
-        .track_interaction(node.bounds, event);
+    node.modifier.track_interaction(event, inside);
     let Node { widget, children, .. } = node;
     let mut scope = EventScope::new(children, theme, path.clone(), focus);
     let result = widget.on_event(&mut scope, event);
@@ -1326,7 +1479,7 @@ pub(crate) fn dispatch_event(
     if result.is_consumed() {
         return result;
     }
-    if let Some(result) = node.modifier.select(node.bounds, event) {
+    if let Some(result) = node.modifier.select(event, inside) {
         return result;
     }
     if let Some(handler) = handler {
@@ -1362,6 +1515,8 @@ impl Children for Vec<Node> {
         };
         child.layout = Rect::new(position, child.size);
         child.bounds = child.layout;
+        // A rounded child whose box moved without a place rebuilds its
+        // shape on the next pointer test instead.
     }
 
     fn dispatch_child(
@@ -1853,6 +2008,156 @@ mod tests {
             &Event::Pointer(PointerEvent::new(PointerEventKind::Down, Offset::new(5.0, 5.0))),
         );
         assert!(source.state().contains(InteractionState::PRESSED));
+    }
+
+    /// A node that paints a rounding of `radius` on every corner of the
+    /// box it is given.
+    fn rounded_box(radius: f32, modifier: Modifier) -> Node {
+        Node::new(Filler).modifier(modifier.rounded_background(Color::RED, CornerRadii::uniform(radius)))
+    }
+
+    /// Measures and places `node` in a square box of `side` pixels.
+    fn placed(node: &mut Node, theme: &Theme, side: f32) {
+        node.measure(theme, Constraints::unbounded());
+        node.place(Rect::from_min_size(Offset::ZERO, side, side));
+    }
+
+    #[test]
+    fn an_unrounded_node_keeps_no_geometry() {
+        let theme = Theme::light();
+        let mut node = Node::new(Filler).modifier(Modifier::none().hoverable(InteractionSource::new()));
+        placed(&mut node, &theme, 100.0);
+        assert!(
+            node.hit.is_none(),
+            "a plain rectangle is hit by the rectangle test alone"
+        );
+    }
+
+    #[test]
+    fn a_rounded_node_cuts_its_hover_with_its_corner() {
+        let theme = Theme::light();
+        let source = InteractionSource::new();
+        let mut node = rounded_box(30.0, Modifier::none().hoverable(source.clone()));
+        placed(&mut node, &theme, 100.0);
+        assert!(node.hit.is_some(), "the rounding builds a shape");
+
+        let mut focus = None;
+        let mut path = Vec::new();
+        // The corner of the box, which the arc of radius 30 cut away: a
+        // rectangle test would call it hovered.
+        dispatch_event(
+            &mut node,
+            &theme,
+            &mut path,
+            &mut focus,
+            &Event::Pointer(PointerEvent::new(PointerEventKind::Move, Offset::new(2.0, 2.0))),
+        );
+        assert!(
+            !source.state().contains(InteractionState::HOVERED),
+            "the cut corner is not part of the node"
+        );
+
+        dispatch_event(
+            &mut node,
+            &theme,
+            &mut path,
+            &mut focus,
+            &Event::Pointer(PointerEvent::new(PointerEventKind::Move, Offset::new(50.0, 50.0))),
+        );
+        assert!(source.state().contains(InteractionState::HOVERED));
+    }
+
+    #[test]
+    fn a_rounded_node_ignores_a_release_in_the_corner_it_cuts() {
+        let theme = Theme::light();
+        let source = InteractionSource::new();
+        let seen = Rc::new(Cell::new(0_u8));
+        let counted = Rc::clone(&seen);
+        let mut node = rounded_box(
+            30.0,
+            Modifier::none().selectable(source.clone(), move |_, _| {
+                counted.replace(counted.get() + 1);
+                EventResult::Consumed
+            }),
+        );
+        placed(&mut node, &theme, 100.0);
+
+        let mut focus = None;
+        let mut path = Vec::new();
+        let corner = Event::Pointer(PointerEvent::new(PointerEventKind::Up, Offset::new(2.0, 2.0)));
+        let result = dispatch_event(&mut node, &theme, &mut path, &mut focus, &corner);
+        assert!(!result.is_consumed(), "the corner releases nothing");
+        assert!(
+            !source
+                .state()
+                .contains(InteractionState::SELECTED)
+        );
+
+        let center = Event::Pointer(PointerEvent::new(PointerEventKind::Up, Offset::new(50.0, 50.0)));
+        let result = dispatch_event(&mut node, &theme, &mut path, &mut focus, &center);
+        assert!(result.is_consumed(), "the body of the node still selects");
+        assert_eq!(seen.get(), 1);
+    }
+
+    #[test]
+    fn a_pointer_in_the_cut_corner_of_a_child_falls_through_it() {
+        let theme = Theme::light();
+        let source = InteractionSource::new();
+        let label = rounded_box(
+            30.0,
+            Modifier::none()
+                .size(Some(100.0), Some(100.0))
+                .clickable_with(source.clone(), |_| EventResult::Consumed),
+        );
+        let mut node = Node::new(crate::widgets::Row::new()).with_children(vec![label]);
+        node.measure(&theme, Constraints::tight(Size::new(100.0, 100.0)));
+        node.place(Rect::from_min_size(Offset::ZERO, 100.0, 100.0));
+        assert_eq!(
+            node.children()[0].bounds,
+            Rect::from_min_size(Offset::ZERO, 100.0, 100.0),
+            "the child fills the box, so the corner it cuts is a corner of the box"
+        );
+
+        let mut focus = None;
+        let mut path = Vec::new();
+        let corner = Event::Pointer(PointerEvent::new(PointerEventKind::Down, Offset::new(2.0, 2.0)));
+        let result = dispatch_event(&mut node, &theme, &mut path, &mut focus, &corner);
+        assert!(
+            !result.is_consumed(),
+            "the press landed outside the shape of the child"
+        );
+        assert!(!source.state().contains(InteractionState::PRESSED));
+
+        let center = Event::Pointer(PointerEvent::new(PointerEventKind::Down, Offset::new(50.0, 50.0)));
+        let result = dispatch_event(&mut node, &theme, &mut path, &mut focus, &center);
+        assert!(
+            result.is_consumed(),
+            "the same press inside the arc reaches the child"
+        );
+        assert!(source.state().contains(InteractionState::PRESSED));
+    }
+
+    #[test]
+    fn a_moved_node_follows_its_shape() {
+        let theme = Theme::light();
+        let mut node = rounded_box(30.0, Modifier::none());
+        placed(&mut node, &theme, 100.0);
+        assert!(
+            !node.pointer_hits(Offset::new(150.0, 150.0)),
+            "the point is outside the box the node was placed in"
+        );
+
+        placed(&mut node, &theme, 200.0);
+        // The corner of the bigger box is rounded by 30 pixels there too,
+        // and (150, 150) sits inside its arc: the shape followed the layout.
+        assert!(node.pointer_hits(Offset::new(150.0, 150.0)));
+        assert!(!node.pointer_hits(Offset::new(3.0, 3.0)));
+
+        // A widget that moves its child without placing it again: the
+        // shape is rebuilt by the test that asks for it.
+        node.bounds = Rect::from_min_size(Offset::new(100.0, 0.0), 100.0, 100.0);
+        assert!(node.pointer_hits(Offset::new(150.0, 50.0)));
+        assert!(!node.pointer_hits(Offset::new(50.0, 50.0)));
     }
 
     /// A widget that reports the same size whatever it is given.
