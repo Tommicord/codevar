@@ -783,6 +783,31 @@ impl Modifier {
         )
     }
 
+    /// The angle the container of the node is painted turned by.
+    ///
+    /// The turn only reaches a pixel when there is a container to turn: the
+    /// framework records the effect as a layer around the container fill, so
+    /// a chain that names a rotation over no background paints its box
+    /// straight and the pointer is tested against the straight box. A chain
+    /// that names several turns paints the last angle, the same way
+    /// [`Self::effect`] keeps the last one, and the pointer follows it. An
+    /// angle that is not a finite number turns nothing: the shape built from
+    /// it would be noise.
+    fn hit_rotation(&self) -> f32 {
+        if self.container_color().is_none() {
+            return 0.0;
+        }
+        self.ops
+            .iter()
+            .rev()
+            .find_map(|op| match *op {
+                ModifierOp::Rotate(radians) => Some(radians),
+                _ => None,
+            })
+            .filter(|radians| radians.is_finite())
+            .unwrap_or(0.0)
+    }
+
     /// The click handler of the widget, if any.
     fn click_handler(&self) -> Option<ClickHandler> {
         self.ops.iter().rev().find_map(|op| match op {
@@ -1002,12 +1027,15 @@ fn released_inside(event: &Event, inside: bool) -> bool {
 /// keeps the rasterization of the 8x8 grid a per-layout cost rather than
 /// a per-event one.
 struct HitGeometry {
-    /// The convex shape of the node, cut to the rounding it paints with.
+    /// The convex shape of the node, cut to the rounding it paints with and
+    /// turned the way its container is painted.
     shape: VertexBounds,
     /// The rectangle the shape was built from.
     bounds: Rect,
     /// The radii the shape was built from.
     radii: CornerRadii,
+    /// The angle the shape was turned by.
+    rotation: f32,
     /// The index of the shape, kept so a frame does not rasterize twice.
     cache: GeometryCache,
 }
@@ -1033,11 +1061,13 @@ pub struct Node {
     layout: Rect,
     /// The rectangle the node was placed in.
     pub(crate) bounds: Rect,
-    /// The geometry the pointer is tested against, when the node rounds.
+    /// The geometry the pointer is tested against, when the node cuts or
+    /// turns what it paints.
     ///
-    /// `None` for a node that paints a plain rectangle: its hit test is
-    /// the rectangle test of [`Node::bounds`], and it allocates nothing.
-    /// The box keeps the common node exactly the size it was.
+    /// `None` for a node that paints a plain rectangle where it was laid out:
+    /// its hit test is the rectangle test of [`Node::bounds`], and it
+    /// allocates nothing. The box keeps the common node exactly the size it
+    /// was.
     hit: Option<Box<HitGeometry>>,
 }
 
@@ -1170,45 +1200,51 @@ impl Node {
 
     /// Rebuilds the geometry the pointer is tested against.
     ///
-    /// A node whose chain names no rounding has no geometry at all: the
-    /// rectangle test is its hit test, and it pays for nothing else. A
-    /// node that does names one gets the convex shape of a rectangle
-    /// rounded the way it paints, and the shape is only rebuilt when the
-    /// box or the radii moved — so placing an unchanged tree costs one
-    /// read of the chain, and the index of the shape survives the frame.
+    /// A node whose chain names neither a rounding nor a turn has no geometry
+    /// at all: the rectangle test is its hit test, and it pays for nothing
+    /// else. A node that names one of them gets the convex shape of a
+    /// rectangle rounded and turned the way it paints, and the shape is only
+    /// rebuilt when the box, the radii or the angle moved — so placing an
+    /// unchanged tree costs one read of the chain, and the index of the shape
+    /// survives the frame.
     fn update_hit_geometry(&mut self) {
         let radii = self.modifier.hit_radii();
-        if radii.is_zero() {
+        let rotation = self.modifier.hit_rotation();
+        if radii.is_zero() && rotation == 0.0 {
             self.hit = None;
             return;
         }
-        let unchanged = self
-            .hit
-            .as_ref()
-            .is_some_and(|geometry| geometry.bounds == self.bounds && geometry.radii == radii);
+        let unchanged = self.hit.as_ref().is_some_and(|geometry| {
+            geometry.bounds == self.bounds && geometry.radii == radii && geometry.rotation == rotation
+        });
         if unchanged {
             return;
         }
         let bounds = self.bounds;
         // One shape per node, and the index of a node is only ever asked
         // about that shape, so the hit needs no name beyond the first one.
-        self.hit = VertexBounds::rounded_rect(BoundId::new(0), bounds, radii).map(|shape| {
-            Box::new(HitGeometry {
-                shape,
-                bounds,
-                radii,
-                cache: GeometryCache::new(),
-            })
-        });
+        self.hit = VertexBounds::rounded_rect(BoundId::new(0), bounds, radii)
+            .and_then(|shape| shape.rotated(bounds.center(), rotation))
+            .map(|shape| {
+                Box::new(HitGeometry {
+                    shape,
+                    bounds,
+                    radii,
+                    rotation,
+                    cache: GeometryCache::new(),
+                })
+            });
     }
 
     /// Whether `position` lies inside the shape the node paints.
     ///
-    /// A node with no rounding answers with the rectangle test of its box,
-    /// the common case, and never reaches a polygon. A rounded node
-    /// answers through the index cached on the node, which re-rasterizes
-    /// only when the geometry or the point changed, so a hover that moves
-    /// across a button measures the same shape frame after frame.
+    /// A node with no rounding and no turn answers with the rectangle test of
+    /// its box, the common case, and never reaches a polygon. A node that
+    /// paints a turned or cut box answers through the index cached on the
+    /// node, which re-rasterizes only when the geometry or the point changed,
+    /// so a hover that moves across a button measures the same shape frame
+    /// after frame. The index is rasterized over the box that holds the shape,
+    /// which is the box the node was laid out in unless a turn grew it.
     fn pointer_hits(&mut self, position: Offset) -> bool {
         if self
             .hit
@@ -1223,8 +1259,9 @@ impl Node {
             None => self.bounds.contains(position),
             Some(geometry) => {
                 let shape = geometry.shape;
-                let bounds = geometry.bounds;
-                geometry.cache.covers(&[shape], bounds, position)
+                geometry
+                    .cache
+                    .covers(&[shape], shape.bound(), position)
             }
         }
     }
@@ -2263,6 +2300,120 @@ mod tests {
         node.bounds = Rect::from_min_size(Offset::new(100.0, 0.0), 100.0, 100.0);
         assert!(node.pointer_hits(Offset::new(150.0, 50.0)));
         assert!(!node.pointer_hits(Offset::new(50.0, 50.0)));
+    }
+
+    /// The point `point` turned `radians` about `center`, the same turn the
+    /// painted container of a node takes.
+    fn turned_around(center: Offset, point: Offset, radians: f32) -> Offset {
+        let (cos, sin) = (libm::cosf(radians), libm::sinf(radians));
+        let dx = point.x - center.x;
+        let dy = point.y - center.y;
+        Offset::new(center.x + dx * cos - dy * sin, center.y + dx * sin + dy * cos)
+    }
+
+    /// A node that paints a container rounded by `radius` in a box of
+    /// `width` by `height`, turned about its center by `radians`.
+    fn turned_box(radius: f32, width: f32, height: f32, radians: f32) -> Node {
+        rounded_box(
+            radius,
+            Modifier::none()
+                .size(Some(width), Some(height))
+                .rotate(radians),
+        )
+    }
+
+    /// Measures and places `node` in `rect`.
+    fn laid_out(node: &mut Node, theme: &Theme, rect: Rect) {
+        node.measure(theme, Constraints::unbounded());
+        node.place(rect);
+    }
+
+    #[test]
+    fn a_turned_container_moves_the_pixels_the_pointer_answers_for() {
+        let theme = Theme::light();
+        let box_rect = Rect::from_min_size(Offset::ZERO, 160.0, 40.0);
+        let mut node = turned_box(0.0, 160.0, 40.0, core::f32::consts::FRAC_PI_4);
+        laid_out(&mut node, &theme, box_rect);
+        assert!(
+            node.hit.is_some(),
+            "a turned box is not the box around it, so the rectangle test would answer for pixels nobody painted"
+        );
+
+        assert!(
+            node.pointer_hits(Offset::new(80.0, 20.0)),
+            "the center turns onto itself"
+        );
+        assert!(
+            node.pointer_hits(Offset::new(80.0, 30.0)),
+            "the body travels with the turn"
+        );
+        assert!(
+            node.pointer_hits(Offset::new(130.0, 75.0)),
+            "the turn reaches past the box the node was laid out in"
+        );
+        assert!(
+            !node.pointer_hits(Offset::new(2.0, 2.0)),
+            "the corner it turned away from is left empty"
+        );
+        assert!(
+            !node.pointer_hits(Offset::new(158.0, 38.0)),
+            "and so is the opposite one"
+        );
+    }
+
+    #[test]
+    fn a_turn_that_paints_no_container_leaves_the_pointer_on_the_box() {
+        let theme = Theme::light();
+        let mut node = Node::new(Filler).modifier(
+            Modifier::none()
+                .size(Some(160.0), Some(40.0))
+                .rotate(core::f32::consts::FRAC_PI_4),
+        );
+        laid_out(&mut node, &theme, Rect::from_min_size(Offset::ZERO, 160.0, 40.0));
+        assert!(
+            node.hit.is_none(),
+            "with no container to turn no pixel moved, so the box still answers"
+        );
+        assert!(node.pointer_hits(Offset::new(2.0, 2.0)));
+        assert!(!node.pointer_hits(Offset::new(130.0, 75.0)));
+    }
+
+    #[test]
+    fn a_turned_node_answers_where_the_straight_one_answered() {
+        let theme = Theme::light();
+        let box_rect = Rect::from_min_size(Offset::ZERO, 160.0, 40.0);
+        let angle = core::f32::consts::PI / 5.0;
+        let center = box_rect.center();
+        let mut straight = turned_box(12.0, 160.0, 40.0, 0.0);
+        let mut turned = turned_box(12.0, 160.0, 40.0, angle);
+        laid_out(&mut straight, &theme, box_rect);
+        laid_out(&mut turned, &theme, box_rect);
+
+        // Turning the shape and the point together cannot change the answer,
+        // so the arc, the straight edges and the corners cut away all travel
+        // as one piece of geometry.
+        for point in [
+            Offset::new(80.0, 20.0),
+            Offset::new(2.0, 2.0),
+            Offset::new(6.0, 6.0),
+            Offset::new(158.0, 38.0),
+            Offset::new(154.0, 34.0),
+            Offset::new(1.0, 20.0),
+            Offset::new(-1.0, 20.0),
+            Offset::new(80.0, 2.0),
+            Offset::new(80.0, 38.0),
+            Offset::new(80.0, -3.0),
+            Offset::new(80.0, 43.0),
+        ] {
+            let moved = turned_around(center, point, angle);
+            assert_eq!(
+                turned.pointer_hits(moved),
+                straight.pointer_hits(point),
+                "the turn changed the answer for the point ({}, {})",
+                point.x,
+                point.y
+            );
+        }
     }
 
     /// A widget that reports the same size whatever it is given.
