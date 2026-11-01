@@ -19,6 +19,20 @@
 //! scroll and window events. A widget reacts to an event by returning
 //! [`EventResult::Consumed`], which stops the event from reaching the
 //! widgets below it in the tree.
+//!
+//! # The clock
+//!
+//! A pointer and a scroll event carry the [`Timestamp`] the backend
+//! reported for them. A gesture is a *sequence* of events, so the
+//! widget that folds presses and moves into a drag or a fling needs the
+//! time between them: the speed of a release, and therefore how far it
+//! should carry the content, is a distance over a time. An event from a
+//! backend that reports no time carries
+//! [`Timestamp::UNSPECIFIED`], and the gesture then has no speed to
+//! measure — it stops where the finger stopped instead of throwing the
+//! content.
+
+use codevar_kuitui_control::Timestamp;
 
 use crate::geometry::{Offset, Size};
 
@@ -152,10 +166,16 @@ pub struct PointerEvent {
     pub buttons: PointerButtons,
     /// The modifier keys that are held down.
     pub modifiers: Modifiers,
+    /// When the backend observed the event.
+    pub time: Timestamp,
 }
 
 impl PointerEvent {
     /// Creates a pointer event of the given kind at `position`.
+    ///
+    /// The event is created with [`Timestamp::UNSPECIFIED`], because a
+    /// caller that synthesizes an event has no device clock to name; a
+    /// real one is delivered through [`PointerEvent::with_time`].
     #[must_use]
     pub const fn new(kind: PointerEventKind, position: Offset) -> Self {
         Self {
@@ -164,6 +184,7 @@ impl PointerEvent {
             button: PointerButton::Primary,
             buttons: PointerButtons::NONE,
             modifiers: Modifiers::NONE,
+            time: Timestamp::UNSPECIFIED,
         }
     }
 
@@ -178,6 +199,59 @@ impl PointerEvent {
     #[must_use]
     pub const fn with_modifiers(mut self, modifiers: Modifiers) -> Self {
         self.modifiers = modifiers;
+        self
+    }
+
+    /// The event as the device reported it at `time`.
+    #[must_use]
+    pub const fn with_time(mut self, time: Timestamp) -> Self {
+        self.time = time;
+        self
+    }
+}
+
+/// The pointer wheel moved.
+///
+/// The delta is what the wheel reported — the scroll along `x` is the
+/// horizontal wheel of a tilting mouse or a two-finger trackpad gesture,
+/// the one along `y` the ordinary wheel — and `position` is where the
+/// pointer was when it moved, because a scroll belongs to the widget
+/// under the pointer the same way a click does.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScrollEvent {
+    /// The distance the wheel reported, in logical pixels.
+    pub delta: Offset,
+    /// Where the pointer was, in the coordinate space of the window.
+    pub position: Offset,
+    /// The modifier keys that were held down.
+    pub modifiers: Modifiers,
+    /// When the backend observed the wheel move.
+    pub time: Timestamp,
+}
+
+impl ScrollEvent {
+    /// Creates a wheel event of `delta` at `position`.
+    #[must_use]
+    pub const fn new(delta: Offset, position: Offset) -> Self {
+        Self {
+            delta,
+            position,
+            modifiers: Modifiers::NONE,
+            time: Timestamp::UNSPECIFIED,
+        }
+    }
+
+    /// The event with a different set of held modifiers.
+    #[must_use]
+    pub const fn with_modifiers(mut self, modifiers: Modifiers) -> Self {
+        self.modifiers = modifiers;
+        self
+    }
+
+    /// The event as the device reported it at `time`.
+    #[must_use]
+    pub const fn with_time(mut self, time: Timestamp) -> Self {
+        self.time = time;
         self
     }
 }
@@ -274,8 +348,8 @@ pub enum Event {
     Key(KeyEvent),
     /// A character was typed.
     Text(char),
-    /// The pointer wheel was scrolled.
-    Scroll(Offset),
+    /// The pointer wheel was scrolled under `position`.
+    Scroll(ScrollEvent),
     /// The widget gained or lost the focus.
     Focus(bool),
     /// The window changed.
@@ -332,5 +406,17 @@ mod tests {
         let event = PointerEvent::new(PointerEventKind::Down, Offset::new(3.0, 4.0));
         assert_eq!(event.position, Offset::new(3.0, 4.0));
         assert_eq!(event.kind, PointerEventKind::Down);
+    }
+
+    #[test]
+    fn an_event_the_backend_never_timed_carries_no_time() {
+        let event = PointerEvent::new(PointerEventKind::Move, Offset::new(1.0, 2.0));
+        assert!(!event.time.is_specified());
+        assert!(
+            event
+                .with_time(Timestamp::from_micros(500))
+                .time
+                .is_specified()
+        );
     }
 }

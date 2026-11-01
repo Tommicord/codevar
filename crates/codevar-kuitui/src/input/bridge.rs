@@ -40,7 +40,7 @@ use codevar_kuitui_control::{InputEvent, KeyCode, KeyState, PointerButton};
 
 use crate::event::{
     Event, Key, KeyEvent, Modifiers, PointerButton as TreeButton, PointerButtons as TreeButtons,
-    PointerEvent, PointerEventKind,
+    PointerEvent, PointerEventKind, ScrollEvent,
 };
 use crate::geometry::Offset;
 use crate::input::{
@@ -153,14 +153,14 @@ impl ToTreeEvent for KeyTransition {
 impl ToTreeEvent for PointerUpdate {
     fn to_tree_event(&self) -> Option<Event> {
         if self.phase == PointerPhase::Scroll {
-            return Some(Event::Scroll(self.scroll));
+            return Some(Event::Scroll(scroll_event(self)));
         }
         let (kind, pressed) = match self.phase {
             PointerPhase::Motion => (PointerEventKind::Move, None),
             PointerPhase::Enter => (PointerEventKind::Enter, None),
             PointerPhase::Leave => (PointerEventKind::Leave, None),
             PointerPhase::Cancel => (PointerEventKind::Cancel, None),
-            PointerPhase::Scroll => return Some(Event::Scroll(self.scroll)),
+            PointerPhase::Scroll => return Some(Event::Scroll(scroll_event(self))),
             PointerPhase::Unknown => return None,
             PointerPhase::Button => {
                 let device = self.button?;
@@ -181,12 +181,27 @@ impl ToTreeEvent for PointerUpdate {
         // the click it carried.
         let mut event = PointerEvent::new(kind, self.position.unwrap_or(Offset::ZERO))
             .with_buttons(buttons_of(self.buttons))
-            .with_modifiers(modifiers_of(self.modifiers));
+            .with_modifiers(modifiers_of(self.modifiers))
+            .with_time(self.timestamp);
         if let Some(button) = pressed {
             event.button = button;
         }
         Some(Event::Pointer(event))
     }
+}
+
+/// The wheel event of a pointer update.
+///
+/// A scroll carries the position the pointer was at when the wheel moved,
+/// so the tree can hand the scroll to the widget under the pointer; the
+/// state keeps that position across the scroll events, which report only
+/// the delta.
+#[inline]
+#[must_use]
+pub fn scroll_event(update: &PointerUpdate) -> ScrollEvent {
+    ScrollEvent::new(update.scroll, update.position.unwrap_or(Offset::ZERO))
+        .with_modifiers(modifiers_of(update.modifiers))
+        .with_time(update.timestamp)
 }
 
 /// Pushes the tree events of one device event that carries no state.
@@ -310,10 +325,9 @@ mod tests {
         let update = PointerUpdate::new(&state, &pointer(None, Some(Point::new(1.0, 1.0))), when(2));
         assert_eq!(
             update.to_tree_event(),
-            Some(Event::Pointer(PointerEvent::new(
-                PointerEventKind::Move,
-                Offset::new(6.0, 8.0)
-            )))
+            Some(Event::Pointer(
+                PointerEvent::new(PointerEventKind::Move, Offset::new(6.0, 8.0)).with_time(when(2))
+            ))
         );
     }
 
@@ -379,6 +393,7 @@ mod tests {
     #[test]
     fn a_scroll_bridges_to_the_scroll_of_its_own_event() {
         let state = PointerState::new();
+        state.apply(&pointer(Some(Point::new(30.0, 40.0)), None), when(5));
         let update = PointerUpdate::new(
             &state,
             &DevicePointerEvent::Scroll {
@@ -388,9 +403,13 @@ mod tests {
             },
             when(6),
         );
+        // The wheel reports no position, so the event carries the last one
+        // the pointer had: a scroll belongs to what is under the pointer.
         assert_eq!(
             update.to_tree_event(),
-            Some(Event::Scroll(Offset::new(0.0, 12.0)))
+            Some(Event::Scroll(
+                ScrollEvent::new(Offset::new(0.0, 12.0), Offset::new(30.0, 40.0)).with_time(when(6))
+            ))
         );
     }
 
