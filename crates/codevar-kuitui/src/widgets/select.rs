@@ -1158,8 +1158,9 @@ fn draw_caret(scope: &mut DrawScope<'_>, field: Rect, open: bool, color: Color) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{PointerEvent, ScrollEvent};
+    use crate::event::{KeyEvent, PointerEvent, ScrollEvent};
     use crate::node::{self, Node};
+    use crate::paint::{DrawList, LineOp, PaintStyle, RectOp, TextOp};
     use crate::theme::Theme;
     use alloc::string::String;
     use core::cell::RefCell;
@@ -1316,6 +1317,80 @@ mod tests {
         fn wheel(&mut self, delta: Offset, position: Offset) -> EventResult {
             self.offer(&Event::Scroll(ScrollEvent::new(delta, position)))
         }
+
+        /// Offers the press of `key` to the tree.
+        fn press(&mut self, key: Key) -> EventResult {
+            self.offer(&Event::Key(KeyEvent::new(key, true)))
+        }
+
+        /// Offers the release of `key` to the tree.
+        fn release(&mut self, key: Key) -> EventResult {
+            self.offer(&Event::Key(KeyEvent::new(key, false)))
+        }
+
+        /// The select as it paints itself right now.
+        fn canvas(&mut self) -> Canvas {
+            let mut list = DrawList::new();
+            self.node.draw(&self.theme, &mut list);
+            Canvas::of(&list)
+        }
+    }
+
+    /// The shapes a draw list recorded, split by how they were painted.
+    #[derive(Default)]
+    struct Canvas {
+        /// The filled rectangles, in paint order.
+        fills: Vec<(Rect, Color)>,
+        /// The outlined rectangles with the width of their stroke.
+        outlines: Vec<(Rect, Color, f32)>,
+        /// The strokes of the icon: their ends and their color.
+        lines: Vec<(Offset, Offset, Color)>,
+        /// The runs of text: their baseline, their characters, their color.
+        texts: Vec<(Offset, Rc<str>, Color)>,
+        /// The box every command was cut to, and the corners of that box.
+        clips: Vec<(Option<Rect>, CornerRadii)>,
+    }
+
+    impl Canvas {
+        /// The recorded shapes of `list`, in the order it recorded them.
+        fn of(list: &DrawList) -> Self {
+            let mut canvas = Self::default();
+            for command in list.commands() {
+                canvas
+                    .clips
+                    .push((command.clip, command.clip_radii));
+                let any: &dyn core::any::Any = &*command.op;
+                if let Some(rect) = any.downcast_ref::<RectOp>() {
+                    match rect.paint.style {
+                        PaintStyle::Fill => canvas.fills.push((rect.rect, rect.paint.color)),
+                        PaintStyle::Stroke(width) => {
+                            canvas
+                                .outlines
+                                .push((rect.rect, rect.paint.color, width))
+                        }
+                    }
+                } else if let Some(line) = any.downcast_ref::<LineOp>() {
+                    canvas
+                        .lines
+                        .push((line.from, line.to, line.paint.color));
+                } else if let Some(text) = any.downcast_ref::<TextOp>() {
+                    canvas
+                        .texts
+                        .push((text.origin, text.text.clone(), text.style.color));
+                }
+            }
+            canvas
+        }
+    }
+
+    /// The baseline the label of row `index` sits on in a list scrolled by
+    /// `offset`, as the theme's own metrics put it.
+    fn row_baseline(theme: &Theme, index: usize, offset: f32) -> f32 {
+        let metrics = theme.metrics.as_ref();
+        let style = &theme.typography.label;
+        defaults::FIELD_HEIGHT + index as f32 * defaults::ITEM_HEIGHT - offset
+            + (defaults::ITEM_HEIGHT - metrics.line_height(style)) * 0.5
+            + metrics.ascent(style)
     }
 
     #[test]
@@ -1677,6 +1752,438 @@ mod tests {
         assert!(
             !harness.scroll.is_flinging(),
             "the pointer that came down owns the content from here"
+        );
+    }
+
+    #[test]
+    fn a_select_without_the_focus_answers_no_key() {
+        let mut harness = Harness::list(SelectOptions::new(&COLORS), 4);
+        assert!(
+            !harness.press(Key::ArrowDown).is_consumed(),
+            "the framework routes a key to the widget that has the focus, so an answer here \
+             would be one nobody asked for"
+        );
+        assert!(
+            !harness.release(Key::Space).is_consumed(),
+            "the page keeps a key a field without the focus would rather have"
+        );
+        assert_eq!(harness.mode.get(), SelectMode::Closed);
+    }
+
+    #[test]
+    fn the_confirm_key_released_opens_and_the_next_chooses_the_row_the_keys_reached() {
+        let mut harness = Harness::list(options(20, usize::MAX), 2);
+        harness.open();
+        harness.release(Key::Escape);
+        harness.relayout();
+        assert_eq!(harness.mode.get(), SelectMode::Closed);
+        assert!(
+            harness.release(Key::Space).is_consumed(),
+            "the confirm key is answered on its release, so a bar held down cannot flicker \
+             the list open and shut"
+        );
+        harness.relayout();
+        assert_eq!(harness.mode.get(), SelectMode::Open { highlight: 0 });
+        for _ in 0..3 {
+            assert!(harness.press(Key::ArrowDown).is_consumed());
+        }
+        assert_eq!(harness.mode.get(), SelectMode::Open { highlight: 3 });
+        assert!(harness.release(Key::Enter).is_consumed());
+        assert_eq!(harness.selection.get(), Some(3));
+        assert_eq!(harness.reports.borrow().len(), 1);
+        assert_eq!(harness.reports.borrow()[0].index, 3);
+        assert!(!harness.mode.get().is_open());
+    }
+
+    #[test]
+    fn the_browsing_keys_answer_nothing_until_the_list_is_on_screen() {
+        let mut harness = Harness::list(SelectOptions::new(&COLORS), 4);
+        harness.open();
+        harness.release(Key::Escape);
+        harness.relayout();
+        for key in [Key::ArrowDown, Key::ArrowUp, Key::Home, Key::End, Key::PageDown] {
+            assert!(
+                !harness.press(key).is_consumed(),
+                "a spinner opens on a confirm key and does not browse its adapter before the \
+                 list is on screen"
+            );
+        }
+        assert_eq!(harness.mode.get(), SelectMode::Closed);
+    }
+
+    #[test]
+    fn the_arrows_move_the_pointer_of_the_list_and_keep_the_row_on_screen() {
+        let mut harness = Harness::list(options(20, usize::MAX), 2);
+        harness.open();
+        assert!(harness.press(Key::ArrowDown).is_consumed());
+        assert_eq!(harness.mode.get(), SelectMode::Open { highlight: 1 });
+        assert!(
+            near(harness.scroll.offset().y, 0.0),
+            "the second row still fits the window, so nothing moved"
+        );
+        assert!(harness.press(Key::ArrowDown).is_consumed());
+        assert_eq!(harness.mode.get(), SelectMode::Open { highlight: 2 });
+        assert!(
+            near(harness.scroll.offset().y, defaults::ITEM_HEIGHT),
+            "the row that left the window is pulled back to its edge, and no further"
+        );
+        assert!(harness.press(Key::ArrowUp).is_consumed());
+        assert_eq!(harness.mode.get(), SelectMode::Open { highlight: 1 });
+        assert!(harness.press(Key::Home).is_consumed());
+        assert_eq!(harness.mode.get(), SelectMode::Open { highlight: 0 });
+        assert!(near(harness.scroll.offset().y, 0.0));
+        assert!(harness.press(Key::End).is_consumed());
+        assert_eq!(harness.mode.get(), SelectMode::Open { highlight: 19 });
+        assert!(
+            near(
+                harness.scroll.offset().y,
+                20.0 * defaults::ITEM_HEIGHT - harness.scroll.viewport().height
+            ),
+            "the end of the list is the last row against the bottom edge"
+        );
+        assert!(
+            !harness.press(Key::ArrowLeft).is_consumed(),
+            "a sideways key is not the list's to take"
+        );
+    }
+
+    #[test]
+    fn a_page_moves_a_window_of_rows_and_points_at_the_row_that_arrived() {
+        let mut harness = Harness::list(options(20, usize::MAX), 2);
+        harness.open();
+        assert!(harness.press(Key::PageDown).is_consumed());
+        assert!(
+            near(harness.scroll.offset().y, harness.scroll.viewport().height),
+            "a page is the height of the window, as it is for a list"
+        );
+        assert_eq!(
+            harness.mode.get(),
+            SelectMode::Open { highlight: 3 },
+            "the keys point at the row the page moved in at the bottom edge"
+        );
+        assert!(harness.press(Key::PageUp).is_consumed());
+        assert!(near(harness.scroll.offset().y, 0.0));
+        assert_eq!(harness.mode.get(), SelectMode::Open { highlight: 0 });
+        assert!(
+            !harness.press(Key::PageUp).is_consumed(),
+            "a page with nothing before the first row has nothing to move"
+        );
+        harness.scroll.scroll_to(harness.scroll.max());
+        assert!(
+            !harness.press(Key::PageDown).is_consumed(),
+            "and the same at the end of the content"
+        );
+        assert_eq!(harness.mode.get(), SelectMode::Open { highlight: 0 });
+    }
+
+    #[test]
+    fn escape_puts_the_list_away_and_a_second_escape_is_no_one_s() {
+        let mut harness = Harness::list(SelectOptions::new(&COLORS), 4);
+        harness.open();
+        assert!(
+            !harness.press(Key::Escape).is_consumed(),
+            "a press that names no move is left where it fell"
+        );
+        assert!(harness.mode.get().is_open());
+        assert!(harness.release(Key::Escape).is_consumed());
+        assert_eq!(harness.mode.get(), SelectMode::Closed);
+        assert!(
+            !harness.release(Key::Escape).is_consumed(),
+            "a list already put away has nothing to dismiss"
+        );
+    }
+
+    #[test]
+    fn a_field_that_lost_the_focus_puts_its_list_away() {
+        let mut harness = Harness::list(SelectOptions::new(&COLORS), 4);
+        harness.open();
+        assert!(
+            !harness.offer(&Event::Focus(false)).is_consumed(),
+            "the loss of the focus is not the select's to take"
+        );
+        assert_eq!(harness.mode.get(), SelectMode::Closed);
+        assert!(
+            !harness
+                .interaction
+                .state()
+                .contains(InteractionState::FOCUSED)
+        );
+    }
+
+    #[test]
+    fn the_field_lends_its_list_the_frame_it_learns_another_widget_took_the_focus() {
+        let mut harness = Harness::list(SelectOptions::new(&COLORS), 4);
+        harness.open();
+        // Only the widget that asks for the focus wins it, and no widget is
+        // told it lost one, so the field finds out with the next event that
+        // reaches it — and its list would else answer keys on screen.
+        harness.focus = None;
+        harness.pointer(PointerEventKind::Move, OUTSIDE);
+        assert_eq!(harness.mode.get(), SelectMode::Closed);
+        assert!(
+            !harness
+                .interaction
+                .state()
+                .contains(InteractionState::FOCUSED)
+        );
+    }
+
+    #[test]
+    fn the_field_shows_the_placeholder_and_then_the_option_chosen() {
+        let theme = Theme::light();
+        let metrics = theme.metrics.as_ref();
+        let baseline = (defaults::FIELD_HEIGHT - metrics.line_height(&theme.typography.body)) * 0.5
+            + metrics.ascent(&theme.typography.body);
+        let colors = SelectColors::for_scheme(&theme.colors, SelectFlags::STANDARD);
+        let mut harness = Harness::new(
+            Constraints::unbounded(),
+            Select::new()
+                .options(SelectOptions::new(&COLORS))
+                .placeholder("Pick a color"),
+        );
+        let canvas = harness.canvas();
+        assert_eq!(&*canvas.texts[0].1, "Pick a color");
+        assert_eq!(
+            canvas.texts[0].2, colors.muted,
+            "the question of a field with nothing chosen is the secondary content"
+        );
+        assert!(near(canvas.texts[0].0.y, baseline));
+        assert!(near(canvas.texts[0].0.x, defaults::PADDING));
+        harness.selection.set(Some(2));
+        harness.relayout();
+        let canvas = harness.canvas();
+        assert_eq!(&*canvas.texts[0].1, "Blue");
+        assert_eq!(canvas.texts[0].2, colors.label);
+        assert_eq!(canvas.outlines[0].1, colors.outline);
+        assert!(
+            near(canvas.outlines[0].2, defaults::OUTLINE),
+            "the field without the focus outlines itself at the lighter width"
+        );
+    }
+
+    #[test]
+    fn the_caret_turns_with_the_list() {
+        let theme = Theme::light();
+        let colors = SelectColors::for_scheme(&theme.colors, SelectFlags::STANDARD);
+        let mut harness = Harness::list(SelectOptions::new(&COLORS), 4);
+        let closed = harness.canvas();
+        assert_eq!(
+            closed.lines.len(),
+            2,
+            "the icon is the two segments that meet at its point"
+        );
+        assert!(
+            closed.lines[0].0.y < closed.lines[0].1.y,
+            "a closed list is offered by an arrow pointing down"
+        );
+        assert!(closed.lines[1].0.y > closed.lines[1].1.y);
+        assert_eq!(closed.lines[0].2, colors.muted);
+        let left = harness.node.size().width - defaults::PADDING - defaults::ICON_BOX;
+        assert!(near(
+            closed.lines[0].0.x,
+            left + defaults::CARET[0].x * defaults::ICON_BOX
+        ));
+        harness.open();
+        let open = harness.canvas();
+        assert!(
+            open.lines[0].0.y > open.lines[0].1.y,
+            "an open list turns the icon about: pressing again puts the rows away"
+        );
+        assert!(open.lines[1].0.y < open.lines[1].1.y);
+    }
+
+    #[test]
+    fn the_list_paints_only_the_rows_the_window_shows() {
+        let mut harness = Harness::list(options(20, usize::MAX), 2);
+        harness.open();
+        let canvas = harness.canvas();
+        assert_eq!(
+            canvas.texts.len(),
+            2,
+            "of twenty options the two that fit are what the list visits"
+        );
+        assert_eq!(&*canvas.texts[0].1, "00");
+        assert_eq!(&*canvas.texts[1].1, "01");
+        harness.scroll.scroll_to(Offset::new(0.0, 30.0));
+        let canvas = harness.canvas();
+        assert_eq!(
+            canvas.texts.len(),
+            3,
+            "a row that only its first pixel has come into the window is painted and cut by \
+             the clip, not dropped by the range"
+        );
+        assert_eq!(&*canvas.texts[2].1, "02");
+        assert!(near(canvas.texts[2].0.y, row_baseline(&harness.theme, 2, 30.0)));
+        harness.scroll.scroll_to(harness.scroll.max());
+        let canvas = harness.canvas();
+        assert_eq!(canvas.texts.len(), 2);
+        assert_eq!(&*canvas.texts[0].1, "18");
+        assert_eq!(&*canvas.texts[1].1, "19");
+    }
+
+    #[test]
+    fn the_rows_are_cut_to_the_rounded_box_of_the_list() {
+        let mut harness = Harness::list(options(20, usize::MAX), 2);
+        harness.open();
+        let width = harness.node.size().width;
+        let box_of_list = Rect::from_min_size(
+            Offset::new(0.0, defaults::FIELD_HEIGHT),
+            width,
+            2.0 * defaults::ITEM_HEIGHT,
+        );
+        let radii = CornerRadii::uniform(defaults::CORNER);
+        let canvas = harness.canvas();
+        let (whole, cut): (Vec<_>, Vec<_>) = canvas
+            .clips
+            .into_iter()
+            .partition(|(clip, _)| clip.is_none());
+        assert_eq!(
+            whole.len(),
+            5,
+            "the layer of the field, its outline, the two strokes of the icon and the \
+             container of the list are painted whole"
+        );
+        assert_eq!(
+            cut.len(),
+            3,
+            "the two rows the window shows, and the tint the pointed at one of them carries"
+        );
+        assert!(
+            cut.iter()
+                .all(|(clip, shape)| *clip == Some(box_of_list) && *shape == radii),
+            "the rows are cut to the rounding of the box they scroll inside, so a row running \
+             past the bottom edge cannot paint over the corner the container was drawn with"
+        );
+    }
+
+    #[test]
+    fn the_chosen_row_takes_the_container_and_a_held_row_the_darker_layer() {
+        let theme = Theme::light();
+        let colors = SelectColors::for_scheme(&theme.colors, SelectFlags::STANDARD);
+        let mut harness = Harness::new(
+            Constraints::unbounded(),
+            Select::new()
+                .options(SelectOptions::new(&COLORS))
+                .max_height(4.0 * defaults::ITEM_HEIGHT),
+        );
+        harness.selection.set(Some(1));
+        harness.relayout();
+        harness.open();
+        let width = harness.node.size().width;
+        let green = Rect::from_min_size(
+            Offset::new(0.0, defaults::FIELD_HEIGHT + defaults::ITEM_HEIGHT),
+            width,
+            defaults::ITEM_HEIGHT,
+        );
+        let canvas = harness.canvas();
+        assert!(
+            canvas.fills.contains(&(green, colors.selected)),
+            "the chosen row is the one carrying the container"
+        );
+        assert!(
+            canvas
+                .fills
+                .contains(&(green, colors.row_overlay_for(false))),
+            "and the row the keys point at is tinted with the lighter layer while no button is held"
+        );
+        assert_eq!(
+            canvas.texts[2].2, colors.on_selected,
+            "the first text is the field, the second row 0, the third the chosen row"
+        );
+        assert_eq!(canvas.texts[1].2, colors.label);
+        harness.pointer(PointerEventKind::Down, row_center(1));
+        let held = harness.canvas();
+        assert!(
+            held.fills
+                .contains(&(green, colors.row_overlay_for(true))),
+            "the row a button is held in takes the pressed layer"
+        );
+    }
+
+    #[test]
+    fn the_layers_take_the_strongest_alpha_and_the_heavier_outline() {
+        let theme = Theme::light();
+        let colors = SelectColors::for_scheme(&theme.colors, SelectFlags::STANDARD);
+        assert_eq!(colors.overlay_for(InteractionState::NONE).alpha, 0.0);
+        assert_eq!(
+            colors
+                .overlay_for(InteractionState::HOVERED)
+                .alpha,
+            defaults::HOVER_ALPHA
+        );
+        assert_eq!(
+            colors
+                .overlay_for(InteractionState::HOVERED | InteractionState::PRESSED)
+                .alpha,
+            defaults::PRESSED_ALPHA
+        );
+        assert_eq!(
+            colors
+                .overlay_for(
+                    InteractionState::FOCUSED | InteractionState::PRESSED | InteractionState::HOVERED
+                )
+                .alpha,
+            defaults::FOCUSED_ALPHA,
+            "the layers of Material 3 do not add up: the strongest one that applies is what shows"
+        );
+        let mut harness = Harness::list(SelectOptions::new(&COLORS), 4);
+        assert!(
+            harness.canvas().fills.is_empty(),
+            "a field at rest paints no layer at all"
+        );
+        harness.pointer(PointerEventKind::Down, FIELD);
+        let canvas = harness.canvas();
+        assert_eq!(
+            canvas.fills[0].0,
+            Rect::from_min_size(Offset::ZERO, harness.node.size().width, defaults::FIELD_HEIGHT),
+            "the layer is the field, painted before the outline and the text sit on it"
+        );
+        assert_eq!(
+            canvas.outlines[0].1, colors.focus,
+            "the field with the focus outlines itself with the color of the focus"
+        );
+        assert!(near(canvas.outlines[0].2, defaults::FOCUSED_OUTLINE));
+    }
+
+    #[test]
+    fn a_disabled_select_answers_nothing_and_paints_the_disabled_alphas() {
+        let mut harness = Harness::new(
+            Constraints::unbounded(),
+            Select::new()
+                .options(SelectOptions::new(&COLORS))
+                .placeholder("Pick a color")
+                .enabled(false),
+        );
+        assert!(
+            !harness.node.hit_testable(),
+            "a disabled select takes no part in the hit test, so the page under it is pressed"
+        );
+        assert!(
+            !harness
+                .pointer(PointerEventKind::Down, FIELD)
+                .is_consumed()
+        );
+        assert!(
+            !harness
+                .pointer(PointerEventKind::Up, FIELD)
+                .is_consumed()
+        );
+        assert!(!harness.release(Key::Space).is_consumed());
+        assert_eq!(harness.mode.get(), SelectMode::Closed);
+        let canvas = harness.canvas();
+        assert!(
+            near(canvas.outlines[0].1.alpha, defaults::DISABLED_OUTLINE_ALPHA),
+            "the outline still shows where the field ends"
+        );
+        assert!(
+            near(canvas.texts[0].2.alpha, defaults::DISABLED_CONTENT_ALPHA),
+            "and the content loses the color of its role rather than the shape of it"
+        );
+        assert!(near(canvas.lines[0].2.alpha, defaults::DISABLED_CONTENT_ALPHA));
+        assert_eq!(
+            canvas.fills,
+            Vec::new(),
+            "a field that answers nothing is never in an interaction state"
         );
     }
 }
