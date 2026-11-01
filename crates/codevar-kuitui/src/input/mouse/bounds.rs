@@ -31,6 +31,12 @@
 //! Raw vertices handed to [`VertexBounds::new`] are put through a convex
 //! hull first, so collinear and interior points drop out and a non-convex
 //! list cannot make the winding test lie.
+//!
+//! A turn about a point is the other shape a widget paints: a container the
+//! modifier rotates is drawn turned about its center, so its pixels no longer
+//! line up with the axis-aligned box it was laid out in.
+//! [`VertexBounds::rotated`] turns every vertex and hands the list to the same
+//! hull, so the hit test follows those pixels instead of that box.
 
 use libm::{cosf, sinf, sqrtf};
 
@@ -310,6 +316,52 @@ impl VertexBounds {
             }
         }
         Some(Self::from_vertices(id, &vertices[..count]))
+    }
+
+    /// The same shape turned `radians` about `center`, which is what a
+    /// rotated container paints.
+    ///
+    /// Every vertex is rotated and the convex hull of the result becomes the
+    /// new shape. The hull is not a formality: it is what keeps the guarantee
+    /// both measures are built on — the vertices form a convex polygon, in
+    /// order around it — after the arithmetic of the turn, and it drops the
+    /// vertices an arc sample lands on top of once it is moved. The bound
+    /// grows to the axis-aligned box that holds the turned shape, the same
+    /// box a backend has to cover to draw it.
+    ///
+    /// Returns `None` when `center` or `radians` is not finite, because the
+    /// vertices would then be noise rather than geometry.
+    #[must_use]
+    pub fn rotated(self, center: Offset, radians: f32) -> Option<Self> {
+        if !radians.is_finite() || !center.x.is_finite() || !center.y.is_finite() {
+            return None;
+        }
+        if radians == 0.0 {
+            return Some(self);
+        }
+        // The turn is folded into a single circle first: `cosf` and `sinf`
+        // lose their argument reduction past a few multiples of pi, and a
+        // spin animation hands exactly those values.
+        let circle = 2.0 * core::f32::consts::PI;
+        let folded = radians % circle;
+        let angle = if folded > core::f32::consts::PI {
+            folded - circle
+        } else if folded < -core::f32::consts::PI {
+            folded + circle
+        } else {
+            folded
+        };
+        let (cos, sin) = (cosf(angle), sinf(angle));
+        let vertices = self.vertices();
+        let count = vertices.len();
+        let mut turned = [Offset::ZERO; MAX_VERTICES];
+        turned[..count].copy_from_slice(vertices);
+        for vertex in &mut turned[..count] {
+            let dx = vertex.x - center.x;
+            let dy = vertex.y - center.y;
+            *vertex = Offset::new(center.x + dx * cos - dy * sin, center.y + dx * sin + dy * cos);
+        }
+        Self::new(self.id, &turned[..count])
     }
 
     /// Builds a shape from the vertices of a polygon already known to be
@@ -1196,6 +1248,181 @@ mod tests {
         );
     }
 
+    /// The point `point` turned `radians` about `center`, the inverse of what
+    /// [`VertexBounds::rotated`] does to a vertex.
+    fn turn_about(center: Offset, point: Offset, radians: f32) -> Offset {
+        let (cos, sin) = (libm::cosf(radians), libm::sinf(radians));
+        let dx = point.x - center.x;
+        let dy = point.y - center.y;
+        Offset::new(center.x + dx * cos - dy * sin, center.y + dx * sin + dy * cos)
+    }
+
+    #[test]
+    fn a_turned_box_stops_answering_where_it_stops_painting() {
+        let rect = Rect::from_min_size(Offset::ZERO, 40.0, 20.0);
+        let center = rect.center();
+        let shape = VertexBounds::rect(BoundId::new(11), rect)
+            .rotated(center, core::f32::consts::FRAC_PI_4)
+            .expect("a turned box has a hull");
+        assert_eq!(shape.id(), BoundId::new(11));
+        assert_eq!(shape.vertex_count(), 4, "the four corners stay four corners");
+        assert!(
+            !shape.is_plain(),
+            "a box turned forty-five degrees is not the box around it"
+        );
+        assert!(shape.contains(center), "the center turns onto itself");
+        assert!(
+            !shape.contains(Offset::new(39.0, 1.0)),
+            "the corner of the box around the turned shape is not painted"
+        );
+        assert!(
+            !shape.contains(Offset::new(0.0, 0.0)),
+            "neither is the corner it started in"
+        );
+        assert!(
+            shape.contains(turn_about(
+                center,
+                Offset::new(35.0, 15.0),
+                core::f32::consts::FRAC_PI_4
+            )),
+            "a point the box carries travels with it"
+        );
+    }
+
+    #[test]
+    fn a_turned_shape_grows_the_box_that_holds_it() {
+        let rect = Rect::from_min_size(Offset::ZERO, 40.0, 20.0);
+        let center = rect.center();
+        let shape = VertexBounds::rect(BoundId::new(12), rect)
+            .rotated(center, core::f32::consts::FRAC_PI_4)
+            .expect("a turned box has a hull");
+        // Both half extents are the two half sides projected on the diagonal,
+        // which is the box a backend has to cover to draw the turn.
+        let reach = (20.0 + 10.0) * core::f32::consts::FRAC_1_SQRT_2;
+        assert!((shape.bound().left() - (center.x - reach)).abs() < 0.01);
+        assert!((shape.bound().right() - (center.x + reach)).abs() < 0.01);
+        assert!((shape.bound().top() - (center.y - reach)).abs() < 0.01);
+        assert!((shape.bound().bottom() - (center.y + reach)).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_turned_shape_measures_the_distance_to_its_turned_edge() {
+        let rect = Rect::from_min_size(Offset::new(-20.0, -20.0), 40.0, 40.0);
+        let shape = VertexBounds::rect(BoundId::new(13), rect)
+            .rotated(Offset::ZERO, core::f32::consts::FRAC_PI_4)
+            .expect("a turned square has a hull");
+        // The square turns into a diamond whose corners sit on the axes at
+        // half the diagonal, so the edge between the two positive corners
+        // lies on `x + y = d`. One step along its normal is exactly the step
+        // away from the shape, and the foot of that step is the midpoint of
+        // the edge, not one of its corners.
+        let corner = 20.0 * core::f32::consts::SQRT_2;
+        let step = 3.0;
+        let along = core::f32::consts::FRAC_1_SQRT_2 * step;
+        let point = Offset::new(corner * 0.5 + along, corner * 0.5 + along);
+        assert!(!shape.contains(point));
+        let distance = shape.distance(point);
+        assert!(
+            (distance - step).abs() < 0.01,
+            "the turned edge is {distance} away, not {step}"
+        );
+    }
+
+    #[test]
+    fn a_turned_rounded_rectangle_keeps_the_arc_it_was_cut_with() {
+        let rect = Rect::from_min_size(Offset::ZERO, 44.0, 30.0);
+        let center = rect.center();
+        let angle = core::f32::consts::FRAC_PI_6;
+        let straight =
+            VertexBounds::rounded_rect(BoundId::new(14), rect, CornerRadii::new(9.0, 6.0, 12.0, 3.0))
+                .expect("the rectangle has an area");
+        let turned = straight
+            .rotated(center, angle)
+            .expect("the turned shape has a hull");
+        assert_eq!(turned.id(), BoundId::new(14));
+        // Turning the shape and the point together cannot change the answer,
+        // so the arc, the sides it joins and the corners cut away all travel
+        // as one piece of geometry.
+        for point in [
+            Offset::new(0.5, 0.5),
+            Offset::new(43.5, 29.5),
+            Offset::new(22.0, 15.0),
+            Offset::new(2.0, 15.0),
+            Offset::new(42.0, 15.0),
+            Offset::new(22.0, 1.0),
+            Offset::new(22.0, 29.0),
+        ] {
+            let moved = turn_about(center, point, angle);
+            assert_eq!(
+                turned.contains(moved),
+                straight.contains(point),
+                "the turn moved the answer for ({}, {})",
+                point.x,
+                point.y
+            );
+        }
+    }
+
+    #[test]
+    fn a_half_turn_answers_for_the_same_pixels_as_the_box() {
+        let rect = Rect::from_min_size(Offset::new(4.0, 2.0), 30.0, 18.0);
+        let center = rect.center();
+        let shape = VertexBounds::rect(BoundId::new(15), rect)
+            .rotated(center, core::f32::consts::PI)
+            .expect("a half turn has a hull");
+        assert_eq!(shape.vertex_count(), 4);
+        assert!(shape.contains(Offset::new(20.0, 11.0)));
+        assert!(!shape.contains(Offset::new(2.0, 11.0)), "past the left edge");
+        assert!(!shape.contains(Offset::new(36.0, 11.0)), "past the right edge");
+        assert!(!shape.contains(Offset::new(20.0, 22.0)), "past the bottom edge");
+    }
+
+    #[test]
+    fn a_turn_of_more_than_one_circle_lands_where_the_first_turn_landed() {
+        let rect = Rect::from_min_size(Offset::ZERO, 40.0, 20.0);
+        let center = rect.center();
+        let quarter = core::f32::consts::FRAC_PI_4;
+        let shape = VertexBounds::rect(BoundId::new(17), rect);
+        let once = shape
+            .rotated(center, quarter)
+            .expect("a turned box has a hull");
+        let twice = shape
+            .rotated(center, quarter + 4.0 * core::f32::consts::PI)
+            .expect("a turned box has a hull");
+        for point in [
+            Offset::new(0.0, 0.0),
+            Offset::new(39.0, 1.0),
+            center,
+            Offset::new(20.0, 19.0),
+        ] {
+            assert_eq!(
+                once.contains(point),
+                twice.contains(point),
+                "one circle more than the turn changed the answer at ({}, {})",
+                point.x,
+                point.y
+            );
+        }
+    }
+
+    #[test]
+    fn a_turn_hands_back_the_shape_untouched_or_nothing_at_all() {
+        let rect = Rect::from_min_size(Offset::ZERO, 24.0, 24.0);
+        let shape = VertexBounds::rounded_rect(BoundId::new(16), rect, CornerRadii::uniform(6.0))
+            .expect("the rectangle has an area");
+        assert_eq!(shape.rotated(rect.center(), 0.0), Some(shape));
+        assert!(
+            shape
+                .rotated(Offset::new(f32::NAN, 3.0), 1.0)
+                .is_none()
+        );
+        assert!(
+            shape
+                .rotated(Offset::new(3.0, 3.0), f32::INFINITY)
+                .is_none()
+        );
+    }
+
     /// Compares a kernel result with the scalar oracle.
     #[cfg(any(
         target_arch = "x86_64",
@@ -1205,17 +1432,20 @@ mod tests {
         (left - right).abs() <= 1e-3 * (1.0 + left.abs().max(right.abs()))
     }
 
-    /// The sample shapes: a triangle, a rotated quad, a hexagon and a rounded
-    /// rectangle whose four corners carry four different radii.
+    /// The sample shapes: a triangle, a rotated quad, a hexagon, a rounded
+    /// rectangle whose four corners carry four different radii, and that same
+    /// rectangle turned about its center.
     ///
     /// Together they cover every vertex count between three and the bound, so
     /// a shape needs one batch, several full batches, and a trailing batch
-    /// that has to repeat lanes.
+    /// that has to repeat lanes. The turned shape is the one whose edges are
+    /// none of the axis directions, which is where a kernel that mixed the two
+    /// coordinate lanes would show up.
     #[cfg(any(
         target_arch = "x86_64",
         all(target_arch = "wasm32", target_feature = "simd128")
     ))]
-    fn sample_shapes() -> [VertexBounds; 4] {
+    fn sample_shapes() -> [VertexBounds; 5] {
         [
             VertexBounds::triangle(
                 BoundId::new(7),
@@ -1252,6 +1482,17 @@ mod tests {
                 CornerRadii::new(9.0, 6.0, 12.0, 3.0),
             )
             .expect("the rectangle has an area"),
+            VertexBounds::rounded_rect(
+                BoundId::new(11),
+                Rect::from_min_size(Offset::new(3.0, 5.0), 44.0, 30.0),
+                CornerRadii::new(9.0, 6.0, 12.0, 3.0),
+            )
+            .expect("the rectangle has an area")
+            .rotated(
+                Rect::from_min_size(Offset::new(3.0, 5.0), 44.0, 30.0).center(),
+                core::f32::consts::FRAC_PI_3,
+            )
+            .expect("the turned rectangle has a hull"),
         ]
     }
 
