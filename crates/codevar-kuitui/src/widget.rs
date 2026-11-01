@@ -55,6 +55,7 @@ use codevar_kuitui_control::Timestamp;
 
 use crate::event::{Event, EventResult};
 use crate::geometry::{Constraints, Offset, Rect, Size};
+use crate::input::mouse::VertexBounds;
 use crate::paint::{CornerRadii, DrawList, Paint};
 use crate::theme::Theme;
 
@@ -178,6 +179,29 @@ pub trait Widget {
     /// default is `false`.
     fn hit_testable(&self) -> bool {
         false
+    }
+
+    /// Adds the shapes the pointer is tested against to `shapes`.
+    ///
+    /// The default adds none, and with none the tree tests the rectangle the
+    /// node was placed in, cut and turned the way the modifier chain paints
+    /// it. A widget that paints boxes its chain says nothing about — a menu
+    /// that hangs below the rectangle it was laid out in, a field and a list
+    /// each rounded by its own corner — adds the convex shapes it actually
+    /// paints, and the pointer stops answering for the pixels it never drew.
+    ///
+    /// `bounds` is the rectangle the node was placed in and the shapes are
+    /// added in that same coordinate space, the one the widget recorded its
+    /// own regions in during [`Self::place`]. The framework asks while it lays
+    /// the node out, after `place` returned, so a widget reports the shapes
+    /// its layout just recorded rather than the ones it drew last frame.
+    ///
+    /// Shapes are tested in the order they are added and a later one answers
+    /// where it covers an earlier one, the way they paint. The identifier of a
+    /// shape names the region to the widget, which is what lets it pick
+    /// between its own shapes with [`crate::input::mouse::GeometryCache`].
+    fn hit_shapes(&self, bounds: Rect, shapes: &mut Vec<VertexBounds>) {
+        let _ = (bounds, shapes);
     }
 
     /// Runs the work the widget does once per frame and reports whether

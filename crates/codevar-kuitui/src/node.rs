@@ -1021,23 +1021,40 @@ fn released_inside(event: &Event, inside: bool) -> bool {
 
 /// The shape a pointer is tested against, with the index that caches it.
 ///
-/// A node only holds one when its modifier names a rounding: a plain
-/// rectangle needs no shape and no index, so the common node pays for
-/// neither. The index travels with the node across frames, which is what
-/// keeps the rasterization of the 8x8 grid a per-layout cost rather than
+/// A node only holds one when something cuts or moves the box it paints: a
+/// rounding or a turn named by its chain, or a shape named by the widget
+/// itself. A plain rectangle needs no shape and no index, so the common node
+/// pays for neither. The index travels with the node across frames, which is
+/// what keeps the rasterization of the 8x8 grid a per-layout cost rather than
 /// a per-event one.
 struct HitGeometry {
-    /// The convex shape of the node, cut to the rounding it paints with and
-    /// turned the way its container is painted.
-    shape: VertexBounds,
-    /// The rectangle the shape was built from.
+    /// The convex shapes the pointer is tested against, in the coordinate
+    /// space of the window. Either the shapes the widget paints, or the box of
+    /// the node cut and turned the way its chain paints it.
+    shapes: Vec<VertexBounds>,
+    /// The box that holds every shape, which is the region the index is
+    /// rasterized over.
+    bound: Rect,
+    /// The rectangle the shapes were built from.
     bounds: Rect,
-    /// The radii the shape was built from.
+    /// The radii the shapes were built from.
     radii: CornerRadii,
-    /// The angle the shape was turned by.
+    /// The angle the shapes were turned by.
     rotation: f32,
-    /// The index of the shape, kept so a frame does not rasterize twice.
+    /// The index of the shapes, kept so a frame does not rasterize twice.
     cache: GeometryCache,
+}
+
+/// The axis-aligned box that holds every shape of the list.
+///
+/// This is the region the index bitmap is rasterized over, so a shape the
+/// widget paints outside the box of its node still gets its cells.
+fn bound_of(shapes: &[VertexBounds]) -> Rect {
+    let Some((first, rest)) = shapes.split_first() else {
+        return Rect::ZERO;
+    };
+    rest.iter()
+        .fold(first.bound(), |held, shape| held.union(shape.bound()))
 }
 
 /// A node of the widget tree.
@@ -1061,8 +1078,8 @@ pub struct Node {
     layout: Rect,
     /// The rectangle the node was placed in.
     pub(crate) bounds: Rect,
-    /// The geometry the pointer is tested against, when the node cuts or
-    /// turns what it paints.
+    /// The geometry the pointer is tested against, when the node cuts, turns
+    /// or leaves the box it paints.
     ///
     /// `None` for a node that paints a plain rectangle where it was laid out:
     /// its hit test is the rectangle test of [`Node::bounds`], and it
@@ -1200,51 +1217,66 @@ impl Node {
 
     /// Rebuilds the geometry the pointer is tested against.
     ///
-    /// A node whose chain names neither a rounding nor a turn has no geometry
-    /// at all: the rectangle test is its hit test, and it pays for nothing
-    /// else. A node that names one of them gets the convex shape of a
-    /// rectangle rounded and turned the way it paints, and the shape is only
-    /// rebuilt when the box, the radii or the angle moved — so placing an
-    /// unchanged tree costs one read of the chain, and the index of the shape
-    /// survives the frame.
+    /// A node whose widget names no shape and whose chain names neither a
+    /// rounding nor a turn has no geometry at all: the rectangle test is its
+    /// hit test, and it pays for nothing else. Otherwise the shape is the one
+    /// the widget painted, or the box of the node rounded and turned the way
+    /// the chain paints it, and the latter is only rebuilt when the box, the
+    /// radii or the angle moved — so placing an unchanged tree costs one read
+    /// of the chain, and the index of the shape survives the frame.
+    ///
+    /// A widget that names shapes is asked on every layout, because its
+    /// regions follow its own state rather than the box it was given: an open
+    /// menu is a shape a closed one does not have.
     fn update_hit_geometry(&mut self) {
         let radii = self.modifier.hit_radii();
         let rotation = self.modifier.hit_rotation();
-        if radii.is_zero() && rotation == 0.0 {
+        let mut shapes = Vec::new();
+        self.widget.hit_shapes(self.bounds, &mut shapes);
+        if shapes.is_empty() {
+            if radii.is_zero() && rotation == 0.0 {
+                self.hit = None;
+                return;
+            }
+            let unchanged = self.hit.as_ref().is_some_and(|geometry| {
+                geometry.bounds == self.bounds && geometry.radii == radii && geometry.rotation == rotation
+            });
+            if unchanged {
+                return;
+            }
+            let bounds = self.bounds;
+            // One shape for the whole node, and the index of a node is only
+            // ever asked about that shape, so the hit needs no name beyond the
+            // first one.
+            shapes = VertexBounds::rounded_rect(BoundId::new(0), bounds, radii)
+                .and_then(|shape| shape.rotated(bounds.center(), rotation))
+                .map_or(Vec::new(), |shape| Vec::from([shape]));
+        }
+        if shapes.is_empty() {
             self.hit = None;
             return;
         }
-        let unchanged = self.hit.as_ref().is_some_and(|geometry| {
-            geometry.bounds == self.bounds && geometry.radii == radii && geometry.rotation == rotation
-        });
-        if unchanged {
-            return;
-        }
-        let bounds = self.bounds;
-        // One shape per node, and the index of a node is only ever asked
-        // about that shape, so the hit needs no name beyond the first one.
-        self.hit = VertexBounds::rounded_rect(BoundId::new(0), bounds, radii)
-            .and_then(|shape| shape.rotated(bounds.center(), rotation))
-            .map(|shape| {
-                Box::new(HitGeometry {
-                    shape,
-                    bounds,
-                    radii,
-                    rotation,
-                    cache: GeometryCache::new(),
-                })
-            });
+        let bound = bound_of(&shapes);
+        self.hit = Some(Box::new(HitGeometry {
+            shapes,
+            bound,
+            bounds: self.bounds,
+            radii,
+            rotation,
+            cache: GeometryCache::new(),
+        }));
     }
 
-    /// Whether `position` lies inside the shape the node paints.
+    /// Whether `position` lies inside a shape the node paints.
     ///
-    /// A node with no rounding and no turn answers with the rectangle test of
-    /// its box, the common case, and never reaches a polygon. A node that
-    /// paints a turned or cut box answers through the index cached on the
+    /// A node with no rounding, no turn and no shape of its own answers with
+    /// the rectangle test of its box, the common case, and never reaches a
+    /// polygon. A node that has one answers through the index cached on the
     /// node, which re-rasterizes only when the geometry or the point changed,
     /// so a hover that moves across a button measures the same shape frame
-    /// after frame. The index is rasterized over the box that holds the shape,
-    /// which is the box the node was laid out in unless a turn grew it.
+    /// after frame. The index is rasterized over the box that holds every
+    /// shape, which is the box the node was laid out in unless a turn grew it
+    /// or the widget paints regions outside it.
     fn pointer_hits(&mut self, position: Offset) -> bool {
         if self
             .hit
@@ -1258,10 +1290,10 @@ impl Node {
         match self.hit.as_mut() {
             None => self.bounds.contains(position),
             Some(geometry) => {
-                let shape = geometry.shape;
+                let bound = geometry.bound;
                 geometry
                     .cache
-                    .covers(&[shape], shape.bound(), position)
+                    .covers(&geometry.shapes, bound, position)
             }
         }
     }
@@ -1338,17 +1370,19 @@ impl Node {
     ///
     /// Placing also refreshes the shape the pointer is tested against, so
     /// the geometry of a rounded node is built once per layout rather
-    /// than once per event.
+    /// than once per event. The widget is asked first: a widget that names
+    /// its own regions records them while it places, and the hit test of the
+    /// node follows the boxes it just wrote down.
     pub fn place(&mut self, bounds: Rect) {
         self.layout = bounds;
         self.bounds = bounds.translate(self.modifier.placement_offset());
-        self.update_hit_geometry();
         let inner = self.content_rect(self.bounds);
         {
             let Node { widget, children, .. } = self;
             let mut scope = PlaceScope::new(children, inner.origin);
             widget.place(&mut scope, inner);
         }
+        self.update_hit_geometry();
         for child in &mut self.children {
             let layout = child.layout;
             child.place(layout);
@@ -2414,6 +2448,68 @@ mod tests {
                 point.y
             );
         }
+    }
+
+    /// A widget that names two regions of the box it was placed in: a field
+    /// rounded by eight pixels and a menu that hangs below that box.
+    struct Regions;
+
+    impl Widget for Regions {
+        fn measure(&mut self, _scope: &mut MeasureScope<'_>, constraints: Constraints) -> Size {
+            constraints.enforce(Size::new(10.0, 10.0))
+        }
+
+        fn hit_testable(&self) -> bool {
+            true
+        }
+
+        fn hit_shapes(&self, bounds: Rect, shapes: &mut Vec<VertexBounds>) {
+            shapes.push(
+                VertexBounds::rounded_rect(
+                    BoundId::new(1),
+                    Rect::from_min_size(bounds.origin, bounds.size.width, 40.0),
+                    CornerRadii::uniform(8.0),
+                )
+                .expect("the field has an area"),
+            );
+            shapes.push(VertexBounds::rect(
+                BoundId::new(2),
+                Rect::from_min_size(Offset::new(bounds.left() + 20.0, bounds.bottom()), 40.0, 30.0),
+            ));
+        }
+    }
+
+    #[test]
+    fn a_widget_that_names_its_regions_is_hit_over_those_and_not_over_its_box() {
+        let theme = Theme::light();
+        let mut node = Node::new(Regions);
+        laid_out(
+            &mut node,
+            &theme,
+            Rect::from_min_size(Offset::new(10.0, 10.0), 100.0, 50.0),
+        );
+        assert!(
+            node.hit.is_some(),
+            "a widget that names shapes is not a plain rectangle"
+        );
+
+        assert!(node.pointer_hits(Offset::new(60.0, 30.0)), "the field answers");
+        assert!(
+            !node.pointer_hits(Offset::new(10.5, 10.5)),
+            "the corner its arc cut away does not"
+        );
+        assert!(
+            !node.pointer_hits(Offset::new(15.0, 55.0)),
+            "the strip between the two regions is inside the box and outside the painting"
+        );
+        assert!(
+            node.pointer_hits(Offset::new(50.0, 65.0)),
+            "the menu left the box and answers where it went"
+        );
+        assert!(
+            !node.pointer_hits(Offset::new(80.0, 65.0)),
+            "beside the menu there is nothing to hit"
+        );
     }
 
     /// A widget that reports the same size whatever it is given.
