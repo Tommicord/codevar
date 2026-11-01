@@ -30,6 +30,7 @@
 //! | [`Spacer`] | nothing, it only takes space |
 //! | [`Text`] | nothing, it draws a run of text |
 
+mod checkbox;
 pub mod text;
 mod viewport;
 
@@ -39,6 +40,7 @@ use crate::geometry::{Alignment, Constraints, Offset, Rect, Size};
 use crate::widget::{MeasureScope, PlaceScope, Widget};
 
 pub use crate::window::{ResizeEdge, ResizeHandle, TitleBar, WindowButton, WindowFrame};
+pub use checkbox::{CheckChange, CheckState, Checkbox, CheckboxColors, CheckboxFlags};
 pub use text::{ColorableText, Text};
 pub use viewport::{
     FLING_FRICTION, FLING_STOP_VELOCITY, Gesture, GestureHandler, GestureRegion, ScrollAxes, ScrollState,
