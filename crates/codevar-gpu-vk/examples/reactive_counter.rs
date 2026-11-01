@@ -18,7 +18,9 @@
 //! The example is the smallest end-to-end picture of reactivity in Kuitui:
 //!
 //! * **Wayland:** the handshake of `hello_text` — registry, `xdg-shell`,
-//!   frame callbacks and `wl_buffer.release`.
+//!   frame callbacks, `wl_buffer.release` — plus the seat of
+//!   `hello_button`, whose `wl_pointer` events are queued by the listener and
+//!   replayed into the tree each frame.
 //! * **[`ReactiveComposition`]:** the content reads a counter with
 //!   `use_state` and renders it in a [`Text`]. The click handler of the
 //!   button writes the same state through its handle, so the next frame
@@ -29,7 +31,7 @@
 //!   UI pipe drains it, but the mesh is rebuilt only when the engine
 //!   recomposed, which is what makes the changing count cheap.
 //!
-//! Run it inside a Wayland session:
+//! Run it inside a Wayland session and click the button:
 //!
 //! ```text
 //! cargo run -p codevar-gpu-vk --example reactive_counter
@@ -43,6 +45,7 @@ use codevar_gpu_vk::base::{Compositor, block_on};
 use codevar_gpu_vk::pipeline::{OwnedFd, PipelineContext};
 use codevar_gpu_vk::ui::{UiFrame, UiPipe};
 use codevar_kuitui::color::Color;
+use codevar_kuitui::event::{Event, PointerButton, PointerButtons, PointerEvent, PointerEventKind};
 use codevar_kuitui::geometry::{Offset, Rect, Size};
 use codevar_kuitui::host::WidgetHost;
 use codevar_kuitui::node::{Modifier, Node};
@@ -60,12 +63,14 @@ use codevar_wayland::{
     COMPOSITOR_CREATE_SURFACE, COMPOSITOR_INTERFACE, DMABUF_CREATE_PARAMS, DMABUF_DESTROY,
     DMABUF_GET_DEFAULT_FEEDBACK, DMABUF_INTERFACE, DMABUF_MODIFIER, DRM_FORMAT_XRGB8888, FEEDBACK_DESTROY,
     FEEDBACK_DONE, FEEDBACK_FORMAT_TABLE, FEEDBACK_MAIN_DEVICE, FEEDBACK_TRANCHE_DONE,
-    FEEDBACK_TRANCHE_FLAGS, FEEDBACK_TRANCHE_FORMATS, FEEDBACK_TRANCHE_TARGET_DEVICE, SURFACE_ATTACH,
-    SURFACE_COMMIT, SURFACE_DAMAGE, SURFACE_DESTROY, SURFACE_FRAME, WlArgument, WlClientDisplay, WlError,
-    WlInterface, WlProxyId, WlRegistryEvent, WlResult, WlUnixTransport, XDG_SURFACE_ACK_CONFIGURE,
-    XDG_SURFACE_CONFIGURE, XDG_SURFACE_DESTROY, XDG_SURFACE_GET_TOPLEVEL, XDG_SURFACE_SET_WINDOW_GEOMETRY,
-    XDG_TOPLEVEL_CLOSE, XDG_TOPLEVEL_DESTROY, XDG_TOPLEVEL_SET_APP_ID, XDG_TOPLEVEL_SET_TITLE,
-    XDG_WM_BASE_GET_XDG_SURFACE, XDG_WM_BASE_INTERFACE, XDG_WM_BASE_PING, XDG_WM_BASE_PONG,
+    FEEDBACK_TRANCHE_FLAGS, FEEDBACK_TRANCHE_FORMATS, FEEDBACK_TRANCHE_TARGET_DEVICE, POINTER_BUTTON,
+    POINTER_ENTER, POINTER_LEAVE, POINTER_MOTION, SEAT_CAPABILITIES, SEAT_CAPABILITY_POINTER,
+    SEAT_GET_POINTER, SEAT_INTERFACE, SURFACE_ATTACH, SURFACE_COMMIT, SURFACE_DAMAGE, SURFACE_DESTROY,
+    SURFACE_FRAME, WlArgument, WlClientDisplay, WlError, WlInterface, WlProxyId, WlRegistryEvent, WlResult,
+    WlUnixTransport, XDG_SURFACE_ACK_CONFIGURE, XDG_SURFACE_CONFIGURE, XDG_SURFACE_DESTROY,
+    XDG_SURFACE_GET_TOPLEVEL, XDG_SURFACE_SET_WINDOW_GEOMETRY, XDG_TOPLEVEL_CLOSE, XDG_TOPLEVEL_DESTROY,
+    XDG_TOPLEVEL_SET_APP_ID, XDG_TOPLEVEL_SET_TITLE, XDG_WM_BASE_GET_XDG_SURFACE, XDG_WM_BASE_INTERFACE,
+    XDG_WM_BASE_PING, XDG_WM_BASE_PONG,
 };
 
 /// Initial window width in surface local pixels (used when the first
@@ -139,6 +144,44 @@ fn run() -> ExampleResult<String> {
 
     let compositor = bind(&mut display, registry, &globals, &COMPOSITOR_INTERFACE)?;
     let wm_base = bind(&mut display, registry, &globals, &XDG_WM_BASE_INTERFACE)?;
+    // The seat is the input side of the window. The protocol only lets a
+    // client ask for a pointer once the seat announces the capability, so
+    // the listener below creates it when that event arrives and hands the
+    // raw events to `PointerInput`, which the frame loop replays into the
+    // tree once the composition exists.
+    let input = Rc::new(RefCell::new(PointerInput::default()));
+    let seat = bind(&mut display, registry, &globals, &SEAT_INTERFACE)?;
+    {
+        let input = Rc::clone(&input);
+        let pointer = Rc::new(Cell::new(None));
+        display.add_listener(seat, move |client, opcode, args| {
+            if opcode != SEAT_CAPABILITIES
+                || !matches!(args.first(), Some(WlArgument::Uint(capabilities))
+                    if capabilities & SEAT_CAPABILITY_POINTER != 0)
+                || pointer.get().is_some()
+            {
+                return 0;
+            }
+            let Ok(pointer_id) = client.marshal_new_id(seat, SEAT_GET_POINTER, Vec::new()) else {
+                return -1;
+            };
+            pointer.set(Some(pointer_id));
+            let input = Rc::clone(&input);
+            if client
+                .add_listener(pointer_id, move |_, opcode, args| {
+                    input.borrow_mut().push(opcode, args);
+                    0
+                })
+                .is_err()
+            {
+                return -1;
+            }
+            0
+        })?;
+    }
+    // The round trip delivers the capabilities event (and with it the
+    // pointer) before the frame loop starts.
+    display.roundtrip()?;
     let (dmabuf_name, dmabuf_version) = global_named(&globals, "zwp_linux_dmabuf_v1")?;
     let dmabuf = display.registry_bind(
         registry,
@@ -429,13 +472,23 @@ fn run() -> ExampleResult<String> {
     }
     let mut frames = 0u32;
     while !closed.get() {
-        // Never rewrite a buffer the compositor may still be reading.
+        // Never rewrite a buffer the compositor may still be reading. The
+        // dispatches also collect the pointer events of the last frame.
         let release_deadline = Instant::now() + RELEASE_TIMEOUT;
         while !released.get() && !closed.get() && Instant::now() < release_deadline {
             display.dispatch(Some(DISPATCH_TIMEOUT))?;
         }
         released.set(false);
 
+        // Replay what the pointer did while the last frame was in flight.
+        // A click reaches the button's modifier, which calls the handler the
+        // content built; the handler writes the counter state.
+        {
+            let mut input = input.borrow_mut();
+            for event in input.events.drain(..) {
+                let _ = composition.handle_event(&event);
+            }
+        }
         // The write woke the root, so render it before the frame below: the
         // label the compositor receives carries the new count.
         let recomposed = composition.is_dirty();
@@ -453,8 +506,10 @@ fn run() -> ExampleResult<String> {
                 0
             })?;
         }
-        // The geometry is recorded every frame because the UI pipe drains
-        // the list; the text is reshaped only when the tree changed.
+        // A pointer event also changes what a widget draws without touching
+        // the engine — hovering the button lights its state layer — so the
+        // geometry is recorded every frame while the text is shaped only
+        // when the tree changed.
         record_frame(
             &mut composition,
             &ui_frame,
@@ -600,6 +655,119 @@ fn record_frame(
         }
         Ok(())
     })
+}
+
+/// Linux input code of the primary pointer button.
+const BTN_LEFT: u32 = 0x110;
+/// Linux input code of the secondary pointer button.
+const BTN_RIGHT: u32 = 0x111;
+/// Linux input code of the middle pointer button.
+const BTN_MIDDLE: u32 = 0x112;
+/// The `wl_pointer.button` state code of a press; a release reports `0`.
+const BUTTON_PRESSED: u32 = 1;
+
+/// The pointer events a `wl_pointer` listener queues for the frame loop.
+///
+/// The listener cannot reach the composition — the seat is bound before the
+/// tree exists — so it records the events and the frame loop replays them
+/// into the tree, where the modifier chain of the button updates the
+/// interaction source it owns.
+#[derive(Default)]
+struct PointerInput {
+    /// Where the pointer is, in surface-local pixels.
+    position: Offset,
+    /// The buttons that are held down.
+    buttons: PointerButtons,
+    /// The events the tree has not seen yet.
+    events: Vec<Event>,
+}
+
+impl PointerInput {
+    /// Routes one `wl_pointer` event by its opcode.
+    fn push(&mut self, opcode: u32, args: &mut [WlArgument]) {
+        match opcode {
+            POINTER_ENTER => {
+                // serial, surface, surface_x, surface_y
+                self.moved(args.get(2), args.get(3), PointerEventKind::Enter);
+            }
+            POINTER_LEAVE => {
+                // serial, surface: the event carries no coordinates, so the
+                // pointer is reported just outside the window, where every
+                // widget clears its hover.
+                self.position = Offset::new(-1.0, -1.0);
+                self.queue(PointerEventKind::Leave, PointerButton::Primary);
+            }
+            POINTER_MOTION => {
+                // time, surface_x, surface_y
+                self.moved(args.get(1), args.get(2), PointerEventKind::Move);
+            }
+            POINTER_BUTTON => {
+                // serial, time, button, state
+                let (Some(WlArgument::Uint(button)), Some(WlArgument::Uint(state))) =
+                    (args.get(2), args.get(3))
+                else {
+                    return;
+                };
+                let code = *button;
+                let pressed = *state == BUTTON_PRESSED;
+                self.buttons = buttons_after(self.buttons, code, pressed);
+                let kind = if pressed {
+                    PointerEventKind::Down
+                } else {
+                    PointerEventKind::Up
+                };
+                self.queue(kind, pointer_button(code));
+            }
+            _ => {}
+        }
+    }
+
+    /// Moves the pointer to the fixed-point coordinates of `x` and `y` and
+    /// queues `kind` there.
+    fn moved(&mut self, x: Option<&WlArgument>, y: Option<&WlArgument>, kind: PointerEventKind) {
+        let (Some(WlArgument::Fixed(x)), Some(WlArgument::Fixed(y))) = (x, y) else {
+            return;
+        };
+        self.position = Offset::new(x.to_double() as f32, y.to_double() as f32);
+        self.queue(kind, PointerButton::Primary);
+    }
+
+    /// Queues a pointer event at the current position.
+    fn queue(&mut self, kind: PointerEventKind, button: PointerButton) {
+        let mut event = PointerEvent::new(kind, self.position);
+        event.button = button;
+        event.buttons = self.buttons;
+        self.events.push(Event::Pointer(event));
+    }
+}
+
+/// The set of buttons held after `code` changed to `pressed`.
+fn buttons_after(held: PointerButtons, code: u32, pressed: bool) -> PointerButtons {
+    let mut next = PointerButtons::NONE;
+    for (button, flag) in [
+        (BTN_LEFT, PointerButtons::PRIMARY),
+        (BTN_RIGHT, PointerButtons::SECONDARY),
+        (BTN_MIDDLE, PointerButtons::MIDDLE),
+    ] {
+        let down = if button == code {
+            pressed
+        } else {
+            held.contains(flag)
+        };
+        if down {
+            next |= flag;
+        }
+    }
+    next
+}
+
+/// The button of the tree that Linux input `code` reports.
+fn pointer_button(code: u32) -> PointerButton {
+    match code {
+        BTN_RIGHT => PointerButton::Secondary,
+        BTN_MIDDLE => PointerButton::Middle,
+        _ => PointerButton::Primary,
+    }
 }
 
 /// Raw `zwp_linux_dmabuf_feedback_v1` payload, accumulated until `done`.
