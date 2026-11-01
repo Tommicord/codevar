@@ -1873,6 +1873,7 @@ mod tests {
     use crate::compose::Composition;
     use crate::node::Node;
     use crate::theme::Theme;
+    use crate::widgets::Row;
 
     /// A page of content of a fixed size, to scroll inside a viewport.
     struct Page {
@@ -1995,6 +1996,28 @@ mod tests {
         let result = composition.handle_event(&wheel(Offset::new(20.0, 0.0), Offset::new(50.0, 20.0), 2_000));
         assert!(result.is_consumed());
         assert_eq!(state.offset().x, 20.0);
+    }
+
+    #[test]
+    fn a_wheel_reaches_the_viewport_nested_in_a_container() {
+        let state = ScrollState::new(ScrollAxes::VERTICAL);
+        let built = state.clone();
+        let mut composition = Composition::new(Theme::light());
+        composition.set_content(move |_| {
+            Node::new(Row::new()).child(Node::new(Viewport::new().scroll(built.clone())).child(Node::new(
+                Page {
+                    size: Size::new(300.0, 400.0),
+                },
+            )))
+        });
+        composition.recompose(true);
+        composition.layout(WINDOW, true);
+        // The wheel is not offered to the whole tree the way a key is: it
+        // falls to the deepest node under the pointer, which here is the
+        // viewport inside the row.
+        let result = composition.handle_event(&wheel(Offset::new(0.0, 20.0), Offset::new(50.0, 20.0), 1_000));
+        assert!(result.is_consumed());
+        assert_eq!(state.offset().y, 20.0);
     }
 
     #[test]

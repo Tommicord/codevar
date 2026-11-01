@@ -1412,6 +1412,21 @@ impl Node {
     }
 }
 
+/// The place of the window an event was delivered at, if it has one.
+///
+/// A wheel event belongs to the widget under the pointer the same way a
+/// click does, so it descends the tree to the same node. An event of any
+/// other kind — a key, a change of the focus, of the window — is not about
+/// a place, and reaches the widget it was offered to without looking for a
+/// deeper one.
+fn event_position(event: &Event) -> Option<Offset> {
+    match event {
+        Event::Pointer(pointer) => Some(pointer.position),
+        Event::Scroll(wheel) => Some(wheel.position),
+        _ => None,
+    }
+}
+
 /// Whether `node` or a descendant under `position` reacts to a pointer.
 ///
 /// A node that does not react is transparent: the pointer falls through it
@@ -1443,10 +1458,10 @@ pub(crate) fn dispatch_event(
     focus: &mut Option<Vec<usize>>,
     event: &Event,
 ) -> EventResult {
-    if let Event::Pointer(pointer) = event {
+    if let Some(position) = event_position(event) {
         let mut target: Option<(i32, usize)> = None;
         for (index, child) in node.children.iter_mut().enumerate() {
-            if !child.pointer_hits(pointer.position) || !reacts(child, pointer.position) {
+            if !child.pointer_hits(position) || !reacts(child, position) {
                 continue;
             }
             let order = (child.z_index(), index);
