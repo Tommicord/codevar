@@ -19,6 +19,10 @@
 //! unchanged list returns the previous bitmap without touching a single
 //! polygon; a moved vertex, a new shape or a resized area changes the hash
 //! and triggers one rasterization.
+//!
+//! [`GeometryCache::covers`] is the form the widget tree hit test uses: it
+//! answers *is the pointer on one of these shapes* with the cached bitmap
+//! doing the culling and the polygons doing the deciding.
 
 use crate::geometry::{Offset, Rect};
 
@@ -70,6 +74,25 @@ impl GeometryCache {
         self.update(bounds, area)
             .pick(bounds, area, point)
     }
+
+    /// Whether `point` lies inside one of `bounds`.
+    ///
+    /// The yes-or-no form of [`Self::hit`] the widget tree needs: the
+    /// bitmap culls the work, the polygons decide. A shape list whose bitmap
+    /// has no occupied cell is measured directly, because a shape smaller
+    /// than one cell center is exactly the case the 8x8 grid cannot answer,
+    /// and a hit at zero distance is containment — the condition
+    /// [`Hit::is_inside`] documents.
+    #[must_use]
+    pub fn covers(&mut self, bounds: &[VertexBounds], area: Rect, point: Offset) -> bool {
+        let index = self.update(bounds, area);
+        if index.is_empty() {
+            return bounds.iter().any(|shape| shape.contains(point));
+        }
+        index
+            .pick(bounds, area, point)
+            .is_some_and(|hit| hit.is_inside())
+    }
 }
 
 impl Default for GeometryCache {
@@ -111,6 +134,7 @@ mod tests {
     use super::GeometryCache;
     use crate::geometry::{Offset, Rect};
     use crate::input::mouse::bounds::{BoundId, VertexBounds};
+    use crate::paint::CornerRadii;
 
     fn area() -> Rect {
         Rect::from_min_size(Offset::ZERO, 80.0, 80.0)
@@ -121,6 +145,11 @@ mod tests {
             BoundId::new(id),
             Rect::from_min_size(Offset::new(x, y), width, height),
         )
+    }
+
+    fn rounded(id: u32, rect: Rect, radius: f32) -> VertexBounds {
+        VertexBounds::rounded_rect(BoundId::new(id), rect, CornerRadii::uniform(radius))
+            .expect("the rectangle has an area")
     }
 
     #[test]
@@ -136,5 +165,56 @@ mod tests {
         let changed = cache.update(&moved, area()).clone();
         assert_eq!(changed.cell(0, 0), None);
         assert_eq!(changed.cell(5, 5), Some(0));
+    }
+
+    #[test]
+    fn covering_stops_being_exact_on_the_cut_corner_of_a_shape() {
+        let mut cache = GeometryCache::new();
+        let shape = [rounded(4, area(), 30.0)];
+        assert!(cache.covers(&shape, area(), Offset::new(40.0, 40.0)));
+        assert!(cache.covers(&shape, area(), Offset::new(40.0, 1.0)));
+        assert!(
+            !cache.covers(&shape, area(), Offset::new(1.0, 1.0)),
+            "the corner of the box is outside the arc the widget paints"
+        );
+        assert!(!cache.covers(&shape, area(), Offset::new(79.0, 1.0)));
+        assert!(cache.covers(&shape, area(), Offset::new(40.0, 79.0)));
+    }
+
+    #[test]
+    fn a_shape_too_small_for_the_grid_is_still_covered() {
+        // Each cell of the 8x8 grid over an 80x80 area is ten pixels wide and
+        // its centers sit at 5, 15, 25 and so on, so this shape covers no
+        // center at all: the bitmap is empty and says nothing, and the
+        // polygon is measured directly instead.
+        let mut cache = GeometryCache::new();
+        let sliver = [rounded(
+            5,
+            Rect::from_min_size(Offset::new(12.0, 12.0), 2.0, 2.0),
+            0.5,
+        )];
+        assert!(
+            cache.update(&sliver, area()).is_empty(),
+            "no cell center of the grid falls inside the sliver"
+        );
+        assert!(cache.covers(&sliver, area(), Offset::new(13.0, 13.0)));
+        assert!(!cache.covers(&sliver, area(), Offset::new(45.0, 45.0)));
+    }
+
+    #[test]
+    fn an_empty_list_covers_nothing() {
+        let mut cache = GeometryCache::new();
+        assert!(!cache.covers(&[], area(), Offset::new(40.0, 40.0)));
+    }
+
+    #[test]
+    fn an_empty_area_still_leaves_the_polygons_to_decide() {
+        let mut cache = GeometryCache::new();
+        let shape = [rect_shape(6, 0.0, 0.0, 40.0, 40.0)];
+        // A raster area with no extent leaves the bitmap empty, and a bitmap
+        // that empty cannot answer anything, so `covers` measures the shapes
+        // instead of trusting the grid.
+        assert!(cache.covers(&shape, Rect::ZERO, Offset::new(10.0, 10.0)));
+        assert!(!cache.covers(&shape, Rect::ZERO, Offset::new(60.0, 60.0)));
     }
 }

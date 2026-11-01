@@ -296,6 +296,7 @@ mod tests {
     use super::{GRID_CELLS, GeometryIndex, Hit};
     use crate::geometry::{Offset, Rect, Size};
     use crate::input::mouse::bounds::{BoundId, VertexBounds};
+    use crate::paint::CornerRadii;
 
     fn area() -> Rect {
         Rect::from_min_size(Offset::ZERO, 80.0, 80.0)
@@ -387,6 +388,30 @@ mod tests {
         let bounds = [rect_shape(1, 0.0, 0.0, 10.0, 10.0)];
         let flat = Rect::new(Offset::ZERO, Size::new(0.0, 0.0));
         assert!(GeometryIndex::rasterize(&bounds, flat).is_empty());
+    }
+
+    #[test]
+    fn a_rounded_shape_leaves_the_cells_of_its_cut_corner_empty() {
+        // A radius of half the side is a full circle, so the corner cells,
+        // whose centers fall outside the arc, stay empty even though they are
+        // inside the box the shape was built from.
+        let bounds = [VertexBounds::rounded_rect(
+            BoundId::new(3),
+            Rect::from_min_size(Offset::ZERO, 80.0, 80.0),
+            CornerRadii::uniform(40.0),
+        )
+        .expect("the rectangle has an area")];
+        let index = GeometryIndex::rasterize(&bounds, area());
+        assert_eq!(index.cell(0, 0), None);
+        assert_eq!(index.cell(7, 7), None);
+        assert_eq!(index.cell(4, 4), Some(0));
+        let hit = index
+            .pick(&bounds, area(), Offset::new(2.0, 2.0))
+            .expect("the circle is the nearest shape");
+        assert!(
+            !hit.is_inside(),
+            "the corner of the box is outside the arc: {hit:?}"
+        );
     }
 
     #[test]
