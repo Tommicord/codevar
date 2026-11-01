@@ -42,7 +42,15 @@
 //! [`DragClaim`] is therefore a handle over a cell, shared by every copy of
 //! the slider, the way the region keeps its recognition shared.
 //!
-//! # The value of a position
+//! # The value and its ticks
+//!
+//! The thumb holds a value in `from ..= to`, and a slider with `steps` snaps
+//! to the ticks that divide that span into `steps + 1` equal parts — the
+//! count is the number of marks *between* the ends, which is what the
+//! platform's `steps` parameter means and why a snapped value can be one of
+//! `steps + 2` of them. Snapping happens on the raw value a position
+//! produced, so the thumb never lands between two marks and both ends of the
+//! range stay reachable.
 //!
 //! A position, not a delta, decides the value: the platform computes the
 //! thumb from where the finger is rather than from how far the last report
@@ -104,6 +112,9 @@ pub mod defaults {
     /// Half the height of the thumb, so the bar stands fully inside the box
     /// at both ends of the range.
     pub const TRACK_INSET: f32 = 10.0;
+
+    /// The radius of a tick mark.
+    pub const TICK_RADIUS: f32 = 2.0;
 
     /// The diameter of the state layer drawn over the thumb.
     pub const HALO: f32 = 40.0;
@@ -205,11 +216,11 @@ impl BitOrAssign for SliderFlags {
 
 /// The colors of the track, the thumb, the ticks and the state layer.
 ///
-/// Four colors decided together: the active part of the track and the thumb
-/// carry the value, the inactive part carries the range, and the two disagree
-/// on purpose — the half the thumb has not reached is drawn in the color of
-/// the surface it sits on, which is what lets a track read as a distance
-/// still to travel rather than as one solid bar.
+/// Six colors decided together: the active part of the track and the thumb
+/// carry the value, the inactive part and the ticks carry the range, and the
+/// two disagree on purpose — a tick the thumb passed is drawn in the color of
+/// the content that sits on the active bar, or the marks would vanish under
+/// the bar they are supposed to divide.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SliderColors {
     /// The track from its start to the thumb.
@@ -218,6 +229,10 @@ pub struct SliderColors {
     pub inactive: Color,
     /// The thumb.
     pub thumb: Color,
+    /// The ticks the thumb has not reached.
+    pub tick: Color,
+    /// The ticks the thumb has passed.
+    pub active_tick: Color,
     /// The color the state layer is tinted with.
     pub state_layer: Color,
 }
@@ -235,6 +250,8 @@ impl SliderColors {
                 active: scheme.primary,
                 inactive: scheme.surface_variant,
                 thumb: scheme.primary,
+                tick: scheme.on_surface_variant,
+                active_tick: scheme.on_primary,
                 state_layer: scheme.primary,
             }
         } else {
@@ -249,6 +266,8 @@ impl SliderColors {
                     .surface_variant
                     .with_alpha(defaults::DISABLED_INACTIVE_ALPHA),
                 thumb,
+                tick: thumb,
+                active_tick: thumb,
                 state_layer: scheme.on_surface,
             }
         }
@@ -328,6 +347,8 @@ struct Track {
     from: f32,
     /// The value at the end of the range.
     to: f32,
+    /// The number of ticks between the ends of the range.
+    steps: usize,
 }
 
 impl Track {
@@ -343,10 +364,10 @@ impl Track {
         ((x - self.left - defaults::TRACK_INSET) / self.width).clamp(0.0, 1.0)
     }
 
-    /// The value at `x`, with the ends of the range clamped in.
+    /// The value at `x`, snapped to a tick if the range has them.
     #[inline]
     fn value_at(&self, x: f32) -> f32 {
-        self.from + self.fraction_at(x) * (self.to - self.from)
+        self.snapped(self.from + self.fraction_at(x) * (self.to - self.from))
     }
 
     /// The window coordinate of the center of the thumb holding `value`.
@@ -365,6 +386,33 @@ impl Track {
             ((value - self.from) / span).clamp(0.0, 1.0)
         }
     }
+
+    /// The distance between two ticks of this range.
+    ///
+    /// `steps` marks sit between the ends, so the range is cut into
+    /// `steps + 1` equal parts.
+    #[inline]
+    fn tick(&self) -> f32 {
+        (self.to - self.from) / (self.steps as f32 + 1.0)
+    }
+
+    /// The value `raw` lands on once the ticks have their say.
+    ///
+    /// The result is clamped into the range, so a value a key pushed past an
+    /// end comes back to it rather than leaving the track.
+    #[inline]
+    fn snapped(&self, raw: f32) -> f32 {
+        let raw = raw.clamp(self.from.min(self.to), self.from.max(self.to));
+        if self.steps == 0 {
+            return raw;
+        }
+        let step = self.tick();
+        if step <= 0.0 {
+            return raw;
+        }
+        (self.from + libm::roundf((raw - self.from) / step) * step)
+            .clamp(self.from.min(self.to), self.from.max(self.to))
+    }
 }
 
 /// A track that holds a value and drags it with the pointer.
@@ -375,7 +423,7 @@ impl Track {
 ///
 /// ```text
 /// let volume = ctx.use_state(|| MutableState::new(0.5_f32));
-/// Slider::new(volume.clone()).range(0.0, 1.0)
+/// Slider::new(volume.clone()).range(0.0, 1.0).steps(4)
 ///     .on_change(move |value| mixer.set(value))
 /// ```
 #[derive(Clone)]
@@ -386,6 +434,8 @@ pub struct Slider {
     from: f32,
     /// The value at the end of the track.
     to: f32,
+    /// The number of ticks between the ends of the range.
+    steps: usize,
     /// What the slider answers to.
     flags: SliderFlags,
     /// The region that turns the events of the track into gestures.
@@ -414,6 +464,7 @@ impl Slider {
             value,
             from: 0.0,
             to: 1.0,
+            steps: 0,
             flags: SliderFlags::STANDARD,
             region: GestureRegion::new(ViewportDispatch::default()),
             interaction: InteractionSource::new(),
@@ -432,6 +483,16 @@ impl Slider {
     pub const fn range(mut self, from: f32, to: f32) -> Self {
         self.from = from;
         self.to = to;
+        self
+    }
+
+    /// The slider that snaps to `steps` marks evenly spaced between the ends.
+    ///
+    /// Zero — the default — makes it continuous: the thumb stops wherever the
+    /// finger does.
+    #[must_use]
+    pub const fn steps(mut self, steps: usize) -> Self {
+        self.steps = steps;
         self
     }
 
@@ -543,15 +604,20 @@ impl Slider {
             width: (self.bounds.size.width - 2.0 * defaults::TRACK_INSET).max(0.0),
             from: self.from,
             to: self.to,
+            steps: self.steps,
         }
     }
 
     /// The share of the range a single key press moves the value by.
     ///
-    /// A continuous slider has no mark to step on, so it moves by a tenth of
-    /// its range.
+    /// A slider with ticks moves by one of them; a continuous one has no tick
+    /// to step on, so it moves by a tenth of its range.
     fn key_step(&self) -> f32 {
-        (self.to - self.from) * defaults::KEY_FRACTION
+        if self.steps == 0 {
+            (self.to - self.from) * defaults::KEY_FRACTION
+        } else {
+            self.track().tick()
+        }
     }
 
     /// Writes `value` and reports it, and says whether it moved.
@@ -641,6 +707,7 @@ impl Widget for Slider {
                 colors.active,
             );
         }
+        draw_ticks(scope, &track, center_y, value, &colors);
         scope.fill_rounded_rect(
             Rect::from_min_size(
                 Offset::new(
@@ -689,7 +756,7 @@ impl Widget for Slider {
                 Key::End => self.to,
                 _ => return EventResult::Ignored,
             };
-            self.write(next.clamp(self.from.min(self.to), self.from.max(self.to)));
+            self.write(self.track().snapped(next));
             return EventResult::Consumed;
         }
         // The gesture of a drag is a delta, but the thumb of a slider is a
@@ -790,6 +857,35 @@ fn end(interaction: &InteractionSource, claim: &DragClaim, on_finish: &Option<Sl
         handler();
     }
 }
+
+/// Draws the `steps` marks between the ends of the range.
+///
+/// The marks are painted over both halves of the track, after the bar: the
+/// ones the thumb passed take the color of the content that sits on that bar,
+/// or they would vanish under it and the active half would read as one solid
+/// run instead of the steps it is made of.
+fn draw_ticks(scope: &mut DrawScope<'_>, track: &Track, center_y: f32, value: f32, colors: &SliderColors) {
+    if track.steps == 0 || track.width <= 0.0 {
+        return;
+    }
+    let thumb = track.position_of(value) - track.left;
+    let side = defaults::TICK_RADIUS * 2.0;
+    let radii = CornerRadii::uniform(defaults::TICK_RADIUS);
+    for index in 1..=track.steps {
+        let x = defaults::TRACK_INSET + track.width * index as f32 / (track.steps as f32 + 1.0);
+        let mark = Rect::from_min_size(
+            Offset::new(x - defaults::TICK_RADIUS, center_y - defaults::TICK_RADIUS),
+            side,
+            side,
+        );
+        let passed = thumb >= x;
+        let color = if passed { colors.active_tick } else { colors.tick };
+        if color.alpha > 0.0 {
+            scope.fill_rounded_rect(mark, radii, color);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1081,21 +1177,36 @@ mod tests {
     }
 
     #[test]
+    fn a_slider_with_ticks_snaps_the_thumb_to_a_mark() {
+        let counted = counted(0.0);
+        let value = counted.value.clone();
+        let mut harness = Harness::new(counted.slider().steps(4));
+        // A quarter of the way between the first and the second mark, and the
+        // nearer mark takes the thumb.
+        harness.pointer(PointerEventKind::Down, Offset::new(35.0, 10.0));
+        assert_eq!(value.get(), 0.4);
+        // The ends of the range stay reachable through the marks.
+        harness.pointer(PointerEventKind::Up, Offset::new(35.0, 10.0));
+        harness.pointer(PointerEventKind::Down, END);
+        assert_eq!(value.get(), 1.0);
+    }
+
+    #[test]
     fn a_key_press_steps_the_focused_slider() {
         let counted = counted(0.0);
         let value = counted.value.clone();
-        let mut harness = Harness::new(counted.slider());
+        let mut harness = Harness::new(counted.slider().steps(4));
         // The press is what takes the focus, so the keyboard answers the
         // slider the pointer last touched rather than the root of the tree.
         harness.pointer(PointerEventKind::Down, START);
         harness.pointer(PointerEventKind::Up, START);
         assert_eq!(value.get(), 0.0);
         assert!(harness.press(Key::ArrowRight).is_consumed());
-        assert_eq!(value.get(), 0.1);
-        assert!(harness.press(Key::ArrowRight).is_consumed());
         assert_eq!(value.get(), 0.2);
+        assert!(harness.press(Key::ArrowRight).is_consumed());
+        assert_eq!(value.get(), 0.4);
         assert!(harness.press(Key::ArrowLeft).is_consumed());
-        assert_eq!(value.get(), 0.1);
+        assert_eq!(value.get(), 0.2);
         // A key held down repeats, and the thumb runs with it: the release of
         // the same key is not a second step.
         assert!(
@@ -1103,7 +1214,7 @@ mod tests {
                 .offer(&Event::Key(KeyEvent::new(Key::ArrowRight, false)))
                 .is_consumed()
         );
-        assert_eq!(value.get(), 0.1);
+        assert_eq!(value.get(), 0.2);
         assert!(harness.press(Key::End).is_consumed());
         assert_eq!(value.get(), 1.0);
         assert!(harness.press(Key::Home).is_consumed());
@@ -1200,6 +1311,26 @@ mod tests {
     }
 
     #[test]
+    fn the_ticks_are_painted_over_both_halves_of_the_track() {
+        let mut harness = Harness::new(Slider::new(MutableState::new(0.5)).steps(3));
+        let scheme = Theme::light().colors;
+        assert_eq!(
+            harness.canvas().fills,
+            [
+                rail(scheme.surface_variant),
+                active(40.0, scheme.primary),
+                // The marks sit at a quarter, a half and three quarters of the
+                // distance the thumb travels; the two it passed are drawn in
+                // the color of the content over the active bar.
+                mark(30.0, scheme.on_primary),
+                mark(50.0, scheme.on_primary),
+                mark(70.0, scheme.on_surface_variant),
+                thumb(50.0, scheme.primary),
+            ]
+        );
+    }
+
+    #[test]
     fn the_halo_shades_the_thumb_of_a_held_slider() {
         let mut harness = Harness::new(Slider::new(MutableState::new(0.5)).focusable(false));
         harness.pointer(PointerEventKind::Down, MIDDLE);
@@ -1219,7 +1350,11 @@ mod tests {
 
     #[test]
     fn a_disabled_slider_paints_the_disabled_alphas() {
-        let mut harness = Harness::new(Slider::new(MutableState::new(0.5)).enabled(false));
+        let mut harness = Harness::new(
+            Slider::new(MutableState::new(0.5))
+                .steps(3)
+                .enabled(false),
+        );
         let scheme = Theme::light().colors;
         assert_eq!(
             harness.canvas().fills,
@@ -1234,6 +1369,24 @@ mod tests {
                     scheme
                         .on_surface
                         .with_alpha(defaults::DISABLED_ACTIVE_ALPHA)
+                ),
+                mark(
+                    30.0,
+                    scheme
+                        .on_surface_variant
+                        .with_alpha(defaults::DISABLED_THUMB_ALPHA)
+                ),
+                mark(
+                    50.0,
+                    scheme
+                        .on_surface_variant
+                        .with_alpha(defaults::DISABLED_THUMB_ALPHA)
+                ),
+                mark(
+                    70.0,
+                    scheme
+                        .on_surface_variant
+                        .with_alpha(defaults::DISABLED_THUMB_ALPHA)
                 ),
                 thumb(
                     50.0,
@@ -1276,6 +1429,18 @@ mod tests {
                 Offset::new(x - defaults::THUMB_WIDTH / 2.0, 0.0),
                 defaults::THUMB_WIDTH,
                 defaults::THUMB_HEIGHT,
+            ),
+            color,
+        )
+    }
+
+    /// The tick mark of a [`BOX`] centered at local `x`.
+    fn mark(x: f32, color: Color) -> (Rect, Color) {
+        (
+            Rect::from_min_size(
+                Offset::new(x - defaults::TICK_RADIUS, 10.0 - defaults::TICK_RADIUS),
+                defaults::TICK_RADIUS * 2.0,
+                defaults::TICK_RADIUS * 2.0,
             ),
             color,
         )
