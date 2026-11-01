@@ -23,17 +23,28 @@
 //! offset is state — a wheel, a drag or a fling writes it, and the tree
 //! that reads it moves.
 //!
-//! # The speed a release was thrown with
+//! # The state outlives the render
 //!
-//! A fling is thrown by the speed of the whole trailing window, not by
-//! its last move, so [`VelocityTracker`] keeps the recent samples and fits
-//! a line through them. The constants are the thresholds the recognition
-//! uses: how far a press travels before it is a drag, how long the window
-//! is, and when a fling has no speed left.
+//! [`ScrollState`] is a handle, like [`InteractionSource`](crate::effect::InteractionSource):
+//! cloning it yields another view of the same offset, so the value a
+//! gesture wrote survives the recomposition that rebuilt the widget. The
+//! content closure therefore creates it once — with
+//! [`use_state`](codevar_kuitui_rea::RenderCtx::use_state) — and every
+//! later render passes the same handle to the viewport.
+//!
+//! The offset lives in a [`MutableState`], which is what lets a scroll
+//! reach the layout pass: the frame loop asks the state whether a gesture
+//! wrote it and lays the tree out again only when the answer is yes.
+//!
+//! [`MutableState`]: crate::state::MutableState
+
+use alloc::rc::Rc;
+use core::cell::RefCell;
 
 use codevar_kuitui_control::Timestamp;
 
-use crate::geometry::Offset;
+use crate::geometry::{Offset, Size};
+use crate::state::MutableState;
 
 /// The axes a viewport scrolls along.
 ///
@@ -268,9 +279,327 @@ impl VelocityTracker {
     }
 }
 
+/// What a viewport knows about the content it shows.
+///
+/// The sizes are not observable state: a layout pass writes them every
+/// time it runs, and a scroll is the only thing an application should be
+/// notified about. The velocity is here for the same reason — a fling is
+/// a transient of the interaction, not a value the tree renders.
+#[derive(Debug, Clone, Copy)]
+struct Geometry {
+    /// The box the content is seen through.
+    viewport: Size,
+    /// The size of the content itself.
+    content: Size,
+    /// The velocity the fling currently running is decaying through.
+    velocity: Offset,
+    /// Whether a fling is running.
+    flinging: bool,
+}
+
+impl Geometry {
+    /// The largest offset the content can be scrolled to on each axis.
+    fn max(&self) -> Offset {
+        Offset::new(
+            (self.content.width - self.viewport.width).max(0.0),
+            (self.content.height - self.viewport.height).max(0.0),
+        )
+    }
+}
+
+/// The offset of a viewport, shared by handle.
+///
+/// A scroll writes the offset and marks the state dirty, which is how the
+/// frame loop learns it has to lay the tree out again: the children of a
+/// viewport are placed relative to the offset, so a scroll that never
+/// reached the place pass would leave the content where it was.
+///
+/// The offset is never negative and never past the content: a viewport at
+/// the start of a list reports zero, and one scrolled to the end reports
+/// the difference between the content and the window. A gesture that asks
+/// for more than that is a scroll to a bound, and the bound holds.
+#[derive(Debug, Clone)]
+pub struct ScrollState {
+    /// The axes the viewport scrolls along.
+    axes: ScrollAxes,
+    /// The offset, as observable state.
+    offset: MutableState<Offset>,
+    /// The sizes and the fling, written by the layout and the gestures.
+    geometry: Rc<RefCell<Geometry>>,
+}
+
+impl ScrollState {
+    /// A state at the start of the content, scrolling along `axes`.
+    #[must_use]
+    pub fn new(axes: ScrollAxes) -> Self {
+        Self {
+            axes,
+            offset: MutableState::new(Offset::ZERO),
+            geometry: Rc::new(RefCell::new(Geometry {
+                viewport: Size::ZERO,
+                content: Size::ZERO,
+                velocity: Offset::ZERO,
+                flinging: false,
+            })),
+        }
+    }
+
+    /// The state with the content already scrolled to `offset`.
+    ///
+    /// The offset is pulled back into the content by the first layout,
+    /// which is when the state learns how far the content reaches: a
+    /// restored session that was scrolled past a shorter document starts
+    /// at the end of it rather than in blank space.
+    #[must_use]
+    pub fn with_offset(offset: Offset, axes: ScrollAxes) -> Self {
+        let state = Self::new(axes);
+        state.offset.set(offset);
+        state
+    }
+
+    /// The axes this state scrolls along.
+    #[inline]
+    #[must_use]
+    pub const fn axes(&self) -> ScrollAxes {
+        self.axes
+    }
+
+    /// The current offset, in the coordinate space of the content.
+    #[inline]
+    #[must_use]
+    pub fn offset(&self) -> Offset {
+        self.offset.get()
+    }
+
+    /// How far the content has scrolled along `axis`.
+    ///
+    /// An axis the state does not scroll reports zero, which is what makes
+    /// a handler for one axis unable to move the other by accident.
+    #[must_use]
+    pub fn value(&self, axis: ScrollAxes) -> f32 {
+        let offset = self.offset.get();
+        if self.axes.contains(axis) {
+            if axis.contains(ScrollAxes::VERTICAL) {
+                offset.y
+            } else {
+                offset.x
+            }
+        } else {
+            0.0
+        }
+    }
+
+    /// The box the content is seen through, as the last layout reported it.
+    #[inline]
+    #[must_use]
+    pub fn viewport(&self) -> Size {
+        self.geometry.borrow().viewport
+    }
+
+    /// The size of the content, as the last layout reported it.
+    #[inline]
+    #[must_use]
+    pub fn content(&self) -> Size {
+        self.geometry.borrow().content
+    }
+
+    /// The largest offset each axis can reach.
+    #[inline]
+    #[must_use]
+    pub fn max(&self) -> Offset {
+        self.geometry.borrow().max()
+    }
+
+    /// Records the sizes the layout pass produced.
+    ///
+    /// Called by the viewport while it places its content. The offset is
+    /// pulled back into the new bounds when the content shrank under it —
+    /// a list that lost its last rows cannot stay scrolled past them —
+    /// and a clamp that moved nothing does not mark the state dirty, so a
+    /// layout that changed only the window does not ask for another frame.
+    pub fn set_layout(&self, viewport: Size, content: Size) {
+        let max = {
+            let mut geometry = self.geometry.borrow_mut();
+            geometry.viewport = viewport;
+            geometry.content = content;
+            geometry.max()
+        };
+        let current = self.offset.get();
+        let clamped = Offset::new(current.x.max(0.0).min(max.x), current.y.max(0.0).min(max.y));
+        if clamped != current {
+            self.offset.set(clamped);
+        }
+    }
+
+    /// Scrolls by `delta` and returns the delta nothing consumed.
+    ///
+    /// This is the contract a nested scroll needs: the viewport takes the
+    /// part of the delta its own axes and bounds can use and hands back
+    /// what is left, so a list inside a pager can pass the overflow to
+    /// the pager. An axis that does not scroll consumes nothing, and a
+    /// bound stops the consumption on that axis only.
+    pub fn scroll_by(&self, delta: Offset) -> Offset {
+        let max = self.max();
+        let current = self.offset.get();
+        let mut consumed = Offset::ZERO;
+        let mut next = current;
+        if self.axes.contains(ScrollAxes::HORIZONTAL) {
+            let wanted = (current.x + delta.x).max(0.0).min(max.x);
+            consumed.x = wanted - current.x;
+            next.x = wanted;
+        }
+        if self.axes.contains(ScrollAxes::VERTICAL) {
+            let wanted = (current.y + delta.y).max(0.0).min(max.y);
+            consumed.y = wanted - current.y;
+            next.y = wanted;
+        }
+        if consumed != Offset::ZERO {
+            self.offset.set(next);
+        }
+        Offset::new(delta.x - consumed.x, delta.y - consumed.y)
+    }
+
+    /// Scrolls to `offset` and returns the offset it actually reached.
+    ///
+    /// A bound is a request, not an error: asking for the eleventh row of
+    /// a list with three rows scrolls to the last one.
+    pub fn scroll_to(&self, offset: Offset) -> Offset {
+        let max = self.max();
+        let wanted = Offset::new(offset.x.max(0.0).min(max.x), offset.y.max(0.0).min(max.y));
+        let before = self.offset.get();
+        if wanted != before {
+            self.offset.set(wanted);
+        }
+        wanted
+    }
+
+    /// Whether the content is scrolled to the leading edge of `axis`.
+    ///
+    /// An axis the state does not scroll reports both edges, the same way
+    /// [`Self::is_at_end`] does: there is nothing on it to reach.
+    #[must_use]
+    pub fn is_at_start(&self, axis: ScrollAxes) -> bool {
+        !self.axes.contains(axis) || self.value(axis) <= 0.0
+    }
+
+    /// Whether the content is scrolled to the trailing edge of `axis`.
+    ///
+    /// A viewport whose content fits the window is at both edges: there is
+    /// nothing between them, and a scroll that starts here belongs to
+    /// whatever is outside the viewport.
+    #[must_use]
+    pub fn is_at_end(&self, axis: ScrollAxes) -> bool {
+        if !self.axes.contains(axis) {
+            return true;
+        }
+        let max = self.max();
+        if axis.contains(ScrollAxes::VERTICAL) {
+            self.value(axis) >= max.y || max.y <= 0.0
+        } else {
+            self.value(axis) >= max.x || max.x <= 0.0
+        }
+    }
+
+    /// Starts a fling at `velocity` pixels per second.
+    ///
+    /// A velocity of zero — the one an untimed release reports — leaves
+    /// the content where it is, which is the honest answer: nothing can be
+    /// inferred about a speed the backend never measured.
+    pub fn start_fling(&self, velocity: Offset) {
+        let mut geometry = self.geometry.borrow_mut();
+        geometry.velocity = velocity;
+        geometry.flinging = velocity.x.abs() > FLING_STOP_VELOCITY || velocity.y.abs() > FLING_STOP_VELOCITY;
+    }
+
+    /// Whether a fling still carries the content.
+    #[inline]
+    #[must_use]
+    pub fn is_flinging(&self) -> bool {
+        self.geometry.borrow().flinging
+    }
+
+    /// Advances a running fling by `elapsed` and reports whether it moved.
+    ///
+    /// The decay is the viscous one [`FLING_FRICTION`] names: over the
+    /// interval the velocity falls by `e^(-k t)` and the distance covered
+    /// is the exact integral of that fall, `(v/k) · (1 - e^(-k t))`, so
+    /// the frame is correct at any interval — a frame loop that dropped
+    /// four frames loses four frames of distance rather than pretending
+    /// they happened.
+    ///
+    /// An axis stops carrying the fling as soon as it has no speed left or
+    /// the content is against one of its bounds — the leftover delta is
+    /// the proof of that — and the fling is over when no axis is left.
+    pub fn advance(&self, elapsed: Timestamp) -> bool {
+        let seconds = elapsed.micros() as f32 / 1_000_000.0;
+        if seconds <= 0.0 || !self.is_flinging() {
+            return false;
+        }
+        let decay = libm::expf(-FLING_FRICTION * seconds);
+        let velocity = self.geometry.borrow().velocity;
+        // v0 · (1 - e^(-k t)) / k is the integral of v0 · e^(-k t).
+        let distance = Offset::new(
+            velocity.x * (1.0 - decay) / FLING_FRICTION,
+            velocity.y * (1.0 - decay) / FLING_FRICTION,
+        );
+        let before = self.offset.get();
+        self.scroll_by(distance);
+        let max = self.max();
+        let current = self.offset.get();
+        // An axis is blocked when the content ended against the bound the
+        // fling was travelling towards; the rounding of a clamped delta is
+        // not evidence of that, so the bound is read from the offset.
+        let blocked = |distance: f32, position: f32, limit: f32| {
+            (distance > 0.0 && position >= limit) || (distance < 0.0 && position <= 0.0)
+        };
+        let vx = velocity.x * decay;
+        let vy = velocity.y * decay;
+        let running = |axis: ScrollAxes, speed: f32, distance: f32, position: f32, limit: f32| {
+            self.axes.contains(axis)
+                && speed.abs() > FLING_STOP_VELOCITY
+                && !blocked(distance, position, limit)
+        };
+        let flinging = running(ScrollAxes::HORIZONTAL, vx, distance.x, current.x, max.x)
+            || running(ScrollAxes::VERTICAL, vy, distance.y, current.y, max.y);
+        let mut geometry = self.geometry.borrow_mut();
+        geometry.velocity = Offset::new(vx, vy);
+        geometry.flinging = flinging;
+        current != before
+    }
+
+    /// Stops a fling, as a new press does.
+    pub fn stop(&self) {
+        let mut geometry = self.geometry.borrow_mut();
+        geometry.velocity = Offset::ZERO;
+        geometry.flinging = false;
+    }
+
+    /// Whether a scroll wrote the offset since the last call.
+    #[must_use]
+    pub fn is_dirty(&self) -> bool {
+        self.offset.is_dirty()
+    }
+
+    /// Reports whether a scroll wrote the offset, and clears the flag.
+    ///
+    /// The frame loop calls this when it decides whether the tree has to
+    /// be laid out again, which is what makes a scroll of a viewport that
+    /// did not move cost nothing.
+    pub fn take_dirty(&self) -> bool {
+        self.offset.take_dirty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A state over a window of `viewport` showing content of `content`.
+    fn scrolled(axes: ScrollAxes, viewport: Size, content: Size) -> ScrollState {
+        let state = ScrollState::new(axes);
+        state.set_layout(viewport, content);
+        state
+    }
 
     #[test]
     fn the_axes_combine_with_the_bit_or_operator() {
@@ -279,6 +608,113 @@ mod tests {
         assert!(axes.contains(ScrollAxes::BOTH));
         assert!(!ScrollAxes::VERTICAL.contains(ScrollAxes::HORIZONTAL));
         assert!(ScrollAxes::NONE.is_empty());
+    }
+
+    #[test]
+    fn the_offset_is_bound_by_the_content() {
+        let state = scrolled(
+            ScrollAxes::VERTICAL,
+            Size::new(100.0, 40.0),
+            Size::new(100.0, 200.0),
+        );
+        assert_eq!(state.max().y, 160.0);
+        assert_eq!(state.scroll_by(Offset::new(0.0, 20.0)), Offset::ZERO);
+        assert_eq!(state.offset().y, 20.0);
+        // Past the end: the content stops at the bound and the rest of the
+        // delta is handed back for whoever is outside the viewport — the
+        // 20 already scrolled plus the 400 asked for, minus the 160 there
+        // is room for.
+        assert_eq!(state.scroll_by(Offset::new(0.0, 400.0)).y, 260.0);
+        assert_eq!(state.offset().y, 160.0);
+        assert!(state.is_at_end(ScrollAxes::VERTICAL));
+        state.scroll_to(Offset::ZERO);
+        assert!(state.is_at_start(ScrollAxes::VERTICAL));
+    }
+
+    #[test]
+    fn an_axis_that_does_not_scroll_consumes_nothing() {
+        let state = scrolled(
+            ScrollAxes::VERTICAL,
+            Size::new(100.0, 40.0),
+            Size::new(100.0, 200.0),
+        );
+        let left = state.scroll_by(Offset::new(15.0, 15.0));
+        assert_eq!(left, Offset::new(15.0, 0.0));
+        assert_eq!(state.offset(), Offset::new(0.0, 15.0));
+        assert_eq!(state.value(ScrollAxes::HORIZONTAL), 0.0);
+    }
+
+    #[test]
+    fn a_shrunken_content_pulls_the_offset_back() {
+        let state = scrolled(
+            ScrollAxes::VERTICAL,
+            Size::new(100.0, 40.0),
+            Size::new(100.0, 200.0),
+        );
+        state.scroll_by(Offset::new(0.0, 120.0));
+        state.take_dirty();
+        state.set_layout(Size::new(100.0, 40.0), Size::new(100.0, 100.0));
+        assert_eq!(state.offset().y, 60.0);
+        assert!(state.is_dirty());
+    }
+
+    #[test]
+    fn a_layout_that_moved_nothing_leaves_the_state_clean() {
+        let state = scrolled(
+            ScrollAxes::VERTICAL,
+            Size::new(100.0, 40.0),
+            Size::new(100.0, 200.0),
+        );
+        state.take_dirty();
+        state.set_layout(Size::new(100.0, 80.0), Size::new(100.0, 400.0));
+        assert!(!state.is_dirty());
+    }
+
+    #[test]
+    fn clones_share_the_offset() {
+        let state = scrolled(ScrollAxes::BOTH, Size::new(50.0, 50.0), Size::new(400.0, 400.0));
+        let other = state.clone();
+        other.scroll_by(Offset::new(4.0, 6.0));
+        assert_eq!(state.offset(), Offset::new(4.0, 6.0));
+    }
+
+    #[test]
+    fn a_fling_decays_and_stops_at_its_bound() {
+        let state = scrolled(
+            ScrollAxes::VERTICAL,
+            Size::new(100.0, 40.0),
+            Size::new(100.0, 1_040.0),
+        );
+        state.take_dirty();
+        state.start_fling(Offset::new(0.0, 1_000.0));
+        assert!(state.is_flinging());
+        // One second of decay travels the integral of the fall, not the
+        // velocity times the interval, and leaves the speed multiplied by
+        // e^(-k).
+        let frame = Timestamp::from_micros(1_000_000);
+        assert!(state.advance(frame));
+        let expected = 1_000.0 * (1.0 - libm::expf(-FLING_FRICTION)) / FLING_FRICTION;
+        assert!((state.offset().y - expected).abs() < 0.5);
+        assert!(state.is_flinging());
+        // A long interval runs the fling out: the speed falls under the
+        // threshold and nothing moves any further.
+        assert!(state.advance(Timestamp::from_micros(60_000_000)));
+        assert!(!state.is_flinging());
+        let settled = state.offset().y;
+        assert!(!state.advance(Timestamp::from_micros(1_000_000)));
+        assert_eq!(state.offset().y, settled);
+    }
+
+    #[test]
+    fn an_untimed_release_never_flings() {
+        let state = scrolled(
+            ScrollAxes::VERTICAL,
+            Size::new(100.0, 40.0),
+            Size::new(100.0, 1_040.0),
+        );
+        state.start_fling(Offset::ZERO);
+        assert!(!state.is_flinging());
+        assert!(!state.advance(Timestamp::from_micros(16_000)));
     }
 
     #[test]

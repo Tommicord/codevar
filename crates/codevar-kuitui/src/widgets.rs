@@ -41,7 +41,8 @@ use crate::widget::{MeasureScope, PlaceScope, Widget};
 pub use crate::window::{ResizeEdge, ResizeHandle, TitleBar, WindowButton, WindowFrame};
 pub use text::{ColorableText, Text};
 pub use viewport::{
-    FLING_FRICTION, FLING_STOP_VELOCITY, ScrollAxes, TOUCH_SLOP, VELOCITY_WINDOW, VelocityTracker,
+    FLING_FRICTION, FLING_STOP_VELOCITY, ScrollAxes, ScrollState, TOUCH_SLOP, VELOCITY_WINDOW,
+    VelocityTracker,
 };
 
 /// Lays its children out one below the other.
