@@ -658,3 +658,437 @@ fn square_in(bounds: Rect, side: f32) -> Rect {
     )
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::{KeyEvent, PointerEvent};
+    use crate::node::{self, Node};
+    use crate::paint::{DrawList, PaintStyle, RectOp};
+    use crate::theme::Theme;
+    use crate::widgets::{Row, ScrollAxes, ScrollState, Viewport};
+    use core::cell::Cell;
+
+    /// The square a one-option harness places its button in.
+    const TARGET: Rect = Rect::from_min_size(Offset::ZERO, 40.0, 40.0);
+
+    /// The rectangle a two-option harness places its row in.
+    const ROW: Rect = Rect::from_min_size(Offset::ZERO, 80.0, 40.0);
+
+    /// The center of the first option of a [`ROW`] — and of a [`TARGET`].
+    const FIRST: Offset = Offset::new(20.0, 20.0);
+
+    /// The center of the second option of a [`ROW`].
+    const SECOND: Offset = Offset::new(60.0, 20.0);
+
+    /// A point no option of a [`ROW`] contains.
+    const OUTSIDE: Offset = Offset::new(120.0, 20.0);
+
+    /// A tree of radio buttons, with the state dispatching an event needs.
+    struct Harness {
+        theme: Theme,
+        node: Node,
+        focus: Option<Vec<usize>>,
+    }
+
+    impl Harness {
+        /// A tree of `radio` alone, measured and placed in [`TARGET`].
+        fn single(radio: Radio<u32>) -> Self {
+            Self::of(Node::new(radio), TARGET)
+        }
+
+        /// A row of the options 0 and 1 of `group`, placed in [`ROW`].
+        ///
+        /// The buttons give up the keyboard focus: the tests of this row
+        /// read the selection off the canvas, and a click would otherwise
+        /// leave a focused state layer in front of the dot they look for.
+        fn options(group: RadioGroup<u32>) -> Self {
+            let row = Node::new(Row::new())
+                .child(Node::new(
+                    Radio::new(0, RadioGroup::clone(&group)).focusable(false),
+                ))
+                .child(Node::new(Radio::new(1, group).focusable(false)));
+            Self::of(row, ROW)
+        }
+
+        /// The tree of `node`, measured and laid out in `bounds`.
+        fn of(mut node: Node, bounds: Rect) -> Self {
+            let theme = Theme::light();
+            node.measure(&theme, Constraints::unbounded());
+            node.place(bounds);
+            Self {
+                theme,
+                node,
+                focus: None,
+            }
+        }
+
+        /// Offers `event` to the tree and reports what it answered.
+        fn offer(&mut self, event: &Event) -> EventResult {
+            let mut path = Vec::new();
+            node::dispatch_event(&mut self.node, &self.theme, &mut path, &mut self.focus, event)
+        }
+
+        /// Offers a pointer event of `kind` at `position` to the tree.
+        fn pointer(&mut self, kind: PointerEventKind, position: Offset) -> EventResult {
+            self.offer(&Event::Pointer(PointerEvent::new(kind, position)))
+        }
+
+        /// Offers the release of `key` to the tree.
+        fn release(&mut self, key: Key) -> EventResult {
+            self.offer(&Event::Key(KeyEvent::new(key, false)))
+        }
+
+        /// Completes a click on the option whose center is `position`.
+        fn click(&mut self, position: Offset) -> EventResult {
+            self.pointer(PointerEventKind::Down, position);
+            self.pointer(PointerEventKind::Up, position)
+        }
+
+        /// The tree as it paints itself right now.
+        fn canvas(&mut self) -> Canvas {
+            let mut list = DrawList::new();
+            self.node.draw(&self.theme, &mut list);
+            Canvas::of(&list)
+        }
+    }
+
+    /// The shapes a draw list recorded, split by how they were painted.
+    #[derive(Default)]
+    struct Canvas {
+        /// The filled circles: the dot and the state layer.
+        fills: Vec<(Rect, Color)>,
+        /// The outlined circles: the ring.
+        outlines: Vec<(Rect, Color)>,
+    }
+
+    impl Canvas {
+        /// The recorded shapes of `list`, in the order it recorded them.
+        fn of(list: &DrawList) -> Self {
+            let mut canvas = Self::default();
+            for op in list.ops() {
+                let any: &dyn core::any::Any = op;
+                if let Some(rect) = any.downcast_ref::<RectOp>() {
+                    match rect.paint.style {
+                        PaintStyle::Fill => canvas.fills.push((rect.rect, rect.paint.color)),
+                        PaintStyle::Stroke(_) => canvas
+                            .outlines
+                            .push((rect.rect, rect.paint.color)),
+                    }
+                }
+            }
+            canvas
+        }
+    }
+
+    #[test]
+    fn a_radio_measures_to_its_touch_target() {
+        let harness = Harness::single(Radio::new(0, RadioGroup::new()));
+        assert_eq!(harness.node.size(), Size::new(40.0, 40.0));
+        let harness = Harness::options(RadioGroup::new());
+        assert_eq!(harness.node.size(), Size::new(80.0, 40.0));
+    }
+
+    #[test]
+    fn a_click_chooses_the_option_it_stands_for_and_reports_it() {
+        let group = RadioGroup::new();
+        let seen = Rc::new(Cell::new(None));
+        let reported = Rc::clone(&seen);
+        let mut harness =
+            Harness::single(Radio::new(7, group.clone()).on_change(move |value| reported.set(Some(*value))));
+        harness.pointer(PointerEventKind::Down, FIRST);
+        assert!(
+            harness
+                .pointer(PointerEventKind::Up, FIRST)
+                .is_consumed(),
+            "a press completed inside the target is the button's click"
+        );
+        assert_eq!(group.current(), Some(7));
+        assert_eq!(seen.get(), Some(7));
+    }
+
+    #[test]
+    fn a_click_moves_the_selection_off_the_option_that_had_it() {
+        let group = RadioGroup::new();
+        let mut harness = Harness::options(group.clone());
+        assert!(harness.click(FIRST).is_consumed());
+        assert_eq!(group.current(), Some(0));
+        assert!(harness.click(SECOND).is_consumed());
+        assert_eq!(group.current(), Some(1));
+        assert!(harness.click(FIRST).is_consumed());
+        assert_eq!(group.current(), Some(0));
+        // Only the chosen option paints a dot, so the tree that reads the
+        // group is exclusive on the screen as well as in the state.
+        let canvas = harness.canvas();
+        assert_eq!(canvas.outlines.len(), 2, "both options keep their ring");
+        assert_eq!(
+            canvas.fills,
+            [(
+                Rect::from_min_size(Offset::new(15.0, 15.0), 10.0, 10.0),
+                Theme::light().colors.primary
+            )]
+        );
+    }
+
+    #[test]
+    fn a_click_on_the_chosen_option_changes_nothing_and_reports_nothing() {
+        let group = RadioGroup::new();
+        let seen = Rc::new(Cell::new(None));
+        let reported = Rc::clone(&seen);
+        let mut harness =
+            Harness::single(Radio::new(2, group.clone()).on_change(move |value| reported.set(Some(*value))));
+        harness.click(FIRST);
+        assert_eq!(seen.get(), Some(2));
+        let revision = group.revision();
+        // The release is still the button's to answer — a click on a chosen
+        // option is a click, not a miss — but the selection does not move
+        // and the handler does not run for it.
+        assert!(harness.click(FIRST).is_consumed());
+        assert_eq!(group.revision(), revision);
+        assert_eq!(seen.get(), Some(2));
+    }
+
+    #[test]
+    fn the_press_of_a_radio_is_reported_but_not_taken() {
+        let source = InteractionSource::new();
+        let mut harness = Harness::single(Radio::new(0, RadioGroup::new()).interaction_with(source.clone()));
+        assert!(
+            !harness
+                .pointer(PointerEventKind::Down, FIRST)
+                .is_consumed()
+        );
+        assert!(source.state().contains(InteractionState::PRESSED));
+        // The leave of the pointer ends the press the way it ends the
+        // hover: a button held in a target the pointer left is not a click.
+        harness.pointer(PointerEventKind::Move, OUTSIDE);
+        assert!(!source.state().contains(InteractionState::PRESSED));
+        assert!(!source.state().contains(InteractionState::HOVERED));
+    }
+
+    #[test]
+    fn a_release_outside_the_target_is_not_a_choice() {
+        let group = RadioGroup::new();
+        let mut harness = Harness::single(Radio::new(0, group.clone()));
+        harness.pointer(PointerEventKind::Down, FIRST);
+        assert!(
+            harness
+                .pointer(PointerEventKind::Up, OUTSIDE)
+                .is_consumed()
+        );
+        assert_eq!(group.current(), None);
+    }
+
+    #[test]
+    fn a_press_that_travelled_never_becomes_a_choice() {
+        let group = RadioGroup::new();
+        let source = InteractionSource::new();
+        let mut harness = Harness::single(Radio::new(0, group.clone()).interaction_with(source.clone()));
+        harness.pointer(PointerEventKind::Down, FIRST);
+        let travelled = Offset::new(20.0, 90.0);
+        assert!(
+            !harness
+                .pointer(PointerEventKind::Move, travelled)
+                .is_consumed(),
+            "a drag that started on a button is left to the list that holds it"
+        );
+        assert!(!source.state().contains(InteractionState::PRESSED));
+        harness.pointer(PointerEventKind::Up, travelled);
+        assert_eq!(group.current(), None);
+    }
+
+    #[test]
+    fn a_disabled_radio_answers_nothing() {
+        let group = RadioGroup::new();
+        let mut harness = Harness::single(Radio::new(4, group.clone()).enabled(false));
+        assert!(
+            !harness.node.hit_testable(),
+            "the press falls through to whatever can still answer it"
+        );
+        assert!(!harness.click(FIRST).is_consumed());
+        assert!(!harness.release(Key::Space).is_consumed());
+        assert_eq!(group.current(), None, "a click is not a choice");
+    }
+
+    #[test]
+    fn a_key_release_chooses_the_focused_radio() {
+        let group = RadioGroup::new();
+        let mut harness = Harness::single(Radio::new(3, group.clone()));
+        // The press takes the focus and the release misses the target, so
+        // the button is focused and nothing is chosen yet: the key is the
+        // only thing left that can answer.
+        harness.pointer(PointerEventKind::Down, FIRST);
+        harness.pointer(PointerEventKind::Up, OUTSIDE);
+        assert_eq!(group.current(), None);
+        assert!(harness.release(Key::Space).is_consumed());
+        assert_eq!(group.current(), Some(3));
+        assert!(harness.release(Key::Enter).is_consumed());
+        // The press of the same key is not the release of it: a key held
+        // down repeats, and a button that answered every repeat would
+        // flicker under a finger that rests on the bar.
+        assert!(
+            !harness
+                .offer(&Event::Key(KeyEvent::new(Key::Space, true)))
+                .is_consumed()
+        );
+        assert_eq!(group.current(), Some(3));
+    }
+
+    #[test]
+    fn an_application_write_chooses_an_option_no_press_made() {
+        let group = RadioGroup::new();
+        let mut harness = Harness::options(group.clone());
+        assert!(harness.canvas().fills.is_empty());
+        assert!(group.select(&1));
+        let canvas = harness.canvas();
+        assert_eq!(
+            canvas.fills,
+            // The dot is 15 pixels from the corner of the target it sits
+            // in, and the second option of the row starts 40 pixels along
+            // it — the scope paints a widget in the box it was placed in.
+            [(
+                Rect::from_min_size(Offset::new(55.0, 15.0), 10.0, 10.0),
+                Theme::light().colors.primary
+            )],
+            "the second option holds the dot the write gave it"
+        );
+    }
+
+    #[test]
+    fn an_unchosen_radio_paints_only_its_ring() {
+        let mut harness = Harness::single(Radio::new(0, RadioGroup::new()).focusable(false));
+        let canvas = harness.canvas();
+        assert!(canvas.fills.is_empty(), "no dot and no layer at rest");
+        assert_eq!(
+            canvas.outlines,
+            [(
+                Rect::from_min_size(Offset::new(10.0, 10.0), 20.0, 20.0),
+                Theme::light().colors.on_surface_variant
+            )]
+        );
+    }
+
+    #[test]
+    fn a_chosen_radio_keeps_its_ring_and_fills_its_dot() {
+        let group = RadioGroup::with_value(0);
+        let mut harness = Harness::single(Radio::new(0, group));
+        let canvas = harness.canvas();
+        let scheme = Theme::light().colors;
+        assert_eq!(
+            canvas.outlines,
+            [(
+                Rect::from_min_size(Offset::new(10.0, 10.0), 20.0, 20.0),
+                scheme.primary
+            )],
+            "the ring of a chosen radio is the color of its dot"
+        );
+        assert_eq!(
+            canvas.fills,
+            [(
+                Rect::from_min_size(Offset::new(15.0, 15.0), 10.0, 10.0),
+                scheme.primary
+            )]
+        );
+    }
+
+    #[test]
+    fn a_disabled_radio_paints_the_disabled_roles() {
+        let group = RadioGroup::with_value(0);
+        let mut harness = Harness::single(Radio::new(0, group).enabled(false));
+        let canvas = harness.canvas();
+        let disabled = Theme::light()
+            .colors
+            .on_surface
+            .with_alpha(defaults::DISABLED_CONTENT_ALPHA);
+        assert_eq!(canvas.outlines[0].1, disabled);
+        assert_eq!(canvas.fills[0].1, disabled);
+    }
+
+    #[test]
+    fn the_state_layer_shades_the_target_of_a_held_radio() {
+        let mut harness = Harness::single(Radio::new(0, RadioGroup::new()).focusable(false));
+        harness.pointer(PointerEventKind::Down, FIRST);
+        let canvas = harness.canvas();
+        assert_eq!(canvas.fills[0].0, TARGET, "the layer is the target");
+        assert!(
+            (canvas.fills[0].1.alpha - defaults::PRESSED_ALPHA).abs() < 0.001,
+            "{:?}",
+            canvas.fills[0].1
+        );
+    }
+
+    #[test]
+    fn a_drag_from_a_radio_still_scrolls_its_list() {
+        let offset = ScrollState::new(ScrollAxes::VERTICAL);
+        let group = RadioGroup::new();
+        let theme = Theme::light();
+        let mut node =
+            Node::new(Viewport::new().scroll(offset.clone())).child(Node::new(Radio::new(0, group.clone())));
+        node.measure(&theme, Constraints::tight(Size::new(40.0, 20.0)));
+        node.place(Rect::from_min_size(Offset::ZERO, 40.0, 20.0));
+        let mut focus = None;
+        let mut offer = |event: &Event| {
+            let mut path = Vec::new();
+            node::dispatch_event(&mut node, &theme, &mut path, &mut focus, event)
+        };
+        let start = Offset::new(20.0, 10.0);
+        offer(&Event::Pointer(PointerEvent::new(PointerEventKind::Down, start)));
+        assert!(
+            offer(&Event::Pointer(PointerEvent::new(
+                PointerEventKind::Move,
+                Offset::new(20.0, 5.0)
+            )))
+            .is_consumed(),
+            "the list answers the drag the button left to it"
+        );
+        assert_eq!(offset.offset().y, 5.0);
+        offer(&Event::Pointer(PointerEvent::new(
+            PointerEventKind::Up,
+            Offset::new(20.0, 5.0),
+        )));
+        assert_eq!(group.current(), None, "a drag is not a choice");
+    }
+
+    #[test]
+    fn the_hover_after_a_click_does_not_scroll_the_list() {
+        let offset = ScrollState::new(ScrollAxes::VERTICAL);
+        let group = RadioGroup::new();
+        let theme = Theme::light();
+        let mut node =
+            Node::new(Viewport::new().scroll(offset.clone())).child(Node::new(Radio::new(0, group.clone())));
+        node.measure(&theme, Constraints::tight(Size::new(40.0, 20.0)));
+        node.place(Rect::from_min_size(Offset::ZERO, 40.0, 20.0));
+        let mut focus = None;
+        let mut offer = |event: &Event| {
+            let mut path = Vec::new();
+            node::dispatch_event(&mut node, &theme, &mut path, &mut focus, event)
+        };
+        let start = Offset::new(20.0, 10.0);
+        offer(&Event::Pointer(PointerEvent::new(PointerEventKind::Down, start)));
+        offer(&Event::Pointer(PointerEvent::new(PointerEventKind::Up, start)));
+        assert_eq!(group.current(), Some(0));
+        // The button took the release, so the list was told its press ended
+        // rather than left holding it: this move is a hover, not a drag.
+        offer(&Event::Pointer(PointerEvent::new(
+            PointerEventKind::Move,
+            Offset::new(20.0, 0.0),
+        )));
+        assert_eq!(offset.offset(), Offset::ZERO);
+    }
+
+    #[test]
+    fn a_group_holds_no_option_until_one_is_chosen() {
+        let group = RadioGroup::<u32>::new();
+        assert_eq!(group.current(), None);
+        assert!(!group.is_selected(&0));
+        assert!(group.select(&0));
+        assert!(group.is_selected(&0));
+        assert!(!group.is_selected(&1));
+        // Repeating a choice is not a write, and so costs no recomposition;
+        // giving it up is, and giving it up twice is not.
+        let revision = group.revision();
+        assert!(!group.select(&0));
+        assert_eq!(group.revision(), revision);
+        assert!(group.clear());
+        assert_eq!(group.current(), None);
+        assert!(!group.clear());
+    }
+}
