@@ -46,6 +46,7 @@ use crate::color::{Color, ColorScheme};
 use crate::effect::{InteractionSource, InteractionState};
 use crate::event::{Event, EventResult, Key, PointerEventKind};
 use crate::geometry::{Constraints, Offset, Rect, Size};
+use crate::input::mouse::{BoundId, VertexBounds};
 use crate::paint::CornerRadii;
 use crate::state::MutableState;
 use crate::theme::Theme;
@@ -1095,6 +1096,33 @@ impl Widget for Select {
         self.flags.contains(SelectFlags::ENABLED)
     }
 
+    /// Names the two boxes the widget paints, each cut with the corner the
+    /// drawing rounds it with.
+    ///
+    /// The node box of a select is the field and the list stacked, so it does
+    /// cover the ink; what it gets wrong is the rounding of it. The field
+    /// rounds its bottom corners and the list its top ones, so the pixels the
+    /// two arcs leave out where the regions meet hold no row to choose, and a
+    /// press there belongs to the page underneath rather than to a select the
+    /// pointer was never over.
+    fn hit_shapes(&self, _bounds: Rect, shapes: &mut Vec<VertexBounds>) {
+        let radii = CornerRadii::uniform(defaults::CORNER);
+        if !self.field_bounds.is_empty() {
+            shapes.extend(VertexBounds::rounded_rect(
+                BoundId::new(0),
+                self.field_bounds,
+                radii,
+            ));
+        }
+        if !self.list_bounds.is_empty() {
+            shapes.extend(VertexBounds::rounded_rect(
+                BoundId::new(1),
+                self.list_bounds,
+                radii,
+            ));
+        }
+    }
+
     fn on_event(&mut self, scope: &mut EventScope<'_>, event: &Event) -> EventResult {
         if !self.flags.contains(SelectFlags::ENABLED) {
             return EventResult::Ignored;
@@ -1333,6 +1361,104 @@ mod tests {
             let mut list = DrawList::new();
             self.node.draw(&self.theme, &mut list);
             Canvas::of(&list)
+        }
+    }
+
+    /// A page with one select in it: the tree that decides whether a point
+    /// reaches the widget at all, which a tree whose root *is* the select
+    /// cannot show because the gate only guards a child.
+    struct Page {
+        theme: Theme,
+        node: Node,
+        interaction: InteractionSource,
+        mode: MutableState<SelectMode>,
+        selection: MutableState<Option<usize>>,
+        select: Rect,
+        focus: Option<Vec<usize>>,
+    }
+
+    impl Page {
+        /// A page holding `select`, laid out at the origin at the size it
+        /// asked for.
+        fn of(select: Select) -> Self {
+            let theme = Theme::light();
+            let interaction = select.interaction().clone();
+            let mode = select.mode().clone();
+            let selection = select.selection().clone();
+            let mut child = Node::new(select);
+            let size = child.measure(&theme, Constraints::unbounded());
+            let mut node = Node::new(crate::widgets::Row::new()).with_children(Vec::from([child]));
+            node.measure(&theme, Constraints::unbounded());
+            node.place(Rect::from_min_size(Offset::ZERO, size.width, size.height));
+            let select = node.children()[0].bounds;
+            Self {
+                theme,
+                node,
+                interaction,
+                mode,
+                selection,
+                select,
+                focus: None,
+            }
+        }
+
+        /// The select of `colors`, four options deep enough to show a list.
+        fn colors() -> Self {
+            Self::of(
+                Select::new()
+                    .options(SelectOptions::new(&COLORS))
+                    .max_height(4.0 * defaults::ITEM_HEIGHT),
+            )
+        }
+
+        /// Lays the page out again, which is what a recomposition does once
+        /// the list has opened and the widget asked for the height of rows.
+        fn relayout(&mut self) {
+            let size = self
+                .node
+                .measure(&self.theme, Constraints::unbounded());
+            self.node
+                .place(Rect::from_min_size(Offset::ZERO, size.width, size.height));
+            self.select = self.node.children()[0].bounds;
+        }
+
+        /// Offers a pointer event of `kind` at `position` to the page.
+        fn pointer(&mut self, kind: PointerEventKind, position: Offset) -> EventResult {
+            let mut path = Vec::new();
+            node::dispatch_event(
+                &mut self.node,
+                &self.theme,
+                &mut path,
+                &mut self.focus,
+                &Event::Pointer(PointerEvent::new(kind, position)),
+            )
+        }
+
+        /// Presses and releases at `position`, the way a pointer that wants
+        /// one thing from the widget does.
+        fn click(&mut self, position: Offset) {
+            self.pointer(PointerEventKind::Down, position);
+            self.pointer(PointerEventKind::Up, position);
+        }
+
+        /// Whether the list of the select is on the screen.
+        fn opened(&self) -> bool {
+            self.mode.get().is_open()
+        }
+
+        /// Presses and releases the field the way a pointer that wants the
+        /// list open does, then lays the page out for the rows it added.
+        fn open(&mut self) {
+            let field = self.select.center();
+            self.click(field);
+            self.relayout();
+        }
+
+        /// Whether the press the page answers for is the one the field took.
+        fn pressed(&self) -> bool {
+            self.interaction
+                .state()
+                .contains(InteractionState::PRESSED)
         }
     }
 
@@ -2184,6 +2310,60 @@ mod tests {
             canvas.fills,
             Vec::new(),
             "a field that answers nothing is never in an interaction state"
+        );
+    }
+
+    #[test]
+    fn a_press_in_the_corner_the_field_rounds_away_reaches_the_page() {
+        let mut page = Page::colors();
+        let corner = Offset::new(page.select.left() + 0.5, page.select.top() + 0.5);
+        assert!(
+            page.select.contains(corner),
+            "the point is inside the box the node was laid out in"
+        );
+
+        page.click(corner);
+        assert!(
+            !page.opened(),
+            "the arc cut that pixel off the field, so the select never learned of the press"
+        );
+        assert!(!page.pressed());
+
+        page.click(page.select.center());
+        assert!(page.opened(), "the same press inside the arc reaches the field");
+    }
+
+    #[test]
+    fn a_press_in_the_notch_the_two_regions_round_between_them_reaches_the_page() {
+        let mut page = Page::colors();
+        page.open();
+        assert!(
+            page.select.size.height > defaults::FIELD_HEIGHT,
+            "the list the page now holds is the half of the box below the field"
+        );
+
+        let notch = page.select.left() + 0.5;
+        let in_list = Offset::new(notch, page.select.top() + defaults::FIELD_HEIGHT + 0.5);
+        assert!(
+            page.select.contains(in_list),
+            "the box of the list still covers the pixel its own corner rounds away"
+        );
+        page.click(in_list);
+        assert_eq!(
+            page.selection.get(),
+            None,
+            "the corner the list rounds holds no row to choose"
+        );
+        assert!(
+            page.opened(),
+            "and the press did not dismiss the list the pointer was not over"
+        );
+
+        page.click(row_center(0));
+        assert_eq!(
+            page.selection.get(),
+            Some(0),
+            "a press on an inked row still reaches the list"
         );
     }
 }
