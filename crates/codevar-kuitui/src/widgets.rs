@@ -31,6 +31,7 @@
 //! | [`Text`] | nothing, it draws a run of text |
 
 mod checkbox;
+mod radio;
 pub mod text;
 mod viewport;
 
@@ -41,6 +42,7 @@ use crate::widget::{MeasureScope, PlaceScope, Widget};
 
 pub use crate::window::{ResizeEdge, ResizeHandle, TitleBar, WindowButton, WindowFrame};
 pub use checkbox::{CheckChange, CheckState, Checkbox, CheckboxColors, CheckboxFlags};
+pub use radio::{Radio, RadioChange, RadioColors, RadioFlags, RadioGroup};
 pub use text::{ColorableText, Text};
 pub use viewport::{
     FLING_FRICTION, FLING_STOP_VELOCITY, Gesture, GestureHandler, GestureRegion, ScrollAxes, ScrollState,
