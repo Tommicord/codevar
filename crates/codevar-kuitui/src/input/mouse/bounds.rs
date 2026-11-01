@@ -449,12 +449,13 @@ impl VertexBounds {
 
     /// Whether the point lies inside the shape or on its boundary.
     ///
-    /// A plain shape is tested against its box; any other shape is tested by
-    /// winding, which needs the vertices to form a convex polygon — the
-    /// guarantee every constructor documents. An edge whose cross product is
-    /// within [`CROSS_NOISE`] of zero counts as collinear with the point,
-    /// which is what keeps a sampled arc whose endpoints `cosf` and `sinf`
-    /// rounded onto each other from reading as a corner that turns away.
+    /// A plain shape is tested against its box; any other shape is measured
+    /// against its own box first and then tested by winding, which needs the
+    /// vertices to form a convex polygon — the guarantee every constructor
+    /// documents. An edge whose cross product is within [`CROSS_NOISE`] of
+    /// zero counts as collinear with the point, which is what keeps a sampled
+    /// arc whose endpoints `cosf` and `sinf` rounded onto each other from
+    /// reading as a corner that turns away.
     #[must_use]
     pub fn contains(self, point: Offset) -> bool {
         if self.plain {
@@ -462,6 +463,17 @@ impl VertexBounds {
                 && point.x <= self.bound.right()
                 && point.y >= self.bound.top()
                 && point.y <= self.bound.bottom();
+        }
+        // A polygon is contained in the convex hull of its vertices, and that
+        // hull is contained in the box `bound` is the min and max of the very
+        // same vertices measured into. So a point past an edge of the box can
+        // be turned away without walking an edge of the shape.
+        if point.x < self.bound.left()
+            || point.x > self.bound.right()
+            || point.y < self.bound.top()
+            || point.y > self.bound.bottom()
+        {
+            return false;
         }
         let vertices = self.vertices();
         let count = vertices.len();
@@ -1025,7 +1037,7 @@ mod wasm {
 
 #[cfg(test)]
 mod tests {
-    use super::{BoundId, CORNER_SEGMENTS, MAX_VERTICES, VertexBounds};
+    use super::{BoundId, CORNER_SEGMENTS, CROSS_NOISE, MAX_VERTICES, VertexBounds, cross};
     use crate::geometry::{Offset, Rect};
     use crate::paint::CornerRadii;
 
@@ -1070,6 +1082,79 @@ mod tests {
         assert!(!shape.contains(Offset::new(30.0, 30.0)));
         let distance = shape.distance(Offset::new(30.0, 30.0));
         assert!((distance - (200.0f32).sqrt()).abs() < 0.001);
+    }
+
+    /// The containment test of `shape` with no culling in it: the walk over
+    /// every edge, which is the answer the shape gave before its own box was
+    /// allowed to turn a point away. `contains` is compared against it the way
+    /// a SIMD kernel is compared against the scalar oracle.
+    fn winding(shape: &VertexBounds, point: Offset) -> bool {
+        let vertices = shape.vertices();
+        let count = vertices.len();
+        let mut side_of_first = 0.0f32;
+        for index in 0..count {
+            let a = vertices[index];
+            let b = vertices[(index + 1) % count];
+            let edge = b.sub(a);
+            let to_point = point.sub(a);
+            let side = cross(edge, to_point);
+            let len_sq = edge.x * edge.x + edge.y * edge.y;
+            let reach_sq = to_point.x * to_point.x + to_point.y * to_point.y;
+            if side * side <= CROSS_NOISE * len_sq * reach_sq {
+                continue;
+            }
+            if side_of_first == 0.0 {
+                side_of_first = side;
+            } else if (side > 0.0) != (side_of_first > 0.0) {
+                return false;
+            }
+        }
+        true
+    }
+
+    #[test]
+    fn the_box_a_shape_culls_with_changes_no_answer() {
+        for shape in sample_shapes() {
+            if shape.is_plain() {
+                continue;
+            }
+            for point in sample_points() {
+                assert_eq!(
+                    shape.contains(point),
+                    winding(&shape, point),
+                    "the cull changed the answer for shape {} at ({}, {})",
+                    shape.id().get(),
+                    point.x,
+                    point.y
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_point_past_the_box_of_a_shape_is_past_every_edge_of_it() {
+        let shape = VertexBounds::rounded_rect(
+            BoundId::new(30),
+            Rect::from_min_size(Offset::new(10.0, 10.0), 40.0, 30.0),
+            CornerRadii::uniform(6.0),
+        )
+        .expect("the rectangle has an area");
+        let bound = shape.bound();
+        let middle = Offset::new(30.0, 25.0);
+        assert!(shape.contains(middle), "the shape holds its own middle");
+        for point in [
+            Offset::new(bound.left() - 0.5, middle.y),
+            Offset::new(bound.right() + 0.5, middle.y),
+            Offset::new(middle.x, bound.top() - 0.5),
+            Offset::new(middle.x, bound.bottom() + 0.5),
+        ] {
+            assert!(
+                !shape.contains(point),
+                "({} , {}) lies past the box the vertices were measured into",
+                point.x,
+                point.y
+            );
+        }
     }
 
     #[test]

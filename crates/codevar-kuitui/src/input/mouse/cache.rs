@@ -78,13 +78,21 @@ impl GeometryCache {
     /// Whether `point` lies inside one of `bounds`.
     ///
     /// The yes-or-no form of [`Self::hit`] the widget tree needs: the
-    /// bitmap culls the work, the polygons decide. A shape list whose bitmap
+    /// bitmap culls the work, the polygons decide. A list of one shape that
+    /// is its own box is answered by the rectangle test directly, which is the
+    /// case the node hit test reaches for a widget that rounds or turns a
+    /// single region and asks for nothing beyond it. A shape list whose bitmap
     /// has no occupied cell is measured directly, because a shape smaller
     /// than one cell center is exactly the case the 8x8 grid cannot answer,
     /// and a hit at zero distance is containment — the condition
     /// [`Hit::is_inside`] documents.
     #[must_use]
     pub fn covers(&mut self, bounds: &[VertexBounds], area: Rect, point: Offset) -> bool {
+        if let [shape] = bounds
+            && shape.is_plain()
+        {
+            return shape.contains(point);
+        }
         let index = self.update(bounds, area);
         if index.is_empty() {
             return bounds.iter().any(|shape| shape.contains(point));
@@ -205,6 +213,49 @@ mod tests {
     fn an_empty_list_covers_nothing() {
         let mut cache = GeometryCache::new();
         assert!(!cache.covers(&[], area(), Offset::new(40.0, 40.0)));
+    }
+
+    #[test]
+    fn a_single_plain_shape_is_covered_without_a_bitmap_being_built() {
+        let mut cache = GeometryCache::new();
+        let shape = [rect_shape(7, 10.0, 10.0, 20.0, 20.0)];
+        assert!(cache.covers(&shape, area(), Offset::new(15.0, 15.0)));
+        assert!(cache.covers(&shape, area(), Offset::new(30.0, 30.0)));
+        assert!(!cache.covers(&shape, area(), Offset::new(35.0, 35.0)));
+        assert_eq!(
+            cache.index().occupied_cells(),
+            0,
+            "the rectangle test answered every one of them, so nothing was rasterized"
+        );
+    }
+
+    #[test]
+    fn the_plain_shortcut_answers_what_the_bitmap_would() {
+        let shape = [rect_shape(8, 10.0, 10.0, 20.0, 20.0)];
+        let mut cache = GeometryCache::new();
+        // The point asked of the shortcut and of the bitmap it would have
+        // used; a point on the edge of a shape is where the two paths could
+        // disagree by an inclusive-versus-exclusive test, so the sweep holds
+        // the corners of the box and one pixel past each of them.
+        for point in [
+            Offset::new(9.0, 15.0),
+            Offset::new(10.0, 10.0),
+            Offset::new(30.0, 20.0),
+            Offset::new(20.0, 30.0),
+            Offset::new(30.5, 30.5),
+            Offset::new(0.0, 0.0),
+        ] {
+            let shortcut = cache.covers(&shape, area(), point);
+            let bitmap = cache
+                .update(&shape, area())
+                .pick(&shape, area(), point)
+                .is_some_and(|hit| hit.is_inside());
+            assert_eq!(
+                shortcut, bitmap,
+                "the two paths disagree at ({}, {})",
+                point.x, point.y
+            );
+        }
     }
 
     #[test]
