@@ -13,8 +13,8 @@
 //! License for the specific language governing permissions and
 //! limitations under the License.
 
-//! The scrolling viewport, the region that reads its gestures and the
-//! table the gestures are dispatched through.
+//! The scroll state of a viewport, the gestures a pointer makes over it,
+//! and the table those gestures are dispatched through.
 //!
 //! A viewport shows a part of content that is larger than the space it
 //! has: it measures the content at the size the content wants, places it
@@ -43,6 +43,7 @@ use core::cell::RefCell;
 
 use codevar_kuitui_control::Timestamp;
 
+use crate::event::EventResult;
 use crate::geometry::{Offset, Size};
 use crate::state::MutableState;
 
@@ -587,6 +588,227 @@ impl ScrollState {
     /// did not move cost nothing.
     pub fn take_dirty(&self) -> bool {
         self.offset.take_dirty()
+    }
+}
+
+/// What the region of a widget recognized in an event.
+///
+/// The measurements are in the coordinate space of the window, because
+/// that is the space the events arrive in. A handler that wants them
+/// relative to its own box subtracts the origin the widget was placed at;
+/// the region itself only needs the box to decide whether an event belongs
+/// to it at all.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Gesture {
+    /// A button went down inside the region.
+    Press {
+        /// Where the press started.
+        position: Offset,
+    },
+    /// The held pointer moved past the slop, so it is dragging the content.
+    Drag {
+        /// How far this move took the pointer.
+        delta: Offset,
+    },
+    /// The pointer of a drag was released.
+    Drop {
+        /// The speed the release was measured at, in pixels per second.
+        velocity: Offset,
+    },
+    /// A release fast enough to carry the content after the pointer left it.
+    Fling {
+        /// The speed the release was measured at, in pixels per second.
+        velocity: Offset,
+    },
+    /// The pointer went down and up inside the region without dragging.
+    Click {
+        /// Where the release happened.
+        position: Offset,
+    },
+    /// The wheel moved along the vertical axis.
+    ScrollY {
+        /// The distance the wheel reported.
+        delta: f32,
+    },
+    /// The wheel moved along the horizontal axis.
+    ScrollX {
+        /// The distance the wheel reported.
+        delta: f32,
+    },
+    /// The pointer entered or left the region with no button held.
+    Hover {
+        /// Whether the pointer is inside the region now.
+        inside: bool,
+    },
+    /// The stream of the press was cancelled, so no gesture completed.
+    Cancel,
+}
+
+/// The handler of one gesture of a [`ViewportDispatch`] table.
+pub type GestureHandler = Rc<dyn Fn(&Gesture) -> EventResult>;
+
+/// The gesture handlers of a widget that answers the pointer.
+///
+/// One slot per gesture, each of them optional: a slot that names no
+/// handler leaves the gesture to the built-in behavior of the widget that
+/// owns the region — for a scrolling viewport that is the [`ScrollState`]
+/// it scrolls. Filling a slot observes
+/// or overrides that one gesture and keeps the others, so a slider that
+/// wants to report where a drag ended writes [`Self::on_drop`] and still
+/// drags the way its widget drags.
+///
+/// The handlers are shared: cloning the table clones the `Rc` of each
+/// handler, which is what lets a recomposition rebuild the widget without
+/// rebuilding the closures or losing the state they captured.
+#[derive(Clone, Default)]
+pub struct ViewportDispatch {
+    on_press: Option<GestureHandler>,
+    on_drag: Option<GestureHandler>,
+    on_drop: Option<GestureHandler>,
+    on_fling: Option<GestureHandler>,
+    on_click: Option<GestureHandler>,
+    on_scroll_y: Option<GestureHandler>,
+    on_scroll_x: Option<GestureHandler>,
+    on_hover: Option<GestureHandler>,
+    on_cancel: Option<GestureHandler>,
+}
+
+impl ViewportDispatch {
+    /// A table that names no handler, leaving every gesture to the widget.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            on_press: None,
+            on_drag: None,
+            on_drop: None,
+            on_fling: None,
+            on_click: None,
+            on_scroll_y: None,
+            on_scroll_x: None,
+            on_hover: None,
+            on_cancel: None,
+        }
+    }
+
+    /// The table that answers a press at `position`.
+    #[must_use]
+    pub fn on_press<H>(mut self, handler: H) -> Self
+    where
+        H: Fn(Offset) -> EventResult + 'static,
+    {
+        self.on_press = Some(Rc::new(move |gesture| match gesture {
+            Gesture::Press { position } => handler(*position),
+            _ => EventResult::Ignored,
+        }));
+        self
+    }
+
+    /// The table that answers a drag of `delta` pixels.
+    #[must_use]
+    pub fn on_drag<H>(mut self, handler: H) -> Self
+    where
+        H: Fn(Offset) -> EventResult + 'static,
+    {
+        self.on_drag = Some(Rc::new(move |gesture| match gesture {
+            Gesture::Drag { delta } => handler(*delta),
+            _ => EventResult::Ignored,
+        }));
+        self
+    }
+
+    /// The table that answers the release of a drag, given the speed the
+    /// release was measured at.
+    #[must_use]
+    pub fn on_drop<H>(mut self, handler: H) -> Self
+    where
+        H: Fn(Offset) -> EventResult + 'static,
+    {
+        self.on_drop = Some(Rc::new(move |gesture| match gesture {
+            Gesture::Drop { velocity } => handler(*velocity),
+            _ => EventResult::Ignored,
+        }));
+        self
+    }
+
+    /// The table that answers a fling of `velocity` pixels per second.
+    #[must_use]
+    pub fn on_fling<H>(mut self, handler: H) -> Self
+    where
+        H: Fn(Offset) -> EventResult + 'static,
+    {
+        self.on_fling = Some(Rc::new(move |gesture| match gesture {
+            Gesture::Fling { velocity } => handler(*velocity),
+            _ => EventResult::Ignored,
+        }));
+        self
+    }
+
+    /// The table that answers a single click at `position`.
+    #[must_use]
+    pub fn on_click<H>(mut self, handler: H) -> Self
+    where
+        H: Fn(Offset) -> EventResult + 'static,
+    {
+        self.on_click = Some(Rc::new(move |gesture| match gesture {
+            Gesture::Click { position } => handler(*position),
+            _ => EventResult::Ignored,
+        }));
+        self
+    }
+
+    /// The table that answers the wheel moving `delta` along the vertical
+    /// axis.
+    #[must_use]
+    pub fn on_scroll_y<H>(mut self, handler: H) -> Self
+    where
+        H: Fn(f32) -> EventResult + 'static,
+    {
+        self.on_scroll_y = Some(Rc::new(move |gesture| match gesture {
+            Gesture::ScrollY { delta } => handler(*delta),
+            _ => EventResult::Ignored,
+        }));
+        self
+    }
+
+    /// The table that answers the wheel moving `delta` along the horizontal
+    /// axis.
+    #[must_use]
+    pub fn on_scroll_x<H>(mut self, handler: H) -> Self
+    where
+        H: Fn(f32) -> EventResult + 'static,
+    {
+        self.on_scroll_x = Some(Rc::new(move |gesture| match gesture {
+            Gesture::ScrollX { delta } => handler(*delta),
+            _ => EventResult::Ignored,
+        }));
+        self
+    }
+
+    /// The table that answers the pointer entering (`true`) or leaving
+    /// (`false`) the region.
+    #[must_use]
+    pub fn on_hover<H>(mut self, handler: H) -> Self
+    where
+        H: Fn(bool) -> EventResult + 'static,
+    {
+        self.on_hover = Some(Rc::new(move |gesture| match gesture {
+            Gesture::Hover { inside } => handler(*inside),
+            _ => EventResult::Ignored,
+        }));
+        self
+    }
+
+    /// The table that answers a cancelled press.
+    #[must_use]
+    pub fn on_cancel<H>(mut self, handler: H) -> Self
+    where
+        H: Fn() -> EventResult + 'static,
+    {
+        self.on_cancel = Some(Rc::new(move |gesture| match gesture {
+            Gesture::Cancel => handler(),
+            _ => EventResult::Ignored,
+        }));
+        self
     }
 }
 
