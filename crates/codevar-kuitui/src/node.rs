@@ -48,6 +48,8 @@ use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 
+use codevar_kuitui_control::Timestamp;
+
 use crate::color::Color;
 use crate::effect::{Effect, Gradient, InteractionSource, InteractionState};
 use crate::event::{Event, EventResult, PointerEventKind};
@@ -1314,6 +1316,23 @@ impl Node {
             let layout = child.layout;
             child.place(layout);
         }
+    }
+
+    /// Runs the per-frame work of the widget of every node in this
+    /// subtree, and reports whether any of them moved.
+    ///
+    /// The frame loop calls this before it lays the tree out: a widget
+    /// that animates by itself — a viewport carrying a fling — writes its
+    /// state here, and the layout that follows reflects it. Nothing is
+    /// measured or painted by this pass, so the walk costs one call per
+    /// node and no allocation.
+    pub fn advance(&mut self, elapsed: Timestamp) -> bool {
+        let Node { widget, children, .. } = self;
+        let mut moved = widget.advance(elapsed);
+        for child in children {
+            moved |= child.advance(elapsed);
+        }
+        moved
     }
 
     /// Draws the node into `list`.

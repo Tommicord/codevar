@@ -27,6 +27,7 @@
 //! | place | [`Widget::place`] | [`PlaceScope`] | give its children their position |
 //! | draw | [`Widget::draw`] | [`DrawScope`] | paint into the display list |
 //! | event | [`Widget::on_event`] | [`EventScope`] | forward events to its children |
+//! | frame | [`Widget::advance`] | — | run the animation it owns, and say whether it moved |
 //!
 //! Every hook has a default implementation, so a widget only overrides
 //! what it actually needs: a leaf that paints a rectangle implements
@@ -49,6 +50,8 @@
 //! them, so a widget never has to know where it sits.
 
 use alloc::vec::Vec;
+
+use codevar_kuitui_control::Timestamp;
 
 use crate::event::{Event, EventResult};
 use crate::geometry::{Constraints, Offset, Rect, Size};
@@ -174,6 +177,24 @@ pub trait Widget {
     /// the events that fall inside it reach the widgets below it. The
     /// default is `false`.
     fn hit_testable(&self) -> bool {
+        false
+    }
+
+    /// Runs the work the widget does once per frame and reports whether
+    /// it moved the tree.
+    ///
+    /// `elapsed` is the time between this frame and the one before. A
+    /// widget that animates by itself — a viewport throwing its content in
+    /// a fling — needs that time and cannot get it from an event: the
+    /// animation outlives the pointer that started it, so no further event
+    /// arrives to be timed. The loop calls this for every node before it
+    /// lays the tree out, and lays the tree out again when a widget
+    /// reports that it moved.
+    ///
+    /// The default implementation does nothing, which is right for a
+    /// widget whose whole state comes from the events it is handed.
+    fn advance(&mut self, elapsed: Timestamp) -> bool {
+        let _ = elapsed;
         false
     }
 
