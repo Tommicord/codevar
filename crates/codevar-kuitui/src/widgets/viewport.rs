@@ -642,7 +642,9 @@ pub enum Gesture {
         /// Whether the pointer is inside the region now.
         inside: bool,
     },
-    /// The stream of the press was cancelled, so no gesture completed.
+    /// The press is over and no gesture completed: its stream was cancelled,
+    /// or its release fell outside the box the press was taken in. A widget
+    /// that set a state on [`Press`](Self::Press) lets go of it here.
     Cancel,
 }
 
@@ -847,6 +849,11 @@ enum Outcome {
     /// An event of a press the region already owns, with nothing to report
     /// yet — it is consumed so no ancestor starts a gesture of its own.
     Owned,
+    /// The end of a press that completed no gesture. The widget is told so
+    /// that it can let go of the states the press set, and the event stays
+    /// taken: the press was the region's, so an ancestor must not answer a
+    /// release it never held.
+    TakenGesture(Gesture),
     /// An event the region has nothing to say about.
     None,
 }
@@ -963,6 +970,12 @@ impl GestureRegion {
         match outcome {
             Outcome::None => EventResult::Ignored,
             Outcome::Owned => EventResult::Consumed,
+            Outcome::TakenGesture(gesture) => {
+                // The answer of the widget is heard, but the event is the
+                // region's to take either way: a release that completed
+                // nothing still ends the press it held.
+                combine(EventResult::Consumed, self.answer(&gesture, &mut default))
+            }
             Outcome::Gesture(gesture) => self.answer(&gesture, &mut default),
             Outcome::DropAndFling { velocity } => {
                 // A release both puts the content down and — if it was
@@ -1077,7 +1090,7 @@ impl GestureRegion {
                             // The press left the box without being a drag:
                             // neither a click nor a drag ended, so nothing
                             // is reported beyond the press being over.
-                            return Outcome::Owned;
+                            return Outcome::TakenGesture(Gesture::Cancel);
                         }
                         Outcome::Gesture(Gesture::Click {
                             position: event.position,
@@ -1703,7 +1716,11 @@ mod tests {
             BOX,
             log.recorder(),
         );
-        assert_eq!(log.seen(), ["press"]);
+        assert_eq!(
+            log.seen(),
+            ["press", "cancel"],
+            "the press ends, and the widget is told that it did"
+        );
         // The press still belonged to the region, so the event is consumed.
         assert_eq!(result, EventResult::Consumed);
     }
