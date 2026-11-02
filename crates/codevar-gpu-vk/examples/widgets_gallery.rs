@@ -24,7 +24,12 @@
 //! * **[`kuitui_element!`]:** the content is a reactive tree whose widgets
 //!   read and write the handles of [`Gallery`]. A press inside a box writes
 //!   the [`MutableState`] that the label next to it reads, so the two cannot
-//!   disagree; the handles outlive a render.
+//!   disagree; the handles outlive a render, which is what lets a drag survive
+//!   the recomposition its own value writes ask for.
+//! * **The gesture stream:** the `wl_pointer` listener queues motion, button
+//!   *and wheel* events with the millisecond timestamp the compositor
+//!   reported. [`GestureRegion`] needs a clock: without one a widget drags but
+//!   never flings.
 //! * **[`UiPipe`] + [`TextPipe`]:** the check mark and the outline of a box,
 //!   the ring and dot of a radio and the track, ticks and thumb of a slider
 //!   are rounded fills, strokes and lines — the
@@ -33,7 +38,12 @@
 //!   deliberately leaves to the text pipe, so both are registered and the list
 //!   is shaped every time the tree is laid out again.
 //!
-//! Run it inside a Wayland session, click the boxes, choose a size and drag the
+//! The regions are handles the [`Gallery`] owns rather than fields the widgets
+//! build, because the widgets are rebuilt by every recomposition and a drag
+//! outlives the one that wrote its first pixel: a slider writes on the press,
+//! so the move that follows would reach a region that never saw it.
+//!
+//! Run it inside a Wayland session, click the boxes, choose a size, drag the
 //! slider:
 //!
 //! ```text
@@ -48,8 +58,10 @@ use codevar_gpu_vk::base::{Compositor, block_on};
 use codevar_gpu_vk::pipeline::{OwnedFd, PipelineContext};
 use codevar_gpu_vk::ui::{UiFrame, UiPipe};
 use codevar_kuitui::color::Color;
+use codevar_kuitui::event::{Event, PointerButton, PointerButtons, PointerEvent, PointerEventKind};
 use codevar_kuitui::geometry::{Alignment, EdgeInsets, Offset, Rect, Size};
 use codevar_kuitui::host::WidgetHost;
+use codevar_kuitui::input::Timestamp;
 use codevar_kuitui::node::{Modifier, Node};
 use codevar_kuitui::paint::{CornerRadii, Paint};
 use codevar_kuitui::prelude::{
@@ -57,7 +69,7 @@ use codevar_kuitui::prelude::{
     kuitui_element,
 };
 use codevar_kuitui::rea::{Element, RenderCtx};
-use codevar_kuitui::widgets::{CheckState, Radio, RadioGroup, Row, Slider, Text};
+use codevar_kuitui::widgets::{CheckState, GestureRegion, Radio, RadioGroup, Row, Slider, Text};
 use codevar_kuitui_button::{Button, TextButton};
 use codevar_kuitui_text::{AtlasConfig, TextAtlas, TextFrame, TextPipe};
 use codevar_kuitui_widget::{Font, shape_list};
@@ -67,12 +79,14 @@ use codevar_wayland::{
     COMPOSITOR_CREATE_SURFACE, COMPOSITOR_INTERFACE, DMABUF_CREATE_PARAMS, DMABUF_DESTROY,
     DMABUF_GET_DEFAULT_FEEDBACK, DMABUF_INTERFACE, DMABUF_MODIFIER, DRM_FORMAT_XRGB8888, FEEDBACK_DESTROY,
     FEEDBACK_DONE, FEEDBACK_FORMAT_TABLE, FEEDBACK_MAIN_DEVICE, FEEDBACK_TRANCHE_DONE,
-    FEEDBACK_TRANCHE_FLAGS, FEEDBACK_TRANCHE_FORMATS, FEEDBACK_TRANCHE_TARGET_DEVICE, SURFACE_ATTACH,
-    SURFACE_COMMIT, SURFACE_DAMAGE, SURFACE_DESTROY, SURFACE_FRAME, WlArgument, WlClientDisplay, WlError,
-    WlInterface, WlProxyId, WlRegistryEvent, WlResult, WlUnixTransport, XDG_SURFACE_ACK_CONFIGURE,
-    XDG_SURFACE_CONFIGURE, XDG_SURFACE_DESTROY, XDG_SURFACE_GET_TOPLEVEL, XDG_SURFACE_SET_WINDOW_GEOMETRY,
-    XDG_TOPLEVEL_CLOSE, XDG_TOPLEVEL_DESTROY, XDG_TOPLEVEL_SET_APP_ID, XDG_TOPLEVEL_SET_TITLE,
-    XDG_WM_BASE_GET_XDG_SURFACE, XDG_WM_BASE_INTERFACE, XDG_WM_BASE_PING, XDG_WM_BASE_PONG,
+    FEEDBACK_TRANCHE_FLAGS, FEEDBACK_TRANCHE_FORMATS, FEEDBACK_TRANCHE_TARGET_DEVICE, POINTER_BUTTON,
+    POINTER_ENTER, POINTER_LEAVE, POINTER_MOTION, SEAT_CAPABILITIES, SEAT_CAPABILITY_POINTER,
+    SEAT_GET_POINTER, SEAT_INTERFACE, SURFACE_ATTACH, SURFACE_COMMIT, SURFACE_DAMAGE, SURFACE_DESTROY,
+    SURFACE_FRAME, WlArgument, WlClientDisplay, WlError, WlInterface, WlProxyId, WlRegistryEvent, WlResult,
+    WlUnixTransport, XDG_SURFACE_ACK_CONFIGURE, XDG_SURFACE_CONFIGURE, XDG_SURFACE_DESTROY,
+    XDG_SURFACE_GET_TOPLEVEL, XDG_SURFACE_SET_WINDOW_GEOMETRY, XDG_TOPLEVEL_CLOSE, XDG_TOPLEVEL_DESTROY,
+    XDG_TOPLEVEL_SET_APP_ID, XDG_TOPLEVEL_SET_TITLE, XDG_WM_BASE_GET_XDG_SURFACE, XDG_WM_BASE_INTERFACE,
+    XDG_WM_BASE_PING, XDG_WM_BASE_PONG,
 };
 
 /// Window width in surface local pixels (used when the first configure
@@ -188,6 +202,30 @@ impl Sources {
     }
 }
 
+/// The gesture regions the widgets of the gallery read through.
+///
+/// A region is a handle too, over the recognition of the press in flight, and
+/// it is hoisted for the same reason [`Sources`] is: a content closure rebuilds
+/// the widget every render. The widgets that answer a press without writing
+/// anything — the boxes and the radios — survive either way, because their
+/// press and release land in the same drain of events. The slider and the
+/// viewport do not: each writes a value the tree reads back, so the move that
+/// follows a press arrives after the recomposition that built a new widget.
+#[derive(Clone)]
+struct Regions {
+    /// The slider of the volume row.
+    slider: GestureRegion,
+}
+
+impl Regions {
+    /// The regions of the gallery, each recognizing nothing yet.
+    fn new() -> Self {
+        Self {
+            slider: GestureRegion::default(),
+        }
+    }
+}
+
 /// The values the widgets of the gallery own and the frame loop watches.
 ///
 /// Every field is a handle over shared storage, so the same value is what the
@@ -217,6 +255,8 @@ struct Gallery {
     density_seen: Cell<u64>,
     /// The interaction states of the widgets.
     sources: Sources,
+    /// The gesture regions the widgets read through.
+    regions: Regions,
 }
 
 impl Gallery {
@@ -232,6 +272,7 @@ impl Gallery {
             resets: MutableState::new(0_u32),
             density_seen: Cell::new(0),
             sources: Sources::new(),
+            regions: Regions::new(),
         }
     }
 
@@ -301,6 +342,40 @@ fn run() -> ExampleResult<String> {
 
     let compositor = bind(&mut display, registry, &globals, &COMPOSITOR_INTERFACE)?;
     let wm_base = bind(&mut display, registry, &globals, &XDG_WM_BASE_INTERFACE)?;
+    // The seat is the input side of the window. The protocol only lets a
+    // client ask for a pointer once the seat announces the capability, so the
+    // listener below creates it when that event arrives and hands the raw
+    // events to `PointerInput`, which the frame loop replays into the tree.
+    let input = Rc::new(RefCell::new(PointerInput::default()));
+    let seat = bind(&mut display, registry, &globals, &SEAT_INTERFACE)?;
+    {
+        let input = Rc::clone(&input);
+        let pointer = Rc::new(Cell::new(None));
+        display.add_listener(seat, move |client, opcode, args| {
+            if opcode != SEAT_CAPABILITIES
+                || !matches!(args.first(), Some(WlArgument::Uint(capabilities))
+                    if capabilities & SEAT_CAPABILITY_POINTER != 0)
+                || pointer.get().is_some()
+            {
+                return 0;
+            }
+            let Ok(pointer_id) = client.marshal_new_id(seat, SEAT_GET_POINTER, Vec::new()) else {
+                return -1;
+            };
+            pointer.set(Some(pointer_id));
+            let input = Rc::clone(&input);
+            if client
+                .add_listener(pointer_id, move |_, opcode, args| {
+                    input.borrow_mut().push(opcode, args);
+                    0
+                })
+                .is_err()
+            {
+                return -1;
+            }
+            0
+        })?;
+    }
     display.roundtrip()?;
     let (dmabuf_name, dmabuf_version) = global_named(&globals, "zwp_linux_dmabuf_v1")?;
     let dmabuf = display.registry_bind(
@@ -566,6 +641,10 @@ fn run() -> ExampleResult<String> {
         })?;
     }
     let mut frames = 0u32;
+    // The clock of the gallery is the compositor's: the `time` of every
+    // pointer event is milliseconds since the client connected, so the
+    // elapsed step handed to the widgets is measured the same way.
+    let mut last_time = Timestamp::UNSPECIFIED;
     while !closed.get() {
         let release_deadline = Instant::now() + RELEASE_TIMEOUT;
         while !released.get() && !closed.get() && Instant::now() < release_deadline {
@@ -573,11 +652,45 @@ fn run() -> ExampleResult<String> {
         }
         released.set(false);
 
+        // Replay what the pointer did while the last frame was in flight, in
+        // the order the compositor reported it. A press that completes inside
+        // a box writes that box's state; a move past the slop drags the
+        // slider's thumb.
+        let mut consumed = 0_u32;
+        let mut frame_time = last_time;
+        {
+            let mut input = input.borrow_mut();
+            for event in input.events.drain(..) {
+                if let Event::Pointer(pointer) = &event
+                    && pointer.time.is_specified()
+                {
+                    frame_time = pointer.time;
+                }
+                if composition.handle_event(&event).is_consumed() {
+                    consumed += 1;
+                }
+            }
+        }
+        // A release fast enough to carry the content moves a widget by itself,
+        // so the animation runs before the rebuild: this frame draws from the
+        // position the gesture reached.
+        let elapsed = if last_time.is_specified() && frame_time.is_specified() {
+            Timestamp::from_micros(
+                frame_time
+                    .micros()
+                    .saturating_sub(last_time.micros())
+                    .max(1_000),
+            )
+        } else {
+            Timestamp::UNSPECIFIED
+        };
+        last_time = frame_time;
+        let animated = elapsed.is_specified() && composition.advance(elapsed);
         // The engine schedules the renders its hooks own; a widget writing a
         // handle the gallery created is only seen through that handle.
         let written = gallery.take_dirty();
         let rebuilt = matches!(composition.recompose(written), Recomposition::Recomposed);
-        composition.layout(size, rebuilt || written);
+        composition.layout(size, rebuilt || written || animated);
 
         let frame = display.marshal_new_id(surface, SURFACE_FRAME, Vec::new())?;
         let frame_done = Rc::new(Cell::new(false));
@@ -598,7 +711,7 @@ fn run() -> ExampleResult<String> {
             &text_frame,
             font.as_ref(),
             size,
-            rebuilt || written,
+            rebuilt || written || animated,
         )?;
 
         let sync_file = block_on(compositor.composite_frame(None))?;
@@ -636,6 +749,7 @@ fn run() -> ExampleResult<String> {
         }
         display.proxy_destroy(frame)?;
         frames += 1;
+        let _ = consumed;
     }
     display.flush()?;
     let _ = display.marshal_request(toplevel, XDG_TOPLEVEL_DESTROY, Vec::new());
@@ -716,6 +830,7 @@ fn gallery_content(gallery: Gallery) -> impl Fn(&mut RenderCtx<'_>) -> Element<W
         let reset_gallery = gallery.clone();
         let reset_count = resets.clone();
         let reset_source = sources.button.clone();
+        let slider_region = gallery.regions.slider.clone();
 
         kuitui_element! {
             Column(
@@ -752,6 +867,7 @@ fn gallery_content(gallery: Gallery) -> impl Fn(&mut RenderCtx<'_>) -> Element<W
                         on,
                         snapped,
                         slider_source.clone(),
+                        slider_region.clone(),
                     ))
                     Text(format!("{shown:>5.1}"), color: Color::WHITE)
                 }
@@ -843,13 +959,15 @@ fn slider_node(
     on: bool,
     snapped: bool,
     source: InteractionSource,
+    region: GestureRegion,
 ) -> Node {
     Node::new(
         Slider::new(progress)
             .range(0.0, 100.0)
             .steps(if snapped { 10 } else { 0 })
             .enabled(on)
-            .interaction_with(source),
+            .interaction_with(source)
+            .region(region),
     )
     .modifier(Modifier::none().size(Some(width), None))
 }
@@ -901,6 +1019,175 @@ fn record_frame(
         }
         Ok(())
     })
+}
+
+/// Linux input code of the primary pointer button.
+const BTN_LEFT: u32 = 0x110;
+/// Linux input code of the secondary pointer button.
+const BTN_RIGHT: u32 = 0x111;
+/// Linux input code of the middle pointer button.
+const BTN_MIDDLE: u32 = 0x112;
+/// The `wl_pointer.button` state code of a press; a release reports `0`.
+const BUTTON_PRESSED: u32 = 1;
+/// The opcode of `wl_pointer.axis`: time, axis, value.
+///
+/// The `codevar-wayland` crate names the four events of version 1 that the
+/// other examples need; `axis` is the fifth event of that interface, and it is
+/// the only one this gallery adds: the continuous value it carries is already
+/// in surface-local pixels, so the discrete and value120 events of version 5
+/// and 8 would double the same scroll.
+const POINTER_AXIS: u32 = 4;
+/// The `wl_pointer.axis` enum code of the vertical axis; `1` is horizontal.
+const AXIS_VERTICAL: u32 = 0;
+
+/// The pointer events a `wl_pointer` listener queues for the frame loop.
+///
+/// The listener cannot reach the composition — the seat is bound before the
+/// tree exists — so it records the events and the frame loop replays them into
+/// the tree, where the gesture region of each widget updates the state it owns.
+#[derive(Default)]
+struct PointerInput {
+    /// Where the pointer is, in surface-local pixels.
+    position: Offset,
+    /// The buttons that are held down.
+    buttons: PointerButtons,
+    /// The events the tree has not seen yet.
+    events: Vec<Event>,
+}
+
+impl PointerInput {
+    /// Routes one `wl_pointer` event by its opcode.
+    fn push(&mut self, opcode: u32, args: &mut [WlArgument]) {
+        match opcode {
+            POINTER_ENTER => {
+                // serial, surface, surface_x, surface_y
+                self.moved(args.get(2), args.get(3), PointerEventKind::Enter, None);
+            }
+            POINTER_LEAVE => {
+                // serial, surface: the event carries no coordinates, so the
+                // pointer is reported just outside the window, where every
+                // widget clears its hover.
+                self.position = Offset::new(-1.0, -1.0);
+                self.queue(PointerEventKind::Leave, PointerButton::Primary, None);
+            }
+            POINTER_MOTION => {
+                // time, surface_x, surface_y
+                self.moved(args.get(1), args.get(2), PointerEventKind::Move, args.first());
+            }
+            POINTER_BUTTON => {
+                // serial, time, button, state
+                let (Some(WlArgument::Uint(button)), Some(WlArgument::Uint(state))) =
+                    (args.get(2), args.get(3))
+                else {
+                    return;
+                };
+                let code = *button;
+                let pressed = *state == BUTTON_PRESSED;
+                self.buttons = buttons_after(self.buttons, code, pressed);
+                let kind = if pressed {
+                    PointerEventKind::Down
+                } else {
+                    PointerEventKind::Up
+                };
+                self.queue(kind, pointer_button(code), args.get(1));
+            }
+            POINTER_AXIS => {
+                // time, axis, value
+                let (Some(WlArgument::Uint(axis)), Some(WlArgument::Fixed(value))) =
+                    (args.get(1), args.get(2))
+                else {
+                    return;
+                };
+                let delta = value.to_double() as f32;
+                if delta == 0.0 {
+                    return;
+                }
+                let position = self.position;
+                let mut event = Event::Scroll(codevar_kuitui::event::ScrollEvent::new(
+                    if *axis == AXIS_VERTICAL {
+                        Offset::new(0.0, delta)
+                    } else {
+                        Offset::new(delta, 0.0)
+                    },
+                    position,
+                ));
+                if let Event::Scroll(scroll) = &mut event {
+                    scroll.time = timestamp_arg(args.first());
+                }
+                self.events.push(event);
+            }
+            _ => {}
+        }
+    }
+
+    /// Moves the pointer to the fixed-point coordinates of `x` and `y` and
+    /// queues `kind` there.
+    fn moved(
+        &mut self,
+        x: Option<&WlArgument>,
+        y: Option<&WlArgument>,
+        kind: PointerEventKind,
+        time: Option<&WlArgument>,
+    ) {
+        let (Some(WlArgument::Fixed(x)), Some(WlArgument::Fixed(y))) = (x, y) else {
+            return;
+        };
+        self.position = Offset::new(x.to_double() as f32, y.to_double() as f32);
+        self.queue(
+            kind,
+            PointerButton::Primary,
+            Some(time.unwrap_or(&WlArgument::Uint(0))),
+        );
+    }
+
+    /// Queues a pointer event at the current position, stamped with `time`.
+    fn queue(&mut self, kind: PointerEventKind, button: PointerButton, time: Option<&WlArgument>) {
+        let mut event = PointerEvent::new(kind, self.position).with_time(timestamp_arg(time));
+        event.button = button;
+        event.buttons = self.buttons;
+        self.events.push(Event::Pointer(event));
+    }
+}
+
+/// The compositor timestamp of an event argument, in the microseconds the
+/// [`Timestamp`] of the tree counts.
+///
+/// A gesture region measures the speed of a release from these stamps, so a
+/// missing one costs the fling rather than the drag.
+fn timestamp_arg(arg: Option<&WlArgument>) -> Timestamp {
+    match arg {
+        Some(WlArgument::Uint(millis)) => Timestamp::from_micros(u64::from(*millis) * 1_000),
+        _ => Timestamp::UNSPECIFIED,
+    }
+}
+
+/// The set of buttons held after `code` changed to `pressed`.
+fn buttons_after(held: PointerButtons, code: u32, pressed: bool) -> PointerButtons {
+    let mut next = PointerButtons::NONE;
+    for (button, flag) in [
+        (BTN_LEFT, PointerButtons::PRIMARY),
+        (BTN_RIGHT, PointerButtons::SECONDARY),
+        (BTN_MIDDLE, PointerButtons::MIDDLE),
+    ] {
+        let down = if button == code {
+            pressed
+        } else {
+            held.contains(flag)
+        };
+        if down {
+            next |= flag;
+        }
+    }
+    next
+}
+
+/// The button of the tree that Linux input `code` reports.
+fn pointer_button(code: u32) -> PointerButton {
+    match code {
+        BTN_RIGHT => PointerButton::Secondary,
+        BTN_MIDDLE => PointerButton::Middle,
+        _ => PointerButton::Primary,
+    }
 }
 
 /// Raw `zwp_linux_dmabuf_feedback_v1` payload, accumulated until `done`.
