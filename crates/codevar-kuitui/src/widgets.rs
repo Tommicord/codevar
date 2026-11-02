@@ -49,8 +49,9 @@ pub use select::{Select, SelectChange, SelectColors, SelectFlags, SelectMode, Se
 pub use slider::{Slider, SliderChange, SliderColors, SliderFinished, SliderFlags};
 pub use text::{ColorableText, Text};
 pub use viewport::{
-    FLING_FRICTION, FLING_STOP_VELOCITY, Gesture, GestureHandler, GestureRegion, ScrollAxes, ScrollState,
-    TOUCH_SLOP, VELOCITY_WINDOW, VelocityTracker, Viewport, ViewportDispatch,
+    BAR_ALPHA, BAR_INSET, BAR_MIN_LENGTH, BAR_THICKNESS, FLING_FRICTION, FLING_STOP_VELOCITY, Gesture,
+    GestureHandler, GestureRegion, ScrollAxes, ScrollState, Scrollbar, TOUCH_SLOP, VELOCITY_WINDOW,
+    VelocityTracker, Viewport, ViewportDispatch,
 };
 
 /// Lays its children out one below the other.

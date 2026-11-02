@@ -44,10 +44,12 @@ use core::cell::RefCell;
 
 use codevar_kuitui_control::Timestamp;
 
+use crate::color::Color;
 use crate::event::{Event, EventResult, PointerButton, PointerEvent, PointerEventKind, ScrollEvent};
 use crate::geometry::{Constraints, Offset, Rect, Size};
+use crate::paint::CornerRadii;
 use crate::state::MutableState;
-use crate::widget::{EventScope, MeasureScope, PlaceScope, Widget};
+use crate::widget::{DrawScope, EventScope, MeasureScope, PlaceScope, Widget};
 
 /// The axes a viewport scrolls along.
 ///
@@ -102,6 +104,22 @@ impl core::ops::BitOrAssign for ScrollAxes {
 /// the hand shakes, and it is in logical pixels so it scales with the
 /// window the way the platform's own slop does.
 pub const TOUCH_SLOP: f32 = 4.0;
+
+/// The width of a scroll bar thumb, across the edge it runs along.
+pub const BAR_THICKNESS: f32 = 8.0;
+
+/// The gap a scroll bar keeps between its thumb and the corners of its box.
+pub const BAR_INSET: f32 = 2.0;
+
+/// The shortest a scroll bar thumb gets.
+///
+/// The length a thumb would otherwise take is the fraction of the content
+/// the box shows, so a document long enough to be worth scrolling is a
+/// document whose thumb is too thin to see; this is the floor that stops it.
+pub const BAR_MIN_LENGTH: f32 = 24.0;
+
+/// The alpha a scroll bar thumb paints with over the content it covers.
+pub const BAR_ALPHA: f32 = 0.5;
 
 /// The window of the samples a fling is measured over, in microseconds.
 ///
@@ -1367,6 +1385,215 @@ impl Widget for Viewport {
     }
 }
 
+/// The bar that reports where inside a viewport the content stands.
+///
+/// The bar is an indicator: it paints the part of the content the box
+/// shows, and the gestures that move it belong to the
+/// [`Viewport`](crate::widgets::Viewport) it reports on. It reads a
+/// [`ScrollState`] handle the same way a viewport does and needs nothing
+/// from the viewport itself, so the two are siblings in the tree — a
+/// [`Stack`](crate::widgets::Stack) of them, with the bar aligned to the
+/// edge it runs along and given a
+/// [`z_index`](crate::Modifier::z_index) so it paints over the
+/// content rather than under it.
+///
+/// A state that scrolls both axes gets a thumb on each edge. A state whose
+/// content fits its box gets nothing at all, which is why the bar is safe
+/// to leave on a page that may or may not need it.
+#[derive(Clone)]
+pub struct Scrollbar {
+    /// The state whose box, content and offset the thumb is cut from.
+    state: ScrollState,
+    /// The width of the thumb across the edge it runs along.
+    thickness: f32,
+    /// The gap the thumb keeps from the corners of the box.
+    inset: f32,
+    /// The shortest a thumb gets, so a long content still shows a bar.
+    min_length: f32,
+    /// The color of the thumb, or `None` for the scheme's own.
+    color: Option<Color>,
+}
+
+impl Scrollbar {
+    /// A bar that reports on `state` with the default metrics.
+    #[must_use]
+    pub fn new(state: ScrollState) -> Self {
+        Self {
+            state,
+            thickness: BAR_THICKNESS,
+            inset: BAR_INSET,
+            min_length: BAR_MIN_LENGTH,
+            color: None,
+        }
+    }
+
+    /// The bar with a thumb `thickness` wide.
+    #[must_use]
+    pub const fn thickness(mut self, thickness: f32) -> Self {
+        self.thickness = thickness;
+        self
+    }
+
+    /// The bar that keeps `inset` between its thumb and the box corners.
+    #[must_use]
+    pub const fn inset(mut self, inset: f32) -> Self {
+        self.inset = inset;
+        self
+    }
+
+    /// The bar whose thumb never shrinks below `min_length`.
+    ///
+    /// The length a thumb would otherwise take is the fraction of the
+    /// content the box shows, so a very long document would leave a bar no
+    /// one can see; this is the floor that stops it.
+    #[must_use]
+    pub const fn min_length(mut self, min_length: f32) -> Self {
+        self.min_length = min_length;
+        self
+    }
+
+    /// The bar painted in `color`.
+    #[must_use]
+    pub const fn color(mut self, color: Color) -> Self {
+        self.color = Some(color);
+        self
+    }
+
+    /// The state the bar reports on.
+    #[inline]
+    #[must_use]
+    pub const fn state(&self) -> &ScrollState {
+        &self.state
+    }
+
+    /// The start and the length of the thumb of one axis, or `None` when
+    /// the box already shows the whole content.
+    ///
+    /// The length is the fraction of the content the box shows, taken over
+    /// `track` — the length of the box left once the insets are off — and
+    /// axis it reports on, so a bar over a state that does not scroll that
+    /// axis paints no thumb of it. The start is the fraction of the
+    /// *travel*, which is what is left of the track after the thumb itself,
+    /// that the offset has reached: at the first pixel of the content the
+    /// thumb sits at the inset, and at the last it ends at the far inset,
+    /// so the thumb touches an edge exactly when the content does.
+    fn thumb_range(&self, track: f32, axis: Axis) -> Option<(f32, f32)> {
+        let (viewport, content, offset, max) = match axis {
+            Axis::Horizontal => (
+                self.state.viewport().width,
+                self.state.content().width,
+                self.state.offset().x,
+                self.state.max().x,
+            ),
+            Axis::Vertical => (
+                self.state.viewport().height,
+                self.state.content().height,
+                self.state.offset().y,
+                self.state.max().y,
+            ),
+        };
+        if !self.state.axes().contains(axis.axes())
+            || max <= 0.0
+            || track <= 0.0
+            || viewport <= 0.0
+            || content <= 0.0
+        {
+            return None;
+        }
+        let length = ((track * viewport) / content).clamp(self.min_length, track);
+        let travel = track - length;
+        Some((travel * (offset / max).clamp(0.0, 1.0), length))
+    }
+}
+
+impl Widget for Scrollbar {
+    /// Takes the box it is offered, falling back on the box the state was
+    /// last measured in.
+    ///
+    /// A thumb is pinned to the far edge of the bar's own box, so a bar
+    /// that measured to anything other than the space it was given would
+    /// paint its thumb where the viewport it reports on does not reach. An
+    /// unbounded offer is the one case the box of the state answers, since
+    /// the bar has no size of its own to propose.
+    fn measure(&mut self, _scope: &mut MeasureScope<'_>, constraints: Constraints) -> Size {
+        let viewport = self.state.viewport();
+        Size::new(
+            if constraints.max_width.is_finite() {
+                constraints.max_width
+            } else {
+                viewport.width
+            },
+            if constraints.max_height.is_finite() {
+                constraints.max_height
+            } else {
+                viewport.height
+            },
+        )
+    }
+
+    /// Paints one thumb per axis the state scrolls.
+    fn draw(&mut self, scope: &mut DrawScope<'_>, bounds: Rect) {
+        let color = match self.color {
+            Some(color) => color,
+            None => scope
+                .theme()
+                .colors
+                .on_surface_variant
+                .with_alpha(BAR_ALPHA),
+        };
+        let radii = CornerRadii::uniform(self.thickness * 0.5);
+        let track = (bounds.size.width - self.inset * 2.0).max(0.0);
+        if let Some((start, thumb)) = self.thumb_range(track, Axis::Horizontal) {
+            scope.fill_rounded_rect(
+                Rect::from_min_size(
+                    Offset::new(
+                        bounds.origin.x + self.inset + start,
+                        bounds.bottom() - self.inset - self.thickness,
+                    ),
+                    thumb,
+                    self.thickness,
+                ),
+                radii,
+                color,
+            );
+        }
+        let track = (bounds.size.height - self.inset * 2.0).max(0.0);
+        if let Some((start, thumb)) = self.thumb_range(track, Axis::Vertical) {
+            scope.fill_rounded_rect(
+                Rect::from_min_size(
+                    Offset::new(
+                        bounds.right() - self.inset - self.thickness,
+                        bounds.origin.y + self.inset + start,
+                    ),
+                    self.thickness,
+                    thumb,
+                ),
+                radii,
+                color,
+            );
+        }
+    }
+}
+
+/// Which of the two axes of a bar a thumb runs along.
+enum Axis {
+    /// The thumb lies out of the bottom edge.
+    Horizontal,
+    /// The thumb lies out of the right edge.
+    Vertical,
+}
+
+impl Axis {
+    /// The axis a state has to scroll for this thumb to show at all.
+    #[inline]
+    const fn axes(self) -> ScrollAxes {
+        match self {
+            Self::Horizontal => ScrollAxes::HORIZONTAL,
+            Self::Vertical => ScrollAxes::VERTICAL,
+        }
+    }
+}
+
 /// Whether an offset move of `asked` reached the state at all.
 ///
 /// The state hands back what it could not consume, so a move that came
@@ -1916,6 +2143,7 @@ mod tests {
 
     use crate::compose::Composition;
     use crate::node::Node;
+    use crate::paint::{DrawList, PaintStyle, RectOp};
     use crate::theme::Theme;
     use crate::widgets::Row;
 
@@ -2192,6 +2420,100 @@ mod tests {
                 .root_mut()
                 .advance(Timestamp::from_micros(8_000))
         );
+    }
+
+    /// The box a test bar is laid out in: tall enough that the thumb of a
+    /// quarter-visible content still has room to travel.
+    const BAR_BOX: Size = Size::new(100.0, 400.0);
+
+    /// The filled rectangles a bar over `state` paints in a box of `size`.
+    fn bar_fills(state: &ScrollState, size: Size) -> Vec<(Rect, CornerRadii)> {
+        let theme = Theme::light();
+        let mut node = Node::new(Scrollbar::new(state.clone()));
+        node.measure(&theme, Constraints::tight(size));
+        node.place(Rect::from_min_size(Offset::ZERO, size.width, size.height));
+        let mut list = DrawList::new();
+        node.draw(&theme, &mut list);
+        let mut fills = Vec::new();
+        for op in list.ops() {
+            let any: &dyn core::any::Any = op;
+            if let Some(rect) = any.downcast_ref::<RectOp>()
+                && matches!(rect.paint.style, PaintStyle::Fill)
+            {
+                fills.push((rect.rect, rect.radii));
+            }
+        }
+        fills
+    }
+
+    /// The state of a bar whose box is [`BAR_BOX`] over content of `height`.
+    fn scrolled_state(axes: ScrollAxes, content: Size) -> ScrollState {
+        let state = ScrollState::new(axes);
+        state.set_layout(BAR_BOX, content);
+        state
+    }
+
+    #[test]
+    fn a_bar_over_content_that_fits_its_box_paints_nothing() {
+        let state = scrolled_state(ScrollAxes::VERTICAL, Size::new(100.0, 300.0));
+        assert!(bar_fills(&state, BAR_BOX).is_empty());
+    }
+
+    #[test]
+    fn the_thumb_is_as_long_as_the_box_shows_of_the_content() {
+        let state = scrolled_state(ScrollAxes::VERTICAL, Size::new(100.0, 1600.0));
+        let fills = bar_fills(&state, BAR_BOX);
+        let (thumb, radii) = *fills
+            .first()
+            .expect("a quarter of the content shows");
+        // A quarter of the content shows, so a quarter of the track — the
+        // 400 pixels of the box with the two insets off — is the thumb.
+        assert_eq!(thumb.size, Size::new(BAR_THICKNESS, 99.0));
+        assert_eq!(thumb.origin, Offset::new(90.0, BAR_INSET));
+        assert_eq!(radii, CornerRadii::uniform(BAR_THICKNESS * 0.5));
+        assert_eq!(fills.len(), 1, "one axis scrolls, one thumb shows");
+    }
+
+    #[test]
+    fn the_thumb_runs_the_track_as_the_offset_does() {
+        let state = scrolled_state(ScrollAxes::VERTICAL, Size::new(100.0, 1600.0));
+        let travel = 400.0 - BAR_INSET * 2.0 - 99.0;
+        state.scroll_by(Offset::new(0.0, state.max().y * 0.5));
+        assert_eq!(bar_fills(&state, BAR_BOX)[0].0.origin.y, BAR_INSET + travel * 0.5);
+        state.scroll_by(Offset::new(0.0, state.max().y * 0.5));
+        // At the last pixel of the content the thumb ends at the far inset,
+        // exactly as the content ends at the bottom of the box.
+        assert_eq!(
+            bar_fills(&state, BAR_BOX)[0].0.bottom(),
+            400.0 - BAR_INSET,
+            "{:?}",
+            bar_fills(&state, BAR_BOX)
+        );
+    }
+
+    #[test]
+    fn a_thumb_never_shrinks_below_its_minimum() {
+        let state = scrolled_state(ScrollAxes::VERTICAL, Size::new(100.0, 16_000.0));
+        // A fortieth of the content would be ten pixels of thumb, which is a
+        // bar no one can see; the floor is what makes it a bar at all.
+        assert_eq!(bar_fills(&state, BAR_BOX)[0].0.size.height, BAR_MIN_LENGTH);
+    }
+
+    #[test]
+    fn a_state_that_scrolls_both_axes_gets_a_thumb_on_each_edge() {
+        let state = scrolled_state(ScrollAxes::BOTH, Size::new(1600.0, 1600.0));
+        let fills = bar_fills(&state, BAR_BOX);
+        let vertical = fills
+            .iter()
+            .find(|(rect, _)| rect.size.width == BAR_THICKNESS)
+            .expect("the right edge has a thumb");
+        let horizontal = fills
+            .iter()
+            .find(|(rect, _)| rect.size.height == BAR_THICKNESS)
+            .expect("the bottom edge has a thumb");
+        assert_eq!(vertical.0.origin, Offset::new(90.0, BAR_INSET));
+        assert_eq!(horizontal.0.origin, Offset::new(BAR_INSET, 390.0));
+        assert_eq!(fills.len(), 2);
     }
 
     #[test]
