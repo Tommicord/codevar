@@ -16,21 +16,25 @@
 //! A window of the interactive Kuitui widgets, rendered through Vulkan.
 //!
 //! `hello_button` covers the button and `reactive_counter` the reactive
-//! content; this example starts with the rest of the widget set — the check
-//! boxes — on the same two pipes, so every shape those widgets paint
-//! reaches the GPU through the code that will draw the editor:
+//! content; this example is the rest of the widget set — the checkboxes,
+//! the [`Radio`] group and the [`Slider`] — on the same two pipes, so every
+//! shape those widgets paint reaches the GPU through the code that will draw
+//! the editor:
 //!
 //! * **[`kuitui_element!`]:** the content is a reactive tree whose widgets
 //!   read and write the handles of [`Gallery`]. A press inside a box writes
 //!   the [`MutableState`] that the label next to it reads, so the two cannot
 //!   disagree; the handles outlive a render.
-//! * **[`UiPipe`] + [`TextPipe`]:** the check mark and the outline of a box
-//!   are a rounded fill and a rounded stroke — the geometry the UI pipe turns
-//!   into scissored spans and signed-distance layers. The labels of the same widgets are text runs,
-//!   which the UI pipe deliberately leaves to the text pipe, so both are
-//!   registered and the list is shaped every time the tree is laid out again.
+//! * **[`UiPipe`] + [`TextPipe`]:** the check mark and the outline of a box,
+//!   the ring and dot of a radio and the track, ticks and thumb of a slider
+//!   are rounded fills, strokes and lines — the
+//!   geometry the UI pipe turns into scissored spans and signed-distance
+//!   layers. The labels of the same widgets are text runs, which the UI pipe
+//!   deliberately leaves to the text pipe, so both are registered and the list
+//!   is shaped every time the tree is laid out again.
 //!
-//! Run it inside a Wayland session:
+//! Run it inside a Wayland session, click the boxes, choose a size and drag the
+//! slider:
 //!
 //! ```text
 //! cargo run -p codevar-gpu-vk --example widgets_gallery
@@ -46,14 +50,15 @@ use codevar_gpu_vk::ui::{UiFrame, UiPipe};
 use codevar_kuitui::color::Color;
 use codevar_kuitui::geometry::{Alignment, EdgeInsets, Offset, Rect, Size};
 use codevar_kuitui::host::WidgetHost;
-use codevar_kuitui::node::Modifier;
+use codevar_kuitui::node::{Modifier, Node};
 use codevar_kuitui::paint::{CornerRadii, Paint};
 use codevar_kuitui::prelude::{
     ColorScheme, FontMetrics, InteractionSource, MutableState, ReactiveComposition, Recomposition, Theme,
     kuitui_element,
 };
 use codevar_kuitui::rea::{Element, RenderCtx};
-use codevar_kuitui::widgets::CheckState;
+use codevar_kuitui::widgets::{CheckState, Radio, RadioGroup, Row, Slider, Text};
+use codevar_kuitui_button::{Button, TextButton};
 use codevar_kuitui_text::{AtlasConfig, TextAtlas, TextFrame, TextPipe};
 use codevar_kuitui_widget::{Font, shape_list};
 use codevar_time_core::TimeDuration;
@@ -105,9 +110,44 @@ const PAGE_PADDING: f32 = 22.0;
 const ROW_SPACING: f32 = 12.0;
 /// Space between a control and the label that names it.
 const CONTROL_SPACING: f32 = 8.0;
+/// The width the slider is given, in logical pixels.
+const SLIDER_WIDTH: f32 = 260.0;
+/// The side of a clickable pill.
+const BUTTON_HEIGHT: f32 = 34.0;
 /// Every failure of the example is reported as a boxed error so `?` works for
 /// Wayland, Vulkan, compositor and shaping errors alike.
 type ExampleResult<T> = Result<T, Box<dyn std::error::Error>>;
+
+/// The option a radio of the density group stands for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Density {
+    /// The compact spacing.
+    Compact,
+    /// The default spacing.
+    Comfortable,
+    /// The roomy spacing.
+    Roomy,
+}
+
+impl Density {
+    /// The caption of the option.
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Compact => "Compact",
+            Self::Comfortable => "Comfortable",
+            Self::Roomy => "Roomy",
+        }
+    }
+
+    /// The extra spacing the option asks the gallery for, in pixels.
+    const fn spacing(self) -> f32 {
+        match self {
+            Self::Compact => -4.0,
+            Self::Comfortable => 0.0,
+            Self::Roomy => 8.0,
+        }
+    }
+}
 
 /// The interaction states the gallery keeps, one source per widget.
 ///
@@ -118,6 +158,16 @@ type ExampleResult<T> = Result<T, Box<dyn std::error::Error>>;
 struct Sources {
     /// The master box of the header row.
     all: InteractionSource,
+    /// The box that enables the slider.
+    enabled: InteractionSource,
+    /// The box that snaps the slider to its ticks.
+    stepped: InteractionSource,
+    /// The three radios, in the order the row lays them out.
+    radios: [InteractionSource; 3],
+    /// The slider.
+    slider: InteractionSource,
+    /// The reset button.
+    button: InteractionSource,
 }
 
 impl Sources {
@@ -125,6 +175,15 @@ impl Sources {
     fn new() -> Self {
         Self {
             all: InteractionSource::new(),
+            enabled: InteractionSource::new(),
+            stepped: InteractionSource::new(),
+            radios: [
+                InteractionSource::new(),
+                InteractionSource::new(),
+                InteractionSource::new(),
+            ],
+            slider: InteractionSource::new(),
+            button: InteractionSource::new(),
         }
     }
 }
@@ -141,6 +200,21 @@ impl Sources {
 struct Gallery {
     /// The tri-state box of the header row.
     all: MutableState<CheckState>,
+    /// The box that enables the slider.
+    enabled: MutableState<CheckState>,
+    /// The box that snaps the slider to its ticks.
+    stepped: MutableState<CheckState>,
+    /// The thumb position of the slider.
+    progress: MutableState<f32>,
+    /// The option the density group holds.
+    density: RadioGroup<Density>,
+    /// The presses the reset button completed.
+    resets: MutableState<u32>,
+    /// The density selection the loop has already seen, as a revision count.
+    ///
+    /// A [`RadioGroup`] exposes a revision rather than the state behind it, so
+    /// the loop notices a click on a radio by watching that number move.
+    density_seen: Cell<u64>,
     /// The interaction states of the widgets.
     sources: Sources,
 }
@@ -151,8 +225,24 @@ impl Gallery {
     fn new() -> Self {
         Self {
             all: MutableState::new(CheckState::Indeterminate),
+            enabled: MutableState::new(CheckState::Unchecked),
+            stepped: MutableState::new(CheckState::Checked),
+            progress: MutableState::new(0.35),
+            density: RadioGroup::with_value(Density::Comfortable),
+            resets: MutableState::new(0_u32),
+            density_seen: Cell::new(0),
             sources: Sources::new(),
         }
+    }
+
+    /// The state [`Self::new`] starts with, except for the reset count, which
+    /// is the history of the session.
+    fn reset(&self) {
+        self.all.set(CheckState::Indeterminate);
+        self.enabled.set(CheckState::Unchecked);
+        self.stepped.set(CheckState::Checked);
+        self.progress.set(0.35);
+        self.density.select(&Density::Comfortable);
     }
 
     /// Whether a widget wrote one of the values since the last frame.
@@ -162,6 +252,15 @@ impl Gallery {
     fn take_dirty(&self) -> bool {
         let mut dirty = false;
         dirty |= self.all.take_dirty();
+        dirty |= self.enabled.take_dirty();
+        dirty |= self.stepped.take_dirty();
+        // The progress is written on every move of a drag, so it asks for a
+        // rebuild on its own; a rebuild is what re-asks the slider whether it
+        // snaps and whether it answers the pointer at all.
+        dirty |= self.progress.take_dirty();
+        dirty |= self.resets.take_dirty();
+        let revision = self.density.revision();
+        dirty |= revision != self.density_seen.replace(revision);
         dirty
     }
 }
@@ -554,8 +653,8 @@ fn run() -> ExampleResult<String> {
     drop(pipeline);
 
     Ok(format!(
-        "widgets_gallery: {frames} frames of a checkbox row into a {width}x{height} \
-         dma-buf window, {} pings answered, configure serial {serial}",
+        "widgets_gallery: {frames} frames of a checkbox, a radio group and a slider \
+         into a {width}x{height} dma-buf window, {} pings answered, configure serial {serial}",
         pings.get()
     ))
 }
@@ -570,31 +669,124 @@ fn run() -> ExampleResult<String> {
 fn gallery_content(gallery: Gallery) -> impl Fn(&mut RenderCtx<'_>) -> Element<WidgetHost> + 'static {
     move |_ctx| {
         let all = gallery.all.clone();
+        let enabled = gallery.enabled.clone();
+        let stepped = gallery.stepped.clone();
+        let progress = gallery.progress.clone();
+        let density_group = gallery.density.clone();
+        let resets = gallery.resets.clone();
         let sources = gallery.sources.clone();
 
         // The values the labels read. A `MutableState` read here is a plain
         // borrow of the same cell the widget writes, so a label and its box
         // cannot disagree.
         let all_state = all.get();
+        let enabled_state = enabled.get();
+        let stepped_state = stepped.get();
+        let shown = progress.get();
+        let chosen = density_group.current();
+        let clicks = resets.get();
+        let on = enabled_state.is_checked();
+        let snapped = stepped_state.is_checked();
+        let extra = chosen.map_or(0.0, Density::spacing);
+
+        // The master box answers for the two below it: a click that leaves it
+        // checked or unchecked writes both children, and an indeterminate one
+        // leaves them alone. Each handler owns the clones it writes with,
+        // because a closure that moved a handle would take it out of the render.
+        let master = all.clone();
+        let master_enabled = enabled.clone();
+        let master_stepped = stepped.clone();
+        let cascade = move |state: CheckState| {
+            master.set(state);
+            if state == CheckState::Indeterminate {
+                return;
+            }
+            master_enabled.set(state);
+            master_stepped.set(state);
+        };
+        let recount = || recount_handler(all.clone(), enabled.clone(), stepped.clone());
+
+        // A `Node(..)` splice is a factory the engine owns, so the handles it
+        // reads move into that factory and cannot be borrowed from the render:
+        // each splice gets a clone of its own, made before the macro runs.
+        let radio_group = density_group.clone();
+        let radio_sources = sources.clone();
+        let slider_value = progress.clone();
+        let slider_source = sources.slider.clone();
+        let reset_gallery = gallery.clone();
+        let reset_count = resets.clone();
+        let reset_source = sources.button.clone();
 
         kuitui_element! {
             Column(
                 modifier: Modifier::none().padding(EdgeInsets::all(PAGE_PADDING)),
-                spacing: ROW_SPACING,
+                spacing: ROW_SPACING + extra,
                 alignment: Alignment::TOP_START
             ) {
                 Text("Kuitui widgets on Vulkan", color: Color::WHITE)
-                Text("Checkbox rows through UiPipe and TextPipe.", color: MUTED)
+                Text("Checkbox, radio group and slider through UiPipe and TextPipe.", color: MUTED)
                 Row(spacing: CONTROL_SPACING, alignment: Alignment::CENTER) {
                     Checkbox(
                         toggle: all.clone(),
                         tri_state: true,
                         interaction_with: sources.all.clone(),
+                        on_change: cascade
                     )
                     Text(all_caption(all_state))
                 }
+                Row(spacing: CONTROL_SPACING, alignment: Alignment::CENTER) {
+                    Text("Density")
+                    Node(radio_row(radio_group.clone(), radio_sources.clone()))
+                    Text(chosen.map_or("none".to_string(), |option| option.label().to_string()))
+                }
+                Row(spacing: CONTROL_SPACING, alignment: Alignment::CENTER) {
+                    Checkbox(
+                        toggle: enabled.clone(),
+                        interaction_with: sources.enabled.clone(),
+                        on_change: recount()
+                    )
+                    Text(if on { "Volume" } else { "Volume (disabled)" }, color: Color::WHITE)
+                    Node(slider_node(
+                        slider_value.clone(),
+                        SLIDER_WIDTH,
+                        on,
+                        snapped,
+                        slider_source.clone(),
+                    ))
+                    Text(format!("{shown:>5.1}"), color: Color::WHITE)
+                }
+                Row(spacing: CONTROL_SPACING, alignment: Alignment::CENTER) {
+                    Checkbox(
+                        toggle: stepped.clone(),
+                        interaction_with: sources.stepped.clone(),
+                        on_change: recount()
+                    )
+                    Text("Snap to ticks")
+                    Node(reset_node(reset_gallery.clone(), reset_count.clone(), reset_source.clone()))
+                    Text(format!("{clicks} resets"), color: MUTED)
+                }
             }
         }
+    }
+}
+
+/// The handler a child box calls to recompute what the master box reports.
+///
+/// The two children answer independently, so the master is checked when both
+/// agree, unchecked is both empty, and indeterminate while they disagree.
+fn recount_handler(
+    all: MutableState<CheckState>,
+    enabled: MutableState<CheckState>,
+    stepped: MutableState<CheckState>,
+) -> impl Fn(CheckState) + 'static {
+    move |_| {
+        let enabled = enabled.get();
+        let stepped = stepped.get();
+        all.set(if enabled == stepped {
+            enabled
+        } else {
+            CheckState::Indeterminate
+        });
     }
 }
 
@@ -605,6 +797,76 @@ fn all_caption(state: CheckState) -> String {
         CheckState::Unchecked => "No row selected".to_string(),
         CheckState::Indeterminate => "Some rows selected — click to select all".to_string(),
     }
+}
+
+/// The row of radios that answers for the density group.
+///
+/// A radio is built with two arguments — the option it stands for and the
+/// group it writes — so it is described as a node and spliced into the macro
+/// with `Node(..)`. The group is a handle shared by all three buttons, which is
+/// how choosing one draws the dot in that button and clears the other two.
+///
+/// The ring of a radio measures the touch target and paints nothing else, so
+/// each option pairs its button with the caption the same row lays out.
+fn radio_row(group: RadioGroup<Density>, sources: Sources) -> Node {
+    let mut options = Vec::new();
+    for (index, option) in [Density::Compact, Density::Comfortable, Density::Roomy]
+        .into_iter()
+        .enumerate()
+    {
+        options.push(
+            Node::new(
+                Row::new()
+                    .spacing(4.0)
+                    .alignment(Alignment::CENTER),
+            )
+            .with_children([
+                Node::new(Radio::new(option, group.clone()).interaction_with(sources.radios[index].clone())),
+                Node::new(Text::new(option.label()).color(MUTED)),
+            ]),
+        );
+    }
+    Node::new(
+        Row::new()
+            .spacing(10.0)
+            .alignment(Alignment::CENTER),
+    )
+    .with_children(options)
+}
+
+/// The slider of the volume row, given `width` and the two switches the boxes
+/// above it write: a disabled slider answers nothing, and a stepped one snaps
+/// to its ticks.
+fn slider_node(
+    progress: MutableState<f32>,
+    width: f32,
+    on: bool,
+    snapped: bool,
+    source: InteractionSource,
+) -> Node {
+    Node::new(
+        Slider::new(progress)
+            .range(0.0, 100.0)
+            .steps(if snapped { 10 } else { 0 })
+            .enabled(on)
+            .interaction_with(source),
+    )
+    .modifier(Modifier::none().size(Some(width), None))
+}
+
+/// The button that puts the gallery back the way
+/// [`Gallery::new`] left it, counting how many times it was pressed.
+fn reset_node(gallery: Gallery, resets: MutableState<u32>, source: InteractionSource) -> Node {
+    TextButton::new(
+        move || {
+            gallery.reset();
+            resets.set(resets.get().wrapping_add(1));
+        },
+        "Reset",
+    )
+    .interaction_source(source)
+    .modifier(Modifier::none().size(None, Some(BUTTON_HEIGHT)))
+    .node()
 }
 
 /// Records the laid-out tree and, when `reshape` is set, the text of the new
