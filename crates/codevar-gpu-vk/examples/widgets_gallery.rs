@@ -44,6 +44,12 @@
 //!   from the viewport: a viewport measured with an unbounded height has
 //!   nothing to scroll, and the framework only cuts what a chain asks to be
 //!   cut.
+//! * **The present pool:** the page is drawn through three render targets, each
+//!   exported as its own dma-buf and wrapped as its own `wl_buffer`, so a commit
+//!   *supersedes* the image on screen instead of overwriting it. The loop
+//!   renders the next frame while the compositor still holds the last, sleeps on
+//!   the compositor's socket while the GPU writes the one it just submitted, and
+//!   commits at the vsync — which is what holds it at the refresh rate.
 //!
 //! The regions are handles the [`Gallery`] owns rather than fields the widgets
 //! build, because the widgets are rebuilt by every recomposition and a drag
@@ -62,7 +68,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use codevar_gpu_vk::base::{Compositor, block_on};
-use codevar_gpu_vk::pipeline::{OwnedFd, PipelineContext};
+use codevar_gpu_vk::pipeline::{OwnedFd, PipelineContext, RenderTarget};
 use codevar_gpu_vk::ui::{UiFrame, UiPipe};
 use codevar_kuitui::color::Color;
 use codevar_kuitui::event::{Event, PointerButton, PointerButtons, PointerEvent, PointerEventKind};
@@ -121,6 +127,17 @@ const MEASURE_WINDOW: Duration = Duration::from_secs(5);
 /// frame that misses it is counted and retried instead of costing the loop a
 /// timeout's worth of stalled input.
 const FRAME_PACE: Duration = Duration::from_millis(20);
+/// Render targets the window pools, and so the frames it may keep in flight.
+///
+/// A target is a rendered image exported as its own dma-buf and wrapped as its
+/// own `wl_buffer`, so committing the next one *supersedes* the one on screen —
+/// which is the only way a compositor is ever going to send `wl_buffer.release`
+/// back. One target cannot: the buffer the loop renders into is the current
+/// surface state, so the loop would have to wait for the display before it
+/// could write again. Three is what `MAX_PRESENT_SLOTS` pools in the editor,
+/// and it is enough to cover the round trip the compositor takes to retire a
+/// superseded buffer.
+const PRESENT_SLOTS: usize = 3;
 /// Milliseconds the example waits for the GPU through the exported
 /// `sync_file` before committing the buffer.
 const GPU_SYNC_TIMEOUT_MS: i32 = 5_000;
@@ -264,6 +281,28 @@ impl Regions {
             list: GestureRegion::default(),
         }
     }
+}
+
+/// One present target of the pool: the image the GPU renders, the compositor
+/// that folds the two pipes into it, and the `wl_buffer` that shows the image.
+///
+/// The three belong together because a target is more than memory. Each owns a
+/// Vulkan device and the pipelines built on it, and its pipes read a
+/// [`TextFrame`] of their own: the text pipe uploads the atlas pages to the
+/// device it was registered on, so a second compositor handed the first one's
+/// frame would sample an atlas it never filled. The [`UiFrame`] is shared —
+/// the geometry list is drained by whichever compositor is run, and the loop
+/// records exactly once per target.
+struct Slot<'p> {
+    /// The renderer that writes this target's image.
+    compositor: Compositor<'p>,
+    /// The text the frame draws, with the atlas this device uploads.
+    text_frame: TextFrame,
+    /// The `wl_buffer` wrapping the exported dma-buf.
+    buffer: WlProxyId,
+    /// Whether the compositor has handed this buffer back. A commit clears it,
+    /// and the release of the superseded buffer sets it again.
+    released: Rc<Cell<bool>>,
 }
 
 /// The values the widgets of the gallery own and the frame loop watches.
@@ -635,12 +674,20 @@ fn run() -> ExampleResult<String> {
     } else {
         &modifiers
     };
-    let pipeline = match PipelineContext::new(width as u32, height as u32, requested) {
-        Ok(context) => context,
-        Err(_) if requested.len() == 1 => PipelineContext::new(width as u32, height as u32, &modifiers)?,
-        Err(error) => return Err(error.into()),
-    };
-    let target = pipeline.present_target();
+    // The present pool. Each target is a render image of its own, exported as a
+    // dma-buf of its own and wrapped as a `wl_buffer` of its own, so a commit
+    // *supersedes* the buffer on screen instead of overwriting it: the loop can
+    // render the next frame while the compositor still holds the last, and the
+    // compositor has something to release.
+    let mut pipelines = Vec::with_capacity(PRESENT_SLOTS);
+    for _ in 0..PRESENT_SLOTS {
+        let pipeline = match PipelineContext::new(width as u32, height as u32, requested) {
+            Ok(context) => context,
+            Err(_) if requested.len() == 1 => PipelineContext::new(width as u32, height as u32, &modifiers)?,
+            Err(error) => return Err(error.into()),
+        };
+        pipelines.push(pipeline);
+    }
 
     // The UI: the gallery measured with the real font, and the two pipes the
     // compositor folds together. The UI pipe is registered first so it is the
@@ -654,72 +701,48 @@ fn run() -> ExampleResult<String> {
     composition.layout(size, true);
 
     let ui_frame = UiFrame::new();
-    let text_frame = TextFrame::new(TextAtlas::new(AtlasConfig::DEFAULT)?)?;
-    let mut compositor = Compositor::new(&pipeline);
-    compositor.start()?;
-    let mut ui_pipe = UiPipe::new(&pipeline, ui_frame.clone())?;
-    ui_pipe.set_clear(BACKGROUND);
-    compositor.add_pipe(ui_pipe)?;
-    let mut text_pipe = TextPipe::new(&pipeline, text_frame.clone())?;
-    text_pipe.set_clear(BACKGROUND);
-    compositor.add_pipe(text_pipe)?;
+    let mut slots = Vec::with_capacity(PRESENT_SLOTS);
+    for pipeline in &pipelines {
+        let text_frame = TextFrame::new(TextAtlas::new(AtlasConfig::DEFAULT)?)?;
+        let mut compositor = Compositor::new(pipeline);
+        compositor.start()?;
+        let mut ui_pipe = UiPipe::new(pipeline, ui_frame.clone())?;
+        ui_pipe.set_clear(BACKGROUND);
+        compositor.add_pipe(ui_pipe)?;
+        let mut text_pipe = TextPipe::new(pipeline, text_frame.clone())?;
+        text_pipe.set_clear(BACKGROUND);
+        compositor.add_pipe(text_pipe)?;
+        let (buffer, released) =
+            import_buffer(&mut display, dmabuf, pipeline.present_target(), width, height)?;
+        slots.push(Slot {
+            compositor,
+            text_frame,
+            buffer,
+            released,
+        });
+    }
 
     record_frame(
         &mut composition,
         &ui_frame,
-        &text_frame,
+        &slots[0].text_frame,
         font.as_ref(),
         size,
         true,
     )?;
-
-    let params = display.marshal_new_id(dmabuf, DMABUF_CREATE_PARAMS, Vec::new())?;
-    display.marshal_request(
-        params,
-        BUFFER_PARAMS_ADD,
-        vec![
-            WlArgument::Fd(target.dmabuf_fd.as_raw()),
-            WlArgument::Uint(0),
-            WlArgument::Uint(target.offset),
-            WlArgument::Uint(target.stride),
-            WlArgument::Uint((target.modifier >> 32) as u32),
-            WlArgument::Uint(target.modifier as u32),
-        ],
-    )?;
-    let buffer = display.marshal_new_id(
-        params,
-        BUFFER_PARAMS_CREATE_IMMED,
-        vec![
-            WlArgument::Int(width),
-            WlArgument::Int(height),
-            WlArgument::Uint(target.drm_format),
-            WlArgument::Uint(0),
-        ],
-    )?;
-    display.marshal_request(params, BUFFER_PARAMS_DESTROY, Vec::new())?;
-    display.flush()?;
-
-    let released = Rc::new(Cell::new(true));
-    {
-        let released = Rc::clone(&released);
-        display.add_listener(buffer, move |_, opcode, _| {
-            if opcode == BUFFER_RELEASE {
-                released.set(true);
-            }
-            0
-        })?;
-    }
     let mut frames = 0_u32;
     // Where a frame's time goes, accumulated so the report names the stage
     // that binds the loop instead of only counting the frames it made.
+    let mut free_wait = Duration::ZERO;
     let mut pace_wait = Duration::ZERO;
+    let mut place_time = Duration::ZERO;
     let mut record_time = Duration::ZERO;
     let mut submit_time = Duration::ZERO;
     let mut gpu_wait = Duration::ZERO;
-    // Frames rendered while the compositor had not yet handed the buffer back,
-    // and beats that found no frame callback waiting for them. The first is the
-    // cost of a single present target — the image on screen is the image to
-    // draw into — and the second is a compositor that stopped answering.
+    // Frames that started with no target the compositor had handed back, and
+    // beats that found no frame callback waiting for them. The first says the
+    // pool is too shallow to hide the display's round trip; the second, that
+    // the compositor stopped answering commits.
     let mut held = 0_u32;
     let mut stalled = 0_u32;
     let measured = Instant::now();
@@ -731,51 +754,35 @@ fn run() -> ExampleResult<String> {
     // proxy and the flag its `done` sets. Waiting on that callback is what
     // paces the loop to the refresh rate rather than to a timeout.
     let mut pending: Option<(WlProxyId, Rc<Cell<bool>>)> = None;
+    // The target the next frame renders into, walked in commit order so the
+    // image the loop is offered is always the oldest one on screen.
+    let mut cursor = 0_usize;
     while !closed.get() && frames < MEASURE_FRAMES && measured.elapsed() < MEASURE_WINDOW {
+        // A target the compositor has handed back — the release of the oldest
+        // buffer, which arrives as soon as committing a newer one supersedes
+        // it. This is the wait that keeps the GPU from writing into the image
+        // still on screen, and the reason for the pool: a single target is
+        // never superseded, so its release never comes.
         let stage = Instant::now();
-        let beat_deadline = stage + FRAME_PACE;
-        while !closed.get() {
-            // The frame callback is the gate. `wl_buffer.release` cannot be
-            // one: the buffer this loop renders into *is* the current surface
-            // state, and a compositor only releases a buffer once another one
-            // supersedes it, which a single present target never does. It is
-            // still watched, and counted, because the day the compositor
-            // exports a second image the release is the signal to gate on.
-            if pending
-                .as_ref()
-                .is_none_or(|(_, done)| done.get())
-            {
-                break;
-            }
-            let left = beat_deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                break;
-            }
-            // Wait on the socket, not on a clock: `dispatch` returns as soon as
-            // the compositor answers, and only the time left in the beat bounds
-            // how long it holds the loop when nothing arrives.
-            let millis = u64::try_from(left.as_millis())
-                .unwrap_or(1)
-                .clamp(1, 1_000);
-            display.dispatch(Some(TimeDuration::from_millis(millis)))?;
-        }
-        pace_wait += stage.elapsed();
-        let shown = pending
-            .as_ref()
-            .is_none_or(|(_, done)| done.get());
-        if let Some((callback, _)) = shown.then(|| pending.take()).flatten() {
-            display.proxy_destroy(callback)?;
-        } else {
-            stalled += 1;
-        }
-        if !released.get() {
+        let count = slots.len();
+        let ready = wait_for(&mut display, &closed, FRAME_PACE, || {
+            (0..count).any(|offset| slots[(cursor + offset) % count].released.get())
+        })?;
+        free_wait += stage.elapsed();
+        if !ready {
             held += 1;
         }
+        let offset = (0..count)
+            .find(|offset| slots[(cursor + offset) % count].released.get())
+            .unwrap_or(0);
+        let slot = &mut slots[(cursor + offset) % count];
+        cursor = (cursor + offset + 1) % count;
 
         // Replay what the pointer did while the last frame was in flight, in
         // the order the compositor reported it. A press that completes inside
         // a box writes that box's state; a move past the slop drags the
         // slider's thumb.
+        let stage = Instant::now();
         let mut consumed = 0_u32;
         let mut frame_time = last_time;
         {
@@ -814,6 +821,56 @@ fn run() -> ExampleResult<String> {
         let written = gallery.take_dirty();
         let rebuilt = matches!(composition.recompose(written), Recomposition::Recomposed);
         composition.layout(size, rebuilt || written || animated);
+        place_time += stage.elapsed();
+
+        // A hover or a press changes what a widget paints without touching the
+        // engine, so the geometry is recorded every frame. The text is shaped
+        // whenever the tree was laid out again, because a relayout moves the
+        // runs the mesh carries.
+        let stage = Instant::now();
+        record_frame(
+            &mut composition,
+            &ui_frame,
+            &slot.text_frame,
+            font.as_ref(),
+            size,
+            rebuilt || written || animated,
+        )?;
+        record_time += stage.elapsed();
+        let stage = Instant::now();
+        let sync_file = block_on(slot.compositor.composite_frame(None))?;
+        submit_time += stage.elapsed();
+
+        // The frame is in flight, so the display's own wait runs beside it:
+        // `dispatch` sleeps on the compositor's socket while the GPU writes the
+        // image, and the two overlap instead of adding up. The wait is what
+        // paces the loop to the refresh period — the commit lands at the vsync
+        // rather than after it, because the work that had to finish first is
+        // already finished by the time the callback answers.
+        let stage = Instant::now();
+        let shown = wait_for(&mut display, &closed, FRAME_PACE, || {
+            pending
+                .as_ref()
+                .is_none_or(|(_, done)| done.get())
+        })?;
+        pace_wait += stage.elapsed();
+        if shown {
+            if let Some((callback, _)) = pending.take() {
+                display.proxy_destroy(callback)?;
+            }
+        } else {
+            stalled += 1;
+        }
+
+        // Only now may the buffer be offered. The compositor reads the dma-buf
+        // as soon as it is attached and `codevar-wayland` has no in-fence
+        // protocol to tell it to hold off, so the image has to be finished by
+        // the time this returns — which it nearly always is, since the wait
+        // above gave the GPU the whole round trip to get there.
+        let stage = Instant::now();
+        wait_for_gpu(&sync_file)?;
+        drop(sync_file);
+        gpu_wait += stage.elapsed();
 
         let callback = display.marshal_new_id(surface, SURFACE_FRAME, Vec::new())?;
         let done = Rc::new(Cell::new(false));
@@ -824,34 +881,11 @@ fn run() -> ExampleResult<String> {
                 0
             })?;
         }
-        // A hover or a press changes what a widget paints without touching the
-        // engine, so the geometry is recorded every frame. The text is shaped
-        // whenever the tree was laid out again, because a relayout moves the
-        // runs the mesh carries.
-        let stage = Instant::now();
-        record_frame(
-            &mut composition,
-            &ui_frame,
-            &text_frame,
-            font.as_ref(),
-            size,
-            rebuilt || written || animated,
-        )?;
-        record_time += stage.elapsed();
-        let stage = Instant::now();
-        let sync_file = block_on(compositor.composite_frame(None))?;
-        submit_time += stage.elapsed();
-        let stage = Instant::now();
-        wait_for_gpu(&sync_file)?;
-        drop(sync_file);
-        gpu_wait += stage.elapsed();
-        released.set(false);
-
         display.marshal_request(
             surface,
             SURFACE_ATTACH,
             vec![
-                WlArgument::Object(buffer.id()),
+                WlArgument::Object(slot.buffer.id()),
                 WlArgument::Int(0),
                 WlArgument::Int(0),
             ],
@@ -868,6 +902,7 @@ fn run() -> ExampleResult<String> {
         )?;
         display.marshal_request(surface, SURFACE_COMMIT, Vec::new())?;
         display.flush()?;
+        slot.released.set(false);
         pending = Some((callback, done));
         frames += 1;
         let _ = consumed;
@@ -877,16 +912,20 @@ fn run() -> ExampleResult<String> {
     let _ = display.marshal_request(toplevel, XDG_TOPLEVEL_DESTROY, Vec::new());
     let _ = display.marshal_request(xdg_surface, XDG_SURFACE_DESTROY, Vec::new());
     let _ = display.marshal_request(surface, SURFACE_DESTROY, Vec::new());
-    let _ = display.marshal_request(buffer, BUFFER_DESTROY, Vec::new());
+    for slot in &slots {
+        let _ = display.marshal_request(slot.buffer, BUFFER_DESTROY, Vec::new());
+    }
     if let Some(feedback) = feedback_proxy {
         let _ = display.marshal_request(feedback, FEEDBACK_DESTROY, Vec::new());
     }
     let _ = display.marshal_request(dmabuf, DMABUF_DESTROY, Vec::new());
     let _ = display.flush();
 
-    let _ = compositor.stop();
-    drop(compositor);
-    drop(pipeline);
+    for slot in &mut slots {
+        let _ = slot.compositor.stop();
+    }
+    drop(slots);
+    drop(pipelines);
 
     // The distance the block can be scrolled is reported because it is the one
     // number that says whether the box was bounded: a viewport measured with an
@@ -911,12 +950,15 @@ fn run() -> ExampleResult<String> {
         }
     };
     Ok(format!(
-        "widgets_gallery: {frames} frames in {:.1} ms at {fps:.1} fps, {per_frame:.3} per \
-         frame (pace {:.2}, record {:.2}, submit {:.2}, gpu {:.2} ms each), \
-         {stalled} beats without a frame callback, {held} beats with the buffer still held, \
-         {} pings answered, configure serial {serial}, {scrollable:.0} of scroll to report",
+        "widgets_gallery: {frames} frames in {:.1} ms at {fps:.1} fps, {per_frame:.3} per frame \
+         over {PRESENT_SLOTS} present targets (free {:.2}, pace {:.2}, place {:.2}, record \
+         {:.2}, submit {:.2}, gpu {:.2} ms each), {stalled} beats without a frame callback, \
+         {held} frames with no released target, {} pings answered, configure serial {serial}, \
+         {scrollable:.0} of scroll to report",
         measured_for.as_secs_f64() * 1_000.0,
+        average(free_wait),
         average(pace_wait),
+        average(place_time),
         average(record_time),
         average(submit_time),
         average(gpu_wait),
@@ -1188,6 +1230,91 @@ fn reset_node(gallery: Gallery, resets: MutableState<u32>, source: InteractionSo
     .node()
 }
 
+/// Dispatches Wayland events until `ready` answers or the beat is spent.
+///
+/// The wait is on the socket, not on a clock: `dispatch` returns as soon as the
+/// compositor sends anything — which is also what lets a pointer event reach
+/// the loop between two frames — and only the time left in `beat` bounds how
+/// long the wait can hold the loop when nothing arrives. `false` is the beat
+/// ending unanswered, never an error: a compositor that stops answering the
+/// frame callback costs the loop one frame of latency, not the window.
+fn wait_for(
+    display: &mut WlClientDisplay<WlUnixTransport>,
+    closed: &Cell<bool>,
+    beat: Duration,
+    ready: impl Fn() -> bool,
+) -> ExampleResult<bool> {
+    let deadline = Instant::now() + beat;
+    loop {
+        if ready() {
+            return Ok(true);
+        }
+        if closed.get() {
+            return Ok(false);
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Ok(false);
+        }
+        let millis = u64::try_from(left.as_millis())
+            .unwrap_or(1)
+            .clamp(1, 1_000);
+        display.dispatch(Some(TimeDuration::from_millis(millis)))?;
+    }
+}
+
+/// Wraps one exported render target as a `wl_buffer` and watches its release.
+///
+/// The params object is a one-shot builder — created, given the plane of the
+/// dma-buf, consumed by `create_immed`, destroyed — so each target of the pool
+/// is imported through its own. The released flag starts set because nothing
+/// has committed the buffer yet, and the listener is what a superseded commit
+/// answers: the release of one buffer is the permission to render into it.
+fn import_buffer(
+    display: &mut WlClientDisplay<WlUnixTransport>,
+    dmabuf: WlProxyId,
+    target: &RenderTarget,
+    width: i32,
+    height: i32,
+) -> ExampleResult<(WlProxyId, Rc<Cell<bool>>)> {
+    let params = display.marshal_new_id(dmabuf, DMABUF_CREATE_PARAMS, Vec::new())?;
+    display.marshal_request(
+        params,
+        BUFFER_PARAMS_ADD,
+        vec![
+            WlArgument::Fd(target.dmabuf_fd.as_raw()),
+            WlArgument::Uint(0),
+            WlArgument::Uint(target.offset),
+            WlArgument::Uint(target.stride),
+            WlArgument::Uint((target.modifier >> 32) as u32),
+            WlArgument::Uint(target.modifier as u32),
+        ],
+    )?;
+    let buffer = display.marshal_new_id(
+        params,
+        BUFFER_PARAMS_CREATE_IMMED,
+        vec![
+            WlArgument::Int(width),
+            WlArgument::Int(height),
+            WlArgument::Uint(target.drm_format),
+            WlArgument::Uint(0),
+        ],
+    )?;
+    display.marshal_request(params, BUFFER_PARAMS_DESTROY, Vec::new())?;
+    display.flush()?;
+    let released = Rc::new(Cell::new(true));
+    {
+        let released = Rc::clone(&released);
+        display.add_listener(buffer, move |_, opcode, _| {
+            if opcode == BUFFER_RELEASE {
+                released.set(true);
+            }
+            0
+        })?;
+    }
+    Ok((buffer, released))
+}
+
 /// Records the laid-out tree and, when `reshape` is set, the text of the new
 /// list.
 ///
@@ -1195,6 +1322,10 @@ fn reset_node(gallery: Gallery, resets: MutableState<u32>, source: InteractionSo
 /// recorded again. The text mesh persists until [`TextFrame::clear`], which is
 /// why a frame that laid nothing out can skip the shaping pass and still draw
 /// the text of the last one.
+///
+/// `text_frame` is the frame of the target about to be composited, not of the
+/// window: a text pipe uploads its atlas to the device it was registered on, so
+/// each target shapes and caches the same glyphs on its own.
 fn record_frame(
     composition: &mut ReactiveComposition,
     ui_frame: &UiFrame,
