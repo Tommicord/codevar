@@ -1392,10 +1392,11 @@ impl Widget for Viewport {
 /// [`Viewport`](crate::widgets::Viewport) it reports on. It reads a
 /// [`ScrollState`] handle the same way a viewport does and needs nothing
 /// from the viewport itself, so the two are siblings in the tree — a
-/// [`Stack`](crate::widgets::Stack) of them, with the bar aligned to the
-/// edge it runs along and given a
-/// [`z_index`](crate::Modifier::z_index) so it paints over the
-/// content rather than under it.
+/// [`Stack`](crate::widgets::Stack) of them, with the bar the *later*
+/// sibling: a stack paints its children in the order of the tree, which is
+/// what puts the thumb over the content rather than under it. A
+/// [`z_index`](crate::Modifier::z_index) is only needed when the bar has to
+/// rise above siblings that are not its own viewport's.
 ///
 /// A state that scrolls both axes gets a thumb on each edge. A state whose
 /// content fits its box gets nothing at all, which is why the bar is safe
