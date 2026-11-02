@@ -110,6 +110,23 @@ pub const OUTPUT_NAME: u32 = 4;
 /// `wl_output.description` event opcode.
 pub const OUTPUT_DESCRIPTION: u32 = 5;
 
+/// `wl_pointer.set_cursor` request opcode.
+pub const POINTER_SET_CURSOR: u32 = 0;
+/// `wl_pointer.release` request opcode.
+pub const POINTER_RELEASE: u32 = 1;
+/// `wl_pointer.enter` event opcode.
+pub const POINTER_ENTER: u32 = 0;
+/// `wl_pointer.leave` event opcode.
+pub const POINTER_LEAVE: u32 = 1;
+/// `wl_pointer.motion` event opcode.
+pub const POINTER_MOTION: u32 = 2;
+/// `wl_pointer.button` event opcode.
+pub const POINTER_BUTTON: u32 = 3;
+/// `wl_pointer.frame` event opcode.
+pub const POINTER_FRAME: u32 = 5;
+
+/// `wl_seat` capability flag: the seat has a pointer.
+pub const SEAT_CAPABILITY_POINTER: u32 = 1;
 /// `wl_seat.get_pointer` request opcode.
 pub const SEAT_GET_POINTER: u32 = 0;
 /// `wl_seat.get_keyboard` request opcode.
@@ -189,17 +206,48 @@ pub static OUTPUT_INTERFACE: WlInterface = WlInterface {
     ],
 };
 
+/// `wl_pointer` core interface.
+///
+/// Only the events a window needs are declared, up to version 9; the
+/// axis events keep their place in the table so the opcodes of the
+/// pointer, motion and button events stay those of the protocol.
+pub static POINTER_INTERFACE: WlInterface = WlInterface {
+    name: "wl_pointer",
+    version: 9,
+    requests: &[
+        WlMessage::new(
+            "set_cursor",
+            "?oii",
+            &[None, Some(&SURFACE_INTERFACE), None, None],
+        ),
+        WlMessage::new("release", "3", &[]),
+    ],
+    events: &[
+        WlMessage::new("enter", "uoff", &[None, Some(&SURFACE_INTERFACE), None, None]),
+        WlMessage::new("leave", "uo", &[None, Some(&SURFACE_INTERFACE)]),
+        WlMessage::new("motion", "uff", &[None, None, None]),
+        WlMessage::new("button", "uuuu", &[None, None, None, None]),
+        WlMessage::new("axis", "uuf", &[None, None, None]),
+        WlMessage::new("frame", "5", &[]),
+        WlMessage::new("axis_source", "5u", &[None]),
+        WlMessage::new("axis_stop", "5uu", &[None, None]),
+        WlMessage::new("axis_discrete", "5uui", &[None, None, None]),
+        WlMessage::new("axis_value120", "8ui", &[None, None]),
+        WlMessage::new("axis_relative_direction", "9uu", &[None, None]),
+    ],
+};
+
 /// `wl_seat` core interface.
 ///
-/// The pointer, keyboard and touch objects the `get_*` requests create
-/// have no tables yet, so their new ids carry no interface and
+/// The keyboard and touch objects the `get_*` requests create have no
+/// tables yet, so their new ids carry no interface and
 /// `WlClientDisplay::marshal_new_id` refuses to create them until
 /// those interfaces exist.
 pub static SEAT_INTERFACE: WlInterface = WlInterface {
     name: "wl_seat",
     version: 11,
     requests: &[
-        WlMessage::new("get_pointer", "n", &[None]),
+        WlMessage::new("get_pointer", "n", &[Some(&POINTER_INTERFACE)]),
         WlMessage::new("get_keyboard", "n", &[None]),
         WlMessage::new("get_touch", "n", &[None]),
         WlMessage::new("release", "5", &[]),

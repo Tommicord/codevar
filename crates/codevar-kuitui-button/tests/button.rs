@@ -18,7 +18,7 @@
 use codevar_kuitui::{
     ColorScheme, Constraints, CornerRadii, DrawList, DrawVisitor, Effect, EffectKinds, Event,
     InteractionSource, InteractionState, Node, Offset, Paint, PointerEvent, PointerEventKind,
-    ReactiveComposition, Rect, Size, Text, TextStyle, Theme, element,
+    ReactiveComposition, Rect, Size, Text, TextStyle, Theme, kuitui_element,
 };
 use codevar_kuitui_button::*;
 use core::cell::Cell;
@@ -182,7 +182,7 @@ fn composed(button: TestButton, size: Size) -> ReactiveComposition {
     let mut composition = ReactiveComposition::new(Theme::light());
     composition.set_content(move |_| {
         let button = Rc::clone(&button);
-        element! {
+        kuitui_element! {
             Row {
                 Node(button.node())
             }

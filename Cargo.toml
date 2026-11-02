@@ -2,8 +2,6 @@
 members = [
     "crates/codevar-base",
     "crates/codevar-tlsf-alloc",
-    "crates/codevar-mergen",
-    "crates/codevar-shake",
     "crates/codevar-textlike-encode",
     "crates/codevar-tls",
     "crates/codevar-pretty-unwind",
@@ -11,7 +9,6 @@ members = [
     "crates/codevar-sig-handler",
     "crates/codevar-sig-module-base",
     "crates/codevar-wredit",
-    "crates/codevar-packlow",
     "crates/codevar-wsocket",
     "crates/codevar-launcher",
     "crates/codevar-wayland",
@@ -47,9 +44,9 @@ members = [
     "crates/codevar-ocl-parse",
     "crates/codevar-ocl-sar",
     "crates/codevar-ocl-ir",
-    "crates/codevar-ocl-cubin",
     "crates/codevar-ocl-asm",
     "crates/codevar-ocl",
+    "crates/codevar-ocl-interop",
     "crates/codevar-ocl-abi",
     "crates/codevar-ocl-native-codegen",
     "crates/codevar-ocl-native-codegen-x86",
@@ -58,6 +55,12 @@ members = [
     "crates/codevar-ocl-tc",
     "crates/codevar-ocl-bare",
     "crates/codevar-inssched",
+    "crates/codevar-negex-abi",
+    "crates/codevar-negex-lex",
+    "crates/codevar-negex-parse",
+    "crates/codevar-negex-codegen",
+    "crates/codevar-negex-native-codegen",
+    "crates/codevar-negex",
     "crates/codevar-kuitui-control",
     "crates/codevar-kuitui-control-linux",
     "crates/codevar-kuitui-control-windows",
@@ -143,8 +146,6 @@ pem = { version = "3", default-features = false }
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
 codevar-dbus = { path = "crates/codevar-dbus" }
-codevar-mergen = { path = "crates/codevar-mergen" }
-codevar-shake = { path = "crates/codevar-shake" }
 codevar-base = { path = "crates/codevar-base" }
 codevar-tlsf-alloc = { path = "crates/codevar-tlsf-alloc" }
 codevar-textlike-encode = { path = "crates/codevar-textlike-encode" }
@@ -153,7 +154,6 @@ codevar-wayland = { path = "crates/codevar-wayland" }
 codevar-time-util = { path = "crates/codevar-time-util" }
 codevar-time-core = { path = "crates/codevar-time-core" }
 codevar-wredit = { path = "crates/codevar-wredit" }
-codevar-packlow = { path = "crates/codevar-packlow" }
 codevar-wsocket = { path = "crates/codevar-wsocket" }
 codevar-sig-handler = { path = "crates/codevar-sig-handler" }
 codevar-sig-module-base = { path = "crates/codevar-sig-module-base" }
@@ -196,7 +196,6 @@ codevar-ocl-parse = { path = "crates/codevar-ocl-parse" }
 codevar-ocl-sar = { path = "crates/codevar-ocl-sar" }
 codevar-ocl-ir = { path = "crates/codevar-ocl-ir" }
 codevar-ocl-asm = { path = "crates/codevar-ocl-asm" }
-codevar-ocl-cubin = { path = "crates/codevar-ocl-cubin" }
 codevar-ocl-abi = { path = "crates/codevar-ocl-abi" }
 codevar-ocl-native-codegen = { path = "crates/codevar-ocl-native-codegen" }
 codevar-ocl-native-codegen-x86 = { path = "crates/codevar-ocl-native-codegen-x86" }
@@ -205,7 +204,14 @@ codevar-ocl-native-codegen-aarch64 = { path = "crates/codevar-ocl-native-codegen
 codevar-ocl-tc = { path = "crates/codevar-ocl-tc" }
 codevar-ocl-bare = { path = "crates/codevar-ocl-bare" }
 codevar-ocl = { path = "crates/codevar-ocl" }
+codevar-ocl-interop = { path = "crates/codevar-ocl-interop" }
 codevar-inssched = { path = "crates/codevar-inssched" }
+codevar-negex-abi = { path = "crates/codevar-negex-abi" }
+codevar-negex-lex = { path = "crates/codevar-negex-lex" }
+codevar-negex-parse = { path = "crates/codevar-negex-parse" }
+codevar-negex-codegen = { path = "crates/codevar-negex-codegen" }
+codevar-negex-native-codegen = { path = "crates/codevar-negex-native-codegen" }
+codevar-negex = { path = "crates/codevar-negex" }
 
 [profile.dev]
 opt-level = 0
@@ -219,7 +225,7 @@ strip = "none"
 opt-level = 2
 
 [profile.release]
-opt-level = 3
+opt-level = "z"
 lto = "fat"
 codegen-units = 1
 panic = "abort"

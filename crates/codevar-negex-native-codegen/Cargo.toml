@@ -1,0 +1,26 @@
+[package]
+name = "codevar-negex-native-codegen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Regex to SPIR-V and native machine code via the codevar-ocl-native-codegen pipeline"
+
+[lib]
+name = "codevar_negex_native_codegen"
+
+[dependencies]
+codevar-negex-codegen = { workspace = true }
+codevar-ocl-asm = { workspace = true }
+codevar-ocl-ir = { workspace = true }
+codevar-ocl-native-codegen = { workspace = true }
+codevar-ocl-native-codegen-x86 = { workspace = true }
+codevar-ocl-native-codegen-aarch64 = { workspace = true }
+codevar-ocl-native-codegen-thumbv7m = { workspace = true }
+codevar-ocl-abi = { workspace = true }
+codevar-logger = { workspace = true }
+
+[lints]
+workspace = true

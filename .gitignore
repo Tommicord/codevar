@@ -12,6 +12,5 @@ external/
 latest/
 tmp/
 .vs/
-
-# OpenCode per-agent worktrees (see .opencode/opencode.jsonc)
+.qoder/
 .lane/

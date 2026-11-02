@@ -33,11 +33,29 @@ use codevar_negex_lex::{Token, TokenKind};
 /// instead of overflowing the native stack.
 const MAX_DEPTH: u32 = 64;
 
+/// Extracts the category name from a `\p{...}` / `\P{...}` escape's source
+/// text.
+///
+/// Returns an empty name when the escape is malformed (for example `\p` with
+/// no braces, or an unclosed `\p{L`).  Encoding that as an empty name lets
+/// code generation reject it as an unknown property instead of silently
+/// treating it as a wildcard.
+fn property_name(text: &str) -> String {
+    let body = text
+        .strip_prefix("\\p{")
+        .or_else(|| text.strip_prefix("\\P{"))
+        .and_then(|rest| rest.strip_suffix('}'));
+    match body {
+        Some(name) => String::from(name),
+        None => String::new(),
+    }
+}
+
 /// A cursor over tokens with lookahead.
 pub(crate) struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
-    _pattern: &'a str,
+    pattern: &'a str,
     depth: u32,
     errors: Vec<ParseError>,
 }
@@ -48,10 +66,23 @@ impl<'a> Parser<'a> {
         Self {
             tokens,
             pos: 0,
-            _pattern: pattern,
+            pattern,
             depth: 0,
             errors: Vec::new(),
         }
+    }
+
+    /// The source text of the current token.
+    ///
+    /// Tokens carry lengths, not text, so multi-character escapes such as
+    /// `\p{L}` recover their property name by slicing the original pattern.
+    #[inline]
+    fn current_text(&self) -> &'a str {
+        let offset = self.offset() as usize;
+        let len = self.peek().len as usize;
+        self.pattern
+            .get(offset..offset.saturating_add(len))
+            .unwrap_or("")
     }
 
     /// Byte offset of the current token.
@@ -144,7 +175,7 @@ impl<'a> Parser<'a> {
         if branches.len() == 1 {
             Regex::new(branches.remove(0), span)
         } else {
-            Regex::new(Branch::pieces(branches, span), span)
+            Regex::alternation(branches, span)
         }
     }
 
@@ -302,13 +333,20 @@ impl<'a> Parser<'a> {
             }
             TokenKind::CharClassStart(negated) => self.parse_char_class(negated != '\0'),
             TokenKind::Escape(c) => {
+                let text = self.current_text();
                 self.bump();
-                self.parse_escape(c)
+                self.parse_escape(c, text)
             }
-            TokenKind::Caret | TokenKind::Dollar => {
-                // Anchors: treat as atoms that match empty at boundaries.
+            TokenKind::Caret => {
+                // `^` is a normal character in I-Regexp (RFC 9485 has no
+                // anchors): it matches itself.
                 self.bump();
-                Atom::Literal('\0') // placeholder; anchors handled at codegen
+                Atom::Literal('^')
+            }
+            TokenKind::Dollar => {
+                // `$` is a normal character in I-Regexp.
+                self.bump();
+                Atom::Literal('$')
             }
             _ => {
                 let token = self.peek();
@@ -330,7 +368,10 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses an escape sequence after the backslash.
-    fn parse_escape(&mut self, c: char) -> Atom {
+    ///
+    /// `text` is the whole escape's source text, needed for the property
+    /// escapes whose category name is not part of the token kind.
+    fn parse_escape(&mut self, c: char, text: &str) -> Atom {
         match c {
             'n' => Atom::Literal('\n'),
             'r' => Atom::Literal('\r'),
@@ -384,14 +425,14 @@ impl<'a> Parser<'a> {
             'p' => {
                 // \p{IsCategory}: Unicode property (positive)
                 Atom::Class(Class::Property {
-                    category: String::new(),
+                    category: property_name(text),
                     negated: false,
                 })
             }
             'P' => {
                 // \P{IsCategory}: Unicode property (negated)
                 Atom::Class(Class::Property {
-                    category: String::new(),
+                    category: property_name(text),
                     negated: true,
                 })
             }
@@ -416,14 +457,15 @@ impl<'a> Parser<'a> {
                     items.push(ClassItem::Char('-'));
                 }
                 TokenKind::Escape(c) => {
+                    let text = self.current_text();
                     self.bump();
                     match c {
                         'p' => items.push(ClassItem::Property {
-                            category: String::new(),
+                            category: property_name(text),
                             negated: false,
                         }),
                         'P' => items.push(ClassItem::Property {
-                            category: String::new(),
+                            category: property_name(text),
                             negated: true,
                         }),
                         c => items.push(ClassItem::Char(c)),
@@ -481,21 +523,5 @@ impl<'a> Parser<'a> {
             log_warn!("empty character class at offset {}", start);
         }
         Atom::Class(Class::Positive { items, negated })
-    }
-}
-
-impl Branch {
-    /// Builds a branch from a list of alternatives (used for `|` branches).
-    fn pieces(alternatives: Vec<Branch>, span: Span) -> Self {
-        // Each alternative becomes a piece wrapping a Group atom.
-        let pieces = alternatives
-            .into_iter()
-            .map(|b| Piece {
-                atom: Atom::Group(Box::new(Regex::new(b, span))),
-                quantifier: None,
-                span,
-            })
-            .collect();
-        Self { pieces, span }
     }
 }

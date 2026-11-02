@@ -1,0 +1,18 @@
+[package]
+name = "codevar-negex-lex"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Lossless lexer for Negex regular expression strings"
+
+[lib]
+name = "codevar_negex_lex"
+
+[dependencies]
+codevar-logger = { workspace = true }
+
+[lints]
+workspace = true

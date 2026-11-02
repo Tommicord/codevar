@@ -684,6 +684,10 @@ impl<'a> Checker<'a> {
         Ok(matches!(self.ty(self.scalar_of(id)?)?, Type::Float { .. }))
     }
 
+    fn is_pointer(&self, id: TypeId) -> Result<bool, VerifyError> {
+        Ok(matches!(self.ty(id)?, Type::Pointer { .. }))
+    }
+
     fn int_signedness(&self, id: TypeId) -> Result<Option<bool>, VerifyError> {
         Ok(match self.ty(self.scalar_of(id)?)? {
             Type::Int { signed, .. } => Some(*signed),
@@ -1606,6 +1610,34 @@ impl<'a> Checker<'a> {
                         }
                     },
                 }
+            }
+            Op::IntToPtr { operand } => {
+                use_value(*operand, None)?;
+                let Some(result) = inst.ty else {
+                    return Err(shape_mismatch);
+                };
+                let operand_ty = self.type_of(*operand)?;
+                self.require(
+                    "IntToPtr operand",
+                    "an integer",
+                    operand_ty,
+                    self.is_int(operand_ty)?,
+                )?;
+                self.require("IntToPtr result", "a pointer", result, self.is_pointer(result)?)?;
+            }
+            Op::PtrToInt { operand } => {
+                use_value(*operand, None)?;
+                let Some(result) = inst.ty else {
+                    return Err(shape_mismatch);
+                };
+                let operand_ty = self.type_of(*operand)?;
+                self.require(
+                    "PtrToInt operand",
+                    "a pointer",
+                    operand_ty,
+                    self.is_pointer(operand_ty)?,
+                )?;
+                self.require("PtrToInt result", "an integer", result, self.is_int(result)?)?;
             }
             Op::Call { callee, args } => {
                 use_value(*callee, None)?;

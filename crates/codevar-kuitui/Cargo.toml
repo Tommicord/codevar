@@ -10,10 +10,6 @@ description = "Kuitui: the retained-mode UI framework of Codevar"
 
 [features]
 default = []
-# Runs the 8x8 geometry rasterizer on an OpenCL device, falling back to the
-# host when no device is available. Off by default because `codevar-ocl` is a
-# native dependency and Kuitui also targets WebAssembly.
-opencl = ["dep:codevar-ocl", "dep:codevar-oclc", "dep:spin"]
 
 [lib]
 name = "codevar_kuitui"

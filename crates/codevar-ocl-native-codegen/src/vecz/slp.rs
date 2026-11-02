@@ -322,6 +322,8 @@ fn collect_operands(op: &Op, out: &mut Vec<ValueId>) {
         | Op::Branch { .. }
         | Op::Return
         | Op::Unreachable => {}
+        Op::IntToPtr { operand } => out.push(*operand),
+        Op::PtrToInt { operand } => out.push(*operand),
     }
 }
 

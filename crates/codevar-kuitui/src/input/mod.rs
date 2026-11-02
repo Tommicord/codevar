@@ -19,7 +19,7 @@
 //! it owns the devices and publishes [`InputEvent`]s through a reactive
 //! [`Subscription`](codevar_kuitui_control::Subscription). This module is the
 //! layer above it. It keeps the state a widget asks about — which keys are
-//! down, where the pointer is, how loud the microphone is — in a small set of
+//! down, where the pointer is — in a small set of
 //! global states, and it defines the traits a widget implements to receive
 //! those events.
 //!
@@ -51,7 +51,6 @@
 //! | --- | --- | --- |
 //! | `KeyboardHandler` | `KeyboardState` | `on_key` |
 //! | `MouseHandler` | `PointerState` | `on_pointer` |
-//! | `MicrophoneHandler` | `MicrophoneState` | `on_audio` |
 //!
 //! Every one of them extends [`Input`], the base trait that receives events
 //! which carry no device-specific state (text, gamepads, device changes).

@@ -29,7 +29,7 @@
 //! let mut composition = ReactiveComposition::new(Theme::light());
 //! composition.set_content(|ctx| {
 //!     let count = ctx.use_state(|| 0_u32);
-//!     element! {
+//!     kuitui_element! {
 //!         Column(spacing: 4.0) {
 //!             Text(count.get().to_string())
 //!         }
@@ -72,7 +72,7 @@
 /// ```
 /// use codevar_kuitui::prelude::*;
 ///
-/// let tree = element! {
+/// let tree = kuitui_element! {
 ///     Column(spacing: 8.0) {
 ///         Text("Codevar")
 ///         Spacer(height: 12.0)
@@ -85,8 +85,8 @@
 /// ```
 /// use codevar_kuitui::prelude::*;
 ///
-/// let label = element! { Text("Save") };
-/// let tree = element! {
+/// let label = kuitui_element! { Text("Save") };
+/// let tree = kuitui_element! {
 ///     Row {
 ///         Element(label)
 ///         Spacer(width: 4.0)
@@ -101,14 +101,14 @@
 /// use codevar_kuitui::prelude::*;
 /// use codevar_kuitui::node::Node;
 ///
-/// let tree = element! {
+/// let tree = kuitui_element! {
 ///     Row {
 ///         Node(Node::new(Text::new("Save")))
 ///     }
 /// };
 /// ```
 #[macro_export]
-macro_rules! element {
+macro_rules! kuitui_element {
     (Element ( $($element:tt)* )) => {{
         $($element)*
     }};
@@ -167,25 +167,25 @@ macro_rules! __kuitui_element_children {
     }};
     (Node ( $($node:tt)* ) $($rest:tt)*) => {{
         let mut __children = $crate::elements::private::no_children();
-        __children.push($crate::element!(Node($($node)*)));
+        __children.push($crate::kuitui_element!(Node($($node)*)));
         $crate::elements::private::append(&mut __children, $crate::__kuitui_element_children!($($rest)*));
         __children
     }};
     ($name:ident { $($inner:tt)* } $($rest:tt)*) => {{
         let mut __children = $crate::elements::private::no_children();
-        __children.push($crate::element!($name { $($inner)* }));
+        __children.push($crate::kuitui_element!($name { $($inner)* }));
         $crate::elements::private::append(&mut __children, $crate::__kuitui_element_children!($($rest)*));
         __children
     }};
     ($name:ident ( $($args:tt)* ) { $($inner:tt)* } $($rest:tt)*) => {{
         let mut __children = $crate::elements::private::no_children();
-        __children.push($crate::element!($name ( $($args)* ) { $($inner)* }));
+        __children.push($crate::kuitui_element!($name ( $($args)* ) { $($inner)* }));
         $crate::elements::private::append(&mut __children, $crate::__kuitui_element_children!($($rest)*));
         __children
     }};
     ($name:ident ( $($args:tt)* ) $($rest:tt)*) => {{
         let mut __children = $crate::elements::private::no_children();
-        __children.push($crate::element!($name ( $($args)* )));
+        __children.push($crate::kuitui_element!($name ( $($args)* )));
         $crate::elements::private::append(&mut __children, $crate::__kuitui_element_children!($($rest)*));
         __children
     }};
@@ -277,7 +277,7 @@ mod tests {
     #[test]
     fn the_macro_builds_a_container_with_its_children() {
         let composition = composed(|| {
-            element! {
+            kuitui_element! {
                 Column(spacing: 8.0) {
                     Text("one")
                     Text("two")
@@ -292,9 +292,9 @@ mod tests {
 
     #[test]
     fn the_macro_accepts_a_positional_argument_and_splices_an_element() {
-        let label = element! { Text("one") };
+        let label = kuitui_element! { Text("one") };
         let composition = composed(move || {
-            element! {
+            kuitui_element! {
                 Row {
                     Element(label.clone())
                     Text("two")
@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn the_macro_splices_a_node_that_keeps_its_own_children() {
         let composition = composed(|| {
-            element! {
+            kuitui_element! {
                 Column {
                     Node(Node::new(Text::new("one")).with_children(vec![Node::new(Text::new("two"))]))
                 }
@@ -336,7 +336,7 @@ mod tests {
         let read = Rc::clone(&side);
         let mut composition = ReactiveComposition::new(Theme::light());
         composition.set_content(move |_| {
-            element! {
+            kuitui_element! {
                 Column {
                     Text(if read.get() > 0.0 { "a" } else { "b" })
                 }
@@ -361,7 +361,7 @@ mod tests {
         let mut composition = ReactiveComposition::new(Theme::light());
         composition.set_content(move |_| {
             let counted = Rc::clone(&holder);
-            element! {
+            kuitui_element! {
                 Column(modifier: Modifier::none().clickable(move |event| {
                     if matches!(event, Event::Pointer(pointer) if pointer.kind == PointerEventKind::Down) {
                         counted.set(counted.get() + 1);

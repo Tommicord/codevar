@@ -20,7 +20,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use ash::vk;
 use core::future::Future;
-use core::task::{Context, Poll, Waker};
+use core::task::{Context, Poll};
 
 use crate::base::CompositorComm;
 use crate::base::OffscreenFramebuffer;
@@ -844,29 +844,21 @@ impl<'p> Compositor<'p> {
 
 /// Drives `future` to completion on the current thread.
 ///
-/// A minimal single-threaded executor: the future is polled with a
-/// no-op waker and every [`Poll::Pending`] is retried after a short
-/// sleep, so pipe futures that wait on the communication channels make
-/// progress through re-polling alone. Use it from synchronous code (the
-/// display loop); executors should await
-/// [`Compositor::composite_frame`] directly instead.
+/// The future is polled with a real waker, so pipe futures that wait on the
+/// compositor channels resume as soon as a producer wakes them instead of
+/// being re-polled on a timer. While the future is pending and no wake is
+/// outstanding, the thread sleeps for a millisecond; that bounds the reaction
+/// time for event sources that wake through a path the compositor does not
+/// control. Use it from synchronous code (the display loop); executors should
+/// await [`Compositor::composite_frame`] directly instead.
 #[must_use]
 pub fn block_on<F: Future>(future: F) -> F::Output {
-    let mut future = core::pin::pin!(future);
-    let mut cx = Context::from_waker(Waker::noop());
-    loop {
-        match future.as_mut().poll(&mut cx) {
-            Poll::Ready(output) => return output,
-            Poll::Pending => {
-                // Back off for a millisecond before re-polling. This goes
-                // through the workspace sleep so the platform policy stays in
-                // one place: a real scheduler suspends the thread, and a
-                // bare-metal target (no timer to program) aborts instead of
-                // burning the core in a busy loop.
-                let _ = codevar_base::sleep::sleep_nanos(1_000_000);
-            }
-        }
-    }
+    // The sleep goes through the workspace helper so the platform policy stays
+    // in one place: a real scheduler suspends the thread, and a bare-metal
+    // target (no timer to program) aborts instead of burning the core.
+    codevar_inssched::block_on(future, || {
+        let _ = codevar_base::sleep::sleep_nanos(1_000_000);
+    })
 }
 
 #[cfg(test)]
@@ -878,9 +870,10 @@ mod tests {
     #[test]
     fn block_on_drives_pending_futures_to_completion() {
         let mut polls = 0_u32;
-        let future = core::future::poll_fn(|_cx| {
+        let future = core::future::poll_fn(|cx| {
             polls += 1;
             if polls < 3 {
+                cx.waker().wake_by_ref();
                 Poll::<u32>::Pending
             } else {
                 Poll::Ready(polls)

@@ -13,19 +13,16 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-//! The program-level unit of work: a task and its control block.
+//! The program-level unit of work: an asynchronous task and its control block.
 //!
 //! Where [`asm::Instruction`](crate::asm::Instruction) describes one machine
-//! instruction, a [`Task`] describes one *program* the single core must
-//! multiplex: how much computation it needs ([`burst`](Task::burst)), how
-//! urgent it is ([`priority`](Task::priority)), and the CPU state the kernel
-//! saves and restores across a switch ([`Context`]).
+//! instruction, a [`Task`] describes one *future* the single core must
+//! multiplex: its scheduling metadata (name, [`priority`](Task::priority),
+//! arrival, cost estimate) and the accounting the executor keeps across polls.
 //!
-//! This is the process-control-block (PCB) layer: the kernel never inspects a
-//! task's code, it only reads the numbers the scheduler needs and swaps the
-//! saved context in and out of the core. That keeps the two layers of this
-//! crate independent — the instruction scheduler orders *within* a program,
-//! the [`kernel`](crate::kernel) orders *between* programs.
+//! The future itself lives in the executor, not in the [`Task`]. Keeping the
+//! metadata separate is what lets the scheduling policies stay independent of
+//! the future's concrete type: a policy reads numbers, never the future.
 
 use alloc::string::String;
 
@@ -34,14 +31,11 @@ use crate::error::ScheduleError;
 use crate::machine::Machine;
 use crate::sched::SchedStrategy;
 
-/// Number of general-purpose registers saved in a [`Context`].
-pub const REGISTER_COUNT: usize = 8;
-
-/// Identifies a task within one [`Kernel`](crate::kernel::Kernel).
+/// Identifies a task within one [`Executor`](crate::executor::Executor).
 ///
 /// Ids are dense indices assigned by
-/// [`Kernel::spawn`](crate::kernel::Kernel::spawn), so a task can be looked up
-/// in O(1) and a PCB carries no pointer back to its owner.
+/// [`Executor::spawn`](crate::executor::Executor::spawn), so a task can be
+/// looked up in O(1) and a control block carries no pointer back to its owner.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[repr(transparent)]
 pub struct TaskId(u32);
@@ -99,22 +93,22 @@ impl Default for Priority {
 
 /// The lifecycle state of a task.
 ///
-/// The variants are the classic process states a PCB records: admitted but
-/// not yet released ([`New`](Self::New)), on the ready queue
-/// ([`Ready`](Self::Ready)), executing ([`Running`](Self::Running)), waiting
-/// for an event such as I/O ([`Blocked`](Self::Blocked)), and finished
-/// ([`Terminated`](Self::Terminated)).
+/// These are the states a real executor's task table records: spawned but not
+/// yet released ([`New`](Self::New)), runnable ([`Ready`](Self::Ready)),
+/// being polled ([`Running`](Self::Running)), parked because its future
+/// returned `Pending` without a wake ([`Blocked`](Self::Blocked)), and
+/// finished ([`Terminated`](Self::Terminated)).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum TaskState {
-    /// Spawned but not yet released into the ready queue.
+    /// Spawned, but its arrival cycle has not been reached.
     New,
-    /// Runnable, waiting for the core.
+    /// Runnable: its future may be polled now.
     Ready,
-    /// Currently executing on the core.
+    /// Currently being polled on the core.
     Running,
-    /// Waiting for an external event (I/O, a timer) before it can run.
+    /// Parked: the future returned `Pending` and no wake is pending.
     Blocked,
-    /// Finished all of its work.
+    /// The future returned `Ready` and the task finished.
     Terminated,
 }
 
@@ -132,99 +126,76 @@ impl TaskState {
     }
 }
 
-/// The CPU state a context switch saves and restores.
+/// The schedulable metadata and accounting of one asynchronous task.
 ///
-/// A switch has to preserve the *program counter* (how far the task had run)
-/// and the register file (its live values). The scheduler never interprets
-/// the register contents; it only copies the block to and from the core.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Context {
-    /// The logical program counter: cycles of the task already executed.
-    pub program_counter: u32,
-    /// The architectural register file at the moment of the switch.
-    pub registers: [u64; REGISTER_COUNT],
-}
-
-impl Context {
-    /// An all-zero context, as a freshly spawned task has.
-    pub const EMPTY: Self = Self {
-        program_counter: 0,
-        registers: [0; REGISTER_COUNT],
-    };
-}
-
-impl Default for Context {
-    #[inline]
-    fn default() -> Self {
-        Self::EMPTY
-    }
-}
-
-/// One schedulable program and its PCB.
-///
-/// Built by [`Task::new`], or from a straight-line block of instructions with
-/// [`Task::burst_from_block`] so the instruction scheduler supplies the burst.
+/// Built by [`Task::new`], or with a cost derived from a straight-line block
+/// via [`Task::cost_from_block`]. The future is supplied separately when the
+/// task is spawned on an [`Executor`](crate::executor::Executor).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Task {
     id: TaskId,
     name: String,
     priority: Priority,
     state: TaskState,
-    burst: u32,
+    cost: u32,
     remaining: u32,
-    slice_left: u32,
+    polls: u32,
+    cpu: u64,
     arrival: u64,
     completion: Option<u64>,
-    wake_at: Option<u64>,
-    context: Context,
 }
 
 impl Task {
-    /// Creates a task that needs `burst` cycles of CPU time, released at
+    /// Creates a task with an estimated cost of `cost` cycles, released at
     /// cycle `arrival`.
     ///
-    /// The id is a placeholder — [`Kernel::spawn`](crate::kernel::Kernel::spawn)
-    /// assigns the real one from the kernel's task table. A standalone task
-    /// (in a test, or a caller's own ready queue) takes its id from
-    /// [`with_id`](Self::with_id).
+    /// `cost` is a scheduling *hint*, used by heuristics such as
+    /// [`ShortestJobFirst`](crate::policy::ShortestJobFirst) and by the
+    /// executor's accounting; the future itself decides when it is done. Use
+    /// [`cost_from_block`](Self::cost_from_block) when the work is a known
+    /// straight-line block, or `0` when no estimate exists.
+    ///
+    /// The id is a placeholder — [`Executor::spawn_with`] assigns the real one
+    /// from the executor's task table. A standalone task (in a test, or a
+    /// caller's own queue) takes its id from [`with_id`](Self::with_id).
+    ///
+    /// [`Executor::spawn_with`]: crate::executor::Executor::spawn_with
     #[must_use]
-    pub fn new(name: impl Into<String>, priority: Priority, burst: u32, arrival: u64) -> Self {
+    pub fn new(name: impl Into<String>, priority: Priority, cost: u32, arrival: u64) -> Self {
         Self {
             id: TaskId::new(0),
             name: name.into(),
             priority,
             state: TaskState::New,
-            burst,
-            remaining: burst,
-            slice_left: 0,
+            cost,
+            remaining: cost,
+            polls: 0,
+            cpu: 0,
             arrival,
             completion: None,
-            wake_at: None,
-            context: Context::EMPTY,
         }
     }
 
-    /// Returns the task with `id` assigned, for use outside a
-    /// [`Kernel`](crate::kernel::Kernel).
+    /// Returns the task with `id` assigned, for use outside an
+    /// [`Executor`](crate::executor::Executor).
     #[must_use]
     pub fn with_id(mut self, id: TaskId) -> Self {
         self.id = id;
         self
     }
 
-    /// Estimates the burst of a straight-line program by scheduling it.
+    /// Estimates the cost of a straight-line program by scheduling it.
     ///
     /// The instruction scheduler's makespan is the number of cycles the block
-    /// needs on `machine`, which is exactly the CPU time a program-level
-    /// scheduler wants for [`burst`](Self::burst). This is the seam between
-    /// the two layers: an instruction order determines the cost the kernel
-    /// schedules against.
+    /// needs on `machine`, which is the natural cost estimate a program-level
+    /// scheduler wants. This is the seam between the two layers: an
+    /// instruction order supplies the number the executor accounts against.
     ///
     /// # Errors
     ///
     /// Propagates the instruction scheduler's errors (an empty block yields a
-    /// burst of zero).
-    pub fn burst_from_block<S: SchedStrategy>(
+    /// cost of zero).
+    pub fn cost_from_block<S: SchedStrategy>(
         block: &[Instruction],
         machine: &Machine,
         strategy: &S,
@@ -233,7 +204,27 @@ impl Task {
         Ok(u32::from(schedule.makespan))
     }
 
-    /// The id assigned by the kernel.
+    /// Estimates the cost of a multi-block function by scheduling every block.
+    ///
+    /// Control flow splits the instructions into basic blocks; each block is
+    /// scheduled independently and the resulting makespans are summed. The sum
+    /// is one pass over the static code, which is the right estimate for a
+    /// task whose cost is dominated by a loop body or a long straight run.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the instruction scheduler's errors (an empty function yields
+    /// a cost of zero).
+    pub fn cost_from_function<S: SchedStrategy>(
+        function: &crate::decode::Function,
+        machine: &Machine,
+        strategy: &S,
+    ) -> Result<u32, ScheduleError> {
+        let schedule = crate::decode::schedule_function(function, machine, strategy)?;
+        Ok(schedule.makespan())
+    }
+
+    /// The id assigned by the executor.
     #[inline]
     pub const fn id(&self) -> TaskId {
         self.id
@@ -257,22 +248,28 @@ impl Task {
         self.state
     }
 
-    /// Total CPU cycles the task needs to finish.
+    /// The estimated CPU cost the task declared when it was spawned.
     #[inline]
-    pub const fn burst(&self) -> u32 {
-        self.burst
+    pub const fn cost(&self) -> u32 {
+        self.cost
     }
 
-    /// CPU cycles the task still has to run.
+    /// The estimated CPU cost not yet charged to the task's polls.
     #[inline]
     pub const fn remaining(&self) -> u32 {
         self.remaining
     }
 
-    /// Cycles left in the task's current time slice.
+    /// How many times the task's future has been polled.
     #[inline]
-    pub const fn slice_left(&self) -> u32 {
-        self.slice_left
+    pub const fn polls(&self) -> u32 {
+        self.polls
+    }
+
+    /// Virtual CPU cycles charged to the task's polls.
+    #[inline]
+    pub const fn cpu(&self) -> u64 {
+        self.cpu
     }
 
     /// The cycle at which the task becomes runnable.
@@ -287,22 +284,10 @@ impl Task {
         self.completion
     }
 
-    /// The saved CPU context.
-    #[inline]
-    pub const fn context(&self) -> &Context {
-        &self.context
-    }
-
-    /// Whether the task has run to completion.
+    /// Whether the task's future has completed.
     #[inline]
     pub const fn is_terminated(&self) -> bool {
         matches!(self.state, TaskState::Terminated)
-    }
-
-    /// The cycle by which a blocked task may run again, or `None`.
-    #[inline]
-    pub const fn wake_at(&self) -> Option<u64> {
-        self.wake_at
     }
 
     /// The turnaround time from arrival to completion, or `None` while the
@@ -313,15 +298,15 @@ impl Task {
             .map(|completion| completion.saturating_sub(self.arrival))
     }
 
-    /// The cycles the task spent waiting in the ready queue, or `None` while
-    /// it is unfinished.
+    /// The virtual cycles the task spent waiting, or `None` while it is
+    /// unfinished.
     ///
     /// The core is serialized, so a task's waiting is its turnaround minus the
-    /// CPU time it actually consumed.
+    /// CPU cycles charged to its polls.
     #[inline]
     pub fn waiting(&self) -> Option<u64> {
         self.turnaround()
-            .map(|turnaround| turnaround.saturating_sub(u64::from(self.burst)))
+            .map(|turnaround| turnaround.saturating_sub(self.cpu))
     }
 
     /// Overrides the task's priority.
@@ -336,45 +321,18 @@ impl Task {
         self.state = state;
     }
 
-    /// Charges one cycle of execution to the task.
+    /// Charges one poll of `cost` cycles to the task.
     #[inline]
-    pub(crate) fn advance(&mut self, cycles: u32) {
-        let executed = cycles.min(self.remaining);
-        self.remaining -= executed;
-        self.context.program_counter = self
-            .context
-            .program_counter
-            .saturating_add(executed);
-    }
-
-    /// Arms the task's time slice.
-    #[inline]
-    pub(crate) fn set_slice_left(&mut self, slice: u32) {
-        self.slice_left = slice;
-    }
-
-    /// Consumes one cycle of the time slice.
-    #[inline]
-    pub(crate) fn consume_slice(&mut self) {
-        self.slice_left = self.slice_left.saturating_sub(1);
-    }
-
-    /// Saves a CPU context into the task.
-    #[inline]
-    pub(crate) fn set_context(&mut self, context: Context) {
-        self.context = context;
+    pub(crate) fn advance(&mut self, cost: u32) {
+        self.polls = self.polls.saturating_add(1);
+        self.cpu = self.cpu.saturating_add(u64::from(cost));
+        self.remaining = self.remaining.saturating_sub(cost);
     }
 
     /// Records that the task finished at cycle `at`.
     #[inline]
     pub(crate) fn set_completion(&mut self, at: u64) {
         self.completion = Some(at);
-    }
-
-    /// Marks the task as waiting for an event until cycle `at`.
-    #[inline]
-    pub(crate) fn set_wake_at(&mut self, at: u64) {
-        self.wake_at = Some(at);
     }
 }
 
@@ -386,15 +344,16 @@ mod tests {
     use crate::sched::Latency;
 
     #[test]
-    fn waiting_is_turnaround_minus_burst() {
+    fn waiting_is_turnaround_minus_cpu() {
         let mut task = Task::new("t", Priority::NORMAL, 5, 10).with_id(TaskId::new(0));
+        task.advance(2);
         task.set_completion(20);
         assert_eq!(task.turnaround(), Some(10));
-        assert_eq!(task.waiting(), Some(5));
+        assert_eq!(task.waiting(), Some(8));
     }
 
     #[test]
-    fn burst_from_block_uses_the_schedule_makespan() {
+    fn cost_from_block_uses_the_schedule_makespan() {
         let load = Instruction::new(
             Unit::Load,
             InstFlags::READS_MEMORY,
@@ -406,15 +365,16 @@ mod tests {
         let use_it =
             Instruction::new(Unit::Alu, InstFlags::NONE, 0, &[Reg::new(1)], &[Reg::new(2)]).expect("fits");
         // The dependent ALU op waits for the load: makespan 3 cycles.
-        let burst = Task::burst_from_block(&[load, use_it], &bare::cortex_m(), &Latency).expect("schedules");
-        assert_eq!(burst, 3);
+        let cost = Task::cost_from_block(&[load, use_it], &bare::cortex_m(), &Latency).expect("schedules");
+        assert_eq!(cost, 3);
     }
 
     #[test]
-    fn advance_never_runs_past_the_burst() {
+    fn advance_never_goes_below_zero_remaining() {
         let mut task = Task::new("t", Priority::NORMAL, 2, 0).with_id(TaskId::new(0));
         task.advance(5);
         assert_eq!(task.remaining(), 0);
-        assert_eq!(task.context().program_counter, 2);
+        assert_eq!(task.cpu(), 5);
+        assert_eq!(task.polls(), 1);
     }
 }

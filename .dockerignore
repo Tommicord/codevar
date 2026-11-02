@@ -3,6 +3,7 @@
 .git
 .github
 .idea
+.qoder
 .gradle
 build
 dist

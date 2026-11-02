@@ -49,7 +49,6 @@
 extern crate alloc;
 
 pub mod backend;
-pub mod compute;
 pub mod handle;
 pub mod traits;
 
@@ -57,6 +56,5 @@ pub use backend::{
     AlphaMode, Backend, CompletionKind, FrameCompletion, GpuCapabilities, GpuFailure, GpuFeature,
     GpuFeatures, GpuLimits, PresentMode, SurfaceConfig, SurfaceFormat,
 };
-pub use compute::{ComputeProfile, CostModel, HostLink, Tier, Workload, pcie_link_bandwidth};
 pub use handle::OwnedFd;
 pub use traits::{GpuDevice, GpuFrame, GpuPlatform, GpuRenderer, GpuSurface};

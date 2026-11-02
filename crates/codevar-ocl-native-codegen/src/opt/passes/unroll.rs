@@ -711,5 +711,7 @@ fn remap(inst: &mut Inst, map: &BTreeMap<ValueId, ValueId>, readers: &BTreeSet<V
         Op::Return => {}
         Op::ReturnValue { value: returned } => value(returned),
         Op::Unreachable => {}
+        Op::IntToPtr { operand } => value(operand),
+        Op::PtrToInt { operand } => value(operand),
     }
 }

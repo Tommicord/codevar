@@ -130,6 +130,7 @@ impl Bits {
 
 /// Opens one node of [`INPUT_DIR`] with the flags the task needs.
 fn open_node(name: &[u8]) -> Result<Fd, SysError> {
+    // TODO: Replace this manual string concatenation with codevar_pathbuf::PathBuilder
     let mut path = Vec::with_capacity(INPUT_DIR.len() + 1 + name.len() + 1);
     path.extend_from_slice(INPUT_DIR.as_bytes());
     path.push(b'/');

@@ -38,14 +38,18 @@
 //!   blurred silhouette of the shadow and the gradient of the decorated
 //!   background are all fragment-shader work.
 //! * **[`UiPipe`] + [`TextPipe`]:** the compositor replays the polygon UI
-//!   pipe and then the text pipe; the mix pass folds the text layer over
-//!   the geometry. Both targets clear to the window background because the
-//!   mix pass blends the layers with a per-pipe weight, not per-pixel alpha.
+//!   pipe and then the text pipe; the mix pass composites the text layer
+//!   over the geometry by its alpha. The UI pipe clears to the window
+//!   background and the text pipe to transparent, because the text layer
+//!   covers only the pixels it drew.
 //!
-//! The example binds no `wl_seat`, so nothing moves the pointer states.
-//! Two of the buttons start from an [`InteractionSource`] that already holds
-//! `HOVERED` or `PRESSED | SELECTED`, which is how the state layer and the
-//! selected container of the chrome become visible in a static frame.
+//! The example binds the seat of the compositor and replays the
+//! `wl_pointer` enter, motion, button and leave events into the tree, so
+//! hovering a button lights its state layer and clicking it prints the
+//! greeting. Two of the buttons start from an [`InteractionSource`] that
+//! already holds `HOVERED` or `PRESSED | SELECTED`, so the state layer and
+//! the selected container of the chrome are visible before the pointer
+//! moves.
 //!
 //! Run it inside a Wayland session:
 //!
@@ -64,27 +68,30 @@ use codevar_kuitui::color::Color;
 use codevar_kuitui::geometry::{Offset, Rect, Size};
 use codevar_kuitui::paint::CornerRadii;
 use codevar_kuitui::prelude::{
-    Alignment, ColorableText, Column, Composition, EdgeInsets, FontMetrics, Gradient, InteractionSource,
-    InteractionState, Modifier, Node, Spacer, Theme,
+    Alignment, ColorableText, Composition, EdgeInsets, Event, FontMetrics, Gradient, InteractionSource,
+    InteractionState, Modifier, Node, PointerButton, PointerButtons, PointerEvent, PointerEventKind, Theme,
+    kuitui,
 };
 use codevar_kuitui_button::{
     BorderStroke, Button, ButtonColors, ButtonElevation, ButtonFlags, ButtonPalette, Click,
     ColorableTextButton, Concrete, TextButton,
 };
 use codevar_kuitui_text::{AtlasConfig, TextAtlas, TextFrame, TextPipe};
-use codevar_kuitui_widget::{Font, LinearGradient, shape_list_with_color};
+use codevar_kuitui_widget::{ColorFontMetrics, Font, LinearGradient, shape_list_with_color};
 use codevar_time_core::TimeDuration;
 use codevar_wayland::{
     BUFFER_DESTROY, BUFFER_PARAMS_ADD, BUFFER_PARAMS_CREATE_IMMED, BUFFER_PARAMS_DESTROY, BUFFER_RELEASE,
     COMPOSITOR_CREATE_SURFACE, COMPOSITOR_INTERFACE, DMABUF_CREATE_PARAMS, DMABUF_DESTROY,
     DMABUF_GET_DEFAULT_FEEDBACK, DMABUF_INTERFACE, DMABUF_MODIFIER, DRM_FORMAT_XRGB8888, FEEDBACK_DESTROY,
     FEEDBACK_DONE, FEEDBACK_FORMAT_TABLE, FEEDBACK_MAIN_DEVICE, FEEDBACK_TRANCHE_DONE,
-    FEEDBACK_TRANCHE_FLAGS, FEEDBACK_TRANCHE_FORMATS, FEEDBACK_TRANCHE_TARGET_DEVICE, SURFACE_ATTACH,
-    SURFACE_COMMIT, SURFACE_DAMAGE, SURFACE_DESTROY, SURFACE_FRAME, WlArgument, WlClientDisplay, WlError,
-    WlInterface, WlProxyId, WlRegistryEvent, WlResult, WlUnixTransport, XDG_SURFACE_ACK_CONFIGURE,
-    XDG_SURFACE_CONFIGURE, XDG_SURFACE_DESTROY, XDG_SURFACE_GET_TOPLEVEL, XDG_SURFACE_SET_WINDOW_GEOMETRY,
-    XDG_TOPLEVEL_CLOSE, XDG_TOPLEVEL_DESTROY, XDG_TOPLEVEL_SET_APP_ID, XDG_TOPLEVEL_SET_TITLE,
-    XDG_WM_BASE_GET_XDG_SURFACE, XDG_WM_BASE_INTERFACE, XDG_WM_BASE_PING, XDG_WM_BASE_PONG,
+    FEEDBACK_TRANCHE_FLAGS, FEEDBACK_TRANCHE_FORMATS, FEEDBACK_TRANCHE_TARGET_DEVICE, POINTER_BUTTON,
+    POINTER_ENTER, POINTER_LEAVE, POINTER_MOTION, SEAT_CAPABILITIES, SEAT_CAPABILITY_POINTER,
+    SEAT_GET_POINTER, SEAT_INTERFACE, SURFACE_ATTACH, SURFACE_COMMIT, SURFACE_DAMAGE, SURFACE_DESTROY,
+    SURFACE_FRAME, WlArgument, WlClientDisplay, WlError, WlInterface, WlProxyId, WlRegistryEvent, WlResult,
+    WlUnixTransport, XDG_SURFACE_ACK_CONFIGURE, XDG_SURFACE_CONFIGURE, XDG_SURFACE_DESTROY,
+    XDG_SURFACE_GET_TOPLEVEL, XDG_SURFACE_SET_WINDOW_GEOMETRY, XDG_TOPLEVEL_CLOSE, XDG_TOPLEVEL_DESTROY,
+    XDG_TOPLEVEL_SET_APP_ID, XDG_TOPLEVEL_SET_TITLE, XDG_WM_BASE_GET_XDG_SURFACE, XDG_WM_BASE_INTERFACE,
+    XDG_WM_BASE_PING, XDG_WM_BASE_PONG,
 };
 
 /// Initial window width in surface local pixels (used when the first
@@ -197,6 +204,44 @@ fn run() -> ExampleResult<String> {
 
     let compositor = bind(&mut display, registry, &globals, &COMPOSITOR_INTERFACE)?;
     let wm_base = bind(&mut display, registry, &globals, &XDG_WM_BASE_INTERFACE)?;
+    // The seat is the input side of the window. The protocol only lets a
+    // client ask for a pointer once the seat announces the capability, so
+    // the listener below creates it when that event arrives and hands the
+    // raw events to `PointerInput`, which the frame loop replays into the
+    // tree once the composition exists.
+    let input = Rc::new(RefCell::new(PointerInput::default()));
+    let seat = bind(&mut display, registry, &globals, &SEAT_INTERFACE)?;
+    {
+        let input = Rc::clone(&input);
+        let pointer = Rc::new(Cell::new(None));
+        display.add_listener(seat, move |client, opcode, args| {
+            if opcode != SEAT_CAPABILITIES
+                || !matches!(args.first(), Some(WlArgument::Uint(capabilities))
+                    if capabilities & SEAT_CAPABILITY_POINTER != 0)
+                || pointer.get().is_some()
+            {
+                return 0;
+            }
+            let Ok(pointer_id) = client.marshal_new_id(seat, SEAT_GET_POINTER, Vec::new()) else {
+                return -1;
+            };
+            pointer.set(Some(pointer_id));
+            let input = Rc::clone(&input);
+            if client
+                .add_listener(pointer_id, move |_, opcode, args| {
+                    input.borrow_mut().push(opcode, args);
+                    0
+                })
+                .is_err()
+            {
+                return -1;
+            }
+            0
+        })?;
+    }
+    // The round trip delivers the capabilities event (and with it the
+    // pointer) before the frame loop starts.
+    display.roundtrip()?;
     let (dmabuf_name, dmabuf_version) = global_named(&globals, "zwp_linux_dmabuf_v1")?;
     let dmabuf = display.registry_bind(
         registry,
@@ -412,7 +457,12 @@ fn run() -> ExampleResult<String> {
     let font = Rc::new(Font::from_bytes(std::fs::read(FONT)?)?.with_ppem(FONT_PPEM));
     // Load the color emoji font for color glyph rendering.
     let emoji_font = Rc::new(Font::from_bytes(std::fs::read(EMOJI_FONT)?)?.with_ppem(FONT_PPEM));
-    let metrics: Rc<dyn FontMetrics> = font.clone();
+    // The metrics mirror the shaper: the text face measures the run, and
+    // the color face supplies the advance of the characters it covers.
+    let metrics: Rc<dyn FontMetrics> = Rc::new(ColorFontMetrics::new(
+        font.as_ref().clone(),
+        emoji_font.as_ref().clone(),
+    ));
     // The handler every button calls: the console gets the same greeting the
     // first button draws as its label.
     let greeting: Click = Rc::new(|| println!("Hello, World!"));
@@ -424,17 +474,14 @@ fn run() -> ExampleResult<String> {
     let pressed = InteractionSource::with_state(InteractionState::PRESSED | InteractionState::SELECTED);
     let mut composition = Composition::new(Theme::dark().with_metrics(metrics));
     composition.set_content(move |_composer| {
-        Node::new(
-            Column::new()
-                .spacing(ROW_SPACING)
-                .alignment(Alignment::CENTER),
-        )
-        .with_children(vec![
-            Node::new(Spacer::new().height(TOP_PADDING)),
-            full_button(Rc::clone(&greeting), hovered.clone()),
-            emoji_button(Rc::clone(&greeting)),
-            concrete_button(Rc::clone(&greeting), pressed.clone()),
-        ])
+        kuitui! {
+            Column(spacing: ROW_SPACING, alignment: Alignment::CENTER) {
+                Spacer(height: TOP_PADDING)
+                Node(full_button(Rc::clone(&greeting), hovered.clone()))
+                Node(emoji_button(Rc::clone(&greeting)))
+                Node(concrete_button(Rc::clone(&greeting), pressed.clone()))
+            }
+        }
     });
     composition.recompose(true);
     composition.layout(Size::new(width as f32, height as f32), true);
@@ -450,10 +497,10 @@ fn run() -> ExampleResult<String> {
     text_pipe.set_clear(TEXT_CLEAR);
     compositor.add_pipe(text_pipe)?;
 
-    // Record the first frame: the tree into the UI list and every text run
-    // into the shared atlas and mesh. The background is the UI pipe's clear,
-    // so nothing is recorded over the buttons. The text pipe replays that
-    // mesh for the rest of the run, so nothing below re-shapes.
+    // Shape the text once: the frame holds every run of the tree in its
+    // atlas and mesh, and the text pipe replays that mesh for the rest of
+    // the run. The UI list itself is recorded again before every frame,
+    // because the pipe drains the queue it replays.
     text_frame.begin_frame();
     ui_frame.with(|list| -> ExampleResult<()> {
         composition.render(list);
@@ -504,10 +551,15 @@ fn run() -> ExampleResult<String> {
         })?;
     }
     let mut frames = 0u32;
-    // `HELLO_BUTTON_DUMP=<path>` writes the first presented frame as a binary
-    // PPM, so a session whose compositor keeps the window behind another one
-    // can still be inspected pixel by pixel.
+    // `HELLO_BUTTON_DUMP=<path>` writes the presented frame selected by
+    // `HELLO_BUTTON_DUMP_FRAME` (the first by default) as a binary PPM, so a
+    // session whose compositor keeps the window behind another one can still
+    // be inspected pixel by pixel.
     let dump_path = std::env::var("HELLO_BUTTON_DUMP").ok();
+    let dump_frame = std::env::var("HELLO_BUTTON_DUMP_FRAME")
+        .ok()
+        .and_then(|frame| frame.parse::<u32>().ok())
+        .unwrap_or(0);
     while frames < FRAME_BUDGET && !closed.get() && Instant::now() < deadline {
         // Never rewrite a buffer the compositor may still be reading.
         let release_deadline = Instant::now() + RELEASE_TIMEOUT;
@@ -525,13 +577,23 @@ fn run() -> ExampleResult<String> {
                 0
             })?;
         }
+        // Offer the pointer events the dispatches above collected, then
+        // record the tree again: the chrome resolves the state layer at draw
+        // time, so a hover or a press only needs a new display list.
+        {
+            let mut input = input.borrow_mut();
+            for event in input.events.drain(..) {
+                composition.handle_event(&event);
+            }
+        }
+        ui_frame.with(|list| composition.render(list));
         // One frame: both pipes replay, the mix pass folds them into the
         // presentation target and the export signals completion; wait for the
         // GPU so the committed pixels are final.
         let sync_file = block_on(compositor.composite_frame(None))?;
         wait_for_gpu(&sync_file)?;
         drop(sync_file);
-        if frames == 0
+        if frames == dump_frame
             && let Some(path) = dump_path.as_deref()
         {
             dump_target(target, path)?;
@@ -645,9 +707,9 @@ fn emoji_button(greeting: Click) -> Node {
 /// wrapping a label in one of the two text buttons.
 ///
 /// [`Concrete`] is the decoration the example cannot write as a shape of its
-/// own: the banded gradient, the inner outline and the diagonal are recorded
-/// by the canvas behind the container, and the pixel grid the modifier names
-/// is the fragment shader's, over the whole node box.
+/// own: the banded gradient and the inner outline are recorded by the canvas
+/// behind the container, and the pixel grid the modifier names is the fragment
+/// shader's, over the whole node box.
 fn concrete_button(greeting: Click, source: InteractionSource) -> Node {
     GlowButton::new(move || greeting(), source).node()
 }
@@ -686,7 +748,6 @@ impl GlowButton {
                 OUTLINE,
                 2.0,
             );
-            canvas.line(Offset::ZERO, Offset::new(WIDE_WIDTH, CANVAS_HEIGHT), OUTLINE, 1.0);
         });
         Self {
             handler: Rc::new(on_click),
@@ -738,6 +799,119 @@ impl Button for GlowButton {
 
     fn content_padding(&self) -> EdgeInsets {
         EdgeInsets::symmetric(24.0, 10.0)
+    }
+}
+
+/// Linux input code of the primary pointer button.
+const BTN_LEFT: u32 = 0x110;
+/// Linux input code of the secondary pointer button.
+const BTN_RIGHT: u32 = 0x111;
+/// Linux input code of the middle pointer button.
+const BTN_MIDDLE: u32 = 0x112;
+/// The `wl_pointer.button` state code of a press; a release reports `0`.
+const BUTTON_PRESSED: u32 = 1;
+
+/// The pointer events a `wl_pointer` listener queues for the frame loop.
+///
+/// The listener cannot reach the [`Composition`] — the seat is bound before
+/// the tree exists — so it records the events and the frame loop replays
+/// them into the tree, where the modifier chain of every button updates the
+/// interaction source it owns.
+#[derive(Default)]
+struct PointerInput {
+    /// Where the pointer is, in surface-local pixels.
+    position: Offset,
+    /// The buttons that are held down.
+    buttons: PointerButtons,
+    /// The events the tree has not seen yet.
+    events: Vec<Event>,
+}
+
+impl PointerInput {
+    /// Routes one `wl_pointer` event by its opcode.
+    fn push(&mut self, opcode: u32, args: &mut [WlArgument]) {
+        match opcode {
+            POINTER_ENTER => {
+                // serial, surface, surface_x, surface_y
+                self.moved(args.get(2), args.get(3), PointerEventKind::Enter);
+            }
+            POINTER_LEAVE => {
+                // serial, surface: the event carries no coordinates, so the
+                // pointer is reported just outside the window, where every
+                // widget clears its hover.
+                self.position = Offset::new(-1.0, -1.0);
+                self.queue(PointerEventKind::Leave, PointerButton::Primary);
+            }
+            POINTER_MOTION => {
+                // time, surface_x, surface_y
+                self.moved(args.get(1), args.get(2), PointerEventKind::Move);
+            }
+            POINTER_BUTTON => {
+                // serial, time, button, state
+                let (Some(WlArgument::Uint(button)), Some(WlArgument::Uint(state))) =
+                    (args.get(2), args.get(3))
+                else {
+                    return;
+                };
+                let code = *button;
+                let pressed = *state == BUTTON_PRESSED;
+                self.buttons = buttons_after(self.buttons, code, pressed);
+                let kind = if pressed {
+                    PointerEventKind::Down
+                } else {
+                    PointerEventKind::Up
+                };
+                self.queue(kind, pointer_button(code));
+            }
+            _ => {}
+        }
+    }
+
+    /// Moves the pointer to the fixed-point coordinates of `x` and `y` and
+    /// queues `kind` there.
+    fn moved(&mut self, x: Option<&WlArgument>, y: Option<&WlArgument>, kind: PointerEventKind) {
+        let (Some(WlArgument::Fixed(x)), Some(WlArgument::Fixed(y))) = (x, y) else {
+            return;
+        };
+        self.position = Offset::new(x.to_double() as f32, y.to_double() as f32);
+        self.queue(kind, PointerButton::Primary);
+    }
+
+    /// Queues a pointer event at the current position.
+    fn queue(&mut self, kind: PointerEventKind, button: PointerButton) {
+        let mut event = PointerEvent::new(kind, self.position);
+        event.button = button;
+        event.buttons = self.buttons;
+        self.events.push(Event::Pointer(event));
+    }
+}
+
+/// The set of buttons held after `code` changed to `pressed`.
+fn buttons_after(held: PointerButtons, code: u32, pressed: bool) -> PointerButtons {
+    let mut next = PointerButtons::NONE;
+    for (button, flag) in [
+        (BTN_LEFT, PointerButtons::PRIMARY),
+        (BTN_RIGHT, PointerButtons::SECONDARY),
+        (BTN_MIDDLE, PointerButtons::MIDDLE),
+    ] {
+        let down = if button == code {
+            pressed
+        } else {
+            held.contains(flag)
+        };
+        if down {
+            next |= flag;
+        }
+    }
+    next
+}
+
+/// The button of the tree that Linux input `code` reports.
+fn pointer_button(code: u32) -> PointerButton {
+    match code {
+        BTN_RIGHT => PointerButton::Secondary,
+        BTN_MIDDLE => PointerButton::Middle,
+        _ => PointerButton::Primary,
     }
 }
 
@@ -945,4 +1119,100 @@ fn dump_target(target: &RenderTarget, path: &str) -> ExampleResult<()> {
     unsafe { libc::munmap(mapped, length) };
     std::fs::write(path, ppm)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use codevar_wayland::WlFixed;
+
+    use super::*;
+
+    /// The wayland encoding of `value` as a fixed-point argument.
+    fn fixed(value: f64) -> WlArgument {
+        WlArgument::Fixed(WlFixed::from_double(value))
+    }
+
+    /// The last event `input` queued.
+    fn last(input: &PointerInput) -> &PointerEvent {
+        match input.events.last() {
+            Some(Event::Pointer(event)) => event,
+            _ => panic!("the input queued no pointer event"),
+        }
+    }
+
+    #[test]
+    fn a_motion_moves_the_pointer_to_the_fixed_point_position() {
+        let mut input = PointerInput::default();
+        input.push(
+            POINTER_MOTION,
+            &mut [WlArgument::Uint(1), fixed(12.5), fixed(34.0)],
+        );
+        let event = last(&input);
+        assert_eq!(event.kind, PointerEventKind::Move);
+        assert_eq!(event.position, Offset::new(12.5, 34.0));
+    }
+
+    #[test]
+    fn an_enter_reads_the_position_after_the_surface() {
+        let mut input = PointerInput::default();
+        input.push(
+            POINTER_ENTER,
+            &mut [WlArgument::Uint(1), WlArgument::Object(7), fixed(4.0), fixed(8.0)],
+        );
+        let event = last(&input);
+        assert_eq!(event.kind, PointerEventKind::Enter);
+        assert_eq!(event.position, Offset::new(4.0, 8.0));
+    }
+
+    #[test]
+    fn a_press_holds_the_button_until_it_is_released() {
+        let mut input = PointerInput::default();
+        input.push(
+            POINTER_BUTTON,
+            &mut [
+                WlArgument::Uint(1),
+                WlArgument::Uint(0),
+                WlArgument::Uint(BTN_LEFT),
+                WlArgument::Uint(BUTTON_PRESSED),
+            ],
+        );
+        let event = last(&input);
+        assert_eq!(event.kind, PointerEventKind::Down);
+        assert_eq!(event.button, PointerButton::Primary);
+        assert_eq!(event.buttons, PointerButtons::PRIMARY);
+
+        input.push(
+            POINTER_BUTTON,
+            &mut [
+                WlArgument::Uint(2),
+                WlArgument::Uint(0),
+                WlArgument::Uint(BTN_LEFT),
+                WlArgument::Uint(0),
+            ],
+        );
+        let event = last(&input);
+        assert_eq!(event.kind, PointerEventKind::Up);
+        assert!(event.buttons.is_empty());
+    }
+
+    #[test]
+    fn a_leave_reports_the_pointer_outside_the_window() {
+        let mut input = PointerInput::default();
+        input.position = Offset::new(5.0, 5.0);
+        input.push(POINTER_LEAVE, &mut [WlArgument::Uint(1), WlArgument::Object(7)]);
+        let event = last(&input);
+        let window = Rect::new(Offset::ZERO, Size::new(100.0, 100.0));
+        assert_eq!(event.kind, PointerEventKind::Leave);
+        assert!(!window.contains(event.position));
+    }
+
+    #[test]
+    fn a_button_change_keeps_the_buttons_that_did_not_change() {
+        let held = buttons_after(PointerButtons::NONE, BTN_RIGHT, true);
+        assert_eq!(held, PointerButtons::SECONDARY);
+        let both = buttons_after(held, BTN_LEFT, true);
+        assert_eq!(both, PointerButtons::SECONDARY | PointerButtons::PRIMARY);
+        let secondary = buttons_after(both, BTN_LEFT, false);
+        assert_eq!(secondary, PointerButtons::SECONDARY);
+    }
 }

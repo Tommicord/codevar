@@ -13,20 +13,17 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-//! A custom, single-threaded instruction scheduler for raw machine assembly.
+//! A custom, single-threaded instruction scheduler and asynchronous executor.
 //!
 //! Codevar's editor targets run on everything from Cortex-M parts to desktop
-//! cores, and the same straight-line assembly benefits from being ordered
-//! differently on each. This crate is a self-contained machine-level
-//! scheduler: give it a block of decoded instructions and a [`Machine`] model,
-//! and it returns a legal issue order that hides latency on a stalled
-//! in-order pipeline or relieves register pressure on a wide out-of-order one.
+//! cores. This crate covers both kinds of scheduling that cost on a single
+//! core: the order of instructions *inside* a straight-line block, and the
+//! order in which many asynchronous tasks share the core.
+//!
+//! # The instruction level
 //!
 //! The design follows the shape real compilers converged on — LLVM's
-//! `ScheduleDAG` plus its pluggable `MachineSchedStrategy` — and is described
-//! below.
-//!
-//! # The three layers
+//! `ScheduleDAG` plus its pluggable `MachineSchedStrategy`:
 //!
 //! 1. [`asm`] — the [`Instruction`] model. Instructions are *opcode-agnostic*:
 //!    the target lowers its real assembly to the registers an instruction
@@ -42,6 +39,11 @@
 //!    [`SchedStrategy`](sched::SchedStrategy) heuristics: source order,
 //!    critical-path [`Latency`](sched::Latency), and
 //!    [`RegisterPressure`](sched::RegisterPressure).
+//! 4. [`decode`] — turns raw machine code into a [`Function`]
+//!    of [`BasicBlock`]s, so the scheduler sees the real
+//!    I/O loops (a poll, a branch back, a fence, a syscall) instead of asking
+//!    the caller to pre-split control flow. [`Rv32i`] is the
+//!    built-in decoder; implement [`Decoder`] for other ISAs.
 //!
 //! Two ready-made model families sit on top:
 //!
@@ -50,23 +52,29 @@
 //! * [`desktop`] — wide, renaming, out-of-order cores (x86-64, aarch64, a
 //!   wider six-wide part).
 //!
-//! # Two levels of scheduling
+//! # The program level: a real executor
 //!
-//! The crate schedules at two levels, and the layers compose:
+//! [`executor`] is not a simulator: it owns real [`Future`]s and polls them.
+//! Each task gets its own [`Waker`](core::task::Waker); a wired wake puts the
+//! task back on the ready queue, and the [`SchedulePolicy`] decides which ready
+//! task is polled next. A future that returns `Pending` without waking is
+//! parked until something wakes it, which is the standard Rust async contract.
 //!
-//! * **Instruction level** ([`asm`], [`dag`], [`sched`]) orders the
-//!   instructions *inside* one program, hiding latency on a stalled in-order
-//!   pipeline or relieving register pressure on a wide one.
-//! * **Program level** ([`task`], [`policy`], [`kernel`]) multiplexes many
-//!   programs on one core, the way an operating system does on a
-//!   uniprocessor: it hands the core out in time slices, lets an interval
-//!   [`Timer`] interrupt a slice, saves and restores a task's CPU context on a
-//!   switch, and picks the next task with a [`SchedulePolicy`]
-//!   ([`RoundRobin`], priority, or [`ShortestJobFirst`]).
+//! Because the executor is cooperative, it cannot interrupt a future in the
+//! middle of a poll. A task yields exactly where it awaits. [`yield_now`] is
+//! the explicit "give someone else a turn" point, and [`Timer`] provides a
+//! deterministic virtual clock plus a deadline queue so [`Sleep`] works
+//! without a hardware timer.
 //!
-//! [`Task::burst_from_block`] is the seam: it schedules a task's straight-line
-//! program with the instruction layer and uses the resulting makespan as the
-//! CPU time the program-level kernel accounts for.
+//! The clock is virtual: a poll costs [`Config::poll_cost`] cycles, a dispatch
+//! costs [`Config::switch_cost`], and an idle executor jumps to the next
+//! deadline. [`Stats`] turns that into CPU utilization, idle cycles, waiting
+//! time and turnaround.
+//!
+//! [`Task::cost_from_block`] and [`Task::cost_from_function`] are the seam
+//! between the two levels: they schedule a task's straight-line program (or its
+//! decoded blocks) with the instruction layer and use the resulting makespan as
+//! the cost estimate the program level accounts against.
 //!
 //! # Example
 //!
@@ -86,36 +94,60 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! Multiplexing programs on one core with the program-level kernel:
+//! Multiplexing futures on one core with the executor:
 //!
 //! ```rust
-//! use codevar_inssched::kernel::{Config, Kernel};
+//! use codevar_inssched::executor::{Config, Executor};
 //! use codevar_inssched::policy::RoundRobin;
-//! use codevar_inssched::task::{Priority, Task};
+//! use codevar_inssched::task::Priority;
 //!
-//! let mut kernel = Kernel::new(RoundRobin, Config::new(2, 0));
-//! kernel.spawn(Task::new("render", Priority::NORMAL, 6, 0));
-//! kernel.spawn(Task::new("compile", Priority::NORMAL, 6, 0));
-//! let stats = kernel.run()?;
+//! let mut executor = Executor::new(RoundRobin, Config::new(1, 0));
+//! let timer = executor.timer().clone();
+//! executor.spawn("render", Priority::NORMAL, async move {
+//!     timer.sleep(2).await;
+//! });
+//! executor.spawn("compile", Priority::NORMAL, async {});
+//!
+//! let stats = executor.run()?;
 //! assert_eq!(stats.completions, 2);
-//! # Ok::<(), codevar_inssched::error::KernelError>(())
+//! assert!(stats.polls >= 3);
+//! # Ok::<(), codevar_inssched::ExecutorError>(())
 //! ```
 //!
 //! # Performance
 //!
-//! The scheduler is allocation-light: the graph, the ready list and the
-//! result are three flat `Vec`s sized from the block length, the strategy is a
-//! zero-sized generic so it inlines, and the hot path is O(n²) in the block
-//! length — the right shape for the small straight-line blocks the model
-//! schedules. No unbounded recursion, no panics, and `no_std` with `alloc`.
+//! The instruction scheduler is allocation-light: the graph, the ready list
+//! and the result are three flat `Vec`s sized from the block length, the
+//! strategy is a zero-sized generic so it inlines, and the hot path is O(n²) in
+//! the block length — the right shape for the small straight-line blocks the
+//! model schedules.
+//!
+//! The executor allocates one boxed future per task, one small `Arc` wake flag
+//! per task, and keeps the task table, ready queue and pending queue as flat
+//! `Vec`s. A wake is a single atomic store; a tick scans the task table for
+//! fired wakes and asks the policy to choose from the ready queue. Sleepers
+//! live in a binary heap ordered by deadline. No unbounded recursion and no
+//! panics; `no_std` with `alloc`.
 //!
 //! # What it deliberately does not do
 //!
-//! It schedules *within a basic block* and assumes the caller has already
-//! split control flow: a terminator is always placed last. It does not
-//! allocate registers, so on a non-renaming core the targets must supply
-//! physical register numbers directly. It never duplicates, deletes or
-//! speculates an instruction.
+//! * The instruction layer schedules *within a basic block*: a terminator is
+//!   always placed last, and [`decode`] supplies the block boundaries from real
+//!   machine code. Scheduling never crosses a block edge, a barrier or a call.
+//!   The layer does not allocate registers, so on a non-renaming core the
+//!   targets must supply physical register numbers. It never duplicates,
+//!   deletes or speculates an instruction.
+//! * [`decode`] recovers blocks, not a full call graph: an indirect target
+//!   stays indirect, a target outside the decoded range stays external, and
+//!   code reached only through a jump table is not discovered.
+//! * The executor is single-core and cooperative: it never preempts a future
+//!   mid-poll, and the scheduling policy only chooses among tasks that are
+//!   already ready.
+//! * There is no I/O reactor. Integrate one through
+//!   [`Executor::waker`](executor::Executor::waker): clone the waker into the
+//!   event source and wake the task when the event arrives.
+//! * Spawned futures are `'static` and produce `()`. Spawning from inside a
+//!   task needs access to the executor, which the current API does not provide.
 
 #![cfg_attr(not(test), no_std)]
 #![warn(missing_docs)]
@@ -125,9 +157,10 @@ extern crate alloc;
 pub mod asm;
 pub mod bare;
 pub mod dag;
+pub mod decode;
 pub mod desktop;
 pub mod error;
-pub mod kernel;
+pub mod executor;
 pub mod machine;
 pub mod policy;
 pub mod sched;
@@ -135,9 +168,15 @@ pub mod task;
 
 pub use asm::{InstFlags, Instruction, Reg, Unit};
 pub use dag::{SDep, SDepKind, SUnit, ScheduleDAG};
-pub use error::{BuildError, KernelError, ScheduleError};
-pub use kernel::{Config, Cpu, Kernel, Phase, Stats, Tick, Timer, schedule_phases};
+pub use decode::{
+    BasicBlock, ControlFlow, Decoded, Decoder, Function, FunctionSchedule, Rv32i, decode_function,
+    schedule_function,
+};
+pub use error::{BuildError, DecodeError, ExecutorError, ScheduleError};
+pub use executor::{
+    Config, Executor, Phase, Sleep, Stats, Tick, Timer, YieldNow, block_on, schedule_phases, yield_now,
+};
 pub use machine::{Issue, Machine, UnitSpec};
 pub use policy::{RoundRobin, SchedulePolicy, ShortestJobFirst};
 pub use sched::{BlockSchedule, Latency, RegisterPressure, SchedStrategy, Slot, SourceOrder, schedule_block};
-pub use task::{Context, Priority, Task, TaskId, TaskState};
+pub use task::{Priority, Task, TaskId, TaskState};

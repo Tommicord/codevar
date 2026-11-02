@@ -211,6 +211,19 @@ impl ColorableText {
         }
     }
 
+    /// Creates a text widget that draws `content`.
+    #[must_use]
+    pub fn with_content(content: TextContent) -> Self {
+        let lines = content.lines();
+        Self {
+            content,
+            lines,
+            style: None,
+            color: None,
+            max_lines: None,
+        }
+    }
+
     /// The line with the given style.
     #[must_use]
     pub fn style(mut self, style: TextStyle) -> Self {

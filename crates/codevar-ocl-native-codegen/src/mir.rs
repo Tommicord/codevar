@@ -614,6 +614,10 @@ pub enum MOp {
     FPExt,
     /// Bit-level reinterpretation.
     Bitcast,
+    /// Integer to pointer conversion.
+    IntToPtr,
+    /// Pointer to integer conversion.
+    PtrToInt,
     /// Unconditional branch to a block.
     Br {
         /// The target block.
@@ -1022,6 +1026,8 @@ pub struct MirFunction {
     pub vreg_types: Vec<MType>,
     /// The virtual registers holding the function's parameters.
     pub params: Vec<VReg>,
+    /// The physical registers assigned to the function's parameters.
+    pub param_regs: Vec<PReg>,
     /// The size of the stack frame in bytes, excluding the saved
     /// registers the target pushes around it.
     pub frame_size: u32,
@@ -1042,6 +1048,7 @@ impl MirFunction {
             blocks: Vec::new(),
             vreg_types: Vec::new(),
             params: Vec::new(),
+            param_regs: Vec::new(),
             frame_size: 0,
             fixed_frame_size: 0,
         }

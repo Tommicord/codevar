@@ -359,7 +359,9 @@ dependencies = [
  "codevar-console-util",
  "codevar-env",
  "codevar-gpu-core",
+ "codevar-inssched",
  "codevar-kuitui",
+ "codevar-kuitui-button",
  "codevar-kuitui-text",
  "codevar-kuitui-widget",
  "codevar-logger",
@@ -378,6 +380,7 @@ name = "codevar-gpu-wg"
 version = "1.0.0"
 dependencies = [
  "codevar-gpu-core",
+ "codevar-kuitui",
  "libm",
  "wasm-bindgen",
  "web-sys",
@@ -406,6 +409,22 @@ dependencies = [
 name = "codevar-kuitui"
 version = "1.0.0"
 dependencies = [
+ "codevar-base",
+ "codevar-kuitui-control",
+ "codevar-kuitui-rea",
+ "codevar-logger",
+ "codevar-ocl",
+ "codevar-oclc",
+ "libm",
+ "spin 0.12.3",
+]
+
+[[package]]
+name = "codevar-kuitui-button"
+version = "1.0.0"
+dependencies = [
+ "codevar-kuitui",
+ "codevar-kuitui-widget",
  "libm",
 ]
 
@@ -456,6 +475,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-kuitui-rea"
+version = "1.0.0"
+
+[[package]]
 name = "codevar-kuitui-text"
 version = "1.0.0"
 dependencies = [
@@ -491,6 +514,7 @@ dependencies = [
  "codevar-env",
  "codevar-gpu-vk",
  "codevar-inssched",
+ "codevar-kuitui",
  "codevar-logger",
  "codevar-rt",
  "codevar-sig-handler",
@@ -519,13 +543,64 @@ dependencies = [
 ]
 
 [[package]]
-name = "codevar-mergen"
+name = "codevar-negex"
 version = "1.0.0"
 dependencies = [
- "cfg-if",
- "codevar-base",
- "codevar-shake",
+ "codevar-logger",
+ "codevar-negex-abi",
+ "codevar-negex-codegen",
+ "codevar-negex-lex",
+ "codevar-negex-native-codegen",
+ "codevar-negex-parse",
+ "codevar-ocl-abi",
+ "codevar-ocl-native-codegen",
+ "codevar-ocl-tc",
+ "criterion",
  "libc",
+]
+
+[[package]]
+name = "codevar-negex-abi"
+version = "1.0.0"
+
+[[package]]
+name = "codevar-negex-codegen"
+version = "1.0.0"
+dependencies = [
+ "codevar-logger",
+ "codevar-negex-abi",
+ "codevar-negex-parse",
+ "codevar-ocl-ir",
+]
+
+[[package]]
+name = "codevar-negex-lex"
+version = "1.0.0"
+dependencies = [
+ "codevar-logger",
+]
+
+[[package]]
+name = "codevar-negex-native-codegen"
+version = "1.0.0"
+dependencies = [
+ "codevar-logger",
+ "codevar-negex-codegen",
+ "codevar-ocl-abi",
+ "codevar-ocl-asm",
+ "codevar-ocl-ir",
+ "codevar-ocl-native-codegen",
+ "codevar-ocl-native-codegen-aarch64",
+ "codevar-ocl-native-codegen-thumbv7m",
+ "codevar-ocl-native-codegen-x86",
+]
+
+[[package]]
+name = "codevar-negex-parse"
+version = "1.0.0"
+dependencies = [
+ "codevar-logger",
+ "codevar-negex-lex",
 ]
 
 [[package]]
@@ -580,8 +655,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "codevar-ocl-cubin"
+name = "codevar-ocl-interop"
 version = "1.0.0"
+dependencies = [
+ "ash",
+ "codevar-logger",
+ "codevar-ocl",
+ "libc",
+]
 
 [[package]]
 name = "codevar-ocl-ir"
@@ -703,18 +784,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codevar-packlow"
-version = "1.0.0"
-dependencies = [
- "codevar-base",
- "codevar-logger",
- "codevar-ocl",
- "codevar-oclc",
- "criterion",
- "spin 0.12.3",
-]
-
-[[package]]
 name = "codevar-pathbuf"
 version = "1.0.0"
 dependencies = [
@@ -751,14 +820,6 @@ name = "codevar-rt"
 version = "1.0.0"
 dependencies = [
  "codevar-target",
-]
-
-[[package]]
-name = "codevar-shake"
-version = "1.0.0"
-dependencies = [
- "cfg-if",
- "codevar-base",
 ]
 
 [[package]]
@@ -991,6 +1052,7 @@ dependencies = [
  "cc",
  "codevar-base",
  "codevar-gpu-core",
+ "codevar-inssched",
  "codevar-logger",
  "codevar-ocl",
  "codevar-oclc",

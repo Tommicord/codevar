@@ -470,6 +470,8 @@ fn inst_text(module: &Module, ids: &Ids, labels: &[String], inst: &Inst) -> Stri
         Op::Convert { op, operand } => {
             format!("{} {}", head(&format!("Op{}", op.as_str())), ids.val(*operand))
         }
+        Op::IntToPtr { operand } => format!("{} {}", head("OpIntToPtr"), ids.val(*operand)),
+        Op::PtrToInt { operand } => format!("{} {}", head("OpPtrToInt"), ids.val(*operand)),
         Op::Call { callee, args } => {
             let mut out = format!("{} {}", head("OpFunctionCall"), ids.val(*callee));
             for arg in args {

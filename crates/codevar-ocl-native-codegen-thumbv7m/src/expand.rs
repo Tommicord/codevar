@@ -723,6 +723,16 @@ impl<'a> Expander<'a> {
                 }
                 self.emit_value(value, rd);
             }
+            MOp::IntToPtr => {
+                let rd = self.dest(inst)?;
+                let value = self.value(self.arg(inst, 0)?)?;
+                self.emit_value(value, rd);
+            }
+            MOp::PtrToInt => {
+                let rd = self.dest(inst)?;
+                let value = self.value(self.arg(inst, 0)?)?;
+                self.emit_value(value, rd);
+            }
             MOp::Br { target } => {
                 self.emit_branch(FixupKind::Branch, FixupTarget::Block(*target));
             }

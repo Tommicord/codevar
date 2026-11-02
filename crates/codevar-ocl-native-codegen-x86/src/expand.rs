@@ -501,6 +501,8 @@ impl<'a> Expander<'a> {
             MOp::FPTrunc => self.expand_fp_width(enc, inst, false),
             MOp::FPExt => self.expand_fp_width(enc, inst, true),
             MOp::Bitcast => self.expand_bitcast(enc, inst),
+            MOp::IntToPtr => self.expand_int_to_ptr(enc, inst),
+            MOp::PtrToInt => self.expand_ptr_to_int(enc, inst),
             MOp::Br { target } => {
                 let block = *target;
                 self.check_block(block)?;
@@ -1328,6 +1330,29 @@ impl<'a> Expander<'a> {
             Some(_) => {
                 let right = self.operand_reg(enc, inst, 1, &[])?;
                 self.expect_int(right, 1)?;
+                if right == dest && dest != left {
+                    // The result lives where the second operand still
+                    // is, so copying the first operand into the
+                    // destination would erase the operand the
+                    // operation is about to read. A commutative
+                    // operation takes the first operand as its source
+                    // instead and needs no copy at all; a subtraction
+                    // saves the destination in a scratch first.
+                    match op {
+                        Binary::Add => enc.add_rr(size, dest, left),
+                        Binary::And => enc.and_rr(size, dest, left),
+                        Binary::Or => enc.or_rr(size, dest, left),
+                        Binary::Xor => enc.xor_rr(size, dest, left),
+                        Binary::Mul => enc.imul_rr(size, dest, left),
+                        Binary::Sub => {
+                            let scratch = self.scratch_register(inst, &[dest, left])?;
+                            enc.mov_rr(size, scratch, right);
+                            enc.mov_rr(size, dest, left);
+                            enc.sub_rr(size, dest, scratch);
+                        }
+                    }
+                    return Ok(());
+                }
                 // The two-address reuse pass may have made the
                 // destination and the first operand one value; then
                 // the copy would move a register onto itself.
@@ -2136,6 +2161,9 @@ impl<'a> Expander<'a> {
         match Self::class_of(dest) {
             Class::Int => {
                 let size = int_size(&inst.ty);
+                // Test the condition first so its register isn't clobbered
+                // by the move of the false value.
+                enc.test_rr(Size::Dword, condition, condition);
                 // The value of the branch that is not taken is the
                 // one the destination holds first.
                 match inst.args.get(2) {
@@ -2172,7 +2200,6 @@ impl<'a> Expander<'a> {
                         ));
                     }
                 };
-                enc.test_rr(Size::Dword, condition, condition);
                 enc.cmovcc(Cc::Ne, size, dest, source);
             }
             Class::Float => {
@@ -2223,8 +2250,8 @@ impl<'a> Expander<'a> {
         let dst_size = int_size(&inst.ty);
         let src_size = self.integer_width(inst);
         match (dst_size, src_size) {
-            (Size::Qword, Size::Byte) => enc.movzx_rr(Size::Byte, Size::Qword, dest, value),
-            (Size::Qword, Size::Word) => enc.movzx_rr(Size::Word, Size::Qword, dest, value),
+            (Size::Qword, Size::Byte) => enc.movzx_rr(Size::Byte, Size::Dword, dest, value),
+            (Size::Qword, Size::Word) => enc.movzx_rr(Size::Word, Size::Dword, dest, value),
             (Size::Dword, Size::Byte) => enc.movzx_rr(Size::Byte, Size::Dword, dest, value),
             (Size::Dword, Size::Word) => enc.movzx_rr(Size::Word, Size::Dword, dest, value),
             // The thirty-two-bit form of the move clears the upper
@@ -2244,8 +2271,8 @@ impl<'a> Expander<'a> {
         let dst_size = int_size(&inst.ty);
         let src_size = self.integer_width(inst);
         match (dst_size, src_size) {
-            (Size::Qword, Size::Byte) => enc.movsx_rr(Size::Byte, Size::Qword, dest, value),
-            (Size::Qword, Size::Word) => enc.movsx_rr(Size::Word, Size::Qword, dest, value),
+            (Size::Qword, Size::Byte) => enc.movsx_rr(Size::Byte, Size::Dword, dest, value),
+            (Size::Qword, Size::Word) => enc.movsx_rr(Size::Word, Size::Dword, dest, value),
             // The thirty-two-bit form of the move keeps the sign of
             // the value in the whole register.
             (Size::Qword, Size::Dword) => enc.movsxd_rr(dest, value),
@@ -2476,6 +2503,24 @@ impl<'a> Expander<'a> {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Expands an integer-to-pointer conversion.
+    fn expand_int_to_ptr(&self, enc: &mut Encoder<'_>, inst: &MInst) -> Result<(), CodegenError> {
+        let dest = self.dest(inst)?;
+        self.expect_dest(inst, dest)?;
+        let value = self.operand_reg(enc, inst, 0, &[])?;
+        enc.mov_rr(Size::Qword, dest, value);
+        Ok(())
+    }
+
+    /// Expands a pointer-to-integer conversion.
+    fn expand_ptr_to_int(&self, enc: &mut Encoder<'_>, inst: &MInst) -> Result<(), CodegenError> {
+        let dest = self.dest(inst)?;
+        self.expect_dest(inst, dest)?;
+        let value = self.operand_reg(enc, inst, 0, &[])?;
+        enc.mov_rr(Size::Qword, dest, value);
         Ok(())
     }
 

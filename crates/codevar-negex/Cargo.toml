@@ -1,0 +1,34 @@
+[package]
+name = "codevar-negex"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Negex: a high-performance regex engine compiling patterns to native machine code"
+
+[lib]
+name = "codevar_negex"
+
+[dependencies]
+codevar-negex-abi = { workspace = true }
+codevar-negex-lex = { workspace = true }
+codevar-negex-parse = { workspace = true }
+codevar-negex-codegen = { workspace = true }
+codevar-negex-native-codegen = { workspace = true }
+codevar-ocl-native-codegen = { workspace = true }
+codevar-ocl-tc = { workspace = true }
+codevar-ocl-abi = { workspace = true }
+codevar-logger = { workspace = true }
+libc = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "regex_comparison"
+harness = false
+
+[lints]
+workspace = true

@@ -75,8 +75,8 @@ use alloc::vec::Vec;
 
 use codevar_ocl_abi::WorkItemField;
 use codevar_ocl_ir::ir::{
-    BasicBlock, BinOp, CmpOp, ConstValue, ConvOp, Decor, FunctionDef, Inst, Module, Op, Type, TypeId, UnOp,
-    ValueId, ValueKind,
+    BasicBlock, BinOp, CmpOp, ConstValue, ConvOp, Decor, ExecutionModel, FunctionDef, Inst, Module, Op, Type,
+    TypeId, UnOp, ValueId, ValueKind,
 };
 
 use crate::abi::{
@@ -404,11 +404,20 @@ impl<'a> Selector<'a> {
                 "the entry function has no body",
             ));
         }
+        // Check if the entry function is an OpenCL kernel (ExecutionModel::Kernel).
+        // If not, we treat it as a regular function with System V ABI.
+        let is_kernel_entry = self
+            .module
+            .entry_points
+            .iter()
+            .any(|ep| ep.func == entry && ep.model == ExecutionModel::Kernel);
+
         let order = self.reachable(entry)?;
         self.declare(&order)?;
         let mut entry_symbol = SymId::new(0);
         for (index, &func) in order.iter().enumerate() {
-            let function = self.select_function(func, func == entry)?;
+            let is_entry = func == entry && is_kernel_entry;
+            let function = self.select_function(func, is_entry)?;
             if index == 0 {
                 entry_symbol = function.symbol;
             }
@@ -1140,6 +1149,24 @@ impl FnSel<'_> {
                 block
                     .insts
                     .push(MInst::def(dest, ty, op, Operands::one(source)).with_operand_type(operand_ty));
+            }
+            Op::IntToPtr { operand } => {
+                let dest = self.dest_of(inst)?;
+                let ty = self.type_of_dest(inst)?;
+                let source = self.operand(*operand)?;
+                let operand_ty = self.type_of_value(*operand)?;
+                block.insts.push(
+                    MInst::def(dest, ty, MOp::IntToPtr, Operands::one(source)).with_operand_type(operand_ty),
+                );
+            }
+            Op::PtrToInt { operand } => {
+                let dest = self.dest_of(inst)?;
+                let ty = self.type_of_dest(inst)?;
+                let source = self.operand(*operand)?;
+                let operand_ty = self.type_of_value(*operand)?;
+                block.insts.push(
+                    MInst::def(dest, ty, MOp::PtrToInt, Operands::one(source)).with_operand_type(operand_ty),
+                );
             }
             Op::Call { callee, args } => {
                 let symbol = self.syms.get(callee).copied().ok_or_else(|| {

@@ -32,8 +32,11 @@
 //!
 //! Memory is modelled conservatively: without alias information, every store
 //! is ordered after every earlier load and store, and every load after every
-//! earlier store. Two loads never conflict. A [`InstFlags::BARRIER`] node is
-//! ordered against every instruction before and after it.
+//! earlier store. Two loads never conflict. An instruction carrying
+//! [`InstFlags::BARRIER`] or [`InstFlags::CALL`] is ordered against every
+//! instruction before and after it: a call can read and write memory the
+//! scheduler cannot see, so moving traffic across one is unsound, and that is
+//! exactly the shape an I/O path has.
 //!
 //! Every edge points from a lower to a higher original index, so the priority
 //! passes need no separate topological sort.
@@ -160,17 +163,25 @@ impl ScheduleDAG {
         let mut readers: Vec<Vec<u16>> = vec![Vec::new(); registers];
         let mut memory_reads: Vec<u16> = Vec::new();
         let mut last_memory_write: Option<u16> = None;
-        let mut barriers: Vec<u16> = Vec::new();
+        let mut last_ordering: Option<u16> = None;
         let track_anti = !machine.renames();
 
         for (index, instruction) in block.iter().enumerate() {
             let current = index as u16;
             let flags = instruction.flags();
 
-            if flags.contains(InstFlags::BARRIER) {
-                for &barrier in &barriers {
-                    dag.add_edge(barrier, current, SDepKind::Order, 1);
+            // A barrier or a call orders everything before it and everything
+            // after it. The edge to every later instruction is added when
+            // that instruction is visited, by remembering the last one here.
+            let orders = flags.intersects(InstFlags::ORDERING);
+            if let Some(ordering) = last_ordering {
+                dag.add_edge(ordering, current, SDepKind::Order, 1);
+            }
+            if orders {
+                for earlier in 0..current {
+                    dag.add_edge(earlier, current, SDepKind::Order, 1);
                 }
+                last_ordering = Some(current);
             }
 
             for &reg in instruction.reads() {
@@ -218,10 +229,6 @@ impl ScheduleDAG {
                 last_writer[slot] = Reg::new(current);
                 readers[slot].clear();
             }
-
-            if flags.contains(InstFlags::BARRIER) {
-                barriers.push(current);
-            }
         }
 
         dag.finish();
@@ -230,6 +237,10 @@ impl ScheduleDAG {
 
     /// Adds an edge, ignoring a duplicate and never lowering an existing
     /// latency.
+    ///
+    /// An ordering edge may be inserted before the data edge between the same
+    /// pair, so a later data edge upgrades the kind: the pair is a true
+    /// dependence even when a fence or a call also ordered it.
     fn add_edge(&mut self, from: u16, to: u16, kind: SDepKind, latency: u16) {
         if from == to {
             return;
@@ -238,8 +249,22 @@ impl ScheduleDAG {
             .iter_mut()
             .find(|dep| dep.target == to)
         {
+            if kind.is_data() {
+                existing.kind = SDepKind::Data;
+            }
             if latency > existing.latency {
                 existing.latency = latency;
+            }
+            if let Some(reverse) = self.pred[to as usize]
+                .iter_mut()
+                .find(|dep| dep.target == from)
+            {
+                if kind.is_data() {
+                    reverse.kind = SDepKind::Data;
+                }
+                if latency > reverse.latency {
+                    reverse.latency = latency;
+                }
             }
             return;
         }
@@ -259,11 +284,9 @@ impl ScheduleDAG {
     /// Adds a data edge and records the producer/consumer relationship the
     /// register-pressure strategy reads.
     fn add_data_edge(&mut self, from: u16, to: u16, latency: u16) {
-        let existed = self.succ[from as usize]
-            .iter()
-            .any(|dep| dep.target == to);
+        let recorded = self.data_preds[to as usize].contains(&from);
         self.add_edge(from, to, SDepKind::Data, latency);
-        if !existed {
+        if !recorded {
             self.data_preds[to as usize].push(from);
             self.consumer_left[from as usize] += 1;
         }
@@ -377,4 +400,94 @@ fn max_register(block: &[Instruction]) -> u16 {
         }
     }
     max
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use super::SDepKind;
+    use crate::asm::{InstFlags, Instruction, Reg, Unit};
+    use crate::desktop;
+    use crate::sched::{Latency, schedule_block};
+
+    fn instruction(unit: Unit, flags: InstFlags, reads: &[Reg], writes: &[Reg]) -> Instruction {
+        Instruction::new(unit, flags, 0, reads, writes).expect("instruction fits")
+    }
+
+    #[test]
+    fn a_fence_orders_memory_around_it() {
+        // Two loads never conflict with each other, so only the fence can
+        // keep them apart.
+        let before = instruction(
+            Unit::Load,
+            InstFlags::READS_MEMORY,
+            &[Reg::new(0)],
+            &[Reg::new(1)],
+        );
+        let fence = instruction(
+            Unit::System,
+            InstFlags::BARRIER | InstFlags::SIDE_EFFECT,
+            &[],
+            &[],
+        );
+        let after = instruction(
+            Unit::Load,
+            InstFlags::READS_MEMORY,
+            &[Reg::new(2)],
+            &[Reg::new(3)],
+        );
+
+        let dag = super::ScheduleDAG::build(&[before, fence, after], &desktop::x86_64());
+        assert!(dag.has_edge(0, 1));
+        assert!(dag.has_edge(1, 2));
+
+        let schedule =
+            schedule_block(&[before, fence, after], &desktop::x86_64(), &Latency).expect("schedules");
+        assert_eq!(schedule.cycles, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn a_call_orders_work_around_it() {
+        // The two ALU ops touch different registers; without the call edge a
+        // four-wide core could start both in cycle zero.
+        let before = instruction(Unit::Alu, InstFlags::NONE, &[Reg::new(3)], &[Reg::new(1)]);
+        let call = instruction(Unit::Branch, InstFlags::CALL | InstFlags::SIDE_EFFECT, &[], &[]);
+        let after = instruction(Unit::Alu, InstFlags::NONE, &[Reg::new(4)], &[Reg::new(2)]);
+
+        let dag = super::ScheduleDAG::build(&[before, call, after], &desktop::x86_64());
+        assert!(dag.has_edge(0, 1));
+        assert!(dag.has_edge(1, 2));
+
+        let schedule =
+            schedule_block(&[before, call, after], &desktop::x86_64(), &Latency).expect("schedules");
+        assert_eq!(schedule.cycles, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn an_ordering_edge_never_lowers_an_existing_latency() {
+        // A load feeding the call already has a data edge with the load's
+        // latency; the call's order edge must not drop it to one cycle.
+        let load = instruction(
+            Unit::Load,
+            InstFlags::READS_MEMORY,
+            &[Reg::new(0)],
+            &[Reg::new(1)],
+        );
+        let call = instruction(
+            Unit::Branch,
+            InstFlags::CALL | InstFlags::SIDE_EFFECT,
+            &[Reg::new(1)],
+            &[],
+        );
+
+        let dag = super::ScheduleDAG::build(&[load, call], &desktop::x86_64());
+        let edge = dag
+            .succ(0)
+            .iter()
+            .find(|dep| dep.target == 1)
+            .expect("edge");
+        assert_eq!(edge.kind, SDepKind::Data);
+        assert_eq!(edge.latency, 4);
+    }
 }

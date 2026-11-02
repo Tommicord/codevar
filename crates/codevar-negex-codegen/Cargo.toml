@@ -1,0 +1,21 @@
+[package]
+name = "codevar-negex-codegen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Target-independent regex codegen: NFA construction, DFA minimization, IR lowering"
+
+[lib]
+name = "codevar_negex_codegen"
+
+[dependencies]
+codevar-negex-abi = { workspace = true }
+codevar-negex-parse = { workspace = true }
+codevar-ocl-ir = { workspace = true }
+codevar-logger = { workspace = true }
+
+[lints]
+workspace = true

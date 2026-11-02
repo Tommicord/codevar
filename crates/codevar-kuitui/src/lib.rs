@@ -162,7 +162,6 @@ pub mod prelude {
     pub use crate::color::{Color, ColorScheme};
     pub use crate::compose::{Composer, Composition, Recomposition};
     pub use crate::effect::{Effect, EffectKinds, Gradient, InteractionSource, InteractionState};
-    pub use crate::element;
     pub use crate::event::{
         Event, EventResult, KeyEvent, Modifiers, PointerButton, PointerButtons, PointerEvent,
         PointerEventKind,
@@ -170,6 +169,7 @@ pub mod prelude {
     pub use crate::geometry::{Alignment, Constraints, EdgeInsets, Horizontal, Offset, Rect, Size, Vertical};
     pub use crate::host::{NodeElement, NodeId, WidgetHost};
     pub use crate::kuitui;
+    pub use crate::kuitui_element;
     pub use crate::node::{Modifier, Node};
     pub use crate::paint::{
         ClippedOps, ColorTextOp, CornerRadii, Draw, DrawCommand, DrawList, DrawVisitor, LineOp, Paint,

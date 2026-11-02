@@ -894,6 +894,16 @@ pub enum Op {
         /// Source value.
         operand: ValueId,
     },
+    /// Convert an integer to a pointer.
+    IntToPtr {
+        /// Integer operand.
+        operand: ValueId,
+    },
+    /// Convert a pointer to an integer.
+    PtrToInt {
+        /// Pointer operand.
+        operand: ValueId,
+    },
     /// A direct call to a function in this module.
     Call {
         /// Callee; must be a function value.

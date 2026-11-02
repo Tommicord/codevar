@@ -114,6 +114,10 @@ pub const OP_SCONVERT: u16 = 114;
 pub const OP_FCONVERT: u16 = 115;
 /// `OpBitcast`.
 pub const OP_BITCAST: u16 = 124;
+/// `OpPtrToInt`.
+pub const OP_PTRTOINT: u16 = 153;
+/// `OpIntToPtr`.
+pub const OP_INTOPTR: u16 = 154;
 /// `OpSNegate`.
 pub const OP_SNEGATE: u16 = 126;
 /// `OpFNegate`.

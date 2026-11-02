@@ -15,22 +15,26 @@
 
 //! The program-level scheduling algorithms.
 //!
-//! A [`SchedulePolicy`] answers one question — *which ready task should run
-//! next?* — and the [`Kernel`](crate::kernel::Kernel) asks it every time the
-//! core frees up. This is the program-level counterpart of
+//! A [`SchedulePolicy`] answers one question — *which ready task should be
+//! polled next?* — and the [`Executor`](crate::executor::Executor) asks it
+//! every time it has a turn. This is the program-level counterpart of
 //! [`SchedStrategy`](crate::sched::SchedStrategy): the instruction strategy
-//! orders instructions inside one program, the policy orders programs on the
+//! orders instructions inside one program, the policy orders futures on the
 //! core.
+//!
+//! The executor is cooperative, so a policy never preempts a running future.
+//! A task is a candidate only after its waker has fired; the policy then picks
+//! among the runnable tasks.
 //!
 //! Three algorithms cover the classic ground:
 //!
-//! * [`RoundRobin`] — every task gets the same slice, in circular order. The
-//!   fair default, and the only one the hardware timer alone can drive.
-//! * [`Priority`] — the most urgent ready task runs first. Critical system
-//!   work preempts background work.
-//! * [`ShortestJobFirst`] — the shortest remaining task runs first. It is
-//!   *non-preemptive*, so a running task keeps the core until it finishes,
-//!   which is what makes it optimal for average waiting time.
+//! * [`RoundRobin`] — every task gets a turn, in circular order. The fair
+//!   default.
+//! * [`Priority`] — the most urgent ready task runs first, so critical system
+//!   work preempts background work at the next scheduling point.
+//! * [`ShortestJobFirst`] — the task with the least remaining *estimated* cost
+//!   runs first. It is optimal for average waiting time when the cost hints
+//!   are accurate.
 //!
 //! Every policy is a zero-sized type: selecting one costs nothing at run time
 //! and a caller can supply its own by implementing the trait.
@@ -39,25 +43,15 @@ use crate::task::{Task, TaskId};
 
 /// A priority heuristic that picks which ready task runs next.
 ///
-/// Implementations are expected to be cheap and pure: the kernel calls
-/// [`pick`](SchedulePolicy::pick) once per dispatch. `ready` is never empty,
-/// and the returned value is an index into it.
+/// Implementations are expected to be cheap and pure: the executor calls
+/// [`pick`](SchedulePolicy::pick) once per turn. `ready` is never empty, and
+/// the returned value is an index into it.
 pub trait SchedulePolicy {
     /// A short name for diagnostics.
     fn name(&self) -> &'static str;
 
-    /// Chooses one of `ready` (indices into `tasks`) to run next.
+    /// Chooses one of `ready` (indices into `tasks`) to poll next.
     fn pick(&self, tasks: &[Task], ready: &[TaskId], now: u64) -> usize;
-
-    /// Whether the running task may be preempted when its time slice expires.
-    ///
-    /// A preemptive policy is driven by the timer; a non-preemptive one runs
-    /// its choice to completion, so the kernel arms the whole remaining burst
-    /// as its slice.
-    #[inline]
-    fn preemptive(&self) -> bool {
-        true
-    }
 }
 
 /// The task a ready entry refers to.
@@ -66,8 +60,8 @@ fn entry<'a>(tasks: &'a [Task], id: &TaskId) -> &'a Task {
     &tasks[id.index() as usize]
 }
 
-/// Round Robin: the head of the ready queue, so a task that was preempted goes
-/// to the back and every task gets an equal share of the core.
+/// Round Robin: the head of the ready queue, so a task that yielded goes to
+/// the back and every task gets an equal share of the core.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RoundRobin;
 
@@ -118,8 +112,13 @@ fn better_priority(candidate: &Task, incumbent: &Task) -> bool {
                 || (candidate.arrival() == incumbent.arrival() && candidate.id() < incumbent.id())))
 }
 
-/// Shortest Job First: the ready task with the least remaining work runs
-/// first. Non-preemptive, so a dispatched task keeps the core to completion.
+/// Shortest Job First: the ready task with the least remaining estimated cost
+/// is polled first.
+///
+/// The estimate comes from [`Task::remaining`], which the executor charges as
+/// polls run. Set a cost with [`Task::new`] or
+/// [`Task::cost_from_block`](Task::cost_from_block); with no estimate every
+/// task compares equal and the policy falls back to arrival order.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ShortestJobFirst;
 
@@ -141,11 +140,6 @@ impl SchedulePolicy for ShortestJobFirst {
             }
         }
         best
-    }
-
-    #[inline]
-    fn preemptive(&self) -> bool {
-        false
     }
 }
 
@@ -192,9 +186,7 @@ mod tests {
     fn shortest_job_takes_the_least_remaining() {
         let tasks = tasks();
         let ready = [TaskId::new(0), TaskId::new(1), TaskId::new(2)];
-        // Task 2 has the shortest burst and is non-preemptive.
+        // Task 2 has the shortest cost estimate.
         assert_eq!(ShortestJobFirst.pick(&tasks, &ready, 0), 2);
-        assert!(!ShortestJobFirst.preemptive());
-        assert!(RoundRobin.preemptive());
     }
 }

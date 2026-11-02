@@ -22,7 +22,7 @@
 //!   `xdg-shell` (`ack_configure`, `ping`/`pong`, frame callbacks,
 //!   `wl_buffer.release`) and a `zwp_linux_dmabuf_v1` buffer built from the
 //!   render target's exported dma-buf.
-//! * **[`ReactiveComposition`]:** an [`element!`](codevar_kuitui::element)
+//! * **[`ReactiveComposition`]:** an [`element!`](codevar_kuitui::kuitui_element)
 //!   tree of widgets laid out at the window size. It records a [`DrawList`] whose
 //!   text runs carry a baseline origin.
 //! * **[`shape_list_with_color`]:** walks that list and rasterizes every text
@@ -55,7 +55,7 @@ use codevar_gpu_vk::ui::{UiFrame, UiPipe};
 use codevar_kuitui::color::Color;
 use codevar_kuitui::geometry::{Offset, Rect, Size};
 use codevar_kuitui::paint::{CornerRadii, Paint};
-use codevar_kuitui::prelude::{FontMetrics, ReactiveComposition, Theme, element};
+use codevar_kuitui::prelude::{FontMetrics, ReactiveComposition, Theme, kuitui_element};
 use codevar_kuitui_text::{AtlasConfig, TextAtlas, TextFrame, TextPipe};
 use codevar_kuitui_widget::{Font, shape_list_with_color};
 use codevar_time_core::TimeDuration;
@@ -367,7 +367,7 @@ fn run() -> ExampleResult<String> {
     let metrics: Rc<dyn FontMetrics> = font.clone();
     let mut composition = ReactiveComposition::new(Theme::dark().with_metrics(metrics));
     composition.set_content(|_| {
-        element! {
+        kuitui_element! {
             Column {
                 Spacer(height: TOP_PADDING)
                 Text("Hello World!", color: Color::WHITE)

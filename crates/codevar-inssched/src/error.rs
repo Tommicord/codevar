@@ -81,32 +81,90 @@ impl fmt::Display for BuildError {
 
 impl core::error::Error for BuildError {}
 
-/// Why a program-level schedule could not complete.
-///
-/// The [`Kernel`](crate::kernel::Kernel) explores only legal schedules, so a
-/// returned error always describes an invalid *configuration* or a task that
-/// can never finish — never a valid schedule that merely took long.
+/// Why a byte range could not be decoded into basic blocks.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum KernelError {
-    /// The time slice was configured as zero cycles.
+pub enum DecodeError {
+    /// The range ended in the middle of an instruction.
+    Truncated {
+        /// The address of the incomplete instruction.
+        address: u64,
+        /// How many bytes the range still had.
+        available: usize,
+    },
+    /// An instruction starts at an address the target cannot encode.
     ///
-    /// A zero quantum would let the timer fire before any work runs, so the
-    /// kernel rejects it up front rather than spinning.
-    ZeroQuantum,
-    /// The kernel hit its progress guard with a task still unfinished.
-    ///
-    /// Reported when the simulated clock exceeds every legal bound, which
-    /// indicates a task whose work can never be discharged.
-    Stalled,
+    /// RV32I, for example, requires four-byte alignment.
+    Misaligned {
+        /// The offending address.
+        address: u64,
+    },
+    /// The bytes do not encode an instruction this decoder supports.
+    InvalidEncoding {
+        /// The address of the instruction.
+        address: u64,
+        /// The raw encoding word, for diagnostics.
+        word: u32,
+    },
+    /// A [`Decoder`](crate::decode::Decoder) reported a zero-length or
+    /// oversized instruction, so the range cannot be walked safely.
+    InvalidLength {
+        /// The address the decoder claimed to decode.
+        address: u64,
+    },
+    /// A direct control transfer lands in the middle of an instruction.
+    MisalignedTarget {
+        /// The target that is not an instruction boundary.
+        target: u64,
+    },
 }
 
-impl fmt::Display for KernelError {
+impl fmt::Display for DecodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ZeroQuantum => f.write_str("the time slice (quantum) must be at least one cycle"),
-            Self::Stalled => f.write_str("the kernel made no progress with a task still runnable"),
+            Self::Truncated { address, available } => write!(
+                f,
+                "instruction at {address:#x} is truncated ({available} byte(s) left)"
+            ),
+            Self::Misaligned { address } => {
+                write!(f, "instruction address {address:#x} is not aligned")
+            }
+            Self::InvalidEncoding { address, word } => {
+                write!(f, "invalid encoding {word:#010x} at {address:#x}")
+            }
+            Self::InvalidLength { address } => {
+                write!(f, "decoder reported an invalid length at {address:#x}")
+            }
+            Self::MisalignedTarget { target } => {
+                write!(f, "branch target {target:#x} is not an instruction boundary")
+            }
         }
     }
 }
 
-impl core::error::Error for KernelError {}
+impl core::error::Error for DecodeError {}
+
+/// Why an executor run could not complete.
+///
+/// The [`Executor`](crate::executor::Executor) only stops early when a task is
+/// still unfinished and nothing can make progress: no timer deadline, no
+/// future arrival, and no waker. An externally driven event loop uses
+/// [`Executor::run_until_idle`](crate::executor::Executor::run_until_idle)
+/// instead, because a parked task waiting for I/O is normal there.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ExecutorError {
+    /// A task is unfinished and no timer, arrival or waker can resume it.
+    ///
+    /// This is the deadlock case: every unfinished future returned `Pending`
+    /// without arming a wake, and the virtual clock has nowhere to advance.
+    Stalled,
+}
+
+impl fmt::Display for ExecutorError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Stalled => f.write_str("the executor made no progress with a task still pending"),
+        }
+    }
+}
+
+impl core::error::Error for ExecutorError {}

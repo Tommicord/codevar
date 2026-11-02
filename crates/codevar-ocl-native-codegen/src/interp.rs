@@ -1139,6 +1139,13 @@ impl<'m, 'b> Interp<'m, 'b> {
             Op::SelectionMerge { .. } | Op::LoopMerge { .. } => {
                 // Structured control flow carries no value.
             }
+            Op::IntToPtr { operand } | Op::PtrToInt { operand } => {
+                let result = inst.result.ok_or(InterpError::TypeMismatch {
+                    what: "a conversion with a result",
+                })?;
+                let value = self.value_of(depth, *operand)?;
+                self.set_slot(depth, result, value);
+            }
             Op::Branch { .. }
             | Op::BranchConditional { .. }
             | Op::Return

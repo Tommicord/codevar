@@ -28,13 +28,26 @@
 //! free, spilling the interval that is cheapest to spill when no
 //! register is left.
 //!
-//! A spilled value is saved before its register is reused and read
-//! back where it is used: the definition stays where it is, a
-//! [`MOp::SpillStore`](crate::mir::MOp::SpillStore) saves the value
-//! in the frame, and every later use becomes a
+//! A spilled value is saved right after every instruction that defines
+//! it and read back at every instruction that uses it: a
+//! [`MOp::SpillStore`](crate::mir::MOp::SpillStore) saves the value in
+//! the frame, and every use becomes a
 //! [`MOp::SpillLoad`](crate::mir::MOp::SpillLoad) into a register of
-//! its own.  The back ends therefore never see a value that lives in
-//! memory only.
+//! its own.  The reload is tied to the use, not to a position in the
+//! function's layout: a block that the last definition does not
+//! dominate, or an iteration of a loop that follows a back edge, still
+//! reads the value that block's own path saved.  The back ends
+//! therefore never see a value that lives in memory only.
+//!
+//! # Live intervals and loops
+//!
+//! The intervals are computed from a backward dataflow over the control
+//! flow graph, not from the order the blocks are laid out in.  The
+//! layout order is not the execution order — a loop body precedes its
+//! header, and the blocks of a state dispatch are laid out in the order
+//! they were built — so a register is kept for a value from the first
+//! block the value is live into until the last block it is live out of,
+//! including every block an edge can jump back to.
 //!
 //! # The destination of an instruction
 //!
@@ -176,13 +189,43 @@ struct Allocator<'a> {
     active: Vec<Active>,
     /// The position every virtual register is defined at.
     def_pos: Vec<u32>,
+    /// The position every virtual register is last defined at.
+    ///
+    /// The machine code is not in static single assignment form: a
+    /// phi is lowered to one copy in every predecessor, and the
+    /// two-address reuse writes an operand again, so a register can be
+    /// defined more than once.  The interval must stay occupied until
+    /// the last definition, or a register handed to another value
+    /// would be overwritten by it.
+    last_def: Vec<u32>,
     /// The position every virtual register is live until.
     last_use: Vec<u32>,
     /// The positions every virtual register is used at.
     uses: Vec<Vec<u32>>,
+    /// The first position of every virtual register's live interval.
+    ///
+    /// This is the earliest of its definitions, its uses, and the
+    /// first instructions of the blocks it is live into.
+    live_start: Vec<u32>,
+    /// The last position of every virtual register's live interval.
+    ///
+    /// This is the latest of its last definition, its last use, and the
+    /// last instructions of the blocks it is live out of.
+    live_end: Vec<u32>,
+    /// Whether every virtual register lives across a loop back edge.
+    ///
+    /// Such a value is held in its register for the whole interval and
+    /// is never spilled: a spill frees the register, and the next
+    /// iteration would read whatever value took its place.
+    loop_carried: Vec<bool>,
     /// The register of every virtual register.
     assigned: Vec<Option<PReg>>,
     /// The position every virtual register was spilled at.
+    ///
+    /// The uses before this position read the register the value still
+    /// holds; the uses at and after it read the value back from the
+    /// frame.  The value is saved right after its definitions, so the
+    /// frame slot is valid on every path that reaches a reload.
     spill_point: Vec<u32>,
     /// Whether every virtual register was spilled.
     spilled: Vec<bool>,
@@ -192,10 +235,6 @@ struct Allocator<'a> {
     reloads: Vec<Reload>,
     /// The reloads waiting at every position.
     pending: BTreeMap<u32, Vec<usize>>,
-    /// The values saved before the instruction of every position.
-    stored_before: BTreeMap<u32, Vec<VReg>>,
-    /// The values saved after the instruction of every position.
-    stored_after: BTreeMap<u32, Vec<VReg>>,
     /// The reload of a use, by the position and the value.
     reload_of: BTreeMap<(u32, usize), usize>,
     /// The values that start their interval at every position.
@@ -235,16 +274,18 @@ impl<'a> Allocator<'a> {
             free: [Vec::new(), Vec::new(), Vec::new()],
             active: Vec::new(),
             def_pos: Vec::new(),
+            last_def: Vec::new(),
             last_use: Vec::new(),
             uses: Vec::new(),
+            live_start: Vec::new(),
+            live_end: Vec::new(),
+            loop_carried: Vec::new(),
             assigned: Vec::new(),
             spill_point: Vec::new(),
             spilled: Vec::new(),
             slot: Vec::new(),
             reloads: Vec::new(),
             pending: BTreeMap::new(),
-            stored_before: BTreeMap::new(),
-            stored_after: BTreeMap::new(),
             reload_of: BTreeMap::new(),
             starting: BTreeMap::new(),
             types: Vec::new(),
@@ -274,6 +315,12 @@ impl<'a> Allocator<'a> {
         self.gather(function)?;
         self.plan(function)?;
         let added = self.rewrite(function)?;
+        // Record the physical registers assigned to function parameters.
+        function.param_regs = function
+            .params
+            .iter()
+            .filter_map(|&vreg| self.assigned[vreg.index()])
+            .collect();
         function.frame_size = align_up(function.fixed_frame_size.max(self.next_slot), FRAME_ALIGNMENT);
         let registers = self
             .assigned
@@ -316,9 +363,13 @@ impl<'a> Allocator<'a> {
     /// destination's whole interval.
     ///
     /// A destination that is never used drops the copy as well, since a
-    /// copy has no side effect to preserve.  A copy whose source is an
-    /// immediate or a physical register is left alone, because there is no
-    /// register to forward to.
+    /// copy has no side effect to preserve.  A copy that reads its own
+    /// destination drops it too, whatever the counts are: it rewrites a
+    /// register with the value it already holds, and the phi lowering
+    /// emits one at a loop header for the back edge whose incoming value
+    /// is the carried register.  A copy whose source is an immediate or a
+    /// physical register is left alone, because there is no register to
+    /// forward to.
     ///
     /// The machine code is not in static single assignment form — a phi is
     /// lowered to one copy in every predecessor block — so only a
@@ -367,7 +418,7 @@ impl<'a> Allocator<'a> {
             let mut chosen: Option<(usize, usize, VReg, VReg)> = None;
             for (block_index, block) in function.blocks.iter().enumerate() {
                 for (inst_index, inst) in block.insts.iter().enumerate() {
-                    if !matches!(inst.op, MOp::Copy) {
+                    if !matches!(inst.op, MOp::Copy | MOp::IntToPtr | MOp::PtrToInt) {
                         continue;
                     }
                     let Some(dest) = inst.dest_vreg() else {
@@ -381,6 +432,16 @@ impl<'a> Allocator<'a> {
                     let Some(Operand::Virtual(src)) = inst.arg0() else {
                         continue;
                     };
+                    // A copy from a register to itself writes the value
+                    // it already holds.  The phi lowering emits one at a
+                    // loop header for the back edge whose incoming value
+                    // *is* the carried register, so it survives as a move
+                    // no rule about definitions can justify: it is a
+                    // no-op whatever the definition and use counts are.
+                    if src == dest {
+                        chosen = Some((block_index, inst_index, dest, src));
+                        break;
+                    }
                     if self.type_of(dest) != self.type_of(src) {
                         continue;
                     }
@@ -443,6 +504,8 @@ impl<'a> Allocator<'a> {
         self.active.clear();
         self.def_pos.clear();
         self.def_pos.resize(count, NOWHERE);
+        self.last_def.clear();
+        self.last_def.resize(count, NOWHERE);
         self.last_use.clear();
         self.last_use.resize(count, NOWHERE);
         self.uses.clear();
@@ -450,6 +513,12 @@ impl<'a> Allocator<'a> {
         for uses in &mut self.uses {
             uses.clear();
         }
+        self.live_start.clear();
+        self.live_start.resize(count, NOWHERE);
+        self.live_end.clear();
+        self.live_end.resize(count, NOWHERE);
+        self.loop_carried.clear();
+        self.loop_carried.resize(count, false);
         self.assigned.clear();
         self.assigned.resize(count, None);
         self.spill_point.clear();
@@ -460,8 +529,6 @@ impl<'a> Allocator<'a> {
         self.slot.resize(count, 0);
         self.reloads.clear();
         self.pending.clear();
-        self.stored_before.clear();
-        self.stored_after.clear();
         self.reload_of.clear();
         self.starting.clear();
         self.rematerializable.clear();
@@ -540,6 +607,7 @@ impl<'a> Allocator<'a> {
                     if self.def_pos[index] > position {
                         self.def_pos[index] = position;
                     }
+                    self.last_def[index] = position;
                     if self.last_use[index] == NOWHERE {
                         self.last_use[index] = position;
                     }
@@ -571,7 +639,193 @@ impl<'a> Allocator<'a> {
                 ));
             }
         }
+        self.compute_liveness(function)
+    }
+
+    /// Computes the first and last position of every live interval and
+    /// finds the values that live across a loop back edge.
+    ///
+    /// The layout order of the blocks is not the execution order: a
+    /// loop body is laid out before its header, and a state dispatch
+    /// scatters the blocks of one iteration over the function.  The
+    /// linear scan compares positions, so an interval that stops at the
+    /// last use of the layout would hand the register of a value to
+    /// another value that runs before the next iteration reads it.
+    ///
+    /// A backward dataflow over the successor blocks gives the set of
+    /// values live into and out of every block, and an interval is
+    /// stretched over the blocks it is live through: from the first
+    /// instruction of the earliest block it is live into to the last
+    /// instruction of the latest block it is live out of.  A value that
+    /// is live out of a block that jumps back to an earlier block is
+    /// loop-carried; it keeps its register for the whole interval and
+    /// is never spilled, because a spill frees the register for the
+    /// rest of the layout while the next iteration still reads it.
+    fn compute_liveness(&mut self, function: &MirFunction) -> Result<()> {
+        let count = self.uses.len();
+        let word_count = count.div_ceil(64);
+        let block_count = function.blocks.len();
+        if block_count == 0 {
+            return Ok(());
+        }
+
+        // The position of the first and of the last instruction of every block.
+        let mut starts: Vec<u32> = vec![0; block_count];
+        let mut ends: Vec<u32> = vec![0; block_count];
+        let mut position = 0u32;
+        for (index, block) in function.blocks.iter().enumerate() {
+            starts[index] = position;
+            for _ in &block.insts {
+                position = position.saturating_add(1);
+            }
+            ends[index] = starts[index].max(position.saturating_sub(1));
+        }
+
+        // The successor blocks of every block.
+        let mut successors: Vec<Vec<usize>> = vec![Vec::new(); block_count];
+        for (index, block) in function.blocks.iter().enumerate() {
+            let fall_through = index.saturating_add(1);
+            let Some(last) = block.insts.last() else {
+                if fall_through < block_count {
+                    successors[index].push(fall_through);
+                }
+                continue;
+            };
+            match last.op {
+                MOp::Br { target } => {
+                    successors[index].push(self.block_target(target, block_count)?);
+                }
+                MOp::CondBr | MOp::CondBrCmp { .. } => {
+                    let (then, otherwise) = last.cond_br_targets().ok_or_else(|| {
+                        allocation_error(
+                            "computing the live intervals",
+                            "a conditional branch does not name its two blocks",
+                        )
+                    })?;
+                    successors[index].push(self.block_target(then, block_count)?);
+                    successors[index].push(self.block_target(otherwise, block_count)?);
+                }
+                MOp::Ret | MOp::RetVoid | MOp::Unreachable => {}
+                _ => {
+                    if fall_through < block_count {
+                        successors[index].push(fall_through);
+                    }
+                }
+            }
+        }
+
+        // The values a block reads before it defines them, and the
+        // values its instructions define.
+        let mut use_sets: Vec<Vec<u64>> = vec![vec![0; word_count]; block_count];
+        let mut def_sets: Vec<Vec<u64>> = vec![vec![0; word_count]; block_count];
+        for (index, block) in function.blocks.iter().enumerate() {
+            let mut defined: Vec<u64> = vec![0; word_count];
+            for inst in &block.insts {
+                for operand in inst.args.as_slice() {
+                    let Some(value) = operand.virtual_reg() else {
+                        continue;
+                    };
+                    let value_index = value.index();
+                    let word = value_index / 64;
+                    let bit = 1u64 << (value_index % 64);
+                    if word < word_count && defined[word] & bit == 0 {
+                        use_sets[index][word] |= bit;
+                    }
+                }
+                if let Some(dest) = inst.dest_vreg() {
+                    let value_index = dest.index();
+                    let word = value_index / 64;
+                    let bit = 1u64 << (value_index % 64);
+                    if word < word_count {
+                        defined[word] |= bit;
+                        def_sets[index][word] |= bit;
+                    }
+                }
+            }
+        }
+
+        // Backward dataflow to a fixpoint.
+        let mut live_in: Vec<Vec<u64>> = vec![vec![0; word_count]; block_count];
+        let mut live_out: Vec<Vec<u64>> = vec![vec![0; word_count]; block_count];
+        loop {
+            let mut changed = false;
+            for index in (0..block_count).rev() {
+                let mut out: Vec<u64> = vec![0; word_count];
+                for &successor in &successors[index] {
+                    for word in 0..word_count {
+                        out[word] |= live_in[successor][word];
+                    }
+                }
+                let mut into: Vec<u64> = use_sets[index].clone();
+                for word in 0..word_count {
+                    into[word] |= out[word] & !def_sets[index][word];
+                }
+                if live_out[index] != out {
+                    live_out[index] = out;
+                    changed = true;
+                }
+                if live_in[index] != into {
+                    live_in[index] = into;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+
+        // Stretch the intervals over the blocks the values are live
+        // through, and mark the values that live across a back edge.
+        for value_index in 0..count {
+            if self.def_pos[value_index] == NOWHERE {
+                continue;
+            }
+            let mut start = self.def_pos[value_index];
+            for &use_pos in &self.uses[value_index] {
+                start = start.min(use_pos);
+            }
+            let mut end = self.last_use[value_index].max(self.last_def[value_index]);
+            for block in 0..block_count {
+                let word = value_index / 64;
+                let bit = 1u64 << (value_index % 64);
+                if live_in[block][word] & bit != 0 {
+                    start = start.min(starts[block]);
+                }
+                if live_out[block][word] & bit != 0 {
+                    end = end.max(ends[block]);
+                }
+            }
+            self.live_start[value_index] = start;
+            self.live_end[value_index] = end;
+        }
+        for block in 0..block_count {
+            if !successors[block]
+                .iter()
+                .any(|&target| target <= block)
+            {
+                continue;
+            }
+            for value_index in 0..count {
+                let word = value_index / 64;
+                let bit = 1u64 << (value_index % 64);
+                if live_out[block][word] & bit != 0 {
+                    self.loop_carried[value_index] = true;
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// The index of a branch target block.
+    fn block_target(&self, target: u32, block_count: usize) -> Result<usize> {
+        let index = usize::try_from(target).unwrap_or(usize::MAX);
+        if index >= block_count {
+            return Err(allocation_error(
+                "computing the live intervals",
+                "a branch names a block the function does not have",
+            ));
+        }
+        Ok(index)
     }
 
     /// Decides the register of every virtual register.
@@ -580,14 +834,8 @@ impl<'a> Allocator<'a> {
             if self.def_pos[index] == NOWHERE {
                 continue;
             }
-            let mut start = self.def_pos[index];
-            for &use_pos in &self.uses[index] {
-                if use_pos < start {
-                    start = use_pos;
-                }
-            }
             self.starting
-                .entry(start)
+                .entry(self.live_start[index])
                 .or_default()
                 .push(VReg::new(u32::try_from(index).unwrap_or(u32::MAX)));
         }
@@ -675,7 +923,7 @@ impl<'a> Allocator<'a> {
         };
         let index = value.index();
         self.assigned[index] = Some(register);
-        let end = self.last_use[index].max(self.def_pos[index]);
+        let end = self.live_end[index].max(self.def_pos[index]);
         self.active.push(Active {
             value,
             register,
@@ -735,17 +983,36 @@ impl<'a> Allocator<'a> {
     /// class can be spilled: freeing a register of another pool would
     /// not make room for the value that needs one.
     ///
+    /// A value that lives across a loop back edge is never chosen:
+    /// freeing its register for the rest of the layout would let
+    /// another value overwrite it before the next iteration reads it,
+    /// and there is no position at which the spill could save it for
+    /// all the paths that loop back.
+    ///
     /// The interval that is live the longest is preferred, which is the
     /// linear scan rule that keeps the values that die soon in registers.
     /// A value that is read at the current position is only chosen when
     /// no other interval is available: spilling it makes its use read the
     /// value back from the frame at once, which is a reload that spilling
     /// any other interval avoids.
+    ///
+    /// Ranking candidates by their remaining reloads instead was tried
+    /// and reverted: on the compiled matcher the bit shift the class
+    /// lookup lives across has one use left and the word index it
+    /// shares its register with has three, so both rules spill the same
+    /// value.
     fn pick_victim(&self, class: RegClass, position: u32) -> Option<VReg> {
         let mut best: Option<&Active> = None;
         let mut not_read_here: Option<&Active> = None;
         for entry in &self.active {
-            if entry.transient || !self.pools[class_index(class)].contains(&entry.register) {
+            if entry.transient
+                || !self.pools[class_index(class)].contains(&entry.register)
+                || self
+                    .loop_carried
+                    .get(entry.value.index())
+                    .copied()
+                    .unwrap_or(false)
+            {
                 continue;
             }
             let used_here = self
@@ -766,7 +1033,14 @@ impl<'a> Allocator<'a> {
         not_read_here.or(best).map(|entry| entry.value)
     }
 
-    /// Spills a value: its register is saved in the frame and freed.
+    /// Spills a value: every definition saves it in the frame and its
+    /// register is freed.
+    ///
+    /// The value is saved right after each instruction that defines it
+    /// (see [`Allocator::rewrite`]), not at the position the register
+    /// is given up at: a use may be reached from a block that the
+    /// spill position does not dominate, and the only definition that
+    /// dominates such a use is the one on its own path.
     fn spill(&mut self, victim: VReg, position: u32, queue: &mut Vec<Item>) -> Result<()> {
         let index = victim.index();
         if self.spilled[index] {
@@ -780,27 +1054,11 @@ impl<'a> Allocator<'a> {
         let size = self.value_size(&ty);
         let offset = self.allocate_slot(size);
         self.slot[index] = offset;
-        // A value that is defined at this very position still holds
-        // its register while the instruction runs, so it is saved
-        // afterwards and its uses read the register.
-        let defined_here = self.def_pos[index] == position;
-        if defined_here {
-            self.stored_after
-                .entry(position)
-                .or_default()
-                .push(victim);
-            self.spill_point[index] = position.saturating_add(1);
-        } else {
-            self.stored_before
-                .entry(position)
-                .or_default()
-                .push(victim);
-            self.spill_point[index] = position;
-        }
+        self.spill_point[index] = position;
         let class = ty.reg_class();
         let uses = self.uses[index].clone();
         for use_pos in uses {
-            if use_pos < self.spill_point[index] {
+            if use_pos < position {
                 continue;
             }
             let id = self.reloads.len();
@@ -829,24 +1087,16 @@ impl<'a> Allocator<'a> {
     /// Spills a constant by recomputing it at every use.
     ///
     /// The value is never given a frame slot: the definition stays
-    /// where it is until the rewriting drops it, and every use at or
-    /// after the spill point reads the immediate again through
-    /// [`Allocator::rewrite_operand`].  The register the value held is
-    /// freed like any other spill, so the value that needed it can take
-    /// it.
-    ///
-    /// A value defined at the spill position still holds its register
-    /// while the instruction runs, exactly as a framed spill does, so
-    /// only the uses that follow it are recomputed.
+    /// where it is and every use at or after the spill point reads the
+    /// immediate again through [`Allocator::rewrite_operand`].  The
+    /// register the value held is freed like any other spill, so the
+    /// value that needed it can take it.  The definition is kept: a use
+    /// before the spill point still reads the register, which the copy
+    /// wrote.
     fn rematerialize(&mut self, victim: VReg, position: u32) -> Result<()> {
         let index = victim.index();
         self.spilled[index] = true;
-        let defined_here = self.def_pos[index] == position;
-        self.spill_point[index] = if defined_here {
-            position.saturating_add(1)
-        } else {
-            position
-        };
+        self.spill_point[index] = position;
         self.release(victim);
         Ok(())
     }
@@ -880,12 +1130,6 @@ impl<'a> Allocator<'a> {
             let old = core::mem::take(&mut block.insts);
             let mut insts: Vec<MInst> = Vec::with_capacity(old.len() + 4);
             for mut inst in old {
-                if let Some(values) = self.stored_before.get(&position) {
-                    for value in values.clone() {
-                        insts.push(self.save(value)?);
-                        added += 1;
-                    }
-                }
                 if let Some(ids) = self.pending.get(&position) {
                     for id in ids.clone() {
                         let reload = &self.reloads[id];
@@ -911,19 +1155,26 @@ impl<'a> Allocator<'a> {
                         added += 1;
                     }
                 }
-                let dropped = inst
-                    .dest_vreg()
-                    .is_some_and(|dest| self.rematerialized(dest));
-                if !dropped {
-                    self.rewrite_operands(&mut inst, position)?;
-                    self.rewrite_destination(&mut inst)?;
-                    insts.push(inst);
-                }
-                if let Some(values) = self.stored_after.get(&position) {
-                    for value in values.clone() {
-                        insts.push(self.save(value)?);
-                        added += 1;
-                    }
+                let dest = inst.dest_vreg();
+                let terminator = is_terminator(&inst.op);
+                self.rewrite_operands(&mut inst, position)?;
+                self.rewrite_destination(&mut inst)?;
+                insts.push(inst);
+                // The definition of a spilled value is saved right
+                // where it happens, so every use that reads the frame
+                // reads the value its own path defined.  Nothing may
+                // follow the terminator of a block.
+                if !terminator
+                    && let Some(dest) = dest
+                    && self
+                        .spilled
+                        .get(dest.index())
+                        .copied()
+                        .unwrap_or(false)
+                    && !self.rematerialized(dest)
+                {
+                    insts.push(self.save(dest)?);
+                    added += 1;
                 }
                 position = position.saturating_add(1);
             }
@@ -1022,8 +1273,8 @@ impl<'a> Allocator<'a> {
     ///
     /// Only a value the allocator chose to rematerialize answers true:
     /// it has a constant definition and was spilled, so every use reads
-    /// the constant again and [`Allocator::rewrite`] drops the
-    /// definition.
+    /// the constant again and [`Allocator::rewrite`] leaves the
+    /// definition out of the frame.
     fn rematerialized(&self, value: VReg) -> bool {
         self.spilled
             .get(value.index())
@@ -1058,6 +1309,18 @@ impl<'a> Allocator<'a> {
                 .unwrap_or(self.registers.pointer_size),
         }
     }
+}
+
+/// Whether an operation ends a block.
+///
+/// A value the terminator defines is not saved in the frame: nothing
+/// may follow the terminator, and no instruction of the function is
+/// left to read the value.
+fn is_terminator(op: &MOp) -> bool {
+    matches!(
+        op,
+        MOp::Br { .. } | MOp::CondBr | MOp::CondBrCmp { .. } | MOp::Ret | MOp::RetVoid | MOp::Unreachable
+    )
 }
 
 /// Fuses an integer comparison with the conditional branch that
@@ -1203,28 +1466,36 @@ fn fuse_compare_branches(function: &mut MirFunction) {
 /// the operation the same register, and the back end drops the copy.
 ///
 /// Only an operation whose first operand has a single definition and is
-/// read for the last time by the operation, and whose destination has a
-/// single definition, is rewritten.  The machine code is not in static
-/// single assignment form — a phi is lowered to one copy per predecessor
-/// block — so a register written by several instructions cannot be
-/// renamed without changing the values its uses read, and the old value
-/// of the first operand is dead after the operation only when the
-/// operation is its last use.
+/// dead after the operation — read for the last time on every control
+/// flow path — and whose destination has a single definition, is
+/// rewritten.  The machine code is not in static single assignment form
+/// — a phi is lowered to one copy per predecessor block — so a register
+/// written by several instructions cannot be renamed without changing
+/// the values its uses read, and the old value of the first operand is
+/// dead only when no instruction that still reads it can run after the
+/// operation.
+///
+/// The deadness test follows the control-flow graph, not the layout: a
+/// loop body is laid out before the block that branches back to it, so
+/// a use that sits textually earlier still runs on the next iteration
+/// and keeps the operand alive.  The operation's own read of the operand
+/// counts as such a use, because the loop runs the operation again —
+/// unless the block also defines the operand, in which case the block
+/// gives the operand its value again before the operation reads it.
 ///
 /// Only the two-address operations are rewritten.  A shift or a division
 /// reads a fixed register in its back end and is not two-address in the
 /// same way.
 ///
-/// The pass runs to a fixpoint and recomputes the definition and the last
-/// use of every register on each round, so a rewrite can expose the
-/// operation that produced the first operand as reusable in turn.  Every
-/// round leaves one fewer register defined, so the loop terminates.
+/// The pass runs to a fixpoint and recomputes the definition of every
+/// register on each round, so a rewrite can expose the operation that
+/// produced the first operand as reusable in turn.  Every round leaves
+/// one fewer register defined, so the loop terminates.
 fn reuse_two_address_destinations(function: &mut MirFunction) {
     let count = function.vreg_types.len();
+    let successors = block_successors(function);
     loop {
         let mut defs: Vec<u32> = vec![0; count];
-        let mut last_use: Vec<u32> = vec![NOWHERE; count];
-        let mut position = 0u32;
         for block in &function.blocks {
             for inst in &block.insts {
                 if let Some(dest) = inst.dest_vreg()
@@ -1232,19 +1503,9 @@ fn reuse_two_address_destinations(function: &mut MirFunction) {
                 {
                     *slot = slot.saturating_add(1);
                 }
-                for operand in inst.args.as_slice() {
-                    let Some(value) = operand.virtual_reg() else {
-                        continue;
-                    };
-                    if let Some(entry) = last_use.get_mut(value.index()) {
-                        *entry = position;
-                    }
-                }
-                position = position.saturating_add(1);
             }
         }
         let mut chosen: Option<(usize, usize, VReg, VReg)> = None;
-        let mut position = 0u32;
         for (block_index, block) in function.blocks.iter().enumerate() {
             for (inst_index, inst) in block.insts.iter().enumerate() {
                 if chosen.is_none()
@@ -1257,11 +1518,17 @@ fn reuse_two_address_destinations(function: &mut MirFunction) {
                     && dest != left
                     && defs.get(left.index()).copied().unwrap_or(0) == 1
                     && defs.get(dest.index()).copied().unwrap_or(0) == 1
-                    && last_use.get(left.index()).copied() == Some(position)
+                    && operand_dead_after(
+                        function,
+                        &successors,
+                        left,
+                        block_index,
+                        inst_index,
+                        block_local_def(function, block_index, left).is_some(),
+                    )
                 {
                     chosen = Some((block_index, inst_index, dest, left));
                 }
-                position = position.saturating_add(1);
             }
         }
         let Some((block_index, inst_index, dest, left)) = chosen else {
@@ -1270,6 +1537,144 @@ fn reuse_two_address_destinations(function: &mut MirFunction) {
         function.blocks[block_index].insts[inst_index].dest = Some(Destination::Virtual(left));
         rewrite_uses(function, dest, left);
     }
+}
+
+/// The position of the instruction that defines `value` inside `block_index`.
+///
+/// The caller has already checked that the value has a single definition, so
+/// a definition in this block is that definition, and the block re-executes
+/// it before the operation reads the value again on the next iteration.
+fn block_local_def(function: &MirFunction, block_index: usize, value: VReg) -> Option<usize> {
+    function
+        .blocks
+        .get(block_index)?
+        .insts
+        .iter()
+        .position(|inst| inst.dest_vreg() == Some(value))
+}
+
+/// The successor blocks of every block of the machine function.
+///
+/// A branch that names a block the function does not have adds no
+/// successor: the reuse pass then leaves the function alone, and the
+/// allocator reports the malformed machine code when it gathers the
+/// intervals.
+fn block_successors(function: &MirFunction) -> Vec<Vec<usize>> {
+    let len = function.blocks.len();
+    let mut successors: Vec<Vec<usize>> = vec![Vec::new(); len];
+    for (index, block) in function.blocks.iter().enumerate() {
+        let fall_through = index.saturating_add(1);
+        let Some(last) = block.insts.last() else {
+            if fall_through < len
+                && let Some(list) = successors.get_mut(index)
+            {
+                list.push(fall_through);
+            }
+            continue;
+        };
+        let list = match successors.get_mut(index) {
+            Some(list) => list,
+            None => continue,
+        };
+        match last.op {
+            MOp::Br { target } => push_successor(list, target, len),
+            MOp::CondBr | MOp::CondBrCmp { .. } => {
+                if let Some((then, otherwise)) = last.cond_br_targets() {
+                    push_successor(list, then, len);
+                    push_successor(list, otherwise, len);
+                }
+            }
+            MOp::Ret | MOp::RetVoid | MOp::Unreachable => {}
+            _ => {
+                if fall_through < len {
+                    list.push(fall_through);
+                }
+            }
+        }
+    }
+    successors
+}
+
+/// Appends the branch target `target` when it names a block.
+#[inline]
+fn push_successor(list: &mut Vec<usize>, target: u32, len: usize) {
+    let index = usize::try_from(target).unwrap_or(usize::MAX);
+    if index < len {
+        list.push(index);
+    }
+}
+
+/// True when no execution that follows the instruction at
+/// `(block_index, inst_index)` reads `value` again.
+///
+/// The walk follows every control-flow edge out of the block: the
+/// blocks a loop reaches back are visited again, so a use that sits
+/// textually before the instruction is still a live use when the block
+/// runs once more.
+///
+/// The instruction itself reads `value` as its first operand, so when its
+/// block runs more than once the operand is live on the next visit even
+/// if no other instruction names it — rewriting the operation to write
+/// that operand would make the next iteration read the previous
+/// iteration's result.  `redefined_in_block` relaxes that self-read when
+/// the operation's block also defines the operand: the block then writes
+/// the operand again before the operation runs, so overwriting it in the
+/// operation stays correct.
+fn operand_dead_after(
+    function: &MirFunction,
+    successors: &[Vec<usize>],
+    value: VReg,
+    block_index: usize,
+    inst_index: usize,
+    redefined_in_block: bool,
+) -> bool {
+    let len = function.blocks.len();
+    // The blocks that can run after the instruction, starting from the
+    // instruction's own successors.
+    let mut reached = vec![false; len];
+    let mut queue: Vec<usize> = successors
+        .get(block_index)
+        .map_or_else(Vec::new, |list| list.clone());
+    while let Some(next) = queue.pop() {
+        if next >= len {
+            continue;
+        }
+        if let Some(flag) = reached.get_mut(next) {
+            if *flag {
+                continue;
+            }
+            *flag = true;
+        }
+        if let Some(list) = successors.get(next) {
+            queue.extend(list.iter().copied());
+        }
+    }
+    // The block itself among them means its earlier instructions run
+    // again on the next visit.
+    let reruns = reached.get(block_index).copied().unwrap_or(false);
+    for (index, block) in function.blocks.iter().enumerate() {
+        for (position, inst) in block.insts.iter().enumerate() {
+            if !inst
+                .args
+                .as_slice()
+                .contains(&Operand::Virtual(value))
+            {
+                continue;
+            }
+            if index == block_index {
+                if position == inst_index && reruns {
+                    if !redefined_in_block {
+                        return false;
+                    }
+                } else if position > inst_index || (position < inst_index && reruns) {
+                    return false;
+                }
+            } else if reached.get(index).copied().unwrap_or(false) {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// Replaces every use of `dest` with `src`.
@@ -1664,6 +2069,92 @@ mod tests {
             allocator.pick_victim(RegClass::Integer, 10),
             Some(read_here),
             "the value that is read here is spilled when it is the only candidate"
+        );
+    }
+
+    /// A loop whose body keeps more values alive than the file holds.
+    ///
+    /// `carried` is defined before the loop and read on every
+    /// iteration; `first` and `second` are constants that live only
+    /// inside one iteration.  Two integer registers cannot hold all
+    /// three values at once, so the allocator has to give one of them
+    /// up.
+    fn loop_pressure_function() -> (MirFunction, VReg) {
+        let mut function = MirFunction::new("looping");
+        let carried = function.new_vreg(MType::I32);
+        let first = function.new_vreg(MType::I32);
+        let second = function.new_vreg(MType::I32);
+        let shifted = function.new_vreg(MType::I32);
+        let total = function.new_vreg(MType::I32);
+        let mut entry = MirBlock::new("entry");
+        // A copy of a physical register: the allocator cannot recompute
+        // the carried value, so spilling it would cost a frame slot.
+        entry.insts.push(MInst::def(
+            carried,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Physical(PReg::new(20))),
+        ));
+        entry
+            .insts
+            .push(MInst::none(MType::Void, MOp::Br { target: 1 }, Operands::none()));
+        let mut body = MirBlock::new("body");
+        body.insts.push(MInst::def(
+            first,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(1)),
+        ));
+        body.insts.push(MInst::def(
+            second,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(2)),
+        ));
+        body.insts.push(MInst::def(
+            shifted,
+            MType::I32,
+            MOp::Shl,
+            Operands::two(Operand::Virtual(carried), Operand::Virtual(first)),
+        ));
+        body.insts.push(MInst::def(
+            total,
+            MType::I32,
+            MOp::Shl,
+            Operands::two(Operand::Virtual(shifted), Operand::Virtual(second)),
+        ));
+        body.insts
+            .push(MInst::none(MType::Void, MOp::Br { target: 1 }, Operands::none()));
+        function.push_block(entry);
+        function.push_block(body);
+        (function, carried)
+    }
+
+    /// A value that is live across a loop back edge keeps its register.
+    ///
+    /// The register of the carried value must not be handed to a value
+    /// that is only live inside one iteration: the next iteration would
+    /// read the carried value from a register the body has since
+    /// overwritten.
+    #[test]
+    fn a_value_live_across_a_loop_back_edge_is_never_spilled() {
+        let (mut function, carried) = loop_pressure_function();
+        let registers = model(2);
+        let mut allocator = Allocator::new(&registers);
+        let stats = allocator
+            .allocate_function(&mut function)
+            .expect("the allocation succeeds");
+        assert!(
+            stats.spills > 0,
+            "the loop body needs more values than the file holds"
+        );
+        assert!(
+            allocator.loop_carried[carried.index()],
+            "the value the loop carries is marked as loop-carried"
+        );
+        assert!(
+            !allocator.spilled[carried.index()],
+            "the value the loop carries kept its register"
         );
     }
 
@@ -2208,6 +2699,60 @@ mod tests {
         );
     }
 
+    /// The self-copy a loop header carries for its back edge is deleted.
+    ///
+    /// A phi lowering writes one copy of the carried register per
+    /// predecessor, and the header's own back edge copies it onto itself
+    /// when the incoming value is the carried value.  That copy has two
+    /// definitions of its destination, so the rule that a destination be
+    /// defined once refuses to forward it and it survives as a `mov reg,
+    /// reg` in the loop header of the compiled matcher.  It is a no-op
+    /// whatever the counts are, so it is dropped without forwarding.
+    #[test]
+    fn a_self_copy_of_a_rewritten_register_is_deleted() {
+        let mut function = MirFunction::new("looping");
+        let carried = function.new_vreg(MType::I32);
+        let sum = function.new_vreg(MType::I32);
+        let mut entry = MirBlock::new("entry");
+        entry.insts.push(MInst::def(
+            carried,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Physical(PReg::new(20))),
+        ));
+        entry
+            .insts
+            .push(MInst::none(MType::Void, MOp::Br { target: 1 }, Operands::none()));
+        let mut header = MirBlock::new("header");
+        header.insts.push(MInst::def(
+            carried,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Virtual(carried)),
+        ));
+        header.insts.push(MInst::def(
+            sum,
+            MType::I32,
+            MOp::Add,
+            Operands::two(Operand::Virtual(carried), Operand::Immediate(1)),
+        ));
+        header
+            .insts
+            .push(MInst::none(MType::Void, MOp::Br { target: 1 }, Operands::none()));
+        function.push_block(entry);
+        function.push_block(header);
+        coalesce(&mut function);
+        assert_eq!(copies(&function), 1, "only the entry copy is left");
+        assert!(
+            matches!(function.blocks[1].insts[0].op, MOp::Add),
+            "the header starts at the value that reads the carried register"
+        );
+        assert!(
+            defined(&function).contains(&carried),
+            "the carried register is still defined"
+        );
+    }
+
     #[test]
     fn a_copy_from_an_immediate_is_kept() {
         let mut function = MirFunction::new("immediate");
@@ -2659,6 +3204,207 @@ mod tests {
         assert!(
             defined(&function).contains(&sum),
             "the destination is still defined"
+        );
+    }
+
+    /// A function whose last addition, in the layout, reads an operand
+    /// that a block laid out before it reads again when the loop runs
+    /// once more through the back edge.
+    fn back_edge_function() -> MirFunction {
+        let mut function = MirFunction::new("back_edge");
+        let left = function.new_vreg(MType::I32);
+        let right = function.new_vreg(MType::I32);
+        let early = function.new_vreg(MType::I32);
+        let late = function.new_vreg(MType::I32);
+        let condition = function.new_vreg(MType::I1);
+        let mut entry = MirBlock::new("entry");
+        entry.insts.push(MInst::def(
+            left,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(1)),
+        ));
+        entry.insts.push(MInst::def(
+            right,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(2)),
+        ));
+        entry
+            .insts
+            .push(MInst::none(MType::Void, MOp::Br { target: 1 }, Operands::none()));
+        function.push_block(entry);
+        let mut header = MirBlock::new("header");
+        header.insts.push(MInst::def(
+            condition,
+            MType::I1,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(1)),
+        ));
+        header.insts.push(MInst::none(
+            MType::Void,
+            MOp::CondBr,
+            Operands::three(
+                Operand::Virtual(condition),
+                Operand::Immediate(2),
+                Operand::Immediate(3),
+            ),
+        ));
+        function.push_block(header);
+        let mut early_block = MirBlock::new("early");
+        early_block.insts.push(MInst::def(
+            early,
+            MType::I32,
+            MOp::Add,
+            Operands::two(Operand::Virtual(left), Operand::Virtual(right)),
+        ));
+        early_block
+            .insts
+            .push(MInst::none(MType::Void, MOp::Br { target: 4 }, Operands::none()));
+        function.push_block(early_block);
+        // The last addition in the layout branches back to the header,
+        // so the earlier block — and its read of the operand — runs
+        // again after the addition.
+        let mut late_block = MirBlock::new("late");
+        late_block.insts.push(MInst::def(
+            late,
+            MType::I32,
+            MOp::Add,
+            Operands::two(Operand::Virtual(left), Operand::Virtual(right)),
+        ));
+        late_block
+            .insts
+            .push(MInst::none(MType::Void, MOp::Br { target: 1 }, Operands::none()));
+        function.push_block(late_block);
+        let mut exit = MirBlock::new("exit");
+        exit.insts.push(MInst::none(
+            MType::Void,
+            MOp::Ret,
+            Operands::one(Operand::Virtual(early)),
+        ));
+        function.push_block(exit);
+        function
+    }
+
+    #[test]
+    fn a_two_address_operation_keeps_an_operand_live_through_a_back_edge() {
+        let mut function = back_edge_function();
+        reuse_two_address_destinations(&mut function);
+        let late = VReg::new(3);
+        let adds: Vec<&MInst> = function
+            .blocks
+            .iter()
+            .flat_map(|block| block.insts.iter())
+            .filter(|inst| matches!(inst.op, MOp::Add))
+            .collect();
+        assert_eq!(adds.len(), 2, "both additions survive");
+        assert_eq!(
+            adds[1].dest_vreg(),
+            Some(late),
+            "the operand is read again when the loop runs, so the addition keeps its own destination"
+        );
+        assert!(
+            defined(&function).contains(&late),
+            "the destination is still defined"
+        );
+    }
+
+    #[test]
+    fn a_two_address_operation_keeps_an_operand_used_by_a_rerun_of_its_block() {
+        let mut function = MirFunction::new("self_loop");
+        let left = function.new_vreg(MType::I32);
+        let step = function.new_vreg(MType::I32);
+        let total = function.new_vreg(MType::I32);
+        let mut entry = MirBlock::new("entry");
+        entry.insts.push(MInst::def(
+            left,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(1)),
+        ));
+        entry
+            .insts
+            .push(MInst::none(MType::Void, MOp::Br { target: 1 }, Operands::none()));
+        function.push_block(entry);
+        // The body reads the operand twice and then branches back to
+        // itself: the first read runs again after the second one.
+        let mut body = MirBlock::new("body");
+        body.insts.push(MInst::def(
+            step,
+            MType::I32,
+            MOp::Add,
+            Operands::two(Operand::Virtual(left), Operand::Immediate(1)),
+        ));
+        body.insts.push(MInst::def(
+            total,
+            MType::I32,
+            MOp::Add,
+            Operands::two(Operand::Virtual(left), Operand::Virtual(step)),
+        ));
+        body.insts
+            .push(MInst::none(MType::Void, MOp::Br { target: 1 }, Operands::none()));
+        function.push_block(body);
+        reuse_two_address_destinations(&mut function);
+        let adds: Vec<&MInst> = function
+            .blocks
+            .iter()
+            .flat_map(|block| block.insts.iter())
+            .filter(|inst| matches!(inst.op, MOp::Add))
+            .collect();
+        assert_eq!(adds.len(), 2, "both additions survive");
+        assert_eq!(
+            adds[1].dest_vreg(),
+            Some(total),
+            "the block runs again, so the earlier read keeps the operand alive"
+        );
+    }
+
+    #[test]
+    fn a_two_address_operation_writes_into_an_operand_dead_in_later_blocks() {
+        let mut function = MirFunction::new("falling");
+        let left = function.new_vreg(MType::I32);
+        let right = function.new_vreg(MType::I32);
+        let sum = function.new_vreg(MType::I32);
+        let mut entry = MirBlock::new("entry");
+        entry.insts.push(MInst::def(
+            left,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(1)),
+        ));
+        entry.insts.push(MInst::def(
+            right,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(2)),
+        ));
+        entry
+            .insts
+            .push(MInst::none(MType::Void, MOp::Br { target: 1 }, Operands::none()));
+        function.push_block(entry);
+        let mut body = MirBlock::new("body");
+        body.insts.push(MInst::def(
+            sum,
+            MType::I32,
+            MOp::Add,
+            Operands::two(Operand::Virtual(left), Operand::Virtual(right)),
+        ));
+        body.insts
+            .push(MInst::none(MType::Void, MOp::Br { target: 2 }, Operands::none()));
+        function.push_block(body);
+        let mut exit = MirBlock::new("exit");
+        exit.insts.push(MInst::none(
+            MType::Void,
+            MOp::Ret,
+            Operands::one(Operand::Virtual(sum)),
+        ));
+        function.push_block(exit);
+        reuse_two_address_destinations(&mut function);
+        let add = operation(&function, |op| matches!(op, MOp::Add)).expect("the addition survives");
+        assert_eq!(
+            add.dest_vreg(),
+            Some(left),
+            "no block the addition can reach reads the operand again"
         );
     }
 

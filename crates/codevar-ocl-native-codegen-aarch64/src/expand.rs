@@ -568,6 +568,8 @@ impl<'a> Expander<'a> {
             MOp::FPTrunc => self.expand_fp_trunc(inst),
             MOp::FPExt => self.expand_fp_ext(inst),
             MOp::Bitcast => self.expand_bitcast(inst),
+            MOp::IntToPtr => self.expand_int_to_ptr(inst),
+            MOp::PtrToInt => self.expand_ptr_to_int(inst),
             MOp::Call { callee } => self.expand_call(inst, *callee),
             MOp::WorkItemLoad { field, lane } => self.expand_work_item(inst, *field, *lane),
             MOp::ArgBlockBase => self.expand_arg_base(inst),
@@ -2002,6 +2004,36 @@ impl<'a> Expander<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Expands an integer-to-pointer conversion.
+    fn expand_int_to_ptr(&mut self, inst: &MInst) -> Result<()> {
+        let operand = self.arg(inst, 0)?;
+        let source = self.loc(operand)?;
+        if let (Some(Loc::Gpr(target)), Loc::Gpr(reg)) = (self.dest(inst)?, source) {
+            self.enc().mov_reg(target, reg, Width::Bits64);
+            Ok(())
+        } else {
+            Err(CodegenError::Target {
+                what: "integer to pointer conversion",
+                detail: alloc::string::String::from("expected GPR destination and source"),
+            })
+        }
+    }
+
+    /// Expands a pointer-to-integer conversion.
+    fn expand_ptr_to_int(&mut self, inst: &MInst) -> Result<()> {
+        let operand = self.arg(inst, 0)?;
+        let source = self.loc(operand)?;
+        if let (Some(Loc::Gpr(target)), Loc::Gpr(reg)) = (self.dest(inst)?, source) {
+            self.enc().mov_reg(target, reg, Width::Bits64);
+            Ok(())
+        } else {
+            Err(CodegenError::Target {
+                what: "pointer to integer conversion",
+                detail: alloc::string::String::from("expected GPR destination and source"),
+            })
+        }
     }
 
     /// Expands a call.

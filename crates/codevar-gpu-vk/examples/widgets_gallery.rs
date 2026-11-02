@@ -72,11 +72,10 @@ use codevar_gpu_vk::pipeline::{OwnedFd, PipelineContext, RenderTarget};
 use codevar_gpu_vk::ui::{UiFrame, UiPipe};
 use codevar_kuitui::color::Color;
 use codevar_kuitui::event::{Event, PointerButton, PointerButtons, PointerEvent, PointerEventKind};
-use codevar_kuitui::geometry::{Alignment, EdgeInsets, Offset, Rect, Size};
+use codevar_kuitui::geometry::{Alignment, EdgeInsets, Offset, Size};
 use codevar_kuitui::host::WidgetHost;
 use codevar_kuitui::input::Timestamp;
 use codevar_kuitui::node::{Modifier, Node};
-use codevar_kuitui::paint::{CornerRadii, Paint};
 use codevar_kuitui::prelude::{
     ColorScheme, FontMetrics, InteractionSource, MutableState, ReactiveComposition, Recomposition, Theme,
     kuitui_element,
@@ -143,8 +142,12 @@ const PRESENT_SLOTS: usize = 3;
 const GPU_SYNC_TIMEOUT_MS: i32 = 5_000;
 /// Largest format table the example is willing to allocate.
 const MAX_FORMAT_TABLE_BYTES: usize = 1 << 20;
-/// The window background, shared by the two pipes.
+/// The window background; the UI pipe clears to it, so it is the base layer
+/// the text pipe composites over.
 const BACKGROUND: [f32; 4] = [0.10, 0.11, 0.14, 1.0];
+/// The clear color of the text pipe: transparent, so the glyphs land on the
+/// UI layer instead of replacing it.
+const TEXT_CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
 /// The tone of the captions: the muted text color of the dark scheme the
 /// widgets are drawn with, so a caption is dimmer than the value it names.
 const MUTED: Color = ColorScheme::dark().on_surface_variant;
@@ -710,7 +713,7 @@ fn run() -> ExampleResult<String> {
         ui_pipe.set_clear(BACKGROUND);
         compositor.add_pipe(ui_pipe)?;
         let mut text_pipe = TextPipe::new(pipeline, text_frame.clone())?;
-        text_pipe.set_clear(BACKGROUND);
+        text_pipe.set_clear(TEXT_CLEAR);
         compositor.add_pipe(text_pipe)?;
         let (buffer, released) =
             import_buffer(&mut display, dmabuf, pipeline.present_target(), width, height)?;
@@ -728,14 +731,7 @@ fn run() -> ExampleResult<String> {
     // cold rasterization each atlas pays once belongs here, not inside the
     // frames being measured.
     for slot in &mut slots {
-        record_frame(
-            &mut composition,
-            &ui_frame,
-            &slot.text_frame,
-            font.as_ref(),
-            size,
-            true,
-        )?;
+        record_frame(&mut composition, &ui_frame, &slot.text_frame, font.as_ref(), true)?;
     }
     let mut frames = 0_u32;
     // Where a frame's time goes, accumulated so the report names the stage
@@ -840,7 +836,6 @@ fn run() -> ExampleResult<String> {
             &ui_frame,
             &slot.text_frame,
             font.as_ref(),
-            size,
             rebuilt || written || animated,
         )?;
         record_time += stage.elapsed();
@@ -1041,7 +1036,6 @@ fn gallery_content(gallery: Gallery) -> impl Fn(&mut RenderCtx<'_>) -> Element<W
                 alignment: Alignment::TOP_START
             ) {
                 Text("Kuitui widgets on Vulkan", color: Color::WHITE)
-                Text("Checkbox, radio group and slider through UiPipe and TextPipe.", color: MUTED)
                 Row(spacing: CONTROL_SPACING, alignment: Alignment::CENTER) {
                     Checkbox(
                         toggle: all.clone(),
@@ -1338,7 +1332,6 @@ fn record_frame(
     ui_frame: &UiFrame,
     text_frame: &TextFrame,
     font: &Font,
-    size: Size,
     reshape: bool,
 ) -> ExampleResult<()> {
     if reshape {
@@ -1347,11 +1340,6 @@ fn record_frame(
     }
     ui_frame.with(|list| -> ExampleResult<()> {
         composition.render(list);
-        list.rect(
-            Rect::new(Offset::ZERO, size),
-            CornerRadii::ZERO,
-            Paint::fill(Color::from_rgba8(26, 28, 36, 255)),
-        );
         if reshape {
             shape_list(text_frame, font, list)?;
             text_frame.mark_dirty();

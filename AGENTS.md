@@ -44,7 +44,7 @@ CI (`.github/workflows/rust.yml`) runs build, test, `cargo fmt --check`, and cli
 
 ### Scoped commands (preferred while working)
 
-The workspace has 53 crates and ~215k lines of code. A full-workspace check costs
+The workspace has 63 crates and ~344k lines of code. A full-workspace check costs
 minutes; a per-crate check costs seconds. Scope every command to the crates you
 actually touched, and run the full workspace check once at the end of the task.
 
@@ -151,7 +151,7 @@ allocation off the hot path.
 
 ### Context loading
 
-The codebase is ~293k lines across 53 crates. **Never try to read the whole repository
+The codebase is ~344k lines across 63 crates. **Never try to read the whole repository
 and never paste a whole crate into context.** Instead:
 
 1. Identify the crate that owns the change and read only that crate.
@@ -173,26 +173,26 @@ and never paste a whole crate into context.** Instead:
 This repository ships OpenCode configuration under `.opencode/`. It is the reference
 tooling for AI agents working here; other harnesses should follow the same rules.
 
-| Path | Purpose |
-| --- | --- |
-| `.opencode/opencode.jsonc` | Project config: agents, permissions, instructions, worktree layout |
-| `.opencode/skills/<id>/SKILL.md` | Task skills, loaded on demand with the `skill` tool |
-| `.opencode/agents/*.md` | Subagents (reviewer, verifier) |
-| `.opencode/commands/*.md` | Slash commands (`/commit`, `/check`, `/review`, `/crate`) |
+| Path                             | Purpose                                                            |
+|----------------------------------|--------------------------------------------------------------------|
+| `.opencode/opencode.jsonc`       | Project config: agents, permissions, instructions, worktree layout |
+| `.opencode/skills/<id>/SKILL.md` | Task skills, loaded on demand with the `skill` tool                |
+| `.opencode/agents/*.md`          | Subagents (reviewer, verifier)                                     |
+| `.opencode/commands/*.md`        | Slash commands (`/commit`, `/check`, `/review`, `/crate`)          |
 
 **Skills.** A skill is a directory under `.opencode/skills/` containing a `SKILL.md`.
 The skill ID is the directory name (lowercase, kebab-case). Skills are advertised to
 the agent by their `description`; load one explicitly with the `skill` tool by ID, or
 by mentioning `@<skill-id>` in a prompt.
 
-| Skill ID | Load it when |
-| --- | --- |
-| `commit-discipline` | Committing work, or when the diff is growing past ~800 lines |
-| `crate-context` | Before editing any crate, to load its API surface, deps, and invariants |
-| `verify` | Before declaring a task complete, or when a check fails |
-| `unsafe-audit` | Adding, changing, or reviewing `unsafe` code |
-| `new-crate` | Scaffolding a new crate in the workspace |
-| `public-api` | Changing a public API, or reviewing whether a change breaks callers |
+| Skill ID            | Load it when                                                            |
+|---------------------|-------------------------------------------------------------------------|
+| `commit-discipline` | Committing work, or when the diff is growing past ~800 lines            |
+| `crate-context`     | Before editing any crate, to load its API surface, deps, and invariants |
+| `verify`            | Before declaring a task complete, or when a check fails                 |
+| `unsafe-audit`      | Adding, changing, or reviewing `unsafe` code                            |
+| `new-crate`         | Scaffolding a new crate in the workspace                                |
+| `public-api`        | Changing a public API, or reviewing whether a change breaks callers     |
 
 **Commands.** Run from the TUI: `/commit` (checkpoint the current work within the
 commit budget), `/check` (scoped verification for the affected crates), `/review`
@@ -302,23 +302,27 @@ and knowing *why* it is not — matters as much as any GPU optimization. Use
 queue or a priority loop.
 
 **Scheduling multiple tasks on one core (program level).** `codevar-inssched`
-exposes a program-level `Kernel` that multiplexes many tasks on a single core
-the way an operating system does on a uniprocessor: it hands the core out in
-time slices, lets a `Timer` interrupt a slice, saves and restores a task's CPU
-context on a switch, and chooses the next task with a `SchedulePolicy`.
+exposes a program-level `Executor` that runs Rust futures on a single core:
+it polls ready tasks, parks a task when its future returns `Pending`, resumes
+it when its waker fires, and chooses the next ready task with a
+`SchedulePolicy`. Scheduling is cooperative — a future runs until it yields or
+returns `Pending`, and the virtual `Timer` supplies deterministic delays
+without a real clock.
 
 - Reach for `codevar_inssched::policy::RoundRobin` for fair, equal-share work,
-  `Priority` when critical system work must preempt background work, and
+  `Priority` when critical system work must run before background work, and
   `ShortestJobFirst` when average waiting time is the metric that matters.
-- Model each unit of work as a `Task` with a realistic `burst`; derive that
-  burst from real code with `Task::burst_from_block` so the numbers track the
+- Model each unit of work as a `Task` with a realistic `cost`; derive that cost
+  from real code with `Task::cost_from_block` so the numbers track the
   instruction schedule instead of guesses.
-- Call `Kernel::block` when a task waits on I/O instead of spinning. A busy
-  wait burns the slice the blocked task would have released.
-- Pick a `Config::quantum` that is a few times the context-switch cost: too
-  small and switch overhead dominates, too large and the core stops being fair.
-- Never busy-wait between tasks; if nothing is runnable, let the kernel idle or
-  block rather than spin.
+- Await instead of spinning. A future that returns `Pending` is parked until
+  its waker fires, and `Timer::sleep` provides a deadline the executor can
+  advance to. Busy-waiting keeps the task runnable and burns CPU.
+- Keep `Config::poll_cost` realistic and `Config::switch_cost` small relative
+  to the work between polls; every poll is charged to the task, and a wake
+  that changes the running task pays the switch.
+- Never poll a task that cannot make progress; use `yield_now` to share the
+  core cooperatively and let the executor idle when nothing is runnable.
 
 **Ordering instructions inside a task (instruction level).** Order each task's
 straight-line block before running it, so latency is hidden instead of stalled:
@@ -330,11 +334,13 @@ straight-line block before running it, so latency is hidden instead of stalled:
 - Use `SourceOrder` when scheduling is not known to help; it repairs stalls
   without reordering.
 
-**Measure, do not guess.** `Kernel::run` returns `Stats`; read
-`cpu_utilization`, `idle_cycles`, `overhead_cycles`, `context_switches`, and
-`average_waiting` to find the bottleneck before tuning a quantum or a policy.
+**Measure, do not guess.** `Executor::run` returns `Result<Stats,
+ExecutorError>` and `run_until_idle` returns `Stats`; read `cpu_utilization`,
+`idle_cycles`, `overhead_cycles`, `context_switches`, `polls`, and
+`average_waiting` to find the bottleneck before tuning a policy or a cost.
 High `idle_cycles` with runnable work means a scheduling bug, high
-`overhead_cycles` means the quantum is too small, and high `average_waiting`
+`overhead_cycles` means switches are too frequent, a high `polls` count per
+unit of work means a future is yielding too often, and high `average_waiting`
 means the policy is starving a task. Profile CPU changes the same way GPU
 changes are profiled.
 

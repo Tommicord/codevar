@@ -23,7 +23,6 @@
 //! * `simd/*`  - UTF-8 scanning, byte search/count/filter, checksum, hash
 //! * `arch/*`  - assembly `memcpy`/`memmove`/`memchr` vs the libc path
 //! * `codec/*` - path-name compression / decompression
-//! * `change/*`- capped Levenshtein distance
 //! * `storage/*` - in-memory block device read/write
 
 use std::hint::black_box;
@@ -31,7 +30,6 @@ use std::hint::black_box;
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 use codevar_wredit::arch;
-use codevar_wredit::change::{ChangeFlags, change_distance};
 use codevar_wredit::compress::{compress, decompress};
 use codevar_wredit::simd;
 use codevar_wredit::storage::{DiskFs, MemoryDisk};
@@ -307,29 +305,6 @@ fn bench_codec(c: &mut Criterion) {
     group.finish();
 }
 
-/// Capped Levenshtein distance over text-sized inputs.
-fn bench_change(c: &mut Criterion) {
-    let mut group = c.benchmark_group("change/levenshtein");
-    for &len in &[64usize, 256, 1024] {
-        let a: Vec<u32> = (0..len as u32).map(|value| value % 13).collect();
-        let b: Vec<u32> = (0..len as u32)
-            .map(|value| (value * 5) % 13)
-            .collect();
-        group.throughput(Throughput::Elements(len as u64));
-        group.bench_with_input(BenchmarkId::from_parameter(len), &(a, b), |bencher, (a, b)| {
-            bencher.iter(|| {
-                black_box(change_distance(
-                    black_box(a),
-                    black_box(b),
-                    8,
-                    ChangeFlags::DEFAULT,
-                ))
-            });
-        });
-    }
-    group.finish();
-}
-
 /// In-memory block-device reads and writes through `DiskFs`.
 fn bench_storage(c: &mut Criterion) {
     const BLOCKS: u64 = 16_384;
@@ -398,7 +373,6 @@ criterion_group!(
     bench_arch_copy,
     bench_arch_memchr,
     bench_codec,
-    bench_change,
     bench_storage,
 );
 criterion_main!(benches);

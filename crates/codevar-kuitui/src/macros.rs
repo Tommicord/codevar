@@ -48,6 +48,10 @@
 //! `Column(spacing: 8.0)` calls `Column::new().spacing(8.0)`. The
 //! first argument may be `modifier:`, which decorates the node the
 //! widget ends up in.
+//!
+//! A widget library that builds its nodes outside the macro (a button
+//! that answers a trait, for example) is spliced into a children block
+//! with `Node(expr)`, which takes any expression of type [`Node`].
 
 /// Builds a tree of widgets.
 ///
@@ -64,8 +68,25 @@
 ///     }
 /// };
 /// ```
+///
+/// A node built by another library is spliced in with `Node(expr)`:
+///
+/// ```
+/// use codevar_kuitui::prelude::*;
+/// use codevar_kuitui::node::Node;
+///
+/// let label = Node::new(Text::new("Save"));
+/// let tree = kuitui! {
+///     Column {
+///         Node(label)
+///     }
+/// };
+/// ```
 #[macro_export]
 macro_rules! kuitui {
+    (Node ( $($node:tt)* )) => {{
+        $($node)*
+    }};
     ($name:ident (modifier : $modifier:expr $(, $arg:ident : $value:expr)* $(,)?)
      $( { $($child:tt)* } )?) => {{
         $crate::__private::kuitui_node_with_modifier(
@@ -110,6 +131,12 @@ macro_rules! __kuitui_children {
     () => {
         $crate::__private::empty_children()
     };
+    (Node ( $($node:tt)* ) $($rest:tt)*) => {{
+        let mut __children = $crate::__private::empty_children();
+        __children.push($($node)*);
+        $crate::__private::append_children(&mut __children, $crate::__kuitui_children!($($rest)*));
+        __children
+    }};
     ($name:ident { $($inner:tt)* } $($rest:tt)*) => {{
         let mut __children = $crate::__private::empty_children();
         __children.push($crate::kuitui!($name { $($inner)* }));
@@ -231,6 +258,27 @@ mod tests {
         let mut tree = tree;
         let size = tree.measure(&theme, Constraints::unbounded());
         assert!(size.width > 0.0);
+    }
+
+    #[test]
+    fn the_macro_splices_a_node_built_outside_it() {
+        let label = crate::node::Node::new(crate::widgets::Text::new("one"));
+        let tree = crate::kuitui! {
+            Column {
+                Node(label)
+                Text("two")
+            }
+        };
+        assert_eq!(tree.children().len(), 2);
+    }
+
+    #[test]
+    fn the_macro_returns_a_spliced_node_on_its_own() {
+        let label = crate::node::Node::new(crate::widgets::Text::new("one"));
+        let tree = crate::kuitui! {
+            Node(label)
+        };
+        assert_eq!(tree.children().len(), 0);
     }
 
     #[test]

@@ -34,7 +34,7 @@
 //! Run it inside a Wayland session:
 //!
 //! ```text
-//! cargo run -p codevar-launcher --example present_hit
+//! cargo run -p codevar-gpu-vk --example render_hit
 //! ```
 
 use std::cell::{Cell, RefCell};

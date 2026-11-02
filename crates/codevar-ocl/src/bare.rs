@@ -79,10 +79,10 @@ static DEVICE_INFO: DeviceInfo = DeviceInfo::new(
     PLATFORM_VENDOR,
     bare_sys::DEVICE_TYPE_CPU,
     1,
-    256,
-    256 * 1024 * 1024,
-    64 * 1024,
-    1024,
+    0x100,
+    0x10000000,
+    0x10000,
+    0x400,
 );
 
 /// Casts a bare entry point to the signature of this crate.

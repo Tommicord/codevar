@@ -31,7 +31,7 @@
 //!
 //! let output = parse("a*b");
 //! assert!(output.errors.is_empty());
-//! assert!(matches!(output.ast, Regex { branch: _, .. }));
+//! assert!(matches!(output.ast, Regex { branches: _, .. }));
 //! ```
 
 #![cfg_attr(not(test), no_std)]
@@ -110,7 +110,7 @@ mod tests {
     fn empty_pattern_parses() {
         let output = parse("");
         assert!(output.errors.is_empty());
-        assert!(matches!(output.ast, Regex { branch, .. } if branch.pieces.is_empty()));
+        assert!(matches!(output.ast, Regex { branches, .. } if branches[0].pieces.is_empty()));
     }
 
     #[test]
@@ -119,8 +119,8 @@ mod tests {
         assert!(output.errors.is_empty());
         assert!(matches!(
             output.ast,
-            Regex { branch: ref b, .. } if b.pieces.len() == 1
-                && matches!(b.pieces[0].atom, Atom::Literal('a'))
+            Regex { branches: ref b, .. } if b[0].pieces.len() == 1
+                && matches!(b[0].pieces[0].atom, Atom::Literal('a'))
         ));
     }
 
@@ -130,7 +130,7 @@ mod tests {
         assert!(output.errors.is_empty());
         assert!(matches!(
             output.ast,
-            Regex { branch: ref b, .. } if b.pieces.len() == 3
+            Regex { branches: ref b, .. } if b[0].pieces.len() == 3
         ));
     }
 
@@ -138,14 +138,28 @@ mod tests {
     fn alternation_two_branches() {
         let output = parse("a|b");
         assert!(output.errors.is_empty());
-        assert!(matches!(output.ast, Regex { branch: ref b, .. } if b.pieces.len() == 2));
+        assert_eq!(output.ast.branches.len(), 2);
+        assert!(
+            output
+                .ast
+                .branches
+                .iter()
+                .all(|b| b.pieces.len() == 1)
+        );
     }
 
     #[test]
     fn alternation_three_branches() {
         let output = parse("a|b|c");
         assert!(output.errors.is_empty());
-        assert!(matches!(output.ast, Regex { branch: ref b, .. } if b.pieces.len() == 3));
+        assert_eq!(output.ast.branches.len(), 3);
+        assert!(
+            output
+                .ast
+                .branches
+                .iter()
+                .all(|b| b.pieces.len() == 1)
+        );
     }
 
     #[test]
@@ -177,7 +191,7 @@ mod tests {
         assert!(output.errors.is_empty());
         assert!(matches!(
             output.ast,
-            Regex { branch: ref b, .. } if b.pieces[0].quantifier.is_none()
+            Regex { branches: ref b, .. } if b[0].pieces[0].quantifier.is_none()
         ));
     }
 
@@ -187,7 +201,7 @@ mod tests {
         assert!(output.errors.is_empty());
         assert!(matches!(
             output.ast,
-            Regex { branch: ref b, .. } if matches!(b.pieces[0].quantifier, Some(Quantifier::Star))
+            Regex { branches: ref b, .. } if matches!(b[0].pieces[0].quantifier, Some(Quantifier::Star))
         ));
         assert!(output.ast.matches_empty());
     }
@@ -198,7 +212,7 @@ mod tests {
         assert!(output.errors.is_empty());
         assert!(matches!(
             output.ast,
-            Regex { branch: ref b, .. } if matches!(b.pieces[0].quantifier, Some(Quantifier::Plus))
+            Regex { branches: ref b, .. } if matches!(b[0].pieces[0].quantifier, Some(Quantifier::Plus))
         ));
     }
 
@@ -208,7 +222,7 @@ mod tests {
         assert!(output.errors.is_empty());
         assert!(matches!(
             output.ast,
-            Regex { branch: ref b, .. } if matches!(b.pieces[0].quantifier, Some(Quantifier::Question))
+            Regex { branches: ref b, .. } if matches!(b[0].pieces[0].quantifier, Some(Quantifier::Question))
         ));
         assert!(output.ast.matches_empty());
     }
@@ -219,7 +233,7 @@ mod tests {
         assert!(output.errors.is_empty());
         assert!(matches!(
             output.ast,
-            Regex { branch: ref b, .. } if matches!(b.pieces[0].quantifier, Some(Quantifier::Range { min: 3, max: None }))
+            Regex { branches: ref b, .. } if matches!(b[0].pieces[0].quantifier, Some(Quantifier::Range { min: 3, max: None }))
         ));
     }
 
@@ -229,7 +243,7 @@ mod tests {
         assert!(output.errors.is_empty());
         assert!(matches!(
             output.ast,
-            Regex { branch: ref b, .. } if matches!(b.pieces[0].quantifier, Some(Quantifier::Range { min: 2, max: Some(4) }))
+            Regex { branches: ref b, .. } if matches!(b[0].pieces[0].quantifier, Some(Quantifier::Range { min: 2, max: Some(4) }))
         ));
     }
 
@@ -239,7 +253,7 @@ mod tests {
         assert!(output.errors.is_empty());
         assert!(matches!(
             output.ast,
-            Regex { branch: ref b, .. } if matches!(b.pieces[0].quantifier, Some(Quantifier::Range { min: 2, max: None }))
+            Regex { branches: ref b, .. } if matches!(b[0].pieces[0].quantifier, Some(Quantifier::Range { min: 2, max: None }))
         ));
     }
 
@@ -251,7 +265,7 @@ mod tests {
         assert!(output.errors.is_empty());
         assert!(matches!(
             output.ast,
-            Regex { branch: ref b, .. } if matches!(b.pieces[0].atom, Atom::Literal('z'))
+            Regex { branches: ref b, .. } if matches!(b[0].pieces[0].atom, Atom::Literal('z'))
         ));
     }
 
@@ -261,7 +275,7 @@ mod tests {
         assert!(output.errors.is_empty());
         assert!(matches!(
             output.ast,
-            Regex { branch: ref b, .. } if matches!(b.pieces[0].atom, Atom::Any)
+            Regex { branches: ref b, .. } if matches!(b[0].pieces[0].atom, Atom::Any)
         ));
     }
 
@@ -271,7 +285,38 @@ mod tests {
         assert!(output.errors.is_empty());
         assert!(matches!(
             output.ast,
-            Regex { branch: ref b, .. } if matches!(b.pieces[0].atom, Atom::Group(_))
+            Regex { branches: ref b, .. } if matches!(b[0].pieces[0].atom, Atom::Group(_))
+        ));
+    }
+
+    #[test]
+    fn top_level_alternation_has_two_branches() {
+        let output = parse("a|b");
+        assert!(output.errors.is_empty());
+        assert!(output.ast.is_alternation());
+        assert_eq!(output.ast.branches.len(), 2);
+    }
+
+    #[test]
+    fn char_class_negation() {
+        let output = parse("[^ab]");
+        assert!(output.errors.is_empty());
+        assert!(matches!(
+            output.ast.branches[0].pieces[0].atom,
+            Atom::Class(Class::Positive { negated: true, .. })
+        ));
+    }
+
+    #[test]
+    fn caret_and_dollar_are_literal_in_i_regexp() {
+        let caret = parse("^");
+        assert!(caret.errors.is_empty());
+        assert!(matches!(caret.ast.branches[0].pieces[0].atom, Atom::Literal('^')));
+        let dollar = parse("$");
+        assert!(dollar.errors.is_empty());
+        assert!(matches!(
+            dollar.ast.branches[0].pieces[0].atom,
+            Atom::Literal('$')
         ));
     }
 
@@ -382,7 +427,7 @@ mod tests {
         assert!(output.errors.is_empty());
         assert!(matches!(
             output.ast,
-            Regex { branch: ref b, .. } if matches!(b.pieces[0].atom, Atom::Class(Class::Property { negated: false, .. }))
+            Regex { branches: ref b, .. } if matches!(b[0].pieces[0].atom, Atom::Class(Class::Property { negated: false, .. }))
         ));
     }
 
@@ -392,7 +437,7 @@ mod tests {
         assert!(output.errors.is_empty());
         assert!(matches!(
             output.ast,
-            Regex { branch: ref b, .. } if matches!(b.pieces[0].atom, Atom::Class(Class::Property { negated: true, .. }))
+            Regex { branches: ref b, .. } if matches!(b[0].pieces[0].atom, Atom::Class(Class::Property { negated: true, .. }))
         ));
     }
 
@@ -430,7 +475,7 @@ mod tests {
         assert!(output.errors.is_empty());
         assert!(matches!(
             output.ast,
-            Regex { branch: ref b, .. } if matches!(b.pieces[0].atom, Atom::Literal('\n'))
+            Regex { branches: ref b, .. } if matches!(b[0].pieces[0].atom, Atom::Literal('\n'))
         ));
     }
 
@@ -440,7 +485,7 @@ mod tests {
         assert!(output.errors.is_empty());
         assert!(matches!(
             output.ast,
-            Regex { branch: ref b, .. } if matches!(b.pieces[0].atom, Atom::Literal('\t'))
+            Regex { branches: ref b, .. } if matches!(b[0].pieces[0].atom, Atom::Literal('\t'))
         ));
     }
 
@@ -450,7 +495,7 @@ mod tests {
         assert!(output.errors.is_empty());
         assert!(matches!(
             output.ast,
-            Regex { branch: ref b, .. } if matches!(b.pieces[0].atom, Atom::Literal('\r'))
+            Regex { branches: ref b, .. } if matches!(b[0].pieces[0].atom, Atom::Literal('\r'))
         ));
     }
 
@@ -460,7 +505,7 @@ mod tests {
         assert!(output.errors.is_empty());
         assert!(matches!(
             output.ast,
-            Regex { branch: ref b, .. } if matches!(b.pieces[0].atom, Atom::Class(Class::Positive { negated: false, .. }))
+            Regex { branches: ref b, .. } if matches!(b[0].pieces[0].atom, Atom::Class(Class::Positive { negated: false, .. }))
         ));
     }
 
@@ -602,7 +647,7 @@ mod tests {
     fn complex_pattern_parses() {
         let output = parse(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$");
         // Should never fail, even if some constructs are unusual.
-        assert!(matches!(output.ast, Regex { branch: _, .. }));
+        assert!(matches!(output.ast, Regex { branches: _, .. }));
     }
 
     #[test]

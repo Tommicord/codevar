@@ -36,6 +36,7 @@
 //! ICD driver threads may still run is unsafe, and every real
 //! application keeps it mapped for its process lifetime.
 
+#[cfg(debug_assertions)]
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
@@ -47,6 +48,7 @@ use ash::vk;
 use codevar_wayland::DRM_FORMAT_XRGB8888;
 
 /// Validation layer name for debug builds.
+#[cfg(debug_assertions)]
 const VALIDATION_LAYER: &CStr = c"VK_LAYER_KHRONOS_validation";
 
 /// Vulkan format of the render target: memory-layout counterpart of

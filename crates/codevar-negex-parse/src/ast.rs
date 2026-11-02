@@ -33,28 +33,47 @@
 use crate::Span;
 use alloc::boxed::Box;
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 
 /// A complete regular expression: `i-regexp = branch *( "|" branch )`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Regex {
-    /// The top-level branch.
-    pub branch: Branch,
+    /// The alternatives of this expression.  A plain concatenation has a
+    /// single branch; `a|b` has two.  A match succeeds when any alternative
+    /// matches.
+    pub branches: Vec<Branch>,
     /// Span covering the whole pattern.
     pub span: Span,
 }
 
 impl Regex {
-    /// Creates a regex from a branch and span.
+    /// Creates a regex with a single branch.
     #[must_use]
     pub fn new(branch: Branch, span: Span) -> Self {
-        Self { branch, span }
+        Self {
+            branches: vec![branch],
+            span,
+        }
+    }
+
+    /// Creates a regex from two or more alternatives.
+    #[must_use]
+    pub fn alternation(branches: Vec<Branch>, span: Span) -> Self {
+        Self { branches, span }
+    }
+
+    /// Whether this expression has more than one alternative.
+    #[must_use]
+    #[inline]
+    pub fn is_alternation(&self) -> bool {
+        self.branches.len() > 1
     }
 
     /// Whether this regex can match the empty string.
     #[must_use]
     pub fn matches_empty(&self) -> bool {
-        self.branch.matches_empty()
+        self.branches.iter().any(Branch::matches_empty)
     }
 }
 

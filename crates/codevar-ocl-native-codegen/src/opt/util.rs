@@ -342,6 +342,8 @@ pub(crate) fn collect_operands(op: &Op, out: &mut Vec<ValueId>) {
         Op::Return => {}
         Op::ReturnValue { value } => out.push(*value),
         Op::Unreachable => {}
+        Op::IntToPtr { operand } => out.push(*operand),
+        Op::PtrToInt { operand } => out.push(*operand),
     }
 }
 
@@ -375,6 +377,8 @@ pub(crate) fn is_removable(op: &Op) -> bool {
                 | Op::Compare { .. }
                 | Op::Select { .. }
                 | Op::Convert { .. }
+                | Op::IntToPtr { .. }
+                | Op::PtrToInt { .. }
                 | Op::CompositeExtract { .. }
                 | Op::CompositeConstruct { .. }
                 | Op::Phi { .. }

@@ -441,5 +441,7 @@ fn remap(inst: &mut Inst, values: &BTreeMap<ValueId, ValueId>, blocks: &BTreeMap
         Op::Return => {}
         Op::ReturnValue { value: returned } => value(returned),
         Op::Unreachable => {}
+        Op::IntToPtr { operand } => value(operand),
+        Op::PtrToInt { operand } => value(operand),
     }
 }

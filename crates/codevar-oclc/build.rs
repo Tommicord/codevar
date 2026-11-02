@@ -745,7 +745,7 @@ fn compile_native(
             Ok(code) => code,
             Err(error) => {
                 cargo_warning(&format!(
-                    "{}: the kernel `{name}` has no native machine code ({error}); \
+                    "{}: the kernel `{name}` has no native machine code: {error}; \
                          it is embedded as SPIR-V only",
                     source.file_name
                 ));

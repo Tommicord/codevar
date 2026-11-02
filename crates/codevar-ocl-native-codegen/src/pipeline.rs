@@ -35,6 +35,7 @@ use codevar_ocl_ir::verify::verify;
 
 use crate::error::Result;
 use crate::opt::{OptConfig, Optimization};
+use crate::regalloc::AllocStats;
 use crate::target::NativeTarget;
 use crate::vecz::VectorConfig;
 
@@ -57,6 +58,12 @@ pub struct CompiledCode {
     entry_offset: u32,
     /// The number of machine instructions the code holds.
     instruction_count: u32,
+    /// What the register allocator did to get here.
+    ///
+    /// The allocator reports its spills, and a caller tuning the code
+    /// has to know whether a slowdown is a spill or a longer basic
+    /// block; without this the count is lost when the pipeline returns.
+    allocation: AllocStats,
 }
 
 impl CompiledCode {
@@ -79,6 +86,13 @@ impl CompiledCode {
     #[inline]
     pub fn instruction_count(&self) -> u32 {
         self.instruction_count
+    }
+
+    /// What the register allocator did.
+    #[must_use]
+    #[inline]
+    pub fn allocation(&self) -> AllocStats {
+        self.allocation
     }
 }
 
@@ -131,11 +145,12 @@ pub fn compile_entry(
     }
     let selection = crate::isel::select_module(&module, entry)?;
     let mut machine = selection.module;
-    crate::regalloc::allocate(&mut machine, target.registers())?;
+    let allocation = crate::regalloc::allocate(&mut machine, target.registers())?;
     let image = target.lower_module(&machine, selection.entry)?;
     Ok(CompiledCode {
         bytes: image.bytes,
         entry_offset: image.entry_offset,
         instruction_count: image.instruction_count,
+        allocation,
     })
 }

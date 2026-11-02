@@ -1,0 +1,17 @@
+[package]
+name = "codevar-negex-abi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ABI contract shared by the Negex regex engine and its compiled machine code"
+
+[lib]
+name = "codevar_negex_abi"
+
+[dependencies]
+
+[lints]
+workspace = true
