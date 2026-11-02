@@ -31,12 +31,19 @@
 //!   reported. [`GestureRegion`] needs a clock: without one a widget drags but
 //!   never flings.
 //! * **[`UiPipe`] + [`TextPipe`]:** the check mark and the outline of a box,
-//!   the ring and dot of a radio and the track, ticks and thumb of a slider
-//!   are rounded fills, strokes and lines — the
+//!   the ring and dot of a radio, the track, ticks and thumb of a slider and
+//!   the thumb of the scroll bar are rounded fills, strokes and lines — the
 //!   geometry the UI pipe turns into scissored spans and signed-distance
 //!   layers. The labels of the same widgets are text runs, which the UI pipe
 //!   deliberately leaves to the text pipe, so both are registered and the list
 //!   is shaped every time the tree is laid out again.
+//! * **[`Viewport`] + [`Scrollbar`]:** the block of lines at the foot of the
+//!   page is taller than the box it is given, so its content is laid out
+//!   whole, clipped to the box, and shifted by the offset the gestures write.
+//!   The box is bounded and clipped from the *modifier chain* of its node, not
+//!   from the viewport: a viewport measured with an unbounded height has
+//!   nothing to scroll, and the framework only cuts what a chain asks to be
+//!   cut.
 //!
 //! The regions are handles the [`Gallery`] owns rather than fields the widgets
 //! build, because the widgets are rebuilt by every recomposition and a drag
@@ -44,7 +51,7 @@
 //! so the move that follows would reach a region that never saw it.
 //!
 //! Run it inside a Wayland session, click the boxes, choose a size, drag the
-//! slider:
+//! slider, and scroll the block of lines with the wheel or a drag of it:
 //!
 //! ```text
 //! cargo run -p codevar-gpu-vk --example widgets_gallery
@@ -69,7 +76,10 @@ use codevar_kuitui::prelude::{
     kuitui_element,
 };
 use codevar_kuitui::rea::{Element, RenderCtx};
-use codevar_kuitui::widgets::{CheckState, GestureRegion, Radio, RadioGroup, Row, Slider, Text};
+use codevar_kuitui::widgets::{
+    CheckState, Column, GestureRegion, Radio, RadioGroup, Row, ScrollAxes, ScrollState, Scrollbar, Slider,
+    Stack, Text, Viewport,
+};
 use codevar_kuitui_button::{Button, TextButton};
 use codevar_kuitui_text::{AtlasConfig, TextAtlas, TextFrame, TextPipe};
 use codevar_kuitui_widget::{Font, shape_list};
@@ -128,6 +138,16 @@ const CONTROL_SPACING: f32 = 8.0;
 const SLIDER_WIDTH: f32 = 260.0;
 /// The side of a clickable pill.
 const BUTTON_HEIGHT: f32 = 34.0;
+/// The width of the scrolled block, which is the page inside its padding.
+const LIST_WIDTH: f32 = 596.0;
+/// The height of the box the lines scroll inside.
+///
+/// The block is deliberately taller than this, since a box that fits its
+/// content has nothing to scroll and no thumb to paint.
+const LIST_HEIGHT: f32 = 132.0;
+/// The lines the scrolled block holds.
+const LIST_LINES: usize = 20;
+
 /// Every failure of the example is reported as a boxed error so `?` works for
 /// Wayland, Vulkan, compositor and shaping errors alike.
 type ExampleResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -215,6 +235,8 @@ impl Sources {
 struct Regions {
     /// The slider of the volume row.
     slider: GestureRegion,
+    /// The scrolled block of lines.
+    list: GestureRegion,
 }
 
 impl Regions {
@@ -222,6 +244,7 @@ impl Regions {
     fn new() -> Self {
         Self {
             slider: GestureRegion::default(),
+            list: GestureRegion::default(),
         }
     }
 }
@@ -255,6 +278,8 @@ struct Gallery {
     density_seen: Cell<u64>,
     /// The interaction states of the widgets.
     sources: Sources,
+    /// The scroll position of the block of lines.
+    list: ScrollState,
     /// The gesture regions the widgets read through.
     regions: Regions,
 }
@@ -272,6 +297,7 @@ impl Gallery {
             resets: MutableState::new(0_u32),
             density_seen: Cell::new(0),
             sources: Sources::new(),
+            list: ScrollState::new(ScrollAxes::VERTICAL),
             regions: Regions::new(),
         }
     }
@@ -284,6 +310,10 @@ impl Gallery {
         self.stepped.set(CheckState::Checked);
         self.progress.set(0.35);
         self.density.select(&Density::Comfortable);
+        // The block goes back to its first line, which is the one place the
+        // offset is written by something other than a gesture.
+        let top = self.list.offset().y;
+        self.list.scroll_by(Offset::new(0.0, -top));
     }
 
     /// Whether a widget wrote one of the values since the last frame.
@@ -300,6 +330,10 @@ impl Gallery {
         // snaps and whether it answers the pointer at all.
         dirty |= self.progress.take_dirty();
         dirty |= self.resets.take_dirty();
+        // A scroll writes the offset the layout reads, so it asks for the tree
+        // to be placed again; the recomposition it costs is what the host
+        // regions make harmless.
+        dirty |= self.list.take_dirty();
         let revision = self.density.revision();
         dirty |= revision != self.density_seen.replace(revision);
         dirty
@@ -766,9 +800,15 @@ fn run() -> ExampleResult<String> {
     drop(compositor);
     drop(pipeline);
 
+    // The distance the block can be scrolled is reported because it is the one
+    // number that says whether the box was bounded: a viewport measured with an
+    // unbounded height has a content as tall as its box, a maximum of zero, and
+    // gestures that answer a wheel which moves nothing.
+    let scrollable = gallery.list.max().y;
     Ok(format!(
-        "widgets_gallery: {frames} frames of a checkbox, a radio group and a slider \
-         into a {width}x{height} dma-buf window, {} pings answered, configure serial {serial}",
+        "widgets_gallery: {frames} frames of a checkbox, a radio group, a slider \
+         and a scrolled block into a {width}x{height} dma-buf window, {} pings \
+         answered, configure serial {serial}, {scrollable:.0} of scroll to report",
         pings.get()
     ))
 }
@@ -831,6 +871,8 @@ fn gallery_content(gallery: Gallery) -> impl Fn(&mut RenderCtx<'_>) -> Element<W
         let reset_count = resets.clone();
         let reset_source = sources.button.clone();
         let slider_region = gallery.regions.slider.clone();
+        let list_state = gallery.list.clone();
+        let list_region = gallery.regions.list.clone();
 
         kuitui_element! {
             Column(
@@ -881,6 +923,12 @@ fn gallery_content(gallery: Gallery) -> impl Fn(&mut RenderCtx<'_>) -> Element<W
                     Node(reset_node(reset_gallery.clone(), reset_count.clone(), reset_source.clone()))
                     Text(format!("{clicks} resets"), color: MUTED)
                 }
+                Text("A viewport: scroll the lines with the wheel, or drag them.", color: MUTED)
+                Node(list_node(
+                    list_state.clone(),
+                    list_region.clone(),
+                    ROW_SPACING + extra,
+                ))
             }
         }
     }
@@ -970,6 +1018,48 @@ fn slider_node(
             .region(region),
     )
     .modifier(Modifier::none().size(Some(width), None))
+}
+
+/// The block of lines that scrolls: a viewport over the state the gallery
+/// owns, with the bar that reports where in them the box stands.
+///
+/// The two are siblings of a [`Stack`] rather than parent and child. The bar
+/// reads the same [`ScrollState`] handle the viewport writes, so it needs
+/// nothing from the viewport, and a stack paints its children in the order of
+/// the tree: the bar last, over the lines it reports on. It is not
+/// [`hit_testable`](codevar_kuitui::widget::Widget::hit_testable), so a press
+/// on it is a press on the content underneath and drags the lines.
+///
+/// The bounded box comes from the *modifier chain* of the viewport node, not
+/// from the viewport: `size` is what keeps the height from growing to the
+/// whole document — a viewport measured with the unbounded height a
+/// [`Column`] offers its children has nothing left to scroll — and `clip` is
+/// what keeps the lines below the box painted over the rest of the page.
+fn list_node(state: ScrollState, region: GestureRegion, spacing: f32) -> Node {
+    let mut lines = Vec::new();
+    for index in 0..LIST_LINES {
+        lines.push(Node::new(
+            Text::new(format!("{:>2}  vkQueueSubmit(q, n);", index + 1)).color(MUTED),
+        ));
+    }
+    let content = Node::new(
+        Column::new()
+            .spacing(spacing)
+            .alignment(Alignment::TOP_START),
+    )
+    .with_children(lines);
+    let scrolled = Node::new(
+        Viewport::new()
+            .scroll(state.clone())
+            .region(region),
+    )
+    .modifier(
+        Modifier::none()
+            .size(Some(LIST_WIDTH), Some(LIST_HEIGHT))
+            .clip(),
+    )
+    .child(content);
+    Node::new(Stack::new()).with_children([scrolled, Node::new(Scrollbar::new(state))])
 }
 
 /// The button that puts the gallery back the way
