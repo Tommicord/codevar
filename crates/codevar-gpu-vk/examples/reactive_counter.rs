@@ -46,10 +46,9 @@ use codevar_gpu_vk::pipeline::{OwnedFd, PipelineContext};
 use codevar_gpu_vk::ui::{UiFrame, UiPipe};
 use codevar_kuitui::color::Color;
 use codevar_kuitui::event::{Event, PointerButton, PointerButtons, PointerEvent, PointerEventKind};
-use codevar_kuitui::geometry::{Offset, Rect, Size};
+use codevar_kuitui::geometry::{Offset, Size};
 use codevar_kuitui::host::WidgetHost;
 use codevar_kuitui::node::{Modifier, Node};
-use codevar_kuitui::paint::{CornerRadii, Paint};
 use codevar_kuitui::prelude::{
     Alignment, FontMetrics, InteractionSource, ReactiveComposition, Theme, kuitui_element,
 };
@@ -92,8 +91,12 @@ const RELEASE_TIMEOUT: Duration = Duration::from_millis(500);
 const GPU_SYNC_TIMEOUT_MS: i32 = 5_000;
 /// Largest format table the example is willing to allocate.
 const MAX_FORMAT_TABLE_BYTES: usize = 1 << 20;
-/// The window background, shared by the two pipes.
+/// The window background; the UI pipe clears to it, so it is the base layer
+/// the text pipe composites over.
 const BACKGROUND: [f32; 4] = [0.10, 0.11, 0.14, 1.0];
+/// The clear color of the text pipe: transparent, so the glyphs land on the
+/// UI layer instead of replacing it.
+const TEXT_CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
 /// Pixels per em the glyphs are rasterized at.
 const FONT_PPEM: u16 = 32;
 /// Space between the top of the window and the first label.
@@ -417,20 +420,13 @@ fn run() -> ExampleResult<String> {
     ui_pipe.set_clear(BACKGROUND);
     compositor.add_pipe(ui_pipe)?;
     let mut text_pipe = TextPipe::new(&pipeline, text_frame.clone())?;
-    text_pipe.set_clear(BACKGROUND);
+    text_pipe.set_clear(TEXT_CLEAR);
     compositor.add_pipe(text_pipe)?;
 
     // The first frame shapes the text of the mounted tree. Later frames shape
     // again only when the engine recomposed, because the mesh persists across
     // frames while the geometry list does not.
-    record_frame(
-        &mut composition,
-        &ui_frame,
-        &text_frame,
-        font.as_ref(),
-        size,
-        true,
-    )?;
+    record_frame(&mut composition, &ui_frame, &text_frame, font.as_ref(), true)?;
 
     let params = display.marshal_new_id(dmabuf, DMABUF_CREATE_PARAMS, Vec::new())?;
     display.marshal_request(
@@ -515,7 +511,6 @@ fn run() -> ExampleResult<String> {
             &ui_frame,
             &text_frame,
             font.as_ref(),
-            size,
             recomposed,
         )?;
 
@@ -632,7 +627,6 @@ fn record_frame(
     ui_frame: &UiFrame,
     text_frame: &TextFrame,
     font: &Font,
-    size: Size,
     reshape: bool,
 ) -> ExampleResult<()> {
     if reshape {
@@ -643,11 +637,6 @@ fn record_frame(
     }
     ui_frame.with(|list| -> ExampleResult<()> {
         composition.render(list);
-        list.rect(
-            Rect::new(Offset::ZERO, size),
-            CornerRadii::ZERO,
-            Paint::fill(Color::from_rgba8(26, 28, 36, 255)),
-        );
         if reshape {
             shape_list(text_frame, font, list)?;
             // The mesh changed, so the text pipe must rebuild its buffers.
