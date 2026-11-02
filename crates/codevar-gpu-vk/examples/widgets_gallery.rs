@@ -109,8 +109,18 @@ const HEIGHT: i32 = 420;
 const STARTUP_DEADLINE: Duration = Duration::from_secs(30);
 /// How long a single `dispatch` waits for Wayland events.
 const DISPATCH_TIMEOUT: TimeDuration = TimeDuration::from_millis(50);
-/// How long to wait for `wl_buffer.release` before re-rendering anyway.
-const RELEASE_TIMEOUT: Duration = Duration::from_millis(500);
+/// Frames the loop renders before it reports how it paced them.
+const MEASURE_FRAMES: u32 = 400;
+/// Wall-clock stop for the measurement, so a compositor that stops answering
+/// frame callbacks cannot hold the example open forever.
+const MEASURE_WINDOW: Duration = Duration::from_secs(5);
+/// How long a beat waits for the compositor to answer the last commit before
+/// the loop draws the next frame anyway.
+///
+/// One refresh period, not the round trip: the wait is a pacing beat, and a
+/// frame that misses it is counted and retried instead of costing the loop a
+/// timeout's worth of stalled input.
+const FRAME_PACE: Duration = Duration::from_millis(20);
 /// Milliseconds the example waits for the GPU through the exported
 /// `sync_file` before committing the buffer.
 const GPU_SYNC_TIMEOUT_MS: i32 = 5_000;
@@ -147,6 +157,13 @@ const LIST_WIDTH: f32 = 596.0;
 const LIST_HEIGHT: f32 = 132.0;
 /// The lines the scrolled block holds.
 const LIST_LINES: usize = 20;
+/// Pixels the measurement creeps the block of lines by each frame.
+///
+/// A window with nothing changing has no frame to draw and no rate to measure,
+/// so the loop drives the one animation that touches every stage: the viewport
+/// moves, which dirties the tree, which lays it out again, which reshapes the
+/// text the mesh carries.
+const DRIVE_PIXELS: f32 = 1.0;
 
 /// Every failure of the example is reported as a boxed error so `?` works for
 /// Wayland, Vulkan, compositor and shaping errors alike.
@@ -314,6 +331,24 @@ impl Gallery {
         // offset is written by something other than a gesture.
         let top = self.list.offset().y;
         self.list.scroll_by(Offset::new(0.0, -top));
+    }
+
+    /// Move the block of lines down by `step`, and back to its first line once
+    /// its last one has left the box.
+    ///
+    /// This is the animation the frame measurement runs on: the scroll writes
+    /// the offset the layout reads, so every frame rebuilds, lays out and
+    /// reshapes the whole page instead of reporting the rate of a window that
+    /// had nothing to draw. Wrapping keeps the block scrolling for as long as
+    /// the loop runs rather than parking against its bottom.
+    fn drive(&self, step: f32) {
+        let offset = self.list.offset().y;
+        let bottom = self.list.max().y;
+        if offset + step >= bottom {
+            self.list.scroll_by(Offset::new(0.0, -offset));
+        } else {
+            self.list.scroll_by(Offset::new(0.0, step));
+        }
     }
 
     /// Whether a widget wrote one of the values since the last frame.
@@ -674,17 +709,68 @@ fn run() -> ExampleResult<String> {
             0
         })?;
     }
-    let mut frames = 0u32;
+    let mut frames = 0_u32;
+    // Where a frame's time goes, accumulated so the report names the stage
+    // that binds the loop instead of only counting the frames it made.
+    let mut pace_wait = Duration::ZERO;
+    let mut record_time = Duration::ZERO;
+    let mut submit_time = Duration::ZERO;
+    let mut gpu_wait = Duration::ZERO;
+    // Frames rendered while the compositor had not yet handed the buffer back,
+    // and beats that found no frame callback waiting for them. The first is the
+    // cost of a single present target — the image on screen is the image to
+    // draw into — and the second is a compositor that stopped answering.
+    let mut held = 0_u32;
+    let mut stalled = 0_u32;
+    let measured = Instant::now();
     // The clock of the gallery is the compositor's: the `time` of every
     // pointer event is milliseconds since the client connected, so the
     // elapsed step handed to the widgets is measured the same way.
     let mut last_time = Timestamp::UNSPECIFIED;
-    while !closed.get() {
-        let release_deadline = Instant::now() + RELEASE_TIMEOUT;
-        while !released.get() && !closed.get() && Instant::now() < release_deadline {
-            display.dispatch(Some(DISPATCH_TIMEOUT))?;
+    // The commit that still owes the loop its frame callback, as the callback
+    // proxy and the flag its `done` sets. Waiting on that callback is what
+    // paces the loop to the refresh rate rather than to a timeout.
+    let mut pending: Option<(WlProxyId, Rc<Cell<bool>>)> = None;
+    while !closed.get() && frames < MEASURE_FRAMES && measured.elapsed() < MEASURE_WINDOW {
+        let stage = Instant::now();
+        let beat_deadline = stage + FRAME_PACE;
+        while !closed.get() {
+            // The frame callback is the gate. `wl_buffer.release` cannot be
+            // one: the buffer this loop renders into *is* the current surface
+            // state, and a compositor only releases a buffer once another one
+            // supersedes it, which a single present target never does. It is
+            // still watched, and counted, because the day the compositor
+            // exports a second image the release is the signal to gate on.
+            if pending
+                .as_ref()
+                .is_none_or(|(_, done)| done.get())
+            {
+                break;
+            }
+            let left = beat_deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            // Wait on the socket, not on a clock: `dispatch` returns as soon as
+            // the compositor answers, and only the time left in the beat bounds
+            // how long it holds the loop when nothing arrives.
+            let millis = u64::try_from(left.as_millis())
+                .unwrap_or(1)
+                .clamp(1, 1_000);
+            display.dispatch(Some(TimeDuration::from_millis(millis)))?;
         }
-        released.set(false);
+        pace_wait += stage.elapsed();
+        let shown = pending
+            .as_ref()
+            .is_none_or(|(_, done)| done.get());
+        if let Some((callback, _)) = shown.then(|| pending.take()).flatten() {
+            display.proxy_destroy(callback)?;
+        } else {
+            stalled += 1;
+        }
+        if !released.get() {
+            held += 1;
+        }
 
         // Replay what the pointer did while the last frame was in flight, in
         // the order the compositor reported it. A press that completes inside
@@ -720,18 +806,21 @@ fn run() -> ExampleResult<String> {
         };
         last_time = frame_time;
         let animated = elapsed.is_specified() && composition.advance(elapsed);
+        // The block of lines creeps on its own, because a window with nothing
+        // changing has no frame to draw and no rate to measure.
+        gallery.drive(DRIVE_PIXELS);
         // The engine schedules the renders its hooks own; a widget writing a
         // handle the gallery created is only seen through that handle.
         let written = gallery.take_dirty();
         let rebuilt = matches!(composition.recompose(written), Recomposition::Recomposed);
         composition.layout(size, rebuilt || written || animated);
 
-        let frame = display.marshal_new_id(surface, SURFACE_FRAME, Vec::new())?;
-        let frame_done = Rc::new(Cell::new(false));
+        let callback = display.marshal_new_id(surface, SURFACE_FRAME, Vec::new())?;
+        let done = Rc::new(Cell::new(false));
         {
-            let frame_done = Rc::clone(&frame_done);
-            display.add_callback_listener(frame, move |_, _| {
-                frame_done.set(true);
+            let done = Rc::clone(&done);
+            display.add_callback_listener(callback, move |_, _| {
+                done.set(true);
                 0
             })?;
         }
@@ -739,6 +828,7 @@ fn run() -> ExampleResult<String> {
         // engine, so the geometry is recorded every frame. The text is shaped
         // whenever the tree was laid out again, because a relayout moves the
         // runs the mesh carries.
+        let stage = Instant::now();
         record_frame(
             &mut composition,
             &ui_frame,
@@ -747,10 +837,15 @@ fn run() -> ExampleResult<String> {
             size,
             rebuilt || written || animated,
         )?;
-
+        record_time += stage.elapsed();
+        let stage = Instant::now();
         let sync_file = block_on(compositor.composite_frame(None))?;
+        submit_time += stage.elapsed();
+        let stage = Instant::now();
         wait_for_gpu(&sync_file)?;
         drop(sync_file);
+        gpu_wait += stage.elapsed();
+        released.set(false);
 
         display.marshal_request(
             surface,
@@ -773,18 +868,11 @@ fn run() -> ExampleResult<String> {
         )?;
         display.marshal_request(surface, SURFACE_COMMIT, Vec::new())?;
         display.flush()?;
-
-        let frame_deadline = Instant::now() + RELEASE_TIMEOUT;
-        while !frame_done.get() && !closed.get() && Instant::now() < frame_deadline {
-            display.dispatch(Some(DISPATCH_TIMEOUT))?;
-        }
-        if !frame_done.get() {
-            break;
-        }
-        display.proxy_destroy(frame)?;
+        pending = Some((callback, done));
         frames += 1;
         let _ = consumed;
     }
+    let measured_for = measured.elapsed();
     display.flush()?;
     let _ = display.marshal_request(toplevel, XDG_TOPLEVEL_DESTROY, Vec::new());
     let _ = display.marshal_request(xdg_surface, XDG_SURFACE_DESTROY, Vec::new());
@@ -805,10 +893,33 @@ fn run() -> ExampleResult<String> {
     // unbounded height has a content as tall as its box, a maximum of zero, and
     // gestures that answer a wheel which moves nothing.
     let scrollable = gallery.list.max().y;
+    let per_frame = if frames == 0 {
+        0.0
+    } else {
+        measured_for.as_secs_f64() * 1_000.0 / f64::from(frames)
+    };
+    let fps = if measured_for.is_zero() {
+        0.0
+    } else {
+        f64::from(frames) / measured_for.as_secs_f64()
+    };
+    let average = |wait: Duration| {
+        if frames == 0 {
+            0.0
+        } else {
+            wait.as_secs_f64() * 1_000.0 / f64::from(frames)
+        }
+    };
     Ok(format!(
-        "widgets_gallery: {frames} frames of a checkbox, a radio group, a slider \
-         and a scrolled block into a {width}x{height} dma-buf window, {} pings \
-         answered, configure serial {serial}, {scrollable:.0} of scroll to report",
+        "widgets_gallery: {frames} frames in {:.1} ms at {fps:.1} fps, {per_frame:.3} per \
+         frame (pace {:.2}, record {:.2}, submit {:.2}, gpu {:.2} ms each), \
+         {stalled} beats without a frame callback, {held} beats with the buffer still held, \
+         {} pings answered, configure serial {serial}, {scrollable:.0} of scroll to report",
+        measured_for.as_secs_f64() * 1_000.0,
+        average(pace_wait),
+        average(record_time),
+        average(submit_time),
+        average(gpu_wait),
         pings.get()
     ))
 }
