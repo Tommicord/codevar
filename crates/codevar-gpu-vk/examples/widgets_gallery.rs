@@ -722,14 +722,21 @@ fn run() -> ExampleResult<String> {
         });
     }
 
-    record_frame(
-        &mut composition,
-        &ui_frame,
-        &slots[0].text_frame,
-        font.as_ref(),
-        size,
-        true,
-    )?;
+    // Every target is shaped before the loop starts. A frame that does not
+    // reshape leaves the last mesh of *that* target on screen, so a target the
+    // loop had not drawn yet would draw the page without its text — and the
+    // cold rasterization each atlas pays once belongs here, not inside the
+    // frames being measured.
+    for slot in &mut slots {
+        record_frame(
+            &mut composition,
+            &ui_frame,
+            &slot.text_frame,
+            font.as_ref(),
+            size,
+            true,
+        )?;
+    }
     let mut frames = 0_u32;
     // Where a frame's time goes, accumulated so the report names the stage
     // that binds the loop instead of only counting the frames it made.
