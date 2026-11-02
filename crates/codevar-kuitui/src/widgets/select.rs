@@ -528,6 +528,32 @@ impl Select {
         self
     }
 
+    /// The select that reads the field through `region`.
+    ///
+    /// A region is a handle like [`Self::interaction_with`]: the recognition of
+    /// the press in flight lives behind an [`Rc`](alloc::rc::Rc), so a content
+    /// closure that builds one region and hands the same one every render keeps
+    /// a press that spans a recomposition. Losing it is not a cosmetic matter
+    /// for a select: opening the list writes the state the tree reads back, so
+    /// the field is rebuilt between the press and its release.
+    #[must_use]
+    pub fn region(mut self, region: GestureRegion) -> Self {
+        self.field = region;
+        self
+    }
+
+    /// The select that reads the open list through `region`.
+    ///
+    /// The list of a select is a viewport, and a viewport scrolls by writing
+    /// the offset its content is laid out at: a drag of the list causes the
+    /// recomposition that would, without a region the host owns, end the press
+    /// the drag is made of.
+    #[must_use]
+    pub fn list_region(mut self, region: GestureRegion) -> Self {
+        self.list = region;
+        self
+    }
+
     /// The select that reports the option the user chose to `handler`.
     #[must_use]
     pub fn on_change(mut self, handler: impl Fn(usize) + 'static) -> Self {
@@ -1186,6 +1212,7 @@ fn draw_caret(scope: &mut DrawScope<'_>, field: Rect, open: bool, color: Color) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compose::Composition;
     use crate::event::{KeyEvent, PointerEvent, ScrollEvent};
     use crate::node::{self, Node};
     use crate::paint::{DrawList, LineOp, PaintStyle, RectOp, TextOp};
@@ -2365,5 +2392,68 @@ mod tests {
             Some(0),
             "a press on an inked row still reaches the list"
         );
+    }
+
+    /// A composition of the colors select, laid out in a `200` by `200` box,
+    /// with the two regions and the mode held by the host.
+    fn openable(
+        mode: MutableState<SelectMode>,
+        field: GestureRegion,
+        list: GestureRegion,
+    ) -> Composition<'static> {
+        let shown = mode.clone();
+        let field_held = field.clone();
+        let list_held = list.clone();
+        let mut composition = Composition::new(Theme::light());
+        composition.set_content(move |_| {
+            Node::new(
+                Select::new()
+                    .options(SelectOptions::new(&COLORS))
+                    .mode_with(shown.clone())
+                    .region(field_held.clone())
+                    .list_region(list_held.clone()),
+            )
+        });
+        composition.recompose(true);
+        composition.layout(Size::new(200.0, 200.0), true);
+        composition
+    }
+
+    #[test]
+    fn a_press_of_the_field_survives_the_recomposition_it_started() {
+        let mode = MutableState::new(SelectMode::Closed);
+        let mut composition = openable(mode.clone(), GestureRegion::default(), GestureRegion::default());
+        composition.handle_event(&Event::Pointer(PointerEvent::new(PointerEventKind::Down, FIELD)));
+        // The press writes the interaction the host paints, so the field is
+        // rebuilt before its release arrives; the regions the host owns are
+        // not.
+        composition.recompose(true);
+        composition.layout(Size::new(200.0, 200.0), true);
+        composition.handle_event(&Event::Pointer(PointerEvent::new(PointerEventKind::Up, FIELD)));
+        assert!(mode.get().is_open(), "the release found the press of the field");
+    }
+
+    #[test]
+    fn a_region_built_with_the_field_loses_the_click_that_opens_it() {
+        let mode = MutableState::new(SelectMode::Closed);
+        let shown = mode.clone();
+        let mut composition = Composition::new(Theme::light());
+        composition.set_content(move |_| {
+            Node::new(
+                Select::new()
+                    .options(SelectOptions::new(&COLORS))
+                    .mode_with(shown.clone()),
+            )
+        });
+        composition.recompose(true);
+        composition.layout(Size::new(200.0, 200.0), true);
+        composition.handle_event(&Event::Pointer(PointerEvent::new(PointerEventKind::Down, FIELD)));
+        composition.recompose(true);
+        composition.layout(Size::new(200.0, 200.0), true);
+        composition.handle_event(&Event::Pointer(PointerEvent::new(PointerEventKind::Up, FIELD)));
+        // The same press and release, with the regions named by the rebuild
+        // rather than the host: the new field region never held the press, so
+        // the release is a hover over a select that stays shut.
+        assert!(!mode.get().is_open());
     }
 }

@@ -508,6 +508,21 @@ impl Slider {
         self
     }
 
+    /// The slider that recognizes its drag through `region`.
+    ///
+    /// The region is a handle like the [`MutableState`] of
+    /// [`Self::new`]: the recognition of the
+    /// press in flight lives behind an [`Rc`](alloc::rc::Rc), so a content
+    /// closure that builds one region and hands the same one every render
+    /// keeps a drag that started before this recomposition. A slider writes
+    /// its value on the press, so a region built with each render loses the
+    /// drag on the first move — the thumb stops where it was pressed.
+    #[must_use]
+    pub fn region(mut self, region: GestureRegion) -> Self {
+        self.region = region;
+        self
+    }
+
     /// The slider that reports each value the user dragged to.
     #[must_use]
     pub fn on_change(mut self, handler: impl Fn(f32) + 'static) -> Self {
@@ -889,6 +904,7 @@ fn draw_ticks(scope: &mut DrawScope<'_>, track: &Track, center_y: f32, value: f3
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compose::Composition;
     use crate::event::{KeyEvent, PointerEvent};
     use crate::node::{self, Node};
     use crate::paint::{DrawList, PaintStyle, RectOp};
@@ -1067,6 +1083,48 @@ mod tests {
                 .is_consumed()
         );
         assert_eq!(counted.finishes.get(), 1);
+    }
+
+    #[test]
+    fn a_drag_survives_the_recomposition_that_rebuilt_the_slider() {
+        let value = MutableState::new(0.0f32);
+        let region = GestureRegion::default();
+        let dragged = value.clone();
+        let held = region.clone();
+        let mut composition = Composition::new(Theme::light());
+        composition.set_content(move |_| Node::new(Slider::new(dragged.clone()).region(held.clone())));
+        composition.recompose(true);
+        composition.layout(BOX.size, true);
+        composition.handle_event(&Event::Pointer(PointerEvent::new(PointerEventKind::Down, MIDDLE)));
+        // The press itself writes the value, so the host recomposes before the
+        // first move of the drag arrives. The slider is built again; the region
+        // the host owns is not.
+        composition.recompose(true);
+        composition.layout(BOX.size, true);
+        composition.handle_event(&Event::Pointer(PointerEvent::new(PointerEventKind::Move, END)));
+        assert_eq!(
+            value.get(),
+            1.0,
+            "the move found the press the region the host owns still held"
+        );
+    }
+
+    #[test]
+    fn a_region_built_with_the_slider_leaves_a_move_after_a_recompose_as_a_hover() {
+        let value = MutableState::new(0.0f32);
+        let dragged = value.clone();
+        let mut composition = Composition::new(Theme::light());
+        composition.set_content(move |_| Node::new(Slider::new(dragged.clone())));
+        composition.recompose(true);
+        composition.layout(BOX.size, true);
+        composition.handle_event(&Event::Pointer(PointerEvent::new(PointerEventKind::Down, MIDDLE)));
+        composition.recompose(true);
+        composition.layout(BOX.size, true);
+        composition.handle_event(&Event::Pointer(PointerEvent::new(PointerEventKind::Move, END)));
+        // The same sequence with the region named by the rebuild: the press of
+        // the drag was never seen by the new region, so the move hovers and
+        // the thumb stays on the value the press wrote.
+        assert_eq!(value.get(), 0.5);
     }
 
     #[test]
