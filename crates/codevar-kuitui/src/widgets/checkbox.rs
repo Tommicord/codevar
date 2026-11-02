@@ -433,6 +433,21 @@ impl Checkbox {
         self
     }
 
+    /// The box that recognizes its gestures through `region`.
+    ///
+    /// The region is a handle like [`Self::toggle`] and
+    /// [`Self::interaction_with`]: the recognition of the press in flight
+    /// lives behind an [`Rc`](alloc::rc::Rc), so a content closure that
+    /// builds one region and hands the same one every render keeps a press
+    /// that spans a recomposition. A region built with each render forgets
+    /// the press the moment the box writes the value the tree reads back, and
+    /// the release that follows finds no press to answer for.
+    #[must_use]
+    pub fn region(mut self, region: GestureRegion) -> Self {
+        self.region = region;
+        self
+    }
+
     /// The box that reports the value the user chose to `handler`.
     #[must_use]
     pub fn on_change(mut self, handler: impl Fn(CheckState) + 'static) -> Self {
@@ -698,6 +713,7 @@ fn draw_glyph(scope: &mut DrawScope<'_>, rect: Rect, state: CheckState, color: C
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compose::Composition;
     use crate::event::{KeyEvent, PointerEvent};
     use crate::node::{self, Node};
     use crate::paint::{DrawList, LineOp, PaintStyle, RectOp};
@@ -1093,5 +1109,54 @@ mod tests {
             Offset::new(20.0, 0.0),
         )));
         assert_eq!(offset.offset(), Offset::ZERO);
+    }
+
+    #[test]
+    fn a_click_survives_the_recomposition_that_rebuilt_the_box() {
+        let value = MutableState::new(CheckState::Unchecked);
+        let region = GestureRegion::default();
+        let mut composition = Composition::new(Theme::light());
+        let toggled = value.clone();
+        let held = region.clone();
+        composition.set_content(move |_| {
+            Node::new(
+                Checkbox::new()
+                    .toggle(toggled.clone())
+                    .region(held.clone()),
+            )
+        });
+        composition.recompose(true);
+        composition.layout(TARGET.size, true);
+        let start = Offset::new(20.0, 20.0);
+        composition.handle_event(&Event::Pointer(PointerEvent::new(PointerEventKind::Down, start)));
+        // A value the tree reads back rebuilds the widget while the finger is
+        // still down; only the region the host owns carries the press over.
+        composition.recompose(true);
+        composition.layout(TARGET.size, true);
+        composition.handle_event(&Event::Pointer(PointerEvent::new(PointerEventKind::Up, start)));
+        assert_eq!(
+            value.get(),
+            CheckState::Checked,
+            "the release found the press the region the host owns still held"
+        );
+    }
+
+    #[test]
+    fn a_region_built_with_the_box_forgets_a_press_a_recompose_ends() {
+        let value = MutableState::new(CheckState::Unchecked);
+        let mut composition = Composition::new(Theme::light());
+        let toggled = value.clone();
+        composition.set_content(move |_| Node::new(Checkbox::new().toggle(toggled.clone())));
+        composition.recompose(true);
+        composition.layout(TARGET.size, true);
+        let start = Offset::new(20.0, 20.0);
+        composition.handle_event(&Event::Pointer(PointerEvent::new(PointerEventKind::Down, start)));
+        composition.recompose(true);
+        composition.layout(TARGET.size, true);
+        composition.handle_event(&Event::Pointer(PointerEvent::new(PointerEventKind::Up, start)));
+        // The same sequence as the test above, with the region named by the
+        // rebuild rather than the host: the new region never saw the press, so
+        // the release answers for nothing and the box stays as it was.
+        assert_eq!(value.get(), CheckState::Unchecked);
     }
 }

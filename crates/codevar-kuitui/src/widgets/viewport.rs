@@ -1246,6 +1246,21 @@ impl Viewport {
         self
     }
 
+    /// The viewport that recognizes its gestures through `region`.
+    ///
+    /// The region is a handle like [`Self::scroll`]: the recognition of the
+    /// press in flight lives behind an [`Rc`](alloc::rc::Rc), so a content
+    /// closure that builds one region and hands the same one every render
+    /// keeps a drag that started before this recomposition. A region built
+    /// with each render forgets the press the moment the widget writes a
+    /// value the tree reads back, which is what turns a drag of the content
+    /// into a one-event jump.
+    #[must_use]
+    pub fn region(mut self, region: GestureRegion) -> Self {
+        self.region = region;
+        self
+    }
+
     /// The state the viewport scrolls.
     #[inline]
     #[must_use]
@@ -1942,10 +1957,38 @@ mod tests {
     }
 
     /// A laid-out composition of a viewport box showing a page of `content`.
+    ///
+    /// The viewport builds its own region with every render, which is what a
+    /// content closure that names neither handle gets.
     fn scrolling(state: ScrollState, box_size: Size, content: Size) -> Composition<'static> {
         let mut composition = Composition::new(Theme::light());
         composition.set_content(move |_| {
             Node::new(Viewport::new().scroll(state.clone())).child(Node::new(Page { size: content }))
+        });
+        composition.recompose(true);
+        composition.layout(box_size, true);
+        composition
+    }
+
+    /// A laid-out composition whose region is the one `region` names.
+    ///
+    /// The region is rebuilt by the closure the way a widget is, but built
+    /// *from* the handle the host owns, so the recognition behind it is the
+    /// same across renders.
+    fn scrolling_with_region(
+        state: ScrollState,
+        region: GestureRegion,
+        box_size: Size,
+        content: Size,
+    ) -> Composition<'static> {
+        let mut composition = Composition::new(Theme::light());
+        composition.set_content(move |_| {
+            Node::new(
+                Viewport::new()
+                    .scroll(state.clone())
+                    .region(region.clone()),
+            )
+            .child(Node::new(Page { size: content }))
         });
         composition.recompose(true);
         composition.layout(box_size, true);
@@ -2026,6 +2069,47 @@ mod tests {
         // The finger went up, so the content followed it and the offset
         // grew: the opposite of the pointer is the direction of a scroll.
         assert_eq!(state.offset().y, 10.0);
+    }
+
+    #[test]
+    fn a_drag_survives_the_recomposition_that_rebuilt_the_viewport() {
+        let state = ScrollState::new(ScrollAxes::VERTICAL);
+        let mut composition = scrolling_with_region(
+            state.clone(),
+            GestureRegion::default(),
+            WINDOW,
+            Size::new(300.0, 400.0),
+        );
+        composition.handle_event(&pointer(PointerEventKind::Down, Offset::new(50.0, 30.0), 1_000));
+        // A scroll writes the offset the tree reads back, so the host
+        // recomposes and re-lays out while the finger is still down. The
+        // widget is built again; the region the host owns is not.
+        composition.recompose(true);
+        composition.layout(WINDOW, true);
+        composition.handle_event(&pointer(PointerEventKind::Move, Offset::new(50.0, 20.0), 2_000));
+        composition.handle_event(&pointer(PointerEventKind::Up, Offset::new(50.0, 20.0), 3_000));
+        assert_eq!(
+            state.offset().y,
+            10.0,
+            "the press that started the drag was still held after the rebuild"
+        );
+    }
+
+    #[test]
+    fn a_region_built_with_the_widget_forgets_a_press_a_recompose_ends() {
+        let state = ScrollState::new(ScrollAxes::VERTICAL);
+        let mut composition = scrolling(state.clone(), WINDOW, Size::new(300.0, 400.0));
+        composition.handle_event(&pointer(PointerEventKind::Down, Offset::new(50.0, 30.0), 1_000));
+        composition.recompose(true);
+        composition.layout(WINDOW, true);
+        composition.handle_event(&pointer(PointerEventKind::Move, Offset::new(50.0, 20.0), 2_000));
+        composition.handle_event(&pointer(PointerEventKind::Up, Offset::new(50.0, 20.0), 3_000));
+        // This is the same sequence the test above runs, with the region
+        // named by the rebuild instead of the host: the new region never saw
+        // the press, so the move is a hover and nothing scrolls. A host that
+        // lets its viewport build its own region gets a one-event jump, not a
+        // drag.
+        assert_eq!(state.offset(), Offset::ZERO);
     }
 
     #[test]

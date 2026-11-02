@@ -434,6 +434,21 @@ impl<T: Clone + PartialEq + 'static> Radio<T> {
         self
     }
 
+    /// The button that recognizes its gestures through `region`.
+    ///
+    /// The region is a handle like [`Self::interaction_with`]: the recognition
+    /// of the press in flight lives behind an [`Rc`](alloc::rc::Rc), so a
+    /// content closure that builds one region per option and hands the same
+    /// one every render keeps a press that spans a recomposition. A region
+    /// built with each render forgets the press the moment the button moves
+    /// the selection the group reads back, and the release that follows finds
+    /// no press to answer for.
+    #[must_use]
+    pub fn region(mut self, region: GestureRegion) -> Self {
+        self.region = region;
+        self
+    }
+
     /// The button that reports the option the user chose to `handler`.
     ///
     /// The handler runs when the selection *moves*: a click on the chosen
@@ -661,6 +676,7 @@ fn square_in(bounds: Rect, side: f32) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compose::Composition;
     use crate::event::{KeyEvent, PointerEvent};
     use crate::node::{self, Node};
     use crate::paint::{DrawList, PaintStyle, RectOp};
@@ -1072,6 +1088,27 @@ mod tests {
             Offset::new(20.0, 0.0),
         )));
         assert_eq!(offset.offset(), Offset::ZERO);
+    }
+
+    #[test]
+    fn a_choice_survives_the_recomposition_that_rebuilt_the_button() {
+        let group = RadioGroup::new();
+        let kept = group.clone();
+        let region = GestureRegion::default();
+        let held = region.clone();
+        let mut composition = Composition::new(Theme::light());
+        composition.set_content(move |_| Node::new(Radio::new(7, kept.clone()).region(held.clone())));
+        composition.recompose(true);
+        composition.layout(TARGET.size, true);
+        let start = Offset::new(20.0, 20.0);
+        composition.handle_event(&Event::Pointer(PointerEvent::new(PointerEventKind::Down, start)));
+        // Choosing writes the group the tree reads back, so the host
+        // recomposes with the finger still down: the button is built again,
+        // and only the region the host owns still knows about the press.
+        composition.recompose(true);
+        composition.layout(TARGET.size, true);
+        composition.handle_event(&Event::Pointer(PointerEvent::new(PointerEventKind::Up, start)));
+        assert_eq!(group.current(), Some(7));
     }
 
     #[test]
