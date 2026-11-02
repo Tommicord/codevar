@@ -457,29 +457,43 @@ impl Font {
                 }
                 let glyph_index = font.char_index(u32::from(character));
                 let advance = mul_fix(i64::from(font.advance_for_glyph(glyph_index)), self.scale);
-                if glyph_index != 0
-                    && let Some(bitmap) =
+                if glyph_index != 0 {
+                    let key = glyph_key(self.ppem, glyph_index);
+                    // The atlas answers before the raster is asked. A glyph
+                    // already resident has its coverage in a page that will not
+                    // move, so reshaping a run that repeats it needs only the
+                    // control box that placed it — never the GPU again. Without
+                    // this order every frame of a scroll re-rasterizes every
+                    // glyph it draws, which is a round trip per glyph.
+                    if let Some(resident) = atlas.get(key) {
+                        if let Some(position) =
+                            resident_position(&font, &mut slot, &metrics, glyph_index, pen, origin)
+                                .map_err(ShapeError::Font)?
+                        {
+                            mesh.push(&AtlasQuad::from_slot(resident, position, color, clip));
+                        }
+                    } else if let Some(bitmap) =
                         rasterize_glyph(&font, &mut slot, &mut raster, &metrics, glyph_index)
                             .map_err(ShapeError::Font)?
-                {
-                    let width = bitmap.bitmap.width;
-                    let height = bitmap.bitmap.rows;
-                    coverage.clear();
-                    for row in 0..height {
-                        if let Some(slice) = bitmap.bitmap.row(row) {
-                            coverage.extend_from_slice(slice);
-                        }
-                    }
-                    let key = glyph_key(self.ppem, glyph_index);
-                    if let Some(slot) = atlas
-                        .insert(key, width, height, &coverage)
-                        .map_err(ShapeError::Atlas)?
                     {
-                        let position = [
-                            origin.x + fixed_pixels(pen) + bitmap.left as f32,
-                            origin.y - bitmap.top as f32,
-                        ];
-                        mesh.push(&AtlasQuad::from_slot(slot, position, color, clip));
+                        let width = bitmap.bitmap.width;
+                        let height = bitmap.bitmap.rows;
+                        coverage.clear();
+                        for row in 0..height {
+                            if let Some(slice) = bitmap.bitmap.row(row) {
+                                coverage.extend_from_slice(slice);
+                            }
+                        }
+                        if let Some(atlased) = atlas
+                            .insert(key, width, height, &coverage)
+                            .map_err(ShapeError::Atlas)?
+                        {
+                            let position = [
+                                origin.x + fixed_pixels(pen) + bitmap.left as f32,
+                                origin.y - bitmap.top as f32,
+                            ];
+                            mesh.push(&AtlasQuad::from_slot(atlased, position, color, clip));
+                        }
                     }
                 }
                 pen += advance + spacing;
@@ -1250,6 +1264,33 @@ struct GlyphBitmap {
     /// The vertical bearing from the baseline to the bitmap top, in
     /// pixels.
     top: i64,
+}
+
+/// Where a glyph whose coverage is already resident in the atlas is drawn.
+///
+/// The outline is loaded for the control box — the same box [`rasterize_glyph`]
+/// cropped its bitmap to, so a cached glyph lands exactly where a freshly
+/// rasterized one would — and the raster is never reached. `None` is a glyph
+/// with no outline, which is drawn as nothing and only moves the pen.
+fn resident_position(
+    font: &SfntFont<'_>,
+    slot: &mut GlyphSlot,
+    metrics: &SizeMetrics,
+    glyph_index: u32,
+    pen: i64,
+    origin: Offset,
+) -> Result<Option<[f32; 2]>, FontError> {
+    load_glyph(font, slot, metrics, glyph_index, LoadFlags::DEFAULT).map_err(FontError::Load)?;
+    if slot.outline.is_empty() {
+        return Ok(None);
+    }
+    let cbox = slot.outline.get_cbox();
+    let left = cbox.x_min >> 6;
+    let top = cbox.y_max.saturating_add(63) >> 6;
+    Ok(Some([
+        origin.x + fixed_pixels(pen) + left as f32,
+        origin.y - top as f32,
+    ]))
 }
 
 /// Loads, scales and rasterizes one glyph into a bitmap cropped to its

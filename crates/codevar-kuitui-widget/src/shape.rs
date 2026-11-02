@@ -233,6 +233,53 @@ mod tests {
         assert_eq!(frame.atlas().glyph_count(), 2, "H and i are distinct glyphs");
     }
 
+    /// The frame a scroll makes: the runs are dropped, the atlas is not, and
+    /// the same run is shaped somewhere else.
+    ///
+    /// The coverage of a resident glyph never moves, so a reshaped run must
+    /// find it in the atlas instead of asking the raster again — the raster is
+    /// a round trip per glyph, and a scroll repeats every glyph it shows.
+    #[test]
+    fn a_reshaped_run_reuses_the_resident_coverage() {
+        let mut list = DrawList::new();
+        list.text(Offset::new(2.0, 20.0), Rc::from("Hi"), TextStyle::new(24.0));
+
+        let frame = frame();
+        shape_list(&frame, &font(24), &list).unwrap();
+        let placed = frame.atlas().stats();
+        assert_eq!(
+            (placed.misses, placed.hits),
+            (2, 0),
+            "both glyphs were rasterized"
+        );
+        let first: Vec<[f32; 2]> = frame.runs()[0]
+            .mesh
+            .vertices()
+            .iter()
+            .map(|vertex| vertex.position)
+            .collect();
+
+        frame.clear();
+        frame.begin_frame();
+        list.clear();
+        list.text(Offset::new(2.0, 26.0), Rc::from("Hi"), TextStyle::new(24.0));
+        shape_list(&frame, &font(24), &list).unwrap();
+
+        let again = frame.atlas().stats();
+        assert_eq!((again.misses, again.hits), (0, 2), "the atlas answered both");
+        assert_eq!(frame.atlas().glyph_count(), 2, "no coverage was duplicated");
+
+        let runs = frame.runs();
+        assert_eq!(runs[0].quad_count(), 2, "a cached glyph is still drawn");
+        for (before, after) in first.iter().zip(runs[0].mesh.vertices()) {
+            assert_eq!(before[0], after.position[0], "the pen did not move sideways");
+            assert!(
+                (after.position[1] - before[1] - 6.0).abs() < 0.001,
+                "the run landed at the origin it was shaped with"
+            );
+        }
+    }
+
     #[test]
     fn a_text_run_carries_the_command_clip() {
         let clip = Rect::from_min_size(Offset::new(1.0, 1.0), 40.0, 40.0);
