@@ -164,16 +164,43 @@ NW = NM + 1
 # mixer weight sets per bit position: the match model off, then on
 NSEL = 2
 
-# A context keeps its 16-bit probability together with how many times it has
-# been seen: the learning rate is 1/(count+2), so a fresh slot moves in big
-# steps and a well-evidenced one barely moves. Fixed rates leave the sparse
-# order-4 and order-5 slots near 0.5 forever, which is where the ratio is.
-CMAX = 32
-INV = array("H", [0] * (CMAX + 1))
-for _n in range(CMAX + 1):
-    INV[_n] = int(round(65536.0 / (_n + 2)))
-CINIT = (32768 << 6)  # count 0, p = 0.5
-CMASK = 63
+# A context slot holds a bit-history state instead of a probability: how many
+# zeros and ones it has seen (saturating at 7 each) and the last bit, packed
+# into one byte as (n0<<5)|(n1<<2)|lb. The probability is then a function of
+# the *state*, kept in a 256-entry StateMap per context and adapted with rate
+# 1/(n+1.5) where n counts visits to that state. Sharing one estimate across
+# every slot that is in the same state is what buys the ratio: a sparse
+# order-5 slot no longer has to infer its own frequency from two
+# observations, and the tables shrink to a quarter of the old size.
+#
+# The decay in the transition has to be slow. Decrementing the other count as
+# soon as the two sum past 3 - the threshold in the published state machines -
+# measured +7.8% at 1 MB, because it keeps every state near (2,2) and throws
+# away the count magnitude that says how much to trust the frequency.
+NX = bytearray(512)  # (state << 1) | observed bit -> next state
+for _s in range(256):
+    _n0, _n1 = (_s >> 5) & 7, (_s >> 2) & 7
+    for _y in (0, 1):
+        if _y:
+            _a, _b = _n0, _n1 + 1 if _n1 < 7 else 7
+            if _a > 3 and _a + _b > 7:
+                _a -= 1
+        else:
+            _a, _b = _n0 + 1 if _n0 < 7 else 7, _n1
+            if _b > 3 and _a + _b > 7:
+                _b -= 1
+        NX[(_s << 1) | _y] = (_a << 5) | (_b << 2) | _y
+
+# StateMap entry: a 16-bit probability above an 8-bit visit counter that
+# sets the rate, 1/(n+1.5). A 6-bit counter measured +0.4% and a 12-bit one
+# +3.6% at 1 MB: the counter has to be long enough to average out a state's
+# noise, but short enough that a hot state keeps tracking the contexts moving
+# through it instead of freezing on a stale full-history mean.
+INVR = array("H", [int(round(65536.0 / (_n + 1.5))) for _n in range(256)])
+SM0 = array("I", bytes(256 * 4))
+for _s in range(256):
+    _n0, _n1 = (_s >> 5) & 7, (_s >> 2) & 7
+    SM0[_s] = clamp16(int(round(65536.0 * (_n1 + 0.5) / (_n0 + _n1 + 1.0)))) << 8
 
 
 class Wezc:
@@ -182,8 +209,9 @@ class Wezc:
     def __init__(self, mem_bits=22, sse_bits=16, lr_shift=11):
         size = 1 << mem_bits
         self.mask = size - 1
-        # every hashed context starts at p(bit=1) = 0.5
-        self.t = [array("I", (CINIT,)) * size for _ in range(NCTX)]
+        # one history byte per slot, plus the shared 256-state probability map
+        self.tc = [array("B", bytes(size)) for _ in range(NCTX)]
+        self.sm = [array("I", SM0) for _ in range(NCTX)]
         # Mixer weight sets, selected per bit by what is already known about
         # it: the partial byte (which bits are decided and how) and the match
         # model's confidence. One row per bit position, as before, has to
@@ -209,8 +237,7 @@ class Wezc:
         # per-bit scratch, filled by predict and consumed by update
         self.idx = [0] * NCTX
         self.st = [0] * NM
-        self.probs = [32768] * NCTX
-        self.nc = [0] * NCTX
+        self.sn = [0] * NCTX
         self.sidx = 0
         self.pr = 2048
 
@@ -278,44 +305,38 @@ class Wezc:
         h = self.h
         idx = self.idx
         st = self.st
-        probs = self.probs
-        t = self.t
+        tc = self.tc
+        sm = self.sm
+        sn = self.sn
         dot = 0
         pc0 = (c0 * PHI) & MASK32
         ml = self.mlen
         sel = 1 if (ml and not self.miss) else 0
         self.w = w = self.wrows[nbits * NSEL + sel]
-        nc = self.nc
         for k in range(6):
             # multiply-xor, so that different partial bytes never land on the
             # same slot: a plain `h ^ c0` folds 256 contexts into one index.
             i = (((h[k] ^ pc0) * PHI) & MASK32) & m
             idx[k] = i
-            e = t[k][i]
-            p = e >> 6
-            nc[k] = e & CMASK
-            probs[k] = p
-            s = ST[clamp12(p >> 4)]
-            st[k] = s
-            dot += w[k] * s
+            s = tc[k][i]
+            sn[k] = s
+            p = ST[clamp12(sm[k][s] >> 12)]
+            st[k] = p
+            dot += w[k] * p
         i = (self.word ^ pc0) & m
         idx[6] = i
-        e = t[6][i]
-        p = e >> 6
-        nc[6] = e & CMASK
-        probs[6] = p
-        s = ST[clamp12(p >> 4)]
-        st[6] = s
-        dot += w[6] * s
+        s = tc[6][i]
+        sn[6] = s
+        p = ST[clamp12(sm[6][s] >> 12)]
+        st[6] = p
+        dot += w[6] * p
         i = ((self.sp ^ pc0) * PHI) & MASK32 & m
         idx[7] = i
-        e = t[7][i]
-        p = e >> 6
-        nc[7] = e & CMASK
-        probs[7] = p
-        s = ST[clamp12(p >> 4)]
-        st[7] = s
-        dot += w[7] * s
+        s = tc[7][i]
+        sn[7] = s
+        p = ST[clamp12(sm[7][s] >> 12)]
+        st[7] = p
+        dot += w[7] * p
         mn = self._match_input(c0, nbits)
         st[NCTX] = mn
         dot += w[NCTX] * mn + w[NM] * 256
@@ -341,16 +362,17 @@ class Wezc:
         sh = self.lr_shift
         w = self.w
         st = self.st
-        probs = self.probs
         idx = self.idx
-        nc = self.nc
+        sn = self.sn
         target = bit << 16
         for k in range(NCTX):
-            n = nc[k] + 1
-            if n > CMAX:
-                n = CMAX
-            p = clamp16(probs[k] + (((target - probs[k]) * INV[n]) >> 16))
-            self.t[k][idx[k]] = (p << 6) | n
+            s = sn[k]
+            e = self.sm[k][s]
+            p = e >> 8
+            n = e & 255
+            p = clamp16(p + (((target - p) * INVR[n]) >> 16))
+            self.sm[k][s] = (p << 8) | (n + (n < 255))
+            self.tc[k][idx[k]] = NX[(s << 1) | bit]
             w[k] += (err * st[k]) >> sh
         w[NCTX] += (err * st[NCTX]) >> sh
         w[NM] += err >> (sh - 8)
