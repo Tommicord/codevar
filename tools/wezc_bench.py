@@ -176,19 +176,23 @@ COLUMNS = ("codec", "bytes", "bits/unit", "ratio", "enc MB/s", "dec MB/s",
            "enc RSS", "dec RSS", "ok")
 
 
-def report(rows, unit, stream=sys.stdout):
+def report_header(unit, stream=sys.stdout):
     cols = list(COLUMNS)
     cols[2] = f"bits/{unit}"
     print(f"{cols[0]:16s} {cols[1]:>11s} {cols[2]:>10s} {cols[3]:>8s} "
           f"{cols[4]:>9s} {cols[5]:>9s} {cols[6]:>8s} {cols[7]:>8s}  {cols[8]}",
           file=stream)
     print("-" * 96, file=stream)
-    for r in rows:
-        ratio = 8.0 / r["bits_per_unit"] if r["bits_per_unit"] else 0.0
-        print(f"{r['codec']:16s} {r['bytes']:11,} {r['bits_per_unit']:10.4f} "
-              f"{ratio:7.2f}:1 {r['encode_MBps']:9.3g} {r['decode_MBps']:9.3g} "
-              f"{r['enc_RSS_MiB']:8.1f} {r['dec_RSS_MiB']:8.1f}  "
-              f"{'yes' if r['verified'] else 'NO'}", file=stream)
+    stream.flush()
+
+
+def report_row(r, stream=sys.stdout):
+    ratio = 8.0 / r["bits_per_unit"] if r["bits_per_unit"] else 0.0
+    print(f"{r['codec']:16s} {r['bytes']:11,} {r['bits_per_unit']:10.4f} "
+          f"{ratio:7.2f}:1 {r['encode_MBps']:9.3g} {r['decode_MBps']:9.3g} "
+          f"{r['enc_RSS_MiB']:8.1f} {r['dec_RSS_MiB']:8.1f}  "
+          f"{'yes' if r['verified'] else 'NO'}", file=stream)
+    stream.flush()
 
 
 _SPAWN = None
@@ -254,6 +258,10 @@ def block_test(wezc, args, workdir, dictionary):
     ]
     n = len(blocks) * BLOCK_SIZE
     spawn = spawn_cost(workdir)
+    print(f"\n=== {len(blocks)} blocks of {BLOCK_SIZE} B from {args.corpus}"
+          f"  (dictionary {len(dictionary):,} B)")
+    print(f"    brotli throughput is net of {spawn * 1e3:.2f} ms of process spawn")
+    report_header("byte")
     rows = []
     for name, enc_flags, dec_flags in configs:
         if "+dict" in name and not args.dictionary:
@@ -282,6 +290,7 @@ def block_test(wezc, args, workdir, dictionary):
                      "decode_MBps": n / max(dec_s, 1e-9) / 1e6,
                      "enc_RSS_MiB": round(enc_rss, 1),
                      "dec_RSS_MiB": round(dec_rss, 1), "verified": ok})
+        report_row(rows[-1])
     if args.wezc:
         for use_dict, label in ((True, "WEZC +priming"), (False, "WEZC no dict")):
             if not args.dictionary and use_dict:
@@ -304,10 +313,7 @@ def block_test(wezc, args, workdir, dictionary):
                          "decode_MBps": n / max(dec_s, 1e-9) / 1e6,
                          "enc_RSS_MiB": rss, "dec_RSS_MiB": rss,
                          "verified": back == blocks})
-    print(f"\n=== {len(blocks)} blocks of {BLOCK_SIZE} B from {args.corpus}"
-          f"  (dictionary {len(dictionary):,} B)")
-    print(f"    brotli throughput is net of {spawn * 1e3:.2f} ms of process spawn")
-    report(rows, "byte")
+            report_row(rows[-1])
     return rows
 
 
@@ -336,18 +342,22 @@ def main():
             for size in [int(s) for s in a.sizes.split(",") if s]:
                 chunk = open(a.corpus, "rb").read(size)
                 units = len(chunk) // 4 if a.units == "codepoints" else len(chunk)
+                unit = "cp" if a.units == "codepoints" else "byte"
                 print(f"\n=== {os.path.basename(a.corpus)} slice {len(chunk):,} B"
                       f"  ({units:,} {a.units})")
+                report_header(unit)
                 rows = []
                 for name, enc, dec, how in REFERENCE:
                     r = bench_codec(name, enc, dec, how, chunk, workdir, units)
                     if r:
                         rows.append(r)
+                        report_row(r)
                 if a.wezc:
                     mode = wezc.MODE_UTF32 if a.units == "codepoints" else wezc.MODE_RAW
-                    rows.append(bench_wezc(wezc, chunk, mode, dictionary, a.mem, a.sse,
-                                           a.lr, units))
-                report(rows, "cp" if a.units == "codepoints" else "byte")
+                    r = bench_wezc(wezc, chunk, mode, dictionary, a.mem, a.sse,
+                                   a.lr, units)
+                    rows.append(r)
+                    report_row(r)
                 rows_all += [dict(r, size=len(chunk)) for r in rows]
         if a.csv:
             with open(a.csv, "w") as fh:
