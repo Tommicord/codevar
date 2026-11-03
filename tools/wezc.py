@@ -154,8 +154,9 @@ def utf32_join(body):
 
 # --- stage 3: the context-mixing model ------------------------------------
 
-# context tables: orders 1, 2, 3, 4, 5, 6 (hashed) and the word context
-NCTX = 7
+# context tables: orders 1 to 6 (hashed and exact mix), the word context and
+# one sparse context that skips the byte in the middle
+NCTX = 8
 # mixer inputs: the context tables plus the match model
 NM = NCTX + 1
 # mixer weights: one per input plus a bias
@@ -196,6 +197,7 @@ class Wezc:
         self.sse_mask = (1 << sse_bits) - 1
         self.h = [0] * NCTX
         self.word = 0
+        self.sp = 0
         # match model
         self.mm_bits = mem_bits
         self.mm = array("I", bytes((1 << self.mm_bits) * 4))
@@ -226,6 +228,11 @@ class Wezc:
             self.word = ((self.word << 5) + self.word + c) & MASK32
         else:
             self.word = 0
+        # A context with a byte skipped over: markup pairs and the fixed-width
+        # lanes of a codepoint stream repeat at a stride that no contiguous
+        # order can see.
+        b = self.buf
+        self.sp = ((b[-1] << 16) | (b[-3] << 8) | b[-4]) if len(b) >= 4 else 0
         # match model: extend while the predicted byte keeps agreeing
         if self.mlen:
             if self.mptr < len(self.buf) and self.buf[self.mptr] == c:
@@ -300,6 +307,15 @@ class Wezc:
         s = ST[clamp12(p >> 4)]
         st[6] = s
         dot += w[6] * s
+        i = ((self.sp ^ pc0) * PHI) & MASK32 & m
+        idx[7] = i
+        e = t[7][i]
+        p = e >> 6
+        nc[7] = e & CMASK
+        probs[7] = p
+        s = ST[clamp12(p >> 4)]
+        st[7] = s
+        dot += w[7] * s
         mn = self._match_input(c0, nbits)
         st[NCTX] = mn
         dot += w[NCTX] * mn + w[NM] * 256
