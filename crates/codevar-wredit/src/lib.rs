@@ -22,6 +22,7 @@ pub mod compress;
 pub mod cursor_allocator;
 pub mod edit;
 pub mod error;
+pub mod hot;
 pub mod ptbp;
 pub mod simd;
 pub mod staging_gap;
