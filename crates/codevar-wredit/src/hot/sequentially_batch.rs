@@ -562,3 +562,401 @@ fn check_table(rows: &[BoundaryRow]) -> WreditResult<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ptbp::{OP_CURSOR_SET, OP_DELETE, OP_OVERWRITE, OP_PUT, OP_REPLACE};
+
+    /// An edit operation as the queue spells it.
+    fn edit(kind: u32, pos: u32, len: u32, count: u32, payload: u32) -> OpRecord {
+        OpRecord {
+            kind,
+            pos,
+            len,
+            count,
+            payload,
+            cursor: 0,
+            flags: 0,
+        }
+    }
+
+    /// The same script run the way the CPU engine runs it: splice the
+    /// live document for every operation, in order.
+    fn sequential(src: &[u32], ops: &[OpRecord], payload: &[u32]) -> Vec<u32> {
+        let mut doc: Vec<u32> = src.to_vec();
+        for op in ops {
+            let start = op.pos as usize;
+            let stop = start + op.len as usize;
+            let run: Vec<u32> = if op.count == 0 {
+                Vec::new()
+            } else {
+                let from = op.payload as usize;
+                payload[from..from + op.count as usize].to_vec()
+            };
+            doc.drain(start..stop);
+            for (offset, word) in run.iter().enumerate() {
+                doc.insert(start + offset, *word);
+            }
+        }
+        doc
+    }
+
+    #[test]
+    fn a_replace_is_one_insert_row_and_one_drop_row() {
+        let mut batch = Batch::new(8);
+        batch
+            .fold(&edit(OP_REPLACE, 2, 3, 2, 0))
+            .expect("replace folds");
+        let rows = batch.rows();
+        assert_eq!(rows.len(), 2);
+        assert!(is_insert(&rows[0]));
+        assert_eq!(rows[0].pos, 2);
+        assert_eq!(rows[0].delta, 2);
+        assert_eq!(rows[0].cum, 2);
+        assert!(is_drop(&rows[1]));
+        assert_eq!(rows[1].delta, -3);
+        assert_eq!(rows[1].cum, -1);
+        assert_eq!(rows[1].payload, NO_PAYLOAD);
+    }
+
+    #[test]
+    fn a_folded_nothing_batch_is_the_empty_table() {
+        let batch = Batch::new(4);
+        assert!(batch.rows().is_empty());
+        assert_eq!(batch.destination_of(3), Some(3));
+        assert_eq!(batch.len(), 4);
+    }
+
+    #[test]
+    fn a_pure_insert_needs_only_an_insert_row() {
+        let mut batch = Batch::new(4);
+        batch
+            .fold(&edit(OP_PUT, 2, 0, 3, 0))
+            .expect("put folds");
+        let rows = batch.rows();
+        assert_eq!(rows.len(), 1);
+        assert!(is_insert(&rows[0]));
+        assert_eq!(rows[0].pos, 2);
+        assert_eq!(rows[0].cum, 3);
+        // The text behind the insert shifts right; nothing is removed.
+        assert_eq!(dst_of(&rows, 2), Some(5));
+        assert_eq!(dst_of(&rows, 1), Some(1));
+    }
+
+    #[test]
+    fn a_drop_row_covers_exactly_the_removed_elements() {
+        let mut batch = Batch::new(8);
+        batch
+            .fold(&edit(OP_DELETE, 2, 3, 0, NO_PAYLOAD))
+            .expect("delete folds");
+        let rows = batch.rows();
+        assert_eq!(dst_of(&rows, 1), Some(1));
+        assert_eq!(dst_of(&rows, 2), None);
+        assert_eq!(dst_of(&rows, 4), None);
+        assert_eq!(dst_of(&rows, 5), Some(2));
+        assert_eq!(dst_of(&rows, 7), Some(4));
+    }
+
+    #[test]
+    fn text_reinserted_by_a_later_operation_survives_the_first_hole() {
+        // Replace "CDE" with "XY", then delete "Y": the second
+        // operation's range lies inside the first batch's payload, and
+        // the piece list resolves it without a second pass.
+        let src: Vec<u32> = (0..8).collect();
+        let payload = [100, 101, 102];
+        let ops = [edit(OP_REPLACE, 2, 3, 2, 0), edit(OP_DELETE, 3, 1, 0, NO_PAYLOAD)];
+        let mut batch = Batch::new(src.len() as u32);
+        batch.fold_prefix(&ops).expect("script folds");
+        let out = apply_rows(&src, &batch.rows(), &payload).expect("apply");
+        assert_eq!(out, sequential(&src, &ops, &payload));
+        assert_eq!(out, [0, 1, 100, 5, 6, 7]);
+    }
+
+    #[test]
+    fn deleting_a_whole_inserted_run_folds_the_batch_to_nothing() {
+        let src: Vec<u32> = (0..6).collect();
+        let payload = [9, 9, 9, 9];
+        let ops = [edit(OP_PUT, 2, 0, 3, 0), edit(OP_DELETE, 2, 3, 0, NO_PAYLOAD)];
+        let mut batch = Batch::new(src.len() as u32);
+        batch.fold_prefix(&ops).expect("script folds");
+        // The batch inserted text and then removed exactly that text,
+        // so the document is the source and there is no pass to run:
+        // an empty table is the caller's signal to skip the dispatch.
+        assert!(
+            batch
+                .pieces()
+                .iter()
+                .all(|piece| piece.kind == PieceKind::Source)
+        );
+        assert!(batch.rows().is_empty());
+        assert_eq!(apply_rows(&src, &batch.rows(), &payload).expect("apply"), src);
+    }
+
+    #[test]
+    fn an_overwrite_keeps_the_length_and_swaps_the_words() {
+        let src: Vec<u32> = (0..5).collect();
+        let payload = [70, 71];
+        let ops = [edit(OP_OVERWRITE, 1, 2, 2, 0)];
+        let mut batch = Batch::new(src.len() as u32);
+        batch.fold_prefix(&ops).expect("script folds");
+        assert_eq!(batch.len(), 5);
+        assert_eq!(
+            apply_rows(&src, &batch.rows(), &payload).expect("apply"),
+            [0, 70, 71, 3, 4]
+        );
+    }
+
+    #[test]
+    fn a_second_insert_at_the_same_position_lands_before_the_first() {
+        // A position names the element sitting at it, so repeating a
+        // put at the same position pushes the earlier run right; the
+        // rows for one anchor keep the queue order, which is newest
+        // first here because both landed at the same anchor.
+        let src: Vec<u32> = (0..4).collect();
+        let payload = [10, 20];
+        let ops = [edit(OP_PUT, 2, 0, 1, 0), edit(OP_PUT, 2, 0, 1, 1)];
+        let mut batch = Batch::new(src.len() as u32);
+        batch.fold_prefix(&ops).expect("script folds");
+        let out = apply_rows(&src, &batch.rows(), &payload).expect("apply");
+        assert_eq!(out, [0, 1, 20, 10, 2, 3]);
+        assert_eq!(out, sequential(&src, &ops, &payload));
+    }
+
+    #[test]
+    fn a_fold_stops_at_the_first_operation_that_is_not_an_edit() {
+        let mut batch = Batch::new(4);
+        let ops = [
+            edit(OP_PUT, 1, 0, 1, 0),
+            OpRecord {
+                kind: OP_CURSOR_SET,
+                pos: 3,
+                len: 0,
+                count: 0,
+                payload: NO_PAYLOAD,
+                cursor: 1,
+                flags: 0,
+            },
+            edit(OP_DELETE, 0, 1, 0, NO_PAYLOAD),
+        ];
+        let folded = batch.fold_prefix(&ops).expect("prefix folds");
+        assert_eq!(folded, 1);
+        assert_eq!(batch.len(), 5);
+        assert!(matches!(
+            batch.fold(&ops[1]),
+            Err(WreditError::InvalidOperation { .. })
+        ));
+    }
+
+    #[test]
+    fn a_range_outside_the_folded_document_is_rejected() {
+        let mut batch = Batch::new(4);
+        let err = batch
+            .fold(&edit(OP_DELETE, 2, 3, 0, NO_PAYLOAD))
+            .expect_err("overruns");
+        assert!(matches!(err, WreditError::OutOfRange { .. }));
+        // Nothing changed: a refused operation leaves the batch usable.
+        assert_eq!(batch.len(), 4);
+        assert_eq!(batch.pieces().len(), 1);
+    }
+
+    #[test]
+    fn an_insert_without_a_payload_is_rejected() {
+        let mut batch = Batch::new(4);
+        let err = batch
+            .fold(&edit(OP_PUT, 0, 0, 2, NO_PAYLOAD))
+            .expect_err("no payload");
+        assert!(matches!(
+            err,
+            WreditError::InvalidOperation {
+                what: "insert with no payload run"
+            }
+        ));
+    }
+
+    #[test]
+    fn an_overwrite_that_changes_the_length_is_rejected() {
+        let mut batch = Batch::new(4);
+        let err = batch
+            .fold(&edit(OP_OVERWRITE, 0, 1, 2, 0))
+            .expect_err("resizes");
+        assert!(matches!(
+            err,
+            WreditError::InvalidOperation {
+                what: "overwrite changes the length"
+            }
+        ));
+    }
+
+    #[test]
+    fn a_batch_too_wide_for_the_table_asks_for_a_second_pass() {
+        let mut batch = Batch::new(4_000);
+        let mut overflowed = false;
+        // Each put at a fresh position adds a payload piece and leaves
+        // a source piece behind, so the list grows until the budget
+        // refuses the fold.
+        for index in 0..(MAX_ROWS as u32 + 8) {
+            let at = index % 4_000;
+            let result = batch.fold(&edit(OP_PUT, at, 0, 1, 0));
+            if matches!(result, Err(WreditError::LimitExceeded { .. })) {
+                overflowed = true;
+                break;
+            }
+            result.expect("fold");
+        }
+        assert!(overflowed, "the piece budget never fired");
+        assert!(batch.pieces().len() <= MAX_ROWS);
+    }
+
+    #[test]
+    fn the_table_matches_a_sequential_script() {
+        let src: Vec<u32> = (0..64).collect();
+        let payload: Vec<u32> = (1_000..4_096).collect();
+        let mut ops: Vec<OpRecord> = Vec::new();
+        let mut state = 0x2545_FEE0u32;
+        let mut next = |bound: u32| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state % bound
+        };
+        // A deterministic pseudo-script of the four edit tags, long
+        // enough to produce overlapping and adjacent ranges. Runs stay
+        // inside the payload plane because their start is drawn from a
+        // window well below its end.
+        for _ in 0..48 {
+            let doc_len = {
+                let mut len = src.len() as u32;
+                for op in &ops {
+                    len = len - op.len + op.count;
+                }
+                len
+            };
+            if doc_len == 0 {
+                ops.push(edit(OP_PUT, 0, 0, 1, next(1_000)));
+                continue;
+            }
+            let pos = next(doc_len);
+            match next(4) {
+                OP_PUT => ops.push(edit(OP_PUT, pos, 0, 1 + next(3), next(1_000))),
+                OP_DELETE => {
+                    let len = 1 + next(doc_len - pos);
+                    ops.push(edit(OP_DELETE, pos, len, 0, NO_PAYLOAD));
+                }
+                OP_REPLACE => {
+                    let len = 1 + next(doc_len - pos);
+                    ops.push(edit(OP_REPLACE, pos, len, 1 + next(3), next(1_000)));
+                }
+                _ => {
+                    let len = 1 + next(doc_len - pos);
+                    ops.push(edit(OP_OVERWRITE, pos, len, len, next(1_000)));
+                }
+            }
+        }
+        let mut batch = Batch::new(src.len() as u32);
+        batch.fold_prefix(&ops).expect("the script folds");
+        let out = apply_rows(&src, &batch.rows(), &payload).expect("apply");
+        assert_eq!(out, sequential(&src, &ops, &payload));
+        assert_eq!(out.len(), batch.len() as usize);
+    }
+
+    #[test]
+    fn the_prefix_sum_matches_a_linear_walk_of_the_table() {
+        let src: Vec<u32> = (0..12).collect();
+        let payload: Vec<u32> = (100..112).collect();
+        let ops = [
+            edit(OP_REPLACE, 1, 2, 3, 0),
+            edit(OP_PUT, 0, 0, 2, 3),
+            edit(OP_DELETE, 9, 2, 0, NO_PAYLOAD),
+            edit(OP_PUT, 12, 0, 1, 5),
+        ];
+        let mut batch = Batch::new(src.len() as u32);
+        batch.fold_prefix(&ops).expect("script folds");
+        let rows = batch.rows();
+
+        // The same rule as `dst_of`, spelled as a linear walk that
+        // accumulates the shift and the drop coverage independently.
+        for source in 0..src.len() as u32 {
+            let mut cum = 0i32;
+            let mut removed = false;
+            for row in &rows {
+                if row.pos <= source {
+                    cum = row.cum;
+                    if is_drop(row) && source < row.pos + row.delta.unsigned_abs() {
+                        removed = true;
+                    }
+                }
+            }
+            let expected = if removed {
+                None
+            } else {
+                u32::try_from(i64::from(source) + i64::from(cum)).ok()
+            };
+            assert_eq!(dst_of(&rows, source), expected, "element {source}");
+        }
+
+        let out = apply_rows(&src, &rows, &payload).expect("apply");
+        assert_eq!(out, sequential(&src, &ops, &payload));
+    }
+
+    #[test]
+    fn an_unsorted_or_overlapping_table_is_refused() {
+        let src = [1, 2, 3];
+        let payload = [7];
+        let overlapping = [
+            BoundaryRow {
+                pos: 0,
+                delta: -3,
+                cum: -3,
+                payload: NO_PAYLOAD,
+            },
+            BoundaryRow {
+                pos: 1,
+                delta: -1,
+                cum: -4,
+                payload: NO_PAYLOAD,
+            },
+        ];
+        assert!(matches!(
+            apply_rows(&src, &overlapping, &payload),
+            Err(WreditError::InvalidOperation {
+                what: "overlapping drop rows"
+            })
+        ));
+        let unsorted = [
+            BoundaryRow {
+                pos: 2,
+                delta: -1,
+                cum: -1,
+                payload: NO_PAYLOAD,
+            },
+            BoundaryRow {
+                pos: 0,
+                delta: -1,
+                cum: -2,
+                payload: NO_PAYLOAD,
+            },
+        ];
+        assert!(matches!(
+            apply_rows(&src, &unsorted, &payload),
+            Err(WreditError::InvalidOperation {
+                what: "boundary rows are unsorted"
+            })
+        ));
+    }
+
+    #[test]
+    fn a_row_reaching_past_the_payload_plane_is_refused() {
+        let src = [1, 2, 3];
+        let rows = [BoundaryRow {
+            pos: 0,
+            delta: 4,
+            cum: 4,
+            payload: 0,
+        }];
+        // Only two payload words exist, the run claims four.
+        assert!(matches!(
+            apply_rows(&src, &rows, &[7, 8]),
+            Err(WreditError::OutOfRange { .. })
+        ));
+    }
+}
