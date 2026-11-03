@@ -69,13 +69,24 @@
 //! data-parallel instead of a sequential memmove.
 //!
 //! The prefix sums are filled on the device by a Hillis-Steele scan
-//! over global memory ([`CTRL_SCAN_STRIDE`] selects the pass, and
+//! over global memory ([`fields::CTRL_SCAN_STRIDE`] selects the pass, and
 //! each pass is a separate dispatch because the dialect has no barrier
 //! that survives across work items). Ordering work items without
 //! synchronization is done by *dispatch chaining*: the queue order
 //! between two dispatches is the only synchronization a kernel may
 //! rely on, so a batch is planned as a fixed sequence of passes and
 //! never as one kernel that races itself.
+//!
+//! # Operations
+//!
+//! The queue is a table of [`OpRecord`] entries tagged by the `OP_*`
+//! kinds, and a tag's [`OpClass`] says what the planning pass does with
+//! it: an [`OpClass::Edit`] contributes exactly one row to the index
+//! map — its jump is `insertions - removals`, independent of how long
+//! the document is — while [`OpClass::Cursor`],
+//! [`OpClass::Capture`] and [`OpClass::Replay`] entries are scheduled
+//! from the queue without touching the map. That reduction is what
+//! turns a sequential edit history into one parallel pass.
 //!
 //! # Undo and redo
 //!
@@ -115,6 +126,10 @@ pub mod fields;
 /// Little-endian word and run access, plus image initialisation.
 pub mod access;
 
+/// Operation queue: record fields, tags, classes and the reduction to
+/// a boundary row.
+pub mod ops;
+
 pub use access::{
     control_at, get_word, image_words, init, is_conforming, put_word, read_run, set_control, write_run,
 };
@@ -127,4 +142,11 @@ pub use geometry::{
     BOUNDARY_CAPACITY, BOUNDARY_WORDS, CONTROL_WORDS, CURSOR_CAPACITY, CURSOR_WORDS, GAP_CAPACITY, GAP_WORDS,
     IMAGE_WORDS, LOG_CAPACITY, MAGIC, OP_CAPACITY, OP_WORDS, PAYLOAD_CAPACITY, PLANES, Plane, TEXT_A_OFFSET,
     TEXT_B_OFFSET, TEXT_CAPACITY, VERSION, WORD_BYTES, record_word,
+};
+pub use ops::{
+    OP_CAPTURE, OP_COUNT, OP_CURSOR, OP_CURSOR_LINE, OP_CURSOR_MOVE, OP_CURSOR_SET, OP_DELETE, OP_FIELDS,
+    OP_FLAG_ANCHOR, OP_FLAG_BITS, OP_FLAG_KEEP, OP_FLAG_SHARED, OP_FLAG_SKIP_CAPTURE, OP_FLAGS,
+    OP_GAP_COMMIT, OP_KIND, OP_KIND_LIMIT, OP_KINDS, OP_LEN, OP_NOP, OP_OVERWRITE, OP_PAYLOAD, OP_POS,
+    OP_PUT, OP_REDO, OP_REPLACE, OP_RESERVED, OP_SELECT_ALL, OP_UNDO, OpClass, OpRecord, class_of, kind_name,
+    op_captures,
 };
