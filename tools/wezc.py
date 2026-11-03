@@ -19,9 +19,10 @@
 #                                  model without emitting bytes, which is
 #                                  what buys ratio at the 4 KiB block size
 #                                  of the Wredit store.
-#   stage 3  context mixing      : order 1-4 hashed contexts + word context
-#                                  + a match model, logistic mixing, one
-#                                  SSE stage, binary arithmetic coder.
+#   stage 3  context mixing      : order 1-6 contexts + word context
+#                                  + a match model, logistic mixing with
+#                                  match-selected weight sets, one SSE
+#                                  stage, binary arithmetic coder.
 #
 # Everything is integer only and the encoder and the decoder share one
 # coding loop, so the two cannot drift apart.
@@ -153,8 +154,8 @@ def utf32_join(body):
 
 # --- stage 3: the context-mixing model ------------------------------------
 
-# context tables: orders 1, 2, 3, 4, 5 (hashed) and the word context
-NCTX = 6
+# context tables: orders 1, 2, 3, 4, 5, 6 (hashed) and the word context
+NCTX = 7
 # mixer inputs: the context tables plus the match model
 NM = NCTX + 1
 # mixer weights: one per input plus a bias
@@ -215,6 +216,7 @@ class Wezc:
         """Fold a finished byte into the contexts and the match model."""
         self.buf.append(c)
         h = self.h
+        h[5] = ((h[4] * PHI) ^ (c + 0x2A6B2E3D)) & MASK32  # order 6, hashed
         h[4] = ((h[3] * PHI) ^ (c + 0x76B149)) & MASK32  # order 5, hashed
         h[3] = ((h[2] << 8) | c) & MASK32  # order 4, exact
         h[2] = ((h[1] << 8) | c) & MASK32  # order 3, exact
@@ -277,7 +279,7 @@ class Wezc:
         sel = 1 if (ml and not self.miss) else 0
         self.w = w = self.wrows[nbits * NSEL + sel]
         nc = self.nc
-        for k in range(5):
+        for k in range(6):
             # multiply-xor, so that different partial bytes never land on the
             # same slot: a plain `h ^ c0` folds 256 contexts into one index.
             i = (((h[k] ^ pc0) * PHI) & MASK32) & m
@@ -290,14 +292,14 @@ class Wezc:
             st[k] = s
             dot += w[k] * s
         i = (self.word ^ pc0) & m
-        idx[5] = i
-        e = t[5][i]
+        idx[6] = i
+        e = t[6][i]
         p = e >> 6
-        nc[5] = e & CMASK
-        probs[5] = p
+        nc[6] = e & CMASK
+        probs[6] = p
         s = ST[clamp12(p >> 4)]
-        st[5] = s
-        dot += w[5] * s
+        st[6] = s
+        dot += w[6] * s
         mn = self._match_input(c0, nbits)
         st[NCTX] = mn
         dot += w[NCTX] * mn + w[NM] * 256
