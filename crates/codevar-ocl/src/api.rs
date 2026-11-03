@@ -31,14 +31,18 @@
 //! Required entry points (the OpenCL 1.0/1.1 core this crate depends on)
 //! must resolve or construction fails with [`Error::MissingSymbol`].
 //! Optional entry points become `None` and surface as [`Error::Unsupported`]
-//! only when a caller actually uses them.
+//! only when a caller actually uses them. A third group — the `no_dispatch`
+//! entries — names core functions that have no slot in `cl_icd_dispatch`
+//! (for example `clFlushMemObject`): they resolve only through symbol
+//! lookup and are always `None` on the dispatch path, so callers must have
+//! a fallback for them.
 //!
 //! The struct contains nothing but function pointers, so it is
 //! automatically `Send + Sync` and is shared by all objects through `Arc`.
 
 use alloc::ffi::CString;
 use core::ffi::{CStr, c_void};
-use core::mem::{size_of, transmute};
+use core::mem::{size_of, transmute, transmute_copy};
 
 use crate::dispatch::IcdDispatch;
 use crate::error::{Error, Result};
@@ -60,7 +64,8 @@ fn lookup(library: &Library, name: &'static str) -> Result<*mut c_void> {
 macro_rules! define_api {
     (
         required: [$($req:ident : $req_ty:ident => $req_sym:literal),* $(,)?],
-        optional: [$($opt:ident : $opt_ty:ident => $opt_sym:literal),* $(,)?]
+        optional: [$($opt:ident : $opt_ty:ident => $opt_sym:literal),* $(,)?],
+        no_dispatch: [$($nod:ident : $nod_ty:ident => $nod_sym:literal),* $(,)?]
     ) => {
         /// The set of OpenCL entry points resolved from one driver library.
         ///
@@ -78,6 +83,11 @@ macro_rules! define_api {
             $(
                 #[doc = concat!("`", $opt_sym, "` when the driver exports it, `None` otherwise.")]
                 pub(crate) $opt: Option<sys::$opt_ty>,
+            )*
+            $(
+                #[doc = concat!("`", $nod_sym, "` when the library exports it, `None` otherwise. ",
+                    "Absent on every dispatch-table [`Api`] because the entry point has no `cl_icd_dispatch` slot.")]
+                pub(crate) $nod: Option<sys::$nod_ty>,
             )*
         }
 
@@ -104,22 +114,10 @@ macro_rules! define_api {
                         },
                     )*
                     $(
-                        $opt: {
-                            let raw = lookup(library, $opt_sym);
-                            match raw {
-                                Ok(raw) => {
-                                    debug_assert_eq!(
-                                        size_of::<sys::$opt_ty>(),
-                                        size_of::<*mut c_void>()
-                                    );
-                                    // SAFETY: same argument as the required
-                                    // case, for the optional symbol named
-                                    // `$opt_sym`.
-                                    Some(unsafe { transmute::<*mut c_void, sys::$opt_ty>(raw) })
-                                }
-                                Err(_) => None,
-                            }
-                        },
+                        $opt: lookup_optional(library, $opt_sym),
+                    )*
+                    $(
+                        $nod: lookup_optional(library, $nod_sym),
                     )*
                 })
             }
@@ -145,10 +143,35 @@ macro_rules! define_api {
                 Ok(Self {
                     $($req: table.$req.ok_or(Error::MissingSymbol { symbol: $req_sym })?,)*
                     $($opt: table.$opt,)*
+                    // The `no_dispatch` entries have no slot in
+                    // `cl_icd_dispatch`, so a vendor loaded through its
+                    // table cannot expose them; only a client library
+                    // reached by symbol lookup can.
+                    $($nod: None,)*
                 })
             }
         }
     };
+}
+
+/// Resolves an optional symbol, mapping absence (and any lookup error) to
+/// `None` exactly like the old inline arm of the macro did.
+///
+/// # Safety-relevant note
+///
+/// The transmute target is chosen by the caller through the inferred
+/// `T`; every use site instantiates it with a [`sys`] entry-point type,
+/// which is a pointer-wide function pointer.
+fn lookup_optional<T: Copy>(library: &Library, symbol: &'static str) -> Option<T> {
+    let raw = lookup(library, symbol).ok()?;
+    let address = raw as usize;
+    debug_assert_eq!(size_of::<T>(), size_of::<*mut c_void>());
+    // SAFETY: `T` is an entry-point type of [`crate::sys`] (the macro
+    // only instantiates it with those), hence a pointer-wide function
+    // pointer; copying `size_of::<T>()` bytes out of `address`
+    // reproduces the pointer `lookup` returned, exactly as in
+    // [`Api::extension_fn`].
+    Some(unsafe { transmute_copy::<usize, T>(&address) })
 }
 
 define_api! {
@@ -193,6 +216,11 @@ define_api! {
             => "clGetExtensionFunctionAddress",
         get_extension_function_address_for_platform: GetExtensionFunctionAddressForPlatform
             => "clGetExtensionFunctionAddressForPlatform",
+        enqueue_map_buffer: EnqueueMapBuffer => "clEnqueueMapBuffer",
+        enqueue_unmap_mem_object: EnqueueUnmapMemObject => "clEnqueueUnmapMemObject",
+    ],
+    no_dispatch: [
+        flush_mem_object: FlushMemObject => "clFlushMemObject",
     ]
 }
 

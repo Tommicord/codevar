@@ -197,6 +197,12 @@ fn api() -> Api {
         create_buffer_with_properties: None,
         get_extension_function_address: None,
         get_extension_function_address_for_platform: None,
+        // The single-address-space CPU device never needs a host mapping:
+        // buffer commands already read and write host memory directly, so
+        // the map surface stays `None` and callers take the copy path.
+        enqueue_map_buffer: None,
+        enqueue_unmap_mem_object: None,
+        flush_mem_object: None,
     }
 }
 
