@@ -64,6 +64,6 @@ pub use kernel::{Arg, Kernel};
 pub use platform::{Device, DeviceKind, Platform};
 pub use program::Program;
 pub use queue::{CommandQueue, QueueProperties};
-pub use readback::Readback;
+pub use readback::{MapMode, MappedRegion, MappedView, Readback};
 pub use runtime::Runtime;
 pub use semaphore::{ExternalSemaphoreHandle, Semaphore};
