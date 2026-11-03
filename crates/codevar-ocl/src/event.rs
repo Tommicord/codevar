@@ -26,11 +26,13 @@
 //! neither the queue nor its context can be released early.
 
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::fmt;
 
 use codevar_logger::log_warn;
 
 use crate::api::Api;
+use crate::context::Context;
 use crate::error::{Error, Result, status};
 use crate::query;
 use crate::queue::CommandQueue;
@@ -127,6 +129,58 @@ impl Event {
         )
     }
 
+    /// Waits for every command in `events` with a single
+    /// `clWaitForEvents` call.
+    ///
+    /// This is the batch half of the non-blocking submission protocol:
+    /// enqueue N commands, collect their events, and retire all of them
+    /// with one CPU wait instead of N. Each *distinct* queue the events
+    /// belong to is flushed once before the wait, so a never-flushed
+    /// queue cannot stall the batch. An empty list succeeds without
+    /// touching the driver.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidArgument`] when the events come from more
+    /// than one OpenCL implementation or the list is longer than
+    /// `u32::MAX` entries, [`Error::Status`] when a flush fails or the
+    /// driver reports that one of the waited commands ended with an
+    /// error status.
+    pub fn wait_all(events: &[&Event]) -> Result<()> {
+        let Some(first) = events.first() else {
+            return Ok(());
+        };
+        if !events
+            .iter()
+            .all(|event| Arc::ptr_eq(&event.api, &first.api))
+        {
+            return Err(Error::InvalidArgument {
+                what: "events of different OpenCL implementations cannot be waited on together",
+            });
+        }
+        let mut handles = Vec::with_capacity(events.len());
+        let mut flushed: Vec<usize> = Vec::with_capacity(events.len());
+        for event in events {
+            let queue = event.queue.raw().as_raw() as usize;
+            if !flushed.contains(&queue) {
+                event.queue.flush()?;
+                flushed.push(queue);
+            }
+            handles.push(event.raw);
+        }
+        let count = u32::try_from(handles.len()).map_err(|_| Error::InvalidArgument {
+            what: "an event wait list must hold at most u32::MAX events",
+        })?;
+        status(
+            // SAFETY: `handles` is a live array of `count` event handles,
+            // all belonging to the driver that resolved `first.api` (the
+            // shared-table pointer check above guarantees they came from
+            // one implementation).
+            unsafe { (first.api.wait_for_events)(count, handles.as_ptr()) },
+            "clWaitForEvents",
+        )
+    }
+
     /// Returns the current execution state of the command.
     ///
     /// # Errors
@@ -173,6 +227,16 @@ impl Event {
             unsafe { (self.api.get_event_profiling_info)(self.raw, param, size, value, size_ret) }
         };
         query::query_u64(&mut call, "clGetEventProfilingInfo")
+    }
+
+    /// Returns the raw driver handle.
+    pub(crate) fn raw(&self) -> sys::EventHandle {
+        self.raw
+    }
+
+    /// Returns the context of the queue this event was enqueued on.
+    pub(crate) fn context(&self) -> &Context {
+        self.queue.context()
     }
 }
 
