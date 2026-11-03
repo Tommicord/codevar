@@ -312,7 +312,8 @@ class Wezc:
         # one SSE stage: an additive logit correction keyed by the order-2
         # context and the mixed probability. It starts at zero, so an
         # untrained table leaves the mixer alone instead of pulling every
-        # prediction halfway to 0.5.
+        # prediction halfway to 0.5. A second stage keyed by the partial byte
+        # measured -0.11% at 100 kB but +0.04% at 1 MB, so there is only one.
         sidx = ((idx[1] >> 4) ^ (p >> 6)) & self.sse_mask
         self.sidx = sidx
         self.pr = SQ[clamplog(logit + (self.sse[sidx] >> 6)) + 2047]
