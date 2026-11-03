@@ -322,3 +322,218 @@ pub const GAP_FIELDS: [(&str, u32); 4] = [
 /// Bit 16 of [`GAP_OWNER`]: the descriptor names a shared gap slot
 /// rather than a private per-cursor gap.
 pub const GAP_SHARED: u32 = 1 << 16;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::WreditError;
+    use crate::ptbp::geometry::*;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    fn image() -> Vec<u8> {
+        vec![0u8; IMAGE_WORDS as usize * WORD_BYTES]
+    }
+
+    #[test]
+    fn control_fields_are_distinct_and_inside_the_plane() {
+        for (name, field) in CTRL_FIELDS {
+            assert!(field < CONTROL_WORDS, "{name} escapes the control plane");
+            for (other, value) in CTRL_FIELDS {
+                if other != name {
+                    assert_ne!(field, value, "{name} collides with {other}");
+                }
+            }
+        }
+        assert_eq!(
+            CTRL_RESERVED,
+            CONTROL_WORDS - 1,
+            "the spare field must stay the last word"
+        );
+    }
+
+    #[test]
+    fn flag_bits_are_single_and_disjoint() {
+        for (name, bit) in FLAG_BITS {
+            assert_eq!(bit.count_ones(), 1, "{name} is not one bit");
+            for (other, value) in FLAG_BITS {
+                if other != name {
+                    assert_eq!(bit & value, 0, "{name} overlaps {other}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn field_tables_name_every_field_of_their_plane() {
+        for (name, field) in CURSOR_FIELDS {
+            assert!(field < CURSOR_WORDS, "{name} escapes a cursor record");
+            for (other, value) in CURSOR_FIELDS {
+                if other != name {
+                    assert_ne!(field, value, "{name} collides with {other}");
+                }
+            }
+        }
+        assert_eq!(
+            CURSOR_FIELDS.len() as u32 + 1,
+            CURSOR_WORDS,
+            "exactly one cursor word is a reserved spare"
+        );
+        for (name, field) in GAP_FIELDS {
+            assert!(field < GAP_WORDS, "{name} escapes a gap record");
+        }
+        assert_eq!(GAP_FIELDS.len() as u32, GAP_WORDS, "every gap word is named");
+    }
+
+    #[test]
+    fn parity_always_selects_two_different_text_planes() {
+        for flags in [0, FLAG_PARITY, FLAG_PARITY | FLAG_INVERSE | FLAG_LOG] {
+            let (src, dst) = (src_plane(flags), dst_plane(flags));
+            assert_ne!(src, dst);
+            assert!(matches!(
+                (src, dst),
+                (Plane::TextA, Plane::TextB) | (Plane::TextB, Plane::TextA)
+            ));
+        }
+    }
+
+    #[test]
+    fn record_words_land_on_the_field_they_name() {
+        assert_eq!(
+            record_word(Plane::Boundaries, 0, BND_CUM),
+            Ok(BOUNDARIES_OFFSET + BND_CUM)
+        );
+        assert_eq!(
+            record_word(Plane::Cursors, 3, CUR_OUT_POS),
+            Ok(CURSORS_OFFSET + 3 * CURSOR_WORDS + CUR_OUT_POS)
+        );
+        assert_eq!(
+            record_word(Plane::Gaps, 19, GAP_OWNER),
+            Ok(GAPS_OFFSET + 19 * GAP_WORDS + GAP_OWNER)
+        );
+        assert_eq!(
+            record_word(Plane::Log, 5, BND_POS),
+            Ok(LOG_OFFSET + 5 * LOG_WORDS + BND_POS)
+        );
+        assert_eq!(
+            record_word(Plane::Payload, 0, 0),
+            Err(WreditError::InvalidOperation {
+                what: "plane is not record-structured"
+            })
+        );
+    }
+
+    #[test]
+    fn record_word_rejects_a_record_or_field_past_its_plane() {
+        assert!(
+            matches!(
+                record_word(Plane::Cursors, CURSOR_CAPACITY, CUR_POS),
+                Err(WreditError::OutOfRange { start, end })
+                    if start == CURSOR_CAPACITY as u64 && end == CURSOR_CAPACITY as u64
+            ),
+            "the record after the pool must be refused"
+        );
+        assert!(matches!(
+            record_word(Plane::Gaps, 0, GAP_WORDS),
+            Err(WreditError::OutOfRange { start, end }) if start == GAP_WORDS as u64 && end == GAP_WORDS as u64
+        ));
+    }
+
+    #[test]
+    fn boundary_rows_round_trip_including_negative_deltas() {
+        let mut data = image();
+        let rows = [
+            BoundaryRow {
+                pos: 0,
+                delta: 0,
+                cum: 0,
+                payload: NO_PAYLOAD,
+            },
+            BoundaryRow {
+                pos: 12,
+                delta: -7,
+                cum: -7,
+                payload: 4_096,
+            },
+            BoundaryRow {
+                pos: 900,
+                delta: 1_024,
+                cum: 1_017,
+                payload: 77,
+            },
+            BoundaryRow {
+                pos: u32::MAX,
+                delta: i32::MIN,
+                cum: i32::MAX,
+                payload: 0,
+            },
+        ];
+        for (index, row) in rows.iter().enumerate() {
+            row.write(&mut data, index as u32).unwrap();
+        }
+        for (index, row) in rows.iter().enumerate() {
+            assert_eq!(BoundaryRow::read(&data, index as u32).unwrap(), *row);
+        }
+        assert!(
+            matches!(
+                BoundaryRow::read(&data, BOUNDARY_CAPACITY),
+                Err(WreditError::OutOfRange { .. })
+            ),
+            "the row after the table must be refused"
+        );
+    }
+
+    #[test]
+    fn an_inverse_row_negates_the_jump_and_drops_the_prefix() {
+        let row = BoundaryRow {
+            pos: 40,
+            delta: -9,
+            cum: 12,
+            payload: 512,
+        };
+        let back = row.checked_inverse().unwrap();
+        assert_eq!(
+            back.pos, 40,
+            "the discontinuity stays where the forward pass put it"
+        );
+        assert_eq!(back.delta, 9);
+        assert_eq!(
+            back.payload, 512,
+            "the run an undo must re-insert is still addressed"
+        );
+        assert_eq!(
+            back.cum, 0,
+            "a stale prefix must never survive into an inverse pass"
+        );
+    }
+
+    #[test]
+    fn an_unnegatable_jump_is_refused_rather_than_wrapped() {
+        let row = BoundaryRow {
+            pos: 1,
+            delta: i32::MIN,
+            cum: 7,
+            payload: 3,
+        };
+        assert_eq!(
+            row.checked_inverse(),
+            None,
+            "a jump with no negation must stop the undo pass, not wrap to itself"
+        );
+        assert_eq!(row.checked_inverse().map(|back| back.delta), None);
+    }
+
+    #[test]
+    fn an_empty_boundary_row_inserts_nothing() {
+        assert_eq!(BoundaryRow::none().payload, NO_PAYLOAD);
+        assert_eq!(NO_PAYLOAD, u32::MAX);
+        assert_eq!(BoundaryRow::none().delta, 0);
+    }
+
+    #[test]
+    fn signed_views_use_twos_complement() {
+        assert_eq!(signed(0xFFFF_FFF9), -7);
+        assert_eq!(signed(0x8000_0000), i32::MIN);
+        assert_eq!((-7i32).cast_unsigned(), 0xFFFF_FFF9);
+    }
+}

@@ -277,3 +277,173 @@ pub fn is_conforming(image: &[u8]) -> bool {
         (Ok(MAGIC), Ok(VERSION))
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ptbp::fields::FLAG_REMAP;
+    use crate::ptbp::geometry::*;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    fn image() -> Vec<u8> {
+        vec![0u8; IMAGE_WORDS as usize * WORD_BYTES]
+    }
+
+    #[test]
+    fn init_stamps_a_conforming_header() {
+        let mut data = image();
+        assert!(!is_conforming(&data), "a zeroed image must not look conforming");
+        // The image is built from the layout's own constants, so a
+        // failure here means the layout is inconsistent, not the input.
+        init(&mut data, FLAG_REMAP).unwrap();
+        assert!(is_conforming(&data));
+        assert_eq!(control_at(&data, CTRL_FLAGS).unwrap(), FLAG_REMAP);
+        assert_eq!(control_at(&data, CTRL_TEXT_CAPACITY).unwrap(), TEXT_CAPACITY);
+        assert_eq!(
+            control_at(&data, CTRL_PAYLOAD_CAPACITY).unwrap(),
+            PAYLOAD_CAPACITY
+        );
+        assert_eq!(control_at(&data, CTRL_CURSOR_COUNT).unwrap(), CURSOR_CAPACITY);
+        assert_eq!(control_at(&data, CTRL_DST_LEN).unwrap(), 0);
+        assert_eq!(control_at(&data, CTRL_RESERVED).unwrap(), 0);
+    }
+
+    #[test]
+    fn init_rejects_a_short_or_misaligned_image() {
+        let mut short = vec![0u8; (IMAGE_WORDS - 1) as usize * WORD_BYTES];
+        assert!(
+            matches!(
+                init(&mut short, 0),
+                Err(WreditError::CapacityExhausted { requested, available })
+                    if requested == IMAGE_WORDS as usize && available == (IMAGE_WORDS - 1) as usize
+            ),
+            "a one-word-short image must report exactly what it lacks"
+        );
+        let mut ragged = image();
+        ragged.truncate(ragged.len() - 1);
+        assert!(matches!(
+            init(&mut ragged, 0),
+            Err(WreditError::InvalidAddress { .. })
+        ));
+    }
+
+    #[test]
+    fn a_tampered_header_stops_looking_conforming() {
+        let mut data = image();
+        init(&mut data, 0).unwrap();
+        set_control(&mut data, CTRL_MAGIC, MAGIC ^ 1).unwrap();
+        assert!(!is_conforming(&data), "a wrong magic must be rejected");
+        set_control(&mut data, CTRL_MAGIC, MAGIC).unwrap();
+        set_control(&mut data, CTRL_VERSION, VERSION + 1).unwrap();
+        assert!(!is_conforming(&data), "a wrong revision must be rejected");
+    }
+
+    #[test]
+    fn word_access_round_trips_little_endian() {
+        let mut data = image();
+        put_word(&mut data, TEXT_A_OFFSET + 7, 0xDEAD_BEEF).unwrap();
+        assert_eq!(get_word(&data, TEXT_A_OFFSET + 7).unwrap(), 0xDEAD_BEEF);
+        let tail = (TEXT_A_OFFSET as usize + 7) * WORD_BYTES;
+        assert_eq!(&data[tail..tail + WORD_BYTES], &[0xEF, 0xBE, 0xAD, 0xDE]);
+    }
+
+    #[test]
+    fn word_access_bounds_checks_before_reading() {
+        let data = image();
+        assert!(
+            matches!(
+                get_word(&data, IMAGE_WORDS),
+                Err(WreditError::OutOfRange { start, end })
+                    if start == IMAGE_WORDS as u64 && end == IMAGE_WORDS as u64 + 1
+            ),
+            "reading one past the image must name the word it wanted"
+        );
+        assert!(matches!(get_word(&data, IMAGE_WORDS - 1), Ok(0)));
+        let ragged = vec![0u8; 6];
+        assert!(matches!(
+            get_word(&ragged, 0),
+            Err(WreditError::InvalidAddress { .. })
+        ));
+    }
+
+    #[test]
+    fn a_word_index_that_would_wrap_is_reported_not_wrapped() {
+        let data = image();
+        assert!(
+            matches!(
+                get_word(&data, u32::MAX),
+                Err(WreditError::OutOfRange { start, end })
+                    if start == u64::from(u32::MAX) && end == u64::from(u32::MAX) + 1
+            ),
+            "start + 1 must be computed without wrapping a u32"
+        );
+    }
+
+    #[test]
+    fn control_fields_reject_a_field_outside_the_plane() {
+        let mut data = image();
+        assert!(
+            matches!(
+                control_at(&data, CONTROL_WORDS),
+                Err(WreditError::OutOfRange { start, end })
+                    if start == CONTROL_WORDS as u64 && end == CONTROL_WORDS as u64
+            ),
+            "the control plane must reject its own size as a field index"
+        );
+        assert!(matches!(
+            set_control(&mut data, CONTROL_WORDS + 9, 1),
+            Err(WreditError::OutOfRange { .. })
+        ));
+    }
+
+    #[test]
+    fn runs_write_and_read_back_a_plane() {
+        const RUN: [u32; 5] = [1, 2, 3, 0xE100_0041, 5];
+        let mut data = image();
+        write_run(&mut data, Plane::TextA, 40, &RUN).unwrap();
+        let mut back = [0u32; RUN.len()];
+        read_run(&data, Plane::TextA, 40, RUN.len() as u32, &mut back).unwrap();
+        assert_eq!(back, RUN);
+        write_run(&mut data, Plane::Payload, 0, &RUN).unwrap();
+        let mut at = [0u32; RUN.len()];
+        read_run(&data, Plane::Payload, 0, RUN.len() as u32, &mut at).unwrap();
+        assert_eq!(at, RUN);
+    }
+
+    #[test]
+    fn a_run_ends_where_the_next_plane_starts() {
+        let mut data = image();
+        let run = [7u32; 4];
+        write_run(&mut data, Plane::TextA, TEXT_CAPACITY - 4, &run).unwrap();
+        let mut back = [0u32; 4];
+        read_run(&data, Plane::TextA, TEXT_CAPACITY - 4, 4, &mut back).unwrap();
+        assert_eq!(back, run, "the last elements of plane A must be addressable");
+        assert_eq!(
+            get_word(&data, TEXT_B_OFFSET).unwrap(),
+            0,
+            "and must not spill into plane B"
+        );
+    }
+
+    #[test]
+    fn runs_are_bounded_by_the_plane_and_the_out_buffer() {
+        let mut data = image();
+        let run = [0u32; 4];
+        assert!(matches!(
+            write_run(&mut data, Plane::TextA, TEXT_CAPACITY - 2, &run),
+            Err(WreditError::OutOfRange { .. })
+        ));
+        let mut tiny = [0u32; 2];
+        assert!(matches!(
+            read_run(&data, Plane::Payload, 0, 4, &mut tiny),
+            Err(WreditError::OutOfRange { .. })
+        ));
+        assert_eq!(
+            write_run(&mut data, Plane::Ops, 0, &run),
+            Err(WreditError::InvalidOperation {
+                what: "plane is record-structured"
+            })
+        );
+    }
+}
