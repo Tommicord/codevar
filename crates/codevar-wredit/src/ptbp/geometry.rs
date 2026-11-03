@@ -35,10 +35,10 @@ use crate::error::{WreditError, WreditResult};
 /// Bytes in one protocol word.
 pub const WORD_BYTES: usize = 4;
 
-/// Magic word a conforming image holds at [`CTRL_MAGIC`].
+/// Magic word a conforming image holds at [`super::fields::CTRL_MAGIC`].
 pub const MAGIC: u32 = 0x5054_4250;
 
-/// Protocol revision a conforming image holds at [`CTRL_VERSION`].
+/// Protocol revision a conforming image holds at [`super::fields::CTRL_VERSION`].
 ///
 /// A kernel reads these two words first and returns without touching
 /// the text planes when they disagree; the layout is versioned as a

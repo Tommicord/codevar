@@ -31,9 +31,9 @@ use crate::error::WreditResult;
 // Control plane fields
 // ---------------------------------------------------------------------------
 
-/// Image identity; must read [`MAGIC`] before anything else is trusted.
+/// Image identity; must read [`super::geometry::MAGIC`] before anything else is trusted.
 pub const CTRL_MAGIC: u32 = 0;
-/// Protocol revision; must read [`VERSION`].
+/// Protocol revision; must read [`super::geometry::VERSION`].
 pub const CTRL_VERSION: u32 = 1;
 /// Batch flags, a union of the `FLAG_*` bits.
 pub const CTRL_FLAGS: u32 = 2;
@@ -194,8 +194,8 @@ impl BoundaryRow {
     ///
     /// # Errors
     ///
-    /// [`WreditError::OutOfRange`] when `index` escapes the table or
-    /// the image, [`WreditError::InvalidAddress`] when `image` is not
+    /// [`crate::error::WreditError::OutOfRange`] when `index` escapes the table or
+    /// the image, [`crate::error::WreditError::InvalidAddress`] when `image` is not
     /// whole words.
     pub fn read(image: &[u8], index: u32) -> WreditResult<Self> {
         let word = |field: u32| {
