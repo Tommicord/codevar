@@ -53,6 +53,10 @@
 /// Folding a sequential operation queue into one boundary table.
 pub mod sequentially_batch;
 
+/// Shifting cursors and gap bases along a boundary table.
+pub mod shift;
+
 pub use sequentially_batch::{
     Batch, MAX_PIECES, MAX_ROWS, Piece, PieceKind, apply_rows, dst_of, is_drop, is_insert,
 };
+pub use shift::{caret_at, cum_before, cum_through, drop_anchor, dst_len, gap_base_at, inserts_at};
