@@ -881,9 +881,57 @@ pub type EnqueueNdRangeKernel = unsafe extern "system" fn(
     event: *mut EventHandle,
 ) -> i32;
 
+/// Maps a buffer region into the host address space
+/// (`clEnqueueMapBuffer`).
+///
+/// The returned pointer addresses the mapped region (`[offset,
+/// offset + size)` of the buffer) and is only valid while the mapping is
+/// alive; `errcode_ret` reports the status because the null pointer is
+/// also the failure return value.
+pub type EnqueueMapBuffer = unsafe extern "system" fn(
+    command_queue: CommandQueueHandle,
+    buffer: MemHandle,
+    blocking_map: u32,
+    map_flags: u64,
+    offset: usize,
+    size: usize,
+    num_events_in_wait_list: u32,
+    event_wait_list: *const EventHandle,
+    event: *mut EventHandle,
+    errcode_ret: *mut i32,
+) -> *mut c_void;
+
+/// Releases a host pointer returned by [`EnqueueMapBuffer`]
+/// (`clEnqueueUnmapMemObject`).
+///
+/// For non-coherent host-visible memory the unmap is also the command
+/// that flushes the region, so it is mandatory before the device may
+/// touch the buffer again.
+pub type EnqueueUnmapMemObject = unsafe extern "system" fn(
+    command_queue: CommandQueueHandle,
+    memobj: MemHandle,
+    mapped_ptr: *mut c_void,
+    num_events_in_wait_list: u32,
+    event_wait_list: *const EventHandle,
+    event: *mut EventHandle,
+) -> i32;
+
+/// Flushes a mapped region without unmapping it
+/// (`clFlushMemObject`, OpenCL 1.1).
+///
+/// The entry point exists so a non-coherent mapping can push host writes
+/// back to the device while the host keeps working on it; it has no slot
+/// in the ICD dispatch table and is only reachable as a library symbol.
+pub type FlushMemObject = unsafe extern "system" fn(
+    command_queue: CommandQueueHandle,
+    memobj: MemHandle,
+    num_events_in_wait_list: u32,
+    event_wait_list: *const EventHandle,
+    event: *mut EventHandle,
+) -> i32;
+
 /// Waits for events to complete (`clWaitForEvents`).
 pub type WaitForEvents = unsafe extern "system" fn(num_events: u32, event_list: *const EventHandle) -> i32;
-
 /// Decrements an event's reference count (`clReleaseEvent`).
 pub type ReleaseEvent = unsafe extern "system" fn(event: EventHandle) -> i32;
 
@@ -1170,6 +1218,18 @@ mod tests {
         );
         assert_eq!(
             core::mem::size_of::<EnqueueAcquireExternalMemObjects>(),
+            core::mem::size_of::<*mut c_void>()
+        );
+        assert_eq!(
+            core::mem::size_of::<EnqueueMapBuffer>(),
+            core::mem::size_of::<*mut c_void>()
+        );
+        assert_eq!(
+            core::mem::size_of::<EnqueueUnmapMemObject>(),
+            core::mem::size_of::<*mut c_void>()
+        );
+        assert_eq!(
+            core::mem::size_of::<FlushMemObject>(),
             core::mem::size_of::<*mut c_void>()
         );
         assert_eq!(

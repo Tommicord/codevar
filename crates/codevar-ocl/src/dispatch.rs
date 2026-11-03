@@ -50,12 +50,13 @@ use core::mem::{offset_of, size_of};
 
 use crate::sys::{
     BuildProgram, CreateBuffer, CreateBufferWithProperties, CreateCommandQueue, CreateContext, CreateKernel,
-    CreateProgramWithIL, CreateProgramWithSource, EnqueueCopyBuffer, EnqueueFillBuffer, EnqueueNdRangeKernel,
-    EnqueueReadBuffer, EnqueueWriteBuffer, Finish, Flush, GetDeviceIds, GetDeviceInfo, GetEventInfo,
-    GetEventProfilingInfo, GetExtensionFunctionAddress, GetExtensionFunctionAddressForPlatform,
-    GetKernelInfo, GetKernelWorkGroupInfo, GetPlatformIds, GetPlatformInfo, GetProgramBuildInfo,
-    GetProgramInfo, PlatformHandle, ReleaseCommandQueue, ReleaseContext, ReleaseEvent, ReleaseKernel,
-    ReleaseMemObject, ReleaseProgram, SetKernelArg, WaitForEvents,
+    CreateProgramWithIL, CreateProgramWithSource, EnqueueCopyBuffer, EnqueueFillBuffer, EnqueueMapBuffer,
+    EnqueueNdRangeKernel, EnqueueReadBuffer, EnqueueUnmapMemObject, EnqueueWriteBuffer, Finish, Flush,
+    GetDeviceIds, GetDeviceInfo, GetEventInfo, GetEventProfilingInfo, GetExtensionFunctionAddress,
+    GetExtensionFunctionAddressForPlatform, GetKernelInfo, GetKernelWorkGroupInfo, GetPlatformIds,
+    GetPlatformInfo, GetProgramBuildInfo, GetProgramInfo, PlatformHandle, ReleaseCommandQueue,
+    ReleaseContext, ReleaseEvent, ReleaseKernel, ReleaseMemObject, ReleaseProgram, SetKernelArg,
+    WaitForEvents,
 };
 
 /// The vendor ICD dispatch table (`cl_icd_dispatch` in `CL/cl_icd.h`).
@@ -176,12 +177,12 @@ pub(crate) struct IcdDispatch {
     pub(crate) enqueue_copy_image_to_buffer: *mut c_void,
     /// Slot 55: `clEnqueueCopyBufferToImage` (unused).
     pub(crate) enqueue_copy_buffer_to_image: *mut c_void,
-    /// Slot 56: `clEnqueueMapBuffer` (unused).
-    pub(crate) enqueue_map_buffer: *mut c_void,
+    /// Slot 56: `clEnqueueMapBuffer`.
+    pub(crate) enqueue_map_buffer: Option<EnqueueMapBuffer>,
     /// Slot 57: `clEnqueueMapImage` (unused).
     pub(crate) enqueue_map_image: *mut c_void,
-    /// Slot 58: `clEnqueueUnmapMemObject` (unused).
-    pub(crate) enqueue_unmap_mem_object: *mut c_void,
+    /// Slot 58: `clEnqueueUnmapMemObject`.
+    pub(crate) enqueue_unmap_mem_object: Option<EnqueueUnmapMemObject>,
     /// Slot 59.
     pub(crate) enqueue_nd_range_kernel: Option<EnqueueNdRangeKernel>,
     /// Slot 60: `clEnqueueTask` (deprecated, unused).
@@ -435,6 +436,8 @@ mod tests {
         assert_eq!(offset_of!(IcdDispatch, enqueue_read_buffer), 48 * SLOT);
         assert_eq!(offset_of!(IcdDispatch, enqueue_write_buffer), 49 * SLOT);
         assert_eq!(offset_of!(IcdDispatch, enqueue_copy_buffer), 50 * SLOT);
+        assert_eq!(offset_of!(IcdDispatch, enqueue_map_buffer), 56 * SLOT);
+        assert_eq!(offset_of!(IcdDispatch, enqueue_unmap_mem_object), 58 * SLOT);
         assert_eq!(offset_of!(IcdDispatch, enqueue_nd_range_kernel), 59 * SLOT);
         assert_eq!(offset_of!(IcdDispatch, get_extension_function_address), 65 * SLOT);
         assert_eq!(
