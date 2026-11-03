@@ -20,8 +20,8 @@
 #                                  what buys ratio at the 4 KiB block size
 #                                  of the Wredit store.
 #   stage 3  context mixing      : order 1-6 contexts + word context
-#                                  + a match model, logistic mixing with
-#                                  match-selected weight sets, one SSE
+#                                  + a match model, two-layer logistic mixing
+#                                  with context-selected weight rows, one SSE
 #                                  stage, binary arithmetic coder.
 #
 # Everything is integer only and the encoder and the decoder share one
@@ -164,6 +164,17 @@ NW = NM + 1
 # mixer weight sets per bit position: the match model off, then on
 NSEL = 2
 
+# A two-layer mixer, because selecting the weight row by the previous byte
+# trades one error for another: 256 rows measured -1.3% at 1 MB but +1.3% at
+# 100 kB, since a row that is only visited every 256th bit never learns. The
+# first layer is three mixers over the same inputs with row selectors of
+# different widths - 16 rows that always learn, 256 that learn the class of
+# the previous byte, 4096 that learn the byte itself - and the second layer
+# combines their stretched outputs with the narrow row. Each first layer also
+# carries a bias weight on a constant input.
+NMX = 3
+NWR = (8 * NSEL, 8 * NSEL * 16, 8 * NSEL * 256)
+
 # A context slot holds a bit-history state instead of a probability: how many
 # zeros and ones it has seen (saturating at 7 each) and the last bit, packed
 # into one byte as (n0<<5)|(n1<<2)|lb. The probability is then a function of
@@ -212,14 +223,16 @@ class Wezc:
         # one history byte per slot, plus the shared 256-state probability map
         self.tc = [array("B", bytes(size)) for _ in range(NCTX)]
         self.sm = [array("I", SM0) for _ in range(NCTX)]
-        # Mixer weight sets, selected per bit by what is already known about
-        # it: the partial byte (which bits are decided and how) and the match
-        # model's confidence. One row per bit position, as before, has to
-        # average a confident match copy together with a bare order-1 guess,
-        # and the two want different input weights.
-        self.wrows = [array("q", [0x10000 // NM] * NM + [0])
-                      for _ in range(8 * NSEL)]
-        self.w = self.wrows[0]
+        # First-layer weight rows, one table per selector width, and the
+        # second-layer rows that combine their outputs. Each row is one weight
+        # per input plus a bias on a constant 256 input.
+        self.m1 = [[array("q", [0x10000 // NM] * NM + [0]) for _ in range(rows)]
+                   for rows in NWR]
+        self.m2 = [array("q", [0x10000 // NMX] * NMX + [0])
+                   for _ in range(8 * NSEL)]
+        self.rows = [0] * NMX
+        self.w2 = self.m2[0]
+        self.s2 = [0] * NMX
         self.lr_shift = lr_shift
         self.sse = array("i", bytes(4 << sse_bits))
         self.sse_mask = (1 << sse_bits) - 1
@@ -236,7 +249,7 @@ class Wezc:
         self.miss = False
         # per-bit scratch, filled by predict and consumed by update
         self.idx = [0] * NCTX
-        self.st = [0] * NM
+        self.st = [0] * NM + [256]
         self.sn = [0] * NCTX
         self.sidx = 0
         self.pr = 2048
@@ -308,11 +321,15 @@ class Wezc:
         tc = self.tc
         sm = self.sm
         sn = self.sn
-        dot = 0
         pc0 = (c0 * PHI) & MASK32
         ml = self.mlen
         sel = 1 if (ml and not self.miss) else 0
-        self.w = w = self.wrows[nbits * NSEL + sel]
+        r0 = nbits * NSEL + sel
+        prev = h[0]
+        rows = self.rows
+        rows[0] = r0
+        rows[1] = (r0 << 4) | (prev >> 4)
+        rows[2] = (r0 << 8) | prev
         for k in range(6):
             # multiply-xor, so that different partial bytes never land on the
             # same slot: a plain `h ^ c0` folds 256 contexts into one index.
@@ -320,27 +337,32 @@ class Wezc:
             idx[k] = i
             s = tc[k][i]
             sn[k] = s
-            p = ST[clamp12(sm[k][s] >> 12)]
-            st[k] = p
-            dot += w[k] * p
+            st[k] = ST[clamp12(sm[k][s] >> 12)]
         i = (self.word ^ pc0) & m
         idx[6] = i
         s = tc[6][i]
         sn[6] = s
-        p = ST[clamp12(sm[6][s] >> 12)]
-        st[6] = p
-        dot += w[6] * p
+        st[6] = ST[clamp12(sm[6][s] >> 12)]
         i = ((self.sp ^ pc0) * PHI) & MASK32 & m
         idx[7] = i
         s = tc[7][i]
         sn[7] = s
-        p = ST[clamp12(sm[7][s] >> 12)]
-        st[7] = p
-        dot += w[7] * p
-        mn = self._match_input(c0, nbits)
-        st[NCTX] = mn
-        dot += w[NCTX] * mn + w[NM] * 256
-        logit = dot >> 16
+        st[7] = ST[clamp12(sm[7][s] >> 12)]
+        st[NCTX] = self._match_input(c0, nbits)
+        self.w2 = w2 = self.m2[r0]
+        s2 = self.s2
+        m1 = self.m1
+        dot2 = 0
+        for j in range(NMX):
+            wj = m1[j][rows[j]]
+            dot = 0
+            for i in range(NW):
+                dot += wj[i] * st[i]
+            p = SQ[clamplog(dot >> 16) + 2047]
+            s = ST[clamp12(p)]
+            s2[j] = s
+            dot2 += w2[j] * s
+        logit = (dot2 + (w2[NMX] << 8)) >> 16
         if logit < -2047:
             logit = -2047
         elif logit > 2047:
@@ -360,11 +382,27 @@ class Wezc:
         """Adapt the context tables, the mixer and the SSE stage."""
         err = (bit << 12) - self.pr
         sh = self.lr_shift
-        w = self.w
         st = self.st
         idx = self.idx
         sn = self.sn
+        s2 = self.s2
+        w2 = self.w2
         target = bit << 16
+        for j in range(NMX):
+            w2[j] += (err * s2[j]) >> sh
+        w2[NMX] += err >> (sh - 8)
+        # The stretch feeding the second layer is the inverse of the squash
+        # that produced it, so those two derivatives cancel and the gradient
+        # each first-layer weight sees is the second layer's error scaled by
+        # that mixer's own output weight. Boosting that scale measured worse
+        # (+1.9% at 1 MB), because the narrow row is what keeps the wide
+        # selectors from being read as noise while they are still learning.
+        for j in range(NMX):
+            e1 = (err * w2[j]) >> 16
+            if e1:
+                wj = self.m1[j][self.rows[j]]
+                for i in range(NW):
+                    wj[i] += (e1 * st[i]) >> sh
         for k in range(NCTX):
             s = sn[k]
             e = self.sm[k][s]
@@ -373,9 +411,6 @@ class Wezc:
             p = clamp16(p + (((target - p) * INVR[n]) >> 16))
             self.sm[k][s] = (p << 8) | (n + (n < 255))
             self.tc[k][idx[k]] = NX[(s << 1) | bit]
-            w[k] += (err * st[k]) >> sh
-        w[NCTX] += (err * st[NCTX]) >> sh
-        w[NM] += err >> (sh - 8)
         self.sse[self.sidx] += err >> 5
 
 
