@@ -159,6 +159,8 @@ NCTX = 6
 NM = NCTX + 1
 # mixer weights: one per input plus a bias
 NW = NM + 1
+# mixer weight sets per bit position: the match model off, then on
+NSEL = 2
 
 # A context keeps its 16-bit probability together with how many times it has
 # been seen: the learning rate is 1/(count+2), so a fresh slot moves in big
@@ -180,10 +182,13 @@ class Wezc:
         self.mask = size - 1
         # every hashed context starts at p(bit=1) = 0.5
         self.t = [array("I", (CINIT,)) * size for _ in range(NCTX)]
-        # one mixer weight set per bit position: the high bits of a byte are
-        # decided by different evidence than the low ones, so a single set of
-        # weights has to compromise between them.
-        self.wrows = [array("q", [0x10000 // NM] * NM + [0]) for _ in range(8)]
+        # Mixer weight sets, selected per bit by what is already known about
+        # it: the partial byte (which bits are decided and how) and the match
+        # model's confidence. One row per bit position, as before, has to
+        # average a confident match copy together with a bare order-1 guess,
+        # and the two want different input weights.
+        self.wrows = [array("q", [0x10000 // NM] * NM + [0])
+                      for _ in range(8 * NSEL)]
         self.w = self.wrows[0]
         self.lr_shift = lr_shift
         self.sse = array("i", bytes(4 << sse_bits))
@@ -266,9 +271,11 @@ class Wezc:
         st = self.st
         probs = self.probs
         t = self.t
-        self.w = w = self.wrows[nbits]
         dot = 0
         pc0 = (c0 * PHI) & MASK32
+        ml = self.mlen
+        sel = 1 if (ml and not self.miss) else 0
+        self.w = w = self.wrows[nbits * NSEL + sel]
         nc = self.nc
         for k in range(5):
             # multiply-xor, so that different partial bytes never land on the
