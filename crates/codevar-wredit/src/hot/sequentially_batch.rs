@@ -372,10 +372,24 @@ impl Batch {
                 });
             }
             let Some(piece) = self.pieces.get(index) else {
+                // The table accounted for the source up to its end.
+                consumed = next;
                 break;
             };
             consumed = piece.start + piece.len;
             index += 1;
+        }
+        // Text removed at the very end of the document has no piece
+        // after it to anchor the hole, so the tail is closed here.
+        let hole = self.src_len.saturating_sub(consumed);
+        if hole > 0 {
+            cum -= hole.cast_signed();
+            rows.push(BoundaryRow {
+                pos: consumed,
+                delta: hole.cast_signed().wrapping_neg(),
+                cum,
+                payload: NO_PAYLOAD,
+            });
         }
         rows
     }
@@ -720,6 +734,25 @@ mod tests {
         let out = apply_rows(&src, &batch.rows(), &payload).expect("apply");
         assert_eq!(out, [0, 1, 20, 10, 2, 3]);
         assert_eq!(out, sequential(&src, &ops, &payload));
+    }
+
+    #[test]
+    fn text_removed_at_the_end_still_gets_its_drop_row() {
+        // The tail has no live piece after it to anchor the hole, so a
+        // table that only walked pieces would report the removed text
+        // as still present.
+        let src: Vec<u32> = (0..8).collect();
+        let mut batch = Batch::new(8);
+        batch
+            .fold(&edit(OP_DELETE, 5, 3, 0, NO_PAYLOAD))
+            .expect("delete folds");
+        let rows = batch.rows();
+        assert_eq!(rows.len(), 1);
+        assert!(is_drop(&rows[0]));
+        assert_eq!(rows[0].pos, 5);
+        assert_eq!(rows[0].cum, -3);
+        assert_eq!(apply_rows(&src, &rows, &[]).expect("apply"), [0, 1, 2, 3, 4]);
+        assert_eq!(dst_of(&rows, 7), None);
     }
 
     #[test]
