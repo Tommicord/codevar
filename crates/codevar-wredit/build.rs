@@ -90,6 +90,14 @@ fn build_x86_64(arch_dir: &str) {
 
     // SSE2 baseline: always available on x86_64, no extra flags.
     compile_x86_set(&dir, "codevar_wredit_x86_64_sse2", "_sse2", None, &[]);
+    // SSE4.2: PCMPESTRI string-search instruction, 16 bytes per op.
+    compile_x86_set(
+        &dir,
+        "codevar_wredit_x86_64_sse42",
+        "_sse42",
+        Some("CODEVAR_HAVE_SSE42"),
+        &["-msse4.2"],
+    );
     // AVX2.
     compile_x86_set(
         &dir,

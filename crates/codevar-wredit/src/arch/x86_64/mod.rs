@@ -40,6 +40,7 @@ unsafe extern "C" {
     fn codevar_wredit_memchr_sse2(haystack: *const u8, needle: u8, len: usize) -> *const u8;
     fn codevar_wredit_memchr_avx2(haystack: *const u8, needle: u8, len: usize) -> *const u8;
     fn codevar_wredit_memchr_avx512(haystack: *const u8, needle: u8, len: usize) -> *const u8;
+    fn codevar_wredit_memchr_sse42(haystack: *const u8, needle: u8, len: usize) -> *const u8;
 
     // Spill-free packed-word newline kernels (`wordscan.S`), one set
     // per ISA level.
@@ -62,10 +63,12 @@ unsafe extern "C" {
 const LEVEL_UNINIT: u8 = u8::MAX;
 /// SSE2 baseline (always available on x86_64).
 const LEVEL_SSE2: u8 = 0;
+/// SSE4.2 (PCMPESTRI string-search instruction).
+const LEVEL_SSE42: u8 = 1;
 /// AVX2.
-const LEVEL_AVX2: u8 = 1;
+const LEVEL_AVX2: u8 = 2;
 /// AVX-512 (F + BW + VL).
-const LEVEL_AVX512: u8 = 2;
+const LEVEL_AVX512: u8 = 3;
 
 /// Cached ISA level, probed once on first use.
 static LEVEL: AtomicU8 = AtomicU8::new(LEVEL_UNINIT);
@@ -78,6 +81,8 @@ fn detect_level() -> u8 {
         LEVEL_AVX512
     } else if has(Feature::Avx2) && has(Feature::Avx) {
         LEVEL_AVX2
+    } else if has(Feature::Sse42) {
+        LEVEL_SSE42
     } else {
         LEVEL_SSE2
     }
@@ -150,6 +155,7 @@ pub unsafe fn memchr(haystack: *const u8, needle: u8, len: usize) -> *const u8 {
         match level() {
             LEVEL_AVX512 => codevar_wredit_memchr_avx512(haystack, needle, len),
             LEVEL_AVX2 => codevar_wredit_memchr_avx2(haystack, needle, len),
+            LEVEL_SSE42 => codevar_wredit_memchr_sse42(haystack, needle, len),
             _ => codevar_wredit_memchr_sse2(haystack, needle, len),
         }
     }
@@ -263,6 +269,74 @@ mod tests {
         buf[298] = 0x77;
         let found = unsafe { memchr(buf.as_ptr(), 0x77, buf.len()) };
         assert_eq!(found as usize - buf.as_ptr() as usize, 298);
+    }
+
+    #[test]
+    fn memchr_sse42_matches_scalar_scan() {
+        if !has(Feature::Sse42) {
+            return; // PCMPESTRI requires an SSE4.2-capable CPU.
+        }
+        // Scalar reference: first index of `needle` in `hay[..len]`, or
+        // `len` when absent (mirrors the NULL return as "past the end").
+        let scalar = |hay: &[u8], needle: u8, len: usize| -> usize {
+            hay[..len]
+                .iter()
+                .position(|&b| b == needle)
+                .unwrap_or(len)
+        };
+
+        // Covers: start, middle, chunk boundary (16), end of a chunk,
+        // just past a chunk boundary, multi-chunk wide loop, absent, and
+        // a needle spanning the 64-byte wide-loop boundary.
+        let mut hay = [0x41u8; 200];
+        hay[0] = 0x01;
+        hay[16] = 0x02;
+        hay[31] = 0x03;
+        hay[48] = 0x04;
+        hay[63] = 0x05;
+        hay[64] = 0x06;
+        hay[127] = 0x07;
+        hay[128] = 0x08;
+        hay[199] = 0x09;
+
+        for (needle, want) in [
+            (0x01, 0),
+            (0x02, 16),
+            (0x03, 31),
+            (0x04, 48),
+            (0x05, 63),
+            (0x06, 64),
+            (0x07, 127),
+            (0x08, 128),
+            (0x09, 199),
+            (0x00, 200), // absent: "past the end"
+        ] {
+            let got = unsafe {
+                let p = codevar_wredit_memchr_sse42(hay.as_ptr(), needle, hay.len());
+                if p.is_null() {
+                    hay.len()
+                } else {
+                    p as usize - hay.as_ptr() as usize
+                }
+            };
+            assert_eq!(got, want, "needle 0x{needle:02x}");
+            assert_eq!(got, scalar(&hay, needle, hay.len()), "needle 0x{needle:02x}");
+        }
+
+        // Short lengths that never reach the wide loop.
+        for len in 0..17 {
+            for &needle in &[0x01, 0x41] {
+                let got = unsafe {
+                    let p = codevar_wredit_memchr_sse42(hay.as_ptr(), needle, len);
+                    if p.is_null() {
+                        len
+                    } else {
+                        p as usize - hay.as_ptr() as usize
+                    }
+                };
+                assert_eq!(got, scalar(&hay, needle, len), "len {len} needle 0x{needle:02x}");
+            }
+        }
     }
 
     #[test]

@@ -23,6 +23,7 @@
 //
 // Instruction selection (preprocessor):
 //   SSE2   - pcmpeqb + pmovmskb, 16 bytes per vector
+//   SSE4.2 - pcmpestri, 16 bytes per op (returns match index directly)
 //   AVX2   - vpcmpeqb + two pmovmskb (low/high 128-bit halves)
 //   AVX512 - vpcmpb into a mask register + kmovq
 //
@@ -57,6 +58,12 @@
     vpmovmskb %xmm2, %r11d ; \
     shlq $16, %r11 ; \
     orq %r11, %rax
+#elif defined(CODEVAR_HAVE_SSE42)
+#define VEC 16
+#define VZERO
+// PCMPESTRI compares 16 bytes per op and returns the match index in ECX
+// (16 = no match). imm8 = 0: equal_any, least-significant index, explicit
+// lengths (pattern len in %eax, text len in %edx, hoisted loop-invariant).
 #else
 #define VEC 16
 #define VZERO
@@ -94,10 +101,57 @@ CODEVAR_FN(codevar_wredit_memchr):
 
 // =====================================================================
 // Wide loop: four vectors (4*VEC bytes) per iteration.
+// SSE4.2 uses PCMPESTRI which returns the match index in ECX directly
+// (16 = no match), so chunks are tested individually rather than ORing
+// masks.
 // =====================================================================
+#if defined(CODEVAR_HAVE_SSE42)
+// Pattern length (1 byte) and text length (16 bytes) are loop-invariant.
+// R8 is the remaining-length counter so RDX stays free for PCMPESTRI's
+// text-length input (EDX aliases RDX).
+    movq    %rdx, %r8
+    movl    $1, %eax
+    movl    $16, %edx
+#endif
 .Lmc_wide:
-    cmpq    $(4*VEC), %rdx
+    cmpq    $(4*VEC), %r8
     jb      .Lmc_vec
+#if defined(CODEVAR_HAVE_SSE42)
+    pcmpestri $0, 0(%r10), %xmm1
+    cmpq    $16, %rcx
+    jne     .Lmc_sse42_hit0
+    pcmpestri $0, 16(%r10), %xmm1
+    cmpq    $16, %rcx
+    jne     .Lmc_sse42_hit1
+    pcmpestri $0, 32(%r10), %xmm1
+    cmpq    $16, %rcx
+    jne     .Lmc_sse42_hit2
+    pcmpestri $0, 48(%r10), %xmm1
+    cmpq    $16, %rcx
+    jne     .Lmc_sse42_hit3
+    addq    $(4*VEC), %r10
+    subq    $(4*VEC), %r8
+    jmp     .Lmc_wide
+.Lmc_sse42_hit0:
+    addq    %rcx, %r10
+    movq    %r10, %rax
+    jmp     .Lmc_done
+.Lmc_sse42_hit1:
+    addq    $16, %r10
+    addq    %rcx, %r10
+    movq    %r10, %rax
+    jmp     .Lmc_done
+.Lmc_sse42_hit2:
+    addq    $32, %r10
+    addq    %rcx, %r10
+    movq    %r10, %rax
+    jmp     .Lmc_done
+.Lmc_sse42_hit3:
+    addq    $48, %r10
+    addq    %rcx, %r10
+    movq    %r10, %rax
+    jmp     .Lmc_done
+#else
     MASK_AT(0)
     movq    %rax, %r8
     MASK_AT(VEC)
@@ -111,14 +165,28 @@ CODEVAR_FN(codevar_wredit_memchr):
     addq    $(4*VEC), %r10
     subq    $(4*VEC), %rdx
     jmp     .Lmc_wide
+#endif
 
 // =====================================================================
 // Single-vector loop: 0..4*VEC-1 bytes left.
 // =====================================================================
 .Lmc_vec:
-    cmpq    $VEC, %rdx
+    cmpq    $VEC, %r8
     jb      .Lmc_tail
 .Lmc_vec_loop:
+#if defined(CODEVAR_HAVE_SSE42)
+    pcmpestri $0, 0(%r10), %xmm1
+    cmpq    $16, %rcx
+    je      .Lmc_sse42_vec_nomatch
+    addq    %rcx, %r10
+    movq    %r10, %rax
+    jmp     .Lmc_done
+.Lmc_sse42_vec_nomatch:
+    addq    $VEC, %r10
+    subq    $VEC, %r8
+    cmpq    $VEC, %r8
+    jae     .Lmc_vec_loop
+#else
     MASK_AT(0)
     testq   %rax, %rax
     jnz     .Lmc_hit
@@ -126,22 +194,32 @@ CODEVAR_FN(codevar_wredit_memchr):
     subq    $VEC, %rdx
     cmpq    $VEC, %rdx
     jae     .Lmc_vec_loop
+#endif
 
 // Scalar tail: 0..VEC-1 bytes, always in bounds.
 .Lmc_tail:
+#if defined(CODEVAR_HAVE_SSE42)
+    testq   %r8, %r8
+#else
     testq   %rdx, %rdx
+#endif
     jz      .Lmc_none
 .Lmc_tail_loop:
     cmpb    %sil, (%r10)
     je      .Lmc_hit_byte
     incq    %r10
+#if defined(CODEVAR_HAVE_SSE42)
+    decq    %r8
+#else
     decq    %rdx
+#endif
     jnz     .Lmc_tail_loop
     jmp     .Lmc_none
 
 // =====================================================================
 // Slow paths.
 // =====================================================================
+#ifndef CODEVAR_HAVE_SSE42
 .Lmc_wide_hit:
     MASK_AT(0)
     testq   %rax, %rax
@@ -161,6 +239,8 @@ CODEVAR_FN(codevar_wredit_memchr):
 .Lmc_hit:
     bsfq    %rax, %rax              // index of the first set bit
     addq    %r10, %rax
+#endif
+.Lmc_done:
     VZERO
     ret
 
