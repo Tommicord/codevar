@@ -23,7 +23,7 @@
 use codevar_logger::log_error;
 
 use super::base::{MERGE_MASK, make_packed, packed_char, packed_type};
-use super::scan;
+use super::writable_scan;
 use super::shared_gap::{SLOT_CURSOR_BITS, SLOT_MAX_BASE, SLOT_MAX_SIZE};
 use super::traits::{
     TextEditableBufferQuery, TextEditableCursor, TextEditableDelete, TextEditableGap, TextEditableOverwrite,
@@ -447,7 +447,7 @@ where
             return 0;
         }
         let old_length = self.base.raw_length;
-        let new_length = super::flush::write_bytes_to_raw(self.base.raw_mut(), old_length, at, values);
+        let new_length = super::flush_writable::write_bytes_to_raw(self.base.raw_mut(), old_length, at, values);
         if new_length == old_length {
             return 0;
         }
@@ -459,7 +459,7 @@ where
         // the sparse index can shift with the text instead of being
         // invalidated and rebuilt on the next row query.
         // SAFETY: `values` is a valid read-only range for its length.
-        let newlines = unsafe { scan::count_newlines(values.as_ptr(), values.len()) };
+        let newlines = unsafe { writable_scan::count_newlines(values.as_ptr(), values.len()) };
         let layout_stable = newlines == 0;
         // Keep the committed row count exact for the line ring. A merge
         // can consume an existing element (possibly a newline), so its
@@ -511,7 +511,7 @@ where
             let ptr = self.base.raw_ref().as_ptr();
             // SAFETY: `end <= raw_length`, so `start..end` is a valid
             // initialized range of the committed view.
-            unsafe { scan::count_newlines(ptr.add(start), count) }
+            unsafe { writable_scan::count_newlines(ptr.add(start), count) }
         };
         let layout_stable = removed_newlines == 0;
         {
@@ -956,8 +956,8 @@ where
                 // line caches stay valid.
                 // Safety: both ranges are initialized and within
                 // their respective slices.
-                removed_newlines = unsafe { scan::count_newlines(target.as_ptr(), overwritten) };
-                added_newlines = unsafe { scan::count_newlines(values.as_ptr(), overwritten) };
+                removed_newlines = unsafe { writable_scan::count_newlines(target.as_ptr(), overwritten) };
+                added_newlines = unsafe { writable_scan::count_newlines(values.as_ptr(), overwritten) };
                 layout_changed = removed_newlines > 0 || added_newlines > 0;
                 target.copy_from_slice(&values[..overwritten]);
             } else {
@@ -1041,7 +1041,7 @@ where
         let position = position.min(elements.len());
         // Safety: the slice is valid for its whole length; one CPUID
         // dispatch resolves both boundaries.
-        let (start, end) = unsafe { scan::line_bounds(elements.as_ptr(), elements.len(), position) };
+        let (start, end) = unsafe { writable_scan::line_bounds(elements.as_ptr(), elements.len(), position) };
         Some(end - start)
     }
 }

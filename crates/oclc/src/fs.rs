@@ -23,8 +23,8 @@
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use bsize::BSize;
-use codevar_stdio::{ErrorKind, Read, Stdin};
 use codevar_pathbuf::{PathBuf, PathError};
+use codevar_stdio::{ErrorKind, Read, Stdin};
 
 /// Largest source file (or stdin stream) the driver will read: 64 MiB.
 const MAX_SOURCE_BYTES: usize = BSize::mb(64).bytes();

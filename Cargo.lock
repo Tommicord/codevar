@@ -1049,15 +1049,42 @@ dependencies = [
 name = "codevar-wredit"
 version = "1.0.0"
 dependencies = [
+ "codevar-base",
+ "codevar-inssched",
+ "codevar-logger",
+ "codevar-ocl",
+ "codevar-textlike-encode",
+ "codevar-wredit-asm",
+ "codevar-wredit-fs",
+ "criterion",
+ "spin 0.12.3",
+]
+
+[[package]]
+name = "codevar-wredit-asm"
+version = "1.0.0"
+dependencies = [
  "cc",
  "codevar-base",
- "codevar-gpu-core",
  "codevar-inssched",
  "codevar-logger",
  "codevar-ocl",
  "codevar-oclc",
  "codevar-textlike-encode",
  "criterion",
+ "spin 0.12.3",
+]
+
+[[package]]
+name = "codevar-wredit-fs"
+version = "1.0.0"
+dependencies = [
+ "codevar-base",
+ "codevar-inssched",
+ "codevar-logger",
+ "codevar-ocl",
+ "codevar-textlike-encode",
+ "codevar-wredit-asm",
  "spin 0.12.3",
 ]
 

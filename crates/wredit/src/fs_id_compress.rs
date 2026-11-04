@@ -49,7 +49,7 @@
 //! # Examples
 //!
 //! ```
-//! use codevar_wredit::compress::{compress, decompress};
+//! use codevar_wredit::fs_id_compress::{compress, decompress};
 //!
 //! let name = b"src/main.rs";
 //! let packed = compress(name);
@@ -143,7 +143,7 @@ fn codebook_entry(code: usize) -> Option<&'static [u8]> {
 /// # Examples
 ///
 /// ```
-/// use codevar_wredit::compress::compress;
+/// use codevar_wredit::fs_id_compress::compress;
 ///
 /// assert_eq!(compress(b""), Vec::<u8>::new());
 /// ```
@@ -221,7 +221,7 @@ fn flush_literals(literals: &[u8], out: &mut Vec<u8>) {
 /// # Examples
 ///
 /// ```
-/// use codevar_wredit::compress::decompress;
+/// use codevar_wredit::fs_id_compress::decompress;
 ///
 /// assert_eq!(decompress(&[0xFE, b'?']).as_deref(), Some(&b"?"[..]));
 /// assert_eq!(decompress(&[0xFF, 0x00, b'x']).as_deref(), Some(&b"x"[..]));
@@ -266,7 +266,7 @@ pub fn decompress(block: &[u8]) -> Option<Vec<u8>> {
 /// # Examples
 ///
 /// ```
-/// use codevar_wredit::compress::{compress_bounded, decompress};
+/// use codevar_wredit::fs_id_compress::{compress_bounded, decompress};
 ///
 /// let mut block = [0u8; 8];
 /// let len = compress_bounded(b"src/main.rs", &mut block);

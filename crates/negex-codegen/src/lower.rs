@@ -291,9 +291,27 @@ pub fn lower_dfa(dfa: &Determinized) -> Result<Module, NegexError> {
     let pc_next = new_value(&mut module, func, next, ptr_byte);
     let row_next = new_value(&mut module, func, next, ptr_i32);
     let left_next = new_value(&mut module, func, next, u64);
-    let pc = phi(&mut module, func, loop_bb, ptr_byte, &[(pc0, entry), (pc_next, next)])?;
-    let row = phi(&mut module, func, loop_bb, ptr_i32, &[(row0, entry), (row_next, next)])?;
-    let left = phi(&mut module, func, loop_bb, u64, &[(len_wide, entry), (left_next, next)])?;
+    let pc = phi(
+        &mut module,
+        func,
+        loop_bb,
+        ptr_byte,
+        &[(pc0, entry), (pc_next, next)],
+    )?;
+    let row = phi(
+        &mut module,
+        func,
+        loop_bb,
+        ptr_i32,
+        &[(row0, entry), (row_next, next)],
+    )?;
+    let left = phi(
+        &mut module,
+        func,
+        loop_bb,
+        u64,
+        &[(len_wide, entry), (left_next, next)],
+    )?;
     let byte = load(&mut module, func, loop_bb, i8, pc)?;
     let byte_index = zext(&mut module, func, loop_bb, u64, byte)?;
     let cell = access_chain(&mut module, func, loop_bb, ptr_i32, row, &[byte_index])?;
@@ -311,9 +329,25 @@ pub fn lower_dfa(dfa: &Determinized) -> Result<Module, NegexError> {
     // The entry already names a row by its flat index, so the row address is
     // one scaled index and the dead row's zero points back at itself: the
     // scan cannot die early, but it needs no death test either.
-    let row_index = binary(&mut module, func, next, i32, BinOp::BitwiseAnd, entry_val, row_mask)?;
+    let row_index = binary(
+        &mut module,
+        func,
+        next,
+        i32,
+        BinOp::BitwiseAnd,
+        entry_val,
+        row_mask,
+    )?;
     let row_flat = zext(&mut module, func, next, u64, row_index)?;
-    access_chain_into(&mut module, func, next, row_next, ptr_i32, table_base, &[row_flat])?;
+    access_chain_into(
+        &mut module,
+        func,
+        next,
+        row_next,
+        ptr_i32,
+        table_base,
+        &[row_flat],
+    )?;
     access_chain_into(&mut module, func, next, pc_next, ptr_byte, pc, &[one])?;
     binary_into(&mut module, func, next, left_next, u64, BinOp::ISub, left, one)?;
     let more = compare(&mut module, func, next, CmpOp::INotEqual, left_next, zero_u)?;
@@ -323,7 +357,13 @@ pub fn lower_dfa(dfa: &Determinized) -> Result<Module, NegexError> {
     // A row reached exactly at end of input has not been published yet, and
     // every entry of a row carries its own state's accept flag, so the row's
     // first entry answers whether the match ends here.
-    let row_here = phi(&mut module, func, tail, ptr_i32, &[(row0, entry), (row_next, next)])?;
+    let row_here = phi(
+        &mut module,
+        func,
+        tail,
+        ptr_i32,
+        &[(row0, entry), (row_next, next)],
+    )?;
     let final_entry = load(&mut module, func, tail, i32, row_here)?;
     let ends_here = compare(&mut module, func, tail, CmpOp::SLessThan, final_entry, zero32)?;
     branch_cond(&mut module, func, tail, ends_here, tail_hit, tail_miss)?;
@@ -466,7 +506,12 @@ fn compare(
 ) -> Result<ValueId, NegexError> {
     let bool = module.bool_ty();
     let val = new_value(module, func, block, bool);
-    emit(module, func, block, Inst::def(val, bool, Op::Compare { op, lhs, rhs }))?;
+    emit(
+        module,
+        func,
+        block,
+        Inst::def(val, bool, Op::Compare { op, lhs, rhs }),
+    )?;
     Ok(val)
 }
 
@@ -1000,10 +1045,12 @@ mod tests {
                         .get(byte)
                         .copied()
                         .flatten()
-                        .map_or(0, |target| {
-                            row_index(state_row(target)).expect("row fits")
-                        });
-                    assert_eq!(entry_row(entry), expected, "`{pattern}` state {index} byte {byte}");
+                        .map_or(0, |target| row_index(state_row(target)).expect("row fits"));
+                    assert_eq!(
+                        entry_row(entry),
+                        expected,
+                        "`{pattern}` state {index} byte {byte}"
+                    );
                 }
             }
         }

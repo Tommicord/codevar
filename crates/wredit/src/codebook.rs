@@ -25,9 +25,9 @@ pub const CODEBOOK_ENTRIES: usize = 245;
 /// Flat, length-prefixed filename codebook.
 ///
 /// Entry `n` starts at the `n`-th record: one length byte, then
-/// that many name bytes. [`crate::compress::compress`] matches
+/// that many name bytes. [`crate::fs_id_compress::compress`] matches
 /// against these records longest-first and
-/// [`crate::compress::decompress`] indexes them by token byte.
+/// [`crate::fs_id_compress::decompress`] indexes them by token byte.
 pub const CODEBOOK: &[u8] = &[
     // Single characters, extensions, directories and file names.
     1, b'a', // b

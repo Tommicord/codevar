@@ -38,7 +38,7 @@ use std::hint::black_box;
 
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
-use codevar_wredit::edit::{
+use codevar_wredit::{
     COMMON_MASK, Cursor, StreamWritable, TextEditableBufferQuery, TextEditableCursor, TextEditableDelete,
     TextEditableOverwrite, TextEditablePut, TextEditableReplace, Writable, make_packed,
 };

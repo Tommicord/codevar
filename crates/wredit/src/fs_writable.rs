@@ -41,9 +41,9 @@ use crate::error::{WreditError, WreditResult};
 /// # Examples
 ///
 /// ```
-/// use codevar_wredit::storage::block::MemoryDisk;
-/// use codevar_wredit::storage::fs::DiskFs;
-/// use codevar_wredit::storage::writable::WritableFile;
+/// use codevar_wredit_fs::block::MemoryDisk;
+/// use codevar_wredit_fs::fs::DiskFs;
+/// use codevar_wredit_fs::writable::WritableFile;
 ///
 /// fn write_file() -> codevar_wredit::error::WreditResult<()> {
 ///     let disk = MemoryDisk::new(256)?;

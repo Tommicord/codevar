@@ -13,13 +13,21 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-//! Criterion benchmarks for the storage ↔ edit bindings.
+//! The Wredit text-editing engine core.
+//!
+//! This module tree implements a multi-cursor, gap-buffer based text
+//! engine. Documents are stored as packed 32-bit *raw* elements in a
+//! sparsely grown heap buffer ([`base::WritableAlignedPtr`]); edits
+//! are staged either in a private per-cursor gap or in a shared gap
+//! suballocated from a fixed descriptor table
+//! ([`shared_gap::SharedGapTable`]) and committed into the raw
+//! buffer by the flush layer ([`flush`]).//! Criterion benchmarks for the storage ↔ edit bindings.
 //!
 //! Measures the latency of loading a stored file into the edit buffer,
 //! saving the edit buffer back to storage, and full round-trip
 //! (load → edit → save) cycles, across a range of document sizes.
 //!
-//! The storage backend is [`MemoryDisk`](codevar_wredit::storage::block::MemoryDisk),
+//! The storage backend is [`MemoryDisk`](codevar_wredit_fs::block::MemoryDisk),
 //! so the numbers reflect the binding overhead (byte ↔ packed-element
 //! conversion, gap staging, block writes) without real-device latency.
 
@@ -31,10 +39,10 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
-use codevar_wredit::edit::{COMMON_MASK, make_packed};
-use codevar_wredit::storage::block::MemoryDisk;
-use codevar_wredit::storage::fs::DiskFs;
-use codevar_wredit::storage_bind::BoundDocument;
+use codevar_wredit::{COMMON_MASK, make_packed};
+use codevar_wredit_fs::block::MemoryDisk;
+use codevar_wredit_fs::fs::DiskFs;
+use codevar_wredit_fs_bind::BoundDocument;
 
 /// Private gap window used by every benchmark document, in elements.
 const GAP_SIZE: usize = 1024;

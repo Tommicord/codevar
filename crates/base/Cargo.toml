@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [lib]
-name = "base"
+name = "codevar_base"
 
 [features]
 nightly = []

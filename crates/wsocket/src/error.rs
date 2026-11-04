@@ -358,7 +358,9 @@ mod tests {
         }
         assert_eq!(ws_err.close_code(), None);
 
-        let kind_only = WsError::from(codevar_stdio::Error::from(codevar_stdio::ErrorKind::ConnectionReset));
+        let kind_only = WsError::from(codevar_stdio::Error::from(
+            codevar_stdio::ErrorKind::ConnectionReset,
+        ));
         assert!(matches!(kind_only, WsError::Io(_)));
     }
 

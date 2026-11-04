@@ -31,7 +31,7 @@ use core::cell::Cell;
 use core::marker::PhantomData;
 use core::ptr;
 
-use super::scan;
+use super::writable_scan;
 
 /// Documents at least this long get a lazily built line-start cache.
 ///
@@ -543,7 +543,7 @@ impl LineAnchors {
         loop {
             // Safety: `from <= len` and `raw[..len]` is the committed
             // view supplied by the caller.
-            let found = unsafe { scan::collect_newlines_forward(raw, len, from, &mut buffer) };
+            let found = unsafe { writable_scan::collect_newlines_forward(raw, len, from, &mut buffer) };
             if found == 0 {
                 break;
             }
@@ -579,7 +579,7 @@ impl LineAnchors {
         let mut from = 0;
         while count < capacity {
             // Safety: same committed-view contract as above.
-            let found = unsafe { scan::collect_newlines_forward(raw, len, from, &mut buffer) };
+            let found = unsafe { writable_scan::collect_newlines_forward(raw, len, from, &mut buffer) };
             if found == 0 {
                 break;
             }
@@ -683,7 +683,7 @@ impl LineAnchors {
         }
         let remaining = row - base_row;
         // Safety: `base_start <= len`, so the sub-slice is in bounds.
-        let newline = unsafe { scan::find_nth_newline(raw.add(base_start), len - base_start, remaining) }?;
+        let newline = unsafe { writable_scan::find_nth_newline(raw.add(base_start), len - base_start, remaining) }?;
         Some(base_start + newline + 1)
     }
 }
@@ -1012,7 +1012,7 @@ impl<Raw: Copy + Into<u32> + From<u32>, Buf, const GAP_SIZE: usize> Cursor<Raw, 
                 let mut back = [0u32; LINE_RING_CAPACITY];
                 let before = start.saturating_sub(1);
                 let backs =
-                    unsafe { scan::collect_newlines_backward(raw, len, before, &mut back[..want_back]) };
+                    unsafe { writable_scan::collect_newlines_backward(raw, len, before, &mut back[..want_back]) };
                 if backs == want_back {
                     for (offset, &newline) in back[..backs].iter().enumerate() {
                         entries[want_back - 1 - offset] = newline.saturating_add(1);
@@ -1020,7 +1020,7 @@ impl<Raw: Copy + Into<u32> + From<u32>, Buf, const GAP_SIZE: usize> Cursor<Raw, 
                     let room = LINE_RING_CAPACITY - (want_back + 1);
                     let mut forward = [0u32; LINE_RING_CAPACITY];
                     let forwards =
-                        unsafe { scan::collect_newlines_forward(raw, len, start, &mut forward[..room]) };
+                        unsafe { writable_scan::collect_newlines_forward(raw, len, start, &mut forward[..room]) };
                     for (offset, &newline) in forward[..forwards].iter().enumerate() {
                         entries[want_back + 1 + offset] = newline.saturating_add(1);
                     }
@@ -1040,7 +1040,7 @@ impl<Raw: Copy + Into<u32> + From<u32>, Buf, const GAP_SIZE: usize> Cursor<Raw, 
             let before = cursor.saturating_sub(1);
             // Safety: `raw[..len]` is the committed view bound by
             // `set_raw`/`rebind_raw`, and `cursor <= len`.
-            let previous = match unsafe { scan::find_newline_backward(raw, len, before) } {
+            let previous = match unsafe { writable_scan::find_newline_backward(raw, len, before) } {
                 Some(newline) => newline + 1,
                 None => 0,
             };
@@ -1052,7 +1052,7 @@ impl<Raw: Copy + Into<u32> + From<u32>, Buf, const GAP_SIZE: usize> Cursor<Raw, 
         let mut forward = start;
         while count < LINE_RING_CAPACITY {
             // Safety: same committed-view contract as above.
-            let Some(newline) = (unsafe { scan::find_newline_forward(raw, len, forward) }) else {
+            let Some(newline) = (unsafe { writable_scan::find_newline_forward(raw, len, forward) }) else {
                 break;
             };
             forward = newline + 1;
@@ -1113,7 +1113,7 @@ impl<Raw: Copy + Into<u32> + From<u32>, Buf, const GAP_SIZE: usize> Cursor<Raw, 
     /// Start and exclusive end of the logical line containing
     /// `position`.
     ///
-    /// A single [`scan::line_bounds`] call performs the CPUID dispatch
+    /// A single [`writable_scan::line_bounds`] call performs the CPUID dispatch
     /// once and runs both SIMD directions, so callers that need both
     /// boundaries avoid two independent scanner calls.
     fn line_bounds(&self, position: usize) -> (usize, usize) {
@@ -1126,7 +1126,7 @@ impl<Raw: Copy + Into<u32> + From<u32>, Buf, const GAP_SIZE: usize> Cursor<Raw, 
         let before = index.min(len);
         // Safety: `raw[..len]` is the committed view bound by
         // `set_raw`/`rebind_raw`, and `before <= len`.
-        let (start, end) = unsafe { scan::line_bounds(raw, len, before) };
+        let (start, end) = unsafe { writable_scan::line_bounds(raw, len, before) };
         // `line_bounds` reports the committed length when no newline
         // follows; the logical line also covers the staged tail.
         let end = if end >= len { length } else { end };
@@ -1143,7 +1143,7 @@ impl<Raw: Copy + Into<u32> + From<u32>, Buf, const GAP_SIZE: usize> Cursor<Raw, 
         let before = index.min(len);
         // Safety: `raw[..len]` is the committed view bound by
         // `set_raw`/`rebind_raw`.
-        match unsafe { scan::find_newline_backward(raw, len, before) } {
+        match unsafe { writable_scan::find_newline_backward(raw, len, before) } {
             Some(newline) => newline + 1,
             None => 0,
         }
@@ -1161,7 +1161,7 @@ impl<Raw: Copy + Into<u32> + From<u32>, Buf, const GAP_SIZE: usize> Cursor<Raw, 
         }
         // Safety: `raw[..len]` is the committed view bound by
         // `set_raw`/`rebind_raw`, and `index < len`.
-        match unsafe { scan::find_newline_forward(raw, len, index) } {
+        match unsafe { writable_scan::find_newline_forward(raw, len, index) } {
             Some(newline) => newline,
             None => length,
         }
@@ -1239,13 +1239,13 @@ impl<Raw: Copy + Into<u32> + From<u32>, Buf, const GAP_SIZE: usize> Cursor<Raw, 
             // Safety: `raw[..len]` is the committed view bound by
             // `set_raw`/`rebind_raw`, `base_start <= end <= len`,
             // so the sub-slice stays in bounds.
-            let row = base_row + unsafe { scan::count_newlines(raw.add(base_start), end - base_start) };
+            let row = base_row + unsafe { writable_scan::count_newlines(raw.add(base_start), end - base_start) };
             Self::rebuild_line_ring(cache, raw, len, row, self.line_start(end));
             return row;
         }
         // Safety: `raw[..len]` is the committed view bound by
         // `set_raw`/`rebind_raw`, and `end <= len`.
-        unsafe { scan::count_newlines(raw, end) }
+        unsafe { writable_scan::count_newlines(raw, end) }
     }
 
     /// Caret column: elements since the start of the current line.
@@ -1367,7 +1367,7 @@ impl<Raw: Copy + Into<u32> + From<u32>, Buf, const GAP_SIZE: usize> Cursor<Raw, 
                     // Safety: `raw[..len]` is the committed view bound
                     // by `set_raw`/`rebind_raw`.
                     let start =
-                        unsafe { scan::find_newline_backward(raw, len, before) }.map_or(0, |nl| nl + 1);
+                        unsafe { writable_scan::find_newline_backward(raw, len, before) }.map_or(0, |nl| nl + 1);
                     cache.push_front(start as u32);
                     index = Some(start);
                 } else if cache.last_row().checked_add(1) == Some(row) {
@@ -1375,7 +1375,7 @@ impl<Raw: Copy + Into<u32> + From<u32>, Buf, const GAP_SIZE: usize> Cursor<Raw, 
                     // the last cached line begins the next one.
                     let last = cache.at(cache.len() - 1);
                     // Safety: same committed-view contract as above.
-                    if let Some(newline) = unsafe { scan::find_newline_forward(raw, len, last) } {
+                    if let Some(newline) = unsafe { writable_scan::find_newline_forward(raw, len, last) } {
                         let start = newline + 1;
                         cache.push_back(start as u32);
                         index = Some(start);
@@ -1393,7 +1393,7 @@ impl<Raw: Copy + Into<u32> + From<u32>, Buf, const GAP_SIZE: usize> Cursor<Raw, 
                     // Safety: same committed-view contract as above.
                     Some(anchors) => unsafe { anchors.row_start(raw, len, row) },
                     // Safety: same committed-view contract as above.
-                    None => unsafe { scan::find_nth_newline(raw, len, row) }.map(|newline| newline + 1),
+                    None => unsafe { writable_scan::find_nth_newline(raw, len, row) }.map(|newline| newline + 1),
                 };
                 match start {
                     // Deliberately leave the ring untouched on a distant
@@ -1458,7 +1458,7 @@ impl<Raw: Copy + Into<u32> + From<u32>, Buf, const GAP_SIZE: usize> Cursor<Raw, 
                 unsafe { anchors.row_start(raw, len, row) }
             } else {
                 // Safety: same committed-view contract.
-                unsafe { scan::find_nth_newline(raw, len, row) }.map(|newline| newline + 1)
+                unsafe { writable_scan::find_nth_newline(raw, len, row) }.map(|newline| newline + 1)
             };
             let Some(start) = start else {
                 return false;

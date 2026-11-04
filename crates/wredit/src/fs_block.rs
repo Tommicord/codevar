@@ -84,7 +84,7 @@ pub trait BlockDevice {
 ///
 /// ```
 /// use codevar_wredit::error::WreditResult;
-/// use codevar_wredit::storage::block::{BlockDevice, MemoryDisk, BLOCK_SIZE};
+/// use codevar_wredit_fs::block::{BlockDevice, MemoryDisk, BLOCK_SIZE};
 ///
 /// fn inspect() -> WreditResult<u64> {
 ///     let disk = MemoryDisk::new(64)?;

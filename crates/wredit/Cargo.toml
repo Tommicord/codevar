@@ -13,18 +13,15 @@ name = "codevar_wredit"
 [dependencies]
 spin = { workspace = true }
 codevar-base = { workspace = true }
+codevar-wredit-asm = { workspace = true }
+codevar-wredit-fs = { workspace = true }
 codevar-inssched = { workspace = true }
 codevar-logger = { workspace = true }
 codevar-textlike-encode = { workspace = true }
 codevar-ocl = { workspace = true }
-codevar-oclc = { workspace = true }
-codevar-gpu-core = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
-
-[build-dependencies]
-cc = { workspace = true }
 
 [[bench]]
 name = "text_core"

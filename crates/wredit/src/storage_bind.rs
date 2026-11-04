@@ -32,9 +32,9 @@
 //! ```rust
 //! use codevar_wredit::error::WreditResult;
 //! use codevar_wredit::edit::{COMMON_MASK, make_packed};
-//! use codevar_wredit::storage::block::MemoryDisk;
-//! use codevar_wredit::storage::fs::DiskFs;
-//! use codevar_wredit::storage_bind::BoundDocument;
+//! use codevar_wredit_fs::block::MemoryDisk;
+//! use codevar_wredit_fs::fs::DiskFs;
+//! use codevar_wredit_fs_bind::BoundDocument;
 //!
 //! fn edit_stored_file() -> WreditResult<()> {
 //!     let disk = MemoryDisk::new(256)?;
@@ -265,11 +265,7 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
         self.loaded_size = bytes.len() as u64;
         self.dirty = false;
 
-        log_info!(
-            "storage_bind: saved inode {} ({} bytes)",
-            self.inode,
-            bytes.len()
-        );
+        log_info!("storage_bind: saved inode {} ({} bytes)", self.inode, bytes.len());
 
         Ok(())
     }

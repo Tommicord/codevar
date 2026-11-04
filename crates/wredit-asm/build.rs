@@ -15,7 +15,7 @@
 
 //! Build script for `codevar-wredit`.
 //!
-//! Assembles the hand-written `.S` kernels under `src/arch/` for the
+//! Assembles the hand-written `.S` kernels under `src/` for the
 //! target architecture via the `cc` crate and links them into the
 //! crate. The selection is driven by Cargo's `CARGO_CFG_TARGET_ARCH` /
 //! `CARGO_CFG_TARGET_FEATURE` environment (the *target* triple, so this
@@ -32,7 +32,7 @@ fn main() {
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let features = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
     let target = env::var("TARGET").unwrap_or_default();
-    let arch_dir = format!("{}/src/arch", env!("CARGO_MANIFEST_DIR"));
+    let arch_dir = format!("{}/src/", env!("CARGO_MANIFEST_DIR"));
 
     let has = |name: &str| features.split(',').any(|f| f == name);
 
@@ -93,7 +93,7 @@ fn build_x86_64(arch_dir: &str) {
     // SSE4.2: PCMPESTRI string-search instruction, 16 bytes per op.
     compile_x86_set(
         &dir,
-        "codevar_wredit_x86_64_sse42",
+        "codevar_wredit_asm_x86_64_sse42",
         "_sse42",
         Some("CODEVAR_HAVE_SSE42"),
         &["-msse4.2"],
@@ -101,7 +101,7 @@ fn build_x86_64(arch_dir: &str) {
     // AVX2.
     compile_x86_set(
         &dir,
-        "codevar_wredit_x86_64_avx2",
+        "codevar_wredit_asm_x86_64_avx2",
         "_avx2",
         Some("CODEVAR_HAVE_AVX2"),
         &["-mavx2"],
@@ -109,7 +109,7 @@ fn build_x86_64(arch_dir: &str) {
     // AVX-512 (F + BW + VL) with AVX2 as a convenient superset base.
     compile_x86_set(
         &dir,
-        "codevar_wredit_x86_64_avx512",
+        "codevar_wredit_asm_x86_64_avx512",
         "_avx512",
         Some("CODEVAR_HAVE_AVX512"),
         &["-mavx512f", "-mavx512bw", "-mavx512vl", "-mavx2"],
@@ -122,7 +122,7 @@ fn build_x86_64(arch_dir: &str) {
     build
         .include(&dir)
         .file(format!("{dir}/prefetch.S"))
-        .compile("codevar_wredit_x86_64_prefetch");
+        .compile("codevar_wredit_asm_x86_64_prefetch");
 }
 
 /// i686: SSE2 when the target baseline provides it, scalar otherwise.
@@ -139,7 +139,7 @@ fn build_i686(arch_dir: &str, has_sse2: bool) {
         build.define("CODEVAR_HAVE_SSE2", None);
         build.flag("-msse2");
     }
-    build.compile("codevar_wredit_i686");
+    build.compile("codevar_wredit_asm_i686");
 }
 
 /// aarch64: baseline NEON always, plus an SVE variant of the copy
@@ -155,7 +155,7 @@ fn build_aarch64(arch_dir: &str) {
         .file(format!("{dir}/memcpy.S"))
         .file(format!("{dir}/memchr.S"))
         .file(format!("{dir}/prefetch.S"))
-        .compile("codevar_wredit_aarch64");
+        .compile("codevar_wredit_asm_aarch64");
 
     let mut sve = cc::Build::new();
     sve.include(&dir)
@@ -164,7 +164,7 @@ fn build_aarch64(arch_dir: &str) {
         .define("CODEVAR_SUFFIX", Some("_sve"))
         .define("CODEVAR_HAVE_SVE", None)
         .flag_if_supported("-march=armv8-a+sve")
-        .compile("codevar_wredit_aarch64_sve");
+        .compile("codevar_wredit_asm_aarch64_sve");
 }
 
 /// arm: NEON for A-profile (armv7/r), scalar word copies for the
@@ -196,7 +196,7 @@ fn build_arm(arch_dir: &str, target: &str, has_neon: bool) {
         } else {
             build.flag_if_supported("-march=armv7-m");
         }
-        build.compile("codevar_wredit_thumbv7m");
+        build.compile("codevar_wredit_asm_thumbv7m");
         return;
     }
 
@@ -212,7 +212,7 @@ fn build_arm(arch_dir: &str, target: &str, has_neon: bool) {
         build.define("CODEVAR_HAVE_NEON", None);
         build.flag_if_supported("-mfpu=neon");
     }
-    build.compile("codevar_wredit_armv7");
+    build.compile("codevar_wredit_asm_armv7");
 }
 
 /// riscv: scalar 8-byte (RV64) / 4-byte (RV32) copies, with an optional
@@ -231,5 +231,5 @@ fn build_riscv(arch_dir: &str, sub: &str, has_rvv: bool) {
         let march = if sub == "riscv32" { "rv32gcv" } else { "rv64gcv" };
         build.flag_if_supported(format!("-march={march}"));
     }
-    build.compile(&format!("codevar_wredit_{sub}"));
+    build.compile(&format!("codevar_wredit_asm_{sub}"));
 }

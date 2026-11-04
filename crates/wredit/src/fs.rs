@@ -398,7 +398,7 @@ fn pool_record_eq(block: &[u8], offset: usize, name: &[u8]) -> WreditResult<bool
         return Ok(false);
     }
     if flags & POOL_FLAG_COMPRESSED != 0 {
-        Ok(crate::compress::decompress(stored).as_deref() == Some(name))
+        Ok(crate::fs_id_compress::decompress(stored).as_deref() == Some(name))
     } else {
         Ok(stored == name)
     }
@@ -563,8 +563,8 @@ impl DirEntry {
 ///
 /// ```
 /// use codevar_wredit::error::WreditResult;
-/// use codevar_wredit::storage::block::MemoryDisk;
-/// use codevar_wredit::storage::fs::{DiskFs, Inode};
+/// use codevar_wredit_fs::block::MemoryDisk;
+/// use codevar_wredit_fs::fs::{DiskFs, Inode};
 ///
 /// fn create_file() -> WreditResult<()> {
 ///     let disk = MemoryDisk::new(256)?;
@@ -1136,7 +1136,7 @@ impl<D: BlockDevice> DiskFs<D> {
         let offset = usize::from(off);
         let (orig_len, flags, stored) = pool_record(&block_buf, offset)?;
         let name = if flags & POOL_FLAG_COMPRESSED != 0 {
-            crate::compress::decompress(stored).ok_or(WreditError::CorruptImage {
+            crate::fs_id_compress::decompress(stored).ok_or(WreditError::CorruptImage {
                 what: "compressed name",
             })?
         } else {
@@ -1156,7 +1156,7 @@ impl<D: BlockDevice> DiskFs<D> {
     /// raw bytes, and an equal name already present is reused, so the
     /// pool holds one record per distinct long name.
     fn intern_name(&mut self, name: &[u8]) -> WreditResult<(u32, u16)> {
-        let packed = crate::compress::compress(name);
+        let packed = crate::fs_id_compress::compress(name);
         let compressed = packed.len() < name.len();
         let stored: Vec<u8> = if compressed { packed } else { name.to_vec() };
         let wanted_hash = crate::simd::hash_bytes(name);

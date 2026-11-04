@@ -1138,7 +1138,7 @@ impl<Raw: Copy, Buf: Copy, const GAP_SIZE: usize> Default for BaseWritable<Raw, 
 
 /// The stream facade over a [`BaseWritable`].
 ///
-/// Operation implementations live in [`super::ops`]; packed-element
+/// Operation implementations live in [`super::core_op_dispatcher`]; packed-element
 /// helpers and flush wrappers live next to the base structure.
 pub struct StreamWritable<Raw: Copy, Buf: Copy, const GAP_SIZE: usize> {
     /// The inline engine state.

@@ -29,10 +29,10 @@ use std::hint::black_box;
 
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
-use codevar_wredit::arch;
-use codevar_wredit::compress::{compress, decompress};
+use codevar_wredit_asm;
+use codevar_wredit::fs_id_compress::{compress, decompress};
 use codevar_wredit::simd;
-use codevar_wredit::storage::{DiskFs, MemoryDisk};
+use codevar_wredit_fs::{DiskFs, MemoryDisk};
 
 /// The benchmark sizes for streaming kernels, in bytes.
 const SIZES: [usize; 3] = [4 * 1024, 64 * 1024, 1 << 20];
