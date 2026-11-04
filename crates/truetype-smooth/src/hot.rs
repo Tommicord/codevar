@@ -462,10 +462,11 @@ pub fn try_render(source: &Outline, target: &mut Bitmap) -> bool {
 /// target is attached, the glyph does not fit the allocation, there are no
 /// edges to draw, or any driver step fails. Errors are logged at debug level.
 ///
-/// When this returns `Some`, the kernel has completed and the acquire window
-/// has closed, so the coverage is readable by the exporting device. It is a
-/// host-visible hand-off, not a signaled one: the calling thread waits for
-/// this glyph's kernel instead of queueing work behind a shared semaphore.
+/// When this returns `Some`, the kernel has run and the release has completed
+/// with it, so the exporting device may read the coverage immediately. It is
+/// a queue-draining hand-off rather than a signaled one: the calling thread
+/// waits for this glyph instead of ordering the render behind a semaphore
+/// shared with the other API.
 pub fn try_render_shared(source: &Outline, width: usize, height: usize) -> Option<CoverageRegion> {
     if width == 0 || height == 0 {
         return None;
@@ -557,8 +558,8 @@ fn kernel_params(n_edges: usize, width: usize, height: usize) -> Result<(i32, i3
 /// The window is the whole reason this path is safe: the allocation belongs
 /// to the exporting device, and OpenCL may only write it between the acquire
 /// and the release that [`SharedBuffer::acquire`] and its `Drop` put around
-/// the kernel. Waiting on the kernel event before the guard is dropped is
-/// what keeps the release behind the write in the driver's own order.
+/// the kernel. The guard drops before the wait so the release is queued
+/// behind the write, and the wait then covers both commands.
 ///
 /// # Errors
 ///
@@ -604,9 +605,14 @@ fn enqueue_shared(
     kernel.set_arg(3, Arg::I32(height_i))?;
     kernel.set_arg(4, Arg::I32(even_odd))?;
     kernel.set_arg(5, Arg::Buffer(shared.buffer()))?;
-    let event = queue.enqueue_kernel(kernel, &[width, height], None)?;
-    event.wait()?;
+    queue.enqueue_kernel(kernel, &[width, height], None)?;
+    // Dropping the guard is what submits the release, and the release is the
+    // command that hands the allocation back, so it has to be queued before
+    // the wait below and be part of it: a caller that read the coverage as
+    // soon as only the kernel had finished would race the driver's own
+    // invalidate on memory the exporting device is about to touch.
     drop(_share);
+    queue.finish()?;
     Ok(CoverageRegion { width, height })
 }
 
