@@ -14,7 +14,7 @@ async = []
 wasm = []
 
 [lib]
-name = "io"
+name = "codevar_stdio"
 
 [dependencies]
 libc = { workspace = true }
