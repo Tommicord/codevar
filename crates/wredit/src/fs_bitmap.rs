@@ -25,6 +25,12 @@ use crate::error::{WreditError, WreditResult};
 
 use crate::fs_block::BLOCK_SIZE;
 
+/// Bits covered by one word of bitmap storage.
+const WORD_BITS: u32 = 64;
+
+/// Bytes in one word of bitmap storage.
+const WORD_BYTES: usize = (WORD_BITS / 8) as usize;
+
 /// A one-block allocation bitmap: `BLOCK_SIZE * 8` bits, `1` = used.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bitmap {
@@ -69,21 +75,21 @@ impl Bitmap {
     /// Lowest free index below `limit`, if any.
     #[must_use]
     pub fn find_free(&self, limit: u32) -> Option<u32> {
-        let whole = (limit / 8) as usize;
-        for (position, &byte) in self.bits.iter().enumerate().take(whole) {
-            if byte != 0xFF {
-                // `!byte` has 1s where `byte` has clear bits, so its
-                // lowest set bit is the lowest clear bit of `byte`.
-                let bit = (!byte).trailing_zeros();
-                let index = (position as u32) * 8 + bit;
+        let words = (limit / WORD_BITS) as usize;
+        for (position, word) in words_of(&self.bits).take(words).enumerate() {
+            if word != u64::MAX {
+                // `!word` has 1s where `word` has clear bits, so its
+                // lowest set bit is the lowest clear bit of the word.
+                let bit = (!word).trailing_zeros();
+                let index = (position as u32) * WORD_BITS + bit;
                 if index < limit {
                     return Some(index);
                 }
                 return None;
             }
         }
-        // Tail bits above the last whole byte.
-        let mut index = whole as u32 * 8;
+        // Tail bits above the last whole word.
+        let mut index = words as u32 * WORD_BITS;
         while index < limit && self.is_used(index) {
             index += 1;
         }
@@ -93,12 +99,18 @@ impl Bitmap {
     /// Number of set bits below `limit`.
     #[must_use]
     pub fn count_used(&self, limit: u32) -> u32 {
-        let whole = (limit / 8) as usize;
+        let whole_words = (limit / WORD_BITS) as usize;
         let mut count: u32 = 0;
-        for &byte in &self.bits[..whole] {
+        for word in words_of(&self.bits).take(whole_words) {
+            count = count.saturating_add(word.count_ones());
+        }
+        // Tail bytes between the last whole word and the last whole
+        // byte, then the individual bits below `limit`.
+        let whole_bytes = (limit / 8) as usize;
+        for &byte in &self.bits[whole_words * WORD_BYTES..whole_bytes] {
             count = count.saturating_add(byte.count_ones());
         }
-        let mut index = whole as u32 * 8;
+        let mut index = whole_bytes as u32 * 8;
         while index < limit {
             if self.is_used(index) {
                 count += 1;
@@ -150,6 +162,16 @@ fn split(index: u32) -> (usize, u8) {
     let byte = (index / 8) as usize;
     let mask = 1u8 << (index % 8);
     (byte, mask)
+}
+
+/// The bitmap read as little-endian words.
+///
+/// One word covers [`WORD_BITS`] consecutive addresses with the same
+/// bit order as the on-disk bytes, so a scan needs 8x fewer iterations
+/// than the byte-wise one without widening the stored layout.
+fn words_of(bits: &[u8]) -> impl Iterator<Item = u64> + '_ {
+    bits.chunks_exact(WORD_BYTES)
+        .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap_or([0u8; WORD_BYTES])))
 }
 
 #[cfg(test)]
