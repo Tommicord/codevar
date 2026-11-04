@@ -744,10 +744,14 @@ fn hash_state(mut hash: u64, bytes: &[u8]) -> u64 {
 }
 
 /// One Horner step of the name hash, reduced mod `2^52`.
+///
+/// Both operands are held below `2^52` and `2^33`, so their product
+/// reaches 85 bits, but only its low 52 bits survive the mask. A
+/// wraparound 64-bit multiply keeps the same low 52 bits, so this is
+/// bit-identical to the 128-bit form without widening the multiply.
 #[inline]
 fn hash_step(hash: u64, word: u64) -> u64 {
-    let product = (u128::from(hash) * u128::from(HASH_PRIME)) & u128::from(HASH_MASK);
-    ((product as u64) + word) & HASH_MASK
+    ((hash.wrapping_mul(HASH_PRIME) & HASH_MASK) + word) & HASH_MASK
 }
 
 /// Reads up to eight bytes of `chunk` as a little-endian, zero-padded
