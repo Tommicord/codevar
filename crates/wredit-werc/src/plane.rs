@@ -169,18 +169,18 @@ pub fn split(elements: &[u32], flags: u8, planes: &mut [u8]) -> WercResult<usize
     }
     let count = elements.len();
     let mut cursor = 0usize;
-    write_shifted(elements, &mut planes[cursor..cursor + count], 0);
+    crate::simd::write_plane(elements, &mut planes[cursor..cursor + count], 0);
     cursor += count;
     if flags & FLAG_PLANE1 != 0 {
-        write_shifted(elements, &mut planes[cursor..cursor + count], 8);
+        crate::simd::write_plane(elements, &mut planes[cursor..cursor + count], 8);
         cursor += count;
     }
     if flags & FLAG_PLANE2 != 0 {
-        write_shifted(elements, &mut planes[cursor..cursor + count], 16);
+        crate::simd::write_plane(elements, &mut planes[cursor..cursor + count], 16);
         cursor += count;
     }
     if flags & FLAG_PLANE3 != 0 {
-        write_shifted(elements, &mut planes[cursor..cursor + count], 24);
+        crate::simd::write_plane(elements, &mut planes[cursor..cursor + count], 24);
     }
     Ok(needed)
 }
@@ -204,28 +204,29 @@ pub fn join(flags: u8, planes: &[u8], out: &mut [u32]) -> WercResult<usize> {
         });
     }
     let count = out.len();
-    read_shifted(planes, out, 0);
+    crate::simd::read_plane(&planes[..count], out, 0, true);
     let mut cursor = count;
     if flags & FLAG_PLANE1 != 0 {
-        read_shifted(&planes[cursor..], out, 8);
+        crate::simd::read_plane(&planes[cursor..cursor + count], out, 8, false);
         cursor += count;
     }
     if flags & FLAG_PLANE2 != 0 {
-        read_shifted(&planes[cursor..], out, 16);
+        crate::simd::read_plane(&planes[cursor..cursor + count], out, 16, false);
         cursor += count;
     }
     if flags & FLAG_PLANE3 != 0 {
-        read_shifted(&planes[cursor..], out, 24);
+        crate::simd::read_plane(&planes[cursor..cursor + count], out, 24, false);
     }
     Ok(count)
 }
 
 /// Gather byte `shift / 8` of every element into `plane`.
 ///
-/// The shift is applied before the truncation, so the plane holds exactly
-/// that byte of each word whatever the target's byte order.
+/// The scalar reference for every tier in [`crate::simd`]: the shift is
+/// applied before the truncation, so the plane holds exactly that byte of
+/// each word whatever the target's byte order.
 #[inline]
-fn write_shifted(elements: &[u32], plane: &mut [u8], shift: u32) {
+pub(crate) fn write_shifted(elements: &[u32], plane: &mut [u8], shift: u32) {
     for (dst, &element) in plane.iter_mut().zip(elements) {
         *dst = (element >> shift) as u8;
     }
@@ -236,9 +237,20 @@ fn write_shifted(elements: &[u32], plane: &mut [u8], shift: u32) {
 /// Each plane owns a disjoint set of bits, so OR is exact and no plane can
 /// corrupt a field another already wrote.
 #[inline]
-fn read_shifted(plane: &[u8], out: &mut [u32], shift: u32) {
+pub(crate) fn read_shifted(plane: &[u8], out: &mut [u32], shift: u32) {
     for (dst, &byte) in out.iter_mut().zip(plane) {
         *dst |= u32::from(byte) << shift;
+    }
+}
+
+/// Write byte `shift / 8` of every plane byte into the elements of `out`.
+///
+/// This is [`read_shifted`] without the OR, used for plane 0 so the
+/// reconstruction never depends on what `out` held before.
+#[inline]
+pub(crate) fn assign_shifted(plane: &[u8], out: &mut [u32], shift: u32) {
+    for (dst, &byte) in out.iter_mut().zip(plane) {
+        *dst = u32::from(byte) << shift;
     }
 }
 
