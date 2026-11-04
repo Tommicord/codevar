@@ -86,7 +86,12 @@ pub(crate) unsafe fn count_newlines<Raw: Copy + Into<u32>>(raw: *const Raw, len:
         if core::mem::size_of::<Raw>() == core::mem::size_of::<u32>() {
             // SAFETY: the caller guarantees `raw[..len]`.
             return unsafe {
-                codevar_wredit_asm::rout::codevar_wredit_k_count_eq_u32(raw.cast::<u32>(), NEWLINE, CHAR_MASK, len)
+                codevar_wredit_asm::rout::codevar_wredit_k_count_eq_u32(
+                    raw.cast::<u32>(),
+                    NEWLINE,
+                    CHAR_MASK,
+                    len,
+                )
             };
         }
     }

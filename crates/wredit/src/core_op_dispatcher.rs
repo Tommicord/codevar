@@ -23,15 +23,15 @@
 use codevar_logger::log_error;
 
 use super::base::{MERGE_MASK, make_packed, packed_char, packed_type};
-use super::writable_scan;
 use super::shared_gap::{SLOT_CURSOR_BITS, SLOT_MAX_BASE, SLOT_MAX_SIZE};
 use super::traits::{
     TextEditableBufferQuery, TextEditableCursor, TextEditableDelete, TextEditableGap, TextEditableOverwrite,
     TextEditablePut, TextEditableReplace, TextEditableSelection, Writable,
 };
 use super::writable::{GAP_NONE, MAX_CURSORS, MAX_GAPS, SHARED_GAP_SLOTS, StreamWritable, WritableEvent};
-use codevar_wredit_asm::memmove;
+use super::writable_scan;
 use crate::error::{WreditError, WreditResult};
+use codevar_wredit_asm::memmove;
 
 impl<Raw, Buf, const GAP_SIZE: usize> Writable<Raw, Buf, GAP_SIZE> for StreamWritable<Raw, Buf, GAP_SIZE>
 where
@@ -286,11 +286,7 @@ where
     ///
     /// Returns the gap index, or an error when the fixed gap set is
     /// exhausted or the cursor is staged in a shared gap.
-    pub(crate) fn ensure_private_gap(
-        &mut self,
-        cursor_id: usize,
-        base: usize,
-    ) -> WreditResult<usize> {
+    pub(crate) fn ensure_private_gap(&mut self, cursor_id: usize, base: usize) -> WreditResult<usize> {
         let mapping = self.cursor_mapping(cursor_id);
         if mapping < MAX_GAPS as u16 {
             return Ok(usize::from(mapping));
@@ -375,12 +371,7 @@ where
     ///
     /// Returns the gap index that received (or would have received)
     /// the value.
-    pub(crate) fn stage_private(
-        &mut self,
-        cursor_id: usize,
-        value: Raw,
-        base: usize,
-    ) -> WreditResult<usize> {
+    pub(crate) fn stage_private(&mut self, cursor_id: usize, value: Raw, base: usize) -> WreditResult<usize> {
         let mut index = self.ensure_private_gap(cursor_id, base)?;
         if self
             .base
@@ -447,7 +438,8 @@ where
             return 0;
         }
         let old_length = self.base.raw_length;
-        let new_length = super::flush_writable::write_bytes_to_raw(self.base.raw_mut(), old_length, at, values);
+        let new_length =
+            super::flush_writable::write_bytes_to_raw(self.base.raw_mut(), old_length, at, values);
         if new_length == old_length {
             return 0;
         }

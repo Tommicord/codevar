@@ -39,9 +39,7 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
-use codevar_wredit::{
-    BLOCK_SIZE, COMMON_MASK, DiskFs, MemoryDisk, make_packed, storage_bind::BoundDocument,
-};
+use codevar_wredit::{BLOCK_SIZE, COMMON_MASK, DiskFs, MemoryDisk, make_packed, storage_bind::BoundDocument};
 
 /// Private gap window used by every benchmark document, in elements.
 const GAP_SIZE: usize = 1024;

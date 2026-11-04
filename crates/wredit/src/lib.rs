@@ -26,29 +26,29 @@
 #![cfg_attr(not(test), no_std)]
 extern crate alloc;
 
+pub mod base;
 mod codebook;
-pub mod fs_id_compress;
+mod core_op_dispatcher;
+pub mod cursor;
 pub mod cursor_allocator;
 pub mod error;
+pub mod flush_writable;
+pub mod fs_id_compress;
+pub mod shared_gap;
 pub mod simd;
 pub mod staging_gap;
 pub mod storage_bind;
-pub mod base;
-pub mod cursor;
-pub mod flush_writable;
-mod core_op_dispatcher;
-mod writable_scan;
-pub mod shared_gap;
 pub mod traits;
 pub mod writable;
+mod writable_scan;
 
+pub mod fs;
 pub mod fs_bitmap;
 pub mod fs_block;
-pub mod fs;
 pub mod fs_writable;
 
-pub use fs_block::{BLOCK_SHIFT, BLOCK_SIZE, BlockDevice, MAX_BLOCKS, MemoryDisk};
 pub use fs::{DirEntry, DiskFs, FileType, Inode, SuperBlock};
+pub use fs_block::{BLOCK_SHIFT, BLOCK_SIZE, BlockDevice, MAX_BLOCKS, MemoryDisk};
 pub use fs_writable::WritableFile;
 
 pub use base::{

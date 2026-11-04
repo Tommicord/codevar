@@ -52,15 +52,15 @@ use alloc::vec::Vec;
 
 use codevar_logger::log_info;
 
+use crate::error::{WreditError, WreditResult};
+use crate::fs::DiskFs;
+use crate::fs_block::BlockDevice;
+use crate::fs_writable::WritableFile;
 use crate::{
     COMMON_MASK, Cursor, StreamWritable, TextEditableBufferQuery, TextEditableCursor, TextEditableDelete,
     TextEditableOverwrite, TextEditablePut, TextEditableReplace, TextEditableSelection, Writable,
     make_packed, packed_char,
 };
-use crate::error::{WreditError, WreditResult};
-use crate::fs_block::BlockDevice;
-use crate::fs::DiskFs;
-use crate::fs_writable::WritableFile;
 
 /// A document that lives both on disk and in the edit engine.
 ///
@@ -549,8 +549,8 @@ mod tests {
     use super::*;
 
     use crate::COMMON_MASK;
-    use crate::fs_block::MemoryDisk;
     use crate::fs::DiskFs;
+    use crate::fs_block::MemoryDisk;
 
     /// Concrete instantiation used by every test: 256-byte staging cache,
     /// 1024-element gap window.

@@ -125,7 +125,10 @@ fn report_model() {
     let in_order = cortex_m();
     let out_of_order = x86_64();
     println!("inssched probe — predicted cycles per hash step (8 steps/block)\n");
-    println!("{:<12} {:>14} {:>14} {:>14}", "machine", "SourceOrder", "Latency", "RegPressure");
+    println!(
+        "{:<12} {:>14} {:>14} {:>14}",
+        "machine", "SourceOrder", "Latency", "RegPressure"
+    );
     for lanes in [1usize, LANES] {
         let block = build_block(lanes, 8);
         println!(
@@ -184,9 +187,7 @@ fn lanes_grouped(words: &[u64]) -> u64 {
         for lane in 0..LANES {
             products[lane] = (products[lane] + chunk[lane]) & HASH_MASK;
         }
-        for lane in 0..LANES {
-            acc[lane] = products[lane];
-        }
+        acc.copy_from_slice(&products);
     }
     acc.iter().fold(0u64, |sum, &v| sum ^ v)
 }
@@ -268,8 +269,14 @@ fn report_measured() {
         }
         rows.push((name, ns_per_pass, cycles));
     }
-    println!("measured cost of the same recurrence (64 KiB, {} steps/pass):\n", steps);
-    println!("{:<16} {:>12} {:>14} {:>10}", "order", "ns/pass", "cycles/step", "vs best");
+    println!(
+        "measured cost of the same recurrence (64 KiB, {} steps/pass):\n",
+        steps
+    );
+    println!(
+        "{:<16} {:>12} {:>14} {:>10}",
+        "order", "ns/pass", "cycles/step", "vs best"
+    );
     for (name, ns, cycles) in rows {
         println!("{name:<16} {ns:>12.1} {cycles:>14.3} {:>9.2}x", cycles / best);
     }

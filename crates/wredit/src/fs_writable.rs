@@ -23,9 +23,9 @@
 //! cache lives inline (`[u8; STAGING]`), a writable file never allocates
 //! on the heap.
 
-use crate::fs_block::BlockDevice;
 use super::fs::DiskFs;
 use crate::error::{WreditError, WreditResult};
+use crate::fs_block::BlockDevice;
 
 /// A buffered, seekable view of one regular file.
 ///
@@ -228,8 +228,8 @@ impl<'a, D: BlockDevice, const STAGING: usize> Drop for WritableFile<'a, D, STAG
 mod tests {
     use super::WritableFile;
     use crate::error::WreditResult;
-    use crate::fs_block::MemoryDisk;
     use crate::fs::DiskFs;
+    use crate::fs_block::MemoryDisk;
 
     /// Justification: `unwrap` in tests is permitted by the project
     /// lint configuration (`allow-unwrap-in-tests`).

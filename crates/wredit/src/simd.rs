@@ -886,9 +886,8 @@ mod x86 {
     use alloc::vec::Vec;
 
     use super::{
-        CHECKSUM_MASK, HASH_MASK, HASH_PRIME_POW8, LANE_POWERS, UTF8_CHUNK, WEIGHT_PERIOD,
-        WEIGHT_ROWS, checksum_scalar_at, count_byte_scalar, count_scalar, find_byte_scalar,
-        hash_state,
+        CHECKSUM_MASK, HASH_MASK, HASH_PRIME_POW8, LANE_POWERS, UTF8_CHUNK, WEIGHT_PERIOD, WEIGHT_ROWS,
+        checksum_scalar_at, count_byte_scalar, count_scalar, find_byte_scalar, hash_state,
     };
     #[cfg(target_arch = "x86")]
     use core::arch::x86::*;
@@ -1939,12 +1938,12 @@ mod tests {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     #[test]
     fn ifma_lane_weights_match_repeated_horner() {
-        for lane in 0..8usize {
+        for (lane, &power) in LANE_POWERS.iter().enumerate() {
             let mut expected = 1u64;
             for _ in 0..(7 - lane) {
                 expected = hash_step(expected, 0);
             }
-            assert_eq!(LANE_POWERS[lane], expected, "lane {lane}");
+            assert_eq!(power, expected, "lane {lane}");
         }
         let mut prime8 = 1u64;
         for _ in 0..8 {

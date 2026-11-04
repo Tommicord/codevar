@@ -683,7 +683,8 @@ impl LineAnchors {
         }
         let remaining = row - base_row;
         // Safety: `base_start <= len`, so the sub-slice is in bounds.
-        let newline = unsafe { writable_scan::find_nth_newline(raw.add(base_start), len - base_start, remaining) }?;
+        let newline =
+            unsafe { writable_scan::find_nth_newline(raw.add(base_start), len - base_start, remaining) }?;
         Some(base_start + newline + 1)
     }
 }
@@ -1011,16 +1012,18 @@ impl<Raw: Copy + Into<u32> + From<u32>, Buf, const GAP_SIZE: usize> Cursor<Raw, 
             if core::mem::size_of::<Raw>() == core::mem::size_of::<u32>() && has(Feature::Avx2) {
                 let mut back = [0u32; LINE_RING_CAPACITY];
                 let before = start.saturating_sub(1);
-                let backs =
-                    unsafe { writable_scan::collect_newlines_backward(raw, len, before, &mut back[..want_back]) };
+                let backs = unsafe {
+                    writable_scan::collect_newlines_backward(raw, len, before, &mut back[..want_back])
+                };
                 if backs == want_back {
                     for (offset, &newline) in back[..backs].iter().enumerate() {
                         entries[want_back - 1 - offset] = newline.saturating_add(1);
                     }
                     let room = LINE_RING_CAPACITY - (want_back + 1);
                     let mut forward = [0u32; LINE_RING_CAPACITY];
-                    let forwards =
-                        unsafe { writable_scan::collect_newlines_forward(raw, len, start, &mut forward[..room]) };
+                    let forwards = unsafe {
+                        writable_scan::collect_newlines_forward(raw, len, start, &mut forward[..room])
+                    };
                     for (offset, &newline) in forward[..forwards].iter().enumerate() {
                         entries[want_back + 1 + offset] = newline.saturating_add(1);
                     }
@@ -1239,7 +1242,8 @@ impl<Raw: Copy + Into<u32> + From<u32>, Buf, const GAP_SIZE: usize> Cursor<Raw, 
             // Safety: `raw[..len]` is the committed view bound by
             // `set_raw`/`rebind_raw`, `base_start <= end <= len`,
             // so the sub-slice stays in bounds.
-            let row = base_row + unsafe { writable_scan::count_newlines(raw.add(base_start), end - base_start) };
+            let row =
+                base_row + unsafe { writable_scan::count_newlines(raw.add(base_start), end - base_start) };
             Self::rebuild_line_ring(cache, raw, len, row, self.line_start(end));
             return row;
         }
@@ -1366,8 +1370,8 @@ impl<Raw: Copy + Into<u32> + From<u32>, Buf, const GAP_SIZE: usize> Cursor<Raw, 
                     let before = cache.at(0).saturating_sub(1);
                     // Safety: `raw[..len]` is the committed view bound
                     // by `set_raw`/`rebind_raw`.
-                    let start =
-                        unsafe { writable_scan::find_newline_backward(raw, len, before) }.map_or(0, |nl| nl + 1);
+                    let start = unsafe { writable_scan::find_newline_backward(raw, len, before) }
+                        .map_or(0, |nl| nl + 1);
                     cache.push_front(start as u32);
                     index = Some(start);
                 } else if cache.last_row().checked_add(1) == Some(row) {
@@ -1393,7 +1397,9 @@ impl<Raw: Copy + Into<u32> + From<u32>, Buf, const GAP_SIZE: usize> Cursor<Raw, 
                     // Safety: same committed-view contract as above.
                     Some(anchors) => unsafe { anchors.row_start(raw, len, row) },
                     // Safety: same committed-view contract as above.
-                    None => unsafe { writable_scan::find_nth_newline(raw, len, row) }.map(|newline| newline + 1),
+                    None => {
+                        unsafe { writable_scan::find_nth_newline(raw, len, row) }.map(|newline| newline + 1)
+                    }
                 };
                 match start {
                     // Deliberately leave the ring untouched on a distant
