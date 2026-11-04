@@ -19,5 +19,12 @@ codevar-ocl = { workspace = true }
 codevar-ocl-interop = { workspace = true }
 codevar-oclc = { workspace = true }
 
+# Only the integration tests open the Vulkan loader: the library imports a
+# handle a caller exported, so it never links a Vulkan driver itself, and the
+# WASM build stays free of one.
+[target.'cfg(unix)'.dev-dependencies]
+ash = { workspace = true }
+libc = { workspace = true }
+
 [lints]
 workspace = true

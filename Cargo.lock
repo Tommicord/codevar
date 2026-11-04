@@ -1012,11 +1012,13 @@ dependencies = [
 name = "codevar-truetype-smooth"
 version = "1.0.0"
 dependencies = [
+ "ash",
  "codevar-logger",
  "codevar-ocl",
  "codevar-ocl-interop",
  "codevar-oclc",
  "codevar-truetype-core",
+ "libc",
  "libm",
  "spin 0.12.3",
 ]
