@@ -34,5 +34,9 @@ harness = false
 name = "storage_bind"
 harness = false
 
+[[bench]]
+name = "inssched_probe"
+harness = false
+
 [lints]
 workspace = true

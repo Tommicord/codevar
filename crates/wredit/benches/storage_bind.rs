@@ -39,7 +39,9 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
-use codevar_wredit::{COMMON_MASK, DiskFs, MemoryDisk, make_packed, storage_bind::BoundDocument};
+use codevar_wredit::{
+    BLOCK_SIZE, COMMON_MASK, DiskFs, MemoryDisk, make_packed, storage_bind::BoundDocument,
+};
 
 /// Private gap window used by every benchmark document, in elements.
 const GAP_SIZE: usize = 1024;
@@ -68,6 +70,24 @@ fn pack(bytes: &[u8]) -> Vec<u32> {
         .collect()
 }
 
+/// Blocks needed to hold a `size`-byte document twice over.
+///
+/// `bind/save` inserts a second copy of the payload before writing it,
+/// so the image must cover 2x the file plus the inode table, bitmap and
+/// directories. The floor of 256 keeps every case except 1 MiB on the
+/// same image size the earlier runs used, so their numbers stay
+/// comparable.
+fn image_blocks(size: usize) -> u64 {
+    (96 + 2 * (size / BLOCK_SIZE) as u64).max(256)
+}
+
+/// Formats an in-memory filesystem sized for a `size`-byte payload.
+fn format_fs(size: usize) -> DiskFs<MemoryDisk> {
+    let blocks = image_blocks(size);
+    let disk = MemoryDisk::new(blocks).unwrap();
+    DiskFs::format(disk, blocks, 128).unwrap()
+}
+
 /// `bind/load` — reading a stored file into the edit buffer.
 fn bench_load(c: &mut Criterion) {
     let mut group = c.benchmark_group("bind/load");
@@ -75,8 +95,7 @@ fn bench_load(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, &size| {
             b.iter(|| {
-                let disk = MemoryDisk::new(256).unwrap();
-                let mut fs = DiskFs::format(disk, 256, 128).unwrap();
+                let mut fs = format_fs(size);
                 let data = payload(size, 0x9E37_79B9);
                 let inode = fs.create(2, "load.bin", 0x8000).unwrap();
                 fs.write_at(inode, 0, &data).unwrap();
@@ -95,8 +114,7 @@ fn bench_save(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, &size| {
             b.iter(|| {
-                let disk = MemoryDisk::new(256).unwrap();
-                let mut fs = DiskFs::format(disk, 256, 128).unwrap();
+                let mut fs = format_fs(size);
                 let data = payload(size, 0x00C0_FFEE);
                 let inode = fs.create(2, "save.bin", 0x8000).unwrap();
                 fs.write_at(inode, 0, &data).unwrap();
@@ -118,8 +136,7 @@ fn bench_roundtrip(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, &size| {
             b.iter(|| {
-                let disk = MemoryDisk::new(256).unwrap();
-                let mut fs = DiskFs::format(disk, 256, 128).unwrap();
+                let mut fs = format_fs(size);
                 let data = payload(size, 0xFEED_FACE);
                 let inode = fs.create(2, "roundtrip.bin", 0x8000).unwrap();
                 fs.write_at(inode, 0, &data).unwrap();
@@ -146,8 +163,7 @@ fn bench_edit(c: &mut Criterion) {
         group.throughput(Throughput::Elements(OPS as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, &size| {
             b.iter(|| {
-                let disk = MemoryDisk::new(256).unwrap();
-                let mut fs = DiskFs::format(disk, 256, 128).unwrap();
+                let mut fs = format_fs(size);
                 let data = payload(size, 0xABCD_EF01);
                 let inode = fs.create(2, "edit.bin", 0x8000).unwrap();
                 fs.write_at(inode, 0, &data).unwrap();
