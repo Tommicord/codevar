@@ -53,6 +53,10 @@
 /// Folding a sequential operation queue into one boundary table.
 pub mod sequentially_batch;
 
+/// Staging a batch into one device image and running the pass it
+/// describes.
+pub mod buffer;
+
 /// Shifting cursors and gap bases along a boundary table.
 pub mod shift;
 
