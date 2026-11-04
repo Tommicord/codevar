@@ -168,7 +168,7 @@ pub unsafe fn memchr(haystack: *const u8, needle: u8, len: usize) -> *const u8 {
 /// `raw` must be valid for reads of `len` `u32` words, or null when
 /// `len == 0`.
 #[inline]
-pub(crate) unsafe fn newline_count(raw: *const u32, len: usize) -> usize {
+pub unsafe fn newline_count(raw: *const u32, len: usize) -> usize {
     // Safety: guaranteed by the caller; the selected kernel matches
     // the probed ISA level and never reads past `len`.
     unsafe {
@@ -186,7 +186,7 @@ pub(crate) unsafe fn newline_count(raw: *const u32, len: usize) -> usize {
 ///
 /// `raw` must be valid for reads of `len` words; `n > 0`.
 #[inline]
-pub(crate) unsafe fn newline_nth(raw: *const u32, len: usize, n: usize) -> Option<usize> {
+pub unsafe fn newline_nth(raw: *const u32, len: usize, n: usize) -> Option<usize> {
     // Safety: see `newline_count`.
     let found = unsafe {
         match level() {
