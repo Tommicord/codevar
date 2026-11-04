@@ -1535,6 +1535,44 @@ impl GrayRaster {
             ycells: Vec::new(),
         }
     }
+
+    /// Rasterizes `source` into the coverage allocation attached to the HOT
+    /// pipeline and reports the region it landed in: the GPU-resident sibling
+    /// of [`Raster::render`].
+    ///
+    /// [`Raster::render`] cannot do this job, because its contract is to fill
+    /// `RasterParams::target` and device-side coverage never reaches a
+    /// [`Bitmap`]. A caller whose glyph cache already lives on the GPU asks
+    /// here instead, and takes the pixels out of its own allocation. The
+    /// gates are the ones `render` applies at its own HOT dispatch, so a
+    /// request that would fall back to the CPU there falls back here too:
+    /// [`RasterFlags::AA`] and [`RasterFlags::HOT`] both set,
+    /// [`RasterFlags::DIRECT`] clear, and a non-empty box.
+    ///
+    /// Returns `None` when nothing was rasterized — the flags rule the GPU
+    /// path out, no allocation is attached (see
+    /// [`hot::attach_shared_coverage`](crate::hot::attach_shared_coverage)),
+    /// the glyph is larger than it, or the driver failed. The caller then
+    /// rasterizes into a bitmap as usual; the target keeps whatever the last
+    /// successful render left in the region, because the whole box is
+    /// rewritten rather than merged.
+    pub fn render_shared_coverage(
+        &self,
+        source: &Outline,
+        flags: RasterFlags,
+        width: usize,
+        height: usize,
+    ) -> Option<crate::hot::CoverageRegion> {
+        if !flags.contains(RasterFlags::AA)
+            || !flags.contains(RasterFlags::HOT)
+            || flags.contains(RasterFlags::DIRECT)
+            || width == 0
+            || height == 0
+        {
+            return None;
+        }
+        crate::hot::try_render_shared(source, width, height)
+    }
 }
 
 impl Default for GrayRaster {
@@ -1736,6 +1774,43 @@ mod tests {
         };
         render_gray(&outline, &mut negative).unwrap();
         assert_eq!(negative.buffer, vec![0, 255]);
+    }
+
+    /// The flag gates of the GPU-resident sibling answer before the driver
+    /// is touched, so a request that the bitmap dispatch would send to the
+    /// CPU scan converter is refused here the same way — with no allocation
+    /// attached, which is this machine's state, even a fully gated request
+    /// has no target and is refused.
+    #[test]
+    fn shared_coverage_render_is_refused_without_a_gated_request() {
+        let raster = GrayRaster::new();
+        let outline = square(0, 0, 64, 64);
+        let gpu = RasterFlags::AA | RasterFlags::HOT;
+        assert!(
+            raster
+                .render_shared_coverage(&outline, RasterFlags::AA, 1, 1)
+                .is_none()
+        );
+        assert!(
+            raster
+                .render_shared_coverage(&outline, gpu, 0, 4)
+                .is_none()
+        );
+        assert!(
+            raster
+                .render_shared_coverage(&outline, gpu, 4, 0)
+                .is_none()
+        );
+        assert!(
+            raster
+                .render_shared_coverage(&outline, gpu | RasterFlags::DIRECT, 1, 1)
+                .is_none()
+        );
+        assert!(
+            raster
+                .render_shared_coverage(&outline, gpu, 1, 1)
+                .is_none()
+        );
     }
 
     #[test]
