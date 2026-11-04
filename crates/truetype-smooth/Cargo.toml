@@ -16,6 +16,7 @@ libm = { workspace = true }
 codevar-truetype-core = { workspace = true }
 codevar-logger = { workspace = true }
 codevar-ocl = { workspace = true }
+codevar-ocl-interop = { workspace = true }
 codevar-oclc = { workspace = true }
 
 [lints]
