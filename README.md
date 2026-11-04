@@ -14,7 +14,7 @@ single-core scheduler all live in this repository.
 
 - **Run everywhere.** The same crates target wasm32, Linux/Wayland, Windows, macOS,
   bare-metal Cortex-M and accelerator-backed devices. Portable code goes through
-  `codevar-target`, `codevar-io` and `codevar-base` instead of `std`.
+  `codevar-target`, `codevar-stdio` and `codevar-base` instead of `std`.
 - **Own the stack.** A self-hosted Wayland client and server, a TrueType rasterizer
   with autofit and pshinter hinting plus color emoji, an OpenCL ICD runtime next to
   a statically linked bare-metal driver, and a scheduler for both instruction order
@@ -106,7 +106,7 @@ cargo run -p codevar-oclc --bin codevar-oclc -- --emit native -O3 -o vector_add.
 | Fonts                      | `codevar-truetype-{core,sfnt,glyf,smooth,autofit,pshinter,psnames,gzip,emoji-color}`                                                                                                                                                                                                                                                  |
 | OpenCL                     | `codevar-ocl-{lex,parse,sar,ir,asm,cubin,abi,tc,native-codegen,native-codegen-x86,native-codegen-aarch64,native-codegen-thumbv7m}`, `codevar-ocl` (ICD runtime), `codevar-ocl-bare` (embedded driver), `codevar-oclc` (compiler CLI)                                                                                                  |
 | Platform                   | `codevar-wayland`, `codevar-dbus`, `codevar-xdg-portal`, `codevar-target`, `codevar-rt`, `codevar-env`, `codevar-pathbuf`                                                                                                                                                                                                             |
-| Runtime and infrastructure | `codevar-inssched`, `codevar-tlsf-alloc`, `codevar-logger`, `codevar-io`, `codevar-console-util`, `codevar-time-core`, `codevar-time-util`, `codevar-cli-parse`, `codevar-base`, `codevar-packlow`, `codevar-mergen`, `codevar-shake`, `codevar-sig-handler`, `codevar-sig-module-base`, `codevar-unwinding`, `codevar-pretty-unwind` |
+| Runtime and infrastructure | `codevar-inssched`, `codevar-tlsf-alloc`, `codevar-logger`, `codevar-stdio`, `codevar-console-util`, `codevar-time-core`, `codevar-time-util`, `codevar-cli-parse`, `codevar-base`, `codevar-packlow`, `codevar-mergen`, `codevar-shake`, `codevar-sig-handler`, `codevar-sig-module-base`, `codevar-unwinding`, `codevar-pretty-unwind` |
 | Networking                 | `codevar-tls`, `codevar-wsocket`                                                                                                                                                                                                                                                                                                      |
 | Launcher                   | `codevar-launcher` (the `codevar` binary)                                                                                                                                                                                                                                                                                             |
 
@@ -129,9 +129,9 @@ CI (`.github/workflows/rust.yml`) runs these on every push and pull request to
 check costs minutes while a per-crate check costs seconds:
 
 ```bash
-cargo check  -p codevar-tls -p codevar-io
-cargo clippy -p codevar-tls -p codevar-io --all-targets -- -D warnings
-cargo test   -p codevar-tls -p codevar-io
+cargo check  -p codevar-tls -p codevar-stdio
+cargo clippy -p codevar-tls -p codevar-stdio --all-targets -- -D warnings
+cargo test   -p codevar-tls -p codevar-stdio
 ```
 
 The engineering standards this project holds itself to — error handling without

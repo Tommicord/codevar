@@ -1,0 +1,27 @@
+[package]
+name = "codevar-wsocket"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "codevar_wsocket"
+
+[dependencies]
+codevar-base = { workspace = true }
+codevar-stdio = { workspace = true }
+codevar-textlike-encode = { workspace = true }
+codevar-tls = { workspace = true }
+getrandom = { workspace = true }
+sha1 = { workspace = true }
+bsize = "0.3.0"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+webpki-roots = { workspace = true }
+arc-swap = { workspace = true }
+
+[lints]
+workspace = true

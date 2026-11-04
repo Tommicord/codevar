@@ -53,9 +53,9 @@ actually touched, and run the full workspace check once at the end of the task.
 git diff --name-only --diff-filter=ACMR HEAD | cut -d/ -f2 | sort -u
 
 # Build + lint + test only those crates
-cargo check  -p codevar-tls -p codevar-io
-cargo clippy -p codevar-tls -p codevar-io --all-targets -- -D warnings
-cargo test   -p codevar-tls -p codevar-io
+cargo check  -p codevar-tls -p codevar-stdio
+cargo clippy -p codevar-tls -p codevar-stdio --all-targets -- -D warnings
+cargo test   -p codevar-tls -p codevar-stdio
 ```
 
 ### Diff size check (run before every commit)

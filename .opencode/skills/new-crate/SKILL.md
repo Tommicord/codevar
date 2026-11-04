@@ -102,7 +102,7 @@ anything that would create a cycle, and must not become a dependency hub.
 Rules:
 
 - A low-level crate (allocator, codec, parser) depends on `codevar-logger` at
-  most. It must not depend on `codevar-base`, `codevar-io`, or anything
+  most. It must not depend on `codevar-base`, `codevar-stdio`, or anything
   higher up.
 - A high-level crate may depend on low-level crates.
 - Never create a crate that everything depends on unless it is a genuine

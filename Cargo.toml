@@ -1,71 +1,71 @@
 [workspace]
 members = [
-    "crates/codevar-base",
-    "crates/codevar-tlsf-alloc",
-    "crates/codevar-textlike-encode",
-    "crates/codevar-tls",
-    "crates/codevar-pretty-unwind",
-    "crates/codevar-unwinding",
-    "crates/codevar-sig-handler",
-    "crates/codevar-sig-module-base",
-    "crates/codevar-wredit",
-    "crates/codevar-wsocket",
-    "crates/codevar-launcher",
-    "crates/codevar-wayland",
-    "crates/codevar-xdg-portal",
-    "crates/codevar-gpu-core",
-    "crates/codevar-gpu-vk",
-    "crates/codevar-gpu-wg",
-    "crates/codevar-kuitui",
-    "crates/codevar-kuitui-button",
-    "crates/codevar-kuitui-text",
-    "crates/codevar-kuitui-widget",
-    "crates/codevar-kuitui-rea",
-    "crates/codevar-logger",
-    "crates/codevar-dbus",
-    "crates/codevar-time-util",
-    "crates/codevar-console-util",
-    "crates/codevar-env",
-    "crates/codevar-io",
-    "crates/codevar-target",
-    "crates/codevar-rt",
-    "crates/codevar-truetype-core",
-    "crates/codevar-truetype-emoji-color",
-    "crates/codevar-truetype-gzip",
-    "crates/codevar-truetype-smooth",
-    "crates/codevar-truetype-sfnt",
-    "crates/codevar-truetype-psnames",
-    "crates/codevar-truetype-pshinter",
-    "crates/codevar-truetype-autofit",
-    "crates/codevar-truetype-glyf",
-    "crates/codevar-cli-parse",
-    "crates/codevar-ocl-lex",
-    "crates/codevar-oclc",
-    "crates/codevar-ocl-parse",
-    "crates/codevar-ocl-sar",
-    "crates/codevar-ocl-ir",
-    "crates/codevar-ocl-asm",
-    "crates/codevar-ocl",
-    "crates/codevar-ocl-interop",
-    "crates/codevar-ocl-abi",
-    "crates/codevar-ocl-native-codegen",
-    "crates/codevar-ocl-native-codegen-x86",
-    "crates/codevar-ocl-native-codegen-thumbv7m",
-    "crates/codevar-ocl-native-codegen-aarch64",
-    "crates/codevar-ocl-tc",
-    "crates/codevar-ocl-bare",
-    "crates/codevar-inssched",
-    "crates/codevar-negex-abi",
-    "crates/codevar-negex-lex",
-    "crates/codevar-negex-parse",
-    "crates/codevar-negex-codegen",
-    "crates/codevar-negex-native-codegen",
-    "crates/codevar-negex",
-    "crates/codevar-kuitui-control",
-    "crates/codevar-kuitui-control-linux",
-    "crates/codevar-kuitui-control-windows",
-    "crates/codevar-kuitui-control-macos",
-    "crates/codevar-kuitui-control-wasm",
+    "crates/base",
+    "crates/tlsf-alloc",
+    "crates/textlike-encode",
+    "crates/tls",
+    "crates/pretty-unwind",
+    "crates/unwinding",
+    "crates/sig-handler",
+    "crates/sig-module-base",
+    "crates/wredit",
+    "crates/wsocket",
+    "crates/launcher",
+    "crates/wayland",
+    "crates/xdg-portal",
+    "crates/gpu-core",
+    "crates/gpu-vk",
+    "crates/gpu-wg",
+    "crates/kuitui",
+    "crates/kuitui-button",
+    "crates/kuitui-text",
+    "crates/kuitui-widget",
+    "crates/kuitui-rea",
+    "crates/logger",
+    "crates/dbus",
+    "crates/time-util",
+    "crates/console-util",
+    "crates/env",
+    "crates/stdio",
+    "crates/target",
+    "crates/rt",
+    "crates/truetype-core",
+    "crates/truetype-emoji-color",
+    "crates/truetype-gzip",
+    "crates/truetype-smooth",
+    "crates/truetype-sfnt",
+    "crates/truetype-psnames",
+    "crates/truetype-pshinter",
+    "crates/truetype-autofit",
+    "crates/truetype-glyf",
+    "crates/cli-parse",
+    "crates/ocl-lex",
+    "crates/oclc",
+    "crates/ocl-parse",
+    "crates/ocl-sar",
+    "crates/ocl-ir",
+    "crates/ocl-asm",
+    "crates/ocl",
+    "crates/ocl-interop",
+    "crates/ocl-abi",
+    "crates/ocl-native-codegen",
+    "crates/ocl-native-codegen-x86",
+    "crates/ocl-native-codegen-thumbv7m",
+    "crates/ocl-native-codegen-aarch64",
+    "crates/ocl-tc",
+    "crates/ocl-bare",
+    "crates/inssched",
+    "crates/negex-abi",
+    "crates/negex-lex",
+    "crates/negex-parse",
+    "crates/negex-codegen",
+    "crates/negex-native-codegen",
+    "crates/negex",
+    "crates/kuitui-control",
+    "crates/kuitui-control-linux",
+    "crates/kuitui-control-windows",
+    "crates/kuitui-control-macos",
+    "crates/kuitui-control-wasm",
 ]
 resolver = "2"
 
@@ -145,73 +145,73 @@ gettid = "0.1.4"
 pem = { version = "3", default-features = false }
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
-codevar-dbus = { path = "crates/codevar-dbus" }
-codevar-base = { path = "crates/codevar-base" }
-codevar-tlsf-alloc = { path = "crates/codevar-tlsf-alloc" }
-codevar-textlike-encode = { path = "crates/codevar-textlike-encode" }
-codevar-tls = { path = "crates/codevar-tls" }
-codevar-wayland = { path = "crates/codevar-wayland" }
-codevar-time-util = { path = "crates/codevar-time-util" }
-codevar-time-core = { path = "crates/codevar-time-core" }
-codevar-wredit = { path = "crates/codevar-wredit" }
-codevar-wsocket = { path = "crates/codevar-wsocket" }
-codevar-sig-handler = { path = "crates/codevar-sig-handler" }
-codevar-sig-module-base = { path = "crates/codevar-sig-module-base" }
-codevar-unwinding = { path = "crates/codevar-unwinding" }
-codevar-pretty-unwind = { path = "crates/codevar-pretty-unwind" }
-codevar-xdg-portal = { path = "crates/codevar-xdg-portal" }
-codevar-gpu-core = { path = "crates/codevar-gpu-core" }
-codevar-gpu-vk = { path = "crates/codevar-gpu-vk" }
-codevar-gpu-wg = { path = "crates/codevar-gpu-wg" }
-codevar-kuitui = { path = "crates/codevar-kuitui" }
-codevar-kuitui-button = { path = "crates/codevar-kuitui-button" }
-codevar-kuitui-text = { path = "crates/codevar-kuitui-text" }
-codevar-kuitui-widget = { path = "crates/codevar-kuitui-widget" }
-codevar-kuitui-rea = { path = "crates/codevar-kuitui-rea" }
-codevar-kuitui-control = { path = "crates/codevar-kuitui-control" }
-codevar-kuitui-control-linux = { path = "crates/codevar-kuitui-control-linux" }
-codevar-kuitui-control-windows = { path = "crates/codevar-kuitui-control-windows" }
-codevar-kuitui-control-macos = { path = "crates/codevar-kuitui-control-macos" }
-codevar-kuitui-control-wasm = { path = "crates/codevar-kuitui-control-wasm" }
-codevar-logger = { path = "crates/codevar-logger" }
-codevar-console-util = { path = "crates/codevar-console-util" }
-codevar-io = { path = "crates/codevar-io" }
-codevar-env = { path = "crates/codevar-env" }
-codevar-pathbuf = { path = "crates/codevar-pathbuf" }
-codevar-target = { path = "crates/codevar-target" }
-codevar-rt = { path = "crates/codevar-rt" }
-codevar-truetype-core = { path = "crates/codevar-truetype-core" }
-codevar-truetype-emoji-color = { path = "crates/codevar-truetype-emoji-color" }
-codevar-truetype-gzip = { path = "crates/codevar-truetype-gzip" }
-codevar-truetype-smooth = { path = "crates/codevar-truetype-smooth" }
-codevar-truetype-sfnt = { path = "crates/codevar-truetype-sfnt" }
-codevar-truetype-psnames = { path = "crates/codevar-truetype-psnames" }
-codevar-truetype-pshinter = { path = "crates/codevar-truetype-pshinter" }
-codevar-truetype-autofit = { path = "crates/codevar-truetype-autofit" }
-codevar-truetype-glyf = { path = "crates/codevar-truetype-glyf" }
-codevar-ocl-lex = { path = "crates/codevar-ocl-lex" }
-codevar-cli-parse = { path = "crates/codevar-cli-parse" }
-codevar-oclc = { path = "crates/codevar-oclc" }
-codevar-ocl-parse = { path = "crates/codevar-ocl-parse" }
-codevar-ocl-sar = { path = "crates/codevar-ocl-sar" }
-codevar-ocl-ir = { path = "crates/codevar-ocl-ir" }
-codevar-ocl-asm = { path = "crates/codevar-ocl-asm" }
-codevar-ocl-abi = { path = "crates/codevar-ocl-abi" }
-codevar-ocl-native-codegen = { path = "crates/codevar-ocl-native-codegen" }
-codevar-ocl-native-codegen-x86 = { path = "crates/codevar-ocl-native-codegen-x86" }
-codevar-ocl-native-codegen-thumbv7m = { path = "crates/codevar-ocl-native-codegen-thumbv7m" }
-codevar-ocl-native-codegen-aarch64 = { path = "crates/codevar-ocl-native-codegen-aarch64" }
-codevar-ocl-tc = { path = "crates/codevar-ocl-tc" }
-codevar-ocl-bare = { path = "crates/codevar-ocl-bare" }
-codevar-ocl = { path = "crates/codevar-ocl" }
-codevar-ocl-interop = { path = "crates/codevar-ocl-interop" }
-codevar-inssched = { path = "crates/codevar-inssched" }
-codevar-negex-abi = { path = "crates/codevar-negex-abi" }
-codevar-negex-lex = { path = "crates/codevar-negex-lex" }
-codevar-negex-parse = { path = "crates/codevar-negex-parse" }
-codevar-negex-codegen = { path = "crates/codevar-negex-codegen" }
-codevar-negex-native-codegen = { path = "crates/codevar-negex-native-codegen" }
-codevar-negex = { path = "crates/codevar-negex" }
+codevar-dbus = { path = "crates/dbus" }
+codevar-base = { path = "crates/base" }
+codevar-tlsf-alloc = { path = "crates/tlsf-alloc" }
+codevar-textlike-encode = { path = "crates/textlike-encode" }
+codevar-tls = { path = "crates/tls" }
+codevar-wayland = { path = "crates/wayland" }
+codevar-time-util = { path = "crates/time-util" }
+codevar-time-core = { path = "crates/time-core" }
+codevar-wredit = { path = "crates/wredit" }
+codevar-wsocket = { path = "crates/wsocket" }
+codevar-sig-handler = { path = "crates/sig-handler" }
+codevar-sig-module-base = { path = "crates/sig-module-base" }
+codevar-unwinding = { path = "crates/unwinding" }
+codevar-pretty-unwind = { path = "crates/pretty-unwind" }
+codevar-xdg-portal = { path = "crates/xdg-portal" }
+codevar-gpu-core = { path = "crates/gpu-core" }
+codevar-gpu-vk = { path = "crates/gpu-vk" }
+codevar-gpu-wg = { path = "crates/gpu-wg" }
+codevar-kuitui = { path = "crates/kuitui" }
+codevar-kuitui-button = { path = "crates/kuitui-button" }
+codevar-kuitui-text = { path = "crates/kuitui-text" }
+codevar-kuitui-widget = { path = "crates/kuitui-widget" }
+codevar-kuitui-rea = { path = "crates/kuitui-rea" }
+codevar-kuitui-control = { path = "crates/kuitui-control" }
+codevar-kuitui-control-linux = { path = "crates/kuitui-control-linux" }
+codevar-kuitui-control-windows = { path = "crates/kuitui-control-windows" }
+codevar-kuitui-control-macos = { path = "crates/kuitui-control-macos" }
+codevar-kuitui-control-wasm = { path = "crates/kuitui-control-wasm" }
+codevar-logger = { path = "crates/logger" }
+codevar-console-util = { path = "crates/console-util" }
+codevar-stdio = { path = "crates/stdio" }
+codevar-env = { path = "crates/env" }
+codevar-pathbuf = { path = "crates/pathbuf" }
+codevar-target = { path = "crates/target" }
+codevar-rt = { path = "crates/rt" }
+codevar-truetype-core = { path = "crates/truetype-core" }
+codevar-truetype-emoji-color = { path = "crates/truetype-emoji-color" }
+codevar-truetype-gzip = { path = "crates/truetype-gzip" }
+codevar-truetype-smooth = { path = "crates/truetype-smooth" }
+codevar-truetype-sfnt = { path = "crates/truetype-sfnt" }
+codevar-truetype-psnames = { path = "crates/truetype-psnames" }
+codevar-truetype-pshinter = { path = "crates/truetype-pshinter" }
+codevar-truetype-autofit = { path = "crates/truetype-autofit" }
+codevar-truetype-glyf = { path = "crates/truetype-glyf" }
+codevar-ocl-lex = { path = "crates/ocl-lex" }
+codevar-cli-parse = { path = "crates/cli-parse" }
+codevar-oclc = { path = "crates/oclc" }
+codevar-ocl-parse = { path = "crates/ocl-parse" }
+codevar-ocl-sar = { path = "crates/ocl-sar" }
+codevar-ocl-ir = { path = "crates/ocl-ir" }
+codevar-ocl-asm = { path = "crates/ocl-asm" }
+codevar-ocl-abi = { path = "crates/ocl-abi" }
+codevar-ocl-native-codegen = { path = "crates/ocl-native-codegen" }
+codevar-ocl-native-codegen-x86 = { path = "crates/ocl-native-codegen-x86" }
+codevar-ocl-native-codegen-thumbv7m = { path = "crates/ocl-native-codegen-thumbv7m" }
+codevar-ocl-native-codegen-aarch64 = { path = "crates/ocl-native-codegen-aarch64" }
+codevar-ocl-tc = { path = "crates/ocl-tc" }
+codevar-ocl-bare = { path = "crates/ocl-bare" }
+codevar-ocl = { path = "crates/ocl" }
+codevar-ocl-interop = { path = "crates/ocl-interop" }
+codevar-inssched = { path = "crates/inssched" }
+codevar-negex-abi = { path = "crates/negex-abi" }
+codevar-negex-lex = { path = "crates/negex-lex" }
+codevar-negex-parse = { path = "crates/negex-parse" }
+codevar-negex-codegen = { path = "crates/negex-codegen" }
+codevar-negex-native-codegen = { path = "crates/negex-native-codegen" }
+codevar-negex = { path = "crates/negex" }
 
 [profile.dev]
 opt-level = 0
