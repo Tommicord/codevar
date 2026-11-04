@@ -26,7 +26,7 @@
 //! cursor's pointer-based view and the raw query slice. The caller
 //! guarantees the pointer is valid for `len` initialized elements.
 
-use crate::edit::base::CHAR_MASK;
+use crate::base::CHAR_MASK;
 
 /// Packed character value of a newline.
 const NEWLINE: u32 = b'\n' as u32;
@@ -49,7 +49,7 @@ pub(crate) unsafe fn count_newlines<Raw: Copy + Into<u32>>(raw: *const Raw, len:
         if core::mem::size_of::<Raw>() == core::mem::size_of::<u32>() {
             // SAFETY: the caller guarantees `raw[..len]`; the kernel
             // only reads inside that range.
-            return unsafe { crate::arch::x86_64::newline_count(raw.cast::<u32>(), len) };
+            return unsafe { codevar_wredit_asm::x86_64::newline_count(raw.cast::<u32>(), len) };
         }
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -86,7 +86,7 @@ pub(crate) unsafe fn count_newlines<Raw: Copy + Into<u32>>(raw: *const Raw, len:
         if core::mem::size_of::<Raw>() == core::mem::size_of::<u32>() {
             // SAFETY: the caller guarantees `raw[..len]`.
             return unsafe {
-                crate::arch::rout::codevar_wredit_k_count_eq_u32(raw.cast::<u32>(), NEWLINE, CHAR_MASK, len)
+                codevar_wredit_asm::rout::codevar_wredit_k_count_eq_u32(raw.cast::<u32>(), NEWLINE, CHAR_MASK, len)
             };
         }
     }
@@ -138,7 +138,7 @@ pub(crate) unsafe fn find_newline_forward<Raw: Copy + Into<u32>>(
             // SAFETY: the caller guarantees `raw[..len]` and
             // `from <= len`; the kernel only reads that range.
             let found = unsafe {
-                crate::arch::rout::codevar_wredit_k_find_eq_u32(
+                codevar_wredit_asm::rout::codevar_wredit_k_find_eq_u32(
                     raw.add(from).cast::<u32>(),
                     NEWLINE,
                     CHAR_MASK,
@@ -204,7 +204,7 @@ pub(crate) unsafe fn find_newline_backward<Raw: Copy + Into<u32>>(
             // SAFETY: the caller guarantees `raw[..len]` and the
             // kernel is bounded by `before <= len`.
             let found = unsafe {
-                crate::arch::rout::codevar_wredit_k_find_eq_u32_rev(
+                codevar_wredit_asm::rout::codevar_wredit_k_find_eq_u32_rev(
                     raw.cast::<u32>(),
                     NEWLINE,
                     CHAR_MASK,
@@ -325,7 +325,7 @@ pub(crate) unsafe fn find_nth_newline<Raw: Copy + Into<u32>>(
         if core::mem::size_of::<Raw>() == core::mem::size_of::<u32>() {
             // SAFETY: see `count_newlines`; loads stay inside
             // `raw[..len]`.
-            return unsafe { crate::arch::x86_64::newline_nth(raw.cast::<u32>(), len, n) };
+            return unsafe { codevar_wredit_asm::x86_64::newline_nth(raw.cast::<u32>(), len, n) };
         }
     }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]

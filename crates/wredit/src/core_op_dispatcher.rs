@@ -30,7 +30,7 @@ use super::traits::{
     TextEditablePut, TextEditableReplace, TextEditableSelection, Writable,
 };
 use super::writable::{GAP_NONE, MAX_CURSORS, MAX_GAPS, SHARED_GAP_SLOTS, StreamWritable, WritableEvent};
-use crate::arch::memmove;
+use codevar_wredit_asm::memmove;
 use crate::error::{WreditError, WreditResult};
 
 impl<Raw, Buf, const GAP_SIZE: usize> Writable<Raw, Buf, GAP_SIZE> for StreamWritable<Raw, Buf, GAP_SIZE>
@@ -265,7 +265,7 @@ where
     ///
     /// An unknown id is logged and reported as
     /// [`WreditError::InvalidCursor`].
-    pub(in crate::edit) fn validate_cursor(&self, cursor_id: usize) -> WreditResult<usize> {
+    pub(crate) fn validate_cursor(&self, cursor_id: usize) -> WreditResult<usize> {
         if !self.base.valid_cursor_id(cursor_id) {
             log_error!("wredit: invalid cursor id {cursor_id}");
             return Err(WreditError::InvalidCursor { cursor: cursor_id });
@@ -274,7 +274,7 @@ where
     }
 
     /// The cursor's current gap mapping, or [`GAP_NONE`].
-    pub(in crate::edit) fn cursor_mapping(&self, cursor_id: usize) -> u16 {
+    pub(crate) fn cursor_mapping(&self, cursor_id: usize) -> u16 {
         self.base
             .cursor_to_gap
             .get(cursor_id)
@@ -286,7 +286,7 @@ where
     ///
     /// Returns the gap index, or an error when the fixed gap set is
     /// exhausted or the cursor is staged in a shared gap.
-    pub(in crate::edit) fn ensure_private_gap(
+    pub(crate) fn ensure_private_gap(
         &mut self,
         cursor_id: usize,
         base: usize,
@@ -322,7 +322,7 @@ where
     /// Returns [`WreditError::InvalidOperation`] when the cursor is
     /// staged in a private gap, and [`WreditError::CapacityExhausted`]
     /// when no slot or mask bit is left.
-    pub(in crate::edit) fn ensure_shared_slot(&mut self, cursor_id: usize) -> WreditResult<usize> {
+    pub(crate) fn ensure_shared_slot(&mut self, cursor_id: usize) -> WreditResult<usize> {
         let mapping = self.cursor_mapping(cursor_id);
         if mapping == GAP_NONE {
             if cursor_id >= super::shared_gap::SLOT_CURSOR_BITS {
@@ -357,7 +357,7 @@ where
     /// Commits whatever the cursor has staged (private or shared) so
     /// the operation below sees a committed layout. Failures are
     /// logged inside the flush path and simply leave the staged data.
-    pub(in crate::edit) fn flush_cursor_gap(&mut self, cursor_id: usize) {
+    pub(crate) fn flush_cursor_gap(&mut self, cursor_id: usize) {
         let mapping = self.cursor_mapping(cursor_id);
         if mapping == GAP_NONE {
             return;
@@ -375,7 +375,7 @@ where
     ///
     /// Returns the gap index that received (or would have received)
     /// the value.
-    pub(in crate::edit) fn stage_private(
+    pub(crate) fn stage_private(
         &mut self,
         cursor_id: usize,
         value: Raw,
@@ -414,7 +414,7 @@ where
 
     /// Advances `cursor_id`'s caret to `position` and announces the
     /// move.
-    pub(in crate::edit) fn move_caret_to(&mut self, cursor_id: usize, position: usize) -> usize {
+    pub(crate) fn move_caret_to(&mut self, cursor_id: usize, position: usize) -> usize {
         let Some(from) = self
             .base
             .cursor(cursor_id)
@@ -442,7 +442,7 @@ where
     /// bookkeeping.
     ///
     /// Returns the number of inserted elements.
-    pub(in crate::edit) fn commit_insertion(&mut self, at: usize, values: &[Raw]) -> usize {
+    pub(crate) fn commit_insertion(&mut self, at: usize, values: &[Raw]) -> usize {
         if values.is_empty() || at > self.base.raw_length {
             return 0;
         }
@@ -494,7 +494,7 @@ where
     /// cursor/gap bookkeeping.
     ///
     /// Returns the number of removed elements.
-    pub(in crate::edit) fn commit_removal(&mut self, start: usize, count: usize) -> usize {
+    pub(crate) fn commit_removal(&mut self, start: usize, count: usize) -> usize {
         if count == 0 {
             return 0;
         }
@@ -1217,8 +1217,8 @@ where
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::edit::base::{COMMON_MASK, make_packed};
-    use crate::edit::traits::{
+    use crate::base::{COMMON_MASK, make_packed};
+    use crate::traits::{
         TextEditableBufferQuery, TextEditableCursor, TextEditableDelete, TextEditableOverwrite,
         TextEditablePut, TextEditableReplace, TextEditableSelection,
     };
@@ -1238,7 +1238,7 @@ pub(crate) mod tests {
     pub(crate) fn new_stream() -> TestStream {
         let mut stream = TestStream::new();
         let id = stream
-            .append_cursor(crate::edit::cursor::Cursor::new())
+            .append_cursor(crate::cursor::Cursor::new())
             .unwrap();
         stream.set_active_cursor(id);
         stream
@@ -1248,9 +1248,9 @@ pub(crate) mod tests {
     fn append_and_delete_cursors() {
         let mut stream = TestStream::new();
         assert!(stream.active_cursor().is_none());
-        let first = stream.append_cursor(crate::edit::cursor::Cursor::new());
+        let first = stream.append_cursor(crate::cursor::Cursor::new());
         assert_eq!(first, Some(0));
-        let second = stream.append_cursor(crate::edit::cursor::Cursor::new());
+        let second = stream.append_cursor(crate::cursor::Cursor::new());
         assert_eq!(second, Some(1));
         assert_eq!(stream.active_cursor_id(), 1);
         assert!(stream.delete_cursor(1));
@@ -1258,7 +1258,7 @@ pub(crate) mod tests {
         assert!(!stream.delete_cursor(99));
         assert_eq!(stream.active_cursor_id(), 0);
         // The slot is reusable.
-        assert_eq!(stream.append_cursor(crate::edit::cursor::Cursor::new()), Some(1));
+        assert_eq!(stream.append_cursor(crate::cursor::Cursor::new()), Some(1));
     }
 
     #[test]
@@ -1267,7 +1267,7 @@ pub(crate) mod tests {
         let mut appended = 0;
         for _ in 0..MAX_CURSORS {
             if stream
-                .append_cursor(crate::edit::cursor::Cursor::new())
+                .append_cursor(crate::cursor::Cursor::new())
                 .is_some()
             {
                 appended += 1;
@@ -1276,7 +1276,7 @@ pub(crate) mod tests {
         assert_eq!(appended, MAX_CURSORS);
         assert!(
             stream
-                .append_cursor(crate::edit::cursor::Cursor::new())
+                .append_cursor(crate::cursor::Cursor::new())
                 .is_none()
         );
     }
@@ -1361,7 +1361,7 @@ pub(crate) mod tests {
     fn two_cursors_edit_independently() {
         let mut stream = new_stream();
         let second = stream
-            .append_cursor(crate::edit::cursor::Cursor::new())
+            .append_cursor(crate::cursor::Cursor::new())
             .unwrap();
         stream.put(0, plain('a')).unwrap();
         stream.put(second, plain('z')).unwrap();

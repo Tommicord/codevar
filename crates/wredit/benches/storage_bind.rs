@@ -27,7 +27,7 @@
 //! saving the edit buffer back to storage, and full round-trip
 //! (load → edit → save) cycles, across a range of document sizes.
 //!
-//! The storage backend is [`MemoryDisk`](codevar_wredit_fs::block::MemoryDisk),
+//! The storage backend is [`MemoryDisk`](codevar_wredit::fs_block::MemoryDisk),
 //! so the numbers reflect the binding overhead (byte ↔ packed-element
 //! conversion, gap staging, block writes) without real-device latency.
 
@@ -39,10 +39,7 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
-use codevar_wredit::{COMMON_MASK, make_packed};
-use codevar_wredit_fs::block::MemoryDisk;
-use codevar_wredit_fs::fs::DiskFs;
-use codevar_wredit_fs_bind::BoundDocument;
+use codevar_wredit::{COMMON_MASK, DiskFs, MemoryDisk, make_packed, storage_bind::BoundDocument};
 
 /// Private gap window used by every benchmark document, in elements.
 const GAP_SIZE: usize = 1024;

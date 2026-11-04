@@ -47,7 +47,7 @@
 //!
 //! The staging gap plays the role a disk's write cache plays: edits
 //! accumulate cheaply in the staging area and are committed in bulk.
-//! [`crate::storage::writable::WritableFile`] sits on top of it and
+//! [`crate::fs_writable::WritableFile`] sits on top of it and
 //! pushes committed elements through the block store.
 
 use crate::error::{WreditError, WreditResult};
@@ -648,12 +648,12 @@ impl<T: Copy + Default, const COMMIT_CAP: usize, const GAP_SIZE: usize> StagingG
         // bounds; the second move may overlap and uses `memmove`.
         unsafe {
             let buf_ptr = self.buf.as_mut_ptr();
-            crate::arch::memcpy(
+            codevar_wredit_asm::memcpy(
                 buf_ptr.add(self.gap_pos).cast::<u8>(),
                 values.as_ptr().cast::<u8>(),
                 total.saturating_mul(elem),
             );
-            crate::arch::memmove(
+            codevar_wredit_asm::memmove(
                 buf_ptr.add(self.gap_pos + total).cast::<u8>(),
                 buf_ptr.add(tail).cast::<u8>(),
                 (old_span - tail).saturating_mul(elem),
@@ -689,7 +689,7 @@ impl<T: Copy + Default, const COMMIT_CAP: usize, const GAP_SIZE: usize> StagingG
             // tolerates their overlap.
             unsafe {
                 let ptr = self.buf.as_mut_ptr();
-                crate::arch::memmove(
+                codevar_wredit_asm::memmove(
                     ptr.add(self.gap_pos).cast::<u8>(),
                     ptr.add(src).cast::<u8>(),
                     count.saturating_mul(elem),
@@ -703,7 +703,7 @@ impl<T: Copy + Default, const COMMIT_CAP: usize, const GAP_SIZE: usize> StagingG
             // tolerates their overlap.
             unsafe {
                 let ptr = self.buf.as_mut_ptr();
-                crate::arch::memmove(
+                codevar_wredit_asm::memmove(
                     ptr.add(index + self.gap_len).cast::<u8>(),
                     ptr.add(index).cast::<u8>(),
                     count.saturating_mul(elem),

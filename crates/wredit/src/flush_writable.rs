@@ -36,7 +36,7 @@ use codevar_logger::log_error;
 
 use super::base::{COMMON_MASK, MERGE_MASK, WritableAlignedPtr, make_packed, packed_char, packed_type};
 use super::writable::{MAX_GAPS, SHARED_GAP_SLOTS, StreamWritable, WritableEvent};
-use crate::arch::{memcpy, memmove};
+use codevar_wredit_asm::{memcpy, memmove};
 
 /// What a committed run did to the line layout.
 ///
@@ -91,10 +91,10 @@ pub(crate) fn write_bytes_to_raw<Raw: Copy>(
     // Prefetch the tail range ahead of the shift so the cache lines are
     // hot when the memmove runs. Prefetch both source (for the load
     // side) and destination (for the store side).
-    if byte_len >= crate::arch::CACHE_LINE_SIZE {
+    if byte_len >= codevar_wredit_asm::CACHE_LINE_SIZE {
         unsafe {
-            crate::arch::prefetch(base.add(at * elem), crate::arch::PREFETCH_T0);
-            crate::arch::prefetch(base.add((at + src.len()) * elem), crate::arch::PREFETCH_T0);
+            codevar_wredit_asm::prefetch(base.add(at * elem), codevar_wredit_asm::PREFETCH_T0);
+            codevar_wredit_asm::prefetch(base.add((at + src.len()) * elem), codevar_wredit_asm::PREFETCH_T0);
         }
     }
     // Safety: `ensure_capacity(new_length)` guarantees room for
@@ -162,12 +162,12 @@ pub(crate) fn flush_stream_write_scalar<Raw: Copy + Into<u32> + From<u32>>(
         let base = raw.as_mut_ptr().cast::<u8>();
         let tail_bytes = (raw_length - at) * elem;
         let staged = values.len();
-        if tail_bytes >= crate::arch::CACHE_LINE_SIZE {
+        if tail_bytes >= codevar_wredit_asm::CACHE_LINE_SIZE {
             // Safety: both prefetch addresses are inside the buffer
             // reserved by `ensure_capacity`.
             unsafe {
-                crate::arch::prefetch(base.add(at * elem), crate::arch::PREFETCH_T0);
-                crate::arch::prefetch(base.add((at + staged) * elem), crate::arch::PREFETCH_T0);
+                codevar_wredit_asm::prefetch(base.add(at * elem), codevar_wredit_asm::PREFETCH_T0);
+                codevar_wredit_asm::prefetch(base.add((at + staged) * elem), codevar_wredit_asm::PREFETCH_T0);
             }
         }
         // Safety: `ensure_capacity(worst_case)` reserved
@@ -261,10 +261,10 @@ unsafe fn commit_pending<Raw: Copy>(
     let base = ptr.cast::<u8>();
     // Prefetch the tail range ahead of the block move so the cache
     // lines are hot when the memmove runs.
-    if byte_len >= crate::arch::CACHE_LINE_SIZE {
+    if byte_len >= codevar_wredit_asm::CACHE_LINE_SIZE {
         unsafe {
-            crate::arch::prefetch(base.add(at * elem), crate::arch::PREFETCH_T0);
-            crate::arch::prefetch(base.add((at + count) * elem), crate::arch::PREFETCH_T0);
+            codevar_wredit_asm::prefetch(base.add(at * elem), codevar_wredit_asm::PREFETCH_T0);
+            codevar_wredit_asm::prefetch(base.add((at + count) * elem), codevar_wredit_asm::PREFETCH_T0);
         }
     }
     // Safety: bounds follow from the caller's pre-growth contract;
@@ -652,7 +652,7 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::{flush_stream_write_scalar, write_bytes_to_raw};
-    use crate::edit::base::{COMMON_MASK, MERGE_MASK, WritableAlignedPtr, make_packed};
+    use crate::base::{COMMON_MASK, MERGE_MASK, WritableAlignedPtr, make_packed};
 
     // Justification: `unwrap` in tests is permitted by the project
     // lint configuration (`allow-unwrap-in-tests`).

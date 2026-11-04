@@ -1184,8 +1184,8 @@ impl<Raw: Copy, Buf: Copy, const GAP_SIZE: usize> Default for StreamWritable<Raw
 #[cfg(test)]
 mod tests {
     use super::{BaseWritable, MAX_CURSORS, MAX_GAPS, WritableEvent, WritableGapPtr, WritableGaps};
-    use crate::edit::base::{COMMON_MASK, make_packed};
-    use crate::edit::writable::WritableGap;
+    use crate::base::{COMMON_MASK, make_packed};
+    use crate::writable::WritableGap;
 
     // Justification: `unwrap` in tests is permitted by the project
     // lint configuration (`allow-unwrap-in-tests`).
@@ -1256,7 +1256,7 @@ mod tests {
         assert_eq!(base.logical_length(), 0);
         assert_eq!(base.headroom, 0);
         assert_eq!(base.active_cursor_id, 0);
-        assert_eq!(base.encoding, crate::edit::base::ENC_UNKNOWN);
+        assert_eq!(base.encoding, crate::base::ENC_UNKNOWN);
     }
 
     #[test]

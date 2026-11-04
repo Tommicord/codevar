@@ -23,7 +23,7 @@
 
 use crate::error::{WreditError, WreditResult};
 
-use super::block::BLOCK_SIZE;
+use crate::fs_block::BLOCK_SIZE;
 
 /// A one-block allocation bitmap: `BLOCK_SIZE * 8` bits, `1` = used.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

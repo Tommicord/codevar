@@ -22,7 +22,7 @@
 //! Two types are meaningful to the flush layer: [`COMMON_MASK`] for an
 //! ordinary committed character and [`MERGE_MASK`] for an element that
 //! overwrites the raw element that follows it when the staged run is
-//! committed (see [`crate::edit::flush`]).
+//! committed (see [`crate::flush_writable`]).
 //!
 //! [`WritableAlignedPtr`] is the sparse growable heap buffer backing
 //! both the raw document and the shared staging arena. It starts
@@ -79,7 +79,7 @@ pub const NAME_LEN: usize = 0xFF;
 /// # Examples
 ///
 /// ```
-/// use codevar_wredit::edit::{COMMON_MASK, make_packed, packed_char, packed_type};
+/// use codevar_wredit::{COMMON_MASK, make_packed, packed_char, packed_type};
 ///
 /// let element = make_packed(b'a' as u32, COMMON_MASK);
 /// assert_eq!(packed_char(element), b'a' as u32);
@@ -270,7 +270,7 @@ impl<T: Copy, const ALIGN: usize> WritableAlignedPtr<T, ALIGN> {
             .saturating_mul(core::mem::size_of::<T>());
         if byte_len != 0 {
             unsafe {
-                crate::arch::memcpy(
+                codevar_wredit_asm::memcpy(
                     new_buff.as_ptr().cast::<u8>(),
                     self.as_ptr().cast::<u8>(),
                     byte_len,

@@ -50,8 +50,8 @@ use alloc::vec::Vec;
 
 use crate::error::{WreditError, WreditResult};
 
-use super::bitmap::Bitmap;
-use super::block::{BLOCK_SIZE, BlockDevice};
+use crate::fs_bitmap::Bitmap;
+use crate::fs_block::{BLOCK_SIZE, BlockDevice};
 
 /// Magic number identifying a Wredit engine storage image.
 const SUPER_MAGIC: u32 = 0xEF53;
@@ -563,8 +563,8 @@ impl DirEntry {
 ///
 /// ```
 /// use codevar_wredit::error::WreditResult;
-/// use codevar_wredit_fs::block::MemoryDisk;
-/// use codevar_wredit_fs::fs::{DiskFs, Inode};
+/// use codevar_wredit::fs_block::MemoryDisk;
+/// use codevar_wredit::fs::{DiskFs, Inode};
 ///
 /// fn create_file() -> WreditResult<()> {
 ///     let disk = MemoryDisk::new(256)?;
@@ -1462,7 +1462,7 @@ mod tests {
         BLOCK_SIZE, DiskFs, MAX_NAME_LEN, NAME_MAX, POOL_BLOCK_HEADER, POOL_RECORD_HEADER, POOL_USED_OFFSET,
     };
     use crate::error::WreditError;
-    use crate::storage::block::{BlockDevice, MemoryDisk};
+    use crate::fs_block::{BlockDevice, MemoryDisk};
 
     #[test]
     fn format_and_round_trip_a_file() {

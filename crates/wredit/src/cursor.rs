@@ -1512,7 +1512,7 @@ mod tests {
 
     /// Packs a plain character the way the engine does.
     fn ch(c: impl Into<u32>) -> u32 {
-        crate::edit::base::make_packed(c.into(), crate::edit::base::COMMON_MASK)
+        crate::base::make_packed(c.into(), crate::base::COMMON_MASK)
     }
 
     #[test]

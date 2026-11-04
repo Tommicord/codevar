@@ -75,7 +75,7 @@ pub trait BlockDevice {
 
 /// An in-RAM block device: the engine's "platters" as one flat array.
 ///
-/// The whole filesystem stack ([`crate::storage::fs::DiskFs`]) is
+/// The whole filesystem stack ([`crate::fs::DiskFs`]) is
 /// written against the [`BlockDevice`] trait, so the same image can
 /// later be persisted to (or loaded from) a real file or a WASM
 /// persistent store without touching the filesystem code.
@@ -84,7 +84,7 @@ pub trait BlockDevice {
 ///
 /// ```
 /// use codevar_wredit::error::WreditResult;
-/// use codevar_wredit_fs::block::{BlockDevice, MemoryDisk, BLOCK_SIZE};
+/// use codevar_wredit::fs_block::{BlockDevice, MemoryDisk, BLOCK_SIZE};
 ///
 /// fn inspect() -> WreditResult<u64> {
 ///     let disk = MemoryDisk::new(64)?;

@@ -31,10 +31,10 @@
 //!
 //! ```rust
 //! use codevar_wredit::error::WreditResult;
-//! use codevar_wredit::edit::{COMMON_MASK, make_packed};
-//! use codevar_wredit_fs::block::MemoryDisk;
-//! use codevar_wredit_fs::fs::DiskFs;
-//! use codevar_wredit_fs_bind::BoundDocument;
+//! use codevar_wredit::{COMMON_MASK, make_packed};
+//! use codevar_wredit::fs_block::MemoryDisk;
+//! use codevar_wredit::fs::DiskFs;
+//! use codevar_wredit::storage_bind::BoundDocument;
 //!
 //! fn edit_stored_file() -> WreditResult<()> {
 //!     let disk = MemoryDisk::new(256)?;
@@ -52,15 +52,15 @@ use alloc::vec::Vec;
 
 use codevar_logger::log_info;
 
-use crate::edit::{
+use crate::{
     COMMON_MASK, Cursor, StreamWritable, TextEditableBufferQuery, TextEditableCursor, TextEditableDelete,
     TextEditableOverwrite, TextEditablePut, TextEditableReplace, TextEditableSelection, Writable,
     make_packed, packed_char,
 };
 use crate::error::{WreditError, WreditResult};
-use crate::storage::block::BlockDevice;
-use crate::storage::fs::DiskFs;
-use crate::storage::writable::WritableFile;
+use crate::fs_block::BlockDevice;
+use crate::fs::DiskFs;
+use crate::fs_writable::WritableFile;
 
 /// A document that lives both on disk and in the edit engine.
 ///
@@ -548,9 +548,9 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
 mod tests {
     use super::*;
 
-    use crate::edit::COMMON_MASK;
-    use crate::storage::block::MemoryDisk;
-    use crate::storage::fs::DiskFs;
+    use crate::COMMON_MASK;
+    use crate::fs_block::MemoryDisk;
+    use crate::fs::DiskFs;
 
     /// Concrete instantiation used by every test: 256-byte staging cache,
     /// 1024-element gap window.

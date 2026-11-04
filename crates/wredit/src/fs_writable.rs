@@ -23,7 +23,7 @@
 //! cache lives inline (`[u8; STAGING]`), a writable file never allocates
 //! on the heap.
 
-use super::block::BlockDevice;
+use crate::fs_block::BlockDevice;
 use super::fs::DiskFs;
 use crate::error::{WreditError, WreditResult};
 
@@ -41,9 +41,9 @@ use crate::error::{WreditError, WreditResult};
 /// # Examples
 ///
 /// ```
-/// use codevar_wredit_fs::block::MemoryDisk;
-/// use codevar_wredit_fs::fs::DiskFs;
-/// use codevar_wredit_fs::writable::WritableFile;
+/// use codevar_wredit::fs_block::MemoryDisk;
+/// use codevar_wredit::fs::DiskFs;
+/// use codevar_wredit::fs_writable::WritableFile;
 ///
 /// fn write_file() -> codevar_wredit::error::WreditResult<()> {
 ///     let disk = MemoryDisk::new(256)?;
@@ -228,8 +228,8 @@ impl<'a, D: BlockDevice, const STAGING: usize> Drop for WritableFile<'a, D, STAG
 mod tests {
     use super::WritableFile;
     use crate::error::WreditResult;
-    use crate::storage::block::MemoryDisk;
-    use crate::storage::fs::DiskFs;
+    use crate::fs_block::MemoryDisk;
+    use crate::fs::DiskFs;
 
     /// Justification: `unwrap` in tests is permitted by the project
     /// lint configuration (`allow-unwrap-in-tests`).
