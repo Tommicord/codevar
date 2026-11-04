@@ -1,0 +1,46 @@
+# Git attributes for Codevar.
+#
+# Line endings. The repository is authored on Linux and .editorconfig mandates
+# LF, so the index is already LF. Without this file, a clone made by a tool
+# that defaults to core.autocrlf=true rewrites every .rs file to CRLF on
+# checkout, and `cargo fmt --check` then reports the whole tree as unformatted.
+# `eol=lf` forces LF in the index and in the working tree on every platform.
+* text=auto eol=lf
+
+# Text sources listed explicitly so that a misclassified file (an almost empty
+# module, for instance) is still diffed as text.
+*.rs    text eol=lf
+*.S     text eol=lf
+*.toml  text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
+*.jsonc text eol=lf
+*.sh    text eol=lf
+*.py    text eol=lf
+*.glsl  text eol=lf
+*.vert  text eol=lf
+*.frag  text eol=lf
+
+# Binaries. A line-ending conversion corrupts these silently: the font or
+# image loader fails with a checksum error that gives no hint of the cause.
+*.ttf  binary
+*.tiff binary
+*.tif~ binary
+*.spv  binary
+*.pyc  binary
+*~     binary
+
+# Generated. Cargo.lock is written by cargo rather than by hand; marking it
+# generated collapses its diff on GitHub so a review shows the real changes.
+Cargo.lock text eol=lf linguist-generated=true
+
+# Release archives. `git archive` and crates.io packaging should carry the
+# published source and the license, not the agent tooling or the CI wiring.
+# These paths stay versioned and keep running in CI; they are only dropped
+# from an exported tarball.
+/.github/      export-ignore
+/.opencode/    export-ignore
+AGENTS.md      export-ignore
+CODE_QUALITY.md export-ignore
+.gitattributes export-ignore
+.gitignore     export-ignore

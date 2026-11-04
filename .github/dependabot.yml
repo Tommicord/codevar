@@ -1,0 +1,42 @@
+# Dependabot configuration.
+#
+# The cargo workspace resolves from the root manifest, so one `cargo` entry
+# covers all 63 crates and their 305 locked dependencies: Dependabot reads the
+# workspace Cargo.toml and Cargo.lock and opens updates against the whole
+# graph. Minor and patch bumps are grouped into a single pull request so that
+# an ordinary week of upstream releases does not bury the review queue; majors
+# stay separate because each one needs its own `cargo deny check` and its own
+# changelog entry.
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directories:
+      - "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "03:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 15
+    labels:
+      - "dependencies"
+    groups:
+      cargo-minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
+
+  # Action refs are pinned by SHA-or-tag in .github/workflows; this keeps them
+  # current, which matters because a workflow action runs with the repository's
+  # `contents: read` token and an unupdated action is an unreviewed dependency.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      timezone: "Etc/UTC"
+    labels:
+      - "dependencies"
+      - "ci"
