@@ -16,6 +16,8 @@ Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md).
 - [Pull Request Process](#pull-request-process)
 - [Coding Conventions](#coding-conventions)
 - [Testing](#testing)
+- [Benchmarks](#benchmarks)
+- [Benchmarks](#benchmarks)
 - [Documentation](#documentation)
 - [Reporting Bugs](#reporting-bugs)
 - [Suggesting Features](#suggesting-features)
@@ -187,6 +189,45 @@ The full guidelines live in [AGENTS.md](AGENTS.md). The highlights:
 - Keep unit tests close to the code when they only exercise one module.
 - Run `cargo test --workspace` before submitting your PR.
 
+## Benchmarks
+
+Benchmarks are criterion targets: one file per group in a crate's `benches/`
+directory, declared in that crate's `Cargo.toml`.
+
+```toml
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "text_core"
+harness = false
+```
+
+`harness = false` is required, because libtest otherwise builds a second `main`
+next to criterion's own. `codevar-wredit`, `codevar-negex` and `codevar-ocl`
+carry benchmarks today.
+
+```bash
+# Every bench target in one crate
+cargo bench -p codevar-wredit
+
+# One target, saved under a name so a later run can compare against it
+cargo bench -p codevar-wredit --bench text_core -- --save-baseline before
+cargo bench -p codevar-wredit --bench text_core -- --baseline before
+```
+
+Reports are written to `target/criterion/<group>/report/`.
+
+`cargo bench` selects `[profile.bench]`, which inherits the release profile and
+then overrides `opt-level = 3` and `lto = "thin"`. Keep that override: the
+release profile builds with `opt-level = "z"`, trading speed for binary size, so
+a benchmark built with it measures the size trade instead of the code.
+
+`.github/workflows/bench.yml` runs the benchmarks on every push to `main` and
+uploads the report as an artifact. It deliberately does not run on pull requests
+and does not fail on a regression: timings on a shared runner move more than most
+changes do, so a threshold there would report noise rather than signal.
+
 ## Documentation
 
 - Public APIs must have doc comments.
@@ -209,6 +250,7 @@ Before requesting a review, verify:
 - [ ] Tests pass: `cargo test --workspace`
 - [ ] Formatting passes: `cargo fmt --all`
 - [ ] Clippy passes: `cargo clippy --workspace --all-targets -- -D warnings`
+- [ ] Dependency changes pass: `cargo deny check`
 
 ## Questions?
 

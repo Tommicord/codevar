@@ -1,0 +1,65 @@
+name: Benchmarks
+
+# Criterion measures wall-clock time, which is not stable on a shared runner:
+# another tenant's process, CPU frequency scaling or a noisy neighbor moves a
+# result by more than most code changes do. So this workflow never gates a
+# pull request. It runs on `main`, where the reports are a baseline to compare
+# against, and on demand for anyone who wants a measurement on a specific
+# commit.
+#
+# The benchmarks themselves live in each crate's `benches/` directory and are
+# declared with `harness = false` in that crate's Cargo.toml; see the
+# Benchmarks section of CONTRIBUTING.md.
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      crates:
+        description: "Space-separated -p selectors to bench"
+        required: false
+        default: "-p codevar-wredit -p codevar-ocl -p codevar-negex"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  criterion:
+    name: Run criterion benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bench-
+
+      # The `bench` profile is deliberately not the `release` profile: release
+      # builds the editor with `opt-level = "z"`, which would measure size
+      # trade-offs instead of speed. `cargo bench` selects `[profile.bench]`
+      # on its own, so no flag is needed here.
+      - name: Bench ${{ github.event.inputs.crates || 'default set' }}
+        run: |
+          cargo bench ${{ github.event.inputs.crates || '-p codevar-wredit -p codevar-ocl -p codevar-negex' }}
+
+      # target/criterion holds both the HTML report and the JSON baselines
+      # criterion writes per benchmark group, which is what a later
+      # `cargo bench -- --load-baseline` compares against.
+      - name: Upload criterion report
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-${{ github.sha }}
+          path: target/criterion
+          if-no-files-found: warn
+          retention-days: 30
