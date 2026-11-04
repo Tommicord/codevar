@@ -1,0 +1,106 @@
+# cargo-deny configuration for Codevar.
+#
+# Run locally with `cargo deny check` (install: `cargo install cargo-deny`).
+# CI runs the same check in .github/workflows/deny.yml.
+#
+# Only documented keys are accepted; an unknown key is a hard error.
+# Reference: https://embarkstudios.github.io/cargo-deny/checks/index.html
+
+# Dependency graph construction. `all-features` makes the check see every
+# optional dependency in the 63-crate workspace, so a feature-gated crate
+# cannot smuggle in a bad license or an un-audited version.
+[graph]
+all-features = true
+
+# Codevar is Apache-2.0 only, so anything that would force a copyleft
+# obligation on a derivative work is rejected outright. Since cargo-deny 0.18
+# there is no `deny` list: a license not in `allow` is denied automatically,
+# which is why the GPL/AGPL/LGPL family needs no entry here. The list is the
+# exact set of licenses present in Cargo.lock today; add to it deliberately,
+# never reflexively.
+[licenses]
+allow = [
+    "Apache-2.0",
+    # LLVM-exception variant: needed by rustc-adjacent crates.
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    # curve25519-dalek, ed25519-dalek, subtle, x25519-dalek.
+    "BSD-3-Clause",
+    # zerocopy.
+    "BSD-2-Clause",
+    # ring (Apache-2.0 AND ISC), untrusted.
+    "ISC",
+    # const_format, konst, foldhash, bytemuck.
+    "Zlib",
+    # memchr, byteorder, aho-corasick, walkdir.
+    "Unlicense",
+    # unicode-ident.
+    "Unicode-3.0",
+    # webpki-roots. Permissive, attribution-only document license.
+    "CDLA-Permissive-2.0",
+]
+# Confidence required when detecting a license from its text alone.
+confidence-threshold = 0.8
+# An unlisted license is denied, and a listed license that nothing uses is an
+# error too, so this list cannot silently drift away from the real tree.
+unused-allowed-license = "deny"
+
+# RustSec advisory database. `yanked = "deny"` also catches crates that
+# crates.io withdrew after publication, which the advisory graph reports.
+[advisories]
+yanked = "deny"
+# Ignored advisories must state why and link the tracking issue. Anything
+# listed here is a hole in the dependency tree, not a lint to be silenced:
+# each entry needs an owner and an upgrade path.
+ignore = [
+    # rsa has no patched release: PSS/PKCS#1 v1.5 signing still branches on
+    # secret data, and crates/tls/src/sign.rs signs with RsaPrivateKey. The
+    # RustCrypto migration to crypto-bigint did not close it; tracking is
+    # RustCrypto/RSA#626. Exposure needs a peer able to time a signing
+    # operation, so this is tracked rather than fixed by an upgrade.
+    { id = "RUSTSEC-2023-0071", reason = "rsa has no patched release; tracked in RustCrypto/RSA#626" },
+    # crypto-bigint 0.7.6 fixes the branches, but elliptic-curve 0.13 pins
+    # 0.5.x, so the tree cannot reach it until p256/p384/ecdsa move to the
+    # 0.14 line. Upgrade path: bump those three in [workspace.dependencies].
+    { id = "RUSTSEC-2026-0387", reason = "elliptic-curve 0.13 pins crypto-bigint 0.5; needs p256/p384/ecdsa 0.14" },
+]
+
+# Duplicate and wildcard dependency policy.
+[bans]
+multiple-versions = "deny"
+# A wildcard (`*`) requirement resolves to whatever is newest, which makes
+# `Cargo.lock` the only thing keeping the build reproducible. It cannot be
+# denied here: every `{ workspace = true }` reference to a sibling crate
+# resolves to a versionless path dependency, which cargo-deny counts as a
+# wildcard, and the workspace has 59 of them. Warned so a real `*` in a
+# third-party requirement still shows up in the log.
+wildcards = "warn"
+# Show the full inclusion path for every duplicate.
+highlight = "all"
+
+# Each entry below is the older copy of a duplicated name in Cargo.lock.
+# Verified against the lockfile dependency graph: none is chosen by the
+# workspace itself, and each is held by one upstream crate that has not
+# migrated yet. Unifying them is upstream work.
+skip = [
+    # Held by defmt 1.2 only; the wgpu stack requires bitflags 2.
+    { crate = "bitflags@1.3.2", reason = "forwarded by defmt 1.2, which cannot move to 2.x" },
+    # lazy_static 1.5 vendors its own spin 0.9 fallback.
+    { crate = "spin@0.9.9", reason = "required by lazy_static 1.5" },
+    # Older derive macros (asn1-rs, curve25519-dalek, windows-implement) are
+    # still on syn 2; serde and thiserror have moved to syn 3.
+    { crate = "syn@2.0.119", reason = "required by derive macros that predate syn 3" },
+    # The workspace pins windows-link 0.100; the windows 0.62 core bindings
+    # and libloading still reference 0.2.
+    { crate = "windows-link@0.2.1", reason = "required by windows-core 0.62 and libloading" },
+    # ring 0.17 is the only consumer of windows-sys 0.52.
+    { crate = "windows-sys@0.52.0", reason = "required by ring 0.17" },
+]
+
+# Only crates.io may supply dependencies: a git or vendored source bypasses
+# both the advisory database and the license text check.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

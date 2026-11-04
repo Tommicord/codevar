@@ -1,0 +1,41 @@
+name: Deny
+
+# cargo-deny checks the dependency graph for RustSec advisories, unapproved
+# licenses, duplicate and wildcard requirements, and non-crates.io sources.
+# The rules live in deny.toml at the repository root.
+#
+# The advisory database changes independently of this repository, so the
+# scheduled run is what turns "a crate we already ship became vulnerable"
+# into a failing check without waiting for someone to touch Cargo.lock.
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**/Cargo.toml"
+      - "deny.toml"
+      - ".github/workflows/deny.yml"
+  schedule:
+    - cron: '0 0 * * 1'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  deny:
+    name: Check dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --all-features
+          log-level: warn
