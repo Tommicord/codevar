@@ -1076,6 +1076,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-wredit-werc"
+version = "1.0.0"
+dependencies = [
+ "codevar-base",
+]
+
+[[package]]
 name = "codevar-wsocket"
 version = "1.0.0"
 dependencies = [

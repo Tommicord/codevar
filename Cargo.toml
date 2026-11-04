@@ -10,6 +10,7 @@ members = [
     "crates/sig-module-base",
     "crates/wredit",
     "crates/wredit-asm",
+    "crates/wredit-werc",
     "crates/wsocket",
     "crates/launcher",
     "crates/wayland",
@@ -156,6 +157,7 @@ codevar-time-util = { path = "crates/time-util" }
 codevar-time-core = { path = "crates/time-core" }
 codevar-wredit = { path = "crates/wredit" }
 codevar-wredit-asm = { path = "crates/wredit-asm" }
+codevar-wredit-werc = { path = "crates/wredit-werc" }
 codevar-wsocket = { path = "crates/wsocket" }
 codevar-sig-handler = { path = "crates/sig-handler" }
 codevar-sig-module-base = { path = "crates/sig-module-base" }
