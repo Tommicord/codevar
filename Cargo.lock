@@ -1082,6 +1082,7 @@ name = "codevar-wredit-werc"
 version = "1.0.0"
 dependencies = [
  "codevar-base",
+ "criterion",
 ]
 
 [[package]]

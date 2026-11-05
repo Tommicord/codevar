@@ -14,5 +14,12 @@ name = "codevar_wredit_werc"
 [dependencies]
 codevar-base = { workspace = true }
 
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "werc_codec"
+harness = false
+
 [lints]
 workspace = true
