@@ -1,0 +1,35 @@
+# CODEOWNERS: people or teams auto-requested when a pull request touches the
+# matching paths. Review is still welcome from anyone; this file only decides
+# who *must* approve, so keep it short and accurate.
+#
+# Every crate is maintained by the project author today. The per-crate entries
+# below are the seams where a second maintainer is expected first, because the
+# rendering, TLS and code-generation stacks each carry their own unsafe and
+# security surface. When ownership is distributed, replace the catch-all with
+# per-directory rules; a rule closer to the bottom wins.
+#
+# Syntax reference:
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Everything not matched below.
+*           @Tommicord
+
+# Native code generation: per-architecture emitters are the riskiest merges in
+# the tree, since a wrong encoding produces a bad instruction rather than a
+# compile error.
+/crates/ocl-native-codegen*/    @Tommicord
+/crates/negex*/                 @Tommicord
+
+# Cryptography and network protocol code. Changes here need a second pair of
+# eyes on the side-channel and handshake-state rules in SECURITY.md.
+/crates/tls/                    @Tommicord
+/crates/wsocket/                @Tommicord
+
+# `unsafe` lives mostly in the vectorized editors of the text engine.
+/crates/wredit*/                @Tommicord
+/crates/truetype-*/             @Tommicord
+
+# CI, release and agent tooling: a broken workflow blocks every merge, so these
+# files are owned explicitly rather than falling through to the catch-all.
+/.github/                       @Tommicord
+/.opencode/                     @Tommicord
