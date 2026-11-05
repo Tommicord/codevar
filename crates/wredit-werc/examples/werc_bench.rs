@@ -124,10 +124,10 @@ fn main() {
         plane_bytes as f64 / 1e6 / encoded_in.as_secs_f64().max(1e-9),
         plane_bytes as f64 / 1e6 / decoded_in.as_secs_f64().max(1e-9)
     );
-    if let Some(out) = argv.get(4) {
-        if let Err(err) = fs::write(out, &blob) {
-            eprintln!("cannot write {out}: {err}");
-            exit(1);
-        }
+    if let Some(out) = argv.get(4)
+        && let Err(err) = fs::write(out, &blob)
+    {
+        eprintln!("cannot write {out}: {err}");
+        exit(1);
     }
 }
