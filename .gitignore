@@ -14,3 +14,5 @@ tmp/
 .vs/
 .qoder/
 .lane/
+# lychee writes its link-check cache next to .lychee.toml when `cache = true`.
+.lycheecache*

@@ -1,0 +1,33 @@
+# Lychee configuration: checks the links in the Markdown files and Rust docs.
+#
+# Install with `cargo install lychee`, then run `lychee --config .lychee.toml
+# .` from the repository root. Lychee walks the tree, skipping anything
+# .gitignore excludes, so only tracked documentation is checked.
+#
+# Only documented keys are used; a key lychee does not know is an error.
+verbose = "info"
+# A dead link is worth reporting once per day rather than on every run.
+cache = true
+max_cache_age = "1d"
+timeout = 20
+max_redirects = 5
+max_retries = 2
+retry_wait_time = 2
+# crates.io, docs.rs and GitHub return 403 to non-browser user agents and 429
+# when a shared runner polls them, so those two codes are recorded as checks
+# that reached the host rather than as failures.
+accept = ["200..=299", "403", "429"]
+# A missing file is a broken relative link in a document, which is exactly
+# what this catches; do not downgrade it to a warning.
+skip_missing = false
+exclude = [
+    # Private-repository settings pages need authentication, so an
+    # unauthenticated check can only ever 404.
+    '^https://github\.com/settings',
+    '^https://github\.com/Tommicord/codevar/(edit|settings|actions)',
+    # Local sockets and example hosts are not resolvable.
+    '^https?://(127\.0\.0\.1|localhost)([:/]|$)',
+    '^https?://0\.0\.0\.0',
+    '^unix://',
+]
+exclude_all_private = true
