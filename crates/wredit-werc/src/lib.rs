@@ -32,7 +32,10 @@
 //! | `coder` | arithmetic coding | the carryless 32-bit binary arithmetic coder that turns the mixed probability into bits. |
 //!
 //! `frame` carries the container: magic, the model parameters the decoder
-//! needs, and the lengths.
+//! needs, and the lengths. `codec` drives the three stages: one bit loop with
+//! an encoder on one side and a decoder on the other, so the two cannot drift
+//! apart, plus the optional dictionary block that primes the model without
+//! entering the stream.
 //!
 //! The encoder and the decoder drive one shared coding loop, so a model
 //! change cannot make the two drift apart: whatever the encoder computes for
@@ -60,6 +63,7 @@
 
 extern crate alloc;
 
+pub mod codec;
 pub mod coder;
 pub mod element;
 pub mod error;
