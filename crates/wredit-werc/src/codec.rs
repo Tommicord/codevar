@@ -17,7 +17,7 @@
 //!
 //! [`encode`] and [`decode`] differ in three places only - which side knows
 //! the bit, whether a byte is appended to the output, and whether the coder
-//! runs at all - so they share [`run`] rather than each carrying a copy. A
+//! runs at all - so they share one private loop rather than each carrying a copy. A
 //! model or coder change lands in both directions at once, which is the only
 //! reason a stream encoded on one build decodes on another.
 //!

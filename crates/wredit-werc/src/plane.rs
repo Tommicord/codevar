@@ -133,7 +133,7 @@ pub const fn body_len(count: usize, flags: u8) -> Option<usize> {
 
 /// Split `elements` into its planes, appended in plane order to `planes`.
 ///
-/// `flags` must be [`presence(elements)`] - or a superset of it, which only
+/// `flags` must be [`presence`] applied to `elements` - or a superset of it, which only
 /// wastes space - and decides which planes are written. Returns the number of
 /// bytes written.
 ///

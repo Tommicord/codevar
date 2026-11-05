@@ -27,36 +27,40 @@
 //!
 //! | stage | module | what it does |
 //! |-------|--------|--------------|
-//! | `plane` | plane split | splits the element array into byte planes: the low byte (the text itself), the codepoint bits 8..23 (non-zero only for wide characters, so it is stored as a compacted escape list) and the element-type byte. The planes are what the model sees; measured on engine data, modelling the interleaved elements instead costs a context-mixing model 60-119% more output bytes. |
+//! | `plane` | plane split | splits the element array into byte planes: the low byte (the text itself), the codepoint bits 8..16 and 16..24, and the element-type byte. A plane is dropped from the stream when every element has a zero byte there, so an all-ASCII document ships two planes instead of four. The planes are what the model sees; measured on engine data, modelling the interleaved elements instead costs a context-mixing model 60-119% more output bytes. |
 //! | `model` | context mixing | orders 1-6 plus word and sparse contexts, each a bit-history state whose probability comes from a per-context state map, a match model, and a two-layer logistic mixer with an SSE stage. |
 //! | `coder` | arithmetic coding | the carryless 32-bit binary arithmetic coder that turns the mixed probability into bits. |
+//! | `frame` | container | magic, the model parameters the decoder needs, the plane flags and the two lengths. |
+//! | `codec` | driver | one bit loop over blocks, with an encoder on one side and a decoder on the other, plus the optional dictionary block that primes the model without entering the stream. |
 //!
-//! `frame` carries the container: magic, the model parameters the decoder
-//! needs, and the lengths. `codec` drives the three stages: one bit loop with
-//! an encoder on one side and a decoder on the other, so the two cannot drift
-//! apart, plus the optional dictionary block that primes the model without
-//! entering the stream.
-//!
-//! The encoder and the decoder drive one shared coding loop, so a model
-//! change cannot make the two drift apart: whatever the encoder computes for
-//! a bit, the decoder computes identically before it knows the bit.
+//! Because the two directions share that loop, a model or coder change lands
+//! in both at once: whatever the encoder computes for a bit, the decoder
+//! computes identically before it knows the bit.
 //!
 //! # Memory
 //!
 //! The model is sized by a single `mem_bits` parameter: the context tables
 //! and the match table each hold `1 << mem_bits` entries. The default is a
 //! desktop budget; a document is only worth compressing when it is larger
-//! than the model it needs, and the model reports its own budget so a caller
-//! can decide.
+//! than the model it needs, and [`model::Model::memory_bytes`] reports that
+//! budget so a caller can decide.
+//!
+//! The floor is not the context tables: it is the mixer, whose widest
+//! selector row is fixed at 4096 rows of nine `i64` weights. Measured at
+//! `mem_bits` 8, the smallest model that still codes, the tables ask 385 KiB
+//! and 288 KiB of that is the mixer - so this codec is a desktop and
+//! server-class tool, not a 16 KiB microcontroller one.
 //!
 //! # Throughput
 //!
 //! Context mixing is serial by construction - the coder feeds back into the
 //! model every bit - so the vectorizable work is in stage 1 (plane split and
-//! compaction) and in the mixer and state-map arithmetic, not in the coder.
+//! merge) and in the mixer and state-map arithmetic, not in the coder.
 //! Kernels are selected at run time through [`codevar_base::cpuid`] and every
 //! path produces bit-identical output, which is what lets a stream encoded
-//! on one machine decode on another.
+//! on one machine decode on another. The coding loop itself measured
+//! 0.3 MB/s of plane bytes on one x86-64 core, release profile, which is
+//! ~55x the Python prototype that defined the format.
 
 #![cfg_attr(not(test), no_std)]
 #![warn(missing_docs)]
