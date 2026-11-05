@@ -50,6 +50,7 @@ def stretch():
 
 def emit(name, values, doc):
     """Print one `static` array, sixteen values to a line."""
+    print()
     print(doc)
     print("#[rustfmt::skip]")
     print(f"pub(crate) static {name}: [i16; {len(values)}] = [")
@@ -57,7 +58,6 @@ def emit(name, values, doc):
         row = values[start : start + 16]
         print("    " + ", ".join(str(v) for v in row) + ",")
     print("];")
-    print()
 
 
 def check(sq, st):
