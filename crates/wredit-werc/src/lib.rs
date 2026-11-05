@@ -61,5 +61,7 @@
 pub mod element;
 pub mod error;
 pub mod plane;
+pub mod tables;
 
 mod simd;
+mod tables_data;
