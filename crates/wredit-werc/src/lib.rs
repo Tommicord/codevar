@@ -63,6 +63,7 @@ extern crate alloc;
 pub mod coder;
 pub mod element;
 pub mod error;
+pub mod frame;
 pub mod model;
 pub mod plane;
 pub mod tables;
