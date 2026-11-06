@@ -120,6 +120,15 @@ fn allocation_error(what: &'static str, detail: impl Into<alloc::string::String>
     }
 }
 
+/// The name a register class is called in a diagnostic.
+const fn class_name(class: RegClass) -> &'static str {
+    match class {
+        RegClass::Integer => "integer",
+        RegClass::Float => "floating-point",
+        RegClass::Vector => "vector",
+    }
+}
+
 /// The index of a register class in the allocator's tables.
 const fn class_index(class: RegClass) -> usize {
     match class {
@@ -154,6 +163,14 @@ struct Reload {
     offset: u32,
     /// The size of the value.
     size: u32,
+    /// Whether the frame is read back into the register before the
+    /// instruction.
+    ///
+    /// A use reads the value back; a definition that nothing on this
+    /// position reads only needs somewhere to write, and reading the
+    /// slot first would be a load whose result the definition throws
+    /// away.
+    load: bool,
     /// The register the reloaded value gets.
     register: Option<PReg>,
 }
@@ -202,6 +219,13 @@ struct Allocator<'a> {
     last_use: Vec<u32>,
     /// The positions every virtual register is used at.
     uses: Vec<Vec<u32>>,
+    /// The positions every virtual register is defined at.
+    ///
+    /// The machine code is not in static single assignment form — a phi
+    /// is lowered to a copy in every predecessor — so a value can have
+    /// one definition per path.  A value the frame holds needs a
+    /// register to write into at every one of them.
+    defs: Vec<Vec<u32>>,
     /// The first position of every virtual register's live interval.
     ///
     /// This is the earliest of its definitions, its uses, and the
@@ -218,6 +242,14 @@ struct Allocator<'a> {
     /// is never spilled: a spill frees the register, and the next
     /// iteration would read whatever value took its place.
     loop_carried: Vec<bool>,
+    /// Whether every virtual register is held in the frame for its whole
+    /// interval instead of in a register.
+    ///
+    /// [`Allocator::pin_frame_values`] decides this before the scan, so
+    /// the definition writes into a register of its position and every
+    /// use reads the slot back into one; the value itself never claims a
+    /// register across the loop.
+    frame: Vec<bool>,
     /// The register of every virtual register.
     assigned: Vec<Option<PReg>>,
     /// The position every virtual register was spilled at.
@@ -277,9 +309,11 @@ impl<'a> Allocator<'a> {
             last_def: Vec::new(),
             last_use: Vec::new(),
             uses: Vec::new(),
+            defs: Vec::new(),
             live_start: Vec::new(),
             live_end: Vec::new(),
             loop_carried: Vec::new(),
+            frame: Vec::new(),
             assigned: Vec::new(),
             spill_point: Vec::new(),
             spilled: Vec::new(),
@@ -313,6 +347,7 @@ impl<'a> Allocator<'a> {
         self.coalesce_copies(function);
         self.find_rematerializable(function);
         self.gather(function)?;
+        self.pin_frame_values();
         self.plan(function)?;
         let added = self.rewrite(function)?;
         // Record the physical registers assigned to function parameters.
@@ -513,12 +548,19 @@ impl<'a> Allocator<'a> {
         for uses in &mut self.uses {
             uses.clear();
         }
+        self.defs.clear();
+        self.defs.resize_with(count, Vec::new);
+        for defs in &mut self.defs {
+            defs.clear();
+        }
         self.live_start.clear();
         self.live_start.resize(count, NOWHERE);
         self.live_end.clear();
         self.live_end.resize(count, NOWHERE);
         self.loop_carried.clear();
         self.loop_carried.resize(count, false);
+        self.frame.clear();
+        self.frame.resize(count, false);
         self.assigned.clear();
         self.assigned.resize(count, None);
         self.spill_point.clear();
@@ -608,6 +650,9 @@ impl<'a> Allocator<'a> {
                         self.def_pos[index] = position;
                     }
                     self.last_def[index] = position;
+                    if let Some(defs) = self.defs.get_mut(index) {
+                        defs.push(position);
+                    }
                     if self.last_use[index] == NOWHERE {
                         self.last_use[index] = position;
                     }
@@ -657,10 +702,17 @@ impl<'a> Allocator<'a> {
     /// stretched over the blocks it is live through: from the first
     /// instruction of the earliest block it is live into to the last
     /// instruction of the latest block it is live out of.  A value that
-    /// is live out of a block that jumps back to an earlier block is
+    /// is live into the target of an edge that closes a cycle is
     /// loop-carried; it keeps its register for the whole interval and
     /// is never spilled, because a spill frees the register for the
     /// rest of the layout while the next iteration still reads it.
+    ///
+    /// The cycle test is reachability, not a comparison of block
+    /// numbers.  The block layout is an emission artifact, so a forward
+    /// edge can well run to a lower number, and reading that as a back
+    /// edge pins every value live into the join of an if/else diamond —
+    /// which the allocator then refuses to spill even though nothing
+    /// loops back to re-read it.
     fn compute_liveness(&mut self, function: &MirFunction) -> Result<()> {
         let count = self.uses.len();
         let word_count = count.div_ceil(64);
@@ -774,6 +826,32 @@ impl<'a> Allocator<'a> {
             }
         }
 
+        // The blocks every block can reach, to a fixpoint.  The forward
+        // dataflow answers the cycle question for the marking below: a
+        // value is carried around a loop exactly when the edge it is
+        // live into takes part in one.
+        let block_words = block_count.div_ceil(64);
+        let mut reaches: Vec<Vec<u64>> = vec![vec![0; block_words]; block_count];
+        loop {
+            let mut changed = false;
+            for index in (0..block_count).rev() {
+                let mut out: Vec<u64> = vec![0; block_words];
+                for &successor in &successors[index] {
+                    out[successor / 64] |= 1u64 << (successor % 64);
+                    for word in 0..block_words {
+                        out[word] |= reaches[successor][word];
+                    }
+                }
+                if reaches[index] != out {
+                    reaches[index] = out;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+
         // Stretch the intervals over the blocks the values are live
         // through, and mark the values that live across a back edge.
         for value_index in 0..count {
@@ -799,21 +877,31 @@ impl<'a> Allocator<'a> {
             self.live_end[value_index] = end;
         }
         for block in 0..block_count {
-            if !successors[block]
-                .iter()
-                .any(|&target| target <= block)
-            {
-                continue;
-            }
-            for value_index in 0..count {
-                let word = value_index / 64;
-                let bit = 1u64 << (value_index % 64);
-                if live_out[block][word] & bit != 0 {
-                    self.loop_carried[value_index] = true;
+            for &target in &successors[block] {
+                if !self.closes_a_cycle(target, block, &reaches) {
+                    continue;
+                }
+                for value_index in 0..count {
+                    let word = value_index / 64;
+                    let bit = 1u64 << (value_index % 64);
+                    if live_in[target][word] & bit != 0 {
+                        self.loop_carried[value_index] = true;
+                    }
                 }
             }
         }
         Ok(())
+    }
+
+    /// Whether the edge into `target` from `block` closes a cycle.
+    ///
+    /// A cycle is what makes a value loop-carried: the edge is one of
+    /// its edges when `target` reaches back to `block`, which includes
+    /// the self loop where the two are the same block.
+    fn closes_a_cycle(&self, target: usize, block: usize, reaches: &[Vec<u64>]) -> bool {
+        let word = block / 64;
+        let bit = 1u64 << (block % 64);
+        word < reaches[target].len() && reaches[target][word] & bit != 0
     }
 
     /// The index of a branch target block.
@@ -828,10 +916,227 @@ impl<'a> Allocator<'a> {
         Ok(index)
     }
 
+    /// Gives the frame the loop-carried values a register file cannot
+    /// hold.
+    ///
+    /// A carried value keeps its register for its whole interval because
+    /// [`Allocator::pick_victim`] cannot evict it: the next iteration
+    /// reads it at a position the layout has already passed, so a
+    /// register handed over at the spill point would be overwritten
+    /// before that read.  A loop whose header reads more values of one
+    /// class than that class has registers therefore has no allocation
+    /// at all, and the only way such a value can give up its register is
+    /// to live in the frame instead.
+    ///
+    /// That is decided before the scan, which is what makes it sound:
+    /// every position that reads or writes the value still lies ahead, so
+    /// each one is given a register of its own position by the normal
+    /// reload path rather than a register claimed retroactively.  The
+    /// longest-lived values go first, the rule the rest of the allocator
+    /// already follows, and framing stops as soon as the loop's
+    /// unspillable claim leaves one register of the class free.
+    fn pin_frame_values(&mut self) {
+        for class in [RegClass::Integer, RegClass::Float, RegClass::Vector] {
+            let pool = self.pools[class_index(class)].len();
+            // One register stays out of the pinned total for the value
+            // the position is computing; below that, ordinary spilling
+            // already copes and framing would only slow the loop down.
+            let fits = pool.saturating_sub(1);
+            loop {
+                if self.pinned_pressure(class) <= fits {
+                    break;
+                }
+                let Some(candidate) = self.longest_carried(class) else {
+                    break;
+                };
+                self.hold_in_frame(candidate);
+            }
+        }
+    }
+
+    /// The widest claim on the register file that no spill can relieve.
+    ///
+    /// Two kinds of occupant are beyond the allocator's reach at a
+    /// position: a carried value that still holds its register, and the
+    /// temporary register that reads a framed value back or writes it
+    /// out — a reload is never a spill candidate either.  Every other
+    /// value can give its register up, so only this sum decides whether
+    /// framing has to step in, and the register file keeps one register
+    /// out of it for the value the position is computing.
+    ///
+    /// Framing a value is not a plain subtraction: where the loop reads
+    /// it, its register becomes its temporary instead.  What the frame
+    /// takes away is the occupancy of the positions it merely lives
+    /// through, which is why the peak over the layout, not the number of
+    /// carried values, is the thing to compare with the register file.
+    fn pinned_pressure(&self, class: RegClass) -> usize {
+        let positions = self.position_count();
+        if positions == 0 {
+            return 0;
+        }
+        let mut diff = vec![0i64; positions + 1];
+        for index in 0..self.loop_carried.len() {
+            if !self.loop_carried[index]
+                || self.frame[index]
+                || self.types[index].reg_class() != class
+                || self.live_start[index] == NOWHERE
+                || self.live_end[index] == NOWHERE
+            {
+                continue;
+            }
+            let start = (self.live_start[index] as usize).min(positions);
+            let end = (self.live_end[index] as usize).min(positions - 1);
+            diff[start] += 1;
+            diff[end + 1] -= 1;
+        }
+        for (&position, ids) in &self.pending {
+            let Ok(position) = usize::try_from(position) else {
+                continue;
+            };
+            if position >= positions {
+                continue;
+            }
+            for &id in ids {
+                if self.reloads[id].class == class {
+                    diff[position] += 1;
+                    diff[position + 1] -= 1;
+                }
+            }
+        }
+        let mut running = 0i64;
+        let mut peak = 0usize;
+        for delta in &diff {
+            running += *delta;
+            if running > peak as i64 {
+                peak = running as usize;
+            }
+        }
+        peak
+    }
+
+    /// The number of instruction positions the function holds.
+    fn position_count(&self) -> usize {
+        self.live_end
+            .iter()
+            .filter(|&&end| end != NOWHERE)
+            .map(|&end| end as usize + 1)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The carried value of `class` that holds a register over the most
+    /// positions and has not been framed yet — the one whose frame slot
+    /// frees the occupancy of the widest stretch of the layout.
+    fn longest_carried(&self, class: RegClass) -> Option<VReg> {
+        let mut best: Option<(u32, usize)> = None;
+        for index in 0..self.loop_carried.len() {
+            if !self.loop_carried[index]
+                || self.frame[index]
+                || self.types[index].reg_class() != class
+                || self.def_pos[index] == NOWHERE
+            {
+                continue;
+            }
+            let span = self.span(index);
+            if best.is_none_or(|(widest, _)| span > widest) {
+                best = Some((span, index));
+            }
+        }
+        best.map(|(_, index)| VReg::new(u32::try_from(index).unwrap_or(u32::MAX)))
+    }
+
+    /// The length of the live interval of a value, the ranking the
+    /// spill rules already use.
+    fn span(&self, value: usize) -> u32 {
+        self.live_end[value]
+            .saturating_sub(self.live_start[value])
+            .max(self.def_pos[value].saturating_sub(self.live_start[value]))
+    }
+
+    /// Moves one value to the frame for the whole of its interval.
+    ///
+    /// Every definition writes into a register its own position is given
+    /// and saves it, and every use reads the slot back, so a value
+    /// written on several paths — a phi lowered to one copy per
+    /// predecessor — holds the value its own path defined.  The decision
+    /// is taken before [`Allocator::plan`], so no position that needs a
+    /// register has been passed yet, and the value itself claims no
+    /// register across the loop: [`Allocator::plan`] leaves it out of the
+    /// intervals that start.
+    fn hold_in_frame(&mut self, value: VReg) {
+        let index = value.index();
+        if self.spilled[index] || self.def_pos[index] == NOWHERE {
+            return;
+        }
+        let ty = self.type_of(value);
+        let class = ty.reg_class();
+        self.frame[index] = true;
+        self.spilled[index] = true;
+        self.spill_point[index] = self.live_start[index].min(self.def_pos[index]);
+        if self.rematerializable[index].is_some() {
+            // A constant needs no slot: every use reads the immediate
+            // again, which `rewrite_operand` already answers.  Its
+            // definition still needs a register to write into.
+            for def_pos in self.defs[index].clone() {
+                self.reserve_position(index, def_pos, &ty, class, 0, 0, false);
+            }
+            return;
+        }
+        let size = self.value_size(&ty);
+        let offset = self.allocate_slot(size);
+        self.slot[index] = offset;
+        let defs = self.defs[index].clone();
+        let uses = self.uses[index].clone();
+        for def_pos in defs.iter().copied() {
+            // A position that both reads and writes the value reads the
+            // old value back first, so the two-address form that writes
+            // its own operand computes on what the frame held.
+            let reads = uses.contains(&def_pos);
+            self.reserve_position(index, def_pos, &ty, class, offset, size, reads);
+        }
+        for use_pos in uses {
+            if defs.contains(&use_pos) {
+                continue;
+            }
+            self.reserve_position(index, use_pos, &ty, class, offset, size, true);
+        }
+    }
+
+    /// Registers one position of a frame value as needing a register, and
+    /// records it as the reload of that position.
+    fn reserve_position(
+        &mut self,
+        index: usize,
+        position: u32,
+        ty: &MType,
+        class: RegClass,
+        offset: u32,
+        size: u32,
+        load: bool,
+    ) {
+        let id = self.reloads.len();
+        self.reloads.push(Reload {
+            ty: ty.clone(),
+            class,
+            offset,
+            size,
+            load,
+            register: None,
+        });
+        self.reload_of.insert((position, index), id);
+        self.pending.entry(position).or_default().push(id);
+    }
+
     /// Decides the register of every virtual register.
     fn plan(&mut self, function: &MirFunction) -> Result<()> {
         for index in 0..self.uses.len() {
             if self.def_pos[index] == NOWHERE {
+                continue;
+            }
+            // A value the frame holds claims no register across its
+            // interval; the positions that read or write it were
+            // registered as reloads by `hold_in_frame`.
+            if self.frame[index] {
                 continue;
             }
             self.starting
@@ -880,10 +1185,25 @@ impl<'a> Allocator<'a> {
             cursor += 1;
             let Some(register) = self.take_register(item.class) else {
                 let Some(victim) = self.pick_victim(item.class, position) else {
-                    return Err(allocation_error(
-                        "assigning a register",
-                        "the target has no register of the class the value needs",
-                    ));
+                    // The two ways of running out of a register say
+                    // different things: a class with an empty pool is a
+                    // target the back end does not describe, and a full
+                    // pool whose every holder is pinned is a function
+                    // that needs a spill the rules do not allow.
+                    return Err(if self.pools[class_index(item.class)].is_empty() {
+                        allocation_error(
+                            "assigning a register",
+                            "the target has no register of the class the value needs",
+                        )
+                    } else {
+                        allocation_error(
+                            "assigning a register",
+                            alloc::format!(
+                                "every {} register the target offers is held by a value that cannot be spilled",
+                                class_name(item.class)
+                            ),
+                        )
+                    });
                 };
                 spills += 1;
                 if spills > limit {
@@ -1067,6 +1387,7 @@ impl<'a> Allocator<'a> {
                 class,
                 offset,
                 size,
+                load: true,
                 register: None,
             });
             self.reload_of.insert((use_pos, index), id);
@@ -1140,6 +1461,12 @@ impl<'a> Allocator<'a> {
                                 "the reloaded value has no register",
                             )
                         })?;
+                        // The register a definition was given needs no
+                        // read: nothing on this position asks for the
+                        // value the slot holds.
+                        if !reload.load {
+                            continue;
+                        }
                         insts.push(
                             MInst::def_physical(
                                 register,
@@ -1158,7 +1485,7 @@ impl<'a> Allocator<'a> {
                 let dest = inst.dest_vreg();
                 let terminator = is_terminator(&inst.op);
                 self.rewrite_operands(&mut inst, position)?;
-                self.rewrite_destination(&mut inst)?;
+                self.rewrite_destination(&mut inst, position)?;
                 insts.push(inst);
                 // The definition of a spilled value is saved right
                 // where it happens, so every use that reads the frame
@@ -1173,7 +1500,7 @@ impl<'a> Allocator<'a> {
                         .unwrap_or(false)
                     && !self.rematerialized(dest)
                 {
-                    insts.push(self.save(dest)?);
+                    insts.push(self.save(dest, position)?);
                     added += 1;
                 }
                 position = position.saturating_add(1);
@@ -1184,9 +1511,11 @@ impl<'a> Allocator<'a> {
     }
 
     /// The instruction that saves a spilled value in the frame.
-    fn save(&self, value: VReg) -> Result<MInst> {
+    fn save(&self, value: VReg, position: u32) -> Result<MInst> {
         let index = value.index();
-        let register = self.assigned[index]
+        let register = self
+            .destination(index, position)
+            .or(self.assigned[index])
             .ok_or_else(|| allocation_error("saving a spilled value", "the value has no register to save"))?;
         let ty = self.type_of(value);
         let size = self.value_size(&ty);
@@ -1201,16 +1530,31 @@ impl<'a> Allocator<'a> {
         .with_operand_type(ty))
     }
 
+    /// The register a frame value is given at this position, when the
+    /// allocator reserved one for it.
+    fn destination(&self, index: usize, position: u32) -> Option<PReg> {
+        if !self.frame.get(index).copied().unwrap_or(false) {
+            return None;
+        }
+        let id = *self.reload_of.get(&(position, index))?;
+        self.reloads.get(id)?.register
+    }
+
     /// Rewrites the destination of one instruction.
     ///
     /// The destination is virtual while the machine code is built and
     /// physical once the allocator has given the value a home, so the
     /// rewriting replaces the virtual register with the physical one.
-    fn rewrite_destination(&self, inst: &mut MInst) -> Result<()> {
+    /// A value the frame holds has no home across its interval; the
+    /// position that writes it was given a register of its own.
+    fn rewrite_destination(&self, inst: &mut MInst, position: u32) -> Result<()> {
         let Some(dest) = inst.dest_vreg() else {
             return Ok(());
         };
-        let register = self.assigned[dest.index()]
+        let index = dest.index();
+        let register = self
+            .destination(index, position)
+            .or(self.assigned[index])
             .ok_or_else(|| allocation_error("assigning a register", "a virtual register has no register"))?;
         inst.dest = Some(Destination::Physical(register));
         Ok(())
@@ -2139,7 +2483,7 @@ mod tests {
     #[test]
     fn a_value_live_across_a_loop_back_edge_is_never_spilled() {
         let (mut function, carried) = loop_pressure_function();
-        let registers = model(2);
+        let registers = model(4);
         let mut allocator = Allocator::new(&registers);
         let stats = allocator
             .allocate_function(&mut function)
@@ -2156,6 +2500,60 @@ mod tests {
             !allocator.spilled[carried.index()],
             "the value the loop carries kept its register"
         );
+    }
+
+    /// A loop that carries more values than the file holds has no
+    /// allocation at all unless the values that only live through the
+    /// loop give their registers up: the carried ones cannot be evicted,
+    /// and the reads of a framed value need a temporary each.
+    #[test]
+    fn a_loop_that_outgrows_the_file_holds_its_longest_values_in_the_frame() {
+        let (mut function, carried) = loop_pressure_function();
+        let first = function.new_vreg(MType::I32);
+        let second = function.new_vreg(MType::I32);
+        let wide = function.new_vreg(MType::I32);
+        let mut body = MirBlock::new("wide");
+        body.insts.push(MInst::def(
+            first,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(7)),
+        ));
+        body.insts.push(MInst::def(
+            second,
+            MType::I32,
+            MOp::Copy,
+            Operands::one(Operand::Immediate(9)),
+        ));
+        // Four values read at one position, on top of the one the loop
+        // carries: two integer registers cannot hold them all.
+        body.insts.push(MInst::def(
+            wide,
+            MType::I32,
+            MOp::Shl,
+            Operands::many(vec![
+                Operand::Virtual(carried),
+                Operand::Virtual(first),
+                Operand::Virtual(second),
+            ]),
+        ));
+        body.insts
+            .push(MInst::none(MType::Void, MOp::Br { target: 1 }, Operands::none()));
+        function.push_block(body);
+        let registers = model(2);
+        let mut allocator = Allocator::new(&registers);
+        allocator
+            .allocate_function(&mut function)
+            .expect("the framed values free the registers the loop needs");
+        assert!(
+            allocator.frame[carried.index()],
+            "the value the loop carries lives in the frame"
+        );
+        assert!(
+            allocator.spilled[carried.index()],
+            "the framed value is saved in the frame"
+        );
+        assert!(function.frame_size > 0, "the function grew a frame for the slot");
     }
 
     #[test]

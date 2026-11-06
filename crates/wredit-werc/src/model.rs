@@ -54,16 +54,16 @@ use crate::tables::{INVR, LOGIT_MAX, LOGIT_MIN, NX, SM0, clamp12, clamp16, squas
 pub const NCTX: usize = 8;
 
 /// Mixer inputs: the contexts plus the match model.
-const NM: usize = NCTX + 1;
+pub(crate) const NM: usize = NCTX + 1;
 
 /// Weights per mixer row: one per input and a bias on the constant input.
-const NW: usize = NM + 1;
+pub(crate) const NW: usize = NM + 1;
 
 /// Row selectors per bit position: the match model off, then on.
 const NSEL: usize = 2;
 
 /// First-layer mixers, one per row-selector width.
-const NMX: usize = 3;
+pub(crate) const NMX: usize = 3;
 
 /// Weights per second-layer row: one per first-layer output plus a bias.
 const NW2: usize = NMX + 1;
