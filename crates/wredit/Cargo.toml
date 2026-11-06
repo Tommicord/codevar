@@ -42,5 +42,9 @@ harness = false
 name = "fs_bitmap"
 harness = false
 
+[[bench]]
+name = "fs_paths"
+harness = false
+
 [lints]
 workspace = true
