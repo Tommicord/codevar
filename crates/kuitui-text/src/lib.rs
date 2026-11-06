@@ -30,9 +30,12 @@
 //! * the platform modules own the GPU objects and the upload/draw calls:
 //!   Vulkan in [`vulkan`] (native) and WebGPU in [`wg`] (wasm32).
 //!
-//! The atlas never reads data back from the GPU. The CPU is the source of
-//! truth for coverage; the GPU receives dirty rectangles through a
-//! host-visible staging buffer and keeps its textures between frames.
+//! The atlas never reads data back from the GPU. For a host-backed atlas the
+//! CPU is the source of truth for coverage; the GPU receives dirty rectangles
+//! through a host-visible staging buffer and keeps its textures between
+//! frames. A device-backed [`atlas::AtlasConfig`] inverts that: the page's
+//! bytes live in device storage the caller rasterizes into, so there is no
+//! host mirror to upload.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -56,8 +59,8 @@ pub mod vulkan;
 pub mod wg;
 
 pub use atlas::{
-    AtlasConfig, AtlasStats, ColorTextAtlas, DirtyRect, GlyphKey, GlyphSlot, TextAtlas, TextError, TextFrame,
-    TextVertex,
+    AtlasConfig, AtlasStats, ColorTextAtlas, DeviceSlot, DirtyRect, GlyphKey, GlyphSlot, PendingCoverage,
+    Reservation, TextAtlas, TextError, TextFrame, TextVertex,
 };
 pub use dirty::{DirtySignal, coalesce};
 pub use mesh::{GlyphQuad, INDICES_PER_QUAD, Index, IndexedMesh, MeshBuilder, MeshRun, VERTICES_PER_QUAD};

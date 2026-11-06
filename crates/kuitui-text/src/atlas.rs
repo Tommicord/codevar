@@ -42,6 +42,7 @@ use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::cell::{Cell, Ref, RefCell};
 use core::fmt;
+use core::ops::Range;
 
 use crate::dirty::DirtySignal;
 use crate::mesh::{MeshBuilder, MeshRun};
@@ -100,23 +101,32 @@ impl GlyphKey {
     }
 }
 
-/// Sizing policy of a [`TextAtlas`].
+/// Sizing and storage policy of a [`TextAtlas`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AtlasConfig {
     /// Side of every square page, in pixels.
     pub page_size: u32,
     /// Maximum number of pages the atlas may allocate.
     pub max_pages: usize,
+    /// Whether the gray pages live in device storage instead of a host mirror.
+    ///
+    /// A device-backed page has no `page_pixels` bytes: the pipe owns a
+    /// linear buffer per page, the caller rasterizes into it through
+    /// [`TextAtlas::reserve`] and the page image is refreshed from that
+    /// buffer. The color atlas always keeps its host mirror, whatever this
+    /// says.
+    pub device_backed: bool,
 }
 
 impl AtlasConfig {
-    /// A 1024 × 1024 page size and at most four pages.
+    /// A 1024 × 1024 page size, at most four pages and host-covered pages.
     ///
     /// One full page holds about a megabyte of coverage, enough for several
     /// thousand UI glyphs; four pages cap the cache at 4 MiB.
     pub const DEFAULT: Self = Self {
         page_size: 0x800,
         max_pages: 0x4,
+        device_backed: false,
     };
 }
 
@@ -162,6 +172,88 @@ pub struct GlyphSlot {
     pub height: u32,
 }
 
+/// Where one glyph's coverage lives inside a page's device storage.
+///
+/// The addressing is the rasterizer's own: the work item `(px, py)` of a
+/// bottom-up glyph writes `offset + py * pitch + px`, so `offset` is the
+/// byte address of the glyph's bottom row and `pitch` the distance to the
+/// row above it. Because page storage is stored row-major from its top
+/// edge, a page slot always has a negative pitch.
+///
+/// The font stack's raster destination is the same contract, so the two
+/// structures map field for field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceSlot {
+    /// Page whose device storage holds the bytes.
+    pub page: u32,
+    /// Glyph width in texels.
+    pub width: usize,
+    /// Glyph height in texels.
+    pub height: usize,
+    /// Byte address of the row the rasterizer writes first.
+    pub offset: usize,
+    /// Bytes from one stored row to the next, negative when the storage
+    /// runs top-down.
+    pub pitch: isize,
+}
+
+impl DeviceSlot {
+    /// The byte address of the `row`-th row counted from the top of the
+    /// glyph, which is the order a host bitmap arrives in.
+    ///
+    /// Returns `None` for a row outside the glyph or an address that does
+    /// not fit the platform's offsets.
+    #[inline]
+    #[must_use]
+    pub fn row_address(&self, row: usize) -> Option<usize> {
+        let from_bottom = self.height.checked_sub(1)?.checked_sub(row)?;
+        let address = i64::try_from(self.offset).ok()?
+            + i64::try_from(from_bottom)
+                .ok()?
+                .checked_mul(i64::try_from(self.pitch).ok()?)?;
+        usize::try_from(address).ok()
+    }
+
+    /// The smallest byte range that contains the slot.
+    ///
+    /// `None` when the slot has no rows or its addressing overflows, which
+    /// is how a destination that reaches past the page storage is refused
+    /// before anything writes it.
+    #[must_use]
+    pub fn bytes(&self) -> Option<Range<usize>> {
+        let first = self.row_address(0)?;
+        let last = self.row_address(self.height.checked_sub(1)?)?;
+        let end = first.max(last).checked_add(self.width)?;
+        Some(first.min(last)..end)
+    }
+}
+
+/// A glyph and the device bytes that will hold its coverage.
+///
+/// [`TextAtlas::reserve`] returns it once the atlas has placed the glyph and
+/// registered the key; writing the coverage is the caller's step.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Reservation {
+    /// Where the glyph lives in the atlas.
+    pub glyph: GlyphSlot,
+    /// The bytes of its coverage in the page's storage, or `None` when the
+    /// key was already resident and nothing has to be written.
+    pub coverage: Option<DeviceSlot>,
+}
+
+/// Coverage a host rasterizer produced for a device-backed page.
+///
+/// A device page keeps no host mirror, so bytes that were rasterized on the
+/// CPU wait here — usually none do — until the pipe copies them into the
+/// page's storage on the next upload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingCoverage {
+    /// Where the bytes belong.
+    pub slot: DeviceSlot,
+    /// Row-major, top-down coverage, `width * height` bytes.
+    pub bitmap: Vec<u8>,
+}
+
 /// Per-frame counters of a [`TextAtlas`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct AtlasStats {
@@ -195,7 +287,8 @@ struct Shelf {
 /// One square page of single-channel coverage.
 #[derive(Debug)]
 struct AtlasPage {
-    /// Row-major coverage, `page_size * page_size` bytes.
+    /// Row-major coverage, `page_size * page_size` bytes, empty for a page
+    /// whose coverage lives in device storage.
     pixels: Vec<u8>,
     /// Shelves allocated so far, top to bottom.
     shelves: Vec<Shelf>,
@@ -210,12 +303,16 @@ struct AtlasPage {
 }
 
 impl AtlasPage {
-    /// Creates a zeroed page.
+    /// Creates a page, zeroed unless its coverage lives on the device.
     ///
     /// The caller validates `page_size` when it builds the
     /// [`AtlasConfig`], so the product fits `usize`.
-    fn new(page_size: u32) -> Self {
-        let len = page_size as usize * page_size as usize;
+    fn new(page_size: u32, device_backed: bool) -> Self {
+        let len = if device_backed {
+            0
+        } else {
+            page_size as usize * page_size as usize
+        };
         Self {
             pixels: alloc::vec![0; len],
             shelves: Vec::new(),
@@ -269,6 +366,8 @@ pub struct TextAtlas {
     glyphs: BTreeMap<GlyphKey, GlyphSlot>,
     /// Regions written since the last upload.
     dirty: Vec<DirtyRect>,
+    /// Host-rasterized coverage waiting for a device page's storage.
+    pending: Vec<PendingCoverage>,
     /// Monotonic use counter for the LRU order.
     clock: u64,
     /// Counters of the current frame.
@@ -310,6 +409,7 @@ impl TextAtlas {
             pages: Vec::new(),
             glyphs: BTreeMap::new(),
             dirty: Vec::new(),
+            pending: Vec::new(),
             clock: 1,
             hits: 0,
             misses: 0,
@@ -351,10 +451,16 @@ impl TextAtlas {
             .sum()
     }
 
-    /// The coverage of one page, row-major, or `None` for an unknown page.
+    /// The coverage of one page, row-major.
+    ///
+    /// `None` for an unknown page and for every page of a device-backed
+    /// atlas, whose bytes only exist in the page's device storage.
     #[inline]
     #[must_use]
     pub fn page_pixels(&self, page: u32) -> Option<&[u8]> {
+        if self.config.device_backed {
+            return None;
+        }
         self.pages
             .get(page as usize)
             .map(|page| page.pixels.as_slice())
@@ -370,6 +476,18 @@ impl TextAtlas {
     /// Drops the dirty list once the pipe has uploaded it.
     pub fn clear_dirty(&mut self) {
         self.dirty.clear();
+    }
+
+    /// The host-rasterized coverage waiting for a device page's storage.
+    #[inline]
+    #[must_use]
+    pub fn pending_coverage(&self) -> &[PendingCoverage] {
+        &self.pending
+    }
+
+    /// Drops [`TextAtlas::pending_coverage`] once the pipe has copied it.
+    pub fn clear_pending(&mut self) {
+        self.pending.clear();
     }
 
     /// The current frame's counters.
@@ -421,6 +539,11 @@ impl TextAtlas {
     /// Re-inserting a resident key returns the old slot and ignores the
     /// new bitmap; a glyph never moves while a frame may reference it.
     ///
+    /// On a device-backed atlas there is no host mirror to fill, so the
+    /// bytes join [`TextAtlas::pending_coverage`] and the pipe copies them
+    /// into the page's storage — the path a CPU rasterization takes when
+    /// the device rasterizer is not available.
+    ///
     /// # Errors
     ///
     /// * [`TextError::GlyphSizeMismatch`] when `bitmap` is the wrong size;
@@ -464,7 +587,114 @@ impl TextAtlas {
         }
         let (page, x, y) = self.place(width, height)?;
         self.misses += 1;
+        self.coverage(page, x, y, width, height, bitmap);
+        Ok(Some(self.register(key, page, x, y, width, height)))
+    }
+
+    /// Reserves the space of a glyph whose coverage the caller rasterizes
+    /// into a device page, or returns its existing reservation.
+    ///
+    /// The atlas places the glyph, registers the key and marks the page
+    /// dirty; the coverage itself is written by the caller through the
+    /// returned [`DeviceSlot`], which addresses the page's device storage
+    /// the way the rasterizer expects. Because the key is resident from the
+    /// call on, a glyph whose rasterization failed has to be dropped again
+    /// with [`TextAtlas::abandon`] or the atlas keeps drawing an
+    /// unwritten rectangle.
+    ///
+    /// A zero `width` or `height` returns `Ok(None)` and allocates nothing,
+    /// and a key that is already resident returns its slot with
+    /// [`Reservation::coverage`] set to `None`: its bytes are where they
+    /// have always been.
+    ///
+    /// # Errors
+    ///
+    /// * [`TextError::HostPages`] when the atlas has no device storage;
+    /// * [`TextError::GlyphTooLarge`] when the glyph does not fit a page;
+    /// * [`TextError::AtlasFull`] when every page is pinned and full.
+    pub fn reserve(
+        &mut self,
+        key: GlyphKey,
+        width: u32,
+        height: u32,
+    ) -> Result<Option<Reservation>, TextError> {
+        if !self.config.device_backed {
+            return Err(TextError::HostPages);
+        }
+        if width == 0 || height == 0 {
+            return Ok(None);
+        }
+        if let Some(glyph) = self.glyphs.get(&key).copied() {
+            self.hits += 1;
+            self.touch(glyph.page);
+            return Ok(Some(Reservation {
+                coverage: None,
+                glyph,
+            }));
+        }
+        if width > self.config.page_size || height > self.config.page_size {
+            return Err(TextError::GlyphTooLarge {
+                width,
+                height,
+                page_size: self.config.page_size,
+            });
+        }
+        let (page, x, y) = self.place(width, height)?;
+        self.misses += 1;
+        self.mark_dirty(page, x, y, width, height);
+        let glyph = self.register(key, page, x, y, width, height);
+        Ok(Some(Reservation {
+            coverage: Some(self.device_slot(page, x, y, width, height)),
+            glyph,
+        }))
+    }
+
+    /// Drops a reserved glyph whose coverage was never written.
+    ///
+    /// The space it took on its shelf stays reserved until the page is
+    /// reset: no slot points at it, so it costs nothing but a few bytes of
+    /// an evictable page.
+    pub fn abandon(&mut self, key: GlyphKey) {
+        if let Some(slot) = self.glyphs.remove(&key)
+            && let Some(page) = self.pages.get_mut(slot.page as usize)
+            && let Some(index) = page
+                .keys
+                .iter()
+                .position(|candidate| *candidate == key)
+        {
+            page.keys.swap_remove(index);
+        }
+    }
+
+    /// Makes `bitmap` the coverage of the rectangle, in either storage.
+    fn coverage(&mut self, page: u32, x: u32, y: u32, width: u32, height: u32, bitmap: &[u8]) {
+        self.mark_dirty(page, x, y, width, height);
+        if self.config.device_backed {
+            // A device page has no host mirror, so bytes rasterized on the
+            // CPU wait here until the pipe copies them into the storage.
+            let slot = self.device_slot(page, x, y, width, height);
+            self.pending.push(PendingCoverage {
+                slot,
+                bitmap: bitmap.to_vec(),
+            });
+            return;
+        }
         self.write(page, x, y, width, height, bitmap);
+    }
+
+    /// Records that the page's storage changed at the rectangle.
+    fn mark_dirty(&mut self, page: u32, x: u32, y: u32, width: u32, height: u32) {
+        self.dirty.push(DirtyRect {
+            page,
+            x,
+            y,
+            width,
+            height,
+        });
+    }
+
+    /// Registers `key` at the rectangle and returns its slot.
+    fn register(&mut self, key: GlyphKey, page: u32, x: u32, y: u32, width: u32, height: u32) -> GlyphSlot {
         let scale = self.config.page_size as f32;
         let slot = GlyphSlot {
             page,
@@ -476,10 +706,26 @@ impl TextAtlas {
         self.glyphs.insert(key, slot);
         self.pages[page as usize].keys.push(key);
         self.touch(page);
-        Ok(Some(slot))
+        slot
     }
 
-    /// Copies `bitmap` into the page and records the dirty rectangle.
+    /// The destination of a rectangle inside a device page's storage.
+    fn device_slot(&self, page: u32, x: u32, y: u32, width: u32, height: u32) -> DeviceSlot {
+        let page_size = self.config.page_size as usize;
+        DeviceSlot {
+            page,
+            width: width as usize,
+            height: height as usize,
+            // The rasterizer writes the outline's bottom row first and
+            // climbs, so the slot starts at the page's last covered row and
+            // its pitch runs one page row upwards: the same bytes a host
+            // `write` fills top-down.
+            offset: (y as usize + height as usize - 1) * page_size + x as usize,
+            pitch: -(page_size as isize),
+        }
+    }
+
+    /// Copies `bitmap` into the page's host mirror.
     fn write(&mut self, page: u32, x: u32, y: u32, width: u32, height: u32, bitmap: &[u8]) {
         let page_size = self.config.page_size as usize;
         let target = &mut self.pages[page as usize];
@@ -488,13 +734,6 @@ impl TextAtlas {
             let start = (y as usize + row) * page_size + x as usize;
             target.pixels[start..start + width as usize].copy_from_slice(source);
         }
-        self.dirty.push(DirtyRect {
-            page,
-            x,
-            y,
-            width,
-            height,
-        });
     }
 
     /// Finds a page with room for `width` × `height`, growing or evicting.
@@ -507,7 +746,7 @@ impl TextAtlas {
         }
         if self.pages.len() < self.config.max_pages {
             let index = self.pages.len();
-            let mut page = AtlasPage::new(page_size);
+            let mut page = AtlasPage::new(page_size, self.config.device_backed);
             let (x, y) = page
                 .allocate(width, height, page_size)
                 .ok_or(TextError::AtlasFull)?;
@@ -553,6 +792,10 @@ impl TextAtlas {
         // bandwidth. The first glyph writes its own dirty rectangle.
         self.dirty
             .retain(|rect| rect.page != index as u32);
+        // Coverage queued for the keys that just died would land on bytes
+        // the page's next occupant owns, so it goes with them.
+        self.pending
+            .retain(|pending| pending.slot.page != index as u32);
         page.shelves.clear();
         page.cursor_y = 0;
         page.pinned = false;
@@ -1098,6 +1341,8 @@ pub enum TextError {
     },
     /// Every page is pinned by the current frame and full.
     AtlasFull,
+    /// The atlas keeps host mirrors, so it has no device storage to reserve.
+    HostPages,
 }
 
 impl fmt::Display for TextError {
@@ -1123,6 +1368,7 @@ impl fmt::Display for TextError {
                 page_size,
             } => write!(f, "text glyph {width}x{height} does not fit a {page_size} page"),
             Self::AtlasFull => f.write_str("the text atlas is full and every page is pinned"),
+            Self::HostPages => f.write_str("the text atlas is host-backed and has no device storage"),
         }
     }
 }
@@ -1138,9 +1384,24 @@ mod tests {
     use alloc::vec;
 
     const KEY_A: GlyphKey = GlyphKey::from_raw(1);
+    const KEY_B: GlyphKey = GlyphKey::from_raw(2);
 
     fn small(page_size: u32, max_pages: usize) -> TextAtlas {
-        TextAtlas::new(AtlasConfig { page_size, max_pages }).unwrap()
+        let config = AtlasConfig {
+            page_size,
+            max_pages,
+            device_backed: false,
+        };
+        TextAtlas::new(config).unwrap()
+    }
+
+    fn device(page_size: u32, max_pages: usize) -> TextAtlas {
+        let config = AtlasConfig {
+            page_size,
+            max_pages,
+            device_backed: true,
+        };
+        TextAtlas::new(config).unwrap()
     }
 
     fn cover(count: usize, byte: u8) -> Vec<u8> {
@@ -1193,6 +1454,190 @@ mod tests {
         );
         atlas.clear_dirty();
         assert!(atlas.dirty_rects().is_empty());
+    }
+
+    #[test]
+    fn a_device_page_keeps_no_host_mirror() {
+        let mut atlas = device(8, 1);
+        atlas
+            .insert(KEY_A, 2, 2, &[1, 2, 3, 4])
+            .unwrap()
+            .unwrap();
+
+        assert!(atlas.page_pixels(0).is_none(), "the bytes are not on the host");
+        let pending = atlas.pending_coverage();
+        assert_eq!(pending.len(), 1, "the host rasterization waits here");
+        assert_eq!(
+            pending[0].slot,
+            DeviceSlot {
+                page: 0,
+                width: 2,
+                height: 2,
+                offset: 8,
+                pitch: -8,
+            }
+        );
+        assert_eq!(pending[0].bitmap, vec![1, 2, 3, 4]);
+        assert_eq!(atlas.dirty_rects().len(), 2, "the page still needs a flush");
+        atlas.clear_pending();
+        assert!(atlas.pending_coverage().is_empty());
+    }
+
+    #[test]
+    fn an_eviction_drops_the_coverage_the_dead_keys_queued() {
+        let mut atlas = device(4, 1);
+        atlas
+            .insert(KEY_A, 2, 2, &cover(4, 1))
+            .unwrap()
+            .unwrap();
+        atlas.begin_frame();
+        atlas
+            .insert(KEY_B, 2, 2, &cover(4, 2))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(atlas.stats().evictions, 1);
+        let pending = atlas.pending_coverage();
+        assert_eq!(pending.len(), 1, "only the surviving glyph is queued");
+        assert_eq!(pending[0].bitmap, vec![2, 2, 2, 2]);
+    }
+
+    #[test]
+    fn a_host_atlas_queues_nothing_and_refuses_a_reservation() {
+        let mut atlas = small(8, 1);
+        atlas
+            .insert(KEY_A, 2, 2, &cover(4, 1))
+            .unwrap()
+            .unwrap();
+        assert!(atlas.pending_coverage().is_empty());
+        assert_eq!(atlas.reserve(KEY_A, 2, 2), Err(TextError::HostPages));
+    }
+
+    #[test]
+    fn a_reserved_glyph_reports_the_bytes_the_rasterizer_writes() {
+        let mut atlas = device(8, 1);
+        atlas
+            .insert(KEY_A, 2, 2, &cover(4, 1))
+            .unwrap()
+            .unwrap();
+        let placed = atlas.reserve(KEY_B, 2, 2).unwrap().unwrap();
+
+        assert_eq!(placed.glyph.page, 0);
+        assert_eq!(placed.glyph.uv_min, [3.0 / 8.0, 0.0]);
+        assert_eq!(
+            placed.coverage,
+            Some(DeviceSlot {
+                page: 0,
+                width: 2,
+                height: 2,
+                offset: 11,
+                pitch: -8,
+            })
+        );
+        assert_eq!(placed.coverage.unwrap().bytes(), Some(3..13));
+
+        let again = atlas.reserve(KEY_B, 2, 2).unwrap().unwrap();
+        assert_eq!(again.glyph, placed.glyph);
+        assert_eq!(again.coverage, None, "a resident glyph has nothing left to write");
+        assert_eq!(atlas.stats().hits, 1);
+    }
+
+    #[test]
+    fn both_paths_to_a_device_page_address_the_same_bytes_as_the_host_page() {
+        let mut host = small(8, 1);
+        let mut atlas = device(8, 1);
+        let mut storage = vec![0u8; 64];
+        let mut reservations = Vec::new();
+        for index in 0..4usize {
+            let key = GlyphKey::from_raw(index as u64 + 1);
+            // A 2x2 glyph whose top row is `top` and bottom row `bottom`.
+            let top = index as u8 + 1;
+            let bitmap = vec![top, top, top + 4, top + 4];
+            let slot = host.insert(key, 2, 2, &bitmap).unwrap().unwrap();
+            let placed = atlas.reserve(key, 2, 2).unwrap().unwrap();
+            assert_eq!(placed.glyph, slot, "both atlases place the same way");
+            let coverage = placed.coverage.unwrap();
+            raster_into(&mut storage, coverage, &bitmap);
+            reservations.push((coverage, bitmap));
+        }
+        let pixels = host.page_pixels(0).unwrap();
+        assert_eq!(
+            storage.as_slice(),
+            pixels,
+            "the slot addresses are the host page's rows"
+        );
+
+        // The pipe's own copy of a host-rasterized glyph lands identically.
+        let mut copied = vec![0u8; 64];
+        for (coverage, bitmap) in reservations {
+            copy_into(&mut copied, coverage, &bitmap);
+        }
+        assert_eq!(
+            copied.as_slice(),
+            pixels,
+            "`row_address` walks the same rows the rasterizer writes"
+        );
+    }
+
+    #[test]
+    fn an_abandoned_reservation_leaves_nothing_behind() {
+        let mut atlas = device(8, 1);
+        let placed = atlas.reserve(KEY_A, 2, 2).unwrap().unwrap();
+        atlas.abandon(KEY_A);
+
+        assert_eq!(atlas.glyph_count(), 0, "no slot names the reservation");
+        assert!(atlas.get(KEY_A).is_none(), "the key is no longer cached");
+        let again = atlas.reserve(KEY_A, 2, 2).unwrap().unwrap();
+        assert!(again.coverage.is_some(), "the key is free to reserve once more");
+        assert!(again.glyph != placed.glyph, "the retry takes new space");
+    }
+
+    #[test]
+    fn a_slot_is_refused_when_its_rows_leave_the_storage() {
+        let last_row = DeviceSlot {
+            page: 0,
+            width: 2,
+            height: 2,
+            offset: 56,
+            pitch: -8,
+        };
+        assert_eq!(last_row.bytes(), Some(48..58));
+        assert_eq!(last_row.row_address(0), Some(48));
+        assert_eq!(last_row.row_address(2), None, "a row outside the glyph");
+
+        let underflow = DeviceSlot {
+            offset: 0,
+            ..last_row
+        };
+        assert_eq!(underflow.bytes(), None, "the first row would run past the top");
+        let empty = DeviceSlot {
+            height: 0,
+            ..last_row
+        };
+        assert_eq!(empty.bytes(), None, "a glyph with no rows has no bytes");
+    }
+
+    /// Writes `bitmap` into `storage` the way the rasterizer kernel does:
+    /// its first row is the glyph's bottom edge and `pitch` steps upward.
+    fn raster_into(storage: &mut [u8], slot: DeviceSlot, bitmap: &[u8]) {
+        for py in 0..slot.height {
+            let address = (slot.offset as i64 + py as i64 * slot.pitch as i64) as usize;
+            for px in 0..slot.width {
+                // The bitmap is top-down, the kernel's `py` is bottom-up.
+                let source = (slot.height - 1 - py) * slot.width + px;
+                storage[address + px] = bitmap[source];
+            }
+        }
+    }
+
+    /// Writes `bitmap` into `storage` the way the pipe does for a host
+    /// rasterization: top-down rows at the addresses the slot reports.
+    fn copy_into(storage: &mut [u8], slot: DeviceSlot, bitmap: &[u8]) {
+        for row in 0..slot.height {
+            let address = slot.row_address(row).unwrap();
+            let source = row * slot.width..(row + 1) * slot.width;
+            storage[address..address + slot.width].copy_from_slice(&bitmap[source]);
+        }
     }
 
     #[test]
@@ -1384,6 +1829,7 @@ mod tests {
             TextAtlas::new(AtlasConfig {
                 page_size: 0,
                 max_pages: 1,
+                device_backed: false,
             })
             .unwrap_err(),
             TextError::ZeroPageSize
@@ -1392,6 +1838,7 @@ mod tests {
             TextAtlas::new(AtlasConfig {
                 page_size: 8,
                 max_pages: 0,
+                device_backed: false,
             })
             .unwrap_err(),
             TextError::ZeroPageCount
@@ -1400,6 +1847,7 @@ mod tests {
             TextAtlas::new(AtlasConfig {
                 page_size: MAX_PAGE_SIZE + 1,
                 max_pages: 1,
+                device_backed: false,
             })
             .unwrap_err(),
             TextError::PageTooLarge {
