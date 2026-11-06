@@ -1,17 +1,17 @@
-// Copyright 2026 Codevar Project
-// Licensed under the Apache License, Version 2.0 (the
-// "License"); you may not use this file except in
-// compliance with the License. You may obtain a copy of the
-// License at
-//
-//   https://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in
-// writing, software distributed under the License is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-// CONDITIONS OF ANY KIND, either express or implied. See
-// the License for the specific language governing
-// permissions and limitations under the License.
+//! Copyright 2026 Codevar Project
+//! Licensed under the Apache License, Version 2.0 (the
+//! "License"); you may not use this file except in
+//! compliance with the License. You may obtain a copy of the
+//! License at
+//!
+//!   https://www.apache.org/licenses/LICENSE-2.0
+//!
+//! Unless required by applicable law or agreed to in
+//! writing, software distributed under the License is
+//! distributed on an "AS IS" BASIS, WITHOUT WARRANTIES
+//! OR CONDITIONS OF ANY KIND, either express or implied. See
+//! the License for the specific language governing
+//! permissions and limitations under the License.
 
 //! WEZC: a context-mixing codec for the elements a `Writable` holds in RAM.
 //!
@@ -27,7 +27,7 @@
 //!
 //! | stage | module | what it does |
 //! |-------|--------|--------------|
-//! | `plane` | plane split | splits the element array into byte planes: the low byte (the text itself), the codepoint bits 8..16 and 16..24, and the element-type byte. A plane is dropped from the stream when every element has a zero byte there, so an all-ASCII document ships two planes instead of four. The planes are what the model sees; measured on engine data, modelling the interleaved elements instead costs a context-mixing model 60-119% more output bytes. |
+//! | `plane` | plane split | splits the element array into byte planes: the low byte (the text itself), the codepoint bits 8..16 and 16..24, and the element-type byte. A plane is dropped from the stream when every element has a zero byte there, so an all-ASCII document ships two planes instead of four. The planes are what the model sees; measured on engine data, modeling the interleaved elements instead costs a context-mixing model 60-119% more output bytes. |
 //! | `model` | context mixing | orders 1-6 plus word and sparse contexts, each a bit-history state whose probability comes from a per-context state map, a match model, and a two-layer logistic mixer with an SSE stage. |
 //! | `coder` | arithmetic coding | the carryless 32-bit binary arithmetic coder that turns the mixed probability into bits. |
 //! | `frame` | container | magic, the model parameters the decoder needs, the plane flags and the two lengths. |
