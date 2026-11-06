@@ -313,6 +313,12 @@ impl Model {
             return;
         }
         let key = (self.h[0] ^ (self.h[1] << 1) ^ (self.h[2] << 2) ^ (self.h[3] << 3)) as usize & self.mask;
+        // The pointer-table miss and, once the match is armed, the follow-up
+        // read of `buf[mptr]` in `match_input` are the only random loads on
+        // the byte boundary; both are hinted the moment their address is
+        // known.
+        // SAFETY: `key` is masked below the table's length.
+        unsafe { crate::simd::touch(self.mm.as_ptr().cast::<u8>(), key * 4) };
         // A stream body is a `u32` long by the container's own limit, so the
         // history position always fits the pointer table.
         let position = self.buf.len() as u32;
@@ -327,6 +333,11 @@ impl Model {
                 self.mptr = cand;
                 self.mlen = 1;
             }
+        }
+        if self.mlen != 0 && self.mptr < self.buf.len() {
+            // SAFETY: the bounds test above is the function's own; the hint
+            // reads the same byte `match_input` will.
+            unsafe { crate::simd::touch(self.buf.as_ptr(), self.mptr) };
         }
     }
 
@@ -373,14 +384,34 @@ impl Model {
         self.row2 = row;
         let prev = (self.h[0] & 0xFF) as usize;
         self.rows = [row, (row << 4) | (prev >> 4), (row << 8) | prev];
-        for k in 0..6 {
-            let i = (self.h[k] ^ pc0).wrapping_mul(PHI) as usize & self.mask;
+        // The slot reads and the mixer rows below are the misses this loop
+        // pays for; their addresses are independent, so every hint is issued
+        // before the first load that needs it and the misses overlap.
+        let mut slots = [0usize; NCTX];
+        for (slot, h) in slots[..6].iter_mut().zip(self.h) {
+            *slot = (h ^ pc0).wrapping_mul(PHI) as usize & self.mask;
+        }
+        slots[6] = (self.word ^ pc0) as usize & self.mask;
+        slots[7] = (self.sp ^ pc0) as usize & self.mask;
+        for (table, i) in self.tc.iter().zip(slots) {
+            // SAFETY: every slot index is masked below `self.mask`, and each
+            // `tc` table is `mask + 1` bytes long.
+            unsafe { crate::simd::touch(table.as_ptr(), i) };
+        }
+        for j in 0..NMX {
+            let byte_row = self.rows[j] * (NW * 8);
+            let base = self.m1[j].as_ptr().cast::<u8>();
+            // SAFETY: a row is `NW` i64s = 88 bytes at `byte_row`, which is
+            // `rows * NW * 8` bytes of table; `byte_row + 64` stays inside
+            // the row, hence inside the allocation.
+            unsafe {
+                crate::simd::touch(base, byte_row);
+                crate::simd::touch(base, byte_row + 64);
+            }
+        }
+        for (k, &i) in slots.iter().enumerate() {
             self.read_slot(k, i);
         }
-        let word = (self.word ^ pc0) as usize & self.mask;
-        self.read_slot(6, word);
-        let sparse = (self.sp ^ pc0).wrapping_mul(PHI) as usize & self.mask;
-        self.read_slot(7, sparse);
         self.st[NCTX] = self.match_input(c0, nbits);
         let base = row * NW2;
         let mut dot2 = 0i64;

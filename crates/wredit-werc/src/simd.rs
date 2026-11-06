@@ -40,6 +40,36 @@
 //! immediate, so each kernel is monomorphised once per plane rather than
 //! building a count vector in the loop.
 
+/// Ask the memory system to bring one cache line in before it is read.
+///
+/// Stage 2's per-bit cost is dominated by random reads into tables larger
+/// than L2, and the eight context slots, mixer rows and match pointer are
+/// independent addresses: issuing all the hints before the first dependent
+/// load lets the misses overlap instead of serializing them. A hint has no
+/// architectural effect - a useless one costs cycles and nothing else - so
+/// every tier still produces the identical stream.
+///
+/// # Safety
+///
+/// - `base.add(offset)` must stay inside the allocation `base` points into.
+///   Forming the pointer is the contract; the prefetch itself never
+///   dereferences it.
+#[inline]
+pub(crate) unsafe fn touch(base: *const u8, offset: usize) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        #[cfg(target_arch = "x86")]
+        use core::arch::x86::{_MM_HINT_T0, _mm_prefetch};
+        #[cfg(target_arch = "x86_64")]
+        use core::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+        // SAFETY: the caller bounds `offset` inside the allocation, and
+        // `_mm_prefetch` only issues the hint.
+        unsafe { _mm_prefetch(base.add(offset).cast::<i8>(), _MM_HINT_T0) };
+    }
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    let _ = (base, offset);
+}
+
 /// Gather byte `shift / 8` of every element into `plane`.
 ///
 /// `plane` and `elements` are the same length. Every tier writes the same
