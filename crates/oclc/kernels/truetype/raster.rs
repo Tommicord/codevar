@@ -32,12 +32,22 @@
 // rule (the outline's default), 1 the even-odd rule
 // (`OUTLINE_EVEN_ODD_FILL`).
 //
+// The destination is addressed rather than assumed: work item (px, py)
+// writes `coverage[origin + py * pitch + px]`, where `origin` is the
+// byte offset of the row `py == 0` lands on and `pitch` is the byte
+// distance from one stored row to the next. `pitch` is signed, so the
+// same kernel serves both orientations: a positive pitch keeps the
+// outline's bottom-up row order, a negative pitch stores it top-down.
+// That is FreeType's `pitch` convention, which is why no separate flip
+// flag is needed; a tight buffer is `origin = 0, pitch = width`.
+//
 // Launch with a global size covering at least width x height (extra
-// work items are discarded by the bounds guard), and allocate
-// width * height bytes for `coverage`. The kernel never reads or
-// writes outside `edges[0 .. 4 * n_edges]` and `coverage[0 .. width *
-// height]`, and it performs no synchronization, so a plain
-// one-dimensional or two-dimensional dispatch is enough.
+// work items are discarded by the bounds guard). The guard only bounds
+// the glyph box, so the caller has to prove that every
+// `origin + py * pitch + px` in that grid lies inside `coverage` before
+// launching. The kernel reads nothing outside `edges[0 .. 4 * n_edges]`
+// and it performs no synchronization, so a plain one-dimensional or
+// two-dimensional dispatch is enough.
 #[kernel]
 fn font_raster(
     edges: *const float,
@@ -45,6 +55,8 @@ fn font_raster(
     width: int,
     height: int,
     even_odd: int,
+    origin: int,
+    pitch: int,
     coverage: *mut uchar,
 ) -> void {
     let px = get_global_id(0) as int;
@@ -97,6 +109,6 @@ fn font_raster(
         }
         // Round hits * (255 / 4) to the nearest level: 0, 64, 128,
         // 191, 255.
-        coverage[py * width + px] = ((hits * 255 + 2) / 4) as uchar;
+        coverage[origin + py * pitch + px] = ((hits * 255 + 2) / 4) as uchar;
     }
 }

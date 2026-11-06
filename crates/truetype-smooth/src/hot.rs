@@ -48,10 +48,11 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use codevar_logger::{log_debug, log_warn};
-use codevar_ocl::{Arg, Buffer, CommandQueue, Context, DeviceKind, Kernel, Program, Runtime};
+use codevar_ocl::{Arg, Buffer, CommandQueue, Context, DeviceKind, Event, Kernel, Program, Runtime};
 use codevar_ocl_interop::{Error as InteropError, MemoryHandle, SharedBuffer};
 use codevar_oclc::kernels;
 use codevar_truetype_core::{Bitmap, OUTLINE_EVEN_ODD_FILL, Outline, TtResult, Vector};
+use core::ops::Range;
 use spin::Mutex;
 
 use crate::decompose::{Decomposer, decompose};
@@ -92,8 +93,9 @@ impl core::fmt::Display for PipelineError {
 /// Glyph coverage left in an allocation shared with another API.
 ///
 /// A region always starts at byte zero of the target it was rasterized
-/// into: `font_raster` indexes `coverage[y * width + x]`, so one render
-/// occupies [`CoverageRegion::size`] bytes from the start of the buffer.
+/// into: [`try_render_shared`] rasterizes through a tight [`CoverageSlot`],
+/// so one render occupies [`CoverageRegion::size`] bytes from the start of
+/// the buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CoverageRegion {
     /// Covered width in pixels.
@@ -109,6 +111,94 @@ impl CoverageRegion {
     #[must_use]
     pub const fn size(self) -> Option<usize> {
         self.width.checked_mul(self.height)
+    }
+}
+
+/// Where one glyph's coverage lands inside a destination buffer.
+///
+/// `font_raster` addresses its destination instead of assuming it: the work
+/// item for the outline-space pixel `(px, py)` writes byte
+/// `offset + py * pitch + px`. A glyph that fills a fresh buffer from byte
+/// zero and a glyph carved out of a larger page are therefore the same
+/// launch, and the sign of `pitch` alone chooses between storing the
+/// outline's bottom-up rows as they come and flipping them top-down — the
+/// same orientation [`blit_coverage`] applies to a bitmap, and FreeType's
+/// own `pitch` convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CoverageSlot {
+    /// Covered width in pixels.
+    width: usize,
+    /// Covered height in pixels.
+    height: usize,
+    /// Byte offset of the row `py == 0` lands on.
+    offset: usize,
+    /// Bytes from one stored row to the next, negative when the outline's
+    /// rows are stored top-down.
+    pitch: isize,
+}
+
+impl CoverageSlot {
+    /// The slot that fills a tight `width x height` buffer from byte zero,
+    /// bottom-up — the layout [`blit_coverage`] reads back.
+    #[must_use]
+    const fn tight(width: usize, height: usize) -> Self {
+        Self {
+            width,
+            height,
+            offset: 0,
+            pitch: width as isize,
+        }
+    }
+
+    /// The range of buffer bytes this slot writes, or `None` when the box
+    /// is empty or its geometry overflows.
+    #[must_use]
+    fn bytes(self) -> Option<Range<usize>> {
+        if self.width == 0 || self.height == 0 {
+            return None;
+        }
+        let width = i64::try_from(self.width).ok()?;
+        let pitch = i64::try_from(self.pitch).ok()?;
+        let last_row = i64::try_from(self.height - 1)
+            .ok()?
+            .checked_mul(pitch)?;
+        let first = i64::try_from(self.offset).ok()?;
+        let last = first.checked_add(last_row)?;
+        let start = usize::try_from(first.min(last)).ok()?;
+        let end = usize::try_from(first.max(last).checked_add(width)?).ok()?;
+        Some(start..end)
+    }
+
+    /// The six `int` parameters `font_raster` takes between the edges and
+    /// the destination, in declaration order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`codevar_ocl::Error::InvalidArgument`] for any value that
+    /// does not fit a 32-bit parameter.
+    fn kernel_args(self, n_edges: usize, even_odd: i32) -> Result<[i32; 6], codevar_ocl::Error> {
+        let checked = |value: usize, what| {
+            i32::try_from(value).map_err(|_| codevar_ocl::Error::InvalidArgument { what })
+        };
+        Ok([
+            checked(n_edges, "the edge count exceeds the kernel's 32-bit parameter")?,
+            checked(
+                self.width,
+                "the target width exceeds the kernel's 32-bit parameter",
+            )?,
+            checked(
+                self.height,
+                "the target height exceeds the kernel's 32-bit parameter",
+            )?,
+            even_odd,
+            checked(
+                self.offset,
+                "the slot origin exceeds the kernel's 32-bit parameter",
+            )?,
+            i32::try_from(self.pitch).map_err(|_| codevar_ocl::Error::InvalidArgument {
+                what: "the slot pitch exceeds the kernel's 32-bit parameter",
+            })?,
+        ])
     }
 }
 
@@ -499,23 +589,16 @@ fn enqueue(
     height: usize,
     target: &mut Bitmap,
 ) -> Result<(), codevar_ocl::Error> {
-    let (n_edges, width_i, height_i) = kernel_params(edges.len() / 4, width, height)?;
-    let coverage_len = width
-        .checked_mul(height)
+    let slot = CoverageSlot::tight(width, height);
+    let coverage_len = slot
+        .bytes()
         .ok_or(codevar_ocl::Error::InvalidArgument {
             what: "the target dimensions overflow the coverage buffer size",
-        })?;
+        })?
+        .len();
     let GpuPipeline { queue, kernel } = pipeline;
-    let context = queue.context();
-    let edge_buf = Buffer::from_slice(context, edges)?;
-    let coverage_buf = Buffer::new(context, coverage_len)?;
-    kernel.set_arg(0, Arg::Buffer(&edge_buf))?;
-    kernel.set_arg(1, Arg::I32(n_edges))?;
-    kernel.set_arg(2, Arg::I32(width_i))?;
-    kernel.set_arg(3, Arg::I32(height_i))?;
-    kernel.set_arg(4, Arg::I32(even_odd))?;
-    kernel.set_arg(5, Arg::Buffer(&coverage_buf))?;
-    let event = queue.enqueue_kernel(kernel, &[width, height], None)?;
+    let coverage_buf = Buffer::new(queue.context(), coverage_len)?;
+    let event = launch(kernel, queue, edges, even_odd, slot, &coverage_buf)?;
     event.wait()?;
     let mut coverage = vec![0u8; coverage_len];
     queue.read_buffer(&coverage_buf, 0, &mut coverage)?;
@@ -523,21 +606,30 @@ fn enqueue(
     Ok(())
 }
 
-/// Reads the three geometry values `font_raster` takes as `int`s.
+/// Sets every `font_raster` argument for one slot and launches it over the
+/// glyph box, without waiting for the render.
 ///
 /// # Errors
 ///
-/// Returns [`codevar_ocl::Error::InvalidArgument`] for any value that does
-/// not fit a 32-bit parameter.
-#[inline]
-fn kernel_params(n_edges: usize, width: usize, height: usize) -> Result<(i32, i32, i32), codevar_ocl::Error> {
-    let checked =
-        |value: usize, what| i32::try_from(value).map_err(|_| codevar_ocl::Error::InvalidArgument { what });
-    Ok((
-        checked(n_edges, "the edge count exceeds the kernel's 32-bit parameter")?,
-        checked(width, "the target width exceeds the kernel's 32-bit parameter")?,
-        checked(height, "the target height exceeds the kernel's 32-bit parameter")?,
-    ))
+/// Returns [`codevar_ocl::Error::InvalidArgument`] when the geometry does
+/// not fit the kernel's 32-bit parameters, and the underlying driver error
+/// for any buffer, argument or enqueue failure.
+fn launch(
+    kernel: &mut Kernel,
+    queue: &CommandQueue,
+    edges: &[f32],
+    even_odd: i32,
+    slot: CoverageSlot,
+    coverage: &Buffer,
+) -> Result<Event, codevar_ocl::Error> {
+    let args = slot.kernel_args(edges.len() / 4, even_odd)?;
+    let edge_buf = Buffer::from_slice(queue.context(), edges)?;
+    kernel.set_arg(0, Arg::Buffer(&edge_buf))?;
+    for (index, value) in args.into_iter().enumerate() {
+        kernel.set_arg(index + 1, Arg::I32(value))?;
+    }
+    kernel.set_arg(args.len() + 1, Arg::Buffer(coverage))?;
+    queue.enqueue_kernel(kernel, &[slot.width, slot.height], None)
 }
 
 /// Launches `font_raster` over `target` inside one acquire window, and waits
@@ -563,11 +655,13 @@ fn enqueue_shared(
     width: usize,
     height: usize,
 ) -> Result<CoverageRegion, InteropError> {
-    let coverage_len = width
-        .checked_mul(height)
+    let slot = CoverageSlot::tight(width, height);
+    let coverage_len = slot
+        .bytes()
         .ok_or(codevar_ocl::Error::InvalidArgument {
             what: "the target dimensions overflow the shared coverage size",
-        })?;
+        })?
+        .len();
     let GpuPipeline { queue, kernel } = pipeline;
     let shared = &target.shared;
     if shared.buffer().size() < coverage_len {
@@ -576,16 +670,8 @@ fn enqueue_shared(
         }
         .into());
     }
-    let (n_edges, width_i, height_i) = kernel_params(edges.len() / 4, width, height)?;
-    let edge_buf = Buffer::from_slice(queue.context(), edges)?;
     let _share = shared.acquire(queue)?;
-    kernel.set_arg(0, Arg::Buffer(&edge_buf))?;
-    kernel.set_arg(1, Arg::I32(n_edges))?;
-    kernel.set_arg(2, Arg::I32(width_i))?;
-    kernel.set_arg(3, Arg::I32(height_i))?;
-    kernel.set_arg(4, Arg::I32(even_odd))?;
-    kernel.set_arg(5, Arg::Buffer(shared.buffer()))?;
-    queue.enqueue_kernel(kernel, &[width, height], None)?;
+    launch(kernel, queue, edges, even_odd, slot, shared.buffer())?;
     // Dropping the guard is what submits the release, and the release is the
     // command that hands the allocation back, so it has to be queued before
     // the wait below and be part of it: a caller that read the coverage as
