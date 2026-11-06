@@ -27,10 +27,23 @@
 //!
 //! The CPU atlas is the source of truth for coverage, so the GPU never has
 //! to send a texel back. Each frame the pipe takes the atlas's dirty
-//! rectangles, coalesces them with [`coalesce`], packs their bytes into the
-//! staging buffer and records one `vkCmdCopyBufferToImage` per rectangle.
-//! The page images stay resident between frames and are only transitioned
-//! around those copies.
+//! rectangles, coalesces them with [`coalesce`] and records one
+//! `vkCmdCopyBufferToImage` per rectangle. The page images stay resident
+//! between frames and are only transitioned around those copies.
+//!
+//! # Device-backed pages
+//!
+//! When [`AtlasConfig::device_backed`] is set the atlas keeps no host mirror
+//! of a gray page; the pipe owns one mapped storage buffer per page instead,
+//! and the page image is refreshed from it. A rasterizer that writes glyph
+//! coverage into that storage — the `SharedCoverage` target of the font
+//! pipeline is meant to be its dma-buf — therefore reaches the screen without
+//! the pipe copying a byte through the staging buffer, and without a host
+//! mirror of its own. Coverage rasterized on the CPU is the fallback: it is
+//! memcpy'd into the storage first, so the storage is always what the image is
+//! copied from.
+//!
+//! [`AtlasConfig::device_backed`]: crate::atlas::AtlasConfig::device_backed
 //!
 //! # Why it is demand-driven
 //!
@@ -61,7 +74,7 @@ use codevar_gpu_vk::ui::scissor_for;
 use codevar_kuitui::geometry::Rect;
 use codevar_kuitui::shaders::{TEXT_COLOR_FRAG_SPIRV, TEXT_FRAG_SPIRV, TEXT_VERT_SPIRV};
 
-use crate::atlas::{DirtyRect, TextFrame, TextVertex};
+use crate::atlas::{DirtyRect, PendingCoverage, TextFrame, TextVertex};
 use crate::dirty::coalesce;
 use crate::mesh::Index;
 
@@ -258,6 +271,11 @@ pub struct TextPipe<'p> {
     sampler: vk::Sampler,
     /// R8 page images, created lazily in atlas page order.
     pages: Vec<PageTexture>,
+    /// Page storage of a device-backed atlas, created lazily in page order.
+    ///
+    /// Empty for a host atlas, whose pages the atlas mirrors itself; one
+    /// buffer per page for a device-backed one, which has no host mirror.
+    storage: Vec<MappedBuffer>,
     /// R8G8B8A8 color page images, created lazily in atlas page order.
     color_pages: Vec<PageTexture>,
     /// Persistent host-visible vertex stream (gray runs).
@@ -329,6 +347,7 @@ impl<'p> TextPipe<'p> {
             color_pipeline_layout: vk::PipelineLayout::null(),
             sampler: vk::Sampler::null(),
             pages: Vec::new(),
+            storage: Vec::new(),
             color_pages: Vec::new(),
             vertices,
             indices,
@@ -375,12 +394,24 @@ impl<'p> TextPipe<'p> {
 impl TextPipe<'_> {
     /// Uploads the atlas rectangles written since the last frame.
     ///
+    /// A host atlas travels through the staging buffer; a device-backed one is
+    /// refreshed from the mapped storage that owns its pages.
+    fn upload_atlas(&mut self, ctx: &mut PipeCtx) -> Result<(), CompositorError> {
+        if self.frame.atlas().config().device_backed {
+            self.upload_device_atlas(ctx)
+        } else {
+            self.upload_host_atlas(ctx)
+        }
+    }
+
+    /// Uploads the host-atlas rectangles written since the last frame.
+    ///
     /// The rectangles are coalesced, packed into the staging buffer with
     /// four-byte-aligned rows and copied into the page images. Each page is
     /// transitioned out of and back into `SHADER_READ_ONLY_OPTIMAL` around
     /// its copies. The atlas's dirty list is cleared once every rectangle is
     /// recorded, so a failed upload is retried next frame.
-    fn upload_atlas(&mut self, ctx: &mut PipeCtx) -> Result<(), CompositorError> {
+    fn upload_host_atlas(&mut self, ctx: &mut PipeCtx) -> Result<(), CompositorError> {
         let context = self.context;
         let device = ctx.device();
         let command_buffer = ctx.command_buffer();
@@ -494,6 +525,118 @@ impl TextPipe<'_> {
         }
 
         self.frame.with(|atlas, _| atlas.clear_dirty());
+        Ok(())
+    }
+
+    /// Uploads the device-backed atlas rectangles written since the last frame.
+    ///
+    /// A device page owns a host-mapped storage buffer, and that buffer is the
+    /// page's only mirror: the rasterizer writes a glyph into it through the
+    /// `DeviceSlot` that [`TextAtlas::reserve`] hands back, so a rectangle
+    /// needs no repacking — one `vkCmdCopyBufferToImage` reads it from the
+    /// storage at the page's own row pitch. Coverage rasterized on the CPU is
+    /// the one exception; it lands in the storage first, because the storage is
+    /// what the image is refreshed from.
+    ///
+    /// The writes cannot race a copy: the compositor waits for the previous
+    /// frame's fence before this pipe's future runs, so no submitted command
+    /// buffer still reads the storage when the host or the rasterizer touches
+    /// it.
+    ///
+    /// [`TextAtlas::reserve`]: crate::atlas::TextAtlas::reserve
+    fn upload_device_atlas(&mut self, ctx: &mut PipeCtx) -> Result<(), CompositorError> {
+        let context = self.context;
+        let device = ctx.device();
+        let command_buffer = ctx.command_buffer();
+
+        {
+            let atlas = self.frame.atlas();
+            if atlas.dirty_rects().is_empty() {
+                return Ok(());
+            }
+            let page_size = atlas.config().page_size;
+
+            stage_overlay(context, atlas.pending_coverage(), &mut self.storage, page_size)?;
+
+            coalesce(atlas.dirty_rects(), &mut self.regions);
+            for region in &self.regions {
+                let page = region.page;
+                ensure_pages(
+                    context,
+                    &mut self.pages,
+                    &mut self.color_pages,
+                    self.descriptor_pool,
+                    self.descriptor_set_layout,
+                    self.sampler,
+                    page,
+                    page_size,
+                )?;
+                ensure_storage(context, &mut self.storage, page, page_size)?;
+                let image = self.pages[page as usize].image;
+                let old_layout = self.pages[page as usize].layout;
+                if old_layout != vk::ImageLayout::TRANSFER_DST_OPTIMAL {
+                    // SAFETY: `image` belongs to this pipe, the command buffer
+                    // is recording and the page is not an attachment.
+                    unsafe {
+                        record_image_barrier(
+                            device,
+                            command_buffer,
+                            image,
+                            old_layout,
+                            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        );
+                    }
+                }
+
+                // R8 is a one-byte format, so the copy may start at any texel
+                // of the storage and read the page's full row pitch.
+                let copy = vk::BufferImageCopy::default()
+                    .buffer_offset(storage_address(*region, page_size))
+                    .buffer_row_length(page_size)
+                    .buffer_image_height(page_size)
+                    .image_subresource(vk::ImageSubresourceLayers {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        mip_level: 0,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+                    .image_offset(vk::Offset3D {
+                        x: region.x as i32,
+                        y: region.y as i32,
+                        z: 0,
+                    })
+                    .image_extent(vk::Extent3D {
+                        width: region.width,
+                        height: region.height,
+                        depth: 1,
+                    });
+                let source = self.storage[page as usize].buffer;
+                // SAFETY: the storage holds the whole page, the image is in
+                // `TRANSFER_DST_OPTIMAL` and the region lies inside the page.
+                unsafe {
+                    device.cmd_copy_buffer_to_image(
+                        command_buffer,
+                        source,
+                        image,
+                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        core::slice::from_ref(&copy),
+                    );
+                    record_image_barrier(
+                        device,
+                        command_buffer,
+                        image,
+                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    );
+                }
+                self.pages[page as usize].layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+            }
+        }
+
+        self.frame.with(|atlas, _| {
+            atlas.clear_pending();
+            atlas.clear_dirty();
+        });
         Ok(())
     }
 
@@ -1474,6 +1617,97 @@ fn ensure_pages(
     Ok(())
 }
 
+/// Byte address of a dirty rectangle inside a page's linear storage.
+///
+/// The storage holds one page row-major and unaligned like the host mirror it
+/// replaces, so a rectangle starts at its own `y` rows plus `x` texels.
+fn storage_address(region: DirtyRect, page_size: u32) -> u64 {
+    u64::from(region.y)
+        .saturating_mul(u64::from(page_size))
+        .saturating_add(u64::from(region.x))
+}
+
+/// Grows `storage` until `page` has a buffer holding a whole page, clearing
+/// every buffer it creates.
+///
+/// A device page has no host mirror, so this buffer is where a new page's
+/// zeroed texels live: the atlas reports the whole page as dirty once, and the
+/// padding ring around each first glyph has to sample coverage zero just like
+/// it does on a host page.
+///
+/// # Errors
+///
+/// * [`CompositorError::BufferCreate`], [`CompositorError::NoSuitableMemoryType`],
+///   [`CompositorError::MemoryAllocate`], [`CompositorError::MemoryBind`],
+///   [`CompositorError::BufferMap`] — the page's storage could not be created.
+fn ensure_storage(
+    context: &PipelineContext,
+    storage: &mut Vec<MappedBuffer>,
+    page: u32,
+    page_size: u32,
+) -> Result<(), CompositorError> {
+    let bytes = u64::from(page_size).saturating_mul(u64::from(page_size));
+    while storage.len() <= page as usize {
+        let buffer = MappedBuffer::new(context, vk::BufferUsageFlags::TRANSFER_SRC, bytes)?;
+        // SAFETY: `mapped` is a live, writable mapping of `bytes` host memory
+        // owned by `buffer`, which nothing has been submitted against yet.
+        unsafe { core::ptr::write_bytes(buffer.mapped, 0, bytes as usize) };
+        storage.push(buffer);
+    }
+    Ok(())
+}
+
+/// Copies the coverage a host rasterizer produced into the storage of the
+/// device pages it belongs to.
+///
+/// This is the fallback path of a device-backed atlas: glyphs the GPU pipeline
+/// did not take arrive as row-major bitmaps queued by `TextAtlas::insert` and
+/// have to reach the page storage, because that is where every rectangle of
+/// the page is copied from. An entry whose geometry does not describe the page
+/// it names is skipped rather than half-written.
+///
+/// # Errors
+///
+/// * the [`ensure_storage`] failures.
+fn stage_overlay(
+    context: &PipelineContext,
+    pending: &[PendingCoverage],
+    storage: &mut Vec<MappedBuffer>,
+    page_size: u32,
+) -> Result<(), CompositorError> {
+    let Ok(page_bytes) = usize::try_from(u64::from(page_size).saturating_mul(u64::from(page_size))) else {
+        return Ok(());
+    };
+    for entry in pending {
+        ensure_storage(context, storage, entry.slot.page, page_size)?;
+        let width = entry.slot.width;
+        let rows = entry.slot.height;
+        let Some(written) = entry.slot.bytes() else {
+            continue;
+        };
+        if written.end > page_bytes || entry.bitmap.len() != width.saturating_mul(rows) {
+            continue;
+        }
+        let mapped = storage[entry.slot.page as usize].mapped;
+        for row in 0..rows {
+            let Some(source) = entry
+                .bitmap
+                .get(row * width..row.saturating_add(1) * width)
+            else {
+                break;
+            };
+            let Some(address) = entry.slot.row_address(row) else {
+                break;
+            };
+            // SAFETY: `written` contains every row address of the slot and
+            // ends inside the mapping, `source` is `width` bytes of the
+            // bitmap, and no submitted command buffer reads the storage.
+            unsafe { core::ptr::copy_nonoverlapping(source.as_ptr(), mapped.add(address), width) };
+        }
+    }
+    Ok(())
+}
+
 /// Creates one R8G8B8A8 page image, its device memory, view and descriptor.
 fn create_color_page_texture(
     context: &PipelineContext,
@@ -1848,8 +2082,10 @@ fn transition_destination(layout: vk::ImageLayout) -> (vk::PipelineStageFlags, v
 
 /// Rounds `value` up to the next multiple of four.
 ///
-/// `vkCmdCopyBufferToImage` requires a four-byte-aligned `bufferOffset`, and
-/// an R8 row of an odd width is not a multiple of four by itself.
+/// The staging buffer packs rows one after another, so an R8 row of an odd
+/// width is padded to keep the next one on a four-byte boundary. A device page
+/// has no such repacking: its rows keep the page pitch, and an R8 copy starts
+/// at any byte of it.
 #[inline]
 fn align4(value: u32) -> u32 {
     (value + 3) & !3
@@ -1863,7 +2099,7 @@ fn staged_bytes(region: DirtyRect) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    //! Staging layout arithmetic.
+    //! Upload layout arithmetic.
 
     use super::*;
 
@@ -1901,5 +2137,41 @@ mod tests {
             staged_bytes(wide),
             "aligned rows stay aligned"
         );
+    }
+
+    #[test]
+    fn a_device_rectangle_addresses_its_own_page_row() {
+        let glyph = DirtyRect {
+            page: 0,
+            x: 13,
+            y: 7,
+            width: 9,
+            height: 4,
+        };
+        assert_eq!(storage_address(glyph, 1024), 7 * 1024 + 13);
+
+        let whole_page = DirtyRect {
+            page: 0,
+            x: 0,
+            y: 0,
+            width: 1024,
+            height: 1024,
+        };
+        assert_eq!(storage_address(whole_page, 1024), 0);
+    }
+
+    #[test]
+    fn a_copy_of_the_page_corner_stays_inside_the_storage() {
+        let page_size = 64u32;
+        let region = DirtyRect {
+            page: 0,
+            x: page_size - 5,
+            y: page_size - 3,
+            width: 5,
+            height: 3,
+        };
+        let rows = u64::from(region.height - 1) * u64::from(page_size);
+        let last = storage_address(region, page_size) + rows + u64::from(region.width) - 1;
+        assert_eq!(last, u64::from(page_size * page_size) - 1);
     }
 }
