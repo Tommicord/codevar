@@ -1536,24 +1536,25 @@ impl GrayRaster {
         }
     }
 
-    /// Rasterizes `source` into `target`, a coverage allocation the caller's
-    /// own GPU device owns, and reports the region it landed in: the
-    /// GPU-resident sibling of [`Raster::render`].
+    /// Rasterizes `source` into `slot`, a box of `target` — a coverage
+    /// allocation the caller's own GPU device owns — and reports the bytes it
+    /// landed in: the GPU-resident sibling of [`Raster::render`].
     ///
     /// [`Raster::render`] cannot do this job, because its contract is to fill
     /// `RasterParams::target` and device-side coverage never reaches a
     /// [`Bitmap`]. A caller whose glyph cache already lives on the GPU asks
-    /// here instead, and takes the pixels out of its own allocation. The
-    /// gates are the ones `render` applies at its own HOT dispatch, so a
+    /// here instead, and takes the pixels out of its own allocation. One
+    /// target holds a page of glyphs, [`CoverageSlot`] names each one's box.
+    /// The gates are the ones `render` applies at its own HOT dispatch, so a
     /// request that would fall back to the CPU there falls back here too:
     /// [`RasterFlags::AA`] and [`RasterFlags::HOT`] both set,
-    /// [`RasterFlags::DIRECT`] clear, and a non-empty box.
+    /// [`RasterFlags::DIRECT`] clear, and a slot that covers something.
     ///
     /// Returns `None` when nothing was rasterized — the flags rule the GPU
-    /// path out, the glyph is larger than `target`, or the driver failed. The
+    /// path out, the slot reaches past `target`, or the driver failed. The
     /// caller then rasterizes into a bitmap as usual; the target keeps
-    /// whatever the last successful render left in the region, because the
-    /// whole box is rewritten rather than merged.
+    /// whatever the last successful render left in the box, because the whole
+    /// box is rewritten rather than merged.
     ///
     /// [`SharedCoverage`](crate::hot::SharedCoverage) is how such a target is
     /// made.
@@ -1562,28 +1563,26 @@ impl GrayRaster {
         source: &Outline,
         flags: RasterFlags,
         target: &crate::hot::SharedCoverage,
-        width: usize,
-        height: usize,
-    ) -> Option<crate::hot::CoverageRegion> {
-        if !shared_coverage_gated(flags, width, height) {
+        slot: crate::hot::CoverageSlot,
+    ) -> Option<core::ops::Range<usize>> {
+        if !shared_coverage_gated(flags, slot) {
             return None;
         }
-        crate::hot::try_render_shared(target, source, width, height)
+        crate::hot::try_render_shared(target, source, slot)
     }
 }
 
-/// `true` when `flags` and the box ask for the GPU-resident coverage path.
+/// `true` when `flags` and `slot` ask for the GPU-resident coverage path.
 ///
 /// This is the gate [`Raster::render`] applies at its own HOT dispatch, so a
 /// request that would end up in the CPU scan converter there is refused by
 /// [`GrayRaster::render_shared_coverage`] the same way.
 #[must_use]
-fn shared_coverage_gated(flags: RasterFlags, width: usize, height: usize) -> bool {
+fn shared_coverage_gated(flags: RasterFlags, slot: crate::hot::CoverageSlot) -> bool {
     flags.contains(RasterFlags::AA)
         && flags.contains(RasterFlags::HOT)
         && !flags.contains(RasterFlags::DIRECT)
-        && width != 0
-        && height != 0
+        && slot.bytes().is_some()
 }
 
 impl Default for GrayRaster {
@@ -1708,6 +1707,7 @@ pub static FT_GRAYS_RASTER: RasterFuncs = RasterFuncs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hot::CoverageSlot;
     use codevar_truetype_core::PixelMode;
 
     fn pt(x: i64, y: i64) -> Vector {
@@ -1797,11 +1797,12 @@ mod tests {
     #[test]
     fn shared_coverage_render_is_refused_without_a_gated_request() {
         let gpu = RasterFlags::AA | RasterFlags::HOT;
-        assert!(!shared_coverage_gated(RasterFlags::AA, 1, 1));
-        assert!(!shared_coverage_gated(gpu, 0, 4));
-        assert!(!shared_coverage_gated(gpu, 4, 0));
-        assert!(!shared_coverage_gated(gpu | RasterFlags::DIRECT, 1, 1));
-        assert!(shared_coverage_gated(gpu, 1, 1));
+        let slot = CoverageSlot::tight(1, 1);
+        assert!(!shared_coverage_gated(RasterFlags::AA, slot));
+        assert!(!shared_coverage_gated(gpu, CoverageSlot::tight(0, 4)));
+        assert!(!shared_coverage_gated(gpu, CoverageSlot::tight(4, 0)));
+        assert!(!shared_coverage_gated(gpu | RasterFlags::DIRECT, slot));
+        assert!(shared_coverage_gated(gpu, slot));
     }
 
     #[test]

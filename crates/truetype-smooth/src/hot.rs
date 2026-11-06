@@ -90,30 +90,6 @@ impl core::fmt::Display for PipelineError {
     }
 }
 
-/// Glyph coverage left in an allocation shared with another API.
-///
-/// A region always starts at byte zero of the target it was rasterized
-/// into: [`try_render_shared`] rasterizes through a tight [`CoverageSlot`],
-/// so one render occupies [`CoverageRegion::size`] bytes from the start of
-/// the buffer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CoverageRegion {
-    /// Covered width in pixels.
-    pub width: usize,
-    /// Covered height in pixels.
-    pub height: usize,
-}
-
-impl CoverageRegion {
-    /// Bytes of the shared allocation this region occupies, or `None` when
-    /// the dimensions overflow — which a caller reads as "this glyph cannot
-    /// be rasterized device-side".
-    #[must_use]
-    pub const fn size(self) -> Option<usize> {
-        self.width.checked_mul(self.height)
-    }
-}
-
 /// Where one glyph's coverage lands inside a destination buffer.
 ///
 /// `font_raster` addresses its destination instead of assuming it: the work
@@ -124,24 +100,29 @@ impl CoverageRegion {
 /// outline's bottom-up rows as they come and flipping them top-down — the
 /// same orientation [`blit_coverage`] applies to a bitmap, and FreeType's
 /// own `pitch` convention.
+///
+/// [`CoverageSlot::tight`] is the whole-buffer case. A renderer that packs
+/// several glyphs into one allocation makes its own slots: `offset` moves
+/// each glyph's box to where the page holds it, and `pitch` becomes the
+/// page's row length so a glyph's rows can be a fraction of a wider row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CoverageSlot {
+pub struct CoverageSlot {
     /// Covered width in pixels.
-    width: usize,
+    pub width: usize,
     /// Covered height in pixels.
-    height: usize,
+    pub height: usize,
     /// Byte offset of the row `py == 0` lands on.
-    offset: usize,
+    pub offset: usize,
     /// Bytes from one stored row to the next, negative when the outline's
     /// rows are stored top-down.
-    pitch: isize,
+    pub pitch: isize,
 }
 
 impl CoverageSlot {
     /// The slot that fills a tight `width x height` buffer from byte zero,
     /// bottom-up — the layout [`blit_coverage`] reads back.
     #[must_use]
-    const fn tight(width: usize, height: usize) -> Self {
+    pub const fn tight(width: usize, height: usize) -> Self {
         Self {
             width,
             height,
@@ -152,8 +133,13 @@ impl CoverageSlot {
 
     /// The range of buffer bytes this slot writes, or `None` when the box
     /// is empty or its geometry overflows.
+    ///
+    /// A caller uses this both to size an allocation before rasterizing into
+    /// it and to slice the bytes back out afterwards: it is the smallest
+    /// range that contains every row, so the rows between the first and the
+    /// last are inside it whether they are adjacent or page padding.
     #[must_use]
-    fn bytes(self) -> Option<Range<usize>> {
+    pub fn bytes(self) -> Option<Range<usize>> {
         if self.width == 0 || self.height == 0 {
             return None;
         }
@@ -519,24 +505,25 @@ pub fn try_render(source: &Outline, target: &mut Bitmap) -> bool {
 }
 
 /// Renders `source` into `target` without a host round-trip, returning the
-/// region of it the glyph occupies.
+/// bytes of it the glyph occupies.
 ///
 /// This is [`try_render`] with its last two steps removed: instead of
 /// reading the coverage back into a `Vec` and blitting it into a [`Bitmap`],
 /// the kernel writes it straight into the allocation
 /// [`SharedCoverage::import`] brought into this pipeline's context, and the
 /// caller — a renderer whose glyph cache is a `VkImage` — takes it from there
-/// as memory its own device owns. The pixels are bottom-up in the same
-/// outline space [`blit_coverage`] flips for a bitmap; a GPU caller copies
-/// the region as it stands and applies its own orientation.
+/// as memory its own device owns. `slot` says where inside that allocation
+/// this glyph goes, so one import serves a whole page of them; the pixels
+/// come out in the slot's own order, which is bottom-up unless `pitch` is
+/// negative.
 ///
-/// Unlike [`try_render`], this overwrites every pixel of the region, the
-/// zero-coverage ones included: the whole box belongs to this glyph, so a
-/// caller must not share a region between two glyphs.
+/// Unlike [`try_render`], this overwrites every pixel of the box, the
+/// zero-coverage ones included: the box belongs to this glyph, so a caller
+/// must not give two glyphs the same slot.
 ///
 /// Returns `None` — and the caller must then run the CPU scan converter or
 /// [`try_render`], as it would for a `false` from that function — when the
-/// glyph does not fit `target`, there are no edges to draw, or any driver
+/// box is empty, reaches past `target`, has no edges to draw, or any driver
 /// step fails. Errors are logged at debug level.
 ///
 /// When this returns `Some`, the kernel has run and the release has completed
@@ -547,12 +534,11 @@ pub fn try_render(source: &Outline, target: &mut Bitmap) -> bool {
 pub fn try_render_shared(
     target: &SharedCoverage,
     source: &Outline,
-    width: usize,
-    height: usize,
-) -> Option<CoverageRegion> {
-    if width == 0 || height == 0 {
-        return None;
-    }
+    slot: CoverageSlot,
+) -> Option<Range<usize>> {
+    // A box with no bytes to write into, or whose geometry overflows, is
+    // refused before the driver is touched.
+    slot.bytes()?;
     let mut builder = EdgeBuilder {
         edges: Vec::with_capacity(source.n_points as usize * 4),
         current: [0.0; 2],
@@ -561,15 +547,15 @@ pub fn try_render_shared(
         return None;
     }
     let even_odd = i32::from(source.flags & OUTLINE_EVEN_ODD_FILL != 0);
-    with_pipeline(|pipeline| {
-        match enqueue_shared(pipeline, target, &builder.edges, even_odd, width, height) {
-            Ok(region) => Some(region),
+    with_pipeline(
+        |pipeline| match enqueue_shared(pipeline, target, &builder.edges, even_odd, slot) {
+            Ok(bytes) => Some(bytes),
             Err(error) => {
                 log_debug!("the HOT shared path fell back to the caller: {error}");
                 None
             }
-        }
-    })
+        },
+    )
     .flatten()
 }
 /// Uploads the edges, launches the kernel over the pixel grid, and
@@ -645,28 +631,25 @@ fn launch(
 ///
 /// Returns the [`codevar_ocl::Error`] of any failed buffer, argument,
 /// enqueue, wait or window command, widened into
-/// [`codevar_ocl_interop::Error`], and `InvalidArgument` when the glyph is
-/// larger than the target or a parameter does not fit 32 bits.
+/// [`codevar_ocl_interop::Error`], and `InvalidArgument` when the slot
+/// reaches past the target or a parameter does not fit 32 bits.
 fn enqueue_shared(
     pipeline: &mut GpuPipeline,
     target: &SharedCoverage,
     edges: &[f32],
     even_odd: i32,
-    width: usize,
-    height: usize,
-) -> Result<CoverageRegion, InteropError> {
-    let slot = CoverageSlot::tight(width, height);
-    let coverage_len = slot
+    slot: CoverageSlot,
+) -> Result<Range<usize>, InteropError> {
+    let bytes = slot
         .bytes()
         .ok_or(codevar_ocl::Error::InvalidArgument {
-            what: "the target dimensions overflow the shared coverage size",
-        })?
-        .len();
+            what: "the coverage slot is empty or overflows",
+        })?;
     let GpuPipeline { queue, kernel } = pipeline;
     let shared = &target.shared;
-    if shared.buffer().size() < coverage_len {
+    if shared.buffer().size() < bytes.end {
         return Err(codevar_ocl::Error::InvalidArgument {
-            what: "the glyph is larger than the shared coverage target",
+            what: "the coverage slot reaches past the shared coverage target",
         }
         .into());
     }
@@ -679,7 +662,7 @@ fn enqueue_shared(
     // invalidate on memory the exporting device is about to touch.
     drop(_share);
     queue.finish()?;
-    Ok(CoverageRegion { width, height })
+    Ok(bytes)
 }
 
 /// Copies non-zero coverage pixels into the bitmap, translating the

@@ -34,7 +34,7 @@ use codevar_ocl::{Device, Runtime};
 use codevar_ocl_interop::{MemoryHandle, MemoryKind, Vulkan};
 use codevar_truetype_core::{BBox, Bitmap, Outline, PixelMode, Raster, RasterFlags, RasterParams, Vector};
 use codevar_truetype_smooth::grays::GrayRaster;
-use codevar_truetype_smooth::hot::{self, CoverageRegion};
+use codevar_truetype_smooth::hot::{self, CoverageSlot};
 use support::{Allocation, Machine, close_descriptor};
 
 /// Bytes a test allocation reserves for coverage.
@@ -117,14 +117,23 @@ fn pair() -> Option<(Machine, Device)> {
     None
 }
 
-/// The glyph rasterized into an allocation the pipeline imported, read back
-/// through the Vulkan mapping.
+/// The glyph rasterized into the box `slot` names, read back through the
+/// Vulkan mapping as every byte up to the end of that box.
 ///
 /// Returns `None` when this machine cannot run the exchange at all — no
 /// paired device, no memory type both sides accept, or a pipeline that chose
 /// another GPU than the pair. A driver that does import an allocation has to
 /// rasterize into it, so the caller's assertions run on anything this returns.
-fn rasterize(outline: &Outline, width: usize, height: usize) -> Option<Vec<u8>> {
+fn rasterize(outline: &Outline, slot: CoverageSlot) -> Option<Vec<u8>> {
+    rasterize_slots(&[(outline, slot)], slot)
+}
+
+/// Each glyph rasterized into its own box of one imported allocation, then
+/// the page read back as every byte up to the end of `page`.
+///
+/// This is the sequence a glyph cache runs: one allocation, one import, and a
+/// render per glyph that has to land where the cache said it would.
+fn rasterize_slots(items: &[(&Outline, CoverageSlot)], page: CoverageSlot) -> Option<Vec<u8>> {
     let (machine, device) = pair()?;
     let endpoint = machine.endpoint();
     let kind = agreed_kind(&endpoint, &device)?;
@@ -139,15 +148,30 @@ fn rasterize(outline: &Outline, width: usize, height: usize) -> Option<Vec<u8>> 
     unsafe { close_descriptor(handle.raw() as i32) };
     let target = imported.ok()?;
     let raster = GrayRaster::new();
-    raster
-        .render_shared_coverage(
-            outline,
-            RasterFlags::AA | RasterFlags::HOT,
-            &target,
-            width,
-            height,
-        )
-        .and_then(|region| allocation.read(region.size()?))
+    for (outline, slot) in items {
+        raster.render_shared_coverage(outline, RasterFlags::AA | RasterFlags::HOT, &target, *slot)?;
+    }
+    allocation.read(page.bytes()?.end)
+}
+
+/// Writes the CPU rasterizer's coverage for `outline` into `page` at the
+/// bytes `slot` addresses.
+///
+/// The kernel puts logical row `py` — counted from the outline's bottom — at
+/// `offset + py * pitch`, and that row is memory row `height - 1 - py` of the
+/// top-down CPU bitmap, so this is the kernel's own addressing restated in
+/// host memory rather than an independent guess at it.
+fn place(page: &mut [u8], outline: &Outline, slot: CoverageSlot) -> Option<()> {
+    let cpu = cpu_coverage(outline, slot.height as u32, slot.width as u32)?;
+    for py in 0..slot.height {
+        let row = slot.offset as isize + py as isize * slot.pitch;
+        for px in 0..slot.width {
+            let at = usize::try_from(row + px as isize).ok()?;
+            let from = (slot.height - 1 - py) * slot.width + px;
+            *page.get_mut(at)? = *cpu.get(from)?;
+        }
+    }
+    Some(())
 }
 
 /// The kernel writes the box where the sharing device can read it, in the
@@ -159,11 +183,12 @@ fn coverage_lands_in_memory_the_vulkan_device_owns() {
     // A 2x2 pixel block, offset one pixel from the logical origin of a 4x4
     // box: integer-aligned, so both rasterizers owe the same answer.
     let outline = square(64, 64, 3 * 64, 4 * 64);
-    let Some(bytes) = rasterize(&outline, 4, 4) else {
+    let slot = CoverageSlot::tight(4, 4);
+    let Some(bytes) = rasterize(&outline, slot) else {
         return;
     };
-    assert_eq!(bytes.len(), 16, "the region is the box that was asked for");
-    // The CPU bitmap is stored top-down and the region is bottom-up, so the
+    assert_eq!(bytes.len(), 16, "the box is the size that was asked for");
+    // The CPU bitmap is stored top-down and the slot is bottom-up, so the
     // rows of one are the rows of the other in reverse.
     let Some(cpu) = cpu_coverage(&outline, 4, 4) else {
         return;
@@ -184,10 +209,79 @@ fn half_pixel_coverage_crosses_the_border_unchanged() {
     let _turn = pipeline_turn();
     // Half a pixel wide, one pixel tall: 128 on both paths.
     let outline = square(0, 0, 32, 64);
-    let Some(bytes) = rasterize(&outline, 1, 1) else {
+    let Some(bytes) = rasterize(&outline, CoverageSlot::tight(1, 1)) else {
         return;
     };
     assert_eq!(bytes, vec![128]);
+}
+
+/// Two glyphs of one page, each in a box of its own inside a row eight bytes
+/// wide, and neither of them leaves it: the kernel has to honour `offset`, not
+/// just the box size.
+#[test]
+fn two_glyphs_share_one_page_without_touching_each_other() {
+    let _turn = pipeline_turn();
+    // The page is four rows of eight bytes; the left half belongs to the
+    // first glyph and the right half to the second, so their boxes share
+    // rows but not pixels.
+    let page = CoverageSlot::tight(8, 4);
+    let left = CoverageSlot {
+        width: 4,
+        height: 4,
+        offset: 0,
+        pitch: 8,
+    };
+    let right = CoverageSlot {
+        width: 4,
+        height: 4,
+        offset: 4,
+        pitch: 8,
+    };
+    // Coverage in the bottom-left of the first box and the top-right of the
+    // second: the two corners furthest apart.
+    let block = square(0, 0, 2 * 64, 2 * 64);
+    let notch = square(2 * 64, 2 * 64, 4 * 64, 4 * 64);
+    let Some(bytes) = rasterize_slots(&[(&block, left), (&notch, right)], page) else {
+        return;
+    };
+    let mut expected = vec![0u8; 32];
+    if place(&mut expected, &block, left).is_none() || place(&mut expected, &notch, right).is_none() {
+        return;
+    }
+    assert_eq!(bytes, expected, "each glyph must stay inside its own box");
+    assert!(
+        bytes[..16].contains(&255) && bytes[16..].contains(&255),
+        "both boxes were written"
+    );
+}
+
+/// A negative pitch stores the outline's rows top-down, which is the order a
+/// CPU bitmap already keeps, so the box comes out equal to the host answer
+/// with no row reversal: the sign of `pitch` reaches the kernel rather than
+/// only its magnitude.
+#[test]
+fn a_negative_pitch_stores_the_rows_top_down() {
+    let _turn = pipeline_turn();
+    // A tight 4x4 box written from its last row upwards: origin 12, pitch -4.
+    let slot = CoverageSlot {
+        width: 4,
+        height: 4,
+        offset: 12,
+        pitch: -4,
+    };
+    let outline = square(0, 0, 2 * 64, 2 * 64);
+    let Some(bytes) = rasterize(&outline, slot) else {
+        return;
+    };
+    let Some(cpu) = cpu_coverage(&outline, 4, 4) else {
+        return;
+    };
+    assert_eq!(bytes, cpu, "top-down storage is the CPU row order");
+    assert_eq!(
+        bytes.first_chunk::<4>(),
+        Some(&[0, 0, 0, 0]),
+        "the empty logical top rows must still be empty"
+    );
 }
 
 /// A glyph the target cannot hold is refused before the kernel is asked, so a
@@ -215,15 +309,52 @@ fn a_glyph_larger_than_the_allocation_falls_back() {
     let Ok(target) = imported else {
         return;
     };
+    let outline = square(0, 0, 64, 64);
     // 16x16 needs 256 bytes of a 64-byte allocation.
     assert!(
-        hot::try_render_shared(&target, &square(0, 0, 16 * 64, 16 * 64), 16, 16).is_none(),
+        hot::try_render_shared(
+            &target,
+            &square(0, 0, 16 * 64, 16 * 64),
+            CoverageSlot::tight(16, 16)
+        )
+        .is_none(),
         "a glyph over the allocation size must not be rasterized device-side"
     );
     assert_eq!(
-        hot::try_render_shared(&target, &square(0, 0, 64, 64), 8, 8).map(CoverageRegion::size),
-        Some(Some(64)),
+        hot::try_render_shared(&target, &outline, CoverageSlot::tight(8, 8)),
+        Some(0..64),
         "the same allocation does take a glyph that fits it"
+    );
+    // A 4x4 box that ends exactly on the last byte is inside the allocation;
+    // one origin byte further it is outside, and the size alone would say
+    // otherwise.
+    assert_eq!(
+        hot::try_render_shared(
+            &target,
+            &outline,
+            CoverageSlot {
+                width: 4,
+                height: 4,
+                offset: 48,
+                pitch: 4
+            },
+        ),
+        Some(48..64),
+        "a box ending on the allocation is accepted"
+    );
+    assert!(
+        hot::try_render_shared(
+            &target,
+            &outline,
+            CoverageSlot {
+                width: 4,
+                height: 4,
+                offset: 52,
+                pitch: 4
+            },
+        )
+        .is_none(),
+        "a box reaching past it must be refused"
     );
 }
 
