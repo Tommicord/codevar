@@ -13,7 +13,7 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-//! Runtime-dispatched kernels for stage 1.
+//! Runtime-dispatched kernels for stage 1 and the mixer of stage 2.
 //!
 //! The order of a plane's bytes *is* the format: the model reads the planes
 //! as a document, so a kernel that leaves them in a permuted element order is
@@ -68,6 +68,35 @@ pub(crate) unsafe fn touch(base: *const u8, offset: usize) {
     }
     #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     let _ = (base, offset);
+}
+
+/// The three first-layer mixer dot products for one bit.
+///
+/// Every mixer input is a stretched 12-bit probability, bounded by the
+/// stretch table to +-1065 with a bias of 256, so a `vpmuldq` product is
+/// exact whenever the weight itself fits an `i32`. The kernel checks that
+/// on the rows it already loaded and reports `None` when it does not hold,
+/// which leaves the caller's scalar loop in charge. `wrapping_add` is
+/// associative mod 2^64, so the vector summation tree computes the same
+/// dot the scalar chain does, lane order notwithstanding.
+#[inline]
+pub(crate) fn mixer_dots(
+    rows: [&[i64]; crate::model::NMX],
+    st: &[i32; crate::model::NW],
+) -> Option<[i64; crate::model::NMX]> {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        use codevar_base::cpuid::{Feature, has};
+        if has(Feature::Avx2) {
+            // SAFETY: the probe above confirmed AVX2 and the OS-enabled YMM
+            // state; each kernel load stays inside the 10 weights or 10
+            // inputs of the slices handed in.
+            return unsafe { x86::mixer_dots_avx2(rows, st) };
+        }
+    }
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    let _ = (rows, st);
+    None
 }
 
 /// Gather byte `shift / 8` of every element into `plane`.
@@ -365,6 +394,69 @@ mod x86 {
             plane::read_shifted(&plane[done..], &mut out[done..], SHIFT as u32);
         }
     }
+
+    /// Number of mixer weights: one per input plus the bias.
+    const NW: usize = crate::model::NW;
+
+    /// Number of first-layer mixers.
+    const NMX: usize = crate::model::NMX;
+
+    /// One past the largest weight a `vpmuldq` product reproduces exactly.
+    const FIT_HI: i64 = i32::MAX as i64 + 1;
+
+    /// One below the smallest weight a `vpmuldq` product reproduces exactly.
+    const FIT_LO: i64 = i32::MIN as i64 - 1;
+
+    /// The three first-layer dots, with the range check folded into the
+    /// loads the products need anyway.
+    ///
+    /// # Safety
+    ///
+    /// - the executing CPU supports AVX2 and the OS has enabled the YMM
+    ///   state;
+    /// - each row holds exactly `NW` weights and `st` exactly `NW` inputs.
+    #[target_feature(enable = "avx2,sse4.1")]
+    pub unsafe fn mixer_dots_avx2(rows: [&[i64]; NMX], st: &[i32; NW]) -> Option<[i64; NMX]> {
+        // SAFETY: the caller guarantees the row lengths and the AVX2 state;
+        // every load below covers at most the 80 bytes of one row and the
+        // 40 bytes of `st`.
+        unsafe {
+            let s0 = _mm256_cvtepi32_epi64(_mm_loadu_si128(st.as_ptr().cast()));
+            let s1 = _mm256_cvtepi32_epi64(_mm_loadu_si128(st.as_ptr().add(4).cast()));
+            let s2 = _mm_cvtepi32_epi64(_mm_loadl_epi64(st.as_ptr().add(8).cast()));
+            let hi = _mm256_set1_epi64x(FIT_HI);
+            let lo = _mm256_set1_epi64x(FIT_LO);
+            // All-ones while every lane still fits an `i32`: 64-bit
+            // min/max are AVX-512-only instructions, so the fit check is a
+            // compare-and-mask fold over the row loads the products use
+            // anyway. Zero padding in the extended pair lanes is
+            // trivially in range.
+            let mut fits = _mm256_set1_epi64x(-1);
+            let mut dots = [0i64; NMX];
+            for (j, row) in rows.iter().enumerate() {
+                let base = row.as_ptr().cast::<__m256i>();
+                let w0 = _mm256_loadu_si256(base);
+                let w1 = _mm256_loadu_si256(base.add(1));
+                let wx = _mm_loadu_si128(row.as_ptr().add(8).cast::<__m128i>());
+                let w2 = _mm256_inserti128_si256(_mm256_setzero_si256(), wx, 1);
+                for w in [w0, w1, w2] {
+                    let inr = _mm256_and_si256(_mm256_cmpgt_epi64(hi, w), _mm256_cmpgt_epi64(w, lo));
+                    fits = _mm256_and_si256(fits, inr);
+                }
+                let p = _mm256_add_epi64(_mm256_mul_epi32(w0, s0), _mm256_mul_epi32(w1, s1));
+                let px = _mm256_inserti128_si256(_mm256_setzero_si256(), _mm_mul_epi32(wx, s2), 0);
+                let t = _mm256_add_epi64(p, px);
+                let fold = _mm_add_epi64(_mm256_castsi256_si128(t), _mm256_extracti128_si256::<1>(t));
+                let pair = _mm_add_epi64(fold, _mm_unpackhi_epi64(fold, fold));
+                dots[j] = _mm_extract_epi64::<0>(pair);
+            }
+            if _mm256_movemask_pd(_mm256_castsi256_pd(fits)) == 0b1111 {
+                Some(dots)
+            } else {
+                None
+            }
+        }
+    }
 }
 
 #[cfg(all(test, any(target_arch = "x86", target_arch = "x86_64")))]
@@ -373,9 +465,11 @@ mod tests {
     //! reports the feature, so a green run on an AVX2-only machine says
     //! nothing about the AVX-512 kernels - a tier that skips is not a tier
     //! that passed.
+    use super::mixer_dots;
     use super::x86::{
         gather_table, read_plane_avx2, read_plane_avx512, write_plane_avx2, write_plane_avx512,
     };
+    use crate::model::{NMX, NW};
     use crate::plane::{assign_shifted, read_shifted, write_shifted};
     use codevar_base::cpuid::{Feature, has};
 
@@ -478,5 +572,59 @@ mod tests {
     #[test]
     fn avx2_read_matches_the_scalar_reference() {
         assert_read_matches_scalar(1000, read_plane_avx2, "avx2", || has(Feature::Avx2));
+    }
+
+    /// Mixer rows and inputs from a xorshift32 sweep, all weights well
+    /// inside the `i32` range the vector products reproduce exactly.
+    fn mixer_fixture() -> ([[i64; NW]; NMX], [i32; NW]) {
+        let mut rows = [[0i64; NW]; NMX];
+        let mut x = 0x2545_F491u32;
+        for row in rows.iter_mut() {
+            for w in row.iter_mut() {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                *w = ((x as i32) >> 4) as i64;
+            }
+        }
+        let mut st = [0i32; NW];
+        for s in st.iter_mut() {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            *s = (x as i32 & 0x7FF) - 1024;
+        }
+        (rows, st)
+    }
+
+    /// The wrapping scalar dots, independent of `Model`, as the reference.
+    fn scalar_dots(rows: &[[i64; NW]; NMX], st: &[i32; NW]) -> [i64; NMX] {
+        let mut out = [0i64; NMX];
+        for (j, row) in rows.iter().enumerate() {
+            for (&w, &s) in row.iter().zip(st) {
+                out[j] = out[j].wrapping_add(w.wrapping_mul(i64::from(s)));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn avx2_mixer_dots_match_the_wrapping_scalar_chain() {
+        if !has(Feature::Avx2) {
+            return;
+        }
+        let (rows, st) = mixer_fixture();
+        let dots = mixer_dots([&rows[0][..], &rows[1][..], &rows[2][..]], &st).unwrap_or([0i64; NMX]);
+        assert_eq!(dots, scalar_dots(&rows, &st), "the vector dots diverged");
+    }
+
+    #[test]
+    fn weights_too_wide_for_the_products_refuse_the_vector_path() {
+        let (mut rows, st) = mixer_fixture();
+        rows[1][7] = i64::MAX;
+        assert!(
+            mixer_dots([&rows[0][..], &rows[1][..], &rows[2][..]], &st).is_none(),
+            "an out-of-range weight must fall back to the scalar chain"
+        );
     }
 }

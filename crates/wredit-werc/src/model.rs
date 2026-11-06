@@ -413,14 +413,18 @@ impl Model {
             self.read_slot(k, i);
         }
         self.st[NCTX] = self.match_input(c0, nbits);
+        let dots = crate::simd::mixer_dots(
+            [
+                &self.m1[0][self.rows[0] * NW..self.rows[0] * NW + NW],
+                &self.m1[1][self.rows[1] * NW..self.rows[1] * NW + NW],
+                &self.m1[2][self.rows[2] * NW..self.rows[2] * NW + NW],
+            ],
+            &self.st,
+        )
+        .unwrap_or_else(|| self.mixer_dots_scalar());
         let base = row * NW2;
         let mut dot2 = 0i64;
-        for j in 0..NMX {
-            let row0 = self.rows[j] * NW;
-            let mut dot = 0i64;
-            for i in 0..NW {
-                dot = dot.wrapping_add(self.m1[j][row0 + i].wrapping_mul(i64::from(self.st[i])));
-            }
+        for (j, &dot) in dots.iter().enumerate() {
             let mixed = stretch(squash64(dot >> 16));
             self.s2[j] = mixed;
             dot2 = dot2.wrapping_add(self.m2[base + j].wrapping_mul(i64::from(mixed)));
@@ -434,6 +438,24 @@ impl Model {
         let correction = i64::from(self.sse[self.sidx] >> 6);
         self.pr = squash64(i64::from(logit) + correction);
         self.pr
+    }
+
+    /// The scalar first-layer dots, the reference every tier must match.
+    fn mixer_dots_scalar(&self) -> [i64; NMX] {
+        let mut dots = [0i64; NMX];
+        for (out, (&row, table)) in dots
+            .iter_mut()
+            .zip(self.rows.iter().zip(&self.m1))
+        {
+            let row0 = row * NW;
+            *out = table[row0..row0 + NW]
+                .iter()
+                .zip(&self.st)
+                .fold(0i64, |acc, (&w, &s)| {
+                    acc.wrapping_add(w.wrapping_mul(i64::from(s)))
+                });
+        }
+        dots
     }
 
     /// Read one context slot, keeping the state and index the update needs.
