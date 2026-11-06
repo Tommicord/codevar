@@ -32,9 +32,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
             ~/.cargo/registry/index
@@ -50,14 +50,16 @@ jobs:
       # trade-offs instead of speed. `cargo bench` selects `[profile.bench]`
       # on its own, so no flag is needed here.
       - name: Bench ${{ github.event.inputs.crates || 'default set' }}
+        env:
+          CRATES: ${{ github.event.inputs.crates || '-p codevar-wredit -p codevar-ocl -p codevar-negex' }}
         run: |
-          cargo bench ${{ github.event.inputs.crates || '-p codevar-wredit -p codevar-ocl -p codevar-negex' }}
+          cargo bench $CRATES
 
       # target/criterion holds both the HTML report and the JSON baselines
       # criterion writes per benchmark group, which is what a later
       # `cargo bench -- --load-baseline` compares against.
       - name: Upload criterion report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: criterion-${{ github.sha }}
           path: target/criterion

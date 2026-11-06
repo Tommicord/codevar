@@ -20,6 +20,8 @@ updates:
     open-pull-requests-limit: 15
     labels:
       - "dependencies"
+    cooldown:
+      default-days: 7
     groups:
       cargo-minor-and-patch:
         patterns:
@@ -40,3 +42,5 @@ updates:
     labels:
       - "dependencies"
       - "ci"
+    cooldown:
+      default-days: 7
