@@ -1536,9 +1536,9 @@ impl GrayRaster {
         }
     }
 
-    /// Rasterizes `source` into the coverage allocation attached to the HOT
-    /// pipeline and reports the region it landed in: the GPU-resident sibling
-    /// of [`Raster::render`].
+    /// Rasterizes `source` into `target`, a coverage allocation the caller's
+    /// own GPU device owns, and reports the region it landed in: the
+    /// GPU-resident sibling of [`Raster::render`].
     ///
     /// [`Raster::render`] cannot do this job, because its contract is to fill
     /// `RasterParams::target` and device-side coverage never reaches a
@@ -1550,29 +1550,40 @@ impl GrayRaster {
     /// [`RasterFlags::DIRECT`] clear, and a non-empty box.
     ///
     /// Returns `None` when nothing was rasterized — the flags rule the GPU
-    /// path out, no allocation is attached (see
-    /// [`hot::attach_shared_coverage`](crate::hot::attach_shared_coverage)),
-    /// the glyph is larger than it, or the driver failed. The caller then
-    /// rasterizes into a bitmap as usual; the target keeps whatever the last
-    /// successful render left in the region, because the whole box is
-    /// rewritten rather than merged.
+    /// path out, the glyph is larger than `target`, or the driver failed. The
+    /// caller then rasterizes into a bitmap as usual; the target keeps
+    /// whatever the last successful render left in the region, because the
+    /// whole box is rewritten rather than merged.
+    ///
+    /// [`SharedCoverage`](crate::hot::SharedCoverage) is how such a target is
+    /// made.
     pub fn render_shared_coverage(
         &self,
         source: &Outline,
         flags: RasterFlags,
+        target: &crate::hot::SharedCoverage,
         width: usize,
         height: usize,
     ) -> Option<crate::hot::CoverageRegion> {
-        if !flags.contains(RasterFlags::AA)
-            || !flags.contains(RasterFlags::HOT)
-            || flags.contains(RasterFlags::DIRECT)
-            || width == 0
-            || height == 0
-        {
+        if !shared_coverage_gated(flags, width, height) {
             return None;
         }
-        crate::hot::try_render_shared(source, width, height)
+        crate::hot::try_render_shared(target, source, width, height)
     }
+}
+
+/// `true` when `flags` and the box ask for the GPU-resident coverage path.
+///
+/// This is the gate [`Raster::render`] applies at its own HOT dispatch, so a
+/// request that would end up in the CPU scan converter there is refused by
+/// [`GrayRaster::render_shared_coverage`] the same way.
+#[must_use]
+fn shared_coverage_gated(flags: RasterFlags, width: usize, height: usize) -> bool {
+    flags.contains(RasterFlags::AA)
+        && flags.contains(RasterFlags::HOT)
+        && !flags.contains(RasterFlags::DIRECT)
+        && width != 0
+        && height != 0
 }
 
 impl Default for GrayRaster {
@@ -1776,41 +1787,21 @@ mod tests {
         assert_eq!(negative.buffer, vec![0, 255]);
     }
 
-    /// The flag gates of the GPU-resident sibling answer before the driver
-    /// is touched, so a request that the bitmap dispatch would send to the
-    /// CPU scan converter is refused here the same way — with no allocation
-    /// attached, which is this machine's state, even a fully gated request
-    /// has no target and is refused.
+    /// The flag gates of the GPU-resident sibling answer before the driver is
+    /// touched, so a request that the bitmap dispatch would send to the CPU
+    /// scan converter is refused by the shared path the same way. The gate is
+    /// what `render_shared_coverage` applies first, and it is the only part of
+    /// that decision a machine without an exported allocation can reach: the
+    /// rest of the path is covered against a real device by the
+    /// `shared_coverage` integration test.
     #[test]
     fn shared_coverage_render_is_refused_without_a_gated_request() {
-        let raster = GrayRaster::new();
-        let outline = square(0, 0, 64, 64);
         let gpu = RasterFlags::AA | RasterFlags::HOT;
-        assert!(
-            raster
-                .render_shared_coverage(&outline, RasterFlags::AA, 1, 1)
-                .is_none()
-        );
-        assert!(
-            raster
-                .render_shared_coverage(&outline, gpu, 0, 4)
-                .is_none()
-        );
-        assert!(
-            raster
-                .render_shared_coverage(&outline, gpu, 4, 0)
-                .is_none()
-        );
-        assert!(
-            raster
-                .render_shared_coverage(&outline, gpu | RasterFlags::DIRECT, 1, 1)
-                .is_none()
-        );
-        assert!(
-            raster
-                .render_shared_coverage(&outline, gpu, 1, 1)
-                .is_none()
-        );
+        assert!(!shared_coverage_gated(RasterFlags::AA, 1, 1));
+        assert!(!shared_coverage_gated(gpu, 0, 4));
+        assert!(!shared_coverage_gated(gpu, 4, 0));
+        assert!(!shared_coverage_gated(gpu | RasterFlags::DIRECT, 1, 1));
+        assert!(shared_coverage_gated(gpu, 1, 1));
     }
 
     #[test]

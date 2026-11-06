@@ -31,7 +31,7 @@ mod support;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use codevar_ocl::{Device, Runtime};
-use codevar_ocl_interop::{MemoryKind, Vulkan};
+use codevar_ocl_interop::{MemoryHandle, MemoryKind, Vulkan};
 use codevar_truetype_core::{BBox, Bitmap, Outline, PixelMode, Raster, RasterFlags, RasterParams, Vector};
 use codevar_truetype_smooth::grays::GrayRaster;
 use codevar_truetype_smooth::hot::{self, CoverageRegion};
@@ -40,8 +40,8 @@ use support::{Allocation, Machine, close_descriptor};
 /// Bytes a test allocation reserves for coverage.
 const ALLOCATION: u64 = 4096;
 
-/// The pipeline and its attached allocation are process-wide state, so these
-/// tests take turns instead of racing each other for the same target.
+/// The HOT pipeline is one process-wide queue, so these tests take turns
+/// rather than racing each other for it.
 fn pipeline_turn() -> MutexGuard<'static, ()> {
     static TURN: Mutex<()> = Mutex::new(());
     TURN.lock()
@@ -132,20 +132,22 @@ fn rasterize(outline: &Outline, width: usize, height: usize) -> Option<Vec<u8>> 
     let Ok(handle) = endpoint.export_memory(allocation.memory(), kind) else {
         return None;
     };
-    let attached = hot::attach_shared_coverage(handle, allocation.len());
+    let imported = hot::SharedCoverage::import(handle, allocation.len());
     // SAFETY: the import only reads the descriptor and takes its own
     // reference, so this process owns the one `export_memory` handed out
     // whichever way the import answered.
     unsafe { close_descriptor(handle.raw() as i32) };
-    if attached.is_err() {
-        return None;
-    }
+    let target = imported.ok()?;
     let raster = GrayRaster::new();
-    let rendered = raster
-        .render_shared_coverage(outline, RasterFlags::AA | RasterFlags::HOT, width, height)
-        .and_then(|region| allocation.read(region.size()?));
-    hot::detach_shared_coverage();
-    rendered
+    raster
+        .render_shared_coverage(
+            outline,
+            RasterFlags::AA | RasterFlags::HOT,
+            &target,
+            width,
+            height,
+        )
+        .and_then(|region| allocation.read(region.size()?))
 }
 
 /// The kernel writes the box where the sharing device can read it, in the
@@ -188,9 +190,9 @@ fn half_pixel_coverage_crosses_the_border_unchanged() {
     assert_eq!(bytes, vec![128]);
 }
 
-/// A glyph the allocation cannot hold is refused before the kernel is asked,
-/// so a renderer sizing its scratch too small falls back instead of writing
-/// past somebody else's memory.
+/// A glyph the target cannot hold is refused before the kernel is asked, so a
+/// renderer sizing its scratch too small falls back instead of writing past
+/// somebody else's memory.
 #[test]
 fn a_glyph_larger_than_the_allocation_falls_back() {
     let _turn = pipeline_turn();
@@ -207,38 +209,33 @@ fn a_glyph_larger_than_the_allocation_falls_back() {
     let Ok(handle) = endpoint.export_memory(allocation.memory(), kind) else {
         return;
     };
-    let attached = hot::attach_shared_coverage(handle, allocation.len());
+    let imported = hot::SharedCoverage::import(handle, allocation.len());
     // SAFETY: as in `rasterize`, the descriptor is this process's to close.
     unsafe { close_descriptor(handle.raw() as i32) };
-    if attached.is_err() {
+    let Ok(target) = imported else {
         return;
-    }
+    };
     // 16x16 needs 256 bytes of a 64-byte allocation.
     assert!(
-        hot::try_render_shared(&square(0, 0, 16 * 64, 16 * 64), 16, 16).is_none(),
+        hot::try_render_shared(&target, &square(0, 0, 16 * 64, 16 * 64), 16, 16).is_none(),
         "a glyph over the allocation size must not be rasterized device-side"
     );
     assert_eq!(
-        hot::try_render_shared(&square(0, 0, 64, 64), 8, 8).map(CoverageRegion::size),
+        hot::try_render_shared(&target, &square(0, 0, 64, 64), 8, 8).map(CoverageRegion::size),
         Some(Some(64)),
         "the same allocation does take a glyph that fits it"
     );
-    hot::detach_shared_coverage();
 }
 
-/// With no target attached nothing is rasterized device-side, and the answer
-/// is the same "fall back" the rest of the module gives.
+/// A descriptor that names no allocation never becomes a target, so the
+/// zero-copy path cannot be entered with memory nobody exported. Whether the
+/// machine has no pipeline at all or a driver that refuses the descriptor, a
+/// target is not produced.
 #[test]
-fn nothing_lands_device_side_without_an_attached_target() {
+fn a_target_imported_from_a_bogus_descriptor_is_refused() {
     let _turn = pipeline_turn();
-    hot::detach_shared_coverage();
-    assert!(!hot::shared_coverage_attached());
-    let outline = square(0, 0, 64, 64);
-    assert!(hot::try_render_shared(&outline, 1, 1).is_none());
-    let raster = GrayRaster::new();
     assert!(
-        raster
-            .render_shared_coverage(&outline, RasterFlags::AA | RasterFlags::HOT, 1, 1)
-            .is_none()
+        hot::SharedCoverage::import(MemoryHandle::DmaBuf(-1), 64).is_err(),
+        "a dma_buf descriptor of -1 cannot name an allocation"
     );
 }

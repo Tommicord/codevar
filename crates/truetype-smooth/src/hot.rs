@@ -37,14 +37,13 @@
 //! The default path ends in host memory: the coverage is read back out of
 //! the device and blitted into a [`Bitmap`], which is what a caller that
 //! keeps its glyph cache in a `Vec` needs. A renderer whose cache lives on
-//! the GPU does not, and [`attach_shared_coverage`] plus
-//! [`try_render_shared`] give it the zero-copy shape of the same render:
-//! the caller allocates the coverage target through its own Vulkan
-//! device, imports it here as memory OpenCL may write, and the kernel
-//! lands the glyph in it directly. See [`codevar_ocl_interop`] for what
-//! makes that exchange sound — the short version is that the allocation
-//! stays owned by Vulkan and OpenCL only touches it inside an acquire
-//! window, which [`enqueue_shared`] opens and closes around one render.
+//! the GPU does not: it allocates the coverage target through its own
+//! Vulkan device, imports that export as a [`SharedCoverage`], and
+//! [`try_render_shared`] rasterizes a glyph straight into it. See
+//! [`codevar_ocl_interop`] for what makes that exchange sound — the short
+//! version is that the allocation stays owned by Vulkan and OpenCL only
+//! touches it inside an acquire window, which [`enqueue_shared`] opens and
+//! closes around one render.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -92,9 +91,9 @@ impl core::fmt::Display for PipelineError {
 
 /// Glyph coverage left in an allocation shared with another API.
 ///
-/// A region always starts at byte zero of the attached allocation:
-/// `font_raster` indexes `coverage[y * width + x]`, so one render occupies
-/// [`CoverageRegion::size`] bytes from the start of the buffer.
+/// A region always starts at byte zero of the target it was rasterized
+/// into: `font_raster` indexes `coverage[y * width + x]`, so one render
+/// occupies [`CoverageRegion::size`] bytes from the start of the buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CoverageRegion {
     /// Covered width in pixels.
@@ -113,9 +112,9 @@ impl CoverageRegion {
     }
 }
 
-/// Why a shared coverage allocation could not be attached.
+/// Why a shared coverage target could not be imported.
 #[derive(Debug)]
-pub enum AttachError {
+pub enum ImportError {
     /// No HOT pipeline can be built on this machine, so there is no OpenCL
     /// context to import the allocation into.
     NoPipeline,
@@ -123,14 +122,14 @@ pub enum AttachError {
     Interop(InteropError),
 }
 
-impl From<InteropError> for AttachError {
+impl From<InteropError> for ImportError {
     #[inline]
     fn from(error: InteropError) -> Self {
         Self::Interop(error)
     }
 }
 
-impl core::fmt::Display for AttachError {
+impl core::fmt::Display for ImportError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::NoPipeline => f.write_str("no HOT pipeline exists to import an allocation into"),
@@ -147,9 +146,6 @@ struct GpuPipeline {
     queue: CommandQueue,
     /// The `font_raster` kernel bound to the embedded SPIR-V program.
     kernel: Kernel,
-    /// Coverage target imported from another API's allocation, once a
-    /// caller attaches one; nothing is rasterized device-side without it.
-    coverage: Option<SharedBuffer>,
 }
 
 /// Process-wide pipeline state, built lazily on the first HOT render.
@@ -196,11 +192,7 @@ fn build_pipeline() -> Result<GpuPipeline, PipelineError> {
     let program = Program::from_il(&context, kernels::truetype::RASTER_SPIRV)?;
     program.build("")?;
     let kernel = program.kernel("font_raster")?;
-    Ok(GpuPipeline {
-        queue,
-        kernel,
-        coverage: None,
-    })
+    Ok(GpuPipeline { queue, kernel })
 }
 
 /// Runs `f` with exclusive access to the cached pipeline, initializing
@@ -235,54 +227,49 @@ pub fn gpu_available() -> bool {
     with_pipeline(|_| ()).is_some()
 }
 
-/// Attaches an allocation exported by another API as the coverage target of
-/// the HOT pipeline.
+/// Coverage target of one render: memory another API allocated, imported
+/// into the HOT pipeline's context.
 ///
-/// `handle` is the descriptor a Vulkan device produced for its own
-/// `VkDeviceMemory` (see [`codevar_ocl_interop::Vulkan::export_memory`]) and
-/// `size` is how many bytes of it this module may write; the allocation is
-/// imported as a buffer of the pipeline's context, so after this call
-/// [`try_render_shared`] rasterizes glyphs into memory that the exporting
-/// device still owns. Attaching is a one-time setup cost paid when the
-/// renderer already holds both drivers and their devices have been paired —
-/// [`codevar_ocl_interop::Identity::pairs_with`] answers that question.
-///
-/// The descriptor is only read during the import and this crate never closes
-/// it, so the caller closes it after this returns, whichever way it returned.
-/// Attaching again replaces the previous target and releases that buffer;
-/// [`try_render`] and the CPU path keep working either way.
-///
-/// # Errors
-///
-/// [`AttachError::NoPipeline`] when no GPU pipeline can be built here, and
-/// [`AttachError::Interop`] when the driver refuses the handle — which is
-/// also the answer on a context without `cl_khr_external_memory`, for a
-/// handle another device exported, or for a `size` beyond the allocation.
-pub fn attach_shared_coverage(handle: MemoryHandle, size: usize) -> Result<(), AttachError> {
-    with_pipeline(|pipeline| {
-        SharedBuffer::import(pipeline.queue.context(), size, handle).map(|shared| {
-            pipeline.coverage = Some(shared);
-        })
-    })
-    .ok_or(AttachError::NoPipeline)?
-    .map_err(AttachError::Interop)
+/// The value, not a process-wide slot, is what a render writes into, so a
+/// renderer can hold one target per glyph cache and share them between
+/// threads; each keeps the imported buffer alive for as long as its owner
+/// may rasterize into it. Dropping one hands the allocation back to the
+/// exporting API, so drop it with no render in flight: the imported buffer
+/// is what the kernel writes, and removing it under a command the queue has
+/// not run yet leaves that command with no destination.
+pub struct SharedCoverage {
+    /// The imported allocation, with the acquire window it takes part in.
+    shared: SharedBuffer,
 }
 
-/// Detaches the shared coverage target, handing the allocation back to the
-/// API that exported it.
-///
-/// A no-op when nothing is attached. Call it with no render in flight: the
-/// imported buffer is what the kernel writes into, so dropping it mid-render
-/// removes the target from under a command the queue may not have run yet.
-pub fn detach_shared_coverage() {
-    let _ = with_pipeline(|pipeline| pipeline.coverage = None);
-}
-
-/// `true` while a shared coverage target is attached, which is exactly when
-/// [`try_render_shared`] can succeed.
-#[must_use]
-pub fn shared_coverage_attached() -> bool {
-    with_pipeline(|pipeline| pipeline.coverage.is_some()).unwrap_or(false)
+impl SharedCoverage {
+    /// Imports the allocation `handle` names as a target of `size` bytes.
+    ///
+    /// `handle` is the descriptor a Vulkan device produced for its own
+    /// `VkDeviceMemory` (see [`codevar_ocl_interop::Vulkan::export_memory`])
+    /// and `size` is how many bytes of it this module may write; the
+    /// descriptor carries no length, so a `size` beyond the allocation is a
+    /// driver-side error at best and an out-of-bounds write by the kernel at
+    /// worst. Importing is a one-time setup cost paid when the renderer
+    /// already holds both drivers and their devices have been paired —
+    /// [`codevar_ocl_interop::Identity::pairs_with`] answers that question.
+    ///
+    /// The descriptor is only read during this call and this crate never
+    /// closes it, so the caller closes it after this returns, whichever way
+    /// it returned.
+    ///
+    /// # Errors
+    ///
+    /// [`ImportError::NoPipeline`] when no GPU pipeline can be built here, and
+    /// [`ImportError::Interop`] when the driver refuses the handle — which is
+    /// also the answer on a context without `cl_khr_external_memory`, for a
+    /// handle another device exported, or for a `size` beyond the allocation.
+    pub fn import(handle: MemoryHandle, size: usize) -> Result<Self, ImportError> {
+        with_pipeline(|pipeline| SharedBuffer::import(pipeline.queue.context(), size, handle))
+            .ok_or(ImportError::NoPipeline)?
+            .map_err(ImportError::Interop)
+            .map(|shared| Self { shared })
+    }
 }
 
 /// Collects outline segments as `f32` pixel-coordinate edges.
@@ -441,33 +428,38 @@ pub fn try_render(source: &Outline, target: &mut Bitmap) -> bool {
     .unwrap_or(false)
 }
 
-/// Renders `source` into the shared coverage target without a host
-/// round-trip, returning the region of the allocation it landed in.
+/// Renders `source` into `target` without a host round-trip, returning the
+/// region of it the glyph occupies.
 ///
 /// This is [`try_render`] with its last two steps removed: instead of
 /// reading the coverage back into a `Vec` and blitting it into a [`Bitmap`],
-/// the kernel writes it straight into the allocation a [`attach_shared_coverage`]
-/// imported, and the caller — a renderer whose glyph cache is a `VkImage` —
-/// takes it from there as memory its own device owns. The pixels are
-/// bottom-up in the same outline space [`blit_coverage`] flips for a bitmap;
-/// a GPU caller copies the region as it stands and applies its own
-/// orientation.
+/// the kernel writes it straight into the allocation
+/// [`SharedCoverage::import`] brought into this pipeline's context, and the
+/// caller — a renderer whose glyph cache is a `VkImage` — takes it from there
+/// as memory its own device owns. The pixels are bottom-up in the same
+/// outline space [`blit_coverage`] flips for a bitmap; a GPU caller copies
+/// the region as it stands and applies its own orientation.
 ///
 /// Unlike [`try_render`], this overwrites every pixel of the region, the
 /// zero-coverage ones included: the whole box belongs to this glyph, so a
 /// caller must not share a region between two glyphs.
 ///
 /// Returns `None` — and the caller must then run the CPU scan converter or
-/// [`try_render`], as it would for a `false` from that function — when no
-/// target is attached, the glyph does not fit the allocation, there are no
-/// edges to draw, or any driver step fails. Errors are logged at debug level.
+/// [`try_render`], as it would for a `false` from that function — when the
+/// glyph does not fit `target`, there are no edges to draw, or any driver
+/// step fails. Errors are logged at debug level.
 ///
 /// When this returns `Some`, the kernel has run and the release has completed
 /// with it, so the exporting device may read the coverage immediately. It is
 /// a queue-draining hand-off rather than a signaled one: the calling thread
 /// waits for this glyph instead of ordering the render behind a semaphore
 /// shared with the other API.
-pub fn try_render_shared(source: &Outline, width: usize, height: usize) -> Option<CoverageRegion> {
+pub fn try_render_shared(
+    target: &SharedCoverage,
+    source: &Outline,
+    width: usize,
+    height: usize,
+) -> Option<CoverageRegion> {
     if width == 0 || height == 0 {
         return None;
     }
@@ -479,15 +471,15 @@ pub fn try_render_shared(source: &Outline, width: usize, height: usize) -> Optio
         return None;
     }
     let even_odd = i32::from(source.flags & OUTLINE_EVEN_ODD_FILL != 0);
-    with_pipeline(
-        |pipeline| match enqueue_shared(pipeline, &builder.edges, even_odd, width, height) {
+    with_pipeline(|pipeline| {
+        match enqueue_shared(pipeline, target, &builder.edges, even_odd, width, height) {
             Ok(region) => Some(region),
             Err(error) => {
                 log_debug!("the HOT shared path fell back to the caller: {error}");
                 None
             }
-        },
-    )
+        }
+    })
     .flatten()
 }
 /// Uploads the edges, launches the kernel over the pixel grid, and
@@ -513,11 +505,7 @@ fn enqueue(
         .ok_or(codevar_ocl::Error::InvalidArgument {
             what: "the target dimensions overflow the coverage buffer size",
         })?;
-    let GpuPipeline {
-        queue,
-        kernel,
-        coverage: _,
-    } = pipeline;
+    let GpuPipeline { queue, kernel } = pipeline;
     let context = queue.context();
     let edge_buf = Buffer::from_slice(context, edges)?;
     let coverage_buf = Buffer::new(context, coverage_len)?;
@@ -552,8 +540,8 @@ fn kernel_params(n_edges: usize, width: usize, height: usize) -> Result<(i32, i3
     ))
 }
 
-/// Launches `font_raster` over the shared allocation inside one acquire
-/// window, and waits for the render.
+/// Launches `font_raster` over `target` inside one acquire window, and waits
+/// for the render.
 ///
 /// The window is the whole reason this path is safe: the allocation belongs
 /// to the exporting device, and OpenCL may only write it between the acquire
@@ -565,11 +553,11 @@ fn kernel_params(n_edges: usize, width: usize, height: usize) -> Result<(i32, i3
 ///
 /// Returns the [`codevar_ocl::Error`] of any failed buffer, argument,
 /// enqueue, wait or window command, widened into
-/// [`codevar_ocl_interop::Error`], and `InvalidArgument` when no target is
-/// attached, the glyph is larger than the allocation, or a parameter does
-/// not fit 32 bits.
+/// [`codevar_ocl_interop::Error`], and `InvalidArgument` when the glyph is
+/// larger than the target or a parameter does not fit 32 bits.
 fn enqueue_shared(
     pipeline: &mut GpuPipeline,
+    target: &SharedCoverage,
     edges: &[f32],
     even_odd: i32,
     width: usize,
@@ -580,19 +568,11 @@ fn enqueue_shared(
         .ok_or(codevar_ocl::Error::InvalidArgument {
             what: "the target dimensions overflow the shared coverage size",
         })?;
-    let GpuPipeline {
-        queue,
-        kernel,
-        coverage,
-    } = pipeline;
-    let shared = coverage
-        .as_ref()
-        .ok_or(codevar_ocl::Error::InvalidArgument {
-            what: "no shared coverage allocation is attached to the HOT pipeline",
-        })?;
+    let GpuPipeline { queue, kernel } = pipeline;
+    let shared = &target.shared;
     if shared.buffer().size() < coverage_len {
         return Err(codevar_ocl::Error::InvalidArgument {
-            what: "the glyph is larger than the attached shared allocation",
+            what: "the glyph is larger than the shared coverage target",
         }
         .into());
     }
