@@ -35,15 +35,16 @@
 //!
 //! When [`AtlasConfig::device_backed`] is set the atlas keeps no host mirror
 //! of a gray page; the pipe owns one mapped storage buffer per page instead,
-//! and the page image is refreshed from it. A rasterizer that writes glyph
-//! coverage into that storage — the `SharedCoverage` target of the font
-//! pipeline is meant to be its dma-buf — therefore reaches the screen without
-//! the pipe copying a byte through the staging buffer, and without a host
-//! mirror of its own. Coverage rasterized on the CPU is the fallback: it is
-//! memcpy'd into the storage first, so the storage is always what the image is
-//! copied from.
+//! and the page image is refreshed from it. [`TextPipe::page_dmabuf`] names
+//! that storage with a dma-buf descriptor, which is the handle the font
+//! pipeline's `SharedCoverage` target imports — so a GPU rasterizer writes a
+//! glyph into the page through the very slot [`TextAtlas::reserve`] returned,
+//! and the pipe copies nothing through the staging buffer. Coverage rasterized
+//! on the CPU is the fallback: it is memcpy'd into the storage first, so the
+//! storage is always what the image is copied from.
 //!
 //! [`AtlasConfig::device_backed`]: crate::atlas::AtlasConfig::device_backed
+//! [`TextAtlas::reserve`]: crate::atlas::TextAtlas::reserve
 //!
 //! # Why it is demand-driven
 //!
@@ -69,7 +70,7 @@ use codevar_gpu_vk::mix::load_spir_v;
 use codevar_gpu_vk::offscreen::{OffscreenFramebuffer, OffscreenTarget, PipeOffscreen};
 use codevar_gpu_vk::pipe::PipeSource;
 use codevar_gpu_vk::pipe_ctx::{PipeCtx, PipeFuture, PipeOutcome};
-use codevar_gpu_vk::pipeline::PipelineContext;
+use codevar_gpu_vk::pipeline::{OwnedFd, PipelineContext};
 use codevar_gpu_vk::ui::scissor_for;
 use codevar_kuitui::geometry::Rect;
 use codevar_kuitui::shaders::{TEXT_COLOR_FRAG_SPIRV, TEXT_FRAG_SPIRV, TEXT_VERT_SPIRV};
@@ -136,6 +137,9 @@ struct MappedBuffer {
     size: u64,
     /// Usage flags the buffer was created with.
     usage: vk::BufferUsageFlags,
+    /// Whether the allocation advertises dma-buf export, which a grown buffer
+    /// has to advertise too.
+    export: bool,
 }
 
 impl MappedBuffer {
@@ -145,8 +149,29 @@ impl MappedBuffer {
         usage: vk::BufferUsageFlags,
         size: u64,
     ) -> Result<Self, CompositorError> {
+        Self::build(context, usage, size, false)
+    }
+
+    /// Allocates a mapped buffer whose memory another API may import as a
+    /// dma-buf, as [`export_dmabuf`] does.
+    fn exportable(
+        context: &PipelineContext,
+        usage: vk::BufferUsageFlags,
+        size: u64,
+    ) -> Result<Self, CompositorError> {
+        Self::build(context, usage, size, true)
+    }
+
+    /// Allocates the buffer and its mapping, advertising dma-buf export when
+    /// `export` is set.
+    fn build(
+        context: &PipelineContext,
+        usage: vk::BufferUsageFlags,
+        size: u64,
+        export: bool,
+    ) -> Result<Self, CompositorError> {
         let size = size.max(1);
-        let (buffer, memory, mapped) = create_mapped_buffer(context, usage, size)?;
+        let (buffer, memory, mapped) = create_mapped_buffer(context, usage, size, export)?;
         Ok(Self {
             device: context.device() as *const ash::Device,
             buffer,
@@ -154,19 +179,22 @@ impl MappedBuffer {
             mapped,
             size,
             usage,
+            export,
         })
     }
 
     /// Grows the buffer to hold at least `required` bytes.
     ///
     /// A no-op when the current allocation already fits, so the steady state
-    /// never touches the allocator.
+    /// never touches the allocator. Growing replaces the allocation, so any
+    /// descriptor exported from the old one names bytes this buffer no longer
+    /// owns.
     fn ensure(&mut self, context: &PipelineContext, required: u64) -> Result<(), CompositorError> {
         if required <= self.size {
             return Ok(());
         }
         let grown = required.max(self.size.saturating_mul(2));
-        let (buffer, memory, mapped) = create_mapped_buffer(context, self.usage, grown)?;
+        let (buffer, memory, mapped) = create_mapped_buffer(context, self.usage, grown, self.export)?;
         // SAFETY: the device outlives this buffer (it comes from the
         // `PipelineContext` the pipe borrows), the compositor waited for the
         // previous frame's fence before this future ran, so no command
@@ -383,6 +411,41 @@ impl<'p> TextPipe<'p> {
     /// Sets the color the target is cleared to before a redraw.
     pub fn set_clear(&mut self, clear: [f32; 4]) {
         self.clear = clear;
+    }
+
+    /// The dma-buf of a device page's storage, so a caller whose rasterizer
+    /// lives in another API writes coverage into the page itself.
+    ///
+    /// The storage is created when the page has none yet: reserve the glyph
+    /// with [`TextAtlas::reserve`], ask here for the page the reservation
+    /// landed on, import the descriptor as a coverage target of
+    /// `page_size * page_size` bytes and rasterize into the slot. The next
+    /// upload copies what landed there into the page image.
+    ///
+    /// Each call exports a fresh descriptor, so the caller owns the one it is
+    /// handed and closes it once the import read it. The bytes stay the pipe's:
+    /// an import is only valid while the pipe that made it lives.
+    ///
+    /// `None` when the atlas mirrors its pages on the host, whose coverage has
+    /// no device storage to share.
+    ///
+    /// # Errors
+    ///
+    /// * [`CompositorError::BufferCreate`], [`CompositorError::NoSuitableMemoryType`],
+    ///   [`CompositorError::MemoryAllocate`], [`CompositorError::MemoryBind`],
+    ///   [`CompositorError::BufferMap`] — the page's storage could not be
+    ///   created or exported.
+    ///
+    /// [`TextAtlas::reserve`]: crate::atlas::TextAtlas::reserve
+    pub fn page_dmabuf(&mut self, page: u32) -> Result<Option<OwnedFd>, CompositorError> {
+        let context = self.context;
+        let config = self.frame.atlas().config();
+        if !config.device_backed {
+            return Ok(None);
+        }
+        ensure_storage(context, &mut self.storage, page, config.page_size)?;
+        let memory = self.storage[page as usize].memory;
+        export_dmabuf(context, memory).map(Some)
     }
 
     /// Sets the mix weight of the target in `[0.0, 1.0]`.
@@ -1158,16 +1221,28 @@ fn find_memory_type(
 }
 
 /// Creates a host-visible, coherent buffer and maps it for its whole life.
+///
+/// With `export` the buffer advertises the dma-buf handle type and its memory
+/// is a dedicated allocation, which is what lets [`export_dmabuf`] name the
+/// same bytes to another API at offset zero.
 fn create_mapped_buffer(
     context: &PipelineContext,
     usage: vk::BufferUsageFlags,
     size: u64,
+    export: bool,
 ) -> Result<(vk::Buffer, vk::DeviceMemory, *mut u8), CompositorError> {
     let device = context.device();
-    let info = vk::BufferCreateInfo::default()
+    let mut external = vk::ExternalMemoryBufferCreateInfo::default()
+        .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+    let mut info = vk::BufferCreateInfo::default()
         .size(size)
         .usage(usage)
         .sharing_mode(vk::SharingMode::EXCLUSIVE);
+    if export {
+        // SAFETY: `external` outlives the create call, and the chain is a
+        // well-formed `VkExternalMemoryBufferCreateInfo`.
+        info = info.push_next(&mut external);
+    }
     // SAFETY: a plain, well-formed buffer descriptor.
     let buffer = unsafe { device.create_buffer(&info, None) }.map_err(CompositorError::BufferCreate)?;
 
@@ -1185,9 +1260,20 @@ fn create_mapped_buffer(
         unsafe { device.destroy_buffer(buffer, None) };
         return Err(CompositorError::NoSuitableMemoryType);
     };
-    let allocate_info = vk::MemoryAllocateInfo::default()
+    let mut export_info =
+        vk::ExportMemoryAllocateInfo::default().handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+    let mut dedicated_info = vk::MemoryDedicatedAllocateInfo::default().buffer(buffer);
+    let mut allocate_info = vk::MemoryAllocateInfo::default()
         .allocation_size(requirements.size)
         .memory_type_index(memory_type);
+    if export {
+        // SAFETY: both structs outlive the allocate call below, and the
+        // dedicated binding is what forces the buffer to byte zero of the
+        // allocation the exported descriptor names.
+        allocate_info = allocate_info
+            .push_next(&mut export_info)
+            .push_next(&mut dedicated_info);
+    }
     // SAFETY: the allocation matches an advertised memory type and size.
     let memory = match unsafe { device.allocate_memory(&allocate_info, None) } {
         Ok(memory) => memory,
@@ -1221,6 +1307,37 @@ fn create_mapped_buffer(
         }
     };
     Ok((buffer, memory, mapped))
+}
+
+/// Names `memory` with a dma-buf descriptor another API can import.
+///
+/// Every call hands out a fresh descriptor for the same allocation, so an
+/// importer that reads the descriptor and closes it afterwards — the contract
+/// of a shared coverage target — never disturbs the pipe. The bytes themselves
+/// stay the pipe's, and it frees the allocation when it is dropped.
+///
+/// # Errors
+///
+/// * [`CompositorError::MemoryAllocate`] — `vkGetMemoryFdKHR` refused the
+///   allocation, which is also the answer from a driver that shares page
+///   memory in some other way.
+/// * [`CompositorError::Internal`] — the driver reported a negative fd.
+fn export_dmabuf(context: &PipelineContext, memory: vk::DeviceMemory) -> Result<OwnedFd, CompositorError> {
+    let ext_memory_fd = ash::khr::external_memory_fd::Device::new(context.instance(), context.device());
+    let info = vk::MemoryGetFdInfoKHR::default()
+        .memory(memory)
+        .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+    // SAFETY: the compositor enables `VK_KHR_external_memory_fd` on the device
+    // this context owns, `memory` was allocated advertising the DMA_BUF handle
+    // type, and the descriptor the call returns is adopted immediately below.
+    let raw_fd = unsafe { ext_memory_fd.get_memory_fd(&info) }.map_err(CompositorError::MemoryAllocate)?;
+    if raw_fd < 0 {
+        return Err(CompositorError::Internal(
+            "vkGetMemoryFdKHR returned a negative file descriptor",
+        ));
+    }
+    // SAFETY: on success the call transferred ownership of an open descriptor.
+    Ok(unsafe { OwnedFd::from_raw(raw_fd) })
 }
 
 /// Creates the linear, clamped sampler every page descriptor shares.
@@ -1633,7 +1750,9 @@ fn storage_address(region: DirtyRect, page_size: u32) -> u64 {
 /// A device page has no host mirror, so this buffer is where a new page's
 /// zeroed texels live: the atlas reports the whole page as dirty once, and the
 /// padding ring around each first glyph has to sample coverage zero just like
-/// it does on a host page.
+/// it does on a host page. The buffer advertises dma-buf export, because
+/// [`TextPipe::page_dmabuf`] hands its descriptor to the API that rasterizes
+/// into the page.
 ///
 /// # Errors
 ///
@@ -1648,7 +1767,7 @@ fn ensure_storage(
 ) -> Result<(), CompositorError> {
     let bytes = u64::from(page_size).saturating_mul(u64::from(page_size));
     while storage.len() <= page as usize {
-        let buffer = MappedBuffer::new(context, vk::BufferUsageFlags::TRANSFER_SRC, bytes)?;
+        let buffer = MappedBuffer::exportable(context, vk::BufferUsageFlags::TRANSFER_SRC, bytes)?;
         // SAFETY: `mapped` is a live, writable mapping of `bytes` host memory
         // owned by `buffer`, which nothing has been submitted against yet.
         unsafe { core::ptr::write_bytes(buffer.mapped, 0, bytes as usize) };
