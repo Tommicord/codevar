@@ -34,6 +34,7 @@ pub mod cursor_allocator;
 pub mod error;
 pub mod flush_writable;
 pub mod fs_id_compress;
+pub mod history_ring_journal;
 pub mod shake256;
 pub mod shared_gap;
 pub mod simd;
