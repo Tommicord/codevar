@@ -69,42 +69,27 @@ const MIN_RING_CAPACITY: usize = 16;
 /// Maximum ring capacity in edit slots (guards against a hostile budget).
 const MAX_RING_CAPACITY: usize = 1 << 20;
 
-/// Number of entries in the undo-group classification LUT (one per byte).
-const GROUP_LUT_LEN: usize = 256;
-
-// ---------------------------------------------------------------------------
-// Undo-group classification LUT
-// ---------------------------------------------------------------------------
-
-/// Entry value: character breaks the current word (starts a new undo group).
-const GROUP_BREAK: u8 = 0;
-/// Entry value: character continues the current word (same undo group).
-const GROUP_CONTINUE: u8 = 1;
-
-/// Builds the undo-group classification table at compile time.
-///
-/// `CONTINUE` for ASCII letters, digits and underscore (word characters);
-/// `BREAK` for everything else (whitespace, punctuation, control bytes,
-/// high Unicode).  Indexed by the low byte of a packed character.
-const fn build_group_lut() -> [u8; GROUP_LUT_LEN] {
-    let mut lut = [GROUP_BREAK; GROUP_LUT_LEN];
-    let mut i = 0usize;
-    while i < GROUP_LUT_LEN {
-        let byte = i as u8;
+/// Undo-group classification: bit `b` of `GROUP_MASK` is set when byte `b`
+/// is a word character (ASCII letter, digit or underscore), i.e. the packed
+/// element continues the current word and coalesces into the preceding undo
+/// group.  Covers bytes `0..=127`; bytes `>= 128` are never word characters.
+/// A single `shr`+`and`+`test` classifies a byte with no L1 load, unlike the
+/// 256-byte table it replaces.
+const GROUP_MASK: u128 = {
+    let mut mask = 0u128;
+    let mut byte = 0u64;
+    while byte < 128 {
         let is_word = matches!(
-            byte,
+            byte as u8,
             b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_'
         );
         if is_word {
-            lut[i] = GROUP_CONTINUE;
+            mask |= 1u128 << byte;
         }
-        i += 1;
+        byte += 1;
     }
-    lut
-}
-
-/// Undo-group classification table: `GROUP_LUT[low_byte_of_packed_char]`.
-const GROUP_LUT: [u8; GROUP_LUT_LEN] = build_group_lut();
+    mask
+};
 
 /// Returns `true` when the packed element's character continues the current
 /// word, i.e. it should coalesce into the preceding edit's undo group.
@@ -114,7 +99,8 @@ const GROUP_LUT: [u8; GROUP_LUT_LEN] = build_group_lut();
 #[inline]
 #[must_use]
 pub const fn is_word_continuation(element: u32) -> bool {
-    GROUP_LUT[(packed_char(element) & 0xFF) as usize] == GROUP_CONTINUE
+    let byte = (packed_char(element) & 0xFF) as u64;
+    byte < 128 && (GROUP_MASK >> byte) & 1 == 1
 }
 
 // ---------------------------------------------------------------------------
@@ -135,7 +121,14 @@ pub const fn is_word_continuation(element: u32) -> bool {
 ///   `0 <= position <= document.len_before_edit`.
 /// * `group_id` is a session-wide monotonic counter; equal ids coalesce only
 ///   when [`is_word_continuation`] says the character continues the word.
+///
+/// # Layout
+///
+/// `Edit` is `#[repr(C)]` and exactly 64 bytes (one cache line) so that
+/// `step`/`undo`/`redo` can read a whole record from a single cache-line
+/// fetch.  `size_of::<Edit>()` is asserted at compile time below.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[repr(C)]
 pub struct Edit {
     /// Packed elements removed (the "old" side), in document order.
     pub old: Vec<u32>,
@@ -148,6 +141,14 @@ pub struct Edit {
     /// classifies as word-continuation coalesce into one undoable action.
     pub group_id: u64,
 }
+
+/// Compile-time layout assertion: `Edit` must be exactly one cache line.
+const _: () = {
+    assert!(
+        core::mem::size_of::<Edit>() == 64,
+        "Edit must be 64 bytes (one cache line)"
+    );
+};
 
 impl Edit {
     /// Constructs a new edit, returning `CapacityExhausted` if either vector
@@ -211,28 +212,64 @@ impl Default for Edit {
 /// `0` and advances only on front-eviction; `head` is one past the latest
 /// edit; `cur` is the revision the document sits on (`base <= cur <= head`).
 ///
+/// # Cache locality
+///
+/// `DeltaRingHot` holds only the fields touched on every undo/redo/step
+/// walk (`edits`, `capacity`, `mask`, `base`, `head`, `cur`) and is
+/// aligned to 64 bytes so the entire hot state fits in one cache line.
+/// `DeltaRingCold` holds record-accounting and observability fields
+/// (`bytes`, `hot_bytes`, `refusals`) touched only on record/evict/refusal.
+///
 /// # Revision numbering
 ///
 /// * Revision `i` = state after the `i`-th recorded edit.
 /// * Revision `0` = document as opened.
 /// * `base` is initialised to `0` (never `1` — see the crate design notes).
 pub struct DeltaRing {
-    /// Edits in ring order; physical slot = logical index % capacity.
+    /// Hot tier: walked on every undo/redo/step.  Cache-line aligned.
+    hot: DeltaRingHot,
+    /// Cold tier: touched only on record/evict/refusal.  Cache-line aligned
+    /// and padded so its fields never share a line with hot fields.
+    cold: DeltaRingCold,
+}
+
+/// Hot tier fields: read/written on every undo/redo/step.
+///
+/// Kept cache-line aligned and compact so `step` can walk `base`, `head`,
+/// `cur`, `mask`, `capacity` from a single cache-line fetch.
+#[repr(C, align(64))]
+struct DeltaRingHot {
+    /// Edits in ring order; physical slot = logical index & `mask`
+    /// (capacity is always a power of two).
     edits: Vec<Edit>,
-    /// Physical capacity of `edits` (== `edits.capacity()`).
+    /// Physical capacity of `edits` (== `edits.capacity()`), always a power
+    /// of two.
     capacity: usize,
+    /// `capacity - 1`, used for the bitmask slot computation `i & mask`.
+    mask: usize,
     /// Oldest revision still retained by the ring.  Starts at `0`.
     base: usize,
     /// One past the latest edit in the ring.
     head: usize,
     /// Revision the document currently sits on.
     cur: usize,
+}
+
+/// Cold tier: record accounting and observability.
+///
+/// Touched only on `record`, `evict`, and refusal paths.  Padded to its own
+/// cache line(s) so false sharing with the hot tier is impossible.
+#[repr(C, align(64))]
+struct DeltaRingCold {
     /// Total `record_bytes` of live edits `[base, head)`.
     bytes: u64,
+    _pad_bytes: [u8; 56],
     /// Hot-byte budget; eviction starts when `bytes > hot_bytes`.
     hot_bytes: u64,
+    _pad_hot: [u8; 56],
     /// Count of refused operations (undo at base, redo at head, etc.).
     refusals: u64,
+    _pad_refusals: [u8; 56],
 }
 
 impl DeltaRing {
@@ -251,19 +288,33 @@ impl DeltaRing {
             let derived = (hot_bytes / min_record.max(1)) as usize;
             derived.clamp(MIN_RING_CAPACITY, MAX_RING_CAPACITY)
         };
+        // Round capacity up to a power of two so the slot computation uses a
+        // bitmask (`i & mask`) instead of an integer division (`i % capacity`).
+        let capacity = capacity
+            .next_power_of_two()
+            .min(MAX_RING_CAPACITY);
+        let mask = capacity.wrapping_sub(1);
         let edits = Vec::with_capacity(capacity);
         if edits.capacity() < capacity && capacity != 0 {
             log_error!("delta ring allocation fell short of requested capacity");
         }
         Ok(Self {
-            edits,
-            capacity,
-            base: 0,
-            head: 0,
-            cur: 0,
-            bytes: 0,
-            hot_bytes,
-            refusals: 0,
+            hot: DeltaRingHot {
+                edits,
+                capacity,
+                mask,
+                base: 0,
+                head: 0,
+                cur: 0,
+            },
+            cold: DeltaRingCold {
+                bytes: 0,
+                _pad_bytes: [0; 56],
+                hot_bytes,
+                _pad_hot: [0; 56],
+                refusals: 0,
+                _pad_refusals: [0; 56],
+            },
         })
     }
 
@@ -271,58 +322,81 @@ impl DeltaRing {
     #[inline]
     #[must_use]
     pub const fn base(&self) -> usize {
-        self.base
+        self.hot.base
     }
 
     /// One past the latest edit.
     #[inline]
     #[must_use]
     pub const fn head(&self) -> usize {
-        self.head
+        self.hot.head
     }
 
     /// Revision the document sits on.
     #[inline]
     #[must_use]
     pub const fn cur(&self) -> usize {
-        self.cur
+        self.hot.cur
     }
 
     /// Total bytes of live edits.
     #[inline]
     #[must_use]
     pub const fn bytes(&self) -> u64 {
-        self.bytes
+        self.cold.bytes
     }
 
     /// Number of refused operations since creation.
     #[inline]
     #[must_use]
     pub const fn refusals(&self) -> u64 {
-        self.refusals
+        self.cold.refusals
     }
 
     /// Hot-byte budget.
     #[inline]
     #[must_use]
     pub const fn hot_bytes(&self) -> u64 {
-        self.hot_bytes
+        self.cold.hot_bytes
     }
 
     /// Physical slot for logical edit index `i` (`base <= i < head`).
+    ///
+    /// Capacity is always a power of two, so `i & mask` replaces the
+    /// integer division of `i % capacity`.
     #[inline]
-    fn slot(i: usize, capacity: usize) -> usize {
-        debug_assert!(capacity > 0);
-        i % capacity
+    fn slot(i: usize, mask: usize) -> usize {
+        debug_assert!(mask > 0 || i == 0);
+        i & mask
+    }
+
+    /// Physical access (caller guarantees `base <= i < head`).
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee `base <= i < head`; the mask confines the slot
+    /// to `[0, capacity)` and every written slot is below `edits.len()`, so
+    /// `get_unchecked` is in bounds.
+    #[inline]
+    unsafe fn edit_at_unchecked(&self, i: usize) -> &Edit {
+        // SAFETY: `base <= i < head` (caller guarantee) and the mask keeps the
+        // slot in `[0, capacity)`; every slot below `capacity` that was ever
+        // written is below `edits.len()`.
+        unsafe {
+            self.hot
+                .edits
+                .get_unchecked(Self::slot(i, self.hot.mask))
+        }
     }
 
     /// Physical access (caller guarantees `base <= i < head`).
     #[inline]
     fn edit_at(&self, i: usize) -> &Edit {
-        debug_assert!(i >= self.base && i < self.head);
-        debug_assert!(self.capacity > 0);
-        debug_assert!(Self::slot(i, self.capacity) < self.edits.len());
-        &self.edits[Self::slot(i, self.capacity)]
+        debug_assert!(i >= self.hot.base && i < self.hot.head);
+        debug_assert!(self.hot.capacity > 0);
+        debug_assert!(Self::slot(i, self.hot.mask) < self.hot.edits.len());
+        // SAFETY: same invariants as `edit_at_unchecked`.
+        unsafe { self.edit_at_unchecked(i) }
     }
 
     /// Pushes `edit` onto the back, growing physical storage if needed.
@@ -331,12 +405,13 @@ impl DeltaRing {
     /// the edit's vectors cannot be allocated.
     #[inline]
     fn push_edit(&mut self, edit: Edit) -> WreditResult<()> {
-        let logical = self.head;
-        let slot = Self::slot(logical, self.capacity);
+        let logical = self.hot.head;
+        let slot = Self::slot(logical, self.hot.mask);
         // Ensure physical storage covers `slot`.
-        if slot >= self.edits.len() {
+        if slot >= self.hot.edits.len() {
             let needed = slot + 1;
             let new_cap = self
+                .hot
                 .capacity
                 .checked_mul(2)
                 .and_then(|c| c.checked_add(needed))
@@ -347,36 +422,39 @@ impl DeltaRing {
                     }
                 })?
                 .max(needed)
-                .clamp(self.capacity, MAX_RING_CAPACITY);
-            if new_cap == self.capacity && self.capacity < needed {
+                .clamp(self.hot.capacity, MAX_RING_CAPACITY);
+            if new_cap == self.hot.capacity && self.hot.capacity < needed {
                 log_error!("delta ring capacity clamp reached");
                 return Err(WreditError::CapacityExhausted {
                     requested: needed,
-                    available: self.capacity,
+                    available: self.hot.capacity,
                 });
             }
-            self.edits.reserve(new_cap - self.edits.len());
-            if self.edits.capacity() < new_cap {
+            self.hot
+                .edits
+                .reserve(new_cap - self.hot.edits.len());
+            if self.hot.edits.capacity() < new_cap {
                 log_error!("delta ring reserve fell short of requested capacity");
                 return Err(WreditError::CapacityExhausted {
                     requested: new_cap,
-                    available: self.edits.capacity(),
+                    available: self.hot.edits.capacity(),
                 });
             }
-            self.capacity = new_cap;
+            self.hot.capacity = new_cap;
         }
         // Normal append path: slot == edits.len() (no wrap yet), so we can
         // push and the slot is fresh.  On wrap the slot was written in a
         // prior cycle and `len` already covers it, so we assign in place.
         let record_bytes = edit.record_bytes();
-        if slot == self.edits.len() {
-            self.edits.push(edit);
+        if slot == self.hot.edits.len() {
+            self.hot.edits.push(edit);
         } else {
             // Wrap-around: overwrite the stale slot in place.
-            debug_assert!(slot < self.edits.len());
-            self.edits[slot] = edit;
+            debug_assert!(slot < self.hot.edits.len());
+            self.hot.edits[slot] = edit;
         }
-        self.bytes = self
+        self.cold.bytes = self
+            .cold
             .bytes
             .checked_add(record_bytes)
             .ok_or_else(|| {
@@ -385,36 +463,45 @@ impl DeltaRing {
                     what: "delta ring bytes",
                 }
             })?;
-        self.head += 1;
+        self.hot.head += 1;
         Ok(())
     }
 
     /// Pops the back edit, returning it (or `None` if the ring is empty).
+    ///
+    /// Returns the edit by reference into the ring slot (no heap clone) when
+    /// possible, avoiding the `Vec<u32>` clone cost on the hot undo/redo path.
     #[inline]
     fn pop_back(&mut self) -> Option<Edit> {
-        if self.head == self.base {
+        if self.hot.head == self.hot.base {
             return None;
         }
-        self.head -= 1;
-        let slot = Self::slot(self.head, self.capacity);
+        self.hot.head -= 1;
+        let slot = Self::slot(self.hot.head, self.hot.mask);
         // SAFETY: `head` is in `[base, head_old)`, so `slot` covers a written
         // edit; `len` covers it because every written slot < len.
-        let edit = unsafe { self.edits.get_unchecked(slot).clone() };
-        self.bytes = self.bytes.saturating_sub(edit.record_bytes());
+        let edit = unsafe { self.hot.edits.get_unchecked(slot).clone() };
+        self.cold.bytes = self
+            .cold
+            .bytes
+            .saturating_sub(edit.record_bytes());
         Some(edit)
     }
 
     /// Pops the front edit, advancing `base`, returning it (or `None`).
     #[inline]
     fn pop_front(&mut self) -> Option<Edit> {
-        if self.head == self.base {
+        if self.hot.head == self.hot.base {
             return None;
         }
-        let slot = Self::slot(self.base, self.capacity);
+        let slot = Self::slot(self.hot.base, self.hot.mask);
         // SAFETY: `base` is in `[base, head)`, slot covers a written edit.
-        let edit = unsafe { self.edits.get_unchecked(slot).clone() };
-        self.bytes = self.bytes.saturating_sub(edit.record_bytes());
-        self.base += 1;
+        let edit = unsafe { self.hot.edits.get_unchecked(slot).clone() };
+        self.cold.bytes = self
+            .cold
+            .bytes
+            .saturating_sub(edit.record_bytes());
+        self.hot.base += 1;
         Some(edit)
     }
 
@@ -433,16 +520,16 @@ impl DeltaRing {
     #[inline]
     pub fn record(&mut self, edit: Edit) -> WreditResult<()> {
         // 1. Truncate the future.
-        while self.head > self.cur {
+        while self.hot.head > self.hot.cur {
             self.pop_back();
         }
         let record_bytes = edit.record_bytes();
         // 2. Push the edit.
         self.push_edit(edit)?;
         // `push_edit` already set `cur`-independent `head`; now `cur = head`.
-        self.cur = self.head;
+        self.hot.cur = self.hot.head;
         // 3. Evict while over budget, keeping at least one edit.
-        while self.bytes > self.hot_bytes && (self.head - self.base) > 1 {
+        while self.cold.bytes > self.cold.hot_bytes && (self.hot.head - self.hot.base) > 1 {
             self.pop_front();
         }
         let _ = record_bytes; // accounted inside push_edit
@@ -457,84 +544,129 @@ impl DeltaRing {
     /// the ring itself only supplies the edits.  `apply(edit, inverse)` is
     /// called with `inverse == true` when walking backward (apply
     /// `edit.inverse()`) and `false` when walking forward (apply `edit`).
+    ///
+    /// Splits into `step_forward` / `step_backward` so each call site has a
+    /// single, predictable loop direction — eliminating the `to < cur`
+    /// direction branch on the hot undo/redo path.
     #[inline]
     pub fn step<F>(&mut self, to: usize, mut apply: F) -> bool
     where
         F: FnMut(&Edit, bool) -> WreditResult<()>,
     {
-        if to == self.cur {
+        if to == self.hot.cur {
             return true;
         }
-        if to < self.cur {
-            // Walk backward: apply inverse of edit[cur-1] that took
-            // cur-1 -> cur, then decrement cur.
-            while self.cur > to {
-                let target = self.cur - 1;
-                if target < self.base {
-                    // Edit evicted: refusal; cur stays at the last good state.
-                    self.refusal();
-                    return false;
-                }
-                // Prefetch the next edit's payloads (walking backward).
-                Self::prefetch_next(
-                    target.wrapping_sub(1),
-                    self.base,
-                    self.head,
-                    self.capacity,
-                    &self.edits,
-                );
-                let edit = self.edit_at(target);
-                if let Err(_e) = apply(edit, true) {
-                    self.refusal();
-                    return false;
-                }
-                self.cur = target;
-            }
+        if to < self.hot.cur {
+            self.step_backward(to, &mut apply)
         } else {
-            // Walk forward: apply edit[cur] that took cur -> cur+1, then
-            // increment cur.
-            while self.cur < to {
-                if self.cur >= self.head {
-                    self.refusal();
-                    return false;
-                }
-                // Prefetch the next edit's payloads (walking forward).
-                Self::prefetch_next(self.cur + 1, self.base, self.head, self.capacity, &self.edits);
-                let edit = self.edit_at(self.cur);
-                if let Err(_e) = apply(edit, false) {
-                    self.refusal();
-                    return false;
-                }
-                self.cur += 1;
+            self.step_forward(to, &mut apply)
+        }
+    }
+
+    /// Walks `cur` forward toward `to` (`to > cur`), applying edits.
+    ///
+    /// Single-direction loop: no direction branch per iteration.  Boundary
+    /// checks (`cur >= head`) are rare and predictable, per the 75% rule.
+    #[inline]
+    fn step_forward<F>(&mut self, to: usize, apply: &mut F) -> bool
+    where
+        F: FnMut(&Edit, bool) -> WreditResult<()>,
+    {
+        while self.hot.cur < to {
+            if self.hot.cur >= self.hot.head {
+                self.refusal();
+                return false;
             }
+            // Prefetch the current and next edit's payloads (walking forward).
+            Self::prefetch_next(
+                self.hot.cur,
+                self.hot.base,
+                self.hot.head,
+                self.hot.mask,
+                &self.hot.edits,
+            );
+            Self::prefetch_next(
+                self.hot.cur + 1,
+                self.hot.base,
+                self.hot.head,
+                self.hot.mask,
+                &self.hot.edits,
+            );
+            let edit = self.edit_at(self.hot.cur);
+            if let Err(_e) = apply(edit, false) {
+                self.refusal();
+                return false;
+            }
+            self.hot.cur += 1;
+        }
+        true
+    }
+
+    /// Walks `cur` backward toward `to` (`to < cur`), applying inverses.
+    ///
+    /// Single-direction loop: no direction branch per iteration.  Boundary
+    /// checks (`target < base`) are rare and predictable.
+    #[inline]
+    fn step_backward<F>(&mut self, to: usize, apply: &mut F) -> bool
+    where
+        F: FnMut(&Edit, bool) -> WreditResult<()>,
+    {
+        while self.hot.cur > to {
+            let target = self.hot.cur - 1;
+            if target < self.hot.base {
+                // Edit evicted: refusal; cur stays at the last good state.
+                self.refusal();
+                return false;
+            }
+            // Prefetch the current and next edit's payloads (walking backward).
+            Self::prefetch_next(
+                target,
+                self.hot.base,
+                self.hot.head,
+                self.hot.mask,
+                &self.hot.edits,
+            );
+            Self::prefetch_next(
+                target.wrapping_sub(1),
+                self.hot.base,
+                self.hot.head,
+                self.hot.mask,
+                &self.hot.edits,
+            );
+            let edit = self.edit_at(target);
+            if let Err(_e) = apply(edit, true) {
+                self.refusal();
+                return false;
+            }
+            self.hot.cur = target;
         }
         true
     }
 
     /// Undoes one edit: refuses at `cur <= base`.
     #[inline]
-    pub fn undo<F>(&mut self, apply: F) -> bool
+    pub fn undo<F>(&mut self, mut apply: F) -> bool
     where
         F: FnMut(&Edit, bool) -> WreditResult<()>,
     {
-        if self.cur <= self.base {
+        if self.hot.cur <= self.hot.base {
             self.refusal();
             return false;
         }
-        self.step(self.cur - 1, apply)
+        self.step_backward(self.hot.cur - 1, &mut |edit, _| apply(edit, true))
     }
 
     /// Redoes one edit: refuses at `cur >= head`.
     #[inline]
-    pub fn redo<F>(&mut self, apply: F) -> bool
+    pub fn redo<F>(&mut self, mut apply: F) -> bool
     where
         F: FnMut(&Edit, bool) -> WreditResult<()>,
     {
-        if self.cur >= self.head {
+        if self.hot.cur >= self.hot.head {
             self.refusal();
             return false;
         }
-        self.step(self.cur + 1, apply)
+        self.step_forward(self.hot.cur + 1, &mut |edit, _| apply(edit, false))
     }
 
     /// Restores to the revision `back` steps behind the tip: `target = head -
@@ -545,11 +677,11 @@ impl DeltaRing {
         F: FnMut(&Edit, bool) -> WreditResult<()>,
     {
         // `back > head` would underflow: refuse outright.
-        let Some(target) = self.head.checked_sub(back) else {
+        let Some(target) = self.hot.head.checked_sub(back) else {
             self.refusal();
             return false;
         };
-        if target < self.base {
+        if target < self.hot.base {
             self.refusal();
             return false;
         }
@@ -559,20 +691,28 @@ impl DeltaRing {
     /// Increments the refusal counter (logged at debug level).
     #[inline]
     fn refusal(&mut self) {
-        self.refusals = self.refusals.saturating_add(1);
-        log_error!("wredit history: refused operation (refusals={})", self.refusals);
+        self.cold.refusals = self.cold.refusals.saturating_add(1);
+        log_error!(
+            "wredit history: refused operation (refusals={})",
+            self.cold.refusals
+        );
     }
 
-    /// Software cache prefetch: `_mm_prefetch` of the next ring payload to
-    /// hide pointer-chase latency during a `step` walk.  A no-op on
-    /// non-x86 targets.  Caller guarantees `index` is a logical edit index;
-    /// we only prefetch when `index` lies within `[base, head)`.
+    /// Software cache prefetch: `_mm_prefetch` of the next ring edit header
+    /// plus its payloads to hide pointer-chase latency during a `step` walk.
+    /// A no-op on non-x86 targets.  Caller guarantees `index` is a logical
+    /// edit index; we only prefetch when `index` lies within `[base, head)`.
+    ///
+    /// Prefetches 2 edits ahead (current + next) so the hardware has more
+    /// latency to hide.  Payloads use `_MM_HINT_T0` because `apply` needs
+    /// them immediately; headers use `_MM_HINT_T0` for the current edit and
+    /// `_MM_HINT_T1` for the next edit (needed one iteration later).
     #[inline]
-    fn prefetch_next(index: usize, base: usize, head: usize, capacity: usize, edits: &[Edit]) {
-        if index < base || index >= head || capacity == 0 {
+    fn prefetch_next(index: usize, base: usize, head: usize, mask: usize, edits: &[Edit]) {
+        if index < base || index >= head || mask == 0 && index != 0 {
             return;
         }
-        let slot = Self::slot(index, capacity);
+        let slot = Self::slot(index, mask);
         if slot >= edits.len() {
             return;
         }
@@ -583,6 +723,9 @@ impl DeltaRing {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             let edit = edits.get_unchecked(slot);
+            let edit_ptr = edit as *const Edit as *const i8;
+            core::arch::x86_64::_mm_prefetch(edit_ptr, core::arch::x86_64::_MM_HINT_T0);
+            // Payloads: T0 (needed immediately in apply).
             let old_ptr = edit.old.as_ptr() as *const i8;
             let new_ptr = edit.new.as_ptr() as *const i8;
             if !old_ptr.is_null() {
@@ -591,8 +734,18 @@ impl DeltaRing {
             if !new_ptr.is_null() {
                 core::arch::x86_64::_mm_prefetch(new_ptr, core::arch::x86_64::_MM_HINT_T0);
             }
-            let edit_ptr = edit as *const Edit as *const i8;
-            core::arch::x86_64::_mm_prefetch(edit_ptr, core::arch::x86_64::_MM_HINT_T0);
+            // Prefetch the next edit's header with T1 (needed next iteration).
+            let next_index = index.wrapping_add(1);
+            if next_index < head {
+                let next_slot = Self::slot(next_index, mask);
+                if next_slot < edits.len() {
+                    let next_edit = edits.get_unchecked(next_slot);
+                    core::arch::x86_64::_mm_prefetch(
+                        next_edit as *const Edit as *const i8,
+                        core::arch::x86_64::_MM_HINT_T1,
+                    );
+                }
+            }
         }
     }
 }
@@ -602,14 +755,22 @@ impl Default for DeltaRing {
     /// No heap allocation happens here, so `default` cannot fail.
     fn default() -> Self {
         Self {
-            edits: Vec::new(),
-            capacity: MIN_RING_CAPACITY,
-            base: 0,
-            head: 0,
-            cur: 0,
-            bytes: 0,
-            hot_bytes: 0,
-            refusals: 0,
+            hot: DeltaRingHot {
+                edits: Vec::new(),
+                capacity: MIN_RING_CAPACITY,
+                mask: MIN_RING_CAPACITY.wrapping_sub(1),
+                base: 0,
+                head: 0,
+                cur: 0,
+            },
+            cold: DeltaRingCold {
+                bytes: 0,
+                _pad_bytes: [0; 56],
+                hot_bytes: 0,
+                _pad_hot: [0; 56],
+                refusals: 0,
+                _pad_refusals: [0; 56],
+            },
         }
     }
 }
@@ -642,10 +803,20 @@ pub fn delta_common(a: &[u32], b: &[u32]) -> (usize, usize) {
 /// Common prefix length of `a` and `b` over `len` elements.
 #[inline]
 fn common_prefix(a: &[u32], b: &[u32], len: usize) -> usize {
+    // Tiny arrays: scalar is cheaper than SIMD setup overhead.
+    if len < 8 {
+        return common_prefix_scalar(a, b, len);
+    }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         use codevar_base::cpuid::{Feature, has};
 
+        if has(Feature::Avx512F) {
+            // SAFETY: the `has(Feature::Avx512F)` probe confirmed AVX-512F
+            // (and OS-enabled ZMM state).  `chunks_exact(16)` bounds every
+            // `_mm512_loadu_si512` inside `a[..len]` and `b[..len]`.
+            return unsafe { x86::common_prefix_avx512(a, b, len) };
+        }
         if has(Feature::Avx2) {
             // SAFETY: the `has(Feature::Avx2)` probe above confirmed AVX2
             // (and OS-enabled YMM state).  `chunks_exact(8)` bounds every
@@ -660,12 +831,20 @@ fn common_prefix(a: &[u32], b: &[u32], len: usize) -> usize {
 /// tails after the common prefix has been removed).
 #[inline]
 fn common_suffix(a_tail: &[u32], b_tail: &[u32], len: usize) -> usize {
+    // Tiny arrays: scalar is cheaper than SIMD setup overhead.
+    if len < 8 {
+        return common_suffix_scalar(a_tail, b_tail, len);
+    }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         use codevar_base::cpuid::{Feature, has};
 
+        if has(Feature::Avx512F) {
+            // SAFETY: the `has(Feature::Avx512F)` probe confirmed AVX-512F.
+            return unsafe { x86::common_suffix_avx512(a_tail, b_tail, len) };
+        }
         if has(Feature::Avx2) {
-            // SAFETY: the `has(Feature::Avx2)` probe confirmed AVX2.
+            // SAFETY: the `has(Feature::Avx2)` probe above confirmed AVX2.
             return unsafe { x86::common_suffix_avx2(a_tail, b_tail, len) };
         }
     }
@@ -777,6 +956,82 @@ mod x86 {
                     return counted + (7 - lane);
                 }
                 counted += 8;
+            }
+            counted
+        }
+    }
+
+    /// Common prefix over 16-element AVX-512 blocks.
+    ///
+    /// # Safety
+    ///
+    /// Requires AVX-512F.  `chunks_exact(16)` keeps every load inside the
+    /// slices; results land in a k-mask register so `kmovd` finds the first
+    /// differing lane without a `movemask` round-trip.
+    #[target_feature(enable = "avx512f")]
+    pub(super) unsafe fn common_prefix_avx512(a: &[u32], b: &[u32], len: usize) -> usize {
+        // SAFETY: the caller proved AVX-512F; `chunks_exact(16)` bounds every
+        // `_mm512_loadu_si512` inside `a[..len]` and `b[..len]`.
+        unsafe {
+            let mut base = 0usize;
+            let mut chunks = a[..len].chunks_exact(16);
+            let b_chunks = b[..len].chunks_exact(16);
+            for (chunk_a, chunk_b) in chunks.by_ref().zip(b_chunks) {
+                let va = _mm512_loadu_si512(chunk_a.as_ptr().cast());
+                let vb = _mm512_loadu_si512(chunk_b.as_ptr().cast());
+                let equal = _mm512_cmpeq_epi32_mask(va, vb);
+                let m: u16 = u16::from(equal);
+                if m != 0xFFFF {
+                    // Differing lanes are the clear bits of the equal-mask.
+                    let diff = (!m) & 0xFFFF;
+                    return base + diff.trailing_zeros() as usize;
+                }
+                base += 16;
+            }
+            // Scalar tail for the remainder.
+            base + super::common_prefix_scalar(&a[base..len], &b[base..len], len - base)
+        }
+    }
+
+    /// Common suffix over 16-element AVX-512 blocks (walking from the back).
+    ///
+    /// # Safety
+    ///
+    /// Requires AVX-512F.  Loads stay inside the tails; `kmovd`+`lzcnt` finds
+    /// the highest differing lane from the end.
+    #[target_feature(enable = "avx512f")]
+    pub(super) unsafe fn common_suffix_avx512(a: &[u32], b: &[u32], len: usize) -> usize {
+        // SAFETY: the caller proved AVX-512F; `chunks_exact(16)` bounds every
+        // load inside `a` and `b`.
+        unsafe {
+            let mut counted = 0usize;
+            let rem = len % 16;
+            let mut checked = 0usize;
+            while checked < rem {
+                if a[len - 1 - checked] != b[len - 1 - checked] {
+                    return counted;
+                }
+                counted += 1;
+                checked += 1;
+            }
+            let full = len - rem;
+            let a_chunks = a[..full].chunks_exact(16);
+            let b_chunks = b[..full].chunks_exact(16);
+            let mut a_rev = a_chunks.rev();
+            let mut b_rev = b_chunks.rev();
+            while let (Some(ca), Some(cb)) = (a_rev.next(), b_rev.next()) {
+                let va = _mm512_loadu_si512(ca.as_ptr().cast());
+                let vb = _mm512_loadu_si512(cb.as_ptr().cast());
+                let equal = _mm512_cmpeq_epi32_mask(va, vb);
+                let m: u16 = u16::from(equal);
+                if m != 0xFFFF {
+                    // Highest differing lane from the end: clear bits of the
+                    // equal-mask, take the highest set bit.
+                    let diff = (!m) & 0xFFFF;
+                    let lane = 15usize - diff.leading_zeros() as usize;
+                    return counted + lane;
+                }
+                counted += 16;
             }
             counted
         }
