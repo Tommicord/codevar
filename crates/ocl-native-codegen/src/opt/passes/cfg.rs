@@ -145,18 +145,79 @@ fn remove_unreachable(module: &mut Module, func: ValueId) -> Result<()> {
         return Ok(());
     };
     let cfg = Cfg::build(body);
+    // A block named by a `LoopMerge` or `SelectionMerge` must not be
+    // removed: a live block's structured-control-flow merge target has to
+    // keep existing, otherwise the pass leaves a reference to a block that
+    // no longer exists and the verifier rejects the module.  Such blocks
+    // stay as unreachable orphans, which the verifier tolerates when they
+    // end in a terminator.
+    let mut merge_targets_vec: Vec<usize> = Vec::new();
+    for block in body {
+        for inst in &block.insts {
+            merge_targets(&inst.op, &mut merge_targets_vec);
+        }
+    }
+    let merge_targeted: BTreeSet<usize> = merge_targets_vec.into_iter().collect();
     let dead: BTreeSet<usize> = (0..cfg.len())
         .filter(|index| {
             !cfg.reachable
                 .get(*index)
                 .copied()
                 .unwrap_or(false)
+                && !merge_targeted.contains(index)
         })
         .collect();
-    if dead.is_empty() {
-        return Ok(());
+    if !dead.is_empty() {
+        remove_dead_blocks(module, func, &dead)?;
     }
-    remove_dead_blocks(module, func, &dead)
+
+    // A merge-target block that stayed behind because it is unreachable
+    // (the loop it merges never exits) must still end in a flow
+    // instruction: the verifier rejects an unreachable block that ends in
+    // OpReturn or OpReturnValue.  Downgrade its terminator to OpUnreachable.
+    let fixup: Vec<usize> = {
+        let Some(function) = module.function(func) else {
+            return Ok(());
+        };
+        let Some(body) = function.body.as_ref() else {
+            return Ok(());
+        };
+        body.iter()
+            .enumerate()
+            .filter(|(index, _)| !dead.contains(index))
+            .filter(|(index, _)| {
+                !cfg.reachable
+                    .get(*index)
+                    .copied()
+                    .unwrap_or(false)
+            })
+            .filter_map(|(index, block)| {
+                let last = block.insts.last()?;
+                if matches!(
+                    last.op,
+                    Op::Unreachable | Op::Branch { .. } | Op::BranchConditional { .. }
+                ) {
+                    return None;
+                }
+                Some(index)
+            })
+            .collect()
+    };
+    let Some(function) = module.function_mut(func) else {
+        return Ok(());
+    };
+    let Some(body) = function.body.as_mut() else {
+        return Ok(());
+    };
+    for index in fixup {
+        let Some(block) = body.get_mut(index) else {
+            continue;
+        };
+        if let Some(last) = block.insts.last_mut() {
+            last.op = Op::Unreachable;
+        }
+    }
+    Ok(())
 }
 
 /// Removes the blocks in `dead`.
