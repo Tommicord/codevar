@@ -58,7 +58,7 @@ pub use base::{
     NAME_LEN, SHIFT_TYPE, TYPE_MASK, WritableAlignedPtr, WritableGapSize, make_packed, packed_char,
     packed_type,
 };
-pub use cursor::{BidiIndex, Cursor};
+pub use cursor::{BidiIndex, ColumnarRange, ColumnarSelection, Cursor};
 pub use history_ring_journal::{Edit, HistoryStore, delta_common, is_word_continuation};
 pub use shared_gap::{SharedGapSlot, SharedGapTable};
 pub use traits::{

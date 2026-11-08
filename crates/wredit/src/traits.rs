@@ -29,7 +29,7 @@
 use alloc::sync::Arc;
 
 use super::base::NAME_LEN;
-use super::cursor::Cursor;
+use super::cursor::{ColumnarSelection, Cursor};
 use super::shared_gap::SharedGapTable;
 use super::writable::{EventBridge, SHARED_GAP_SLOTS};
 use crate::error::WreditResult;
@@ -342,4 +342,34 @@ pub trait TextEditableHistory<Raw, Buf, const GAP_SIZE: usize>: Writable<Raw, Bu
     /// Restores to the revision `back` steps behind the tip.
     /// Returns `false` when `head - back` falls outside `[base, head]`.
     fn restore(&mut self, back: usize) -> WreditResult<bool>;
+}
+
+/// Columnar (vertical/block) selection: one element range per spanned
+/// row, specified in `(row, col)` space and resolved into element
+/// ranges by the cursor.
+///
+/// A columnar selection and a linear selection are mutually exclusive
+/// on a cursor: activating one clears the other.
+pub trait TextEditableColumnarSelection<Raw, Buf, const GAP_SIZE: usize>:
+    Writable<Raw, Buf, GAP_SIZE>
+{
+    /// Starts (or restarts) a columnar selection with its anchor at
+    /// `(row, col)` and its moving end at the caret's current row/col.
+    /// Returns `false` for a dead cursor.
+    fn set_columnar_anchor(&mut self, cursor_id: usize, row: usize, col: usize) -> bool;
+
+    /// Extends the columnar selection to `(row, col)` from its anchor.
+    /// Returns `false` when no columnar selection is active.
+    fn set_columnar_end(&mut self, cursor_id: usize, row: usize, col: usize) -> bool;
+
+    /// Deactivates the columnar selection. Returns `false` for a dead
+    /// cursor.
+    fn clear_columnar_selection(&mut self, cursor_id: usize) -> bool;
+
+    /// `true` when a columnar selection is active on `cursor_id`.
+    fn is_columnar_selection_active(&self, cursor_id: usize) -> bool;
+
+    /// The resolved per-row element ranges, or `None` when no columnar
+    /// selection is active.
+    fn columnar_ranges(&self, cursor_id: usize) -> Option<ColumnarSelection>;
 }

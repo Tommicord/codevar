@@ -25,11 +25,13 @@ use alloc::vec::Vec;
 use codevar_logger::log_error;
 
 use super::base::{MERGE_MASK, make_packed, packed_char, packed_type};
+use super::cursor::ColumnarSelection;
 use super::flush_writable::write_bytes_to_raw;
 use super::shared_gap::{SLOT_CURSOR_BITS, SLOT_MAX_BASE, SLOT_MAX_SIZE};
 use super::traits::{
-    TextEditableBufferQuery, TextEditableCursor, TextEditableDelete, TextEditableGap, TextEditableHistory,
-    TextEditableOverwrite, TextEditablePut, TextEditableReplace, TextEditableSelection, Writable,
+    TextEditableBufferQuery, TextEditableColumnarSelection, TextEditableCursor, TextEditableDelete,
+    TextEditableGap, TextEditableHistory, TextEditableOverwrite, TextEditablePut, TextEditableReplace,
+    TextEditableSelection, Writable,
 };
 use super::writable::{GAP_NONE, MAX_CURSORS, MAX_GAPS, SHARED_GAP_SLOTS, StreamWritable, WritableEvent};
 use super::writable_scan;
@@ -891,6 +893,78 @@ where
             Some(cursor) => cursor.selection_range(),
             None => {
                 log_error!("wredit: selection query for dead cursor {cursor_id}");
+                None
+            }
+        }
+    }
+}
+
+impl<Raw, Buf, const GAP_SIZE: usize> TextEditableColumnarSelection<Raw, Buf, GAP_SIZE>
+    for StreamWritable<Raw, Buf, GAP_SIZE>
+where
+    Raw: Copy + Into<u32> + From<u32> + From<Buf>,
+    Buf: Copy + From<Raw>,
+{
+    fn set_columnar_anchor(&mut self, cursor_id: usize, row: usize, col: usize) -> bool {
+        let Ok(id) = self.validate_cursor(cursor_id) else {
+            return false;
+        };
+        self.base.sync_cursor_length(id);
+        let Some(cursor) = self.base.cursor(id) else {
+            return false;
+        };
+        let ok = cursor.set_columnar_anchor(row, col);
+        if ok {
+            self.base
+                .emit(WritableEvent::selection_changed(id));
+        }
+        ok
+    }
+
+    fn set_columnar_end(&mut self, cursor_id: usize, row: usize, col: usize) -> bool {
+        let Ok(id) = self.validate_cursor(cursor_id) else {
+            return false;
+        };
+        self.base.sync_cursor_length(id);
+        let Some(cursor) = self.base.cursor(id) else {
+            return false;
+        };
+        let ok = cursor.set_columnar_end(row, col);
+        if ok {
+            self.base
+                .emit(WritableEvent::selection_changed(id));
+        }
+        ok
+    }
+
+    fn clear_columnar_selection(&mut self, cursor_id: usize) -> bool {
+        let Ok(id) = self.validate_cursor(cursor_id) else {
+            return false;
+        };
+        let Some(cursor) = self.base.cursor(id) else {
+            return false;
+        };
+        cursor.clear_columnar_selection();
+        self.base
+            .emit(WritableEvent::selection_changed(id));
+        true
+    }
+
+    fn is_columnar_selection_active(&self, cursor_id: usize) -> bool {
+        match self.base.cursor(cursor_id) {
+            Some(cursor) => cursor.is_columnar_active(),
+            None => {
+                log_error!("wredit: columnar selection query for dead cursor {cursor_id}");
+                false
+            }
+        }
+    }
+
+    fn columnar_ranges(&self, cursor_id: usize) -> Option<ColumnarSelection> {
+        match self.base.cursor(cursor_id) {
+            Some(cursor) => cursor.columnar_ranges(),
+            None => {
+                log_error!("wredit: columnar ranges query for dead cursor {cursor_id}");
                 None
             }
         }
