@@ -731,6 +731,110 @@ impl BidiIndex {
     }
 }
 
+/// One contiguous span of a columnar (vertical/block) selection,
+/// covering a single logical row.
+///
+/// `start` is inclusive and `end` is exclusive, both expressed as
+/// element offsets into the committed document.  Ranges are resolved
+/// from `(row, col)` coordinates at build time so consumers iterate
+/// over elements, not rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ColumnarRange {
+    /// Row the range belongs to.
+    pub row: usize,
+    /// First selected element (inclusive).
+    pub start: usize,
+    /// One-past-last selected element (exclusive).
+    pub end: usize,
+}
+
+/// A columnar (vertical/block) selection: one [`ColumnarRange`] per
+/// spanned row, sorted by row and non-overlapping.
+///
+/// Columnar selections are specified in `(row, col)` space but resolved
+/// into element ranges at build time, so rendering and edit application
+/// walk elements rather than rescanning the document.  Building is
+/// `O(rows spanned)`; each row lookup is `O(log n)` by binary search.
+/// The linear (`BidiIndex`) selection and a columnar selection are
+/// mutually exclusive on a cursor: activating one clears the other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnarSelection {
+    /// Row/col where the columnar selection was anchored.
+    anchor: (usize, usize),
+    /// Per-row ranges, sorted by `row`, non-overlapping.
+    ranges: Vec<ColumnarRange>,
+    /// Whether the selection is active.
+    active: bool,
+}
+
+impl ColumnarSelection {
+    /// An empty, inactive columnar selection.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            anchor: (0, 0),
+            ranges: Vec::new(),
+            active: false,
+        }
+    }
+
+    /// `true` when a columnar selection is active (even an empty one).
+    #[must_use]
+    #[inline]
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
+    /// The anchor `(row, col)` of the selection.
+    #[must_use]
+    #[inline]
+    pub fn anchor_row_col(&self) -> (usize, usize) {
+        self.anchor
+    }
+
+    /// The resolved per-row element ranges, sorted by row.
+    #[must_use]
+    #[inline]
+    pub fn ranges(&self) -> &[ColumnarRange] {
+        &self.ranges
+    }
+
+    /// The range covering `row`, if any, found by binary search.
+    #[must_use]
+    #[inline]
+    pub fn range_at_row(&self, row: usize) -> Option<ColumnarRange> {
+        match self
+            .ranges
+            .binary_search_by(|range| range.row.cmp(&row))
+        {
+            Ok(index) => Some(self.ranges[index]),
+            Err(_) => None,
+        }
+    }
+
+    /// Total number of selected elements across all rows.
+    #[must_use]
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.ranges
+            .iter()
+            .map(|range| range.end - range.start)
+            .sum()
+    }
+
+    /// `true` when the selection covers no elements.
+    #[must_use]
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// Maximum rows a columnar selection may span before the builder
+/// falls back to a bounded scan.  Guards a pathological full-document
+/// block selection against O(document) work per keystroke.
+const COLUMNAR_MAX_ROWS: usize = 4096;
+
 /// A movable, selectable cursor over a packed raw document.
 ///
 /// # Type parameters
@@ -755,6 +859,9 @@ pub struct Cursor<Raw, Buf, const GAP_SIZE: usize> {
     anchor: Cell<usize>,
     /// Whether a selection is currently active.
     selection_active: Cell<bool>,
+    /// Active columnar (vertical/block) selection, mutually exclusive
+    /// with the linear `selection` range.
+    columnar: Cell<Option<ColumnarSelection>>,
     /// Borrowed raw document; only indices `< raw_length` are valid.
     raw: Cell<*const Raw>,
     /// Logical document length: the clamping bound for positions,
@@ -780,6 +887,7 @@ impl<Raw, Buf, const GAP_SIZE: usize> Cursor<Raw, Buf, GAP_SIZE> {
             pos: Cell::new(0),
             anchor: Cell::new(0),
             selection_active: Cell::new(false),
+            columnar: Cell::new(None),
             raw: Cell::new(ptr::null()),
             length: Cell::new(0),
             raw_length: Cell::new(0),
@@ -813,6 +921,9 @@ impl<Raw, Buf, const GAP_SIZE: usize> Cursor<Raw, Buf, GAP_SIZE> {
             self.selection
                 .set(BidiIndex::new(sel.p0.min(length), sel.p1.min(length)));
         }
+        // Element ranges are tied to the old view; drop the columnar
+        // selection so it is rebuilt against the new document.
+        self.columnar.set(None);
     }
 
     /// Rebinds the cursor to a raw document view *without* touching
@@ -954,6 +1065,177 @@ impl<Raw, Buf, const GAP_SIZE: usize> Cursor<Raw, Buf, GAP_SIZE> {
         }
         let (low, high) = self.selection.get().ordered();
         if low < high { Some((low, high)) } else { None }
+    }
+
+    /// `true` when a columnar (vertical/block) selection is active.
+    #[must_use]
+    #[inline]
+    pub fn is_columnar_active(&self) -> bool {
+        self.columnar.take().map_or(false, |sel| {
+            let active = sel.is_active();
+            self.columnar.set(Some(sel));
+            active
+        })
+    }
+
+    /// The resolved per-row element ranges of the columnar selection,
+    /// or `None` when no columnar selection is active.
+    #[must_use]
+    #[inline]
+    pub fn columnar_ranges(&self) -> Option<ColumnarSelection> {
+        self.columnar
+            .take()
+            .inspect(|sel| self.columnar.set(Some(sel.clone())))
+    }
+
+    /// Starts (or restarts) a columnar selection with its anchor at
+    /// `(row, col)` and its moving end at the caret's current row/col.
+    ///
+    /// Any existing linear selection is deactivated.  Returns `false`
+    /// for a cursor with no bound view.
+    #[must_use]
+    pub fn set_columnar_anchor(&self, row: usize, col: usize) -> bool
+    where
+        Raw: Copy + Into<u32> + From<u32>,
+    {
+        let length = self.length.get();
+        if self.raw.get().is_null() {
+            return false;
+        }
+        let caret = self.pos.get().min(length);
+        let (crow, ccol) = self.row_col_at(caret);
+        self.selection_active.set(false);
+        self.selection.set(BidiIndex::new(0, 0));
+        self.columnar
+            .set(Some(self.build_columnar(row, col, crow, ccol)));
+        true
+    }
+
+    /// Extends the columnar selection to `(row, col)` from its anchor.
+    ///
+    /// Returns `false` when no columnar selection is active.
+    #[must_use]
+    pub fn set_columnar_end(&self, row: usize, col: usize) -> bool
+    where
+        Raw: Copy + Into<u32> + From<u32>,
+    {
+        let Some(mut sel) = self.columnar.take() else {
+            return false;
+        };
+        let (crow, ccol) = sel.anchor_row_col();
+        sel = self.build_columnar(crow, ccol, row, col);
+        sel.active = true;
+        self.columnar.set(Some(sel));
+        true
+    }
+
+    /// Deactivates the columnar selection.
+    pub fn clear_columnar_selection(&self) {
+        self.columnar.set(None);
+    }
+
+    /// Element start of the logical line holding `row`, found by a
+    /// single forward walk of the line scanner from the document start.
+    ///
+    /// Each [`line_bounds`](Self::line_bounds) call advances past one
+    /// line, so resolving rows in ascending order is O(rows walked)
+    /// overall rather than O(rows) per line.  Clamped to the document
+    /// end; a row past the last line reports the document end.
+    fn row_start_at(&self, row: usize) -> usize
+    where
+        Raw: Copy + Into<u32> + From<u32>,
+    {
+        let length = self.length.get();
+        let mut pos = 0usize;
+        let mut cur = 0usize;
+        while cur < row && pos < length {
+            let (_, end) = self.line_bounds(pos);
+            if end >= length {
+                break;
+            }
+            pos = end + 1;
+            cur += 1;
+        }
+        pos.min(length)
+    }
+
+    /// Builds a columnar selection spanning the rows between
+    /// `(arow, acol)` and `(erow, ecol)`, resolved into per-row element
+    /// ranges.  The anchor row is selected from `acol` to its line end;
+    /// fully spanned middle rows are selected in full; the end row is
+    /// selected from its line start to `ecol`.  Column bounds are
+    /// clamped to each line's width.
+    fn build_columnar(&self, arow: usize, acol: usize, erow: usize, ecol: usize) -> ColumnarSelection
+    where
+        Raw: Copy + Into<u32> + From<u32>,
+    {
+        let length = self.length.get();
+        let (lo, hi) = if arow <= erow { (arow, erow) } else { (erow, arow) };
+        let span = hi.saturating_sub(lo) + 1;
+        if span > COLUMNAR_MAX_ROWS {
+            // A pathological full-document block selection: keep the
+            // result bounded instead of scanning the whole document.
+            return ColumnarSelection::new();
+        }
+        let mut ranges = Vec::with_capacity(span);
+        // Walk the lines in ascending row order, carrying the running
+        // element position forward so each line_bounds call resumes
+        // where the previous line ended.
+        let mut pos = self.row_start_at(lo);
+        for row in lo..=hi {
+            if pos > length {
+                break;
+            }
+            let (line_start, line_end) = self.line_bounds(pos);
+            let line_width = line_end.saturating_sub(line_start);
+            // A columnar (box) selection is a rectangle: every spanned
+            // row selects the same column interval [mincol, maxcol),
+            // clamped to the line width.  The result is symmetric in the
+            // anchor and moving ends, so dragging corner-to-corner in
+            // either direction selects the same block.
+            let lo_col = acol.min(ecol).min(line_width);
+            let hi_col = acol.max(ecol).min(line_width);
+            let (cstart, cend) = (lo_col, hi_col);
+            if cstart < cend {
+                ranges.push(ColumnarRange {
+                    row,
+                    start: line_start + cstart,
+                    end: line_start + cend,
+                });
+            }
+            // Advance to the start of the next line.
+            if line_end >= length {
+                break;
+            }
+            pos = line_end + 1;
+        }
+        let active = !ranges.is_empty();
+        ColumnarSelection {
+            anchor: (arow, acol),
+            ranges,
+            active,
+        }
+    }
+
+    /// The `(row, col)` of `position`, computed by counting newlines
+    /// before it.  Used to derive the caret's row/col for an anchor.
+    fn row_col_at(&self, position: usize) -> (usize, usize)
+    where
+        Raw: Copy + Into<u32> + From<u32>,
+    {
+        let mut row = 0usize;
+        let mut pos = 0usize;
+        let length = self.length.get();
+        while pos < position && pos < length {
+            let (_, end) = self.line_bounds(pos);
+            if end >= length {
+                break;
+            }
+            pos = end + 1;
+            row += 1;
+        }
+        let col = position.saturating_sub(pos);
+        (row, col)
     }
 }
 
@@ -1495,6 +1777,7 @@ impl<Raw, Buf, const GAP_SIZE: usize> Clone for Cursor<Raw, Buf, GAP_SIZE> {
             pos: Cell::new(self.pos.get()),
             anchor: Cell::new(self.anchor.get()),
             selection_active: Cell::new(self.selection_active.get()),
+            columnar: Cell::new(unsafe { (*self.columnar.as_ptr()).clone() }),
             raw: Cell::new(self.raw.get()),
             length: Cell::new(self.length.get()),
             raw_length: Cell::new(self.raw_length.get()),
@@ -1511,7 +1794,7 @@ impl<Raw, Buf, const GAP_SIZE: usize> Default for Cursor<Raw, Buf, GAP_SIZE> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BidiIndex, Cursor, LineAnchors, LineRing};
+    use super::{BidiIndex, ColumnarRange, ColumnarSelection, Cursor, LineAnchors, LineRing};
 
     // Justification: `unwrap` in tests is permitted by the project
     // lint configuration (`allow-unwrap-in-tests`).
@@ -1543,6 +1826,136 @@ mod tests {
         assert_eq!(cursor.row(), 0);
         assert_eq!(cursor.col(), 3);
         assert_eq!(cursor.width(), 3);
+    }
+
+    #[test]
+    fn columnar_selection_spans_multiple_rows() {
+        // "abc\nde\nf": row0=[0,3), row1=[4,6), row2=[7,8)
+        let doc = [
+            ch('a'),
+            ch('b'),
+            ch('c'),
+            ch('\n'),
+            ch('d'),
+            ch('e'),
+            ch('\n'),
+            ch('f'),
+        ];
+        let cursor: Cursor<u32, u32, 16> = Cursor::new();
+        unsafe { cursor.set_raw(doc.as_ptr(), doc.len()) };
+        // Caret on row 2, col 0 -> element 7.
+        unsafe { cursor.set_array_pos(7) };
+        assert!(cursor.set_columnar_anchor(0, 1));
+        assert!(cursor.is_columnar_active());
+        assert!(cursor.set_columnar_end(2, 0));
+        let ranges = cursor.columnar_ranges().expect("columnar active");
+        let rs: Vec<ColumnarRange> = ranges.ranges().to_vec();
+        // Box selection [mincol,maxcol) = [0,1) on every spanned row.
+        assert_eq!(
+            rs,
+            vec![
+                ColumnarRange {
+                    row: 0,
+                    start: 0,
+                    end: 1
+                },
+                ColumnarRange {
+                    row: 1,
+                    start: 4,
+                    end: 5
+                },
+                ColumnarRange {
+                    row: 2,
+                    start: 7,
+                    end: 8
+                },
+            ],
+        );
+        assert_eq!(ranges.len(), 3);
+        assert!(!ranges.is_empty());
+    }
+
+    #[test]
+    fn columnar_selection_single_row() {
+        // "abc\nde\nf": row1 = elements [4,6)
+        let doc = [
+            ch('a'),
+            ch('b'),
+            ch('c'),
+            ch('\n'),
+            ch('d'),
+            ch('e'),
+            ch('\n'),
+            ch('f'),
+        ];
+        let cursor: Cursor<u32, u32, 16> = Cursor::new();
+        unsafe { cursor.set_raw(doc.as_ptr(), doc.len()) };
+        unsafe { cursor.set_array_pos(5) };
+        assert!(cursor.set_columnar_anchor(1, 0));
+        assert!(cursor.set_columnar_end(1, 2));
+        let ranges = cursor.columnar_ranges().expect("columnar active");
+        let rs: Vec<ColumnarRange> = ranges.ranges().to_vec();
+        assert_eq!(
+            rs,
+            vec![ColumnarRange {
+                row: 1,
+                start: 4,
+                end: 6
+            }]
+        );
+        assert_eq!(ranges.len(), 2);
+    }
+
+    #[test]
+    fn columnar_selection_reversed_anchor_equals_forward() {
+        // "abc\nde\nf"
+        let doc = [
+            ch('a'),
+            ch('b'),
+            ch('c'),
+            ch('\n'),
+            ch('d'),
+            ch('e'),
+            ch('\n'),
+            ch('f'),
+        ];
+        let forward = |cursor: &Cursor<u32, u32, 16>| {
+            cursor.set_columnar_anchor(0, 1);
+            cursor.set_columnar_end(2, 0);
+            cursor.columnar_ranges().expect("active")
+        };
+        let reversed = |cursor: &Cursor<u32, u32, 16>| {
+            cursor.set_columnar_anchor(2, 0);
+            cursor.set_columnar_end(0, 1);
+            cursor.columnar_ranges().expect("active")
+        };
+
+        let mut a = Cursor::new();
+        unsafe { a.set_raw(doc.as_ptr(), doc.len()) };
+        let fa = forward(&a);
+
+        let mut b = Cursor::new();
+        unsafe { b.set_raw(doc.as_ptr(), doc.len()) };
+        let ra = reversed(&b);
+
+        assert_eq!(fa.ranges(), ra.ranges());
+    }
+
+    #[test]
+    fn columnar_selection_clears_linear_selection() {
+        let doc = [ch('a'), ch('b'), ch('c')];
+        let cursor: Cursor<u32, u32, 16> = Cursor::new();
+        unsafe { cursor.set_raw(doc.as_ptr(), doc.len()) };
+        cursor.set_selection_anchor(0);
+        cursor.set_selection_end(2);
+        assert_eq!(cursor.selection_range(), Some((0, 2)));
+        assert!(!cursor.is_columnar_active());
+        assert!(cursor.set_columnar_anchor(0, 1));
+        assert!(cursor.is_columnar_active());
+        assert_eq!(cursor.selection_range(), None);
+        cursor.clear_columnar_selection();
+        assert!(!cursor.is_columnar_active());
+        assert_eq!(cursor.columnar_ranges(), None);
     }
 
     #[test]
