@@ -32,6 +32,15 @@
 //! [`keccak_f1600`] is the scalar reference the whole module is verified
 //! against; the vector paths only ever reorder the same arithmetic.
 //!
+//! One Keccak-f[1600] is a sequential network over 25 lanes, so widening
+//! it buys nothing; the SIMD win comes from running four states in
+//! lockstep. [`Batch`] holds them interleaved, with lane `i` of stream `k`
+//! at flat index `i * 4 + k`, so one 256-bit register covers the same lane
+//! of all four streams: theta and chi become single vector ops, iota is a
+//! broadcast XOR, and rho+pi collapses to a register re-indexing.
+//! [`shake256_digests_x4`] and [`shake256_fingerprints_x4_words`] are the
+//! batched entry points a journal scan uses.
+//!
 //! # Examples
 //!
 //! ```
@@ -55,7 +64,7 @@ pub const LANE_COUNT: usize = 25;
 /// Streams one interleaved permutation carries.
 pub const BATCH_STREAMS: usize = 4;
 
-/// Lanes in one interleaved batch state: [`LANE_COUNT`] per stream.
+/// Lanes in one [`Batch`]: [`LANE_COUNT`] per stream.
 pub const BATCH_LANES: usize = LANE_COUNT * BATCH_STREAMS;
 
 /// Lanes the rate fills (136 / 8).
@@ -231,6 +240,43 @@ fn keccak_f1600(state: &mut [u64; LANE_COUNT]) {
             }
         }
         state[0] ^= iota;
+    }
+}
+
+/// Four interleaved Keccak-f[1600] states, one per stream.
+///
+/// Lane `i` of stream `k` lives at `lanes[i * BATCH_STREAMS + k]`. This is
+/// the scalar fallback and the oracle for the vector kernel: it runs the
+/// reference permutation once per stream after de-interleaving.
+#[inline]
+fn keccak_f1600_x4(lanes: &mut [u64; BATCH_LANES]) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        use codevar_base::cpuid::{Feature, has};
+
+        if has(Feature::Avx2) && has(Feature::Sse41) {
+            // SAFETY: the probes above proved AVX2 and SSE4.1, and the
+            // same XGETBV check that backs `Feature::Avx2` proved the
+            // OS-enabled AVX state. The kernel only touches `lanes`,
+            // whose length is the fixed [`BATCH_LANES`].
+            return unsafe { x86::keccak_f1600_x4_avx2(lanes) };
+        }
+    }
+    keccak_f1600_x4_scalar(lanes);
+}
+
+/// The scalar four-way interleaved permutation.
+#[inline]
+fn keccak_f1600_x4_scalar(lanes: &mut [u64; BATCH_LANES]) {
+    for stream in 0..BATCH_STREAMS {
+        let mut state = [0u64; LANE_COUNT];
+        for (i, lane) in state.iter_mut().enumerate() {
+            *lane = lanes[i * BATCH_STREAMS + stream];
+        }
+        keccak_f1600(&mut state);
+        for (i, lane) in state.iter().enumerate() {
+            lanes[i * BATCH_STREAMS + stream] = *lane;
+        }
     }
 }
 
@@ -480,6 +526,383 @@ fn fingerprint_of(digest: &[u8; DIGEST_LEN]) -> u64 {
     u64::from_le_bytes(bytes)
 }
 
+/// Four streams parked side by side for one interleaved permutation.
+#[derive(Clone, Copy)]
+struct Batch {
+    lanes: [u64; BATCH_LANES],
+}
+
+impl Batch {
+    #[must_use]
+    const fn new() -> Self {
+        Self {
+            lanes: [0u64; BATCH_LANES],
+        }
+    }
+
+    #[inline]
+    fn lane(&self, stream: usize, lane: usize) -> u64 {
+        self.lanes[lane * BATCH_STREAMS + stream]
+    }
+
+    /// XORs up to a rate block of bytes into one stream's lanes.
+    ///
+    /// The stride of [`BATCH_STREAMS`] walks that stream's lanes only;
+    /// `bytes.chunks` bounds the walk to the rate, and a short trailing
+    /// chunk zero-fills.
+    #[inline]
+    fn xor_bytes(&mut self, stream: usize, bytes: &[u8]) {
+        for (lane, chunk) in self
+            .lanes
+            .iter_mut()
+            .skip(stream)
+            .step_by(BATCH_STREAMS)
+            .zip(bytes.chunks(8))
+        {
+            *lane ^= lane_from(chunk);
+        }
+    }
+
+    /// XORs one rate block of packed elements into one stream's lanes.
+    #[inline]
+    fn xor_words(&mut self, stream: usize, words: &[u32]) {
+        for (lane, pair) in self
+            .lanes
+            .iter_mut()
+            .skip(stream)
+            .step_by(BATCH_STREAMS)
+            .zip(words.chunks_exact(2))
+        {
+            *lane ^= lane_from_words(pair[0], pair[1]);
+        }
+    }
+
+    /// Advances all four states by one interleaved permutation.
+    #[inline]
+    fn permute(&mut self) {
+        keccak_f1600_x4(&mut self.lanes);
+    }
+
+    /// Squeezes a [`DIGEST_LEN`] digest out of one stream.
+    ///
+    /// The output never crosses a rate block, so no further permutation is
+    /// needed and the batch can stay untouched.
+    fn digest(&self, stream: usize) -> [u8; DIGEST_LEN] {
+        let mut out = [0u8; DIGEST_LEN];
+        for (lane, chunk) in out.chunks_mut(8).enumerate() {
+            lane_into(self.lane(stream, lane), chunk);
+        }
+        out
+    }
+}
+
+/// What a stream can contribute to a [`Batch`].
+///
+/// Implemented for `&[u8]` and `&[u32]`; both write the same lane
+/// positions, so a batched result is bit-identical to hashing each stream
+/// alone.
+trait Feed {
+    /// Whole rate blocks the stream holds.
+    fn blocks(&self) -> usize;
+
+    /// XORs rate block `index` into `stream`'s lanes.
+    fn absorb_block(&self, batch: &mut Batch, stream: usize, index: usize);
+
+    /// XORs the delimited-padded tail into `stream`'s lanes.
+    fn absorb_tail(&self, batch: &mut Batch, stream: usize);
+
+    /// Hashes this stream alone into `out`.
+    fn single(&self, out: &mut [u8; DIGEST_LEN]);
+}
+
+impl Feed for &[u8] {
+    fn blocks(&self) -> usize {
+        self.len() / RATE_BYTES
+    }
+
+    fn absorb_block(&self, batch: &mut Batch, stream: usize, index: usize) {
+        let start = index * RATE_BYTES;
+        batch.xor_bytes(stream, &self[start..start + RATE_BYTES]);
+    }
+
+    fn absorb_tail(&self, batch: &mut Batch, stream: usize) {
+        let tail = self.len() % RATE_BYTES;
+        let head = self.len() - tail;
+        let mut block = [0u8; RATE_BYTES];
+        block[..tail].copy_from_slice(&self[head..]);
+        pad(&mut block, tail);
+        batch.xor_bytes(stream, &block);
+    }
+
+    fn single(&self, out: &mut [u8; DIGEST_LEN]) {
+        shake256(self, out);
+    }
+}
+
+impl Feed for &[u32] {
+    fn blocks(&self) -> usize {
+        self.len() / RATE_WORDS
+    }
+
+    fn absorb_block(&self, batch: &mut Batch, stream: usize, index: usize) {
+        let start = index * RATE_WORDS;
+        batch.xor_words(stream, &self[start..start + RATE_WORDS]);
+    }
+
+    fn absorb_tail(&self, batch: &mut Batch, stream: usize) {
+        let words = self.len() % RATE_WORDS;
+        let head = self.len() - words;
+        let mut block = [0u8; RATE_BYTES];
+        for (slot, word) in block[..words * 4]
+            .chunks_exact_mut(4)
+            .zip(self[head..].iter())
+        {
+            slot.copy_from_slice(&word.to_le_bytes());
+        }
+        pad(&mut block, words * 4);
+        batch.xor_bytes(stream, &block);
+    }
+
+    fn single(&self, out: &mut [u8; DIGEST_LEN]) {
+        let mut sponge = Shake256::new();
+        sponge.update_words(self);
+        sponge.squeeze(out);
+    }
+}
+
+/// Digests four streams through the interleaved permutation.
+///
+/// The caller must have checked that all four streams have the same number
+/// of rate blocks, otherwise the tails would be padded out of lockstep.
+fn batch_digests<T: Feed>(streams: [T; BATCH_STREAMS]) -> [[u8; DIGEST_LEN]; BATCH_STREAMS] {
+    let mut batch = Batch::new();
+    for index in 0..streams[0].blocks() {
+        for (stream, feed) in streams.iter().enumerate() {
+            feed.absorb_block(&mut batch, stream, index);
+        }
+        batch.permute();
+    }
+    for (stream, feed) in streams.iter().enumerate() {
+        feed.absorb_tail(&mut batch, stream);
+    }
+    batch.permute();
+    let mut out = [[0u8; DIGEST_LEN]; BATCH_STREAMS];
+    for (stream, digest) in out.iter_mut().enumerate() {
+        *digest = batch.digest(stream);
+    }
+    out
+}
+
+/// Four independent scalar sponges — the oracle for [`batch_digests`].
+fn scalar_digests<T: Feed>(streams: [T; BATCH_STREAMS]) -> [[u8; DIGEST_LEN]; BATCH_STREAMS] {
+    let mut out = [[0u8; DIGEST_LEN]; BATCH_STREAMS];
+    for (digest, stream) in out.iter_mut().zip(streams) {
+        stream.single(digest);
+    }
+    out
+}
+
+/// Whether every stream is the same length, the batched precondition.
+#[must_use]
+fn same_length(lengths: [usize; BATCH_STREAMS]) -> bool {
+    lengths[1..].iter().all(|len| *len == lengths[0])
+}
+
+/// Digests of four byte streams, computed by interleaved permutations.
+///
+/// Streams of equal length absorb and permute in lockstep, so one vector
+/// permutation advances all four. Unequal lengths cannot share a
+/// permutation schedule and fall back to four independent scalar sponges
+/// — the result is identical either way.
+///
+/// # Examples
+///
+/// ```
+/// use codevar_wredit::shake256::{shake256_digest, shake256_digests_x4};
+///
+/// let alpha: &[u8] = b"alpha";
+/// let beta: &[u8] = b"alpha";
+/// let batch = shake256_digests_x4([alpha, beta, alpha, beta]);
+/// assert_eq!(batch[0], shake256_digest(alpha));
+/// ```
+#[must_use]
+pub fn shake256_digests_x4(streams: [&[u8]; BATCH_STREAMS]) -> [[u8; DIGEST_LEN]; BATCH_STREAMS] {
+    let mut lengths = [0usize; BATCH_STREAMS];
+    for (slot, stream) in lengths.iter_mut().zip(streams) {
+        *slot = stream.len();
+    }
+    if same_length(lengths) {
+        return batch_digests(streams);
+    }
+    scalar_digests(streams)
+}
+
+/// Fingerprints of four element streams, one interleaved permutation per
+/// 136-byte block.
+///
+/// This is the shape of a journal scan: closed windows all hold the same
+/// number of elements, so a group of four is checked at a fraction of the
+/// sequential cost. Unequal lengths take the scalar path.
+#[must_use]
+pub fn shake256_fingerprints_x4_words(streams: [&[u32]; BATCH_STREAMS]) -> [u64; BATCH_STREAMS] {
+    let mut lengths = [0usize; BATCH_STREAMS];
+    for (slot, stream) in lengths.iter_mut().zip(streams) {
+        *slot = stream.len();
+    }
+    let digests = if same_length(lengths) {
+        batch_digests(streams)
+    } else {
+        scalar_digests(streams)
+    };
+    let mut out = [0u64; BATCH_STREAMS];
+    for (slot, digest) in out.iter_mut().zip(digests) {
+        *slot = fingerprint_of(&digest);
+    }
+    out
+}
+
+/// AVX2 four-way interleaved Keccak-f[1600].
+///
+/// Each of the 25 state lanes is one `__m256i` holding that lane of the
+/// four streams, so the round is 25 vector registers moved through theta,
+/// a rotated re-indexing (rho+pi), chi's `andnot`/`xor` and a broadcast
+/// iota. Rotations of 64-bit lanes have no variable-form opcode in AVX2,
+/// so each is a shift pair; lane 0 (offset 0) is passed through because a
+/// shift by the width would zero it.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+mod x86 {
+    use super::{BATCH_LANES, COL, LANE_COUNT, PI_DST, RC, RHO_ROT};
+
+    #[cfg(target_arch = "x86")]
+    use core::arch::x86::{
+        __m256i, _mm256_andnot_si256, _mm256_loadu_si256, _mm256_or_si256, _mm256_set1_epi64x,
+        _mm256_setzero_si256, _mm256_slli_epi64, _mm256_srli_epi64, _mm256_storeu_si256, _mm256_xor_si256,
+    };
+    #[cfg(target_arch = "x86_64")]
+    use core::arch::x86_64::{
+        __m256i, _mm256_andnot_si256, _mm256_loadu_si256, _mm256_or_si256, _mm256_set1_epi64x,
+        _mm256_setzero_si256, _mm256_slli_epi64, _mm256_srli_epi64, _mm256_storeu_si256, _mm256_xor_si256,
+    };
+
+    /// Rotates every 64-bit lane of `value` left by `LEFT` bits.
+    ///
+    /// AVX2 has no variable-width rotate for 64-bit lanes and the shift
+    /// immediates are compile-time operands, so the two halves are passed
+    /// as a pair of constants (`LEFT + RIGHT == 64`). Lane `(0, 0)`, whose
+    /// rho offset is 0, never reaches this helper: a shift by the width
+    /// would produce zero instead of the identity.
+    #[inline(always)]
+    unsafe fn rot<const LEFT: i32, const RIGHT: i32>(value: __m256i) -> __m256i {
+        // SAFETY: pure register arithmetic; the caller proved AVX2.
+        unsafe {
+            _mm256_or_si256(
+                _mm256_slli_epi64::<LEFT>(value),
+                _mm256_srli_epi64::<RIGHT>(value),
+            )
+        }
+    }
+
+    /// rho+pi for one lane: rotate by the table offset, then scatter to the
+    /// destination lane.
+    ///
+    /// The offset stays a table lookup (so the kernel cannot drift from
+    /// [`RHO_ROT`]) while each arm instantiates a compile-time shift pair;
+    /// the loop indices are constants after unrolling.
+    #[inline(always)]
+    unsafe fn rotate_scatter<const I: usize>(value: __m256i) -> __m256i {
+        match RHO_ROT[I] {
+            1 => unsafe { rot::<1, 63>(value) },
+            2 => unsafe { rot::<2, 62>(value) },
+            3 => unsafe { rot::<3, 61>(value) },
+            6 => unsafe { rot::<6, 58>(value) },
+            8 => unsafe { rot::<8, 56>(value) },
+            10 => unsafe { rot::<10, 54>(value) },
+            14 => unsafe { rot::<14, 50>(value) },
+            15 => unsafe { rot::<15, 49>(value) },
+            18 => unsafe { rot::<18, 46>(value) },
+            20 => unsafe { rot::<20, 44>(value) },
+            21 => unsafe { rot::<21, 43>(value) },
+            25 => unsafe { rot::<25, 39>(value) },
+            27 => unsafe { rot::<27, 37>(value) },
+            28 => unsafe { rot::<28, 36>(value) },
+            36 => unsafe { rot::<36, 28>(value) },
+            39 => unsafe { rot::<39, 25>(value) },
+            41 => unsafe { rot::<41, 23>(value) },
+            43 => unsafe { rot::<43, 21>(value) },
+            44 => unsafe { rot::<44, 20>(value) },
+            45 => unsafe { rot::<45, 19>(value) },
+            55 => unsafe { rot::<55, 9>(value) },
+            56 => unsafe { rot::<56, 8>(value) },
+            61 => unsafe { rot::<61, 3>(value) },
+            62 => unsafe { rot::<62, 2>(value) },
+            // rho offset 0: the identity, and the only offset the shift
+            // pair above cannot express.
+            _ => value,
+        }
+    }
+
+    /// Runs 24 interleaved rounds over a `[u64; 100]` buffer.
+    ///
+    /// # Safety
+    ///
+    /// Requires AVX2 (and the OS-enabled AVX state behind it) on the
+    /// executing CPU, as proven by the `CPUID` probe in
+    /// [`super::keccak_f1600_x4`]. `lanes` is read and written as 25
+    /// unaligned 256-bit vectors, which its fixed 800-byte length covers.
+    #[target_feature(enable = "avx2")]
+    pub unsafe fn keccak_f1600_x4_avx2(lanes: &mut [u64; BATCH_LANES]) {
+        // SAFETY: the CPUID probe at the call site proved AVX2; every
+        // access below stays inside the 100-element buffer.
+        unsafe {
+            let base = lanes.as_ptr().cast::<__m256i>();
+            let out = lanes.as_mut_ptr().cast::<__m256i>();
+            let zero = _mm256_setzero_si256();
+            let mut a = [zero; LANE_COUNT];
+            let mut b = [zero; LANE_COUNT];
+            let mut c = [zero; 5];
+            for (i, slot) in a.iter_mut().enumerate() {
+                *slot = _mm256_loadu_si256(base.add(i));
+            }
+            for &iota in RC.iter() {
+                for (x, parity) in c.iter_mut().enumerate() {
+                    let column = &COL[x];
+                    *parity = _mm256_xor_si256(
+                        _mm256_xor_si256(a[column[0]], a[column[1]]),
+                        _mm256_xor_si256(_mm256_xor_si256(a[column[2]], a[column[3]]), a[column[4]]),
+                    );
+                }
+                for x in 0..5 {
+                    let d = _mm256_xor_si256(c[(x + 4) % 5], rot::<1, 63>(c[(x + 1) % 5]));
+                    for y in 0..5 {
+                        a[x + 5 * y] = _mm256_xor_si256(a[x + 5 * y], d);
+                    }
+                }
+                // rho + pi: rotate every lane by its table offset, then
+                // scatter it. Spelling the lane indices as literals lets
+                // each rotation compile to a single shift pair.
+                macro_rules! rho_pi {
+                    ($($i:literal),* $(,)?) => {
+                        $(b[PI_DST[$i]] = rotate_scatter::<$i>(a[$i]);)*
+                    };
+                }
+                rho_pi!(
+                    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24
+                );
+                for y in 0..5 {
+                    for x in 0..5 {
+                        let row = |column: usize| b[(column % 5) + 5 * y];
+                        a[x + 5 * y] = _mm256_xor_si256(row(x), _mm256_andnot_si256(row(x + 1), row(x + 2)));
+                    }
+                }
+                a[0] = _mm256_xor_si256(a[0], _mm256_set1_epi64x(iota as i64));
+            }
+            for (i, value) in a.iter().enumerate() {
+                _mm256_storeu_si256(out.add(i), *value);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec::Vec;
@@ -651,6 +1074,112 @@ mod tests {
         let mut out = [0u8; DIGEST_LEN];
         sponge.squeeze(&mut out);
         assert_eq!(out, shake256_digest(&bytes));
+    }
+
+    #[test]
+    fn batch_matches_per_stream_hashes_for_every_length() {
+        for len in [0usize, 1, 34, RATE_BYTES - 1, RATE_BYTES, RATE_BYTES + 1, 500] {
+            let pools = [
+                repeated(b'1', len),
+                repeated(b'2', len),
+                repeated(b'3', len),
+                repeated(b'4', len),
+            ];
+            let streams: [&[u8]; BATCH_STREAMS] =
+                [&pools[0][..], &pools[1][..], &pools[2][..], &pools[3][..]];
+            let batch = shake256_digests_x4(streams);
+            for (digest, stream) in batch.iter().zip(streams) {
+                assert_eq!(*digest, shake256_digest(stream), "equal len {len}");
+            }
+        }
+    }
+
+    #[test]
+    fn batch_falls_back_when_lengths_differ() {
+        let pools: [Vec<u32>; BATCH_STREAMS] = [
+            (0..1u32).collect(),
+            (10..12u32).collect(),
+            Vec::new(),
+            (20..60u32).collect(),
+        ];
+        let streams: [&[u32]; BATCH_STREAMS] = [&pools[0][..], &pools[1][..], &pools[2][..], &pools[3][..]];
+        let batch = shake256_fingerprints_x4_words(streams);
+        for (slot, stream) in batch.iter().zip(streams) {
+            assert_eq!(*slot, shake256_fingerprint_words(stream));
+        }
+    }
+
+    #[test]
+    fn batch_words_match_scalar_across_block_boundaries() {
+        for blocks in [0usize, 1, 2, 5] {
+            let len = blocks * RATE_WORDS;
+            let pools: [Vec<u32>; BATCH_STREAMS] = [
+                (0..len as u32).collect(),
+                (0..len as u32).map(|i| i ^ 0x7F00).collect(),
+                (0..len as u32)
+                    .map(|i| i.wrapping_mul(7))
+                    .collect(),
+                (0..len as u32).map(|i| !i).collect(),
+            ];
+            let streams: [&[u32]; BATCH_STREAMS] =
+                [&pools[0][..], &pools[1][..], &pools[2][..], &pools[3][..]];
+            let batch = shake256_fingerprints_x4_words(streams);
+            for (slot, stream) in batch.iter().zip(streams) {
+                assert_eq!(*slot, shake256_fingerprint_words(stream), "{blocks} blocks");
+            }
+        }
+    }
+
+    #[test]
+    fn interleaved_permutation_equals_four_separate_states() {
+        // The oracle every vector kernel is compared against: interleaving
+        // must not change any lane.
+        let mut batch = Batch::new();
+        let mut states = [[0u64; LANE_COUNT]; BATCH_STREAMS];
+        for (stream, state) in states.iter_mut().enumerate() {
+            for (i, lane) in state.iter_mut().enumerate() {
+                *lane = 0x0123_4567_89AB_CDEFu64.rotate_left((i * 7 + stream) as u32);
+                batch.lanes[i * BATCH_STREAMS + stream] = *lane;
+            }
+        }
+        keccak_f1600_x4(&mut batch.lanes);
+        for (stream, state) in states.iter_mut().enumerate() {
+            keccak_f1600(state);
+            for (i, lane) in state.iter().enumerate() {
+                assert_eq!(batch.lane(stream, i), *lane);
+            }
+        }
+    }
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[test]
+    fn avx2_kernel_matches_the_scalar_interleaved_permutation() {
+        use codevar_base::cpuid::{Feature, has};
+        if !(has(Feature::Avx2) && has(Feature::Sse41)) {
+            return; // the machine cannot run the kernel safely
+        }
+        // Three round-boundary patterns: zero state, all-ones state and a
+        // spread that touches every lane of every stream.
+        for seed in 0..3u64 {
+            let mut fast = [0u64; BATCH_LANES];
+            let mut slow = [0u64; BATCH_LANES];
+            for (i, lane) in fast.iter_mut().enumerate() {
+                *lane = if seed == 0 {
+                    0
+                } else if seed == 1 {
+                    u64::MAX
+                } else {
+                    (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                };
+            }
+            slow.copy_from_slice(&fast);
+            // SAFETY: the CPUID probe above proved AVX2 and the AVX
+            // enabled state; `fast` is the fixed 100-element buffer the
+            // kernel expects.
+            unsafe { x86::keccak_f1600_x4_avx2(&mut fast) };
+            keccak_f1600_x4_scalar(&mut slow);
+            assert_eq!(fast, slow, "seed {seed}");
+        }
     }
 
     #[test]
