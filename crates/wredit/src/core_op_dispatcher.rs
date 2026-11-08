@@ -20,13 +20,16 @@
 //! cursor validation, raw insert/remove bookkeeping and private-gap
 //! staging.
 
+use alloc::vec::Vec;
+
 use codevar_logger::log_error;
 
 use super::base::{MERGE_MASK, make_packed, packed_char, packed_type};
+use super::flush_writable::write_bytes_to_raw;
 use super::shared_gap::{SLOT_CURSOR_BITS, SLOT_MAX_BASE, SLOT_MAX_SIZE};
 use super::traits::{
-    TextEditableBufferQuery, TextEditableCursor, TextEditableDelete, TextEditableGap, TextEditableOverwrite,
-    TextEditablePut, TextEditableReplace, TextEditableSelection, Writable,
+    TextEditableBufferQuery, TextEditableCursor, TextEditableDelete, TextEditableGap, TextEditableHistory,
+    TextEditableOverwrite, TextEditablePut, TextEditableReplace, TextEditableSelection, Writable,
 };
 use super::writable::{GAP_NONE, MAX_CURSORS, MAX_GAPS, SHARED_GAP_SLOTS, StreamWritable, WritableEvent};
 use super::writable_scan;
@@ -479,7 +482,94 @@ where
         self.base.shift_shared_bases(at, inserted, false);
         self.base
             .emit(WritableEvent::buffer_changed(at, inserted));
+        // Record the committed insertion so undo can remove it.
+        let _ = self.record_edit(at, &[], values);
         inserted
+    }
+
+    /// Applies an edit's inverse to the committed raw document without
+    /// recording a new history entry (undo/redo must not recurse).
+    ///
+    /// Removes `remove_count` elements at `position`, then inserts `insert`
+    /// at `position`.  Pre-ensures capacity so the net-length change cannot
+    /// fail halfway.  Cursor/gap bases are shifted by the net delta and
+    /// cursor views are refreshed.
+    pub(crate) fn apply_edit_raw(
+        &mut self,
+        position: usize,
+        remove_count: usize,
+        insert: &[Raw],
+    ) -> WreditResult<()> {
+        let raw_length = self.base.raw_length;
+        let Some(new_length) = raw_length
+            .checked_sub(remove_count)
+            .and_then(|length| length.checked_add(insert.len()))
+        else {
+            log_error!("wredit: apply edit length overflow");
+            return Err(WreditError::LimitExceeded {
+                what: "apply edit length",
+            });
+        };
+        if position > new_length {
+            log_error!("wredit: apply edit position {position} exceeds length {new_length}");
+            return Err(WreditError::InvalidPosition {
+                position: position as u64,
+                len: new_length as u64,
+            });
+        }
+        // Grow once for the net change so neither half can fail.
+        self.base.raw_mut().ensure_capacity(new_length)?;
+        // 1. Remove `remove_count` elements at `position` (shift tail left).
+        if remove_count > 0 {
+            let end = position + remove_count;
+            let raw = self.base.raw_mut();
+            let ptr = raw.as_mut_ptr();
+            let elem = core::mem::size_of::<Raw>();
+            let byte_len = (raw_length - end) * elem;
+            // Safety: `end <= raw_length <= capacity` after the growth
+            // above; `memmove` tolerates the tail overlap.
+            unsafe {
+                memmove(
+                    ptr.add(position).cast::<u8>(),
+                    ptr.add(end).cast::<u8>(),
+                    byte_len,
+                );
+            }
+            raw.set_count(raw_length - remove_count);
+            self.base.raw_length = raw_length - remove_count;
+        }
+        // 2. Insert `insert` at `position`.
+        if !insert.is_empty() {
+            let current_length = self.base.raw_length;
+            let committed = write_bytes_to_raw(self.base.raw_mut(), current_length, position, insert);
+            if committed == current_length {
+                log_error!("wredit: apply edit insertion refused");
+                return Err(WreditError::CapacityExhausted {
+                    requested: insert.len(),
+                    available: 0,
+                });
+            }
+            self.base.raw_length = committed;
+            self.base.raw_mut().set_count(committed);
+        }
+        // Refresh views (rebinds cursors, invalidates stale line indexes)
+        // then shift cursors/gap bases by the net delta.
+        self.base.refresh_cursor_views();
+        let delta = insert.len() as isize - remove_count as isize;
+        if delta > 0 {
+            let d = delta as usize;
+            self.base.shift_cursors(position, d, false);
+            self.base.shift_gap_bases(position, d, false);
+            self.base.shift_shared_bases(position, d, false);
+        } else if delta < 0 {
+            let d = (-delta) as usize;
+            self.base.shift_cursors(position, d, true);
+            self.base.shift_gap_bases(position, d, true);
+            self.base.shift_shared_bases(position, d, true);
+        }
+        self.base
+            .emit(WritableEvent::buffer_changed(position, insert.len()));
+        Ok(())
     }
 
     /// Removes `count` committed elements at `start` with full
@@ -496,6 +586,15 @@ where
             log_error!("wredit: raw removal {start}..{end} exceeds length {old_length}");
             return 0;
         }
+        // Capture the removed elements before the tail shifts so they can
+        // be replayed by undo.
+        let removed_vals: Vec<Raw> = self
+            .base
+            .raw_ref()
+            .slice()
+            .get(start..end)
+            .map(|slice| slice.to_vec())
+            .unwrap_or_default();
         // Scanning the doomed range before the move tells us whether a
         // line disappears. Without a newline the row count is intact,
         // so the sparse index only needs shifting.
@@ -539,6 +638,8 @@ where
         }
         self.base
             .emit(WritableEvent::buffer_changed(start, count));
+        // Record the removal so undo can re-insert these elements.
+        let _ = self.record_edit(start, &removed_vals, &[]);
         count
     }
 }
@@ -937,6 +1038,14 @@ where
         let mut removed_newlines = 0usize;
         let mut added_newlines = 0usize;
         if overwritten > 0 {
+            // Capture the overwritten elements so undo can restore them.
+            let overwritten_vals: Vec<Raw> = self
+                .base
+                .raw_ref()
+                .slice()
+                .get(start..start + overwritten)
+                .map(|slice| slice.to_vec())
+                .unwrap_or_default();
             let raw = self.base.raw_mut();
             if let Some(target) = raw
                 .slice_mut()
@@ -958,6 +1067,9 @@ where
                     what: "overwrite_slice target out of bounds",
                 });
             }
+            // Record the in-place overwrite: old covered elements replaced
+            // by the new values at `start`.
+            let _ = self.record_edit(start, &overwritten_vals, &values[..overwritten]);
         }
         let rows = self.base.rows.get();
         if rows != 0 {
@@ -1203,6 +1315,113 @@ where
             .cursor(id)
             .map(super::cursor::Cursor::width)
             .unwrap_or(0))
+    }
+}
+
+impl<Raw, Buf, const GAP_SIZE: usize> TextEditableHistory<Raw, Buf, GAP_SIZE>
+    for StreamWritable<Raw, Buf, GAP_SIZE>
+where
+    Raw: Copy + Into<u32> + From<u32> + From<Buf>,
+    Buf: Copy + From<Raw>,
+{
+    fn enable_history(&mut self, hot_bytes: u64, window: usize, keep: usize) -> WreditResult<()> {
+        self.base.enable_history(hot_bytes, window, keep)
+    }
+
+    fn history_enabled(&self) -> bool {
+        self.base.history.is_some()
+    }
+
+    fn can_undo(&self) -> bool {
+        self.base
+            .history
+            .as_ref()
+            .map(|history| history.can_undo())
+            .unwrap_or(false)
+    }
+
+    fn can_redo(&self) -> bool {
+        self.base
+            .history
+            .as_ref()
+            .map(|history| history.can_redo())
+            .unwrap_or(false)
+    }
+
+    fn undo(&mut self) -> WreditResult<bool> {
+        let Some(history) = self.base.history_mut() else {
+            return Ok(false);
+        };
+        let Some(edit) = history.undo() else {
+            return Ok(false);
+        };
+        // Undo: remove the inserted elements, re-insert the removed ones.
+        let new_raw: Vec<Raw> = edit
+            .new
+            .iter()
+            .map(|&value| Raw::from(value))
+            .collect();
+        let old_raw: Vec<Raw> = edit
+            .old
+            .iter()
+            .map(|&value| Raw::from(value))
+            .collect();
+        self.apply_edit_raw(edit.position, new_raw.len(), &old_raw)?;
+        Ok(true)
+    }
+
+    fn redo(&mut self) -> WreditResult<bool> {
+        let Some(history) = self.base.history_mut() else {
+            return Ok(false);
+        };
+        let Some(edit) = history.redo() else {
+            return Ok(false);
+        };
+        // Redo: remove the removed elements, re-insert the inserted ones.
+        let new_raw: Vec<Raw> = edit
+            .new
+            .iter()
+            .map(|&value| Raw::from(value))
+            .collect();
+        let old_raw: Vec<Raw> = edit
+            .old
+            .iter()
+            .map(|&value| Raw::from(value))
+            .collect();
+        self.apply_edit_raw(edit.position, old_raw.len(), &new_raw)?;
+        Ok(true)
+    }
+
+    fn restore(&mut self, back: usize) -> WreditResult<bool> {
+        let Some(history) = self.base.history_mut() else {
+            return Ok(false);
+        };
+        let edits = history.restore(back);
+        if edits.is_empty() {
+            return Ok(false);
+        }
+        for (edit, inverse) in edits {
+            let new_raw: Vec<Raw> = edit
+                .new
+                .iter()
+                .map(|&value| Raw::from(value))
+                .collect();
+            let old_raw: Vec<Raw> = edit
+                .old
+                .iter()
+                .map(|&value| Raw::from(value))
+                .collect();
+            if inverse {
+                // Walking backward: apply the inverse (remove inserted,
+                // re-insert removed).
+                self.apply_edit_raw(edit.position, new_raw.len(), &old_raw)?;
+            } else {
+                // Walking forward: apply the edit itself (remove removed,
+                // re-insert inserted).
+                self.apply_edit_raw(edit.position, old_raw.len(), &new_raw)?;
+            }
+        }
+        Ok(true)
     }
 }
 

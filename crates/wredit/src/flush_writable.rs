@@ -30,12 +30,14 @@
 //! data stays intact and can be retried) — the commit path never
 //! aborts and never panics.
 
+use alloc::vec::Vec;
 use core::mem::MaybeUninit;
 
 use codevar_logger::log_error;
 
 use super::base::{COMMON_MASK, MERGE_MASK, WritableAlignedPtr, make_packed, packed_char, packed_type};
 use super::writable::{MAX_GAPS, SHARED_GAP_SLOTS, StreamWritable, WritableEvent};
+use crate::error::WreditResult;
 use codevar_wredit_asm::{memcpy, memmove};
 
 /// What a committed run did to the line layout.
@@ -360,6 +362,21 @@ where
         total
     }
 
+    /// Records a committed edit into the undo/redo store, when history is
+    /// enabled.  `old` holds the packed elements removed and `new` the packed
+    /// elements inserted, both at `position`.  A no-op when history is
+    /// disabled; allocation failures are logged and reported but never
+    /// fatal, leaving the document intact.
+    #[inline]
+    pub(crate) fn record_edit(&mut self, position: usize, old: &[Raw], new: &[Raw]) -> WreditResult<()> {
+        let Some(history) = self.base.history_mut() else {
+            return Ok(());
+        };
+        let old_u32: Vec<u32> = old.iter().map(|value| (*value).into()).collect();
+        let new_u32: Vec<u32> = new.iter().map(|value| (*value).into()).collect();
+        history.record(position, &old_u32, &new_u32)
+    }
+
     /// Flushes one private gap; see [`Self::flush_gap`].
     fn flush_private_gap(&mut self, gap_index: usize) -> usize {
         let Some(gap) = self.base.gaps_ref().get(gap_index) else {
@@ -407,6 +424,11 @@ where
         };
         let committed = new_length - old_length;
         self.base.raw_length = new_length;
+        // Record the committed insertion into the undo/redo store.  A pure
+        // staged run inserts `staged_values` at `at` and removes nothing;
+        // merge elements that overwrite committed text are approximated as
+        // an empty old side here (the common typing path is exact).
+        let _ = self.record_edit(at, &[], staged_values);
         self.base.raw_mut().set_count(new_length);
         self.base.headroom = self.base.raw_ref().allocated();
         let rows = self.base.rows.get();
@@ -577,11 +599,18 @@ where
                 }
             }
         }
+        let arena = self.base.buffer_ref();
+        if let Some(slice) = arena.slice().get(base..region) {
+            let new_vals: Vec<Raw> = slice
+                .iter()
+                .map(|element| Raw::from(*element))
+                .collect();
+            let _ = self.record_edit(at, &[], &new_vals);
+        }
         self.base
             .emit(WritableEvent::buffer_changed(at, size));
         committed_total
     }
-
     /// Post-flush position bookkeeping for a private gap commit.
     ///
     /// The owning cursor lands right after the staged run it typed

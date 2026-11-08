@@ -59,10 +59,11 @@ pub use base::{
     packed_type,
 };
 pub use cursor::{BidiIndex, Cursor};
+pub use history_ring_journal::{Edit, HistoryStore, delta_common, is_word_continuation};
 pub use shared_gap::{SharedGapSlot, SharedGapTable};
 pub use traits::{
-    TextEditableBufferQuery, TextEditableCursor, TextEditableDelete, TextEditableGap, TextEditableOverwrite,
-    TextEditablePut, TextEditableReplace, TextEditableSelection, Writable,
+    TextEditableBufferQuery, TextEditableCursor, TextEditableDelete, TextEditableGap, TextEditableHistory,
+    TextEditableOverwrite, TextEditablePut, TextEditableReplace, TextEditableSelection, Writable,
 };
 pub use writable::{
     BaseWritable, EventBridge, MAX_CURSORS, MAX_GAPS, SHARED_GAP_SLOTS, StreamWritable, WritableEvent,

@@ -37,8 +37,10 @@ use codevar_logger::log_error;
 
 use super::base::{ENC_UNKNOWN, NAME_LEN, WritableAlignedPtr, ensure_merge_buffer};
 use super::cursor::{Cursor, LineAnchors, LineRing};
+use super::history_ring_journal::HistoryStore;
 use super::shared_gap::SharedGapTable;
 use crate::error::WreditError;
+use crate::error::WreditResult;
 
 /// Maximum number of private (per-cursor) gaps held inline.
 pub const MAX_GAPS: usize = 0x4;
@@ -588,6 +590,11 @@ pub struct BaseWritable<Raw: Copy, Buf: Copy, const GAP_SIZE: usize> {
     /// hot inline working state; only the pointer is part of the
     /// engine struct. `None` means it has never been built.
     pub(crate) line_anchors: UnsafeCell<Option<Box<LineAnchors>>>,
+
+    /// Optional undo/redo store (hot delta ring + cold solid journal).
+    /// `None` until the caller enables history; heap-backed so it does
+    /// not enlarge the inline working state beyond a few pointers.
+    pub(crate) history: Option<HistoryStore>,
 }
 
 impl<Raw: Copy, Buf: Copy, const GAP_SIZE: usize> BaseWritable<Raw, Buf, GAP_SIZE> {
@@ -612,6 +619,7 @@ impl<Raw: Copy, Buf: Copy, const GAP_SIZE: usize> BaseWritable<Raw, Buf, GAP_SIZ
             headroom: 0,
             encoding: ENC_UNKNOWN,
             line_anchors: UnsafeCell::new(None),
+            history: None,
         }
     }
 
@@ -648,6 +656,22 @@ impl<Raw: Copy, Buf: Copy, const GAP_SIZE: usize> BaseWritable<Raw, Buf, GAP_SIZ
     #[inline]
     pub(crate) fn raw_mut(&mut self) -> &mut WritableAlignedPtr<Raw, 64> {
         self.raw.get_mut()
+    }
+
+    /// The undo/redo store, if history has been enabled.
+    #[must_use]
+    #[inline]
+    pub(crate) fn history_mut(&mut self) -> Option<&mut HistoryStore> {
+        self.history.as_mut()
+    }
+
+    /// Enables the undo/redo store with the given hot-byte budget, journal
+    /// window and keep threshold.  Returns `CapacityExhausted` (logged) on
+    /// allocation failure; the writable is left usable without history.
+    #[inline]
+    pub(crate) fn enable_history(&mut self, hot_bytes: u64, window: usize, keep: usize) -> WreditResult<()> {
+        self.history = Some(HistoryStore::new(hot_bytes, window, keep)?);
+        Ok(())
     }
 
     /// The shared staging arena (mutable reference).

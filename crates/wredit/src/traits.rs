@@ -303,3 +303,43 @@ pub trait TextEditableBufferQuery<Raw, Buf, const GAP_SIZE: usize>: Writable<Raw
     /// Width of the committed line containing `position`.
     fn line_width_at(&self, position: usize) -> Option<usize>;
 }
+
+/// Undo/redo over the committed document.
+///
+/// History is opt-in: a writable starts without an undo/redo store and the
+/// caller enables it through [`TextEditableHistory::enable_history`].  While
+/// disabled, every method is a no-op and [`can_undo`]/[`can_redo`] report
+/// `false`.  This keeps the hot inline working state small for embeddings
+/// that do not need history.
+///
+/// [`can_undo`]: Self::can_undo
+/// [`can_redo`]: Self::can_redo
+pub trait TextEditableHistory<Raw, Buf, const GAP_SIZE: usize>: Writable<Raw, Buf, GAP_SIZE> {
+    /// Enables the undo/redo store with the given hot-byte budget, journal
+    /// window and keep threshold.  Returns `CapacityExhausted` (logged) on
+    /// allocation failure; the writable stays usable without history.
+    fn enable_history(&mut self, hot_bytes: u64, window: usize, keep: usize) -> WreditResult<()>;
+
+    /// `true` when the undo/redo store is enabled.
+    fn history_enabled(&self) -> bool;
+
+    /// `true` when `undo` can make progress (the document is not at the
+    /// oldest retained revision).
+    fn can_undo(&self) -> bool;
+
+    /// `true` when `redo` can make progress (the document is not at the
+    /// newest recorded revision).
+    fn can_redo(&self) -> bool;
+
+    /// Undoes one edit, applying its inverse to the committed document.
+    /// Returns `false` (and logs a refusal) at `cur <= base`.
+    fn undo(&mut self) -> WreditResult<bool>;
+
+    /// Redoes one edit, re-applying it to the committed document.
+    /// Returns `false` (and logs a refusal) at `cur >= head`.
+    fn redo(&mut self) -> WreditResult<bool>;
+
+    /// Restores to the revision `back` steps behind the tip.
+    /// Returns `false` when `head - back` falls outside `[base, head]`.
+    fn restore(&mut self, back: usize) -> WreditResult<bool>;
+}

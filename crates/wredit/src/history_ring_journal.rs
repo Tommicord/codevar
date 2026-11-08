@@ -598,10 +598,19 @@ impl DeltaRing {
 }
 
 impl Default for DeltaRing {
+    /// Creates an empty ring that allocates lazily on the first `record`.
+    /// No heap allocation happens here, so `default` cannot fail.
     fn default() -> Self {
-        // `default` is for container use only; a real budget must come from
-        // `new`.  Use a modest default budget.
-        Self::new(256 * 1024).expect("delta ring default allocation must succeed")
+        Self {
+            edits: Vec::new(),
+            capacity: MIN_RING_CAPACITY,
+            base: 0,
+            head: 0,
+            cur: 0,
+            bytes: 0,
+            hot_bytes: 0,
+            refusals: 0,
+        }
     }
 }
 
@@ -849,8 +858,7 @@ impl SolidJournal {
     pub fn new(window: usize, keep: usize) -> WreditResult<Self> {
         let window = window.max(1);
         let keep = keep.max(window);
-        let mut windows = Vec::new();
-        windows.push(JournalWindow::new(0));
+        let windows = alloc::vec![JournalWindow::new(0)];
         Ok(Self {
             windows,
             base: 0,
@@ -1060,6 +1068,160 @@ impl Default for TierLine {
 }
 
 // ---------------------------------------------------------------------------
+// HistoryStore — Step 2 composition of the hot ring and cold journal
+// ---------------------------------------------------------------------------
+
+/// The composable undo/redo store: a hot [`DeltaRing`] over a cold
+/// [`SolidJournal`], reconciled through a [`TierLine`].
+///
+/// [`DeltaRing`] retains recent revisions uncompressed so undo/redo are
+/// O(steps) pointer walks; [`SolidJournal`] retains older revisions in
+/// windowed, SHAKE256-fingerprinted frames so deep look-backs replay a
+/// bounded span instead of the whole session.  [`TierLine`] maps each ring
+/// revision to the journal revision that holds it, which is required once
+/// the user edits in the past (the ring rewrites its tail while the journal
+/// keeps coding over it).
+///
+/// `next_group_id` assigns monotonically growing undo-group ids so edits
+/// that [`is_word_continuation`] classifies as word-continuation coalesce
+/// into a single undoable action.
+pub struct HistoryStore {
+    /// Hot tier: recent revisions, uncompressed.
+    ring: DeltaRing,
+    /// Cold tier: windowed, fingerprint-verified revisions.
+    journal: SolidJournal,
+    /// Ring revision -> journal revision mapping.
+    line: TierLine,
+    /// Next undo-group id to hand out.
+    next_group_id: u64,
+}
+
+impl HistoryStore {
+    /// Creates a store with the given hot-byte budget, journal window and
+    /// keep threshold.  Returns `CapacityExhausted` (logged, never fatal)
+    /// on allocation failure.
+    #[inline]
+    pub fn new(hot_bytes: u64, window: usize, keep: usize) -> WreditResult<Self> {
+        Ok(Self {
+            ring: DeltaRing::new(hot_bytes)?,
+            journal: SolidJournal::new(window, keep)?,
+            line: TierLine::new(),
+            next_group_id: 1,
+        })
+    }
+
+    /// Hot-byte budget.
+    #[inline]
+    #[must_use]
+    pub const fn hot_bytes(&self) -> u64 {
+        self.ring.hot_bytes()
+    }
+
+    /// `true` when `undo` can make progress.
+    #[inline]
+    #[must_use]
+    pub fn can_undo(&self) -> bool {
+        self.ring.cur() > self.ring.base()
+    }
+
+    /// `true` when `redo` can make progress.
+    #[inline]
+    #[must_use]
+    pub fn can_redo(&self) -> bool {
+        self.ring.cur() < self.ring.head()
+    }
+
+    /// Current revision (ring numbering).
+    #[inline]
+    #[must_use]
+    pub const fn cur(&self) -> usize {
+        self.ring.cur()
+    }
+
+    /// Head revision (ring numbering).
+    #[inline]
+    #[must_use]
+    pub const fn head(&self) -> usize {
+        self.ring.head()
+    }
+
+    /// Records an edit: `old` elements removed and `new` elements inserted
+    /// at `position`.  Allocates the edit's vectors; returns
+    /// `CapacityExhausted` (logged, document intact) on failure.
+    ///
+    /// The edit is captured into both tiers and the tier line is extended.
+    /// Edits recorded while `cur < head` truncate the future (the redo
+    /// branch), matching [`DeltaRing::record`].
+    #[inline]
+    pub fn record(&mut self, position: usize, old: &[u32], new: &[u32]) -> WreditResult<()> {
+        let group_id = self.next_group_id;
+        self.next_group_id = self.next_group_id.saturating_add(1);
+        let edit = Edit::new(old.to_vec(), new.to_vec(), position, group_id);
+        self.ring.record(edit)?;
+        // Append the post-edit state's packed elements to the journal so a
+        // cold look-back can replay them.  The caller supplies the post-edit
+        // state; here we record the edit's new side as the appended frame.
+        if !new.is_empty() {
+            self.journal.append(new)?;
+        } else if !old.is_empty() {
+            // A pure removal: journal a zero-length frame so revision
+            // numbering still advances.
+            self.journal.append(&[])?;
+        }
+        self.line.push(self.journal.head() as u64);
+        Ok(())
+    }
+
+    /// Undoes one edit: returns the edit that was undone (so the caller can
+    /// apply its inverse to the document), or `None` at `cur <= base`.
+    #[inline]
+    pub fn undo(&mut self) -> Option<Edit> {
+        let mut out: Option<Edit> = None;
+        let applied = self.ring.undo(|edit, _inverse| {
+            out = Some(edit.clone());
+            Ok(())
+        });
+        if !applied {
+            return None;
+        }
+        out
+    }
+
+    /// Redoes one edit: returns the edit that was redone (so the caller can
+    /// apply it to the document), or `None` at `cur >= head`.
+    #[inline]
+    pub fn redo(&mut self) -> Option<Edit> {
+        let mut out: Option<Edit> = None;
+        let applied = self.ring.redo(|edit, _inverse| {
+            out = Some(edit.clone());
+            Ok(())
+        });
+        if !applied {
+            return None;
+        }
+        out
+    }
+
+    /// Restores to the revision `back` steps behind the tip: returns the
+    /// edits to apply (in order), each paired with `true` when it is an
+    /// inverse (walking backward) or `false` when it is the edit itself
+    /// (walking forward).  Empty when `head - back` falls outside
+    /// `[base, head]`.
+    #[inline]
+    pub fn restore(&mut self, back: usize) -> Vec<(Edit, bool)> {
+        let mut out: Vec<(Edit, bool)> = Vec::new();
+        let applied = self.ring.restore(back, |edit, inverse| {
+            out.push((edit.clone(), inverse));
+            Ok(())
+        });
+        if !applied {
+            return Vec::new();
+        }
+        out
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1097,7 +1259,6 @@ mod tests {
     #[test]
     fn base_cur_head_ordering_held() {
         let mut ring = DeltaRing::new(4096).expect("allocation must succeed");
-        let mut doc: Vec<u32> = Vec::new();
         for i in 0..20u32 {
             let edit = Edit::new(vec![i], vec![i + 100], i as usize, i as u64);
             ring.record(edit).expect("record must succeed");
