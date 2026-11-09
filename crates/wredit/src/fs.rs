@@ -846,6 +846,9 @@ impl<D: BlockDevice> DiskFs<D> {
         if inode == 0 || inode > self.sb.inode_count {
             return Err(WreditError::NotFound { what: "inode" });
         }
+        if !self.inode_bitmap.is_used(inode) {
+            return Err(WreditError::NotFound { what: "inode" });
+        }
         let index = (inode - 1) as usize;
         let block = self.sb.inode_table_block + (index / INODES_PER_BLOCK) as u32;
         let offset = (index % INODES_PER_BLOCK) * INODE_SIZE;
@@ -1389,6 +1392,13 @@ impl<D: BlockDevice> DiskFs<D> {
             FileType::Regular
         };
         self.add_dirent(parent, name, inode, file_type)?;
+        // A freshly created directory holds "." (itself) and ".." (its
+        // parent) so that readdir and rmdir's emptiness check can rely on
+        // them being stored as ordinary dirent records.
+        if new_ino.is_directory() {
+            self.add_dirent(inode, ".", inode, FileType::Directory)?;
+            self.add_dirent(inode, "..", parent, FileType::Directory)?;
+        }
         Ok(inode)
     }
 
@@ -1434,6 +1444,339 @@ impl<D: BlockDevice> DiskFs<D> {
             what: "directory entry",
         })
     }
+}
+
+/// Information about one directory entry, as reported by [`DiskFs::readdir`].
+///
+/// The name is resolved from inline storage or the volume name pool, so
+/// callers always receive the full name regardless of its length.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirEntryInfo {
+    /// Inode of the entry.
+    pub inode: u32,
+    /// File type of the entry.
+    pub file_type: FileType,
+    /// Name of the entry, resolved from inline storage or the name pool.
+    pub name: Vec<u8>,
+}
+
+impl<D: BlockDevice> DiskFs<D> {
+    /// Removes the directory `name` inside `parent`, but only when it is
+    /// empty (holds no entries besides `.` and `..`).
+    ///
+    /// Frees the directory's inode and all of its data blocks.
+    ///
+    /// # Errors
+    ///
+    /// * [`WreditError::NotFound`] when `name` does not exist in `parent`
+    /// * [`WreditError::NotADirectory`] when `name` is not a directory
+    /// * [`WreditError::DirectoryNotEmpty`] when `name` holds entries
+    ///   besides `.` and `..`
+    /// * Propagates device I/O errors from reading and writing blocks
+    pub fn rmdir(&mut self, parent: u32, name: &str) -> WreditResult<()> {
+        let target = self.find_dirent(parent, name)?;
+        let target_ino = self.read_inode(target)?;
+        if !target_ino.is_directory() {
+            return Err(WreditError::NotADirectory { what: "rmdir target" });
+        }
+        // A directory is empty when its only entries are "." and "..".
+        let mut block_buf = [0u8; BLOCK_SIZE];
+        let blocks = (target_ino.size as usize).div_ceil(BLOCK_SIZE);
+        for b in 0..blocks {
+            let logical = b as u32;
+            let block = match self.block_for_direct(&target_ino, logical) {
+                Some(block) => block,
+                None => continue,
+            };
+            self.device
+                .read_block(block.into(), &mut block_buf)?;
+            for e in 0..DIRENTS_PER_BLOCK {
+                let entry = DirEntry::from_bytes(&block_buf[e * DIRENT_SIZE..][..DIRENT_SIZE]);
+                if entry.inode != 0 {
+                    // "." and ".." always point at the directory itself or
+                    // its parent; any other entry means non-empty.
+                    if entry.inode != target && entry.inode != parent {
+                        return Err(WreditError::DirectoryNotEmpty {
+                            what: "directory not empty",
+                        });
+                    }
+                }
+            }
+        }
+        // Collect all data blocks of the directory so they can be freed.
+        let mut blocks_to_free: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
+        for logical in 0..target_ino.block_count {
+            if let Some(block) = self.block_for_direct(&target_ino, logical) {
+                blocks_to_free.push(block);
+            }
+        }
+        // Unlink the entry from the parent directory.
+        self.unlink(parent, name)?;
+        // Free the directory's inode.
+        self.free_inode(target)?;
+        // Free all of its data blocks.
+        for block in blocks_to_free {
+            self.free_block(block)?;
+        }
+        Ok(())
+    }
+
+    /// Renames `source` to `target_name` inside `parent`.
+    ///
+    /// When `target_name` already exists, it is replaced if it is a
+    /// regular file or an empty directory; replacing a non-empty
+    /// directory is refused. Moving across directories is not supported
+    /// — `source` and `target_name` must share the same parent.
+    ///
+    /// # Errors
+    ///
+    /// * [`WreditError::NotFound`] when `source` does not exist
+    /// * [`WreditError::AlreadyExists`] when `target_name` exists and is
+    ///   a non-empty directory
+    /// * [`WreditError::NotADirectory`] when a path component is not a
+    ///   directory
+    /// * Propagates device I/O errors from reading and writing blocks
+    pub fn rename(&mut self, parent: u32, source: &str, target_name: &str) -> WreditResult<()> {
+        if source == target_name {
+            return Ok(());
+        }
+        // Resolve the source entry.
+        let source_inode = self.find_dirent(parent, source)?;
+        let source_ino = self.read_inode(source_inode)?;
+        let source_is_dir = source_ino.is_directory();
+
+        // Resolve the target, if it exists.
+        let target_inode = self.find_dirent(parent, target_name);
+        if let Ok(target_inode) = target_inode {
+            let target_ino = self.read_inode(target_inode)?;
+            if target_ino.is_directory() {
+                // A non-empty directory cannot be replaced.
+                if !self.is_directory_empty(target_inode, &target_ino)? {
+                    return Err(WreditError::AlreadyExists {
+                        what: "target directory",
+                    });
+                }
+            }
+            // Replace the existing entry: unlink it first.
+            self.unlink(parent, target_name)?;
+            if target_ino.is_directory() {
+                self.free_inode(target_inode)?;
+                let mut blocks_to_free: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
+                for logical in 0..target_ino.block_count {
+                    if let Some(block) = self.block_for_direct(&target_ino, logical) {
+                        blocks_to_free.push(block);
+                    }
+                }
+                for block in blocks_to_free {
+                    self.free_block(block)?;
+                }
+            }
+        }
+
+        // Rewrite the source dirent with the new name.
+        let mut block_buf = [0u8; BLOCK_SIZE];
+        let source_bytes = source.as_bytes();
+        let mut found = false;
+        let ino = self.read_inode(parent)?;
+        let blocks = (ino.size as usize).div_ceil(BLOCK_SIZE);
+        for b in 0..blocks {
+            let logical = b as u32;
+            let block = match self.block_for_direct(&ino, logical) {
+                Some(block) => block,
+                None => continue,
+            };
+            self.device
+                .read_block(block.into(), &mut block_buf)?;
+            for e in 0..DIRENTS_PER_BLOCK {
+                let off = e * DIRENT_SIZE;
+                let entry = DirEntry::from_bytes(&block_buf[off..][..DIRENT_SIZE]);
+                if entry.inode == source_inode {
+                    let wanted_hash = crate::simd::hash_bytes(source_bytes);
+                    if entry.name_hash == wanted_hash && self.entry_name_matches(&entry, source_bytes)? {
+                        let mut new_entry = entry;
+                        if !new_entry.set_name(target_name.as_bytes()) {
+                            return Err(WreditError::NameTooLong {
+                                len: target_name.as_bytes().len(),
+                            });
+                        }
+                        block_buf[off..][..DIRENT_SIZE].copy_from_slice(&new_entry.to_bytes());
+                        self.device
+                            .write_block(block.into(), &block_buf)?;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if found {
+                break;
+            }
+        }
+        if !found {
+            return Err(WreditError::NotFound {
+                what: "directory entry",
+            });
+        }
+        // If the renamed entry is a directory and we are keeping "." and ".."
+        // semantics, no further update is needed because rename stays within
+        // the same parent: "." still points at itself and ".." still points
+        // at the same parent inode.
+        if source_is_dir {
+            // The moved directory's ".." entry already points at `parent`,
+            // which is unchanged by a same-parent rename.
+        }
+        Ok(())
+    }
+
+    /// Returns true when the directory at `inode` holds no entries
+    /// besides `.` and `..`.
+    fn is_directory_empty(&mut self, inode: u32, ino: &Inode) -> WreditResult<bool> {
+        let mut block_buf = [0u8; BLOCK_SIZE];
+        let blocks = (ino.size as usize).div_ceil(BLOCK_SIZE);
+        for b in 0..blocks {
+            let logical = b as u32;
+            let block = match self.block_for_direct(ino, logical) {
+                Some(block) => block,
+                None => continue,
+            };
+            self.device
+                .read_block(block.into(), &mut block_buf)?;
+            for e in 0..DIRENTS_PER_BLOCK {
+                let entry = DirEntry::from_bytes(&block_buf[e * DIRENT_SIZE..][..DIRENT_SIZE]);
+                if entry.inode != 0 && entry.inode != inode {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    /// Lists the entries of the directory `inode`.
+    ///
+    /// Returns one [`DirEntryInfo`] per live entry, with names resolved
+    /// from inline storage or the volume name pool. The order is the
+    /// on-disk directory block order.
+    ///
+    /// # Errors
+    ///
+    /// * [`WreditError::NotADirectory`] when `inode` is not a directory
+    /// * Propagates device I/O errors from reading blocks
+    pub fn readdir(&mut self, inode: u32) -> WreditResult<alloc::vec::Vec<DirEntryInfo>> {
+        let ino = self.read_inode(inode)?;
+        if !ino.is_directory() {
+            return Err(WreditError::NotADirectory {
+                what: "readdir target",
+            });
+        }
+        let mut entries: alloc::vec::Vec<DirEntryInfo> = alloc::vec::Vec::new();
+        let mut block_buf = [0u8; BLOCK_SIZE];
+        let blocks = (ino.size as usize).div_ceil(BLOCK_SIZE);
+        for b in 0..blocks {
+            let logical = b as u32;
+            let block = match self.block_for_direct(&ino, logical) {
+                Some(block) => block,
+                None => continue,
+            };
+            self.device
+                .read_block(block.into(), &mut block_buf)?;
+            for e in 0..DIRENTS_PER_BLOCK {
+                let entry = DirEntry::from_bytes(&block_buf[e * DIRENT_SIZE..][..DIRENT_SIZE]);
+                if entry.inode == 0 {
+                    continue;
+                }
+                let name = if entry.is_pooled() {
+                    let target_ino = self.read_inode(entry.inode)?;
+                    self.read_pool_name(target_ino.name_block, target_ino.name_off)?
+                } else {
+                    let len = entry.name_len as usize;
+                    entry.name[..len].to_vec()
+                };
+                entries.push(DirEntryInfo {
+                    inode: entry.inode,
+                    file_type: match entry.file_type {
+                        0 => FileType::Unknown,
+                        1 => FileType::Regular,
+                        2 => FileType::Directory,
+                        _ => FileType::Unknown,
+                    },
+                    name,
+                });
+            }
+        }
+        Ok(entries)
+    }
+
+    /// Truncates or extends the file `inode` to `new_size` bytes.
+    ///
+    /// When shrinking, all data blocks beyond `new_size` are freed and
+    /// returned to the block bitmap. When growing, the size field is
+    /// updated and blocks are allocated lazily on the next write.
+    ///
+    /// # Errors
+    ///
+    /// * [`WreditError::NotADirectory`] — never; kept for symmetry with
+    ///   other file operations
+    /// * [`WreditError::NotFound`] when `inode` does not exist
+    /// * [`WreditError::IsADirectory`] when `inode` is a directory
+    /// * Propagates device I/O errors from reading and writing blocks
+    pub fn truncate(&mut self, inode: u32, new_size: u64) -> WreditResult<()> {
+        let mut ino = self.read_inode(inode)?;
+        if ino.is_directory() {
+            return Err(WreditError::IsADirectory {
+                what: "truncate target",
+            });
+        }
+        let old_size = u64::from(ino.size);
+        if new_size == old_size {
+            return Ok(());
+        }
+        if new_size < old_size {
+            // Free every block whose logical index is at or beyond the
+            // new size.
+            let last_logical = ((new_size as usize).saturating_sub(1) / BLOCK_SIZE) as u32;
+            let mut block_buf = [0u8; BLOCK_SIZE];
+            for logical in (last_logical.saturating_add(1))..ino.block_count {
+                if let Some(block) = self.block_for_direct(&ino, logical) {
+                    self.free_block(block)?;
+                }
+            }
+            // Clear the indirect block if it no longer points anywhere.
+            if ino.indirect != 0 && last_logical < DIRECT_COUNT as u32 {
+                self.device
+                    .read_block(u64::from(ino.indirect), &mut block_buf)?;
+                let mut indirect_cleared = true;
+                for logical in (DIRECT_COUNT as u32)..(ino.block_count) {
+                    let idx = (logical - DIRECT_COUNT as u32) as usize;
+                    let ptr = u32::from_le_bytes(
+                        block_buf[idx * 4..][..4]
+                            .try_into()
+                            .unwrap_or([0; 4]),
+                    );
+                    if ptr != 0 {
+                        indirect_cleared = false;
+                        break;
+                    }
+                }
+                if indirect_cleared {
+                    self.free_block(ino.indirect)?;
+                    ino.indirect = 0;
+                }
+            }
+            ino.block_count = last_logical + 1;
+        } else {
+            // Growing: update size; blocks are allocated lazily on write.
+            // Recompute block_count to cover the new size.
+            let last_logical = ((new_size as usize).saturating_sub(1) / BLOCK_SIZE) as u32;
+            let mut needed = last_logical + 1;
+            let max_blocks = DIRECT_COUNT as u32 + INDIRECT_PTRS as u32;
+            if needed > max_blocks {
+                needed = max_blocks;
+            }
+            ino.block_count = needed;
+        }
+        ino.size = new_size as u32;
+        self.write_inode(inode, &ino)?;
+        Ok(())
+    }
 
     /// The number of blocks the device holds.
     #[must_use]
@@ -1459,7 +1802,8 @@ impl<D: BlockDevice> Drop for DiskFs<D> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BLOCK_SIZE, DiskFs, MAX_NAME_LEN, NAME_MAX, POOL_BLOCK_HEADER, POOL_RECORD_HEADER, POOL_USED_OFFSET,
+        BLOCK_SIZE, DirEntryInfo, DiskFs, FileType, MAX_NAME_LEN, NAME_MAX, POOL_BLOCK_HEADER,
+        POOL_RECORD_HEADER, POOL_USED_OFFSET,
     };
     use crate::error::WreditError;
     use crate::fs_block::{BlockDevice, MemoryDisk};
@@ -1713,5 +2057,234 @@ mod tests {
         let mut edited = restored;
         assert!(!edited.set_name(&long));
         assert_eq!(edited, before);
+    }
+
+    #[test]
+    fn rmdir_removes_empty_directory_and_frees_resources() {
+        let disk = MemoryDisk::new(256).unwrap();
+        let mut fs = DiskFs::format(disk, 256, 128).unwrap();
+        fs.mkdir(2, "emptydir").unwrap();
+        let dir = fs.lookup("emptydir", 2).unwrap();
+        assert!(fs.read_inode(dir).unwrap().is_directory());
+
+        fs.rmdir(2, "emptydir").unwrap();
+        assert!(matches!(
+            fs.lookup("emptydir", 2),
+            Err(WreditError::NotFound { .. })
+        ));
+        // The inode is freed.
+        assert!(matches!(fs.read_inode(dir), Err(WreditError::NotFound { .. })));
+    }
+
+    #[test]
+    fn rmdir_rejects_non_empty_directory() {
+        let disk = MemoryDisk::new(256).unwrap();
+        let mut fs = DiskFs::format(disk, 256, 128).unwrap();
+        fs.mkdir(2, "dir").unwrap();
+        let dir = fs.lookup("dir", 2).unwrap();
+        fs.create(dir, "child.txt", 0x8000).unwrap();
+        assert!(matches!(
+            fs.rmdir(2, "dir"),
+            Err(WreditError::DirectoryNotEmpty { .. })
+        ));
+        // The directory still exists.
+        assert!(fs.lookup("dir", 2).is_ok());
+    }
+
+    #[test]
+    fn rmdir_rejects_non_directory() {
+        let disk = MemoryDisk::new(256).unwrap();
+        let mut fs = DiskFs::format(disk, 256, 128).unwrap();
+        fs.create(2, "file.txt", 0x8000).unwrap();
+        assert!(matches!(
+            fs.rmdir(2, "file.txt"),
+            Err(WreditError::NotADirectory { .. })
+        ));
+    }
+
+    #[test]
+    fn rename_moves_entry_within_directory() {
+        let disk = MemoryDisk::new(256).unwrap();
+        let mut fs = DiskFs::format(disk, 256, 128).unwrap();
+        fs.create(2, "old_name.txt", 0x8000).unwrap();
+        let inode = fs.lookup("old_name.txt", 2).unwrap();
+        fs.write_at(inode, 0, b"data").unwrap();
+
+        fs.rename(2, "old_name.txt", "new_name.txt")
+            .unwrap();
+        assert!(matches!(
+            fs.lookup("old_name.txt", 2),
+            Err(WreditError::NotFound { .. })
+        ));
+        let inode = fs.lookup("new_name.txt", 2).unwrap();
+        let mut buf = [0u8; 4];
+        assert_eq!(fs.read_at(inode, 0, &mut buf).unwrap(), 4);
+        assert_eq!(&buf, b"data");
+    }
+
+    #[test]
+    fn rename_replaces_existing_file() {
+        let disk = MemoryDisk::new(256).unwrap();
+        let mut fs = DiskFs::format(disk, 256, 128).unwrap();
+        fs.create(2, "a.txt", 0x8000).unwrap();
+        fs.create(2, "b.txt", 0x8000).unwrap();
+        let a_inode = fs.lookup("a.txt", 2).unwrap();
+        fs.write_at(a_inode, 0, b"AAAA").unwrap();
+        let b_inode = fs.lookup("b.txt", 2).unwrap();
+        fs.write_at(b_inode, 0, b"BBBB").unwrap();
+
+        fs.rename(2, "a.txt", "b.txt").unwrap();
+        assert!(matches!(fs.lookup("a.txt", 2), Err(WreditError::NotFound { .. })));
+        let inode = fs.lookup("b.txt", 2).unwrap();
+        let mut buf = [0u8; 4];
+        assert_eq!(fs.read_at(inode, 0, &mut buf).unwrap(), 4);
+        assert_eq!(&buf, b"AAAA");
+    }
+
+    #[test]
+    fn rename_rejects_non_empty_directory_target() {
+        let disk = MemoryDisk::new(256).unwrap();
+        let mut fs = DiskFs::format(disk, 256, 128).unwrap();
+        fs.mkdir(2, "dir1").unwrap();
+        fs.mkdir(2, "dir2").unwrap();
+        let dir2 = fs.lookup("dir2", 2).unwrap();
+        fs.create(dir2, "child.txt", 0x8000).unwrap();
+        fs.create(2, "file.txt", 0x8000).unwrap();
+
+        assert!(matches!(
+            fs.rename(2, "file.txt", "dir2"),
+            Err(WreditError::AlreadyExists { .. })
+        ));
+        // The source file still exists.
+        assert!(fs.lookup("file.txt", 2).is_ok());
+    }
+
+    #[test]
+    fn readdir_lists_directory_entries() {
+        let disk = MemoryDisk::new(256).unwrap();
+        let mut fs = DiskFs::format(disk, 256, 128).unwrap();
+        fs.mkdir(2, "src").unwrap();
+        let src = fs.lookup("src", 2).unwrap();
+        fs.create(src, "main.rs", 0x8000).unwrap();
+        fs.create(src, "lib.rs", 0x8000).unwrap();
+
+        let entries = fs.readdir(src).unwrap();
+        let mut names: alloc::vec::Vec<&[u8]> = entries
+            .iter()
+            .map(|e| e.name.as_slice())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                b".".as_slice(),
+                b"..".as_slice(),
+                "lib.rs".as_bytes(),
+                "main.rs".as_bytes()
+            ]
+        );
+        for entry in &entries {
+            let is_dot = entry.name == b"." || entry.name == b"..";
+            let expected = if is_dot {
+                FileType::Directory
+            } else {
+                FileType::Regular
+            };
+            assert!(matches!(entry.file_type, expected));
+            assert!(entry.inode != 0);
+        }
+    }
+
+    #[test]
+    fn readdir_includes_dot_and_dotdot() {
+        let disk = MemoryDisk::new(256).unwrap();
+        let mut fs = DiskFs::format(disk, 256, 128).unwrap();
+        fs.mkdir(2, "sub").unwrap();
+        let sub = fs.lookup("sub", 2).unwrap();
+
+        let entries = fs.readdir(sub).unwrap();
+        let names: alloc::vec::Vec<&[u8]> = entries
+            .iter()
+            .map(|e| e.name.as_slice())
+            .collect();
+        assert!(names.contains(&b".".as_slice()));
+        assert!(names.contains(&b"..".as_slice()));
+        for entry in &entries {
+            assert!(matches!(entry.file_type, FileType::Directory));
+        }
+    }
+
+    #[test]
+    fn readdir_rejects_non_directory() {
+        let disk = MemoryDisk::new(256).unwrap();
+        let mut fs = DiskFs::format(disk, 256, 128).unwrap();
+        fs.create(2, "file.txt", 0x8000).unwrap();
+        let inode = fs.lookup("file.txt", 2).unwrap();
+        assert!(matches!(
+            fs.readdir(inode),
+            Err(WreditError::NotADirectory { .. })
+        ));
+    }
+
+    #[test]
+    fn truncate_shrinks_file_and_frees_blocks() {
+        let disk = MemoryDisk::new(512).unwrap();
+        let mut fs = DiskFs::format(disk, 512, 128).unwrap();
+        let inode = fs.create(2, "big.txt", 0x8000).unwrap();
+        let data = [0x42u8; BLOCK_SIZE * 3];
+        fs.write_at(inode, 0, &data).unwrap();
+
+        fs.truncate(inode, BLOCK_SIZE as u64).unwrap();
+        let ino = fs.read_inode(inode).unwrap();
+        assert_eq!(ino.size, BLOCK_SIZE as u32);
+        // Blocks beyond the new size should be freed.
+        let mut buf = [0u8; BLOCK_SIZE];
+        assert_eq!(fs.read_at(inode, 0, &mut buf).unwrap(), BLOCK_SIZE);
+        assert_eq!(&buf, &data[..BLOCK_SIZE]);
+    }
+
+    #[test]
+    fn truncate_grows_file_updates_size() {
+        let disk = MemoryDisk::new(256).unwrap();
+        let mut fs = DiskFs::format(disk, 256, 128).unwrap();
+        let inode = fs.create(2, "small.txt", 0x8000).unwrap();
+        fs.write_at(inode, 0, b"hi").unwrap();
+
+        fs.truncate(inode, 100).unwrap();
+        let ino = fs.read_inode(inode).unwrap();
+        assert_eq!(ino.size, 100);
+        // Reading past the old size reads zeroed blocks.
+        let mut buf = [0u8; 100];
+        assert_eq!(fs.read_at(inode, 0, &mut buf).unwrap(), 100);
+        assert_eq!(&buf[..2], b"hi");
+        assert!(buf[2..].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn bound_document_save_shrinks_file() {
+        let disk = MemoryDisk::new(256).unwrap();
+        let mut fs = DiskFs::format(disk, 256, 128).unwrap();
+        let inode = fs.create(2, "shrink.txt", 0x8000).unwrap();
+        fs.write_at(inode, 0, b"longer content here")
+            .unwrap();
+
+        let mut bound =
+            crate::storage_bind::BoundDocument::<MemoryDisk, 256, 1024>::open(&mut fs, inode).unwrap();
+        assert_eq!(bound.raw_length(), 19);
+        // Delete most of the content.
+        bound.delete_range(0, 15).unwrap();
+        bound.flush_all();
+        bound.save().unwrap();
+        assert!(!bound.is_dirty());
+
+        // Read back through the storage layer.
+        let inode = {
+            let saved = bound.inode();
+            drop(bound);
+            saved
+        };
+        let mut buf = [0u8; 4];
+        assert_eq!(fs.read_at(inode, 0, &mut buf).unwrap(), 4);
+        assert_eq!(&buf, b"here");
     }
 }
