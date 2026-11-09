@@ -294,6 +294,10 @@ New Rust files must include the Apache 2.0 copyright header used elsewhere:
 - Use `#[inline]` on hot-path small functions
 - Avoid storing more than one `bool` inside structs, Use enums with custom BitOr overloads instead
 
+### Optimizing binary sizes
+
+- Use #![cfg_attr (not (test), no_std)] when adding new modules for reducing binary sizes
+
 ### CPU Utilization and Optimization
 
 Codevar runs on one core on many of its targets, so keeping that core busy —
@@ -343,10 +347,6 @@ High `idle_cycles` with runnable work means a scheduling bug, high
 unit of work means a future is yielding too often, and high `average_waiting`
 means the policy is starving a task. Profile CPU changes the same way GPU
 changes are profiled.
-
-### Optimizing binary sizes
-
-- Use #![cfg_attr (not (test), no_std)] when adding new modules for reducing binary sizes
 
 ### Unsafe Code Guidelines
 
