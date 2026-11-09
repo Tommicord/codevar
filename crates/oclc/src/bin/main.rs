@@ -70,13 +70,6 @@ use codevar_oclc::driver;
 #[cfg(all(not(test), unix))]
 use codevar_tlsf_alloc::LockedGrowableTlsf;
 
-#[cfg(not(test))]
-use codevar_inssched::executor::{Config, Executor, yield_now};
-#[cfg(not(test))]
-use codevar_inssched::policy::RoundRobin;
-#[cfg(not(test))]
-use codevar_inssched::task::{Priority, Task};
-
 // The vector table and `Reset` stub of the bare-metal image.
 //
 // On any other target this expands to nothing, so the hosted build keeps its

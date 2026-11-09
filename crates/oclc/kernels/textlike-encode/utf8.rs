@@ -13,16 +13,6 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-//! # Pipeline status
-//!
-//! **UNWIRED**: These kernels are compiled and embedded by `codevar-oclc`'s
-//! build script, but they are not yet connected to the
-//! `codevar-textlike-encode` `Encoding` pipeline. The host-side codec
-//! selection still routes through the CPU implementations in
-//! `crate::utf8` and `crate::utf16`. Wiring these kernels in requires a host
-//! dispatcher that runs the CPU prefix-sum pass to compute `out_offsets`
-//! and launches the appropriate kernel.
-
 //! UTF-8 GPU kernels.
 //!
 //! UTF-8 is the canonical internal encoding of `codevar-textlike-encode`, so

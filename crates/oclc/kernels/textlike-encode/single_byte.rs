@@ -13,17 +13,6 @@
 //! the License for the specific language governing
 //! permissions and limitations under the License.
 
-//! # Pipeline status
-//!
-//! **UNWIRED**: These kernels are compiled and embedded by `codevar-oclc`'s
-//! build script, but they are not yet connected to the
-//! `codevar-textlike-encode` `Encoding` pipeline. The host-side codec
-//! selection (`crate::legacy::ENCODINGS`) still routes through the CPU
-//! implementations in `crate::single_byte`. Wiring these kernels in requires
-//! a host dispatcher that (1) uploads the normative index table for each
-//! encoding, (2) runs the CPU prefix-sum pass to compute `out_offsets`, and
-//! (3) launches the appropriate kernel with the encoded arguments.
-
 //! Single-byte encoding (legacy) GPU kernels.
 //!
 //! Every legacy single-byte encoding in `codevar-textlike-encode` shares one
