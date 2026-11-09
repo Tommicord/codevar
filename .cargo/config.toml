@@ -14,6 +14,9 @@ runner = "wasm-server-runner"
 rustflags = [
     "-C", "opt-level=z",
     "-C", "codegen-units=1",
+    "-C", "link-arg=--icf=all",
+    "-C", "link-arg=--gc-sections",
+    "-C", "link-arg=--build-id=none",
 ]
 
 # Bare-metal size build: `opt-level=z`, `lto=fat`, `codegen-units=1`,
@@ -31,11 +34,8 @@ rustflags = [
 runner = "qemu-system-arm -cpu cortex-m3 -machine mps2-an385 -nographic -semihosting-config enable=on,target=native -kernel"
 rustflags = [
     "-C", "force-unwind-tables=no",
-    # Fold identical functions/constant pools (LLD extension).
     "-C", "link-arg=--icf=all",
-    # Drop unreferenced sections (rustc also passes this; kept explicit).
     "-C", "link-arg=--gc-sections",
-    # No build-id note: the ELF carries no host metadata.
     "-C", "link-arg=--build-id=none",
     # Keep FLASH sections in one segment and stop 64 KiB page padding:
     # `noseparate-code` merges RO/RX segments, `max-page-size` bounds the
