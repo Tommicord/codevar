@@ -1,0 +1,19 @@
+[package]
+name = "codevar-os-def"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "codevar_os_def"
+
+[dependencies]
+codevar-logger = { workspace = true }
+libc = { workspace = true }
+cfg-if = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-link = { workspace = true }
