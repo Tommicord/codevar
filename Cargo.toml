@@ -25,6 +25,7 @@ members = [
     "crates/kuitui-rea",
     "crates/logger",
     "crates/dbus",
+    "crates/os-def",
     "crates/time-util",
     "crates/console-util",
     "crates/env",
@@ -178,6 +179,7 @@ codevar-kuitui-control-windows = { path = "crates/kuitui-control-windows" }
 codevar-kuitui-control-macos = { path = "crates/kuitui-control-macos" }
 codevar-kuitui-control-wasm = { path = "crates/kuitui-control-wasm" }
 codevar-logger = { path = "crates/logger" }
+codevar-os-def = { path = "crates/os-def" }
 codevar-console-util = { path = "crates/console-util" }
 codevar-stdio = { path = "crates/stdio" }
 codevar-env = { path = "crates/env" }

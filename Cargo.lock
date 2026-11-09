@@ -771,6 +771,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-os-def"
+version = "1.0.0"
+dependencies = [
+ "cfg-if",
+ "codevar-logger",
+ "libc",
+ "windows-link 0.100.0",
+]
+
+[[package]]
 name = "codevar-pathbuf"
 version = "1.0.0"
 dependencies = [
@@ -1056,6 +1066,7 @@ dependencies = [
  "codevar-inssched",
  "codevar-logger",
  "codevar-ocl",
+ "codevar-os-def",
  "codevar-textlike-encode",
  "codevar-wredit-asm",
  "criterion",
