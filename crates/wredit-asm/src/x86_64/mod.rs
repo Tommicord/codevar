@@ -228,6 +228,103 @@ pub unsafe fn prefetch_range(addr: *const u8, len: usize) {
     unsafe { codevar_wredit_prefetch_range(addr, len) };
 }
 
+/// Non-temporal copy of `len` bytes from `src` to `dst` using streaming
+/// stores (`movntdq` / `movnti`). The regions must not overlap.
+///
+/// Non-temporal stores bypass the cache hierarchy and avoid a read-for-
+/// ownership on the destination, which wins when `len` exceeds the
+/// last-level cache and the destination is not reused soon after. The
+/// caller must `sfence` (or otherwise order) stores before any reader
+/// observes the destination; this function issues an `sfence` at the
+/// end so the copy is globally visible on return.
+///
+/// # Safety
+///
+/// `src` must be valid for reads of `len` bytes and `dst` for writes of
+/// `len` bytes, with no overlap; `dst` must be aligned to 16 bytes or
+/// the scalar tail handles the misaligned prefix/suffix.
+#[target_feature(enable = "sse2")]
+#[inline]
+pub unsafe fn memcpy_nt(dst: *mut u8, src: *const u8, len: usize) {
+    // SAFETY: the caller proved SSE2 (present on every x86_64); both
+    // ranges are valid for `len` bytes and do not overlap; stores stay
+    // inside the destination.
+    unsafe {
+        memcpy_nt_sse2(dst, src, len);
+    }
+}
+
+/// Non-temporal move of `len` bytes from `src` to `dst`, handling
+/// overlap. When the regions do not overlap this delegates to
+/// [`memcpy_nt`]; when they overlap, non-temporal stores cannot be used
+/// safely for the overlapping tail, so it falls back to the regular
+/// [`memmove`].
+///
+/// # Safety
+///
+/// `src` must be valid for reads of `len` bytes and `dst` for writes of
+/// `len` bytes; the regions may overlap.
+#[target_feature(enable = "sse2")]
+#[inline]
+pub unsafe fn memmove_nt(dst: *mut u8, src: *const u8, len: usize) {
+    // SAFETY: the caller proved SSE2; the ranges are valid for `len`
+    // bytes.
+    unsafe {
+        let dst_addr = dst as usize;
+        let src_addr = src as usize;
+        if dst_addr < src_addr {
+            // Forward copy: no overlap hazard with streaming stores.
+            memcpy_nt(dst, src, len);
+        } else {
+            // Backward/overlapping copy: streaming stores would clobber
+            // not-yet-read source bytes, so use the cached memmove.
+            memmove(dst, src, len);
+        }
+    }
+}
+
+/// Non-temporal copy over SSE2: 16-byte streaming stores plus a scalar
+/// tail for the unaligned prefix/suffix and any trailing bytes.
+///
+/// # Safety
+///
+/// Requires SSE2. `dst`/`src` must be valid for `len` bytes with no
+/// overlap; `len` may be zero.
+#[target_feature(enable = "sse2")]
+unsafe fn memcpy_nt_sse2(dst: *mut u8, src: *const u8, len: usize) {
+    let mut d = dst as usize;
+    let s = src as usize;
+    let end = d + len;
+
+    // Align the destination up to 16 bytes with scalar stores so every
+    // streaming store is naturally aligned.
+    while d < end && d % 16 != 0 {
+        *(d as *mut u8) = *(s as *const u8);
+        d += 1;
+        // s advances in lockstep; both ranges are valid for `len`.
+    }
+
+    // 16-byte streaming stores.
+    while d + 16 <= end {
+        // SAFETY: `d` is 16-byte aligned and `d + 16 <= end`, so the
+        // load/store are in bounds; `movntdq` is SSE2.
+        let x = core::arch::x86_64::_mm_loadu_si128(s as *const _);
+        core::arch::x86_64::_mm_store_si128(d as *mut _, x);
+        d += 16;
+        // s advances with d; both stay within their valid ranges.
+    }
+
+    // Scalar tail.
+    while d < end {
+        *(d as *mut u8) = *(s as *const u8);
+        d += 1;
+    }
+
+    // SAFETY: SSE2; `sfence` orders the non-temporal stores before any
+    // subsequent load observes them.
+    core::arch::x86_64::_mm_sfence();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

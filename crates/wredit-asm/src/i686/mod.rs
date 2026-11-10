@@ -92,3 +92,26 @@ pub unsafe fn prefetch_range(addr: *const u8, len: usize) {
     // Safety: prefetch never faults.
     unsafe { codevar_wredit_prefetch_range(addr, len) };
 }
+
+/// Non-temporal copy: i686 has no streaming-store path here, so it
+/// delegates to [`memcpy`].
+///
+/// # Safety
+///
+/// Both ranges must be valid for `len` bytes and must not overlap.
+#[inline]
+pub unsafe fn memcpy_nt(dst: *mut u8, src: *const u8, len: usize) {
+    // Safety: guaranteed by the caller.
+    unsafe { memcpy(dst, src, len) };
+}
+
+/// Non-temporal move: delegates to [`memmove`].
+///
+/// # Safety
+///
+/// Both ranges must be valid for `len` bytes; overlap is allowed.
+#[inline]
+pub unsafe fn memmove_nt(dst: *mut u8, src: *const u8, len: usize) {
+    // Safety: guaranteed by the caller.
+    unsafe { memmove(dst, src, len) };
+}

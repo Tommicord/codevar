@@ -133,3 +133,34 @@ pub unsafe fn prefetch_range(addr: *const u8, len: usize) {
     // Safety: prefetch never faults.
     unsafe { codevar_wredit_prefetch_range(addr, len) };
 }
+
+/// Non-temporal copy of `len` bytes from `src` to `dst`. The regions must
+/// not overlap.
+///
+/// ARMv8-A does not expose stable streaming-store intrinsics, so this
+/// delegates to [`memcpy`]. The `memcpy_nt` name is kept portable so
+/// callers can request a non-temporal path uniformly across targets.
+///
+/// # Safety
+///
+/// `src` must be valid for reads of `len` bytes and `dst` for writes of
+/// `len` bytes, with no overlap.
+#[inline]
+pub unsafe fn memcpy_nt(dst: *mut u8, src: *const u8, len: usize) {
+    // Safety: guaranteed by the caller; the ranges are valid for `len`
+    // bytes and do not overlap.
+    unsafe { memcpy(dst, src, len) };
+}
+
+/// Non-temporal move of `len` bytes from `src` to `dst`, handling overlap.
+///
+/// # Safety
+///
+/// `src` must be valid for reads of `len` bytes and `dst` for writes of
+/// `len` bytes; the regions may overlap.
+#[inline]
+pub unsafe fn memmove_nt(dst: *mut u8, src: *const u8, len: usize) {
+    // Safety: guaranteed by the caller; the ranges are valid for `len`
+    // bytes.
+    unsafe { memmove(dst, src, len) };
+}

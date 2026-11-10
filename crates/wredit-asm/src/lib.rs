@@ -158,6 +158,60 @@ mod fallback {
     /// Prefetch never faults.
     #[inline]
     pub unsafe fn prefetch_range(_addr: *const u8, _len: usize) {}
+
+    /// Non-temporal copy: no streaming stores on this target, so it
+    /// delegates to [`memcpy`].
+    ///
+    /// # Safety
+    ///
+    /// Both ranges must be valid for `len` bytes and must not overlap.
+    #[inline]
+    pub unsafe fn memcpy_nt(dst: *mut u8, src: *const u8, len: usize) {
+        // Safety: guaranteed by the caller.
+        unsafe { core::ptr::copy_nonoverlapping(src, dst, len) };
+    }
+
+    /// Non-temporal move: delegates to [`memmove`] on this target.
+    ///
+    /// # Safety
+    ///
+    /// Both ranges must be valid for `len` bytes; overlap is allowed.
+    #[inline]
+    pub unsafe fn memmove_nt(dst: *mut u8, src: *const u8, len: usize) {
+        // Safety: guaranteed by the caller.
+        unsafe { core::ptr::copy(src, dst, len) };
+    }
+}
+
+/// Copies `len` bytes from `src` to `dst` using non-temporal (streaming)
+/// stores. The regions must not overlap.
+///
+/// On x86 this emits `movntdq`/`movnti` stores that bypass the cache
+/// hierarchy and avoid a read-for-ownership on the destination; on other
+/// targets it delegates to [`memcpy`]. The copy is globally visible on
+/// return (an `sfence` or equivalent is issued on x86).
+///
+/// # Safety
+///
+/// `src` must be valid for reads of `len` bytes and `dst` for writes of
+/// `len` bytes, with no overlap.
+#[inline]
+pub unsafe fn memcpy_nt(dst: *mut u8, src: *const u8, len: usize) {
+    // Safety: forwarded to the caller.
+    unsafe { imp::memcpy_nt(dst, src, len) };
+}
+
+/// Copies `len` bytes from `src` to `dst` using non-temporal stores,
+/// correctly handling overlap.
+///
+/// # Safety
+///
+/// `src` must be valid for reads of `len` bytes and `dst` for writes of
+/// `len` bytes; the regions may overlap.
+#[inline]
+pub unsafe fn memmove_nt(dst: *mut u8, src: *const u8, len: usize) {
+    // Safety: forwarded to the caller.
+    unsafe { imp::memmove_nt(dst, src, len) };
 }
 
 /// Copies `len` bytes from `src` to `dst`. The regions must not
