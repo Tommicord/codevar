@@ -471,6 +471,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-kuitui-decoration"
+version = "1.0.0"
+dependencies = [
+ "codevar-base",
+ "codevar-kuitui",
+ "codevar-kuitui-control",
+ "codevar-logger",
+ "codevar-wayland",
+ "spin 0.12.3",
+]
+
+[[package]]
+name = "codevar-kuitui-decoration-wayland"
+version = "1.0.0"
+dependencies = [
+ "codevar-base",
+ "codevar-kuitui",
+ "codevar-kuitui-control",
+ "codevar-kuitui-decoration",
+ "codevar-logger",
+ "codevar-time-core",
+ "codevar-wayland",
+ "spin 0.12.3",
+]
+
+[[package]]
+name = "codevar-kuitui-decoration-windows"
+version = "1.0.0"
+dependencies = [
+ "codevar-base",
+ "codevar-kuitui",
+ "codevar-kuitui-control",
+ "codevar-kuitui-decoration",
+ "codevar-logger",
+ "spin 0.12.3",
+ "windows",
+]
+
+[[package]]
 name = "codevar-kuitui-rea"
 version = "1.0.0"
 

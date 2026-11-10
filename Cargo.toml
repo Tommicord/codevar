@@ -70,6 +70,9 @@ members = [
     "crates/kuitui-control-windows",
     "crates/kuitui-control-macos",
     "crates/kuitui-control-wasm",
+    "crates/kuitui-decoration",
+    "crates/kuitui-decoration-wayland",
+    "crates/kuitui-decoration-windows",
 ]
 resolver = "2"
 
@@ -180,6 +183,9 @@ codevar-kuitui-control-linux = { path = "crates/kuitui-control-linux" }
 codevar-kuitui-control-windows = { path = "crates/kuitui-control-windows" }
 codevar-kuitui-control-macos = { path = "crates/kuitui-control-macos" }
 codevar-kuitui-control-wasm = { path = "crates/kuitui-control-wasm" }
+codevar-kuitui-decoration = { path = "crates/kuitui-decoration" }
+codevar-kuitui-decoration-wayland = { path = "crates/kuitui-decoration-wayland" }
+codevar-kuitui-decoration-windows = { path = "crates/kuitui-decoration-windows" }
 codevar-logger = { path = "crates/logger" }
 codevar-os-def = { path = "crates/os-def" }
 codevar-console-util = { path = "crates/console-util" }

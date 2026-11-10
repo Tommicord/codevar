@@ -1,0 +1,25 @@
+[package]
+name = "codevar-kuitui-decoration-wayland"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Wayland backend for codevar-kuitui-decoration: xdg-shell, wl_surface, wl_pointer and wl_seat window decorations"
+
+[lib]
+name = "codevar_kuitui_decoration_wayland"
+
+[dependencies]
+codevar-base = { workspace = true }
+codevar-kuitui = { workspace = true }
+codevar-kuitui-decoration = { workspace = true }
+codevar-kuitui-control = { workspace = true }
+codevar-logger = { workspace = true }
+codevar-time-core = { workspace = true }
+codevar-wayland = { workspace = true }
+spin = { workspace = true }
+
+[lints]
+workspace = true
