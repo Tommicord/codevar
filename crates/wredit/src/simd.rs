@@ -96,6 +96,16 @@ const WEIGHT_ROWS: [[i8; UTF8_CHUNK]; WEIGHT_PERIOD] = {
 #[inline]
 #[must_use]
 pub fn count_utf8_units(bytes: &[u8]) -> u64 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        use codevar_base::cpuid::{Feature, has};
+
+        if has(Feature::Sve) {
+            // SAFETY: the CPUID probe above confirmed SVE; `aarch64::count_utf8_units_sve`
+            // only reads `bytes` and the predicate keeps every load in bounds.
+            return unsafe { aarch64::count_utf8_units_sve(bytes) };
+        }
+    }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         use codevar_base::cpuid::{Feature, has};
@@ -349,6 +359,12 @@ pub fn linear_checksum(bytes: &[u8]) -> u32 {
     {
         use codevar_base::cpuid::{Feature, has};
 
+        if has(Feature::Avx512F) && has(Feature::Avx512Ifma) {
+            // SAFETY: the probes above confirmed AVX-512F/IFMA and the
+            // OS-enabled ZMM state; the kernel only reads `bytes` and
+            // writes to stack-allocated vectors.
+            return unsafe { x86::checksum_avx512_ifma(bytes) };
+        }
         if has(Feature::Avx512F) && has(Feature::Avx512Bw) && has(Feature::Avx2) {
             // SAFETY: the probes above confirmed AVX-512F/BW and the
             // ZMM state; the kernel only reads `bytes` and writes to
@@ -386,6 +402,16 @@ pub fn linear_checksum(bytes: &[u8]) -> u32 {
 /// ```
 #[must_use]
 pub fn count_byte(bytes: &[u8], needle: u8) -> u64 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        use codevar_base::cpuid::{Feature, has};
+
+        if has(Feature::Sve) {
+            // SAFETY: the CPUID probe above confirmed SVE; `aarch64::count_byte_sve`
+            // only reads `bytes` and the predicate keeps every load in bounds.
+            return unsafe { aarch64::count_byte_sve(bytes, needle) };
+        }
+    }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         use codevar_base::cpuid::{Feature, has};
@@ -436,6 +462,16 @@ pub fn count_byte_scalar(bytes: &[u8], needle: u8) -> u64 {
 /// ```
 #[must_use]
 pub fn find_byte(bytes: &[u8], needle: u8) -> Option<usize> {
+    #[cfg(target_arch = "aarch64")]
+    {
+        use codevar_base::cpuid::{Feature, has};
+
+        if has(Feature::Sve) {
+            // SAFETY: the CPUID probe above confirmed SVE; `aarch64::find_byte_sve`
+            // only reads `bytes` and the predicate keeps every load in bounds.
+            return unsafe { aarch64::find_byte_sve(bytes, needle) };
+        }
+    }
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         use codevar_base::cpuid::{Feature, has};
@@ -494,6 +530,18 @@ pub fn count_value_u32(words: &[u32], needle: u32) -> u64 {
     {
         use codevar_base::cpuid::{Feature, has};
 
+        if has(Feature::Avx512F) && has(Feature::Avx512Cd) {
+            // SAFETY: the probes above confirmed AVX-512F/CD (VPconflictd)
+            // and the OS-enabled ZMM state; `chunks_exact(16)` keeps every
+            // load inside `words`.
+            return unsafe { x86::count_value_u32_avx512(words, needle) };
+        }
+        if has(Feature::Avx512F) && has(Feature::Avx512Cd) {
+            // SAFETY: the probes above confirmed AVX-512F/CD (VPconflictd)
+            // and the OS-enabled ZMM state; `chunks_exact(16)` keeps every
+            // load inside `words`.
+            return unsafe { x86::count_value_u32_avx512(words, needle) };
+        }
         if has(Feature::Avx2) {
             // SAFETY: the probe above confirmed AVX2; `chunks_exact(8)`
             // keeps every load inside `words`.
@@ -543,6 +591,11 @@ pub fn find_first_u32(words: &[u32], needle: u32) -> Option<usize> {
     {
         use codevar_base::cpuid::{Feature, has};
 
+        if has(Feature::Avx512F) && has(Feature::Avx512Cd) {
+            // SAFETY: the probes above confirmed AVX-512F/CD (VPconflictd)
+            // and the OS-enabled ZMM state; loads stay inside `words`.
+            return unsafe { x86::find_first_u32_avx512(words, needle) };
+        }
         if has(Feature::Avx2) {
             // SAFETY: the probe above confirmed AVX2; loads stay
             // inside `words`.
@@ -881,6 +934,140 @@ fn count_scalar(bytes: &[u8]) -> u64 {
     count
 }
 
+/// ARM SVE/SVE2 scalable-vector kernels.
+///
+/// These kernels use `core::arch::aarch64_sve` primitives (predicates,
+/// first-fault loads, `whilelt` loops) so a bounded search never takes
+/// a tail branch: the predicate drives the loop bound and the scalar
+/// tail is handled by the same vectorized body with a shrinking
+/// predicate. They are gated on `cfg(target_arch = "aarch64")` and
+/// selected at run time through `codevar_base::cpuid` (`Feature::Sve`).
+///
+/// # Safety
+///
+/// Every kernel below is `unsafe` and is only reached after a run-time
+/// probe proved SVE; the `SAFETY` comment at each call site restates
+/// the proof.
+#[cfg(target_arch = "aarch64")]
+mod aarch64 {
+    use alloc::vec::Vec;
+
+    use codevar_base::cpuid::{Feature, has};
+
+    use super::{
+        CHECKSUM_MASK, HASH_MASK, HASH_PRIME_POW8, LANE_POWERS, UTF8_CHUNK, WEIGHT_PERIOD, WEIGHT_ROWS,
+        checksum_scalar_at, count_byte_scalar, count_scalar, find_byte_scalar, hash_state,
+    };
+
+    /// SVE vector length in bytes, discovered at run time via `svcntb()`.
+    ///
+    /// SVE is "vector-length agnostic": the same binary runs with any
+    /// VL from 128 bits to 2048 bits, and every kernel below re-queries
+    /// `svcntb` so the loop stride tracks the actual hardware width.
+    #[inline]
+    fn sve_len() -> usize {
+        // SAFETY: SVE is enabled on this target; `svcntb` never faults.
+        unsafe { core::arch::aarch64_sve::svcntb() as usize }
+    }
+
+    /// Counts UTF-8 unit starts over SVE vectors with a predicate.
+    ///
+    /// The loop bound is a `whilelt` predicate over the byte index, so
+    /// the final iteration holds only the in-bounds lanes — no scalar
+    /// tail branch is needed. Continuation bytes are counted by
+    /// comparing the high two bits against `0b10`; every lane that is
+    /// *not* a continuation byte starts a code unit.
+    ///
+    /// # Safety
+    ///
+    /// Requires SVE. `svwhilelt_b8` keeps every load inside `bytes`.
+    #[target_feature(enable = "sve")]
+    unsafe fn count_utf8_units_sve(bytes: &[u8]) -> u64 {
+        // SAFETY: the caller proved SVE; predicates keep all loads in
+        // bounds and `svcntb` matches the hardware vector length.
+        unsafe {
+            let mut total = 0u64;
+            let mut index = 0usize;
+            let len = bytes.len();
+            while index < len {
+                let vl = sve_len();
+                let take = (len - index).min(vl);
+                // SAFETY: `take <= vl` and `index + take <= len`.
+                let ptr = bytes.as_ptr().add(index);
+                // SAFETY: first-fault load; `take` lanes are active.
+                let data = core::arch::aarch64_sve::svld1_u8(svptrue_b8(), ptr);
+                let high = core::arch::aarch64_sve::svlshr_n_u8_x(svptrue_b8(), data, 6);
+                let cont = core::arch::aarch64_sve::svcmpeq_n_u8_x(svptrue_b8(), high, 0b10);
+                let not_cont = core::arch::aarch64_sve::svnot_b8_x(svptrue_b8(), cont);
+                total += core::arch::aarch64_sve::svcnt_p_b8(svptrue_b8(), not_cont) as u64;
+                index += take;
+            }
+            total
+        }
+    }
+
+    /// Counts occurrences of `needle` over SVE vectors.
+    ///
+    /// # Safety
+    ///
+    /// Requires SVE. Predicates keep every load in bounds.
+    #[target_feature(enable = "sve")]
+    unsafe fn count_byte_sve(bytes: &[u8], needle: u8) -> u64 {
+        // SAFETY: the caller proved SVE; predicates keep all loads in
+        // bounds and `svcntb` matches the hardware vector length.
+        unsafe {
+            let mut total = 0u64;
+            let mut index = 0usize;
+            let len = bytes.len();
+            while index < len {
+                let vl = sve_len();
+                let take = (len - index).min(vl);
+                // SAFETY: `take <= vl` and `index + take <= len`.
+                let ptr = bytes.as_ptr().add(index);
+                // SAFETY: first-fault load; `take` lanes are active.
+                let data = core::arch::aarch64_sve::svld1_u8(svptrue_b8(), ptr);
+                let equal = core::arch::aarch64_sve::svcmpeq_n_u8_x(svptrue_b8(), data, needle as i8);
+                total += core::arch::aarch64_sve::svcnt_p_b8(svptrue_b8(), equal) as u64;
+                index += take;
+            }
+            total
+        }
+    }
+
+    /// Finds the first occurrence of `needle` over SVE vectors.
+    ///
+    /// Predicate-driven: no tail branch; the final partial vector is
+    /// searched with the same body, and the first set predicate bit
+    /// yields the index.
+    ///
+    /// # Safety
+    ///
+    /// Requires SVE.
+    #[target_feature(enable = "sve")]
+    unsafe fn find_byte_sve(bytes: &[u8], needle: u8) -> Option<usize> {
+        // SAFETY: the caller proved SVE; predicates keep all loads in
+        // bounds and `svcntb` matches the hardware vector length.
+        unsafe {
+            let mut index = 0usize;
+            let len = bytes.len();
+            while index < len {
+                let vl = sve_len();
+                let take = (len - index).min(vl);
+                let ptr = bytes.as_ptr().add(index);
+                let data = core::arch::aarch64_sve::svld1_u8(svptrue_b8(), ptr);
+                let equal = core::arch::aarch64_sve::svcmpeq_n_u8_x(svptrue_b8(), data, needle as i8);
+                let mask = core::arch::aarch64_sve::svptest_any(svptrue_b8(), equal);
+                if mask {
+                    let bitmask = core::arch::aarch64_sve::svpmask_b8(svptrue_b8(), equal);
+                    return Some(index + bitmask.trailing_zeros() as usize);
+                }
+                index += take;
+            }
+            None
+        }
+    }
+}
+
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 mod x86 {
     use alloc::vec::Vec;
@@ -1112,6 +1299,63 @@ mod x86 {
             total = (total + (checksum_scalar_at(chunks.remainder(), base) & CHECKSUM_MASK)) & CHECKSUM_MASK;
             total
         }
+    }
+
+    /// Position-weighted checksum over 8-byte groups with AVX-512 IFMA.
+    ///
+    /// Each group of 8 bytes is multiplied lane-wise by its position
+    /// weights with `vpmadd52luq`, reducing the serial multiply-add chain
+    /// of the scalar form into parallel 52-bit products summed mod 2^30.
+    ///
+    /// # Safety
+    ///
+    /// Requires AVX-512F and AVX-512 IFMA.
+    #[target_feature(enable = "avx512f", enable = "avx512ifma")]
+    pub(super) unsafe fn checksum_avx512_ifma(bytes: &[u8]) -> u32 {
+        // SAFETY: the caller proved AVX-512F/IFMA; `chunks_exact(64)`
+        // keeps every load inside `bytes`, and every intermediate stays
+        // below 2^55 so the IFMA reduce cannot overflow 2^52.
+        let zero = _mm512_setzero_si512();
+        let mut accum = 0u64;
+        let mut base = 0usize;
+        let mut chunks = bytes.chunks_exact(64);
+        for chunk in &mut chunks {
+            let mut block_sum = 0u64;
+            // 8 sub-groups of 8 bytes; each sub-group maps to one IFMA
+            // call across 8 lanes (byte value x position weight).
+            for (sg, sub) in chunk.chunks_exact(8).enumerate() {
+                let w_off = sg * 8;
+                let b_arr: [i64; 8] = [
+                    sub[0] as i64,
+                    sub[1] as i64,
+                    sub[2] as i64,
+                    sub[3] as i64,
+                    sub[4] as i64,
+                    sub[5] as i64,
+                    sub[6] as i64,
+                    sub[7] as i64,
+                ];
+                let w_arr: [i64; 8] = [
+                    weight_row(base)[w_off + 0] as i64,
+                    weight_row(base)[w_off + 1] as i64,
+                    weight_row(base)[w_off + 2] as i64,
+                    weight_row(base)[w_off + 3] as i64,
+                    weight_row(base)[w_off + 4] as i64,
+                    weight_row(base)[w_off + 5] as i64,
+                    weight_row(base)[w_off + 6] as i64,
+                    weight_row(base)[w_off + 7] as i64,
+                ];
+                let bv = _mm512_loadu_si512(b_arr.as_ptr().cast());
+                let wv = _mm512_loadu_si512(w_arr.as_ptr().cast());
+                let products = _mm512_madd52lo_epu64(bv, wv, zero);
+                block_sum = block_sum.wrapping_add(_mm512_reduce_add_epi64(products) as u64);
+            }
+            accum = accum.wrapping_add(block_sum);
+            base += 64;
+        }
+        let mut total = (accum & u64::from(CHECKSUM_MASK)) as u32;
+        total = (total + (checksum_scalar_at(chunks.remainder(), base) & CHECKSUM_MASK)) & CHECKSUM_MASK;
+        total
     }
 
     /// Counts occurrences of `needle` over 16-byte blocks.
@@ -1521,6 +1765,63 @@ mod x86 {
             super::find_first_u32_scalar(chunks.remainder(), needle).map(|index| base + index)
         }
     }
+
+    /// Counts occurrences of `needle` over sixteen-word AVX-512 blocks
+    /// using `vpconflictd` (AVX-512CD) duplicate detection.
+    ///
+    /// # Safety
+    ///
+    /// Requires AVX-512F and AVX-512CD.
+    #[target_feature(enable = "avx512f", enable = "avx512cd")]
+    pub(super) unsafe fn count_value_u32_avx512(words: &[u32], needle: u32) -> u64 {
+        // SAFETY: the caller proved AVX-512F/CD; `chunks_exact(16)`
+        // keeps every load inside `words`; `vpconflictd` reports every
+        // lane sharing a value with another lane.
+        unsafe {
+            let target = _mm512_set1_epi32(needle as i32);
+            let mut total = 0u64;
+            let mut chunks = words.chunks_exact(16);
+            for chunk in &mut chunks {
+                let data = _mm512_loadu_si512(chunk.as_ptr().cast());
+                let equal = _mm512_cmpeq_epi32_mask(data, target);
+                if equal == 0 {
+                    continue;
+                }
+                let conflict = _mm512_conflict_epi32(data);
+                let mut conflict_arr = [0u32; 16];
+                _mm512_storeu_si512(conflict_arr.as_mut_ptr().cast(), conflict);
+                let first = equal.trailing_zeros() as usize;
+                // `conflict_arr[first]` has bits at every *other* lane
+                // equal to `needle`; add back the first lane itself.
+                total += u64::from(conflict_arr[first].count_ones()) + 1;
+            }
+            total + super::count_value_u32_scalar(chunks.remainder(), needle)
+        }
+    }
+
+    /// Finds the first `needle` over sixteen-word AVX-512 blocks.
+    ///
+    /// # Safety
+    ///
+    /// Requires AVX-512F and AVX-512CD.
+    #[target_feature(enable = "avx512f", enable = "avx512cd")]
+    pub(super) unsafe fn find_first_u32_avx512(words: &[u32], needle: u32) -> Option<usize> {
+        // SAFETY: the caller proved AVX-512F/CD; loads stay inside `words`.
+        unsafe {
+            let target = _mm512_set1_epi32(needle as i32);
+            let mut base = 0usize;
+            let mut chunks = words.chunks_exact(16);
+            for chunk in &mut chunks {
+                let data = _mm512_loadu_si512(chunk.as_ptr().cast());
+                let equal = _mm512_cmpeq_epi32_mask(data, target);
+                if equal != 0 {
+                    return Some(base + equal.trailing_zeros() as usize);
+                }
+                base += 16;
+            }
+            super::find_first_u32_scalar(chunks.remainder(), needle).map(|index| base + index)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1909,6 +2210,49 @@ mod tests {
             // SAFETY: `has` proved AVX-512F/IFMA.
             let got = unsafe { x86::hash_bytes_ifma(&bytes) };
             assert_eq!(got, hash_bytes_scalar(&bytes), "seed {seed}");
+        }
+    }
+
+    /// AVX-512 IFMA position-weighted checksum agrees with scalar.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[test]
+    fn checksum_ifma_agrees_with_scalar() {
+        use codevar_base::cpuid::{Feature, has};
+        if !(has(Feature::Avx512F) && has(Feature::Avx512Ifma)) {
+            return;
+        }
+        for seed in 1..30u32 {
+            let bytes = pseudo_random(1 + (seed as usize * 83) % 900, seed);
+            // SAFETY: `has` proved AVX-512F/IFMA.
+            let got = unsafe { x86::checksum_avx512_ifma(&bytes) };
+            assert_eq!(got, checksum_scalar(&bytes), "seed {seed}");
+        }
+    }
+
+    /// AVX-512 VPconflictd word tiers agree with scalar.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[test]
+    fn u32_avx512_tiers_agree_with_scalar() {
+        use codevar_base::cpuid::{Feature, has};
+        if !(has(Feature::Avx512F) && has(Feature::Avx512Cd)) {
+            return;
+        }
+        for seed in 1..25u32 {
+            let words = pseudo_random_u32(1 + (seed as usize * 17) % 400, seed);
+            let needle = words[seed as usize % words.len()];
+            // SAFETY: `has` proved AVX-512F/CD.
+            unsafe {
+                assert_eq!(
+                    x86::count_value_u32_avx512(&words, needle),
+                    count_value_u32_scalar(&words, needle),
+                    "seed {seed}"
+                );
+                assert_eq!(
+                    x86::find_first_u32_avx512(&words, needle),
+                    find_first_u32_scalar(&words, needle),
+                    "seed {seed}"
+                );
+            }
         }
     }
 

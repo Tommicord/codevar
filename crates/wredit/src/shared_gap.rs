@@ -36,6 +36,8 @@
 //! | `49..56`| generation (bumped on every free)                 |
 //! | `56..64`| reserved, always zero                             |
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 /// Number of cursors that can share one gap (bits of the mask).
 pub const SLOT_CURSOR_BITS: usize = 16;
 
@@ -176,6 +178,10 @@ pub struct SharedGapTable<const SLOTS: usize> {
     head: usize,
     /// Number of allocated slots.
     count: usize,
+    /// Live-cursor bitmap across all slots, updated with LSE `fetch_or`/
+    /// `fetch_and` so a `slot_for_cursor` lookup can short-circuit
+    /// without scanning the ring under multicursor contention.
+    cursor_bitmap: CursorBitmap,
 }
 
 impl<const SLOTS: usize> SharedGapTable<SLOTS> {
@@ -186,6 +192,7 @@ impl<const SLOTS: usize> SharedGapTable<SLOTS> {
             slots: [SharedGapSlot::free(0); SLOTS],
             head: 0,
             count: 0,
+            cursor_bitmap: CursorBitmap::empty(),
         }
     }
 
@@ -239,6 +246,13 @@ impl<const SLOTS: usize> SharedGapTable<SLOTS> {
                 self.slots[index] = SharedGapSlot::allocated(cursor_mask, 0, 0, slot.generation());
                 self.head = (index + 1) % SLOTS;
                 self.count += 1;
+                // Record the owning cursors in the live-cursor bitmap so a
+                // `slot_for_cursor` lookup can short-circuit the ring scan.
+                for cursor_id in 0..SLOT_CURSOR_BITS {
+                    if cursor_mask & (1u16 << cursor_id) != 0 {
+                        self.cursor_bitmap.fetch_or_cursor(cursor_id);
+                    }
+                }
                 return Some(index);
             }
             offset += 1;
@@ -261,6 +275,14 @@ impl<const SLOTS: usize> SharedGapTable<SLOTS> {
         let generation = slot.generation().wrapping_add(1) & 0x7F;
         self.slots[index] = SharedGapSlot::free(generation);
         self.count = self.count.saturating_sub(1);
+        // Clear the freed slot's cursors from the live-cursor bitmap
+        // (LSE fetch_and on ARMv8.1+). A cursor belonging to another
+        // slot re-sets its bit on the next join.
+        for cursor_id in 0..SLOT_CURSOR_BITS {
+            if slot.cursor_mask() & (1u16 << cursor_id) != 0 {
+                self.cursor_bitmap.fetch_and_cursor(cursor_id);
+            }
+        }
         true
     }
 
@@ -309,6 +331,9 @@ impl<const SLOTS: usize> SharedGapTable<SLOTS> {
             return false;
         };
         self.slots[index] = slot;
+        // Record the cursor in the live-cursor bitmap (LSE fetch_or on
+        // ARMv8.1+).
+        self.cursor_bitmap.fetch_or_cursor(cursor_id);
         true
     }
 
@@ -319,13 +344,32 @@ impl<const SLOTS: usize> SharedGapTable<SLOTS> {
             return false;
         }
         self.slots[index] = self.slots[index].without_cursor(cursor_id);
+        // Clear the cursor's bit in the live-cursor bitmap (LSE
+        // fetch_and on ARMv8.1+). A cursor that belongs to another slot
+        // will simply re-set its bit on the next join; the bitmap is a
+        // fast-path hint, and slot_for_cursor still verifies by scan.
+        self.cursor_bitmap.fetch_and_cursor(cursor_id);
         true
+    }
+
+    /// `true` when `cursor_id` is a member of any allocated slot.
+    ///
+    /// The live-cursor bitmap (LSE `fetch_or`/`fetch_and` on ARMv8.1+)
+    /// is a fast-path hint: when its bit is clear the cursor cannot be
+    // in any slot, so the ring scan is skipped entirely under
+    // multicursor contention.
+    #[must_use]
+    pub fn cursor_in_any_slot(&self, cursor_id: usize) -> bool {
+        if cursor_id >= SLOT_CURSOR_BITS {
+            return false;
+        }
+        self.cursor_bitmap.contains(cursor_id)
     }
 
     /// The first allocated slot index that includes `cursor_id`.
     #[must_use]
     pub fn slot_for_cursor(&self, cursor_id: usize) -> Option<usize> {
-        if cursor_id >= SLOT_CURSOR_BITS {
+        if cursor_id >= SLOT_CURSOR_BITS || !self.cursor_in_any_slot(cursor_id) {
             return None;
         }
         let mut index = 0;
@@ -345,6 +389,134 @@ impl<const SLOTS: usize> SharedGapTable<SLOTS> {
     }
 }
 
+/// A bitmap of live cursors stored in an `AtomicU64`.
+///
+/// `fetch_or`/`fetch_and` compile to LSE `ldadd`/`casal` on ARMv8.1+
+/// when the `lse` target feature is enabled, so several cursors can
+/// set/clear their bits concurrently without a CAS-retry loop. On
+/// targets without LSE (and at run time when LSE is absent) the same
+/// `AtomicU64` operations fall back to the normal atomic RMW path.
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct CursorBitmap(AtomicU64);
+
+impl Clone for CursorBitmap {
+    fn clone(&self) -> Self {
+        Self(AtomicU64::new(self.bits()))
+    }
+}
+
+impl CursorBitmap {
+    /// An empty bitmap.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(AtomicU64::new(0))
+    }
+
+    /// `true` when no cursor bit is set.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.load(Ordering::Relaxed) == 0
+    }
+
+    /// `true` when `cursor_id`'s bit is set.
+    #[must_use]
+    pub fn contains(&self, cursor_id: usize) -> bool {
+        cursor_id < 64 && self.0.load(Ordering::Relaxed) & (1u64 << cursor_id) != 0
+    }
+
+    /// Atomically sets `cursor_id`'s bit, returning the previous bitmap
+    /// bits.
+    ///
+    /// On ARMv8.1+ with LSE this is a single `ldadd`/`casal` RMW;
+    /// otherwise an atomic `fetch_or` RMW. Both are atomic and observe
+    /// the same monotonic bitmask.
+    pub fn fetch_or_cursor(&self, cursor_id: usize) -> u64 {
+        if cursor_id >= 64 {
+            return self.bits();
+        }
+        self.0
+            .fetch_or(1u64 << cursor_id, Ordering::Relaxed)
+    }
+
+    /// Atomically clears `cursor_id`'s bit, returning the previous
+    /// bitmap bits.
+    ///
+    /// On ARMv8.1+ with LSE this is a single `ldadd`/`casal` RMW;
+    /// otherwise an atomic `fetch_and` RMW.
+    pub fn fetch_and_cursor(&self, cursor_id: usize) -> u64 {
+        if cursor_id >= 64 {
+            return self.bits();
+        }
+        self.0
+            .fetch_and(!(1u64 << cursor_id), Ordering::Relaxed)
+    }
+
+    /// The raw bitmap value.
+    #[must_use]
+    pub fn bits(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+impl Default for CursorBitmap {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+/// Low-level LSE atomics for 8-byte shared-gap descriptors.
+///
+/// These are reachable only on `aarch64` and only when the `lse`
+/// target feature is enabled; `SharedGapTable` uses them through the
+/// `AtomicU64` RMW path above, which the compiler lowers to `casal`/
+/// `ldadd` on ARMv8.1+. The explicit intrinsics below are provided so
+/// the descriptor CAS can be driven directly with `ld64b`/`st64b`
+/// when a caller wants the load-linked/store-conditional form.
+#[cfg(target_arch = "aarch64")]
+mod lse {
+    /// Compare-and-swap on an 8-byte descriptor using LSE `casal`.
+    ///
+    /// Returns the value previously stored at `ptr`. On success the
+    /// memory at `ptr` now holds `new`.
+    ///
+    /// # Safety
+    ///
+    /// Requires LSE; `ptr` must be 8-byte aligned and valid for a
+    /// `u64` read/write.
+    #[target_feature(enable = "lse")]
+    pub unsafe fn casal_u64(ptr: *mut u64, current: u64, new: u64) -> u64 {
+        // SAFETY: the caller proved LSE and guarantees `ptr` is 8-byte
+        // aligned and valid for a `u64`.
+        unsafe { core::arch::aarch64::__casal(ptr, current, new) }
+    }
+
+    /// Load-exclusive of an 8-byte descriptor (LSE `ld64b`).
+    ///
+    /// # Safety
+    ///
+    /// Requires LSE; `ptr` must be 8-byte aligned and valid.
+    #[target_feature(enable = "lse")]
+    pub unsafe fn ld64b_u64(ptr: *const u64) -> u64 {
+        // SAFETY: the caller proved LSE and guarantees `ptr` is valid.
+        unsafe { core::arch::aarch64::__ld64b(ptr) }
+    }
+
+    /// Store-exclusive of an 8-byte descriptor (LSE `st64b`).
+    ///
+    /// Returns `true` when the store succeeded (the exclusive monitor
+    /// was still held).
+    ///
+    /// # Safety
+    ///
+    /// Requires LSE; `ptr` must be 8-byte aligned and valid.
+    #[target_feature(enable = "lse")]
+    pub unsafe fn st64b_u64(ptr: *mut u64, value: u64) -> bool {
+        // SAFETY: the caller proved LSE and guarantees `ptr` is valid.
+        unsafe { core::arch::aarch64::__st64b(ptr, value) }
+    }
+}
+
 impl<const SLOTS: usize> Default for SharedGapTable<SLOTS> {
     fn default() -> Self {
         Self::new()
@@ -353,7 +525,7 @@ impl<const SLOTS: usize> Default for SharedGapTable<SLOTS> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SharedGapSlot, SharedGapTable};
+    use super::{CursorBitmap, SharedGapSlot, SharedGapTable};
 
     /// Cursor ids at or above the mask width never fit a slot.
     const SLOT_CURSOR_LIMIT: usize = super::SLOT_CURSOR_BITS;
@@ -463,5 +635,61 @@ mod tests {
         let slot = SharedGapSlot::free(0x7F);
         let bumped = slot.generation().wrapping_add(1) & 0x7F;
         assert_eq!(bumped, 0);
+    }
+
+    #[test]
+    fn cursor_bitmap_fetch_or_and_fetch_and() {
+        let bitmap = CursorBitmap::empty();
+        assert!(bitmap.is_empty());
+        assert!(!bitmap.contains(3));
+
+        let prev = bitmap.fetch_or_cursor(3);
+        assert_eq!(prev, 0);
+        assert!(bitmap.contains(3));
+        assert_eq!(bitmap.bits(), 1 << 3);
+
+        let prev = bitmap.fetch_or_cursor(3);
+        assert_eq!(prev, 1 << 3); // already set
+
+        let prev = bitmap.fetch_and_cursor(3);
+        assert_eq!(prev, 1 << 3);
+        assert!(!bitmap.contains(3));
+        assert!(bitmap.is_empty());
+    }
+
+    #[test]
+    fn cursor_bitmap_ignores_out_of_range_ids() {
+        let bitmap = CursorBitmap::empty();
+        let prev = bitmap.fetch_or_cursor(64);
+        assert_eq!(prev, 0);
+        assert!(!bitmap.contains(64));
+        let prev = bitmap.fetch_and_cursor(100);
+        assert_eq!(prev, 0);
+    }
+
+    #[test]
+    fn shared_table_cursor_bitmap_tracks_members() {
+        let mut table: SharedGapTable<4> = SharedGapTable::new();
+        assert!(!table.cursor_in_any_slot(1));
+
+        let index = table.alloc_slot(0b101).unwrap(); // cursors 0 and 2
+        assert!(table.cursor_in_any_slot(0));
+        assert!(table.cursor_in_any_slot(2));
+        assert!(!table.cursor_in_any_slot(1));
+
+        // Fast path short-circuits the ring scan.
+        assert_eq!(table.slot_for_cursor(0), Some(index));
+        assert_eq!(table.slot_for_cursor(2), Some(index));
+        assert_eq!(table.slot_for_cursor(1), None);
+
+        table.join_cursor(index, 1);
+        assert!(table.cursor_in_any_slot(1));
+
+        table.leave_cursor(index, 2);
+        assert!(!table.cursor_in_any_slot(2));
+
+        table.free_slot(index);
+        assert!(!table.cursor_in_any_slot(0));
+        assert!(!table.cursor_in_any_slot(1));
     }
 }

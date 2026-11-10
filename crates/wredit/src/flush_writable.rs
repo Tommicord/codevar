@@ -59,6 +59,16 @@ enum LineLayout {
 /// Number of plain elements resolved on the stack per block move.
 const FLUSH_CHUNK: usize = 0x40;
 
+/// Byte threshold above which the flush layer uses non-temporal
+/// stores for the tail shift and the staged-data copy.
+///
+/// Non-temporal stores bypass the cache hierarchy and avoid a
+/// read-for-ownership on the destination, so they win once a flush
+/// touches more data than fits in the last-level cache. 1 MiB is a
+/// conservative LLC-sized floor that keeps small edits on the cached
+/// path while large pastes and block commits stream past the caches.
+const NT_THRESHOLD: usize = 1 << 20;
+
 /// Inserts `src` into the raw document at `at`.
 ///
 /// The raw buffer is grown first (geometric, checked arithmetic), so
@@ -101,18 +111,76 @@ pub(crate) fn write_bytes_to_raw<Raw: Copy>(
     }
     // Safety: `ensure_capacity(new_length)` guarantees room for
     // `new_length` elements; `at <= raw_length` and `src.len() >= 1`
-    // make both ranges in bounds. `memmove` tolerates the overlap
-    // between the shifted tail and its destination.
+    // make both ranges in bounds.
     unsafe {
-        memmove(base.add((at + src.len()) * elem), base.add(at * elem), byte_len);
-        memcpy(
-            base.add(at * elem),
-            src.as_ptr().cast::<u8>(),
-            core::mem::size_of_val(src),
-        );
+        if byte_len >= NT_THRESHOLD {
+            // Non-temporal tail shift: bypass the cache/RFO on the
+            // destination since a large flush streams past the LLC.
+            codevar_wredit_asm::memmove_nt(base.add((at + src.len()) * elem), base.add(at * elem), byte_len);
+        } else {
+            // `memmove` tolerates the overlap between the shifted tail
+            // and its destination.
+            memmove(base.add((at + src.len()) * elem), base.add(at * elem), byte_len);
+        }
+        if src.len() >= NT_THRESHOLD {
+            // Non-temporal staged-data copy: the destination was just
+            // vacated and will not be reused soon, so streaming stores
+            // avoid polluting the cache.
+            codevar_wredit_asm::memcpy_nt(
+                base.add(at * elem),
+                src.as_ptr().cast::<u8>(),
+                core::mem::size_of_val(src),
+            );
+        } else {
+            memcpy(
+                base.add(at * elem),
+                src.as_ptr().cast::<u8>(),
+                core::mem::size_of_val(src),
+            );
+        }
     }
     raw.set_count(new_length);
     new_length
+}
+
+/// Scans staged values for the newline count and merge presence.
+///
+/// Newlines are counted exactly. A SIMD [`crate::simd::count_byte`]
+/// pre-check over the element bytes skips the scalar newline loop when
+/// no `0x0A` byte appears: every `'\n'` element contributes a `0x0A`
+/// low byte, so zero candidates implies zero newlines. Merge detection
+/// always inspects the type field.
+///
+/// # Safety
+///
+/// `values` must be a valid slice of initialized `Raw` elements.
+unsafe fn scan_staged_elements<Raw: Copy + Into<u32>>(values: &[Raw]) -> (usize, bool) {
+    let elem = core::mem::size_of::<Raw>();
+    // Safety: `values` is a valid slice of `Raw`; reinterpreting its
+    // bytes as `u8` is a read-only alias of the same memory.
+    let bytes = core::slice::from_raw_parts(values.as_ptr().cast::<u8>(), values.len() * elem);
+    let mut newlines = 0usize;
+    let mut has_merge = false;
+    if crate::simd::count_byte(bytes, b'\n') != 0 {
+        for &value in values {
+            let word: u32 = value.into();
+            if packed_type(word) == MERGE_MASK {
+                has_merge = true;
+            }
+            if packed_char(word) == u32::from(b'\n') {
+                newlines += 1;
+            }
+        }
+    } else {
+        // No newline candidates: still check for merges (early out).
+        for &value in values {
+            if packed_type(value.into()) == MERGE_MASK {
+                has_merge = true;
+                break;
+            }
+        }
+    }
+    (newlines, has_merge)
 }
 
 /// Commits the staged stream `values` into the raw document at `at`,
@@ -272,10 +340,18 @@ unsafe fn commit_pending<Raw: Copy>(
     // Safety: bounds follow from the caller's pre-growth contract;
     // `memmove` tolerates the tail overlap.
     unsafe {
-        memmove(base.add((at + count) * elem), base.add(at * elem), byte_len);
+        if byte_len >= NT_THRESHOLD {
+            codevar_wredit_asm::memmove_nt(base.add((at + count) * elem), base.add(at * elem), byte_len);
+        } else {
+            memmove(base.add((at + count) * elem), base.add(at * elem), byte_len);
+        }
         // The first `count` entries are initialized by the caller and
         // contiguous, so one block copy replaces a per-element loop.
-        memcpy(base.add(at * elem), pending.as_ptr().cast::<u8>(), count * elem);
+        if count * elem >= NT_THRESHOLD {
+            codevar_wredit_asm::memcpy_nt(base.add(at * elem), pending.as_ptr().cast::<u8>(), count * elem);
+        } else {
+            memcpy(base.add(at * elem), pending.as_ptr().cast::<u8>(), count * elem);
+        }
     }
     length + count
 }
@@ -396,17 +472,7 @@ where
         // Safety: `content` points at `staged` initialized elements of
         // the gap window.
         let staged_values = unsafe { core::slice::from_raw_parts(content, staged) };
-        let mut newlines = 0usize;
-        let mut has_merge = false;
-        for value in staged_values {
-            let word: u32 = (*value).into();
-            if packed_type(word) == MERGE_MASK {
-                has_merge = true;
-            }
-            if packed_char(word) == u32::from(b'\n') {
-                newlines += 1;
-            }
-        }
+        let (newlines, has_merge) = unsafe { scan_staged_elements(staged_values) };
         let layout = if has_merge {
             LineLayout::Merge
         } else if newlines != 0 {
