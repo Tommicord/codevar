@@ -308,6 +308,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "codevar-bmptovec"
+version = "1.0.0"
+dependencies = [
+ "codevar-base",
+ "codevar-logger",
+ "thiserror",
+]
+
+[[package]]
 name = "codevar-cli-parse"
 version = "1.0.0"
 dependencies = [
@@ -1066,7 +1075,6 @@ dependencies = [
  "codevar-inssched",
  "codevar-logger",
  "codevar-ocl",
- "codevar-os-def",
  "codevar-textlike-encode",
  "codevar-wredit-asm",
  "criterion",

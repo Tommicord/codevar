@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/base",
+    "crates/bmptovec",
     "crates/tlsf-alloc",
     "crates/textlike-encode",
     "crates/tls",
@@ -150,6 +151,7 @@ criterion = { version = "0.8", default-features = false, features = ["cargo_benc
 
 codevar-dbus = { path = "crates/dbus" }
 codevar-base = { path = "crates/base" }
+codevar-bmptovec = { path = "crates/bmptovec" }
 codevar-tlsf-alloc = { path = "crates/tlsf-alloc" }
 codevar-textlike-encode = { path = "crates/textlike-encode" }
 codevar-tls = { path = "crates/tls" }
