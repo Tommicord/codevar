@@ -33,10 +33,9 @@ use codevar_kuitui::widget::{DrawScope, EventScope, MeasureScope, PlaceScope, Wi
 
 use crate::error::{DecorationError, DecorationResult};
 use crate::modifiers::{DecorationModifier, DecorationModifiers};
-use crate::state::DecorationState;
 use crate::theme::DecorationTheme;
-use crate::types::{DecorationBounds, DecorationIcon, DecorationKind, DecorationMetrics, DecorationResizeEdge};
 use crate::traits::Decoration;
+use crate::types::{DecorationBounds, DecorationIcon, DecorationKind};
 
 /// A button of the decoration of a window: minimize, maximize, restore,
 /// close or the window menu.
@@ -234,7 +233,9 @@ impl Widget for DecorationTitleBar {
         let theme = scope.theme();
         let style = self.title_style(theme);
         let metrics = theme.metrics.as_ref();
-        let active = self.active_modifiers.has(DecorationModifier::Activated);
+        let active = self
+            .active_modifiers
+            .has(DecorationModifier::Activated);
         let background = if active {
             theme.colors.surface_variant
         } else {
@@ -366,11 +367,7 @@ impl Decoration for DecorationTitleBar {
         Ok(())
     }
 
-    fn request_modifier(
-        &mut self,
-        modifier: DecorationModifier,
-        enable: bool,
-    ) -> DecorationResult<()> {
+    fn request_modifier(&mut self, modifier: DecorationModifier, enable: bool) -> DecorationResult<()> {
         if !self.supported_modifiers().has(modifier) {
             return Err(DecorationError::Unsupported(DecorationKind::TitleBar));
         }
@@ -446,7 +443,7 @@ impl Widget for DecorationWindowFrame {
         ))
     }
 
-    fn place(&mut self, scope: &mut PlaceScope<'_>, bounds: Rect) {
+    fn place(&mut self, scope: &mut PlaceScope<'_>, _bounds: Rect) {
         let title = scope.child_size(0);
         scope.place_child(0, Offset::ZERO);
         scope.place_child(1, Offset::new(0.0, title.height + self.spacing));
@@ -696,8 +693,10 @@ pub struct DecorationCursor {
 /// The shape of a mouse cursor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
+#[derive(Default)]
 pub enum CursorShape {
     /// The default pointer.
+    #[default]
     Default,
     /// An I-beam, used over text.
     Text,
@@ -727,12 +726,6 @@ pub enum CursorShape {
     ContextMenu,
     /// No cursor is drawn.
     None,
-}
-
-impl Default for CursorShape {
-    fn default() -> Self {
-        Self::Default
-    }
 }
 
 impl DecorationCursor {
@@ -807,6 +800,12 @@ impl Decoration for DecorationCursor {
     }
 }
 
+impl Default for DecorationCursor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// The icon of a window.
 ///
 /// The icon is drawn in the title bar and in the task bar. The backend
@@ -876,7 +875,10 @@ impl Widget for DecorationIconWidget {
             return;
         }
         let theme = scope.theme();
-        let size = self.size_.min(bounds.size.width).min(bounds.size.height);
+        let size = self
+            .size_
+            .min(bounds.size.width)
+            .min(bounds.size.height);
         let x = bounds.left() + (bounds.size.width - size) * 0.5;
         let y = bounds.top() + (bounds.size.height - size) * 0.5;
         scope.fill_rect(
@@ -921,6 +923,12 @@ impl Decoration for DecorationIconWidget {
     }
 }
 
+impl Default for DecorationIconWidget {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -947,10 +955,16 @@ mod tests {
         node.place(Rect::new(Offset::ZERO, Size::new(400.0, 32.0)));
         node.draw(&theme, &mut list);
         assert!(list.len() >= 2);
-        let first = list.ops().next().expect("a rectangle was recorded");
+        let first = list
+            .ops()
+            .next()
+            .expect("a rectangle was recorded");
         let first_any: &dyn core::any::Any = first;
         assert!(first_any.downcast_ref::<RectOp>().is_some());
-        let second = list.ops().nth(1).expect("a text run was recorded");
+        let second = list
+            .ops()
+            .nth(1)
+            .expect("a text run was recorded");
         let second_any: &dyn core::any::Any = second;
         assert!(second_any.downcast_ref::<TextOp>().is_some());
     }

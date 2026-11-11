@@ -20,8 +20,6 @@
 //! deliberately plain data so a backend can copy them into a native
 //! structure without a conversion step.
 
-use alloc::rc::Rc;
-use alloc::string::String;
 use alloc::vec::Vec;
 
 use codevar_kuitui::geometry::{Constraints, Offset, Rect, Size};
@@ -33,6 +31,7 @@ use codevar_kuitui::geometry::{Constraints, Offset, Rect, Size};
 /// same id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(transparent)]
+#[derive(Default)]
 pub struct DecorationId(u64);
 
 impl DecorationId {
@@ -47,12 +46,6 @@ impl DecorationId {
     #[must_use]
     pub const fn handle(self) -> u64 {
         self.0
-    }
-}
-
-impl Default for DecorationId {
-    fn default() -> Self {
-        Self(0)
     }
 }
 
@@ -96,18 +89,17 @@ impl DecorationBounds {
     /// Creates bounds at the origin with the given size.
     #[must_use]
     pub const fn new(x: i32, y: i32, width: u32, height: u32) -> Self {
-        Self {
-            x,
-            y,
-            width,
-            height,
-        }
+        Self { x, y, width, height }
     }
 
     /// The rectangle the bounds describe.
     #[must_use]
     pub const fn rect(self) -> Rect {
-        Rect::from_min_size(Offset::new(self.x as f32, self.y as f32), self.width as f32, self.height as f32)
+        Rect::from_min_size(
+            Offset::new(self.x as f32, self.y as f32),
+            self.width as f32,
+            self.height as f32,
+        )
     }
 
     /// Whether the bounds are empty.
@@ -205,8 +197,10 @@ impl Default for DecorationIcon {
 /// One edge or corner of a window that a resize handle covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
+#[derive(Default)]
 pub enum DecorationResizeEdge {
     /// The top edge.
+    #[default]
     Top,
     /// The bottom edge.
     Bottom,
@@ -250,12 +244,6 @@ impl DecorationResizeEdge {
     #[must_use]
     pub const fn is_right(self) -> bool {
         matches!(self, Self::Right | Self::TopRight | Self::BottomRight)
-    }
-}
-
-impl Default for DecorationResizeEdge {
-    fn default() -> Self {
-        Self::Top
     }
 }
 

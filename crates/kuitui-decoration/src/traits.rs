@@ -31,12 +31,9 @@
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;
-use alloc::string::String;
 use alloc::vec::Vec;
 
-use codevar_kuitui::event::{Event, EventResult};
-use codevar_kuitui::geometry::{Offset, Rect, Size};
-use codevar_kuitui::widget::{DrawScope, EventScope, MeasureScope, PlaceScope, Widget};
+use codevar_kuitui::widget::Widget;
 
 use crate::error::{DecorationError, DecorationResult};
 use crate::modifiers::{DecorationModifier, DecorationModifiers};
@@ -139,11 +136,7 @@ pub trait Decoration: Widget {
     /// A backend calls this when the user toggled a modifier through a
     /// decoration widget (for example the maximize button of a title
     /// bar). The default returns [`DecorationError::Unavailable`].
-    fn request_modifier(
-        &mut self,
-        _modifier: DecorationModifier,
-        _enable: bool,
-    ) -> DecorationResult<()> {
+    fn request_modifier(&mut self, _modifier: DecorationModifier, _enable: bool) -> DecorationResult<()> {
         Err(DecorationError::Unavailable)
     }
 
@@ -222,32 +215,21 @@ pub trait DecorationBackend {
     /// Destroys the native surface behind `id`.
     ///
     /// The default returns [`DecorationError::Unavailable`].
-    fn destroy_surface(
-        &mut self,
-        _id: crate::types::DecorationId,
-    ) -> DecorationResult<()> {
+    fn destroy_surface(&mut self, _id: crate::types::DecorationId) -> DecorationResult<()> {
         Err(DecorationError::Unavailable)
     }
 
     /// Sets the title of the surface behind `id`.
     ///
     /// The default returns [`DecorationError::Unavailable`].
-    fn set_title(
-        &mut self,
-        _id: crate::types::DecorationId,
-        _title: &str,
-    ) -> DecorationResult<()> {
+    fn set_title(&mut self, _id: crate::types::DecorationId, _title: &str) -> DecorationResult<()> {
         Err(DecorationError::Unavailable)
     }
 
     /// Sets the icon of the surface behind `id`.
     ///
     /// The default returns [`DecorationError::Unavailable`].
-    fn set_icon(
-        &mut self,
-        _id: crate::types::DecorationId,
-        _icon: &DecorationIcon,
-    ) -> DecorationResult<()> {
+    fn set_icon(&mut self, _id: crate::types::DecorationId, _icon: &DecorationIcon) -> DecorationResult<()> {
         Err(DecorationError::Unavailable)
     }
 
@@ -293,12 +275,7 @@ pub trait DecorationBackend {
     /// Delivers a key event to the surface behind `id`.
     ///
     /// The default does nothing.
-    fn key_event(
-        &mut self,
-        _id: crate::types::DecorationId,
-        _event: &codevar_kuitui::event::KeyEvent,
-    ) {
-    }
+    fn key_event(&mut self, _id: crate::types::DecorationId, _event: &codevar_kuitui::event::KeyEvent) {}
 }
 
 /// A host of decorations: it owns the backend and the decorations it
@@ -366,7 +343,8 @@ impl<B: DecorationBackend> DecorationHost<B> {
 mod tests {
     use super::*;
     use crate::types::DecorationKind;
-    use codevar_kuitui::geometry::Constraints;
+    use codevar_kuitui::geometry::{Constraints, Size};
+    use codevar_kuitui::widget::MeasureScope;
 
     struct NoopBackend;
 

@@ -17,7 +17,6 @@
 
 use alloc::fmt;
 use alloc::string::String;
-use alloc::vec::Vec;
 
 /// The error type of every decoration operation.
 ///
@@ -59,27 +58,8 @@ impl fmt::Display for DecorationError {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for DecorationError {}
-
 /// The result type of every decoration operation.
 pub type DecorationResult<T> = Result<T, DecorationError>;
-
-/// Converts a wayland error into a decoration error.
-#[cfg(feature = "wayland")]
-impl From<codevar_wayland::WlError> for DecorationError {
-    fn from(error: codevar_wayland::WlError) -> Self {
-        Self::Os(format!("{error}"))
-    }
-}
-
-/// Converts a wayland protocol error into a decoration error.
-#[cfg(feature = "wayland")]
-impl From<codevar_wayland::WlProtocolError> for DecorationError {
-    fn from(error: codevar_wayland::WlProtocolError) -> Self {
-        Self::Refused(format!("{error}"))
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -89,8 +69,8 @@ mod tests {
     fn every_error_has_a_display_form() {
         let errors = [
             DecorationError::Unavailable,
-    DecorationError::Unsupported(crate::types::DecorationKind::TitleBar),
-    DecorationError::Refused("no seat".into()),
+            DecorationError::Unsupported(crate::types::DecorationKind::TitleBar),
+            DecorationError::Refused("no seat".into()),
             DecorationError::InvalidBounds(crate::types::DecorationBounds::new(0, 0, 0, 0)),
             DecorationError::Os("boom".into()),
             DecorationError::AlreadyDecorated,

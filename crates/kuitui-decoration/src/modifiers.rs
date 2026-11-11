@@ -209,7 +209,10 @@ impl DecorationModifiers {
     /// Iterates over the modifiers present in the set.
     #[must_use]
     pub const fn iter(self) -> DecorationModifierIter {
-        DecorationModifierIter { modifiers: self, index: 0 }
+        DecorationModifierIter {
+            modifiers: self,
+            index: 0,
+        }
     }
 }
 
@@ -261,11 +264,7 @@ impl fmt::Display for DecorationModifiers {
             first = false;
             write!(f, "{modifier}")?;
         }
-        if first {
-            f.write_str("none")
-        } else {
-            Ok(())
-        }
+        if first { f.write_str("none") } else { Ok(()) }
     }
 }
 

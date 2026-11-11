@@ -77,7 +77,9 @@ impl DecorationStates {
     /// Creates an empty collection.
     #[must_use]
     pub const fn new() -> Self {
-        Self { states: alloc::vec::Vec::new() }
+        Self {
+            states: alloc::vec::Vec::new(),
+        }
     }
 
     /// The state of the window identified by `id`, if any.
@@ -104,14 +106,18 @@ impl DecorationStates {
 
     /// Removes the state of `id`.
     pub fn remove(&mut self, id: crate::types::DecorationId) {
-        if let Some(index) = self.states.iter().position(|(window_id, _)| *window_id == id) {
+        if let Some(index) = self
+            .states
+            .iter()
+            .position(|(window_id, _)| *window_id == id)
+        {
             self.states.swap_remove(index);
         }
     }
 
     /// Iterates over the states of every window.
     #[must_use]
-    pub fn iter(&self) -> DecorationStateIter {
+    pub fn iter(&self) -> DecorationStateIter<'_> {
         DecorationStateIter {
             states: &self.states,
             index: 0,
@@ -149,10 +155,7 @@ mod tests {
         assert!(state.is_active(DecorationModifier::Maximized));
         assert!(!state.is_active(DecorationModifier::Resizable));
         assert!(state.is_supported(DecorationModifier::Resizable));
-        assert_eq!(
-            state.available(),
-            DecorationModifier::Resizable.into()
-        );
+        assert_eq!(state.available(), DecorationModifier::Resizable.into());
     }
 
     #[test]
@@ -166,7 +169,12 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert!(states.state_of(id).unwrap().is_active(DecorationModifier::Fullscreen));
+        assert!(
+            states
+                .state_of(id)
+                .unwrap()
+                .is_active(DecorationModifier::Fullscreen)
+        );
         states.remove(id);
         assert!(states.state_of(id).is_none());
     }

@@ -23,7 +23,6 @@
 use alloc::rc::Rc;
 
 use codevar_kuitui::color::{Color, ColorScheme};
-use codevar_kuitui::text::TextStyle;
 use codevar_kuitui::theme::{Theme, ThemeMode, Typography};
 
 /// The theme a decoration is drawn with.

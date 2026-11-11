@@ -104,17 +104,13 @@ pub mod traits;
 pub mod types;
 pub mod widgets;
 
-#[cfg(feature = "wayland")]
-pub mod wayland;
-
 pub use error::{DecorationError, DecorationResult};
 pub use modifiers::{DecorationModifier, DecorationModifiers};
 pub use state::{DecorationState, DecorationStates};
 pub use theme::DecorationTheme;
 pub use traits::{Decoration, DecorationBackend, DecorationHost};
 pub use types::{
-    DecorationBounds, DecorationId, DecorationIcon, DecorationKind, DecorationMetrics,
-    DecorationResizeEdge,
+    DecorationBounds, DecorationIcon, DecorationId, DecorationKind, DecorationMetrics, DecorationResizeEdge,
 };
 pub use widgets::{
     DecorationButton, DecorationCursor, DecorationIconWidget, DecorationResizeEdgeWidget,
@@ -124,10 +120,10 @@ pub use widgets::{
 pub mod prelude {
     //! The traits and types a decoration implementation usually needs.
     pub use crate::{
-        Decoration, DecorationBackend, DecorationBounds, DecorationButton, DecorationCursor,
-        DecorationError, DecorationHost, DecorationIcon, DecorationIconWidget, DecorationId,
-        DecorationKind, DecorationMetrics, DecorationModifier, DecorationModifiers, DecorationResult,
-        DecorationResizeEdgeWidget, DecorationResizeHandle, DecorationState, DecorationStates,
-        DecorationTheme, DecorationTitleBar, DecorationWindowFrame,
+        Decoration, DecorationBackend, DecorationBounds, DecorationButton, DecorationCursor, DecorationError,
+        DecorationHost, DecorationIcon, DecorationIconWidget, DecorationId, DecorationKind,
+        DecorationMetrics, DecorationModifier, DecorationModifiers, DecorationResizeEdgeWidget,
+        DecorationResizeHandle, DecorationResult, DecorationState, DecorationStates, DecorationTheme,
+        DecorationTitleBar, DecorationWindowFrame,
     };
 }
