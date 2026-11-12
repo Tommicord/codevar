@@ -38,3 +38,7 @@
 #![allow(clippy::module_name_repetitions)]
 
 extern crate alloc;
+
+pub mod error;
+
+pub use error::{Error, Result};
