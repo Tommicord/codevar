@@ -49,6 +49,7 @@ pub mod polygon;
 pub mod quantize;
 pub mod segment;
 pub mod simplify;
+pub mod vector;
 
 pub use color::{Color, Oklab};
 pub use component::{Component, Connectivity, DespeckleOptions, Segmentation};
@@ -56,3 +57,4 @@ pub use error::{Error, Result};
 pub use geom::{Bounds, CubicBezier, PixelRect, Point};
 pub use image::{ColorImage, IntegralImage};
 pub use palette::{BinaryOptions, BinaryThreshold, ColorMode, IndexedImage, Palette};
+pub use vector::{DocumentStats, Fill, FillRule, Path, Segment, Shape, SubPath, VectorDoc};
