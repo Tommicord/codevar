@@ -39,6 +39,7 @@
 
 extern crate alloc;
 
+pub mod bezier;
 pub mod color;
 pub mod component;
 pub mod contour;
