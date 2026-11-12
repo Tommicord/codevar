@@ -308,12 +308,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "codevar-bmptovec"
+name = "codevar-bmpvector"
 version = "1.0.0"
 dependencies = [
- "codevar-base",
- "codevar-logger",
- "thiserror",
+ "libm",
 ]
 
 [[package]]
@@ -478,7 +476,6 @@ dependencies = [
  "codevar-kuitui",
  "codevar-kuitui-control",
  "codevar-logger",
- "codevar-wayland",
  "spin 0.12.3",
 ]
 
