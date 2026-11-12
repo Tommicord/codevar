@@ -41,6 +41,7 @@ extern crate alloc;
 
 pub mod color;
 pub mod component;
+pub mod contour;
 pub mod error;
 pub mod geom;
 pub mod image;
