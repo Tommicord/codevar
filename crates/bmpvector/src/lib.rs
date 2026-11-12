@@ -17,9 +17,48 @@
 //!
 //! `codevar-bmpvector` turns a decoded raster image into a structured vector
 //! document. It performs no image decoding and emits no SVG, HTML or XML: the
-//! output is a document of filled shapes whose paths contain absolute line and
-//! cubic segments. Every shape carries its fill color, so color artwork is
-//! preserved rather than reduced to a monochrome outline.
+//! output is a [`VectorDoc`] of filled [`Shape`]s whose [`Path`]s contain
+//! absolute line and cubic segments. Every shape carries its [`Fill`] color, so
+//! color artwork is preserved rather than reduced to a monochrome outline.
+//!
+//! # Pipeline
+//!
+//! ```text
+//! ColorImage
+//!   -> palette selection (exact, fixed, median-cut + k-means, or binary)
+//!   -> per-pixel palette assignment and despeckling
+//!   -> connected components
+//!   -> pixel-edge contour extraction (outer rings and holes)
+//!   -> polygon simplification and corner classification
+//!   -> least-squares cubic fitting
+//!   -> document assembly in paint order
+//! ```
+//!
+//! Each stage is available as a public module so applications can inspect or
+//! reuse intermediate results. [`trace`] and [`Config::trace`] are the
+//! convenient one-call entry points.
+//!
+//! # Example
+//!
+//! ```rust
+//! use codevar_bmpvector::{ColorImage, Config, Error};
+//!
+//! # fn main() -> Result<(), Error> {
+//! let image = ColorImage::from_rgb8(
+//!     2,
+//!     2,
+//! &[
+//!         0, 0, 0, 255, 255, 255,
+//!         255, 255, 255, 0, 0, 0,
+//!     ],
+//! )?;
+//!
+//! let document = Config::logo().trace(&image)?;
+//! assert_eq!(document.width, 2);
+//! assert_eq!(document.height, 2);
+//! # Ok(())
+//! # }
+//! ```
 //!
 //! # Coordinate convention
 //!
