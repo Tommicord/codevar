@@ -34,7 +34,10 @@
 //! ```
 //!
 //! Without arguments the example traces the bundled
-//! `examples/resources/gopher.png` and writes `gopher.svg` next to it.
+//! `examples/resources/gopher.png` and writes `gopher.svg` into the current
+//! directory. The bundled image is the Go gopher, downloaded from
+//! <https://go.dev/blog/gopher/gopher.png>; it is used under the Go project
+//! trademark and may be replaced with any other PNG.
 
 use std::env;
 use std::error::Error;
@@ -46,7 +49,10 @@ use std::process::ExitCode;
 use codevar_bmpvector::{Color, ColorImage, Config, FillRule, Preset, Segment, SubPath, VectorDoc};
 
 /// The image shipped with the example, used when no input path is given.
-const DEFAULT_INPUT: &str = "examples/resources/gopher.png";
+///
+/// The path is resolved against the crate directory so the example works
+/// from the workspace root, which is where `cargo run` is normally invoked.
+const DEFAULT_INPUT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/resources/gopher.png");
 
 /// The SVG file written when no output path is given.
 const DEFAULT_OUTPUT: &str = "gopher.svg";
@@ -119,9 +125,13 @@ fn run(input: &Path, output: &Path) -> Result<String, Box<dyn Error>> {
 /// Decodes a PNG file into the bitmap model used by the tracer.
 ///
 /// The `image` crate produces a tightly packed, row-major RGBA buffer, which
-/// is exactly the layout [`ColorImage::from_rgba8`] expects.
+/// is exactly the layout [`ColorImage::from_rgba8`] expects. The format is
+/// detected from the file contents rather than its extension, so a PNG is
+/// recognized whatever the file happens to be called.
 fn load_bitmap(path: &Path) -> Result<ColorImage, Box<dyn Error>> {
-    let decoded = image::open(path)?;
+    let decoded = image::ImageReader::open(path)?
+        .with_guessed_format()?
+        .decode()?;
     let rgba = decoded.to_rgba8();
     let (width, height) = rgba.dimensions();
     Ok(ColorImage::from_rgba8(width, height, rgba.as_raw())?)
@@ -129,11 +139,13 @@ fn load_bitmap(path: &Path) -> Result<ColorImage, Box<dyn Error>> {
 
 /// Picks the tracing configuration for the example.
 ///
-/// The bundled artwork is a flat logo, so the logo preset fits it well: few
-/// palette entries, crisp corners and aggressive despeckling. Transparency is
+/// The bundled artwork is a flat logo, so the poster preset fits it well: a
+/// moderate palette, smooth curves and gentle despeckling. Unlike the logo
+/// preset it fits the rounded outlines with cubic Béziers, so the resulting
+/// SVG exercises both segment kinds the tracer can produce. Transparency is
 /// flattened onto white so the output is a plain opaque illustration.
 fn tracing_config() -> Config {
-    Config::preset(Preset::Logo).with_background(Color::WHITE)
+    Config::preset(Preset::Poster).with_background(Color::WHITE)
 }
 
 /// Serializes a traced document as SVG XML.
@@ -189,6 +201,12 @@ fn path_data(subpaths: &[SubPath]) -> String {
             continue;
         }
 
+        // The space keeps a closed ring and the next moveto from running
+        // together as `ZM` in the generated file.
+        if !data.is_empty() {
+            data.push(' ');
+        }
+
         let start = subpath.start;
         let _ = write!(data, "M {} {}", start.x, start.y);
 
@@ -228,7 +246,10 @@ fn rgb_hex(color: Color) -> String {
 /// Formats the alpha channel as an SVG opacity value.
 ///
 /// SVG 1.1 has no eight-digit hex color, so the alpha channel is written as a
-/// separate `fill-opacity` attribute instead.
+/// separate `fill-opacity` attribute instead. The example composites the
+/// input onto an opaque background, so the traced colors are always fully
+/// opaque and the attribute is emitted as `1.000`; it becomes meaningful
+/// with a configuration that preserves transparency.
 fn alpha_opacity(color: Color) -> String {
     format!("{:.3}", f64::from(color.a) / 255.0)
 }
