@@ -48,6 +48,7 @@ pub mod palette;
 pub mod polygon;
 pub mod quantize;
 pub mod segment;
+pub mod simplify;
 
 pub use color::{Color, Oklab};
 pub use component::{Component, Connectivity, DespeckleOptions, Segmentation};
