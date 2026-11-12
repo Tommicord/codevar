@@ -43,9 +43,12 @@ pub mod color;
 pub mod error;
 pub mod geom;
 pub mod image;
+pub mod palette;
 pub mod polygon;
+pub mod quantize;
 
 pub use color::{Color, Oklab};
 pub use error::{Error, Result};
 pub use geom::{Bounds, CubicBezier, PixelRect, Point};
 pub use image::{ColorImage, IntegralImage};
+pub use palette::{BinaryOptions, BinaryThreshold, ColorMode, IndexedImage, Palette};
