@@ -40,5 +40,8 @@
 extern crate alloc;
 
 pub mod error;
+pub mod geom;
+pub mod polygon;
 
 pub use error::{Error, Result};
+pub use geom::{Bounds, CubicBezier, PixelRect, Point};
