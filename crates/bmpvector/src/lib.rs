@@ -40,14 +40,17 @@
 extern crate alloc;
 
 pub mod color;
+pub mod component;
 pub mod error;
 pub mod geom;
 pub mod image;
 pub mod palette;
 pub mod polygon;
 pub mod quantize;
+pub mod segment;
 
 pub use color::{Color, Oklab};
+pub use component::{Component, Connectivity, DespeckleOptions, Segmentation};
 pub use error::{Error, Result};
 pub use geom::{Bounds, CubicBezier, PixelRect, Point};
 pub use image::{ColorImage, IntegralImage};
