@@ -1,0 +1,18 @@
+[package]
+name = "codevar-bmpvector"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bitmap to color vector-graphics tracer producing structured paths"
+
+[lib]
+name = "codevar_bmpvector"
+
+[dependencies]
+libm = { workspace = true }
+
+[lints]
+workspace = true

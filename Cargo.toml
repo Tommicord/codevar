@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "crates/base",
-    "crates/bmptovec",
+    "crates/bmpvector",
     "crates/tlsf-alloc",
     "crates/textlike-encode",
     "crates/tls",
@@ -152,9 +152,9 @@ gettid = "0.1.4"
 pem = { version = "3", default-features = false }
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
-codevar-dbus = { path = "crates/dbus" }
 codevar-base = { path = "crates/base" }
-codevar-bmptovec = { path = "crates/bmptovec" }
+codevar-bmpvector = { path = "crates/bmpvector" }
+codevar-dbus = { path = "crates/dbus" }
 codevar-tlsf-alloc = { path = "crates/tlsf-alloc" }
 codevar-textlike-encode = { path = "crates/textlike-encode" }
 codevar-tls = { path = "crates/tls" }
