@@ -39,9 +39,11 @@
 
 extern crate alloc;
 
+pub mod color;
 pub mod error;
 pub mod geom;
 pub mod polygon;
 
+pub use color::{Color, Oklab};
 pub use error::{Error, Result};
 pub use geom::{Bounds, CubicBezier, PixelRect, Point};
