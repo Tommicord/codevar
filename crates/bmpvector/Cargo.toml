@@ -14,5 +14,8 @@ name = "codevar_bmpvector"
 [dependencies]
 libm = { workspace = true }
 
+[dev-dependencies]
+image = { workspace = true }
+
 [lints]
 workspace = true
