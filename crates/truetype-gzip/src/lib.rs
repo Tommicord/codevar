@@ -15,7 +15,7 @@
 
 //! # Codevar gzip
 //!
-//! A faithful Rust port of the FreeType 2.6 gzip subsystem
+//! A Rust port of the FreeType 2.6 gzip subsystem
 //! (`src/gzip/`): the public `FT_Stream_OpenGzip` / `FT_Gzip_Uncompress`
 //! API plus the embedded zlib 1.1.4 inflate pipeline that FreeType
 //! bundles when it is built without a system zlib.

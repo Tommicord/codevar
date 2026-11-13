@@ -11,7 +11,6 @@ members = [
     "crates/sig-module-base",
     "crates/wredit",
     "crates/wredit-asm",
-    "crates/wredit-werc",
     "crates/wsocket",
     "crates/launcher",
     "crates/wayland",
@@ -147,6 +146,9 @@ deranged = { version = "0.5.2", default-features = false }
 num-conv = { version = "0.2.2", default-features = false }
 libm = "0.2"
 image = { version = "0.25", default-features = false, features = ["png"] }
+# The pure-Rust `zlib-rs` backend keeps the compressor free of a C toolchain,
+# so the build script stays portable and the WASM target keeps building.
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 powerfmt = { version = "0.2.0", default-features = false }
 zeroize = { version = "1.8", features = ["derive"], default-features = false }
 gettid = "0.1.4"
@@ -164,7 +166,6 @@ codevar-time-util = { path = "crates/time-util" }
 codevar-time-core = { path = "crates/time-core" }
 codevar-wredit = { path = "crates/wredit" }
 codevar-wredit-asm = { path = "crates/wredit-asm" }
-codevar-wredit-werc = { path = "crates/wredit-werc" }
 codevar-wsocket = { path = "crates/wsocket" }
 codevar-sig-handler = { path = "crates/sig-handler" }
 codevar-sig-module-base = { path = "crates/sig-module-base" }
