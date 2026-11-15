@@ -4,14 +4,13 @@ members = [
     "crates/bmpvector",
     "crates/tlsf-alloc",
     "crates/textlike-encode",
-    "crates/tls",
     "crates/pretty-unwind",
     "crates/unwinding",
     "crates/sig-handler",
     "crates/sig-module-base",
     "crates/wredit",
     "crates/wredit-asm",
-    "crates/wsocket",
+    "crates/wredit-werc",
     "crates/launcher",
     "crates/wayland",
     "crates/xdg-portal",
@@ -146,9 +145,6 @@ deranged = { version = "0.5.2", default-features = false }
 num-conv = { version = "0.2.2", default-features = false }
 libm = "0.2"
 image = { version = "0.25", default-features = false, features = ["png"] }
-# The pure-Rust `zlib-rs` backend keeps the compressor free of a C toolchain,
-# so the build script stays portable and the WASM target keeps building.
-flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 powerfmt = { version = "0.2.0", default-features = false }
 zeroize = { version = "1.8", features = ["derive"], default-features = false }
 gettid = "0.1.4"
@@ -160,13 +156,12 @@ codevar-bmpvector = { path = "crates/bmpvector" }
 codevar-dbus = { path = "crates/dbus" }
 codevar-tlsf-alloc = { path = "crates/tlsf-alloc" }
 codevar-textlike-encode = { path = "crates/textlike-encode" }
-codevar-tls = { path = "crates/tls" }
 codevar-wayland = { path = "crates/wayland" }
 codevar-time-util = { path = "crates/time-util" }
 codevar-time-core = { path = "crates/time-core" }
 codevar-wredit = { path = "crates/wredit" }
 codevar-wredit-asm = { path = "crates/wredit-asm" }
-codevar-wsocket = { path = "crates/wsocket" }
+codevar-wredit-werc = { path = "crates/wredit-werc" }
 codevar-sig-handler = { path = "crates/sig-handler" }
 codevar-sig-module-base = { path = "crates/sig-module-base" }
 codevar-unwinding = { path = "crates/unwinding" }

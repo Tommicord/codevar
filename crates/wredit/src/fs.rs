@@ -631,7 +631,6 @@ impl<D: BlockDevice> DiskFs<D> {
 
         let mut block_bitmap = Bitmap::new();
         let mut inode_bitmap = Bitmap::new();
-        // Mark the metadata blocks used.
         for b in 0..metadata_blocks {
             block_bitmap.set_used(b as u32);
         }
