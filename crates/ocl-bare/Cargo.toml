@@ -21,7 +21,7 @@ std = []
 [dependencies]
 spin = { workspace = true }
 codevar-logger = { workspace = true }
-codevar-target = { workspace = true }
+codevar-cputarget = { workspace = true }
 codevar-ocl-abi = { workspace = true }
 libm = { workspace = true }
 # The hosted trampoline maps executable memory; the bare-metal path does

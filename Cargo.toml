@@ -10,7 +10,6 @@ members = [
     "crates/sig-module-base",
     "crates/wredit",
     "crates/wredit-asm",
-    "crates/wredit-werc",
     "crates/launcher",
     "crates/wayland",
     "crates/xdg-portal",
@@ -29,7 +28,7 @@ members = [
     "crates/console-util",
     "crates/env",
     "crates/stdio",
-    "crates/target",
+    "crates/cputarget",
     "crates/rt",
     "crates/truetype-core",
     "crates/truetype-emoji-color",
@@ -161,7 +160,6 @@ codevar-time-util = { path = "crates/time-util" }
 codevar-time-core = { path = "crates/time-core" }
 codevar-wredit = { path = "crates/wredit" }
 codevar-wredit-asm = { path = "crates/wredit-asm" }
-codevar-wredit-werc = { path = "crates/wredit-werc" }
 codevar-sig-handler = { path = "crates/sig-handler" }
 codevar-sig-module-base = { path = "crates/sig-module-base" }
 codevar-unwinding = { path = "crates/unwinding" }
@@ -189,7 +187,7 @@ codevar-console-util = { path = "crates/console-util" }
 codevar-stdio = { path = "crates/stdio" }
 codevar-env = { path = "crates/env" }
 codevar-pathbuf = { path = "crates/pathbuf" }
-codevar-target = { path = "crates/target" }
+codevar-cputarget = { path = "crates/cputarget" }
 codevar-rt = { path = "crates/rt" }
 codevar-truetype-core = { path = "crates/truetype-core" }
 codevar-truetype-emoji-color = { path = "crates/truetype-emoji-color" }

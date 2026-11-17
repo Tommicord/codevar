@@ -33,7 +33,7 @@
 //!   binary's own `_start`.
 //!
 //! Everything else in the table points at `DefaultHandler`, which
-//! [`codevar_target::halt`]s. Without a description of the machine's
+//! [`codevar_cputarget::halt`]s. Without a description of the machine's
 //! peripherals an interrupt is not something this runtime can dispatch, so
 //! trapping it and stopping is the diagnosable answer; jumping through an
 //! unset vector would lock the core up with no way to tell why.
@@ -42,7 +42,7 @@
 //! `HardFault`/`DebugMonitor` recognize the `bkpt #0xAB` the target uses to
 //! reach a debug agent (semihosting) and turn an agentless probe into a
 //! clean `-1` instead of a lockup, and `SysTick` is the periodic tick
-//! `codevar-target` builds its clock on. Both fail closed — an unrecognized
+//! `codevar-cputarget` builds its clock on. Both fail closed — an unrecognized
 //! breakpoint, a real fault, or a tick nobody started ends in the same halt.
 //!
 //! # Portability
@@ -167,7 +167,7 @@ pub mod build {
 ///   system exceptions and 48 external interrupt slots. Reset has its own
 ///   handler, `HardFault`/`DebugMonitor` dispatch the semihosting breakpoint
 ///   and `SysTick` counts ticks (all defined by this crate and
-///   `codevar-target`); everything else points at `DefaultHandler`.
+///   `codevar-cputarget`); everything else points at `DefaultHandler`.
 /// - `Reset`, the reset handler: it masks interrupts, installs `_stack_top`
 ///   as the main stack pointer — independent of what the board firmware left
 ///   there — and calls `codevar_rt_reset`.
@@ -283,7 +283,7 @@ mod init {
     /// clock, a semihosting `SVC` — are live from the first line of the
     /// application. This function never returns; if the binary did not
     /// define `_start`, or the image cannot run at all,
-    /// [`codevar_target::halt`] stops the core.
+    /// [`codevar_cputarget::halt`] stops the core.
     #[unsafe(no_mangle)]
     extern "C" fn codevar_rt_reset() -> ! {
         initialize_memory();
@@ -310,7 +310,7 @@ mod init {
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 #[unsafe(no_mangle)]
 extern "C" fn DefaultHandler() -> ! {
-    codevar_target::halt()
+    codevar_cputarget::halt()
 }
 
 // The `HardFault`/`DebugEvent` handler: unserviced semihosting, or stop.
@@ -324,7 +324,7 @@ extern "C" fn DefaultHandler() -> ! {
 // enabled, which is why both vector slots name the same handler here.
 //
 // The handler recognizes Codevar's own call by reading the two halfwords
-// around the stacked PC for `bkpt #0xAB`, tells `codevar-target` that no
+// around the stacked PC for `bkpt #0xAB`, tells `codevar-cputarget` that no
 // agent is listening (so later probes fail fast instead of faulting again),
 // and returns `-1` in the stacked `r0` — "the agent refused", which the
 // caller turns into an ordinary unsupported-service stop. Any *other*

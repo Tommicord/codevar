@@ -231,8 +231,8 @@ version = "1.0.0"
 dependencies = [
  "cfg-if",
  "codevar-console-util",
+ "codevar-cputarget",
  "codevar-stdio",
- "codevar-target",
  "codevar-textlike-encode",
  "codevar-time-core",
  "libc",
@@ -269,6 +269,13 @@ dependencies = [
  "heapless",
  "libc",
  "windows",
+]
+
+[[package]]
+name = "codevar-cputarget"
+version = "1.0.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -481,6 +488,7 @@ dependencies = [
  "ash",
  "codevar-base",
  "codevar-cli-parse",
+ "codevar-cputarget",
  "codevar-env",
  "codevar-gpu-vk",
  "codevar-inssched",
@@ -489,7 +497,6 @@ dependencies = [
  "codevar-rt",
  "codevar-sig-handler",
  "codevar-sig-module-base",
- "codevar-target",
  "codevar-time-core",
  "codevar-tlsf-alloc",
  "codevar-wayland",
@@ -610,13 +617,13 @@ dependencies = [
 name = "codevar-ocl-bare"
 version = "1.0.0"
 dependencies = [
+ "codevar-cputarget",
  "codevar-logger",
  "codevar-ocl",
  "codevar-ocl-abi",
  "codevar-ocl-asm",
  "codevar-ocl-ir",
  "codevar-rt",
- "codevar-target",
  "codevar-tlsf-alloc",
  "criterion",
  "libc",
@@ -732,6 +739,7 @@ dependencies = [
  "bsize",
  "codevar-cli-parse",
  "codevar-console-util",
+ "codevar-cputarget",
  "codevar-inssched",
  "codevar-logger",
  "codevar-ocl-asm",
@@ -745,7 +753,6 @@ dependencies = [
  "codevar-sig-handler",
  "codevar-sig-module-base",
  "codevar-stdio",
- "codevar-target",
  "codevar-tlsf-alloc",
  "libc",
  "proc-macro2",
@@ -799,7 +806,7 @@ dependencies = [
 name = "codevar-rt"
 version = "1.0.0"
 dependencies = [
- "codevar-target",
+ "codevar-cputarget",
 ]
 
 [[package]]
@@ -837,20 +844,13 @@ dependencies = [
 name = "codevar-stdio"
 version = "1.0.0"
 dependencies = [
- "codevar-target",
+ "codevar-cputarget",
  "codevar-textlike-encode",
  "defmt 0.3.101",
  "heapless",
  "libc",
  "spin",
  "windows",
-]
-
-[[package]]
-name = "codevar-target"
-version = "1.0.0"
-dependencies = [
- "libc",
 ]
 
 [[package]]
@@ -866,7 +866,7 @@ name = "codevar-time-core"
 version = "1.0.0"
 dependencies = [
  "cfg-if",
- "codevar-target",
+ "codevar-cputarget",
  "libc",
  "spin",
  "windows-link 0.100.0",
@@ -1039,14 +1039,6 @@ dependencies = [
  "codevar-textlike-encode",
  "criterion",
  "spin",
-]
-
-[[package]]
-name = "codevar-wredit-werc"
-version = "1.0.0"
-dependencies = [
- "codevar-base",
- "criterion",
 ]
 
 [[package]]

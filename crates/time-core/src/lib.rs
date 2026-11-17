@@ -27,9 +27,9 @@
 //! with `no_std` environments, including embedded targets. On bare-metal
 //! targets (`target_os = "none"`) there is no operating system to ask for
 //! the time, so every clock reports the platform's time-since-reset from
-//! [`codevar_target::uptime_nanos`]; if the target has no timer either, the
+//! [`codevar_cputarget::uptime_nanos`]; if the target has no timer either, the
 //! query stops the application through
-//! [`codevar_target::abort_unsupported`] rather than inventing a timestamp.
+//! [`codevar_cputarget::abort_unsupported`] rather than inventing a timestamp.
 
 #![cfg_attr(not(test), no_std)]
 extern crate alloc;
@@ -55,7 +55,7 @@ pub struct Timespec {
 /// Platform side of the clock interface.
 ///
 /// Hosted targets call the C library's `clock_gettime`. Targets without an
-/// operating system answer from the platform clock in `codevar-target`,
+/// operating system answer from the platform clock in `codevar-cputarget`,
 /// which counts from reset — an image with no OS and no battery-backed
 /// counter has no date to know — and stops the application when even that
 /// clock is missing, because a clock is not a recoverable condition for a
@@ -106,7 +106,7 @@ mod sys {
     /// Reads `clock_id` on a bare-metal target, where time is what the
     /// hardware can count.
     ///
-    /// Every clock reports [`codevar_target::uptime_nanos`]: nanoseconds
+    /// Every clock reports [`codevar_cputarget::uptime_nanos`]: nanoseconds
     /// since reset. That is a real monotonic clock and a deliberately
     /// honest realtime one — with no operating system, no network and no
     /// battery-backed counter there is no date to discover, so stamping
@@ -125,7 +125,7 @@ mod sys {
     pub(super) fn clock_gettime(clock_id: c_int) -> Result<Timespec, TimeError> {
         match clock_id {
             SystemTime::CLOCK_MONOTONIC | SystemTime::CLOCK_MONOTONIC_RAW | SystemTime::CLOCK_REALTIME => {
-                let nanos = codevar_target::uptime_nanos();
+                let nanos = codevar_cputarget::uptime_nanos();
                 Ok(Timespec {
                     tv_sec: nanos / NANOS_PER_SECOND,
                     tv_nsec: nanos % NANOS_PER_SECOND,
@@ -168,7 +168,7 @@ pub enum TimeError {
     ///
     /// Bare-metal targets never produce this value: a clock query there
     /// answers from the platform timer or stops the application (see
-    /// [`codevar_target::abort_unsupported`]) rather than returning a
+    /// [`codevar_cputarget::abort_unsupported`]) rather than returning a
     /// placeholder.
     NotAvailable,
 }

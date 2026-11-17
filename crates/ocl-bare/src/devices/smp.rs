@@ -201,7 +201,7 @@ impl SmpDevice {
     /// Blocks until every secondary core has registered — called after
     /// starting the workers so the first enqueue cannot race their boot.
     pub fn wait_workers(&'static self) {
-        codevar_target::wait_until(|| {
+        codevar_cputarget::wait_until(|| {
             self.started
                 .iter()
                 .all(|flag| flag.load(Ordering::Acquire))
@@ -225,7 +225,7 @@ impl SmpDevice {
         debug_assert!(valid, "worker index {index} out of range");
         if !valid {
             loop {
-                codevar_target::wfe();
+                codevar_cputarget::wfe();
             }
         }
         let index = index as usize;
@@ -240,7 +240,7 @@ impl SmpDevice {
         loop {
             let epoch = self.slot.epoch.load(Ordering::Acquire);
             if epoch == my_epoch {
-                codevar_target::wfe();
+                codevar_cputarget::wfe();
                 continue;
             }
             // Copy the descriptor out: the next writer is fenced behind
@@ -290,8 +290,8 @@ impl SmpDevice {
         self.slot.claim.store(0, Ordering::Release);
         self.slot.done.store(0, Ordering::Release);
         let epoch = self.slot.epoch.fetch_add(1, Ordering::Release) + 1;
-        codevar_target::dsb();
-        codevar_target::sev();
+        codevar_cputarget::dsb();
+        codevar_cputarget::sev();
 
         event.set_status(sys::RUNNING);
         // The submitting core claims alongside the workers; a group failure
@@ -302,10 +302,10 @@ impl SmpDevice {
         if let Err(error) = unsafe { run_claimed(launch, &self.slot.claim, &self.slot.done) } {
             self.slot.record(error);
         }
-        codevar_target::wait_until(|| self.slot.done.load(Ordering::Acquire) >= total);
+        codevar_cputarget::wait_until(|| self.slot.done.load(Ordering::Acquire) >= total);
         // Quiescence: every registered worker has retired this epoch, so
         // the next submit may overwrite the descriptor.
-        codevar_target::wait_until(|| {
+        codevar_cputarget::wait_until(|| {
             self.started
                 .iter()
                 .zip(self.acks.iter())

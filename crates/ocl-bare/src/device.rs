@@ -179,7 +179,7 @@ pub trait Device: Sync {
     fn wait_all(&self) -> Result<()> {
         while self.inflight() > 0 {
             self.progress()?;
-            codevar_target::wfe();
+            codevar_cputarget::wfe();
         }
         Ok(())
     }

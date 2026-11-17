@@ -172,8 +172,8 @@ cfg_if::cfg_if! {
         /// silently did nothing would look like a success to the caller.
         #[inline]
         fn sleep_platform(duration: TimeDuration) -> Result<(), SleepError> {
-            let deadline = u128::from(codevar_target::uptime_nanos()) + duration.as_nanos();
-            while u128::from(codevar_target::uptime_nanos()) < deadline {
+            let deadline = u128::from(codevar_cputarget::uptime_nanos()) + duration.as_nanos();
+            while u128::from(codevar_cputarget::uptime_nanos()) < deadline {
                 core::hint::spin_loop();
             }
             Ok(())

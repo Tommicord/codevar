@@ -458,7 +458,7 @@ impl AccelDevice {
             self.regs.set_opcode(desc.opcode);
             let launch = desc.launch();
             let result = self.invoke(desc.opcode, &launch);
-            codevar_target::dsb();
+            codevar_cputarget::dsb();
             match result {
                 Ok(()) => {
                     slot.result.store(sys::SUCCESS, Ordering::Release);
@@ -476,8 +476,8 @@ impl AccelDevice {
                 .head
                 .store(head.wrapping_add(1), Ordering::Release);
             self.regs.raise_irq();
-            codevar_target::dsb();
-            codevar_target::sev();
+            codevar_cputarget::dsb();
+            codevar_cputarget::sev();
         }
     }
 
@@ -553,18 +553,18 @@ impl AccelDevice {
                 desc.global = launch.global;
                 desc.local = launch.local;
                 desc.args = *launch.args;
-                codevar_target::dsb();
+                codevar_cputarget::dsb();
                 self.ring.slots[slot_index as usize]
                     .status
                     .store(PENDING, Ordering::Release);
                 self.ring
                     .tail
                     .store(tail.wrapping_add(1), Ordering::Release);
-                codevar_target::dsb();
+                codevar_cputarget::dsb();
                 // The doorbell write *is* the engine's interrupt on a real
                 // board; `sev` wakes a peer core running the service loop.
                 self.regs.ring_doorbell();
-                codevar_target::sev();
+                codevar_cputarget::sev();
                 return Ok(slot_index);
             }
             attempts += 1;
@@ -574,7 +574,7 @@ impl AccelDevice {
             // A failing progress here leaves the event unpublished;
             // `dispatch` releases it when this error surfaces.
             self.progress()?;
-            codevar_target::wfe();
+            codevar_cputarget::wfe();
         }
     }
 }

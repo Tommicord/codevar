@@ -19,7 +19,7 @@
 //! so there is exactly one syscall-backed clock in the workspace. That also
 //! fixes the embedded behaviour in one place: on targets without an
 //! operating system (`target_os = "none"`) a clock query aborts the
-//! application through [`codevar_target::abort_unsupported`] rather than
+//! application through [`codevar_cputarget::abort_unsupported`] rather than
 //! inventing a timestamp.
 //!
 //! Provides:

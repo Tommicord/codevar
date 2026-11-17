@@ -236,7 +236,7 @@ impl AmpDevice {
             };
             // SAFETY: kernel and arguments came from a completed publish.
             let result = unsafe { run_all(&launch) };
-            codevar_target::dsb();
+            codevar_cputarget::dsb();
             match result {
                 Ok(()) => {
                     slot.result.store(sys::SUCCESS, Ordering::Release);
@@ -251,8 +251,8 @@ impl AmpDevice {
             self.ring
                 .head
                 .store(head.wrapping_add(1), Ordering::Release);
-            codevar_target::dsb();
-            codevar_target::sev();
+            codevar_cputarget::dsb();
+            codevar_cputarget::sev();
         }
     }
 
@@ -291,15 +291,15 @@ impl AmpDevice {
                 payload.global = launch.global;
                 payload.local = launch.local;
                 payload.args = *launch.args.as_bytes();
-                codevar_target::dsb();
+                codevar_cputarget::dsb();
                 self.ring.slots[slot_index as usize]
                     .status
                     .store(PENDING, Ordering::Release);
                 self.ring
                     .tail
                     .store(tail.wrapping_add(1), Ordering::Release);
-                codevar_target::dsb();
-                codevar_target::sev();
+                codevar_cputarget::dsb();
+                codevar_cputarget::sev();
                 break slot_index;
             }
             attempts += 1;
@@ -311,7 +311,7 @@ impl AmpDevice {
                 release_ref(event);
                 return Err(error);
             }
-            codevar_target::wfe();
+            codevar_cputarget::wfe();
         };
         event.set_status(sys::RUNNING);
         // The reservation above makes this push infallible.

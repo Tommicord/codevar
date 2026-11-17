@@ -16,7 +16,7 @@ description = "Bare-metal runtime: vector table, reset stub and memory initializ
 std = []
 
 [dependencies]
-codevar-target = { workspace = true }
+codevar-cputarget = { workspace = true }
 
 [lints]
 workspace = true

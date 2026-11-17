@@ -90,7 +90,7 @@ fn init_heap() {
     let registered = unsafe { HEAP.lock().add_region(start, HEAP_REGION_BYTES) };
     if registered.is_err() {
         log_error!("heap region rejected by the allocator, cannot continue");
-        codevar_target::halt();
+        codevar_cputarget::halt();
     }
 }
 /// Freestanding entry: initialize the process hooks, run the window
@@ -135,7 +135,7 @@ fn exit_after_panic(code: core::ffi::c_int) -> ! {
     #[cfg(target_os = "none")]
     {
         let _ = code;
-        codevar_target::halt()
+        codevar_cputarget::halt()
     }
     #[cfg(all(not(unix), not(target_os = "none")))]
     {

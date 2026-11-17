@@ -90,7 +90,7 @@ fn init_heap() {
     let registered = unsafe { HEAP.lock().add_region(start, HEAP_REGION_BYTES) };
     if registered.is_err() {
         codevar_logger::log_error!("heap region rejected by the allocator, cannot continue");
-        codevar_target::halt();
+        codevar_cputarget::halt();
     }
 }
 
@@ -146,7 +146,7 @@ pub extern "C" fn _start() -> ! {
     }
     schedule_boot();
     let _ = driver::run(&[]);
-    codevar_target::halt()
+    codevar_cputarget::halt()
 }
 
 /// Terminates the process with `code` after a panic report has been emitted.
@@ -165,7 +165,7 @@ fn exit_after_panic(code: core::ffi::c_int) -> ! {
     #[cfg(target_os = "none")]
     {
         let _ = code;
-        codevar_target::halt()
+        codevar_cputarget::halt()
     }
     #[cfg(all(not(unix), not(target_os = "none")))]
     {

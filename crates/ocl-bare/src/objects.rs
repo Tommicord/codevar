@@ -811,7 +811,7 @@ impl Event {
             if let Some(device) = self.device {
                 device.progress()?;
             }
-            codevar_target::wfe();
+            codevar_cputarget::wfe();
         }
         Ok(())
     }

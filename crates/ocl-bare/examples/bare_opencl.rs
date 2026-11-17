@@ -543,7 +543,7 @@ fn run() -> Result<(), String> {
 ///
 /// Returns the process status the runner must observe: `0` when every
 /// check passed and `1` otherwise — the value the bare-metal entry point
-/// hands to `codevar_target::semihosting::exit`, which turns it into
+/// hands to `codevar_cputarget::semihosting::exit`, which turns it into
 /// QEMU's own exit status.
 fn run_and_report() -> i32 {
     match run() {
@@ -594,7 +594,7 @@ fn init_heap() {
     let registered = unsafe { HEAP.lock().add_region(start, HEAP_REGION_BYTES) };
     if registered.is_err() {
         log_error!("heap region rejected by the allocator, cannot continue");
-        codevar_target::halt();
+        codevar_cputarget::halt();
     }
 }
 
@@ -606,7 +606,7 @@ fn init_heap() {
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     init_heap();
-    codevar_target::semihosting::exit(run_and_report())
+    codevar_cputarget::semihosting::exit(run_and_report())
 }
 
 /// Hosted entry: the same checklist in process, so the example also runs
@@ -630,7 +630,7 @@ fn main() -> std::process::ExitCode {
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
     codevar_logger::report_panic(info);
-    codevar_target::semihosting::exit(1)
+    codevar_cputarget::semihosting::exit(1)
 }
 
 /// Link-time stand-in for the personality routine referenced by the

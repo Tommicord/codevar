@@ -17,7 +17,7 @@
 //!
 //! This module provides the three standard streams for platforms that have
 //! no operating system behind them. On bare metal (`target_os = "none"`)
-//! stdout and stderr are the platform console from `codevar-target` — the
+//! stdout and stderr are the platform console from `codevar-cputarget` — the
 //! debug agent's semihosting channel on ARM — while stdin, which has no
 //! hardware equivalent, always reports [`ErrorKind::Unsupported`]. On other
 //! exotic targets (WebAssembly and friends) every stream reports
@@ -120,7 +120,7 @@ impl Stderr {
 fn write_stdout(buf: &[u8]) -> Result<usize, ErrorKind> {
     #[cfg(target_os = "none")]
     {
-        codevar_target::console_write(codevar_target::Stream::Stdout, buf);
+        codevar_cputarget::console_write(codevar_cputarget::Stream::Stdout, buf);
         Ok(buf.len())
     }
     #[cfg(not(target_os = "none"))]
@@ -137,7 +137,7 @@ fn write_stdout(buf: &[u8]) -> Result<usize, ErrorKind> {
 fn write_stderr(buf: &[u8]) -> Result<usize, ErrorKind> {
     #[cfg(target_os = "none")]
     {
-        codevar_target::console_write(codevar_target::Stream::Stderr, buf);
+        codevar_cputarget::console_write(codevar_cputarget::Stream::Stderr, buf);
         Ok(buf.len())
     }
     #[cfg(not(target_os = "none"))]
