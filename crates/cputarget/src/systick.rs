@@ -34,9 +34,9 @@
 //! register the concept does not exist, and a caller that needs real dates
 //! must supply an epoch of its own (see `codevar-time-core`).
 
-use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use crate::semihosting;
 use crate::tick::{FALLBACK_HZ, MAX_PLAUSIBLE_HZ, MIN_PLAUSIBLE_HZ, RELOAD_MAX, tick_reload};
+use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
 /// SysTick control and status, `0xE000_E010`.
 const SYST_CSR: *mut u32 = 0xE000_E010 as *mut u32;
