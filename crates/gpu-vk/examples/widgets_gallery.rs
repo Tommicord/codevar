@@ -115,7 +115,7 @@ const STARTUP_DEADLINE: Duration = Duration::from_secs(30);
 /// How long a single `dispatch` waits for Wayland events.
 const DISPATCH_TIMEOUT: TimeDuration = TimeDuration::from_millis(50);
 /// Frames the loop renders before it reports how it paced them.
-const MEASURE_FRAMES: u32 = 400;
+const MEASURE_FRAMES: u32 = 1000;
 /// Wall-clock stop for the measurement, so a compositor that stops answering
 /// frame callbacks cannot hold the example open forever.
 const MEASURE_WINDOW: Duration = Duration::from_secs(5);

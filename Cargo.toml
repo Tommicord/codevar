@@ -12,7 +12,6 @@ members = [
     "crates/wredit-asm",
     "crates/launcher",
     "crates/wayland",
-    "crates/xdg-portal",
     "crates/gpu-core",
     "crates/gpu-vk",
     "crates/gpu-wg",
@@ -164,7 +163,6 @@ codevar-sig-handler = { path = "crates/sig-handler" }
 codevar-sig-module-base = { path = "crates/sig-module-base" }
 codevar-unwinding = { path = "crates/unwinding" }
 codevar-pretty-unwind = { path = "crates/pretty-unwind" }
-codevar-xdg-portal = { path = "crates/xdg-portal" }
 codevar-gpu-core = { path = "crates/gpu-core" }
 codevar-gpu-vk = { path = "crates/gpu-vk" }
 codevar-gpu-wg = { path = "crates/gpu-wg" }
