@@ -156,7 +156,7 @@ const RAMP: Gradient = Gradient::new(
 /// The bundled test font (Space Mono for regular text).
 const FONT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../assets/tf/codevar.tf.space-mono.regular.ttf"
+    "/../../assets/ttf/space-mono.regular.ttf"
 );
 /// The color emoji font.
 const EMOJI_FONT: &str = concat!(

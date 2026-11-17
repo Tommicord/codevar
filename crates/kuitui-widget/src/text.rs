@@ -151,7 +151,7 @@ mod tests {
 
     const FONT: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../assets/tf/codevar.tf.space-mono.regular.ttf"
+        "/../../assets/ttf/space-mono.regular.ttf"
     );
 
     fn font() -> Rc<Font> {

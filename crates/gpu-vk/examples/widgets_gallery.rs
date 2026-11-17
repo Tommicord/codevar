@@ -156,7 +156,7 @@ const FONT_PPEM: u16 = 28;
 /// The bundled test font (Space Mono for regular text).
 const FONT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../assets/tf/codevar.tf.space-mono.regular.ttf"
+    "/../../assets/ttf/space-mono.regular.ttf"
 );
 /// Padding around the whole gallery.
 const PAGE_PADDING: f32 = 22.0;

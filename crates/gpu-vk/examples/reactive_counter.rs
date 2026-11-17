@@ -104,7 +104,7 @@ const TOP_PADDING: f32 = 48.0;
 /// The bundled test font (Space Mono for regular text).
 const FONT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../assets/tf/codevar.tf.space-mono.regular.ttf"
+    "/../../assets/ttf/space-mono.regular.ttf"
 );
 
 /// Every failure of the example is reported as a boxed error so `?` works for

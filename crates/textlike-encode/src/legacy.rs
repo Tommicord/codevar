@@ -900,7 +900,7 @@ mod tests {
     fn interior_whitespace_and_untrimmed_padding_are_not_stripped() {
         for label in [
             "utf -8",
-            "u tf-8",
+            "u ttf-8",
             "utf- 8",
             "utf 8",
             "cp125 2",
