@@ -32,19 +32,22 @@
 //! 3. crop a bitmap to the outline's control box and translate the
 //!    outline into it;
 //! 4. rasterize anti-aliased coverage into a gray [`Bitmap`];
-//! 5. pack the coverage into a [`GlyphAtlas`] and keep a [`GlyphQuad`].
+//! 5. hand the coverage to the shared atlas the backend owns.
 //!
-//! [`Font::layout`] runs the whole loop for a run of text and returns a
-//! [`GlyphRun`] whose vertices feed [`crate::shaders::TEXT_VERT_SPIRV`]
-//! directly.
+//! [`Font::shape_into`] runs the whole loop for a run of text and pushes
+//! the quads into a [`TextFrame`] from `codevar-kuitui-text`, the same
+//! atlas and mesh the `text` shader draws. The font never owns an atlas:
+//! caching, eviction and upload belong to the renderer, so a run that is
+//! reshaped every frame only rasterizes the glyphs that are not resident
+//! yet.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use codevar_kuitui::color::Color;
-use codevar_kuitui::geometry::{Offset, Rect, Size};
+use codevar_kuitui::geometry::{Offset, Rect};
 use codevar_kuitui::text::{FontMetrics, TextStyle};
-use codevar_kuitui_text::{GlyphKey, GlyphQuad as AtlasQuad, TextError, TextFrame};
+use codevar_kuitui_text::{GlyphKey, GlyphQuad, TextError, TextFrame};
 use codevar_truetype_core::{
     BBox, Bitmap, Generic, GlyphFormat, GlyphLoader, GlyphMetrics, GlyphSlot, Library, LoadFlags, Matrix,
     Outline, PixelMode, Raster, RasterFlags, RasterParams, SizeMetrics, SlotInternal, TtError, Vector,
@@ -54,12 +57,6 @@ use codevar_truetype_emoji_color::render::{ColorFont, RenderedGlyph};
 use codevar_truetype_glyf::load_glyph;
 use codevar_truetype_sfnt::SfntFont;
 use codevar_truetype_smooth::grays::GrayRaster;
-
-/// The edge length of the coverage atlas [`Font::layout`] allocates.
-const ATLAS_SIZE: u32 = 256;
-
-/// The padding kept between two glyphs in a [`GlyphAtlas`], in pixels.
-const ATLAS_PADDING: u32 = 1;
 
 /// Everything that can go wrong while measuring or rasterizing a font.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -345,88 +342,17 @@ impl Font {
         }))
     }
 
-    /// Lays `text` out along one horizontal baseline.
-    ///
-    /// Every glyph is rasterized, packed into a fresh [`GlyphAtlas`] and
-    /// recorded as a [`GlyphQuad`] in run space: `x` grows to the right
-    /// from the pen start, `y` is the top of the glyph relative to the
-    /// baseline (negative above it). A production application should
-    /// cache the atlas across frames; the widget crate keeps one per run
-    /// so a caller sees the whole pipeline in one value.
-    ///
-    /// `style` supplies the color and the letter spacing; the font size
-    /// is the font's own ppem, not `style.font_size`, so measurements
-    /// and pixels agree.
-    ///
-    /// # Errors
-    ///
-    /// [`FontError::Open`], [`FontError::Load`], [`FontError::Raster`],
-    /// [`FontError::Bitmap`] or [`FontError::AtlasFull`].
-    pub fn layout(&self, text: &str, style: &TextStyle) -> Result<GlyphRun<GlyphAtlas>, FontError> {
-        let font = self.sfnt()?;
-        let metrics = self.size_metrics();
-        let mut slot = new_slot();
-        let mut raster = GrayRaster::new();
-        let mut atlas = GlyphAtlas::new(ATLAS_SIZE, ATLAS_SIZE);
-        let mut quads = Vec::new();
-        let mut pen: i64 = 0;
-        let mut furthest: i64 = 0;
-        let spacing = (style.letter_spacing * 64.0) as i64;
-        let color = color_to_array(style.color);
-
-        for character in text.chars() {
-            if character == '\n' {
-                pen += spacing;
-                continue;
-            }
-            let glyph_index = font.char_index(u32::from(character));
-            let advance = mul_fix(i64::from(font.advance_for_glyph(glyph_index)), self.scale);
-            if glyph_index != 0
-                && let Some(bitmap) = rasterize_glyph(&font, &mut slot, &mut raster, &metrics, glyph_index)?
-            {
-                let Some(region) = atlas.insert(&bitmap.bitmap) else {
-                    return Err(FontError::AtlasFull);
-                };
-                let atlas_width = atlas.width() as f32;
-                let atlas_height = atlas.height() as f32;
-                quads.push(GlyphQuad {
-                    glyph_index,
-                    x: fixed_pixels(pen) + bitmap.left as f32,
-                    y: -(bitmap.top as f32),
-                    width: bitmap.bitmap.width as f32,
-                    height: bitmap.bitmap.rows as f32,
-                    uv_min: [region.x as f32 / atlas_width, region.y as f32 / atlas_height],
-                    uv_max: [
-                        (region.x + region.width) as f32 / atlas_width,
-                        (region.y + region.height) as f32 / atlas_height,
-                    ],
-                    color,
-                });
-            }
-            pen += advance + spacing;
-            furthest = furthest.max(pen);
-        }
-
-        Ok(GlyphRun {
-            quads,
-            atlas,
-            size: Size::new(fixed_pixels(furthest), self.line_height()),
-            baseline: self.ascent(),
-        })
-    }
-
     /// Lays `text` out into a shared [`TextFrame`].
     ///
-    /// This is [`Font::layout`]'s counterpart for the renderer text stack.
-    /// Instead of building a private [`GlyphAtlas`], it rasterizes each
-    /// glyph, inserts its coverage into the frame's shared atlas and pushes
-    /// the quad that samples the slot the atlas returned. A backend that owns
-    /// the `text` pipeline drains the same frame, so the CPU stays the only
-    /// source of coverage and the GPU is never read back.
+    /// It rasterizes each glyph that the frame's atlas does not hold yet,
+    /// inserts its coverage into that shared atlas and pushes the quad that
+    /// samples the slot the atlas returned. A backend that owns the `text`
+    /// pipeline drains the same frame, so the CPU stays the only source of
+    /// coverage and the GPU is never read back.
     ///
     /// `origin` is the baseline origin of the run and `clip` is the clip the
-    /// run was recorded with. As in [`Font::layout`], the size is the font's
-    /// own ppem, not `style.font_size`, so measurement and pixels agree.
+    /// run was recorded with. The raster size is the font's own ppem, not
+    /// `style.font_size`, so measurement and pixels agree.
     ///
     /// # Errors
     ///
@@ -470,7 +396,7 @@ impl Font {
                             resident_position(&font, &mut slot, &metrics, glyph_index, pen, origin)
                                 .map_err(ShapeError::Font)?
                         {
-                            mesh.push(&AtlasQuad::from_slot(resident, position, color, clip));
+                            mesh.push(&GlyphQuad::from_slot(resident, position, color, clip));
                         }
                     } else if let Some(bitmap) =
                         rasterize_glyph(&font, &mut slot, &mut raster, &metrics, glyph_index)
@@ -492,7 +418,7 @@ impl Font {
                                 origin.x + fixed_pixels(pen) + bitmap.left as f32,
                                 origin.y - bitmap.top as f32,
                             ];
-                            mesh.push(&AtlasQuad::from_slot(atlased, position, color, clip));
+                            mesh.push(&GlyphQuad::from_slot(atlased, position, color, clip));
                         }
                     }
                 }
@@ -587,7 +513,7 @@ impl Font {
                                     origin.x + fixed_pixels(pen) + bitmap.left as f32,
                                     origin.y - bitmap.top as f32,
                                 ];
-                                text_mesh.push(&AtlasQuad::from_slot(slot, position, text_color, clip));
+                                text_mesh.push(&GlyphQuad::from_slot(slot, position, text_color, clip));
                             }
                             Ok(())
                         })?;
@@ -620,7 +546,7 @@ impl Font {
                         origin.x + fixed_pixels(pen) + rendered.bitmap_left as f32,
                         origin.y - rendered.bitmap_top as f32,
                     ];
-                    mesh.push(&AtlasQuad::from_slot(slot, position, color, clip));
+                    mesh.push(&GlyphQuad::from_slot(slot, position, color, clip));
                 }
                 pen += rendered.advance + spacing;
             }
@@ -667,77 +593,6 @@ impl Font {
                     Err(FontError::Open(e))
                 }
             })
-    }
-
-    /// Lays `text` out using the color font, returning a run with a BGRA atlas.
-    ///
-    /// This is the color counterpart of [`Font::layout`]. Each glyph is
-    /// rasterized through the color pipeline (strikes → COLR layers → outline)
-    /// and packed into a [`ColorableGlyphAtlas`]. The run's vertices carry
-    /// white as the vertex color so the emoji's own colors are reproduced.
-    ///
-    /// # Errors
-    ///
-    /// Same as [`Font::layout`], plus color font pipeline errors.
-    pub fn layout_color(
-        &self,
-        text: &str,
-        style: &TextStyle,
-    ) -> Result<GlyphRun<ColorableGlyphAtlas>, FontError> {
-        let color_font = match self.color_font() {
-            Some(cf) => cf,
-            None => return Err(FontError::Open(TtError::INVALID_TABLE)),
-        };
-        let mut atlas = ColorableGlyphAtlas::new(ATLAS_SIZE, ATLAS_SIZE);
-        let mut quads = Vec::new();
-        let mut pen: i64 = 0;
-        let spacing = (style.letter_spacing * 64.0) as i64;
-        let color = [1.0, 1.0, 1.0, 1.0]; // white so emoji colors show
-
-        for character in text.chars() {
-            if character == '\n' {
-                pen += spacing;
-                continue;
-            }
-            let rendered = match color_font.render_char(character, self.ppem, 0) {
-                Ok(r) => r,
-                Err(TtError::INVALID_GLYPH_INDEX) => {
-                    // Character not in font; skip but advance by a default amount?
-                    // For now, just skip.
-                    continue;
-                }
-                Err(e) => return Err(FontError::Open(e)),
-            };
-            let advance = rendered.advance;
-            let bitmap = &rendered.bitmap;
-            let width = bitmap.width;
-            let height = bitmap.rows;
-            if let Some(region) = atlas.insert(bitmap) {
-                let atlas_width = atlas.width() as f32;
-                let atlas_height = atlas.height() as f32;
-                quads.push(GlyphQuad {
-                    glyph_index: 0, // Not tracked for color runs
-                    x: fixed_pixels(pen) + rendered.bitmap_left as f32,
-                    y: -(rendered.bitmap_top as f32),
-                    width: width as f32,
-                    height: height as f32,
-                    uv_min: [region.x as f32 / atlas_width, region.y as f32 / atlas_height],
-                    uv_max: [
-                        (region.x + region.width) as f32 / atlas_width,
-                        (region.y + region.height) as f32 / atlas_height,
-                    ],
-                    color,
-                });
-            }
-            pen += advance + spacing;
-        }
-
-        Ok(GlyphRun {
-            quads,
-            atlas,
-            size: Size::new(fixed_pixels(pen), self.line_height()),
-            baseline: self.ascent(),
-        })
     }
 }
 
@@ -898,363 +753,6 @@ pub struct RasterGlyph {
     pub coverage: Vec<u8>,
 }
 
-/// A single-channel coverage atlas.
-///
-/// The atlas packs glyph bitmaps with a one-pixel gap using a shelf
-/// packer: glyphs are placed left to right, and a new shelf starts when
-/// the current row is full. The `.r` channel of the pixels the `text`
-/// fragment shader samples is exactly this buffer.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GlyphAtlas {
-    /// The width of the atlas, in pixels.
-    width: u32,
-    /// The height of the atlas, in pixels.
-    height: u32,
-    /// The coverage of every pixel, row-major, one byte per pixel.
-    pixels: Vec<u8>,
-    /// The x position of the next free cell.
-    pen_x: u32,
-    /// The y position of the next free cell.
-    pen_y: u32,
-    /// The height of the shelf currently being filled.
-    shelf_height: u32,
-}
-
-impl GlyphAtlas {
-    /// Creates a zeroed atlas of `width` by `height` pixels.
-    #[must_use]
-    pub fn new(width: u32, height: u32) -> Self {
-        Self {
-            width,
-            height,
-            pixels: alloc::vec![0u8; width as usize * height as usize],
-            pen_x: 0,
-            pen_y: 0,
-            shelf_height: 0,
-        }
-    }
-
-    /// The width of the atlas, in pixels.
-    #[inline]
-    #[must_use]
-    pub const fn width(&self) -> u32 {
-        self.width
-    }
-
-    /// The height of the atlas, in pixels.
-    #[inline]
-    #[must_use]
-    pub const fn height(&self) -> u32 {
-        self.height
-    }
-
-    /// The coverage of every pixel, row-major.
-    #[inline]
-    #[must_use]
-    pub fn pixels(&self) -> &[u8] {
-        &self.pixels
-    }
-
-    /// Copies a glyph bitmap into the atlas, returning where it landed.
-    ///
-    /// The atlas stores one byte per pixel, so `bitmap` should be gray
-    /// (one byte per pixel). A packed mode such as `Mono` contributes
-    /// only the bytes its row actually holds; the rest of the region
-    /// stays zeroed. Returns `None` when the glyph is larger than the
-    /// atlas or the atlas has no room left; the caller can then grow the
-    /// atlas or start a new one.
-    pub fn insert(&mut self, bitmap: &Bitmap) -> Option<AtlasRegion> {
-        let width = bitmap.width;
-        let height = bitmap.rows;
-        if width == 0 || height == 0 || width > self.width || height > self.height {
-            return None;
-        }
-        if self.pen_x + width > self.width {
-            self.pen_x = 0;
-            self.pen_y += self.shelf_height + ATLAS_PADDING;
-            self.shelf_height = 0;
-        }
-        if self.pen_y + height > self.height {
-            return None;
-        }
-        let region = AtlasRegion {
-            x: self.pen_x,
-            y: self.pen_y,
-            width,
-            height,
-        };
-        for row in 0..height {
-            let Some(source) = bitmap.row(row) else {
-                continue;
-            };
-            let destination_start = ((region.y + row) * self.width + region.x) as usize;
-            let destination_end = destination_start + width as usize;
-            if let Some(destination) = self
-                .pixels
-                .get_mut(destination_start..destination_end)
-            {
-                // A packed pixel mode has a row stride shorter than `width`;
-                // copy only what the row holds and leave the rest zeroed
-                // rather than panicking on a length mismatch.
-                let copy = (width as usize).min(source.len());
-                destination[..copy].copy_from_slice(&source[..copy]);
-            }
-        }
-        self.pen_x += width + ATLAS_PADDING;
-        self.shelf_height = self.shelf_height.max(height);
-        Some(region)
-    }
-}
-
-/// An atlas for glyph bitmaps: stores packed bitmaps and returns
-/// the region where each glyph was placed.
-///
-/// Implementations differ in the pixel format they store (e.g. single-
-/// channel coverage or premultiplied BGRA).
-pub trait Atlas {
-    /// The pixel format of this atlas.
-    fn pixel_mode(&self) -> PixelMode;
-
-    /// The width of the atlas in pixels.
-    fn width(&self) -> u32;
-
-    /// The height of the atlas in pixels.
-    fn height(&self) -> u32;
-
-    /// The raw pixel buffer.
-    fn pixels(&self) -> &[u8];
-
-    /// Inserts a glyph bitmap and returns its region, or `None` if it
-    /// does not fit.
-    fn insert(&mut self, bitmap: &Bitmap) -> Option<AtlasRegion>;
-}
-
-/// A single-channel coverage atlas (gray).
-///
-/// This is the original `GlyphAtlas`, now implementing [`Atlas`].
-impl Atlas for GlyphAtlas {
-    #[inline]
-    fn pixel_mode(&self) -> PixelMode {
-        PixelMode::Gray
-    }
-
-    #[inline]
-    fn width(&self) -> u32 {
-        self.width
-    }
-
-    #[inline]
-    fn height(&self) -> u32 {
-        self.height
-    }
-
-    #[inline]
-    fn pixels(&self) -> &[u8] {
-        &self.pixels
-    }
-
-    #[inline]
-    fn insert(&mut self, bitmap: &Bitmap) -> Option<AtlasRegion> {
-        self.insert(bitmap)
-    }
-}
-
-/// A BGRA atlas for color glyphs (emoji).
-///
-/// Stores premultiplied BGRA bitmaps (4 bytes per pixel), matching
-/// the output of [`codevar_truetype_emoji_color::render::ColorFont`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ColorableGlyphAtlas {
-    /// The width of the atlas, in pixels.
-    width: u32,
-    /// The height of the atlas, in pixels.
-    height: u32,
-    /// The BGRA pixels, row-major, 4 bytes per pixel.
-    pixels: Vec<u8>,
-    /// The x position of the next free cell.
-    pen_x: u32,
-    /// The y position of the next free cell.
-    pen_y: u32,
-    /// The height of the shelf currently being filled.
-    shelf_height: u32,
-}
-
-impl ColorableGlyphAtlas {
-    /// Creates a zeroed atlas of `width` by `height` pixels.
-    ///
-    /// Each pixel occupies 4 bytes (BGRA), so the buffer size is
-    /// `width * height * 4`.
-    #[must_use]
-    pub fn new(width: u32, height: u32) -> Self {
-        let byte_len = (width as usize)
-            .saturating_mul(height as usize)
-            .saturating_mul(4);
-        Self {
-            width,
-            height,
-            pixels: alloc::vec![0u8; byte_len],
-            pen_x: 0,
-            pen_y: 0,
-            shelf_height: 0,
-        }
-    }
-}
-
-impl Atlas for ColorableGlyphAtlas {
-    #[inline]
-    fn pixel_mode(&self) -> PixelMode {
-        PixelMode::Bgra
-    }
-
-    #[inline]
-    fn width(&self) -> u32 {
-        self.width
-    }
-
-    #[inline]
-    fn height(&self) -> u32 {
-        self.height
-    }
-
-    #[inline]
-    fn pixels(&self) -> &[u8] {
-        &self.pixels
-    }
-
-    fn insert(&mut self, bitmap: &Bitmap) -> Option<AtlasRegion> {
-        debug_assert_eq!(bitmap.pixel_mode, PixelMode::Bgra);
-        let width = bitmap.width;
-        let height = bitmap.rows;
-        if width == 0 || height == 0 || width > self.width || height > self.height {
-            return None;
-        }
-        if self.pen_x + width > self.width {
-            self.pen_x = 0;
-            self.pen_y += self.shelf_height + ATLAS_PADDING;
-            self.shelf_height = 0;
-        }
-        if self.pen_y + height > self.height {
-            return None;
-        }
-        let region = AtlasRegion {
-            x: self.pen_x,
-            y: self.pen_y,
-            width,
-            height,
-        };
-        let pitch = bitmap.pitch;
-        let src_stride = if pitch < 0 {
-            (-pitch) as usize
-        } else {
-            pitch as usize
-        };
-        for row in 0..height {
-            let src_offset = row as usize * src_stride;
-            if src_offset >= bitmap.buffer.len() {
-                break;
-            }
-            let src_end = (src_offset + width as usize * 4).min(bitmap.buffer.len());
-            let source = &bitmap.buffer[src_offset..src_end];
-            let dst_start = ((region.y + row) * self.width + region.x) as usize * 4;
-            let dst_end = dst_start + width as usize * 4;
-            if let Some(destination) = self.pixels.get_mut(dst_start..dst_end) {
-                let copy = (width as usize * 4).min(source.len());
-                destination[..copy].copy_from_slice(&source[..copy]);
-            }
-        }
-        self.pen_x += width + ATLAS_PADDING;
-        self.shelf_height = self.shelf_height.max(height);
-        Some(region)
-    }
-}
-
-/// Where a glyph bitmap landed inside a [`GlyphAtlas`] or [`ColorableGlyphAtlas`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct AtlasRegion {
-    /// The left edge of the region, in pixels.
-    pub x: u32,
-    /// The top edge of the region, in pixels.
-    pub y: u32,
-    /// The width of the region, in pixels.
-    pub width: u32,
-    /// The height of the region, in pixels.
-    pub height: u32,
-}
-
-/// One glyph of a [`GlyphRun`], positioned relative to the baseline
-/// origin.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct GlyphQuad {
-    /// The glyph index inside the font.
-    pub glyph_index: u32,
-    /// The left edge of the quad, in pixels from the pen start.
-    pub x: f32,
-    /// The top edge of the quad, in pixels from the baseline (negative
-    /// above it).
-    pub y: f32,
-    /// The width of the quad, in pixels.
-    pub width: f32,
-    /// The height of the quad, in pixels.
-    pub height: f32,
-    /// The normalized top-left atlas coordinate.
-    pub uv_min: [f32; 2],
-    /// The normalized bottom-right atlas coordinate.
-    pub uv_max: [f32; 2],
-    /// The non-premultiplied sRGB color of the run.
-    pub color: [f32; 4],
-}
-
-/// A laid-out run of text: its glyph quads, its atlas and its
-/// measured extent.
-///
-/// The atlas type parameter allows the run to carry either a gray
-/// [`GlyphAtlas`] or a color [`ColorableGlyphAtlas`], both implementing
-/// [`Atlas`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct GlyphRun<A: Atlas = GlyphAtlas> {
-    /// The glyph quads, in reading order.
-    pub quads: Vec<GlyphQuad>,
-    /// The atlas the quads sample.
-    pub atlas: A,
-    /// The extent of the run; `width` is the advance, `height` the line
-    /// height.
-    pub size: Size,
-    /// The distance from the top of the run to the baseline, in pixels.
-    pub baseline: f32,
-}
-
-impl<A: Atlas> GlyphRun<A> {
-    /// Builds the six vertices of every glyph quad.
-    ///
-    /// The vertices use the [`crate::shaders::TextVertex`] layout the
-    /// `text` shader program declares: two triangles per quad, in
-    /// logical pixels relative to `origin` (the baseline start).
-    #[must_use]
-    pub fn vertices(&self, origin: codevar_kuitui::geometry::Offset) -> Vec<crate::shaders::TextVertex> {
-        let mut vertices = Vec::with_capacity(self.quads.len() * 6);
-        for quad in &self.quads {
-            let left = origin.x + quad.x;
-            let top = origin.y + quad.y;
-            let right = left + quad.width;
-            let bottom = top + quad.height;
-            let [u0, v0] = quad.uv_min;
-            let [u1, v1] = quad.uv_max;
-            let corners = [
-                ([left, top], [u0, v0]),
-                ([right, top], [u1, v0]),
-                ([right, bottom], [u1, v1]),
-                ([left, top], [u0, v0]),
-                ([right, bottom], [u1, v1]),
-                ([left, bottom], [u0, v1]),
-            ];
-            for (position, uv) in corners {
-                vertices.push(crate::shaders::TextVertex::new(position, uv, quad.color));
-            }
-        }
-        vertices
-    }
-}
-
 /// The result of rasterizing one glyph into a cropped bitmap.
 struct GlyphBitmap {
     /// The coverage bitmap.
@@ -1398,6 +896,12 @@ mod tests {
         Font::from_bytes(bytes).unwrap().with_ppem(ppem)
     }
 
+    fn test_frame() -> TextFrame {
+        let atlas = codevar_kuitui_text::TextAtlas::new(codevar_kuitui_text::AtlasConfig::DEFAULT)
+            .expect("the default atlas config is valid");
+        TextFrame::new(atlas).expect("valid atlas config creates frame")
+    }
+
     #[test]
     fn a_font_reports_its_em_and_line_metrics() {
         let font = test_font(16);
@@ -1415,12 +919,15 @@ mod tests {
     }
 
     #[test]
-    fn a_space_has_an_advance_but_no_quad() {
+    fn a_space_has_an_advance_but_produces_no_geometry() {
         let font = test_font(16);
         let style = TextStyle::new(16.0);
         assert!(font.advance(" ", &style) > 0.0);
-        let run = font.layout(" ", &style).unwrap();
-        assert!(run.quads.is_empty());
+        let frame = test_frame();
+        frame.begin_frame();
+        font.shape_into(&frame, Offset::ZERO, " ", &style, None)
+            .expect("a space shapes to nothing");
+        assert!(frame.is_empty(), "a space has no glyph to pack");
     }
 
     #[test]
@@ -1437,17 +944,6 @@ mod tests {
     fn a_missing_glyph_rasterizes_to_nothing() {
         let font = test_font(16);
         assert!(font.rasterize('\u{10FFFF}').unwrap().is_none());
-    }
-
-    #[test]
-    fn a_layout_packs_every_glyph_of_a_monospaced_run() {
-        let font = test_font(24);
-        let style = TextStyle::new(24.0);
-        let run = font.layout("Codevar", &style).unwrap();
-        assert_eq!(run.quads.len(), 7);
-        assert!(run.size.width > 0.0);
-        assert!(run.size.height > 0.0);
-        assert!(run.atlas.pixels().iter().any(|value| *value > 0));
     }
 
     #[test]
@@ -1484,42 +980,24 @@ mod tests {
     }
 
     #[test]
-    fn a_layout_emits_six_vertices_per_quad() {
-        let font = test_font(16);
-        let style = TextStyle::new(16.0);
-        let run = font.layout("hi", &style).unwrap();
-        assert_eq!(
-            run.vertices(codevar_kuitui::geometry::Offset::ZERO)
-                .len(),
-            run.quads.len() * 6
+    fn reshaping_a_run_reuses_the_resident_glyphs() {
+        let font = test_font(24);
+        let style = TextStyle::new(24.0);
+        let frame = test_frame();
+
+        frame.begin_frame();
+        font.shape_into(&frame, Offset::ZERO, "Hello", &style, None)
+            .expect("the first shape rasterizes every glyph");
+        let first = frame.atlas().dirty_rects().len();
+        assert!(first > 0, "the first shape uploads coverage");
+
+        frame.begin_frame();
+        font.shape_into(&frame, Offset::ZERO, "Hello", &style, None)
+            .expect("the second shape hits the cache");
+        assert!(
+            frame.atlas().dirty_rects().len() == first,
+            "no new coverage is written for glyphs that are already resident"
         );
-    }
-
-    #[test]
-    fn the_atlas_runs_out_of_room_instead_of_wrapping() {
-        let mut atlas = GlyphAtlas::new(4, 2);
-        let mut bitmap = Bitmap::new_sized(2, 4, PixelMode::Gray, 256).unwrap();
-        for row in 0..2u32 {
-            if let Some(slice) = bitmap.row_mut(row) {
-                slice.fill(255);
-            }
-        }
-        assert!(atlas.insert(&bitmap).is_some());
-        assert!(atlas.insert(&bitmap).is_none());
-    }
-
-    #[test]
-    fn a_glyph_larger_than_the_atlas_is_rejected() {
-        let mut atlas = GlyphAtlas::new(4, 4);
-        let bitmap = Bitmap::new_sized(2, 8, PixelMode::Gray, 256).unwrap();
-        assert!(atlas.insert(&bitmap).is_none());
-    }
-
-    #[test]
-    fn a_packed_bitmap_is_copied_without_panicking() {
-        let mut atlas = GlyphAtlas::new(8, 8);
-        let bitmap = Bitmap::new_sized(4, 8, PixelMode::Mono, 2).unwrap();
-        assert!(atlas.insert(&bitmap).is_some());
     }
 
     #[test]

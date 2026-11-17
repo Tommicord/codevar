@@ -40,10 +40,7 @@ pub mod shape;
 pub mod text;
 
 pub use canvas::{Canvas, LinearGradient, ScanlineSpan, Shape};
-pub use font::{
-    Atlas, AtlasRegion, ColorFontMetrics, ColorableGlyphAtlas, Font, FontError, GlyphAtlas, GlyphQuad,
-    GlyphRun, RasterGlyph, ShapeError,
-};
+pub use font::{ColorFontMetrics, Font, FontError, RasterGlyph, ShapeError};
 pub use shaders::{PushConstants, TextVertex, UiVertex};
 pub use shape::{TextShaper, shape_list, shape_list_with_color};
 pub use text::Text;

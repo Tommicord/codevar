@@ -24,10 +24,10 @@
 //!
 //! * [`Widget::draw`] records a [`TextOp`] op, which is all a
 //!   backend that owns its own glyph atlas needs;
-//! * [`Text::layout`] returns the [`GlyphRun`] — quads plus the
-//!   single-channel coverage atlas — that the `text` shader program
-//!   consumes, for a backend that would rather upload the coverage this
-//!   crate rasterized.
+//! * [`Text::shape_into`] rasterizes the line into the shared
+//!   [`TextFrame`], which is what a backend that draws the `text`
+//!   shader consumes. The frame owns the atlas, so reshaping a line
+//!   every frame only rasterizes glyphs that are not resident yet.
 //!
 //! The widget is single-line: a `'\n'` in the text is not a line break,
 //! it is a character with no glyph. Use one `Text` per line.
@@ -40,9 +40,9 @@ use codevar_kuitui::color::Color;
 use codevar_kuitui::geometry::{Constraints, Offset, Rect, Size};
 use codevar_kuitui::text::{FontMetrics, TextStyle};
 use codevar_kuitui::widget::{DrawScope, MeasureScope, Widget};
+use codevar_kuitui_text::TextFrame;
 
-use crate::font::{Font, FontError, GlyphRun};
-use crate::shaders::TextVertex;
+use crate::font::{Font, ShapeError};
 
 /// Draws a single line of text with a real font.
 #[derive(Debug, Clone)]
@@ -105,26 +105,28 @@ impl Text {
         &self.style
     }
 
-    /// Lays the line out as a glyph run.
+    /// Shapes the line into a shared text frame.
     ///
-    /// The run carries the rasterized coverage the `text` shader
-    /// samples; a backend that draws the [`TextOp`] op instead
-    /// does not need it.
+    /// This is the renderer path: [`Font::shape_into`] rasterizes the
+    /// glyphs that are not resident yet and pushes their quads into
+    /// `frame`, whose atlas and mesh the backend draws. A backend that
+    /// replays the whole display list can call
+    /// [`crate::shape::shape_list`] instead and shape every run at once.
     ///
-    /// # Errors
-    ///
-    /// The [`FontError`] of the glyph pipeline.
-    pub fn layout(&self) -> Result<GlyphRun, FontError> {
-        self.font.layout(&self.text, &self.style)
-    }
-
-    /// Lays the line out and returns its shader vertices.
+    /// `origin` is the baseline origin of the line and `clip` is the clip
+    /// the run was recorded with.
     ///
     /// # Errors
     ///
-    /// The [`FontError`] of the glyph pipeline.
-    pub fn vertices(&self, origin: Offset) -> Result<alloc::vec::Vec<TextVertex>, FontError> {
-        Ok(self.layout()?.vertices(origin))
+    /// The [`ShapeError`] of the glyph pipeline or of the shared atlas.
+    pub fn shape_into(
+        &self,
+        frame: &TextFrame,
+        origin: Offset,
+        clip: Option<Rect>,
+    ) -> Result<(), ShapeError> {
+        self.font
+            .shape_into(frame, origin, &self.text, &self.style, clip)
     }
 }
 
@@ -227,17 +229,18 @@ mod tests {
     }
 
     #[test]
-    fn a_text_exposes_the_glyph_run_of_the_font() {
+    fn a_text_shapes_every_glyph_into_the_shared_frame() {
         let text = Text::new("Codevar", font());
-        let run = text.layout().unwrap();
-        assert_eq!(run.quads.len(), 7);
-        assert!(run.size.width > 0.0);
-    }
+        let atlas = codevar_kuitui_text::TextAtlas::new(codevar_kuitui_text::AtlasConfig::DEFAULT)
+            .expect("the default atlas config is valid");
+        let frame = TextFrame::new(atlas).expect("valid atlas config creates frame");
+        frame.begin_frame();
 
-    #[test]
-    fn a_text_produces_six_vertices_per_glyph() {
-        let text = Text::new("hi", font());
-        let vertices = text.vertices(Offset::ZERO).unwrap();
-        assert_eq!(vertices.len(), text.layout().unwrap().quads.len() * 6);
+        text.shape_into(&frame, Offset::ZERO, None)
+            .expect("the line shapes");
+
+        let runs = frame.runs();
+        assert_eq!(runs.len(), 1, "one page and no clip is one run");
+        assert_eq!(runs[0].quad_count(), 7, "one quad per glyph of \"Codevar\"");
     }
 }
