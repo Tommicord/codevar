@@ -194,7 +194,7 @@ mod tests {
 
     const EMOJI_FONT: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../codevar-truetype-emoji-color/tests/resources/NotoColorEmoji-colr-v1-subset.ttf"
+        "/../truetype-emoji-color/tests/resources/NotoColorEmoji-colr-v1-subset.ttf"
     );
 
     fn font(ppem: u16) -> Font {
