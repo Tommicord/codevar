@@ -310,13 +310,13 @@ impl LineRing {
 /// workload, and the scan is exactly what a denser index removes. The
 /// backing store is allocated to the number of rows the document
 /// actually has, so a short file never pays for the full capacity.
-const LINE_ANCHOR_CAPACITY: usize = 8192;
+const LINE_ANCHOR_CAPACITY: usize = 0x2000;
 
 /// Smallest distance between two sparse line anchors.
-const LINE_ANCHOR_STRIDE: usize = 1;
+const LINE_ANCHOR_STRIDE: usize = 0x1;
 
 /// Newline positions collected per bulk scan while building the index.
-const LINE_ANCHOR_SCAN_CHUNK: usize = 256;
+const LINE_ANCHOR_SCAN_CHUNK: usize = 0x100;
 
 /// Sparse, document-level starts for random row/position lookup.
 ///

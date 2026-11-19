@@ -33,11 +33,10 @@
 use alloc::vec::Vec;
 use core::mem::MaybeUninit;
 
-use codevar_logger::log_error;
-
 use super::base::{COMMON_MASK, MERGE_MASK, WritableAlignedPtr, make_packed, packed_char, packed_type};
 use super::writable::{MAX_GAPS, SHARED_GAP_SLOTS, StreamWritable, WritableEvent};
 use crate::error::WreditResult;
+use codevar_logger::log_error;
 use codevar_wredit_asm::{memcpy, memmove};
 
 /// What a committed run did to the line layout.
@@ -155,32 +154,34 @@ pub(crate) fn write_bytes_to_raw<Raw: Copy>(
 ///
 /// `values` must be a valid slice of initialized `Raw` elements.
 unsafe fn scan_staged_elements<Raw: Copy + Into<u32>>(values: &[Raw]) -> (usize, bool) {
-    let elem = core::mem::size_of::<Raw>();
-    // Safety: `values` is a valid slice of `Raw`; reinterpreting its
-    // bytes as `u8` is a read-only alias of the same memory.
-    let bytes = core::slice::from_raw_parts(values.as_ptr().cast::<u8>(), values.len() * elem);
-    let mut newlines = 0usize;
-    let mut has_merge = false;
-    if crate::simd::count_byte(bytes, b'\n') != 0 {
-        for &value in values {
-            let word: u32 = value.into();
-            if packed_type(word) == MERGE_MASK {
-                has_merge = true;
+    unsafe {
+        let elem = core::mem::size_of::<Raw>();
+        // Safety: `values` is a valid slice of `Raw`; reinterpreting its
+        // bytes as `u8` is a read-only alias of the same memory.
+        let bytes = core::slice::from_raw_parts(values.as_ptr().cast::<u8>(), values.len() * elem);
+        let mut newlines = 0usize;
+        let mut has_merge = false;
+        if crate::simd::count_byte(bytes, b'\n') != 0 {
+            for &value in values {
+                let word: u32 = value.into();
+                if packed_type(word) == MERGE_MASK {
+                    has_merge = true;
+                }
+                if packed_char(word) == u32::from(b'\n') {
+                    newlines += 1;
+                }
             }
-            if packed_char(word) == u32::from(b'\n') {
-                newlines += 1;
+        } else {
+            // No newline candidates: still check for merges (early out).
+            for &value in values {
+                if packed_type(value.into()) == MERGE_MASK {
+                    has_merge = true;
+                    break;
+                }
             }
         }
-    } else {
-        // No newline candidates: still check for merges (early out).
-        for &value in values {
-            if packed_type(value.into()) == MERGE_MASK {
-                has_merge = true;
-                break;
-            }
-        }
+        (newlines, has_merge)
     }
-    (newlines, has_merge)
 }
 
 /// Commits the staged stream `values` into the raw document at `at`,

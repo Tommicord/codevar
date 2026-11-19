@@ -291,12 +291,10 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
             | DocumentEncoding::Utf32Be => BomPolicy::Emit,
             DocumentEncoding::Utf8 | DocumentEncoding::SingleByte(_) => BomPolicy::Omit,
         };
-
         log_info!(
             "storage_bind: created inode {inode} named {name:?} as {}",
             encoding.name()
         );
-
         Ok(Self {
             file,
             inode,
@@ -456,7 +454,6 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
             BomPolicy::Emit => encode_with_bom(&scalars, self.encoding, EncodePolicy::Strict)?,
             BomPolicy::Omit => encode(&scalars, self.encoding, EncodePolicy::Strict)?,
         };
-
         self.file.set_position(0)?;
         self.file.write(&bytes)?;
         self.file.truncate(bytes.len() as u64)?;
