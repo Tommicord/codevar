@@ -34,7 +34,6 @@
 //! - UTF-8/Unicode support via codevar-textlike-encode (via consoleutil)
 //! - ANSI color/style support via consoleutil
 //! - Terminal detection for ANSI color support via codevar-stdio
-//! - `no_std` compatible
 
 #![cfg_attr(not(test), no_std)]
 #[cfg(test)]

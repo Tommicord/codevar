@@ -83,7 +83,7 @@ pub enum EncodePolicy {
 }
 
 /// Size of the stack buffer used to drain the streaming decoders.
-const DECODE_CHUNK: usize = 4096;
+const DECODE_CHUNK: usize = 0x1000;
 
 /// Decodes `bytes` from `encoding` into Unicode scalar values.
 ///

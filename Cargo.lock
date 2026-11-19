@@ -472,13 +472,17 @@ dependencies = [
 name = "codevar-kuitui-widget"
 version = "1.0.0"
 dependencies = [
+ "codevar-env",
  "codevar-kuitui",
  "codevar-kuitui-text",
+ "codevar-pathbuf",
  "codevar-truetype-core",
  "codevar-truetype-emoji-color",
  "codevar-truetype-glyf",
  "codevar-truetype-sfnt",
  "codevar-truetype-smooth",
+ "libc",
+ "windows",
 ]
 
 [[package]]

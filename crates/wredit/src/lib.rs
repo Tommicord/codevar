@@ -30,7 +30,6 @@ pub mod base;
 mod codebook;
 mod core_op_dispatcher;
 pub mod cursor;
-pub mod cursor_allocator;
 pub mod encoding;
 pub mod encoding_dispatch;
 pub mod error;

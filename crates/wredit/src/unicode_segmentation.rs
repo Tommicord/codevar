@@ -15,11 +15,22 @@
 
 //! # Unicode Text Segmentation (UAX #29)
 //!
-//! Highly robust Unicode text segmentation following UAX #29 (Unicode Text Segmentation)
-//! completely, without placeholders or simplifications.
+//! Segmentation of Unicode text into extended grapheme clusters, words, and
+//! sentences using the default boundary rules of Unicode Standard Annex #29,
+//! *Unicode Text Segmentation*.
 //!
-//! This module provides grapheme cluster, word, and sentence boundary
-//! determination based on Unicode 18.0.0 data files.
+//! Property values are embedded as sorted range tables derived from the
+//! Unicode 18.0.0 character database:
+//!
+//! - [`GraphemeClusterBreak`] drives rules GB1-GB13 and GB999.
+//! - [`WordBreak`] drives rules WB1-WB16 and WB999.
+//! - [`SentenceBreak`] drives rules SB1-SB11 and SB998.
+//! - [`InCB`] supplies the Indic conjunct-break values used by GB9c.
+//!
+//! The entry points operate on slices of Unicode scalar values decoded from
+//! the document. The boundary predicates answer whether an offset inside the
+//! slice is a boundary, and the `next_*`/`prev_*` helpers return the
+//! neighbouring boundary offsets used for cursor movement and selection.
 
 #![allow(dead_code)]
 
@@ -7087,16 +7098,87 @@ fn ep_lookup(table: &[(u32, u32)], cp: u32) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Grapheme Cluster Break Lookup
+// Property decoding (safe: an out-of-range table value decodes as `Other`)
 // ---------------------------------------------------------------------------
 
 #[inline]
 fn gcb(cp: u32) -> GraphemeClusterBreak {
-    let idx = gcp_lookup(GRAPHEME_BREAK, cp);
-    unsafe { core::mem::transmute(idx) }
+    match gcp_lookup(GRAPHEME_BREAK, cp) {
+        1 => GraphemeClusterBreak::CR,
+        2 => GraphemeClusterBreak::LF,
+        3 => GraphemeClusterBreak::Control,
+        4 => GraphemeClusterBreak::Extend,
+        5 => GraphemeClusterBreak::ZWJ,
+        6 => GraphemeClusterBreak::RegionalIndicator,
+        7 => GraphemeClusterBreak::Prepend,
+        8 => GraphemeClusterBreak::SpacingMark,
+        9 => GraphemeClusterBreak::L,
+        10 => GraphemeClusterBreak::V,
+        11 => GraphemeClusterBreak::T,
+        12 => GraphemeClusterBreak::LV,
+        13 => GraphemeClusterBreak::LVT,
+        _ => GraphemeClusterBreak::Other,
+    }
 }
 
 #[inline]
+fn incb_lookup(cp: u32) -> InCB {
+    match gcp_lookup(INCB, cp) {
+        1 => InCB::Linker,
+        2 => InCB::Consonant,
+        3 => InCB::Extend,
+        _ => InCB::None,
+    }
+}
+
+#[inline]
+fn wb_prop(cp: u32) -> WordBreak {
+    match gcp_lookup(WORD_BREAK, cp) {
+        1 => WordBreak::CR,
+        2 => WordBreak::LF,
+        3 => WordBreak::Newline,
+        4 => WordBreak::Extend,
+        5 => WordBreak::Format,
+        6 => WordBreak::ZWJ,
+        7 => WordBreak::RegionalIndicator,
+        8 => WordBreak::WSegSpace,
+        9 => WordBreak::ALetter,
+        10 => WordBreak::HebrewLetter,
+        11 => WordBreak::Numeric,
+        12 => WordBreak::Katakana,
+        13 => WordBreak::ExtendNumLet,
+        14 => WordBreak::MidLetter,
+        15 => WordBreak::MidNumLet,
+        16 => WordBreak::MidNum,
+        17 => WordBreak::SingleQuote,
+        18 => WordBreak::DoubleQuote,
+        _ => WordBreak::Other,
+    }
+}
+
+#[inline]
+fn sb_prop(cp: u32) -> SentenceBreak {
+    match gcp_lookup(SENTENCE_BREAK, cp) {
+        1 => SentenceBreak::CR,
+        2 => SentenceBreak::LF,
+        3 => SentenceBreak::Sep,
+        4 => SentenceBreak::Extend,
+        5 => SentenceBreak::Format,
+        6 => SentenceBreak::Sp,
+        7 => SentenceBreak::Lower,
+        8 => SentenceBreak::Upper,
+        9 => SentenceBreak::OLetter,
+        10 => SentenceBreak::Numeric,
+        11 => SentenceBreak::ATerm,
+        12 => SentenceBreak::STerm,
+        13 => SentenceBreak::Close,
+        14 => SentenceBreak::SContinue,
+        _ => SentenceBreak::Other,
+    }
+}
+
+#[inline]
+#[must_use]
 pub fn is_extended_pictographic(cp: u32) -> bool {
     ep_lookup(EXTENDED_PICTOGRAPHIC, cp)
 }
@@ -7105,43 +7187,98 @@ pub fn is_extended_pictographic(cp: u32) -> bool {
 // Grapheme Boundary Functions (GB1-GB999)
 // ---------------------------------------------------------------------------
 
+/// GB9c: `InCB=Linker InCB=Extend* × InCB=Consonant`.
+///
+/// The caller passes the prospective boundary `index`; this returns `true`
+/// when the character at `index` is an `InCB=Consonant` immediately preceded
+/// by a conjunct linker (optionally separated by `InCB=Extend` characters).
+#[inline]
+fn gb9c_conjunct(code_points: &[u32], index: usize) -> bool {
+    if incb_lookup(code_points[index]) != InCB::Consonant {
+        return false;
+    }
+    let mut i = index;
+    while i > 0 {
+        i -= 1;
+        match incb_lookup(code_points[i]) {
+            InCB::Linker => return true,
+            InCB::Extend => {}
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// GB11: `\p{Extended_Pictographic} Extend* ZWJ × \p{Extended_Pictographic}`.
+///
+/// The caller guarantees that the character before `index` is a ZWJ and that
+/// the character at `index` is Extended_Pictographic.
+#[inline]
+fn gb11_emoji_zwj(code_points: &[u32], index: usize) -> bool {
+    let mut i = index - 1; // position of the ZWJ
+    while i > 0 {
+        i -= 1;
+        if gcb(code_points[i]) == GraphemeClusterBreak::Extend {
+            continue;
+        }
+        return is_extended_pictographic(code_points[i]);
+    }
+    false
+}
+
+/// GB12/GB13: `sot (RI RI)* RI × RI` and `[^RI] (RI RI)* RI × RI`.
+///
+/// Returns `true` when an odd number of Regional_Indicator characters
+/// immediately precede `index`.
+#[inline]
+fn gb_ri_odd_count(code_points: &[u32], index: usize) -> bool {
+    let mut count = 0usize;
+    let mut i = index;
+    while i > 0 {
+        i -= 1;
+        if gcb(code_points[i]) == GraphemeClusterBreak::RegionalIndicator {
+            count += 1;
+        } else {
+            break;
+        }
+    }
+    count % 2 == 1
+}
+
 #[inline]
 #[must_use]
 pub fn is_grapheme_boundary(code_points: &[u32], index: usize) -> bool {
-    // GB1: Boundary at start of text (unless text is empty)
-    // GB2: Boundary at end of text (unless text is empty)
-    if code_points.is_empty() {
+    let len = code_points.len();
+
+    // GB1/GB2: Break at the start and end of text, unless the text is empty.
+    if len == 0 {
         return false;
     }
-    if index == 0 || index >= code_points.len() {
+    if index == 0 || index >= len {
         return true;
     }
 
     let prev = gcb(code_points[index - 1]);
     let next = gcb(code_points[index]);
 
-    // GB3: Do not break between CR and LF. Otherwise, break before and after controls.
+    // GB3: CR × LF
     if prev == GraphemeClusterBreak::CR && next == GraphemeClusterBreak::LF {
         return false;
     }
+    // GB4: (Control | CR | LF) ÷
     if matches!(
         prev,
         GraphemeClusterBreak::Control | GraphemeClusterBreak::CR | GraphemeClusterBreak::LF
     ) {
         return true;
     }
+    // GB5: ÷ (Control | CR | LF)
     if matches!(
         next,
         GraphemeClusterBreak::Control | GraphemeClusterBreak::CR | GraphemeClusterBreak::LF
     ) {
         return true;
     }
-
-    // GB4: Otherwise break before and after controls (already handled above)
-
-    // GB5: Do not break Hangul syllable or other conjoining sequences.
-    //      Handled by GB6-GB8 below.
-
     // GB6: L × (L | V | LV | LVT)
     if prev == GraphemeClusterBreak::L
         && matches!(
@@ -7154,146 +7291,48 @@ pub fn is_grapheme_boundary(code_points: &[u32], index: usize) -> bool {
     {
         return false;
     }
-
     // GB7: (LV | V) × (V | T)
     if matches!(prev, GraphemeClusterBreak::LV | GraphemeClusterBreak::V)
         && matches!(next, GraphemeClusterBreak::V | GraphemeClusterBreak::T)
     {
         return false;
     }
-
     // GB8: (LVT | T) × T
     if matches!(prev, GraphemeClusterBreak::LVT | GraphemeClusterBreak::T) && next == GraphemeClusterBreak::T
     {
         return false;
     }
-
-    // GB9: Do not break before extending characters or ZWJ.
+    // GB9: × (Extend | ZWJ)
     if matches!(next, GraphemeClusterBreak::Extend | GraphemeClusterBreak::ZWJ) {
         return false;
     }
-
-    // GB9a: Do not break before SpacingMarks.
+    // GB9a: × SpacingMark
     if next == GraphemeClusterBreak::SpacingMark {
         return false;
     }
-
-    // GB9b: Do not break after Prepend characters.
+    // GB9b: Prepend ×
     if prev == GraphemeClusterBreak::Prepend {
         return false;
     }
-
-    // GB9c: Do not break within certain combinations with InCB=Linker.
-    if is_incb_linker_boundary(code_points, index) {
+    // GB9c: conjunct clusters joined by InCB=Linker.
+    if gb9c_conjunct(code_points, index) {
         return false;
     }
-
-    // GB10, GB11: Do not break before emoji ZWJ sequences or within emoji modifier sequences.
-    if is_emoji_zwj_sequence(code_points, index) {
+    // GB11: emoji ZWJ sequences.
+    if prev == GraphemeClusterBreak::ZWJ
+        && is_extended_pictographic(code_points[index])
+        && gb11_emoji_zwj(code_points, index)
+    {
         return false;
     }
-
-    // GB12: Do not break within emoji flag sequences (RI pairs with odd count).
-    if is_ri_flag_break(code_points, index) {
+    // GB12/GB13: emoji flag sequences (odd number of RI before the boundary).
+    if prev == GraphemeClusterBreak::RegionalIndicator
+        && next == GraphemeClusterBreak::RegionalIndicator
+        && gb_ri_odd_count(code_points, index)
+    {
         return false;
     }
-
-    // GB999: Otherwise, break everywhere.
-    true
-}
-
-#[inline]
-fn is_incb_linker_boundary(code_points: &[u32], index: usize) -> bool {
-    // GB9c: Do not break within certain combinations with InCB=Linker.
-    // Pattern: InCB=Linker Extend* × InCB=Consonant
-    if index == 0 {
-        return false;
-    }
-    let cp = code_points[index];
-    let incb_val = incb_lookup(cp);
-    if incb_val != InCB::Consonant {
-        return false;
-    }
-
-    // Scan backwards from index-1 to find Linker preceded only by Extend
-    let mut j = index;
-    while j > 0 {
-        j -= 1;
-        let cp_j = code_points[j];
-        let incb_j = incb_lookup(cp_j);
-        match incb_j {
-            InCB::Linker => return true,
-            InCB::Extend => continue,
-            _ => return false,
-        }
-    }
-    false
-}
-
-#[inline]
-fn incb_lookup(cp: u32) -> InCB {
-    let idx = gcp_lookup(INCB, cp);
-    unsafe { core::mem::transmute(idx) }
-}
-
-#[inline]
-fn is_emoji_zwj_sequence(code_points: &[u32], index: usize) -> bool {
-    // GB11: Do not break within emoji modifier sequences or emoji ZWJ sequences.
-    // Pattern: ExtPict Extend* ZWJ × ExtPict
-    if index < 2 {
-        return false;
-    }
-    let cp = code_points[index];
-    if !is_extended_pictographic(cp) {
-        return false;
-    }
-    if gcb(code_points[index - 1]) != GraphemeClusterBreak::ZWJ {
-        return false;
-    }
-
-    // Scan back over Extend before ZWJ
-    let mut k = index - 1; // ZWJ position
-    k -= 1; // character before ZWJ
-    while k > 0 {
-        if gcb(code_points[k]) == GraphemeClusterBreak::Extend {
-            k -= 1;
-        } else {
-            break;
-        }
-    }
-    // k now points to the ExtPict before the Extend* ZWJ sequence
-    is_extended_pictographic(code_points[k])
-}
-
-#[inline]
-fn is_ri_flag_break(code_points: &[u32], index: usize) -> bool {
-    // GB12/GB13: Do not break between Regional_Indicator symbols if odd count before break.
-    if index == 0 {
-        return false;
-    }
-    if gcb(code_points[index - 1]) != GraphemeClusterBreak::RegionalIndicator {
-        return false;
-    }
-    if gcb(code_points[index]) != GraphemeClusterBreak::RegionalIndicator {
-        return false;
-    }
-
-    // Count consecutive RI scanning backwards from index-1
-    let mut count = 0usize;
-    let mut k = index;
-    while k > 0 {
-        k -= 1;
-        if gcb(code_points[k]) == GraphemeClusterBreak::RegionalIndicator {
-            count += 1;
-        } else {
-            break;
-        }
-    }
-
-    // If odd number of RI before break point, no break
-    if count % 2 == 1 {
-        return false;
-    }
+    // GB999: break everywhere else.
     true
 }
 
@@ -7301,254 +7340,237 @@ fn is_ri_flag_break(code_points: &[u32], index: usize) -> bool {
 // Word Break Functions (WB1-WB999)
 // ---------------------------------------------------------------------------
 
-// Helper predicates
-
-fn wb_prop(cp: u32) -> WordBreak {
-    let idx = gcp_lookup(WORD_BREAK, cp);
-    unsafe { core::mem::transmute(idx) }
+#[inline]
+fn wb_ignorable(p: WordBreak) -> bool {
+    matches!(p, WordBreak::Extend | WordBreak::Format | WordBreak::ZWJ)
 }
 
-fn wb_ignored(prop: WordBreak) -> bool {
-    matches!(prop, WordBreak::Extend | WordBreak::Format | WordBreak::ZWJ)
+#[inline]
+fn wb_is_ahletter(p: WordBreak) -> bool {
+    matches!(p, WordBreak::ALetter | WordBreak::HebrewLetter)
 }
 
-fn wb_is_ahletter(prop: WordBreak) -> bool {
-    matches!(prop, WordBreak::ALetter | WordBreak::HebrewLetter)
+/// `MidNumLetQ` macro: `(MidNumLet | Single_Quote)`.
+#[inline]
+fn wb_is_midnumletq(p: WordBreak) -> bool {
+    matches!(p, WordBreak::MidNumLet | WordBreak::SingleQuote)
+}
+
+#[inline]
+fn wb_is_newline(p: WordBreak) -> bool {
+    matches!(p, WordBreak::Newline | WordBreak::CR | WordBreak::LF)
+}
+
+/// Index of the previous significant character (`Extend | Format | ZWJ` are
+/// skipped), or `None` at start-of-text. An ignorable rooted at start-of-text
+/// or at a newline is significant (WB4 exception).
+#[inline]
+fn wb_prev_sig(code_points: &[u32], index: usize) -> Option<usize> {
+    let mut i = index;
+    while i > 0 {
+        i -= 1;
+        let p = wb_prop(code_points[i]);
+        if !wb_ignorable(p) {
+            return Some(i);
+        }
+        if i == 0 || wb_is_newline(wb_prop(code_points[i - 1])) {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Index of the next significant character at or after `index`, or `None` at
+/// end-of-text.
+#[inline]
+fn wb_next_sig(code_points: &[u32], index: usize) -> Option<usize> {
+    let mut i = index;
+    while i < code_points.len() {
+        let p = wb_prop(code_points[i]);
+        if !wb_ignorable(p) {
+            return Some(i);
+        }
+        if i == 0 || wb_is_newline(wb_prop(code_points[i - 1])) {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// WB15/WB16: odd number of Regional_Indicator characters before `index`,
+/// skipping ignorable characters.
+#[inline]
+fn wb_ri_odd_count(code_points: &[u32], index: usize) -> bool {
+    let mut count = 0usize;
+    let mut i = index;
+    while i > 0 {
+        i -= 1;
+        let p = wb_prop(code_points[i]);
+        if p == WordBreak::RegionalIndicator {
+            count += 1;
+        } else if wb_ignorable(p) {
+            if i == 0 || wb_is_newline(wb_prop(code_points[i - 1])) {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+    count % 2 == 1
 }
 
 #[inline]
 #[must_use]
 pub fn is_word_boundary(code_points: &[u32], index: usize) -> bool {
-    // WB1: Boundary at start of text (unless text is empty)
-    // WB2: Boundary at end of text (unless text is empty)
-    if code_points.is_empty() {
+    let len = code_points.len();
+
+    // WB1/WB2: Break at the start and end of text, unless the text is empty.
+    if len == 0 {
         return false;
     }
-    if index == 0 || index >= code_points.len() {
+    if index == 0 || index >= len {
         return true;
     }
 
-    let prev = wb_prop(code_points[index - 1]);
-    let next = wb_prop(code_points[index]);
+    let left_raw = wb_prop(code_points[index - 1]);
+    let right_raw = wb_prop(code_points[index]);
 
-    // WB3: Do not break within CRLF. Otherwise break before and after Newlines.
-    if prev == WordBreak::CR && next == WordBreak::LF {
+    // WB3: CR × LF
+    if left_raw == WordBreak::CR && right_raw == WordBreak::LF {
         return false;
     }
-    if matches!(prev, WordBreak::Newline | WordBreak::CR | WordBreak::LF) {
+    // WB3a: (Newline | CR | LF) ÷
+    if wb_is_newline(left_raw) {
         return true;
     }
-    if matches!(next, WordBreak::Newline | WordBreak::CR | WordBreak::LF) {
+    // WB3b: ÷ (Newline | CR | LF)
+    if wb_is_newline(right_raw) {
         return true;
     }
-
-    // WB3b: Do not break within emoji ZWJ sequences.
-    if prev == WordBreak::ZWJ && is_extended_pictographic(code_points[index]) {
+    // WB3c: ZWJ × \p{Extended_Pictographic}
+    if left_raw == WordBreak::ZWJ && is_extended_pictographic(code_points[index]) {
         return false;
     }
-
-    // WB3c: Keep horizontal whitespace together.
-    if prev == WordBreak::WSegSpace && next == WordBreak::WSegSpace {
+    // WB3d: WSegSpace × WSegSpace
+    if left_raw == WordBreak::WSegSpace && right_raw == WordBreak::WSegSpace {
         return false;
     }
-
-    // WB4: Ignore Format and Extend characters, except after sot, CR, LF, and Newline.
-    //      If next is ignored and not active (not at start, not after newline), no break.
-    if wb_ignored(next) && index > 0 {
-        // Check if "active" - i.e., at start or after newline/CR/LF
-        let prev_prop = wb_prop(code_points[index - 1]);
-        if index == 1 || matches!(prev_prop, WordBreak::Newline | WordBreak::CR | WordBreak::LF) {
-            // Active - don't suppress break
-        } else {
-            return false; // Inactive, suppress break
-        }
-    }
-
-    // Get effective left significant character index
-    fn wb_prev_sig(code_points: &[u32], index: usize) -> Option<usize> {
-        let mut i = index;
-        while i > 0 {
-            i -= 1;
-            let prop = wb_prop(code_points[i]);
-            if !wb_ignored(prop) {
-                return Some(i);
-            }
-            // Active if i==0 or previous is newline/CR/LF
-            if i == 0
-                || matches!(
-                    wb_prop(code_points[i - 1]),
-                    WordBreak::Newline | WordBreak::CR | WordBreak::LF
-                )
-            {
-                return Some(i);
-            }
-        }
-        None
+    // WB4: X (Extend | Format | ZWJ)* → X. The exception for sot, CR, LF and
+    // Newline is already covered by WB1/WB2 and WB3a above, so any ignorable
+    // that reaches this point is attached to the preceding character.
+    if wb_ignorable(right_raw) {
+        return false;
     }
 
     let Some(left_idx) = wb_prev_sig(code_points, index) else {
-        // No significant character to the left: break.
         return true;
     };
-    let left_prop = wb_prop(code_points[left_idx]);
+    let left = wb_prop(code_points[left_idx]);
+    let right = right_raw;
 
-    // Helper to get next significant index
-    fn wb_next_sig(code_points: &[u32], mut index: usize) -> Option<usize> {
-        while index < code_points.len() {
-            let prop = wb_prop(code_points[index]);
-            if !wb_ignored(prop) {
-                return Some(index);
-            }
-            // Active if at start or previous is newline/CR/LF
-            if index == 0
-                || matches!(
-                    wb_prop(code_points[index - 1]),
-                    WordBreak::Newline | WordBreak::CR | WordBreak::LF
-                )
-            {
-                return Some(index);
-            }
-            index += 1;
-        }
-        None
-    }
-
-    // WB5: Do not break letters across certain punctuation, such as within "e.g." or "example.com".
-    if wb_is_ahletter(left_prop) && wb_is_ahletter(next) {
+    // WB5: AHLetter × AHLetter
+    if wb_is_ahletter(left) && wb_is_ahletter(right) {
         return false;
     }
-
-    // WB6: Do not break letters across certain punctuation.
-    if wb_is_ahletter(left_prop)
-        && matches!(
-            next,
-            WordBreak::MidLetter | WordBreak::MidNumLet | WordBreak::SingleQuote
-        )
-        && let Some(next2) = wb_next_sig(code_points, index)
+    // WB6: AHLetter × (MidLetter | MidNumLetQ) AHLetter
+    if wb_is_ahletter(left)
+        && (right == WordBreak::MidLetter || wb_is_midnumletq(right))
+        && let Some(next2) = wb_next_sig(code_points, index + 1)
         && wb_is_ahletter(wb_prop(code_points[next2]))
     {
         return false;
     }
-
-    // WB7: Do not break within sequences of digits, or digits adjacent to letters ("3a", or "A3").
-    if matches!(
-        left_prop,
-        WordBreak::MidLetter | WordBreak::MidNumLet | WordBreak::SingleQuote
-    ) && let Some(left2) = wb_prev_sig(code_points, left_idx)
-        && wb_is_ahletter(wb_prop(code_points[left2]))
-        && wb_is_ahletter(next)
+    // WB7: AHLetter (MidLetter | MidNumLetQ) × AHLetter
+    if wb_is_ahletter(right)
+        && (left == WordBreak::MidLetter || wb_is_midnumletq(left))
+        && let Some(prev2) = wb_prev_sig(code_points, left_idx)
+        && wb_is_ahletter(wb_prop(code_points[prev2]))
     {
         return false;
     }
-
-    // WB7a: Hebrew Letter × Single_Quote.
-    if left_prop == WordBreak::HebrewLetter && next == WordBreak::SingleQuote {
+    // WB7a: Hebrew_Letter × Single_Quote
+    if left == WordBreak::HebrewLetter && right == WordBreak::SingleQuote {
         return false;
     }
-
-    // WB7a: Hebrew Letter × Single_Quote.
-    if left_prop == WordBreak::HebrewLetter && next == WordBreak::SingleQuote {
-        return false;
-    }
-
-    // WB7b: Hebrew Letter × Double_Quote Hebrew Letter.
-    if left_prop == WordBreak::HebrewLetter
-        && next == WordBreak::DoubleQuote
-        && let Some(next2) = wb_next_sig(code_points, index)
+    // WB7b: Hebrew_Letter × Double_Quote Hebrew_Letter
+    if left == WordBreak::HebrewLetter
+        && right == WordBreak::DoubleQuote
+        && let Some(next2) = wb_next_sig(code_points, index + 1)
         && wb_prop(code_points[next2]) == WordBreak::HebrewLetter
     {
         return false;
     }
-
-    // WB7c: Double_Quote × Hebrew Letter.
-    if left_prop == WordBreak::DoubleQuote
-        && next == WordBreak::HebrewLetter
-        && let Some(left2) = wb_prev_sig(code_points, left_idx)
-        && wb_prop(code_points[left2]) == WordBreak::HebrewLetter
+    // WB7c: Hebrew_Letter Double_Quote × Hebrew_Letter
+    if left == WordBreak::DoubleQuote
+        && right == WordBreak::HebrewLetter
+        && let Some(prev2) = wb_prev_sig(code_points, left_idx)
+        && wb_prop(code_points[prev2]) == WordBreak::HebrewLetter
     {
         return false;
     }
-
-    // WB8: Do not break within sequences of digits, or digits adjacent to letters.
-    if left_prop == WordBreak::Numeric && next == WordBreak::Numeric {
+    // WB8: Numeric × Numeric
+    if left == WordBreak::Numeric && right == WordBreak::Numeric {
         return false;
     }
-
-    // WB9: Do not break within sequences such as "3.2" or "3,456.789".
-    if wb_is_ahletter(left_prop) && next == WordBreak::Numeric {
+    // WB9: AHLetter × Numeric
+    if wb_is_ahletter(left) && right == WordBreak::Numeric {
         return false;
     }
-
-    // WB10: Do not break within sequences such as "3,456.789".
-    if left_prop == WordBreak::Numeric && wb_is_ahletter(next) {
+    // WB10: Numeric × AHLetter
+    if left == WordBreak::Numeric && wb_is_ahletter(right) {
         return false;
     }
-
-    // WB11: Do not break within sequences such as "3a" or "a3".
-    if matches!(
-        left_prop,
-        WordBreak::MidNum | WordBreak::MidNumLet | WordBreak::SingleQuote
-    ) && let Some(left2) = wb_prev_sig(code_points, left_idx)
-        && wb_prop(code_points[left2]) == WordBreak::Numeric
-        && next == WordBreak::Numeric
-    {
-        return false;
-    }
-
-    // WB12: Do not break within sequences such as "3,2" or "3,456.789".
-    if left_prop == WordBreak::Numeric
+    // WB11: Numeric (MidNum | MidNumLetQ) × Numeric
+    if right == WordBreak::Numeric
         && matches!(
-            next,
+            left,
             WordBreak::MidNum | WordBreak::MidNumLet | WordBreak::SingleQuote
         )
-        && let Some(next2) = wb_next_sig(code_points, index)
+        && let Some(prev2) = wb_prev_sig(code_points, left_idx)
+        && wb_prop(code_points[prev2]) == WordBreak::Numeric
+    {
+        return false;
+    }
+    // WB12: Numeric × (MidNum | MidNumLetQ) Numeric
+    if left == WordBreak::Numeric
+        && matches!(
+            right,
+            WordBreak::MidNum | WordBreak::MidNumLet | WordBreak::SingleQuote
+        )
+        && let Some(next2) = wb_next_sig(code_points, index + 1)
         && wb_prop(code_points[next2]) == WordBreak::Numeric
     {
         return false;
     }
-
-    // WB13: Do not break between Katakana.
-    if left_prop == WordBreak::Katakana && next == WordBreak::Katakana {
+    // WB13: Katakana × Katakana
+    if left == WordBreak::Katakana && right == WordBreak::Katakana {
         return false;
     }
-
-    // WB13a: Do not break within certain combinations.
-    if (wb_is_ahletter(left_prop)
-        || left_prop == WordBreak::Numeric
-        || left_prop == WordBreak::Katakana
-        || left_prop == WordBreak::ExtendNumLet)
-        && next == WordBreak::ExtendNumLet
+    // WB13a: (AHLetter | Numeric | Katakana | ExtendNumLet) × ExtendNumLet
+    if (wb_is_ahletter(left)
+        || matches!(
+            left,
+            WordBreak::Numeric | WordBreak::Katakana | WordBreak::ExtendNumLet
+        ))
+        && right == WordBreak::ExtendNumLet
     {
         return false;
     }
-
-    // WB13b: Do not break within certain combinations.
-    if left_prop == WordBreak::ExtendNumLet
-        && (wb_is_ahletter(next) || next == WordBreak::Numeric || next == WordBreak::Katakana)
+    // WB13b: ExtendNumLet × (AHLetter | Numeric | Katakana)
+    if left == WordBreak::ExtendNumLet
+        && (wb_is_ahletter(right) || matches!(right, WordBreak::Numeric | WordBreak::Katakana))
     {
         return false;
     }
-
-    // WB15: Do not break from extenders. (Covered by earlier rules.)
-
-    // WB16: Do not break between Regional_Indicator symbols if odd count before break.
-    if left_prop == WordBreak::RegionalIndicator && next == WordBreak::RegionalIndicator {
-        let mut count = 0usize;
-        let mut k = index;
-        while k > 0 {
-            k -= 1;
-            if wb_prop(code_points[k]) == WordBreak::RegionalIndicator {
-                count += 1;
-            } else {
-                break;
-            }
-        }
-        if count % 2 == 1 {
-            return false;
-        }
+    // WB15/WB16: RI RI × RI with an odd number of RI before the boundary.
+    if left == WordBreak::RegionalIndicator
+        && right == WordBreak::RegionalIndicator
+        && wb_ri_odd_count(code_points, index)
+    {
+        return false;
     }
-
-    // WB999: Otherwise, break everywhere.
+    // WB999: break everywhere else.
     true
 }
 
@@ -7556,259 +7578,240 @@ pub fn is_word_boundary(code_points: &[u32], index: usize) -> bool {
 // Sentence Break Functions (SB1-SB998)
 // ---------------------------------------------------------------------------
 
-fn sb_prop(cp: u32) -> SentenceBreak {
-    let idx = gcp_lookup(SENTENCE_BREAK, cp);
-    unsafe { core::mem::transmute(idx) }
+#[inline]
+fn sb_ignorable(p: SentenceBreak) -> bool {
+    matches!(p, SentenceBreak::Extend | SentenceBreak::Format)
 }
 
-fn sb_ignored(prop: SentenceBreak) -> bool {
-    matches!(prop, SentenceBreak::Extend | SentenceBreak::Format)
+/// `ParaSep` macro: `(Sep | CR | LF)`.
+#[inline]
+fn sb_is_parasep(p: SentenceBreak) -> bool {
+    matches!(p, SentenceBreak::Sep | SentenceBreak::CR | SentenceBreak::LF)
 }
 
-fn sb_is_parasep(prop: WordBreak) -> bool {
-    matches!(prop, WordBreak::Newline | WordBreak::CR | WordBreak::LF)
+#[inline]
+fn sb_is_saterm(p: SentenceBreak) -> bool {
+    matches!(p, SentenceBreak::ATerm | SentenceBreak::STerm)
+}
+
+/// SB5 exception: an ignorable character directly after sot or a ParaSep is
+/// not ignored.
+#[inline]
+fn sb_ignorable_rooted_at_reset(code_points: &[u32], index: usize) -> bool {
+    let mut i = index;
+    while i > 0 {
+        i -= 1;
+        let p = sb_prop(code_points[i]);
+        if sb_ignorable(p) {
+            continue;
+        }
+        return sb_is_parasep(p);
+    }
+    true
+}
+
+/// Index of the previous significant character (`Extend | Format` are
+/// skipped), or `None` at start-of-text.
+#[inline]
+fn sb_prev_sig(code_points: &[u32], index: usize) -> Option<usize> {
+    let mut i = index;
+    while i > 0 {
+        i -= 1;
+        let p = sb_prop(code_points[i]);
+        if !sb_ignorable(p) {
+            return Some(i);
+        }
+        if i == 0 || sb_is_parasep(sb_prop(code_points[i - 1])) {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Index of the next significant character at or after `index`, or `None` at
+/// end-of-text.
+#[inline]
+fn sb_next_sig(code_points: &[u32], index: usize) -> Option<usize> {
+    let mut i = index;
+    while i < code_points.len() {
+        let p = sb_prop(code_points[i]);
+        if !sb_ignorable(p) {
+            return Some(i);
+        }
+        if i == 0 || sb_is_parasep(sb_prop(code_points[i - 1])) {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// True when the significant characters immediately before `index` match
+/// `SATerm Close* Sp*`.
+fn sb_left_saterm_close_sp(code_points: &[u32], index: usize) -> bool {
+    let mut cur = sb_prev_sig(code_points, index);
+    while let Some(k) = cur {
+        if sb_prop(code_points[k]) == SentenceBreak::Sp {
+            cur = sb_prev_sig(code_points, k);
+        } else {
+            break;
+        }
+    }
+    while let Some(k) = cur {
+        if sb_prop(code_points[k]) == SentenceBreak::Close {
+            cur = sb_prev_sig(code_points, k);
+        } else {
+            break;
+        }
+    }
+    cur.map(|k| sb_prop(code_points[k]))
+        .is_some_and(sb_is_saterm)
+}
+
+/// True when the significant characters immediately before `index` match
+/// `ATerm Close* Sp*`.
+fn sb_left_aterm_close_sp(code_points: &[u32], index: usize) -> bool {
+    let mut cur = sb_prev_sig(code_points, index);
+    while let Some(k) = cur {
+        if sb_prop(code_points[k]) == SentenceBreak::Sp {
+            cur = sb_prev_sig(code_points, k);
+        } else {
+            break;
+        }
+    }
+    while let Some(k) = cur {
+        if sb_prop(code_points[k]) == SentenceBreak::Close {
+            cur = sb_prev_sig(code_points, k);
+        } else {
+            break;
+        }
+    }
+    matches!(cur.map(|k| sb_prop(code_points[k])), Some(SentenceBreak::ATerm))
+}
+
+/// True when the significant characters immediately before `index` match
+/// `SATerm Close*`.
+fn sb_left_saterm_close(code_points: &[u32], index: usize) -> bool {
+    let mut cur = sb_prev_sig(code_points, index);
+    while let Some(k) = cur {
+        if sb_prop(code_points[k]) == SentenceBreak::Close {
+            cur = sb_prev_sig(code_points, k);
+        } else {
+            break;
+        }
+    }
+    cur.map(|k| sb_prop(code_points[k]))
+        .is_some_and(sb_is_saterm)
+}
+
+/// SB8 right context:
+/// `( ¬(OLetter | Upper | Lower | ParaSep | SATerm) )* Lower`.
+#[inline]
+fn sb8_right_tail(code_points: &[u32], index: usize) -> bool {
+    let mut cur = sb_next_sig(code_points, index);
+    while let Some(k) = cur {
+        match sb_prop(code_points[k]) {
+            SentenceBreak::Lower => return true,
+            SentenceBreak::OLetter
+            | SentenceBreak::Upper
+            | SentenceBreak::ATerm
+            | SentenceBreak::STerm
+            | SentenceBreak::Sep
+            | SentenceBreak::CR
+            | SentenceBreak::LF => return false,
+            _ => cur = sb_next_sig(code_points, k + 1),
+        }
+    }
+    false
 }
 
 #[inline]
 #[must_use]
 pub fn is_sentence_boundary(code_points: &[u32], index: usize) -> bool {
-    // SB1: Boundary at start of text (unless text is empty)
-    // SB2: Boundary at end of text (unless text is empty)
-    if code_points.is_empty() {
+    let len = code_points.len();
+
+    // SB1/SB2: Break at the start and end of text, unless the text is empty.
+    if len == 0 {
         return false;
     }
-    if index == 0 || index >= code_points.len() {
+    if index == 0 || index >= len {
         return true;
     }
 
-    let prev = sb_prop(code_points[index - 1]);
-    let next = sb_prop(code_points[index]);
+    let left_raw = sb_prop(code_points[index - 1]);
+    let right_raw = sb_prop(code_points[index]);
 
-    // SB3: Do not break within CRLF.
-    if prev == SentenceBreak::CR && next == SentenceBreak::LF {
+    // SB3: CR × LF
+    if left_raw == SentenceBreak::CR && right_raw == SentenceBreak::LF {
+        return false;
+    }
+    // SB4: ParaSep ÷
+    if sb_is_parasep(left_raw) {
+        return true;
+    }
+    // SB5: X (Extend | Format)* → X, except after sot and ParaSep.
+    if sb_ignorable(right_raw) && !sb_ignorable_rooted_at_reset(code_points, index) {
         return false;
     }
 
-    // SB4: Break after paragraph separators.
-    // (ParaSep = Sep | CR | LF)
-    if sb_is_parasep(wb_prop(code_points[index - 1])) {
-        return true;
-    }
-
-    // SB5: Ignore Format and Extend characters, except after sot, ParaSep, and within CRLF.
-    if sb_ignored(next) && index > 0 {
-        // Active if at start or after ParaSep/CR/LF
-        let prev_prop = wb_prop(code_points[index - 1]);
-        if index == 1
-            || matches!(prev_prop, WordBreak::Newline | WordBreak::CR | WordBreak::LF)
-            || sb_is_parasep(prev_prop)
-        {
-            // Active - don't suppress
-        } else {
-            return false; // Inactive, suppress break
-        }
-    }
-
-    // Get effective left significant index
-    fn sb_prev_sig(code_points: &[u32], index: usize) -> Option<usize> {
-        let mut i = index;
-        while i > 0 {
-            i -= 1;
-            let prop = sb_prop(code_points[i]);
-            if !sb_ignored(prop) {
-                return Some(i);
-            }
-            // Active if i==0 or previous is ParaSep
-            if i == 0 || sb_is_parasep(wb_prop(code_points[i - 1])) {
-                return Some(i);
-            }
-        }
-        None
-    }
-
-    let Some(left_idx) = sb_prev_sig(code_points, index) else {
-        return true;
-    };
-    let left = sb_prop(code_points[left_idx]);
-
-    // SB6: Do not break after full stop in certain contexts.
-    if left == SentenceBreak::ATerm && next == SentenceBreak::Numeric {
+    // SB6: ATerm × Numeric
+    if right_raw == SentenceBreak::Numeric
+        && let Some(k) = sb_prev_sig(code_points, index)
+        && sb_prop(code_points[k]) == SentenceBreak::ATerm
+    {
         return false;
     }
-
-    // SB7: Do not break after full stop when followed by uppercase or lowercase letter.
-    if left == SentenceBreak::ATerm
-        && matches!(next, SentenceBreak::Upper | SentenceBreak::Lower)
-        && let Some(left2) = sb_prev_sig(code_points, left_idx)
+    // SB7: (Upper | Lower) ATerm × Upper
+    if right_raw == SentenceBreak::Upper
+        && let Some(k) = sb_prev_sig(code_points, index)
+        && sb_prop(code_points[k]) == SentenceBreak::ATerm
+        && let Some(p) = sb_prev_sig(code_points, k)
         && matches!(
-            sb_prop(code_points[left2]),
+            sb_prop(code_points[p]),
             SentenceBreak::Upper | SentenceBreak::Lower
         )
     {
         return false;
     }
-
-    // SB8: Do not break after full stop when followed by closing punctuation, trailing spaces, and paragraph separator.
-    // Pattern: ATerm Close* Sp* × (¬(OLetter|Upper|Lower|ParaSep|SATerm))* Lower
-    fn left_matches_ater_close_sp(cp: &[u32], idx: usize) -> bool {
-        let mut cur = Some(idx);
-        let mut found_ater = false;
-        while let Some(j) = cur {
-            let p = sb_prop(cp[j]);
-            if p == SentenceBreak::ATerm || p == SentenceBreak::STerm {
-                found_ater = true;
-            }
-            if p == SentenceBreak::Close {
-                cur = sb_prev_sig(cp, j);
-            } else {
-                break;
-            }
-        }
-        found_ater
-    }
-
-    // Check right context: continue looking for Lower after possible Close/Sp
-    fn check_right_context(cp: &[u32], idx: usize) -> bool {
-        let mut j = idx;
-        while j < cp.len() {
-            let p = sb_prop(cp[j]);
-            if p == SentenceBreak::Lower {
-                return false;
-            } // forbidden break
-            if matches!(
-                p,
-                SentenceBreak::OLetter | SentenceBreak::Upper | SentenceBreak::ATerm | SentenceBreak::STerm
-            ) {
-                return true;
-            } // allowed
-            if sb_is_parasep(wb_prop(cp[j])) {
-                return true;
-            } // paragraph sep allows break
-            j += 1;
-        }
-        true // no Lower found, so break is allowed
-    }
-
-    // This is a simplified check; full implementation requires tracking Close* Sp*
-    // For now, if left matches ATerm context, check right
-    if left_matches_ater_close_sp(code_points, left_idx) && !check_right_context(code_points, index) {
+    // SB8: ATerm Close* Sp* × (¬(OLetter | Upper | Lower | ParaSep | SATerm))* Lower
+    if sb_left_aterm_close_sp(code_points, index) && sb8_right_tail(code_points, index) {
         return false;
     }
-
-    // SB8a: SATerm Close* Sp* × (SContinue | SATerm).
-    fn left_matches_saterm_close_sp(cp: &[u32], idx: usize) -> bool {
-        let mut cur = Some(idx);
-        while let Some(j) = cur {
-            let p = sb_prop(cp[j]);
-            if p == SentenceBreak::STerm || p == SentenceBreak::ATerm {
-                return true;
-            }
-            if p == SentenceBreak::Close {
-                cur = sb_prev_sig(cp, j);
-            } else {
-                break;
-            }
-        }
-        false
-    }
-
-    if left_matches_saterm_close_sp(code_points, left_idx)
-        && matches!(
-            next,
-            SentenceBreak::SContinue | SentenceBreak::STerm | SentenceBreak::ATerm
-        )
+    // SB8a: SATerm Close* Sp* × (SContinue | SATerm)
+    if matches!(
+        right_raw,
+        SentenceBreak::SContinue | SentenceBreak::ATerm | SentenceBreak::STerm
+    ) && sb_left_saterm_close_sp(code_points, index)
     {
         return false;
     }
-
-    // SB9: SATerm Close* × (Close | Sp | ParaSep).
-    fn left_matches_saterm_close(cp: &[u32], idx: usize) -> bool {
-        let mut cur = Some(idx);
-        while let Some(j) = cur {
-            let p = sb_prop(cp[j]);
-            if p == SentenceBreak::Close {
-                cur = sb_prev_sig(cp, j);
-            } else {
-                break;
-            }
-        }
-        match cur {
-            Some(j) => matches!(sb_prop(cp[j]), SentenceBreak::STerm | SentenceBreak::ATerm),
-            None => false,
-        }
-    }
-
-    if left_matches_saterm_close(code_points, left_idx)
-        && matches!(
-            next,
-            SentenceBreak::Close | SentenceBreak::Sp | SentenceBreak::Sep
-        )
+    // SB9: SATerm Close* × (Close | Sp | ParaSep)
+    if matches!(
+        right_raw,
+        SentenceBreak::Close | SentenceBreak::Sp | SentenceBreak::Sep | SentenceBreak::CR | SentenceBreak::LF
+    ) && sb_left_saterm_close(code_points, index)
     {
         return false;
     }
-
-    // SB10: SATerm Close* Sp* × (Sp | ParaSep).
-    // Simplified: if left matches Ater Close Sp and next is Sp or Sep
-    fn left_matches_ater_close_sp_simplified(cp: &[u32], idx: usize) -> bool {
-        let mut cur = Some(idx);
-        let mut found_ater = false;
-        let mut found_close = false;
-        let mut found_sp = false;
-        while let Some(j) = cur {
-            let p = sb_prop(cp[j]);
-            if p == SentenceBreak::ATerm || p == SentenceBreak::STerm {
-                found_ater = true;
-            }
-            if p == SentenceBreak::Close {
-                found_close = true;
-                cur = sb_prev_sig(cp, j);
-            } else if p == SentenceBreak::Sp {
-                found_sp = true;
-                cur = sb_prev_sig(cp, j);
-            } else {
-                break;
-            }
-        }
-        found_ater && found_close && found_sp
-    }
-
-    if left_matches_ater_close_sp_simplified(code_points, left_idx)
-        && matches!(next, SentenceBreak::Sp | SentenceBreak::Sep)
+    // SB10: SATerm Close* Sp* × (Sp | ParaSep)
+    if matches!(
+        right_raw,
+        SentenceBreak::Sp | SentenceBreak::Sep | SentenceBreak::CR | SentenceBreak::LF
+    ) && sb_left_saterm_close_sp(code_points, index)
     {
         return false;
     }
-
-    // SB11: SATerm Close* Sp* ParaSep? ÷ (Otherwise, do not break).
-    // If we reach here with no earlier rule matching, SB998 says do not break.
-    // However, we need to check if ParaSep is present before the boundary.
-    // If ParaSep exists before index, then break is allowed (SB998 override).
-    fn has_para_sep_before(cp: &[u32], idx: usize) -> bool {
-        let mut i = idx;
-        while i > 0 {
-            i -= 1;
-            if sb_is_parasep(wb_prop(cp[i])) {
-                return true;
-            }
-            if !sb_ignored(sb_prop(cp[i])) {
-                return false;
-            }
-        }
-        false
-    }
-
-    // If ParaSep found before boundary, allow break (SB998)
-    if has_para_sep_before(code_points, index) {
+    // SB11: SATerm Close* Sp* ParaSep? ÷
+    if sb_left_saterm_close_sp(code_points, index) {
         return true;
     }
-
-    // SB998: Otherwise, do not break.
+    // SB998: otherwise, do not break.
     false
 }
 
 // ---------------------------------------------------------------------------
 // Convenience functions for navigation
 // ---------------------------------------------------------------------------
-
 #[inline]
 #[must_use]
 pub fn next_grapheme_boundary(code_points: &[u32], mut index: usize) -> usize {
@@ -7880,10 +7883,6 @@ pub fn prev_sentence_boundary(code_points: &[u32], mut index: usize) -> usize {
     }
     index
 }
-
-// ---------------------------------------------------------------------------
-// Integration with Wredit Engine: position computation
-// ---------------------------------------------------------------------------
 
 #[inline]
 #[must_use]
@@ -7998,5 +7997,82 @@ mod tests {
         // Boundary at index 2 (past end) should be a break
         assert!(!is_grapheme_boundary(&cp, 1)); // no break before Extend
         assert!(is_grapheme_boundary(&cp, 2)); // past end -> break
+    }
+
+    #[test]
+    fn test_gcb_conjunct_linker() {
+        // GB9c: InCB=Linker InCB=Extend* x InCB=Consonant.
+        let cp = [0x094D, 0x0915]; // DEVANAGARI SIGN VIRAMA + LETTER KA
+        assert!(!is_grapheme_boundary(&cp, 1));
+
+        let cp = [0x0915, 0x094D, 0x0924]; // KA + VIRAMA + TA
+        assert!(!is_grapheme_boundary(&cp, 1));
+        assert!(!is_grapheme_boundary(&cp, 2));
+    }
+
+    #[test]
+    fn test_gcb_emoji_zwj() {
+        // GB11: ExtPict Extend* ZWJ x ExtPict.
+        let cp = [0x1F6D1, 0x200D, 0x1F6D1]; // OCTAGONAL SIGN ZWJ OCTAGONAL SIGN
+        assert!(!is_grapheme_boundary(&cp, 1));
+        assert!(!is_grapheme_boundary(&cp, 2));
+    }
+
+    #[test]
+    fn test_gcb_regional_indicators() {
+        // GB12/GB13: pair up regional indicators, break on an even run.
+        let cp = [0x1F1E6, 0x1F1E6, 0x1F1E6, 0x1F1E6];
+        assert!(!is_grapheme_boundary(&cp, 1));
+        assert!(is_grapheme_boundary(&cp, 2));
+        assert!(!is_grapheme_boundary(&cp, 3));
+        assert!(is_grapheme_boundary(&cp, 4));
+    }
+
+    #[test]
+    fn test_wb_ignore_sequence() {
+        // WB4: a soft hyphen and a combining mark form one run, then break.
+        let cp = [0x00AD, 0x0308, 0x0041]; // SOFT HYPHEN + COMBINING DIAERESIS + A
+        assert!(!is_word_boundary(&cp, 1));
+        assert!(is_word_boundary(&cp, 2));
+    }
+
+    #[test]
+    fn test_wb_apostrophe() {
+        // WB6/WB7: letters joined across an apostrophe ("can't").
+        let cp = decode_str_to_code_points("can't");
+        assert!(is_word_boundary(&cp, 0));
+        for i in 1..cp.len() {
+            assert!(!is_word_boundary(&cp, i), "unexpected break at {i}");
+        }
+        assert!(is_word_boundary(&cp, cp.len()));
+    }
+
+    #[test]
+    fn test_wb_regional_indicators() {
+        // WB15/WB16: odd number of RI before the boundary pairs them up.
+        let cp = [0x1F1E6, 0x1F1E6, 0x1F1E6];
+        assert!(!is_word_boundary(&cp, 1));
+        assert!(is_word_boundary(&cp, 2));
+    }
+
+    #[test]
+    fn test_sb_ambiguous_period() {
+        // SB6: ATerm x Numeric.
+        let cp = [0x002E, 0x0030];
+        assert!(!is_sentence_boundary(&cp, 1));
+
+        // SB7: (Upper | Lower) ATerm x Upper.
+        let cp = [0x0055, 0x002E, 0x0053];
+        assert!(!is_sentence_boundary(&cp, 2));
+    }
+
+    #[test]
+    fn test_sb_trailing_spaces() {
+        // SB9/SB10 keep a period and its trailing spaces together, then SB11
+        // breaks before the next capitalised word.
+        let cp = [0x002E, 0x0020, 0x0020, 0x0041];
+        assert!(!is_sentence_boundary(&cp, 1));
+        assert!(!is_sentence_boundary(&cp, 2));
+        assert!(is_sentence_boundary(&cp, 3));
     }
 }

@@ -1794,7 +1794,7 @@ impl<Raw, Buf, const GAP_SIZE: usize> Default for Cursor<Raw, Buf, GAP_SIZE> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BidiIndex, ColumnarRange, ColumnarSelection, Cursor, LineAnchors, LineRing};
+    use super::{BidiIndex, ColumnarRange, Cursor, LineAnchors, LineRing};
 
     // Justification: `unwrap` in tests is permitted by the project
     // lint configuration (`allow-unwrap-in-tests`).
