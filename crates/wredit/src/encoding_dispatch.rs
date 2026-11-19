@@ -544,9 +544,7 @@ mod tests {
 
     #[test]
     fn streaming_decoder_handles_inputs_larger_than_one_chunk() {
-        let text: String = core::iter::repeat('a')
-            .take(DECODE_CHUNK * 2 + 17)
-            .collect();
+        let text: String = core::iter::repeat_n('a', DECODE_CHUNK * 2 + 17).collect();
         let scalars: Vec<u32> = text.chars().map(u32::from).collect();
         let bytes = encode_from_str(&text, DocumentEncoding::Utf8, EncodePolicy::Strict).unwrap();
         assert_eq!(

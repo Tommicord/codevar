@@ -35,10 +35,11 @@ use core::ptr::NonNull;
 
 use codevar_logger::log_error;
 
-use super::base::{ENC_UNKNOWN, NAME_LEN, WritableAlignedPtr, ensure_merge_buffer};
+use super::base::{ENC_UTF8, NAME_LEN, WritableAlignedPtr, ensure_merge_buffer};
 use super::cursor::{Cursor, LineAnchors, LineRing};
 use super::history_ring_journal::HistoryStore;
 use super::shared_gap::SharedGapTable;
+use crate::encoding::DocumentEncoding;
 use crate::error::WreditError;
 use crate::error::WreditResult;
 
@@ -617,7 +618,7 @@ impl<Raw: Copy, Buf: Copy, const GAP_SIZE: usize> BaseWritable<Raw, Buf, GAP_SIZ
             raw_length: 0,
             rows: Cell::new(1),
             headroom: 0,
-            encoding: ENC_UNKNOWN,
+            encoding: ENC_UTF8,
             line_anchors: UnsafeCell::new(None),
             history: None,
         }
@@ -1001,6 +1002,33 @@ impl<Raw: Copy, Buf: Copy, const GAP_SIZE: usize> BaseWritable<Raw, Buf, GAP_SIZ
         self.encoding
     }
 
+    /// Selects the document encoding used at the byte boundary.
+    ///
+    /// The scalar stream in the buffer is unaffected; only the codec
+    /// used to load and save the document changes.
+    ///
+    /// # Errors
+    ///
+    /// [`WreditError::Encoding`] when `encoding` carries an
+    /// out-of-range single-byte index; the current encoding is kept.
+    pub fn set_encoding(&mut self, encoding: DocumentEncoding) -> WreditResult<()> {
+        if !encoding.is_valid() {
+            log_error!("wredit: rejecting an invalid document encoding");
+            return Err(WreditError::Encoding);
+        }
+        self.encoding = encoding.tag();
+        Ok(())
+    }
+
+    /// The document encoding selected for this writable.
+    ///
+    /// New writables default to [`DocumentEncoding::Utf8`].
+    #[must_use]
+    #[inline]
+    pub fn document_encoding(&self) -> DocumentEncoding {
+        DocumentEncoding::from_tag(self.encoding).unwrap_or_default()
+    }
+
     /// Logical document length: committed elements plus every staged
     /// element still sitting in a gap.
     #[must_use]
@@ -1209,6 +1237,7 @@ impl<Raw: Copy, Buf: Copy, const GAP_SIZE: usize> Default for StreamWritable<Raw
 mod tests {
     use super::{BaseWritable, MAX_CURSORS, MAX_GAPS, WritableEvent, WritableGapPtr, WritableGaps};
     use crate::base::{COMMON_MASK, make_packed};
+    use crate::encoding::DocumentEncoding;
     use crate::writable::WritableGap;
 
     // Justification: `unwrap` in tests is permitted by the project
@@ -1280,7 +1309,8 @@ mod tests {
         assert_eq!(base.logical_length(), 0);
         assert_eq!(base.headroom, 0);
         assert_eq!(base.active_cursor_id, 0);
-        assert_eq!(base.encoding, crate::base::ENC_UNKNOWN);
+        assert_eq!(base.encoding, crate::base::ENC_UTF8);
+        assert_eq!(base.document_encoding(), DocumentEncoding::Utf8);
     }
 
     #[test]

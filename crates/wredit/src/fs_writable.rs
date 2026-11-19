@@ -202,6 +202,25 @@ impl<'a, D: BlockDevice, const STAGING: usize> WritableFile<'a, D, STAGING> {
         self.fs.flush()
     }
 
+    /// Truncates or extends the file to `new_size` bytes.
+    ///
+    /// Pending cached bytes are flushed first so the cache and the
+    /// inode size stay consistent. Errors are propagated from the
+    /// flush and from the filesystem's [`DiskFs::truncate`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates a device I/O error from the flush or from the
+    /// truncate operation.
+    pub fn truncate(&mut self, new_size: u64) -> WreditResult<()> {
+        self.flush()?;
+        self.fs.truncate(self.inode, new_size)?;
+        if self.position > new_size {
+            self.position = new_size;
+        }
+        Ok(())
+    }
+
     /// Writes the whole cache to the file at `position - stage_len`.
     fn flush_cache(&mut self) -> WreditResult<()> {
         let len = self.stage_len;

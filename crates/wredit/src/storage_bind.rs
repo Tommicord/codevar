@@ -22,16 +22,19 @@
 //! edits back through the writable file and persists them to the block
 //! device.
 //!
-//! The byte ↔ packed-element conversion is one byte per element: each
-//! byte is stored as [`make_packed`]`(byte, [`COMMON_MASK`])`, so the
-//! bound document is a byte-oriented view over the packed-element
-//! engine.
+//! The edit buffer stores one Unicode scalar value per packed element
+//! ([`make_packed`]`(scalar, [`COMMON_MASK`])`). Encoding is therefore a
+//! property of the byte stream at the boundary: loading decodes the
+//! file's bytes with the document's [`DocumentEncoding`], and saving
+//! encodes the scalar stream back out. A leading byte-order mark is
+//! stripped on load and re-emitted on save when the document was loaded
+//! with one (or created as UTF-16/UTF-32).
 //!
 //! # Example
 //!
 //! ```rust
 //! use codevar_wredit::error::WreditResult;
-//! use codevar_wredit::{COMMON_MASK, make_packed};
+//! use codevar_wredit::{DocumentEncoding, TextEditableEncoding};
 //! use codevar_wredit::fs_block::MemoryDisk;
 //! use codevar_wredit::fs::DiskFs;
 //! use codevar_wredit::storage_bind::BoundDocument;
@@ -42,7 +45,9 @@
 //!     let inode = fs.create(2, "notes.txt", 0x8000)?;
 //!     let mut bound: BoundDocument<'_, MemoryDisk, 256, 1024> =
 //!         BoundDocument::open(&mut fs, inode)?;
-//!     bound.put(make_packed(b'X' as u32, COMMON_MASK))?;
+//!     let cursor = bound.cursor_id();
+//!     bound.stream_mut().insert_str(cursor, "X")?;
+//!     bound.set_encoding(DocumentEncoding::Utf8)?;
 //!     bound.save()?;
 //!     Ok(())
 //! }
@@ -50,17 +55,28 @@
 
 use alloc::vec::Vec;
 
-use codevar_logger::log_info;
+use codevar_logger::{log_error, log_info};
 
+use crate::encoding::{DocumentEncoding, is_valid_scalar};
+use crate::encoding_dispatch::{DecodePolicy, EncodePolicy, decode, encode, encode_with_bom};
 use crate::error::{WreditError, WreditResult};
 use crate::fs::DiskFs;
 use crate::fs_block::BlockDevice;
 use crate::fs_writable::WritableFile;
 use crate::{
-    COMMON_MASK, Cursor, StreamWritable, TextEditableBufferQuery, TextEditableCursor, TextEditableDelete,
-    TextEditableOverwrite, TextEditablePut, TextEditableReplace, TextEditableSelection, Writable,
-    make_packed, packed_char,
+    Cursor, StreamWritable, TextEditableBufferQuery, TextEditableCursor, TextEditableDelete,
+    TextEditableEncoding, TextEditableOverwrite, TextEditablePut, TextEditableReplace, TextEditableSelection,
+    Writable, packed_char,
 };
+
+/// Whether a save emits the selected encoding's byte-order mark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BomPolicy {
+    /// Save without a byte-order mark.
+    Omit,
+    /// Prefix the encoded bytes with the encoding's mark.
+    Emit,
+}
 
 /// A document that lives both on disk and in the edit engine.
 ///
@@ -84,6 +100,10 @@ pub struct BoundDocument<'fs, D: BlockDevice, const STAGING: usize, const GAP_SI
     inode: u32,
     /// In-memory edit buffer.
     stream: StreamWritable<u32, u32, GAP_SIZE>,
+    /// Encoding used to decode the file and to encode it on save.
+    encoding: DocumentEncoding,
+    /// Whether a save re-emits the byte-order mark.
+    bom: BomPolicy,
     /// File size at load time, used to detect growth on save.
     loaded_size: u64,
     /// `true` when the edit buffer has unsaved changes.
@@ -102,6 +122,12 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
     /// [`WritableFile`], so `fs` cannot be used directly until the
     /// document is dropped.
     ///
+    /// The encoding is sniffed from a leading byte-order mark and falls
+    /// back to [`DocumentEncoding::Utf8`] when there is none; use
+    /// [`Self::open_with_encoding`] for a legacy file without a mark.
+    /// Malformed bytes are replaced with U+FFFD so a damaged file still
+    /// opens instead of failing the load.
+    ///
     /// Staged gaps auto-commit as they fill, so files larger than one
     /// gap window load correctly.
     ///
@@ -113,6 +139,34 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
     /// * [`WreditError::CapacityExhausted`] when the edit buffer cannot
     ///   grow to hold the file contents
     pub fn open(fs: &'fs mut DiskFs<D>, inode: u32) -> WreditResult<Self> {
+        Self::open_with_optional_encoding(fs, inode, None)
+    }
+
+    /// Opens an existing regular file with an explicit encoding.
+    ///
+    /// Unlike [`Self::open`], no byte-order-mark sniffing happens: the
+    /// file is decoded with `encoding` and that encoding is retained for
+    /// the next save. A matching leading mark is still detected and
+    /// preserved. Malformed byte sequences are replaced with U+FFFD,
+    /// matching the default load policy of [`Self::open`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::open`], plus [`WreditError::Encoding`] when
+    /// `encoding` carries an out-of-range single-byte index.
+    pub fn open_with_encoding(
+        fs: &'fs mut DiskFs<D>,
+        inode: u32,
+        encoding: DocumentEncoding,
+    ) -> WreditResult<Self> {
+        Self::open_with_optional_encoding(fs, inode, Some(encoding))
+    }
+
+    fn open_with_optional_encoding(
+        fs: &'fs mut DiskFs<D>,
+        inode: u32,
+        requested: Option<DocumentEncoding>,
+    ) -> WreditResult<Self> {
         let ino = fs.read_inode(inode)?;
         if !ino.is_regular() {
             return Err(WreditError::IsADirectory {
@@ -133,23 +187,51 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
             content.extend_from_slice(&buf[..n]);
         }
 
-        let mut stream = StreamWritable::with_capacity(content.len());
+        let encoding = requested
+            .or_else(|| DocumentEncoding::sniff_bom(&content))
+            .unwrap_or_default();
+        Self::bind(file, inode, &content, encoding, loaded_size)
+    }
+
+    /// Builds a document from already-read bytes.
+    fn bind(
+        file: WritableFile<'fs, D, STAGING>,
+        inode: u32,
+        bytes: &[u8],
+        encoding: DocumentEncoding,
+        loaded_size: u64,
+    ) -> WreditResult<Self> {
+        if !encoding.is_valid() {
+            log_error!("storage_bind: rejecting an invalid document encoding");
+            return Err(WreditError::Encoding);
+        }
+        let bom = if encoding.bom().is_empty() || !bytes.starts_with(encoding.bom()) {
+            BomPolicy::Omit
+        } else {
+            BomPolicy::Emit
+        };
+        let scalars = decode(bytes, encoding, DecodePolicy::Replace)?;
+
+        let mut stream = StreamWritable::with_capacity(scalars.len());
         let cursor_id = stream
             .append_cursor(Cursor::new())
             .ok_or(WreditError::LimitExceeded { what: "cursor pool" })?;
         stream.set_active_cursor(cursor_id);
-
-        for &byte in &content {
-            stream.put(cursor_id, make_packed(byte as u32, COMMON_MASK))?;
-        }
+        stream.set_document_encoding(encoding)?;
+        stream.insert_scalars(cursor_id, &scalars)?;
         stream.flush_all();
 
-        log_info!("storage_bind: loaded inode {inode} ({loaded_size} bytes) into edit buffer");
+        log_info!(
+            "storage_bind: loaded inode {inode} ({loaded_size} bytes) as {}",
+            encoding.name()
+        );
 
         Ok(Self {
             file,
             inode,
             stream,
+            encoding,
+            bom,
             loaded_size,
             dirty: false,
             cursor_id,
@@ -158,12 +240,39 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
 
     /// Creates a new empty regular file and binds it for editing.
     ///
+    /// The document starts in [`DocumentEncoding::Utf8`]. Use
+    /// [`Self::create_with_encoding`] to select another encoding.
+    ///
     /// # Errors
     ///
     /// Propagates filesystem errors from creating the file and the
     /// writable file, and [`WreditError::LimitExceeded`] when the
     /// cursor pool is full.
     pub fn create(fs: &'fs mut DiskFs<D>, parent: u32, name: &str, mode: u16) -> WreditResult<Self> {
+        Self::create_with_encoding(fs, parent, name, mode, DocumentEncoding::Utf8)
+    }
+
+    /// Creates a new empty regular file with an explicit encoding.
+    ///
+    /// A UTF-16 or UTF-32 document is created with a byte-order mark so
+    /// that a later [`Self::open`] can sniff the encoding; UTF-8 and
+    /// single-byte documents are created without one.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::create`], plus [`WreditError::Encoding`] when
+    /// `encoding` carries an out-of-range single-byte index.
+    pub fn create_with_encoding(
+        fs: &'fs mut DiskFs<D>,
+        parent: u32,
+        name: &str,
+        mode: u16,
+        encoding: DocumentEncoding,
+    ) -> WreditResult<Self> {
+        if !encoding.is_valid() {
+            log_error!("storage_bind: rejecting an invalid document encoding");
+            return Err(WreditError::Encoding);
+        }
         let inode = fs.create(parent, name, mode)?;
         let file = WritableFile::new(fs, inode)?;
         let mut stream = StreamWritable::new();
@@ -171,13 +280,29 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
             .append_cursor(Cursor::new())
             .ok_or(WreditError::LimitExceeded { what: "cursor pool" })?;
         stream.set_active_cursor(cursor_id);
+        stream.set_document_encoding(encoding)?;
 
-        log_info!("storage_bind: created inode {inode} named {name:?} for editing");
+        // Without a mark a UTF-16/UTF-32 file cannot be told apart from
+        // its alternatives (or from UTF-8) when it is reopened.
+        let bom = match encoding {
+            DocumentEncoding::Utf16Le
+            | DocumentEncoding::Utf16Be
+            | DocumentEncoding::Utf32Le
+            | DocumentEncoding::Utf32Be => BomPolicy::Emit,
+            DocumentEncoding::Utf8 | DocumentEncoding::SingleByte(_) => BomPolicy::Omit,
+        };
+
+        log_info!(
+            "storage_bind: created inode {inode} named {name:?} as {}",
+            encoding.name()
+        );
 
         Ok(Self {
             file,
             inode,
             stream,
+            encoding,
+            bom,
             loaded_size: 0,
             dirty: false,
             cursor_id,
@@ -196,6 +321,53 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
     #[inline]
     pub const fn cursor_id(&self) -> usize {
         self.cursor_id
+    }
+
+    /// The encoding used to decode the file and to encode it on save.
+    #[must_use]
+    #[inline]
+    pub const fn encoding(&self) -> DocumentEncoding {
+        self.encoding
+    }
+
+    /// `true` when [`Self::save`] prefixes the file with the encoding's
+    /// byte-order mark.
+    #[must_use]
+    #[inline]
+    pub const fn emits_bom(&self) -> bool {
+        matches!(self.bom, BomPolicy::Emit)
+    }
+
+    /// Selects the encoding used on the next save.
+    ///
+    /// The in-memory scalar stream is not transcoded; the document is
+    /// simply written back through the new codec. The document is
+    /// marked dirty because the on-disk bytes will change.
+    ///
+    /// # Errors
+    ///
+    /// [`WreditError::Encoding`] when `encoding` carries an
+    /// out-of-range single-byte index; the current encoding is kept.
+    pub fn set_encoding(&mut self, encoding: DocumentEncoding) -> WreditResult<()> {
+        if !encoding.is_valid() {
+            log_error!("storage_bind: rejecting an invalid document encoding");
+            return Err(WreditError::Encoding);
+        }
+        self.encoding = encoding;
+        self.stream.set_document_encoding(encoding)?;
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Controls whether the next save emits the byte-order mark.
+    ///
+    /// Marks the document dirty when the policy changes.
+    #[inline]
+    pub fn set_bom_policy(&mut self, policy: BomPolicy) {
+        if self.bom != policy {
+            self.bom = policy;
+            self.dirty = true;
+        }
     }
 
     /// Borrows the edit buffer immutably.
@@ -221,6 +393,13 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
         self.dirty
     }
 
+    /// Byte length of the file at the last load or save.
+    #[must_use]
+    #[inline]
+    pub const fn loaded_size(&self) -> u64 {
+        self.loaded_size
+    }
+
     /// Number of committed elements in the edit buffer.
     #[must_use]
     #[inline]
@@ -239,33 +418,59 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
 
     /// Saves the edit buffer back to the on-disk file.
     ///
-    /// Staged gaps are committed first, then the document is written
-    /// from position 0 through [`WritableFile`] and synced to the
-    /// block device. The file size only grows: if the edited document
-    /// is shorter than the loaded file, the old tail remains readable
-    /// until the storage layer supports truncation.
+    /// Staged gaps are committed first, then the scalar stream is
+    /// encoded with the document's [`DocumentEncoding`] and written
+    /// from position 0 through [`WritableFile`]. The file is truncated
+    /// to the encoded length, so a shorter save (a different encoding,
+    /// or deleted text) never leaves stale trailing bytes.
+    ///
+    /// Encoding is strict: a scalar the target encoding cannot
+    /// represent returns [`WreditError::UnmappableCharacter`] before
+    /// anything is written, so the stored file is never partially
+    /// rewritten.
     ///
     /// # Errors
     ///
-    /// Propagates device I/O errors from writing and syncing.
+    /// * [`WreditError::Encoding`] when the buffer holds a non-scalar
+    ///   payload
+    /// * [`WreditError::UnmappableCharacter`] when the target encoding
+    ///   cannot represent a scalar
+    /// * Propagates device I/O errors from writing, truncating and
+    ///   syncing
     pub fn save(&mut self) -> WreditResult<()> {
         self.flush_all();
 
         let length = self.stream.raw_length();
         let elements = self.stream.raw_slice(0, length).unwrap_or(&[]);
-        let mut bytes = Vec::with_capacity(elements.len());
+        let mut scalars = Vec::with_capacity(elements.len());
         for &element in elements {
-            bytes.push(packed_char(element) as u8);
+            let value = packed_char(element);
+            if !is_valid_scalar(value) {
+                log_error!("storage_bind: buffer holds non-scalar value U+{value:04X}");
+                return Err(WreditError::Encoding);
+            }
+            scalars.push(value);
         }
+
+        let bytes = match self.bom {
+            BomPolicy::Emit => encode_with_bom(&scalars, self.encoding, EncodePolicy::Strict)?,
+            BomPolicy::Omit => encode(&scalars, self.encoding, EncodePolicy::Strict)?,
+        };
 
         self.file.set_position(0)?;
         self.file.write(&bytes)?;
+        self.file.truncate(bytes.len() as u64)?;
         self.file.sync_all()?;
 
         self.loaded_size = bytes.len() as u64;
         self.dirty = false;
 
-        log_info!("storage_bind: saved inode {} ({} bytes)", self.inode, bytes.len());
+        log_info!(
+            "storage_bind: saved inode {} ({} bytes, {})",
+            self.inode,
+            bytes.len(),
+            self.encoding.name()
+        );
 
         Ok(())
     }
@@ -549,8 +754,12 @@ mod tests {
     use super::*;
 
     use crate::COMMON_MASK;
+    use crate::TextEditableEncoding;
+    use crate::encoding::DocumentEncoding;
+    use crate::encoding_dispatch::{EncodePolicy, encode, encode_from_str, encode_with_bom};
     use crate::fs::DiskFs;
     use crate::fs_block::MemoryDisk;
+    use crate::make_packed;
 
     /// Concrete instantiation used by every test: 256-byte staging cache,
     /// 1024-element gap window.
@@ -690,5 +899,162 @@ mod tests {
 
         bound.save().unwrap();
         assert!(!bound.is_dirty());
+    }
+
+    #[test]
+    fn utf8_bom_is_stripped_on_load_and_reemitted_on_save() {
+        let disk = MemoryDisk::new(256).unwrap();
+        let mut fs = DiskFs::format(disk, 256, 128).unwrap();
+        let inode = fs.create(2, "bom.txt", 0x8000).unwrap();
+        fs.write_at(inode, 0, &[0xEF, 0xBB, 0xBF, b'h', b'i'])
+            .unwrap();
+
+        let mut bound: TestBound<'_> = BoundDocument::open(&mut fs, inode).unwrap();
+        assert_eq!(bound.encoding(), DocumentEncoding::Utf8);
+        assert!(bound.emits_bom());
+        assert_eq!(bound.raw_length(), 2);
+        assert_eq!(bound.stream().read_string(0, 2).unwrap(), "hi");
+
+        bound.save().unwrap();
+        drop(bound);
+
+        let mut buf = [0u8; 5];
+        assert_eq!(fs.read_at(inode, 0, &mut buf).unwrap(), 5);
+        assert_eq!(&buf, &[0xEF, 0xBB, 0xBF, b'h', b'i']);
+    }
+
+    #[test]
+    fn utf16_le_round_trips_through_a_reopen() {
+        let disk = MemoryDisk::new(256).unwrap();
+        let mut fs = DiskFs::format(disk, 256, 128).unwrap();
+        let mut bound: TestBound<'_> =
+            BoundDocument::create_with_encoding(&mut fs, 2, "utf16.txt", 0x8000, DocumentEncoding::Utf16Le)
+                .unwrap();
+        assert_eq!(bound.encoding(), DocumentEncoding::Utf16Le);
+        assert!(bound.emits_bom());
+
+        let cursor = bound.cursor_id();
+        bound
+            .stream_mut()
+            .insert_str(cursor, "hé😀")
+            .unwrap();
+        bound.save().unwrap();
+        let inode = bound.inode();
+        drop(bound);
+
+        let scalars = [u32::from('h'), u32::from('é'), u32::from('😀')];
+        let expected = encode_with_bom(&scalars, DocumentEncoding::Utf16Le, EncodePolicy::Strict).unwrap();
+        let mut buf = vec![0u8; expected.len()];
+        assert_eq!(fs.read_at(inode, 0, &mut buf).unwrap(), expected.len());
+        assert_eq!(buf, expected);
+
+        let bound: TestBound<'_> = BoundDocument::open(&mut fs, inode).unwrap();
+        assert_eq!(bound.encoding(), DocumentEncoding::Utf16Le);
+        assert!(bound.emits_bom());
+        assert_eq!(bound.raw_length(), 3);
+        assert_eq!(bound.stream().read_string(0, 3).unwrap(), "hé😀");
+    }
+
+    #[test]
+    fn saving_a_shorter_document_truncates_the_file() {
+        let disk = MemoryDisk::new(256).unwrap();
+        let mut fs = DiskFs::format(disk, 256, 128).unwrap();
+        let mut bound: TestBound<'_> =
+            BoundDocument::create_with_encoding(&mut fs, 2, "shrink.txt", 0x8000, DocumentEncoding::Utf16Le)
+                .unwrap();
+        let cursor = bound.cursor_id();
+        bound
+            .stream_mut()
+            .insert_str(cursor, "abcdef")
+            .unwrap();
+        bound.save().unwrap();
+
+        let inode = bound.inode();
+        let long_size = bound.loaded_size();
+        bound.delete_range(0, 5).unwrap();
+        bound.save().unwrap();
+        assert_eq!(bound.loaded_size(), 4); // BOM + one UTF-16 unit
+        assert!(long_size > bound.loaded_size());
+        drop(bound);
+
+        // The stale tail is gone: reading past the new size returns 0.
+        let mut tail = [0u8; 4];
+        assert_eq!(fs.read_at(inode, 4, &mut tail).unwrap(), 0);
+    }
+
+    #[test]
+    fn bomless_utf16_needs_an_explicit_encoding() {
+        let disk = MemoryDisk::new(256).unwrap();
+        let mut fs = DiskFs::format(disk, 256, 128).unwrap();
+        let inode = fs.create(2, "bomless.txt", 0x8000).unwrap();
+        let bytes = encode(
+            &[u32::from('o'), u32::from('k')],
+            DocumentEncoding::Utf16Le,
+            EncodePolicy::Strict,
+        )
+        .unwrap();
+        fs.write_at(inode, 0, &bytes).unwrap();
+
+        let bound: TestBound<'_> =
+            BoundDocument::open_with_encoding(&mut fs, inode, DocumentEncoding::Utf16Le).unwrap();
+        assert_eq!(bound.encoding(), DocumentEncoding::Utf16Le);
+        assert!(!bound.emits_bom());
+        assert_eq!(bound.stream().read_string(0, 2).unwrap(), "ok");
+    }
+
+    #[test]
+    fn single_byte_encoding_round_trips() {
+        let disk = MemoryDisk::new(256).unwrap();
+        let mut fs = DiskFs::format(disk, 256, 128).unwrap();
+        let encoding = DocumentEncoding::for_label("windows-1252").unwrap();
+        let mut bound: TestBound<'_> =
+            BoundDocument::create_with_encoding(&mut fs, 2, "latin.txt", 0x8000, encoding).unwrap();
+        assert!(!bound.emits_bom());
+
+        let text = "café €";
+        let cursor = bound.cursor_id();
+        bound
+            .stream_mut()
+            .insert_str(cursor, text)
+            .unwrap();
+        bound.save().unwrap();
+        let inode = bound.inode();
+        let size = bound.loaded_size() as usize;
+        drop(bound);
+
+        let expected = encode_from_str(text, encoding, EncodePolicy::Strict).unwrap();
+        let mut buf = vec![0u8; size];
+        assert_eq!(fs.read_at(inode, 0, &mut buf).unwrap(), size);
+        assert_eq!(buf, expected);
+
+        let bound: TestBound<'_> = BoundDocument::open_with_encoding(&mut fs, inode, encoding).unwrap();
+        let length = bound.raw_length();
+        assert_eq!(bound.stream().read_string(0, length).unwrap(), text);
+    }
+
+    #[test]
+    fn save_rejects_unmappable_scalars_without_writing() {
+        let disk = MemoryDisk::new(256).unwrap();
+        let mut fs = DiskFs::format(disk, 256, 128).unwrap();
+        let encoding = DocumentEncoding::for_label("windows-1252").unwrap();
+        let mut bound: TestBound<'_> =
+            BoundDocument::create_with_encoding(&mut fs, 2, "strict.txt", 0x8000, encoding).unwrap();
+        let cursor = bound.cursor_id();
+        bound
+            .stream_mut()
+            .insert_str(cursor, "☃")
+            .unwrap();
+
+        assert!(matches!(
+            bound.save(),
+            Err(crate::error::WreditError::UnmappableCharacter { character: '☃' })
+        ));
+        assert_eq!(bound.loaded_size(), 0);
+        assert!(bound.is_dirty());
+
+        let inode = bound.inode();
+        drop(bound);
+        let mut buf = [0u8; 1];
+        assert_eq!(fs.read_at(inode, 0, &mut buf).unwrap(), 0);
     }
 }

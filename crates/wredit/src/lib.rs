@@ -62,15 +62,16 @@ pub use base::{
     TYPE_MASK, WritableAlignedPtr, WritableGapSize, make_packed, packed_char, packed_type,
 };
 pub use cursor::{BidiIndex, ColumnarRange, ColumnarSelection, Cursor};
-pub use encoding::DocumentEncoding;
+pub use encoding::{DocumentEncoding, is_valid_scalar};
 pub use encoding_dispatch::{
     DecodePolicy, EncodePolicy, decode, decode_to_string, encode, encode_from_str, encode_with_bom,
 };
 pub use history_ring_journal::{Edit, HistoryStore, delta_common, is_word_continuation};
 pub use shared_gap::{SharedGapSlot, SharedGapTable};
 pub use traits::{
-    TextEditableBufferQuery, TextEditableCursor, TextEditableDelete, TextEditableGap, TextEditableHistory,
-    TextEditableOverwrite, TextEditablePut, TextEditableReplace, TextEditableSelection, Writable,
+    TextEditableBufferQuery, TextEditableCursor, TextEditableDelete, TextEditableEncoding, TextEditableGap,
+    TextEditableHistory, TextEditableOverwrite, TextEditablePut, TextEditableReplace, TextEditableSelection,
+    Writable,
 };
 pub use writable::{
     BaseWritable, EventBridge, MAX_CURSORS, MAX_GAPS, SHARED_GAP_SLOTS, StreamWritable, WritableEvent,

@@ -26,12 +26,16 @@
 //! and out-of-range positions are rejected with an error (and a log
 //! line), never a panic.
 
+use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use super::base::NAME_LEN;
 use super::cursor::{ColumnarSelection, Cursor};
 use super::shared_gap::SharedGapTable;
 use super::writable::{EventBridge, SHARED_GAP_SLOTS};
+use crate::encoding::DocumentEncoding;
+use crate::encoding_dispatch::{DecodePolicy, EncodePolicy};
 use crate::error::WreditResult;
 
 /// The structural contract of a multi-cursor text writable.
@@ -320,6 +324,96 @@ pub trait TextEditableBufferQuery<Raw, Buf, const GAP_SIZE: usize>: Writable<Raw
 
     /// Width of the committed line containing `position`.
     fn line_width_at(&self, position: usize) -> Option<usize>;
+}
+
+/// Encoding-aware insertion and extraction.
+///
+/// The edit buffer stores Unicode scalar values, so encoding is a
+/// property of the byte stream at the document boundary.  These
+/// operations translate between that scalar stream and the byte stream
+/// of a selected [`DocumentEncoding`].  They are implemented for the
+/// packed `u32` stream that exposes scalar-valued elements.
+///
+/// Insertion validates every scalar before staging the first one, and
+/// the read operations reject a buffer that contains a non-scalar
+/// payload rather than silently truncating it.
+pub trait TextEditableEncoding<Raw, Buf, const GAP_SIZE: usize>: Writable<Raw, Buf, GAP_SIZE> {
+    /// Selects the encoding used when the document is saved.
+    ///
+    /// The encoding does not change the in-memory scalar stream; it
+    /// only selects the codec used at the byte boundary.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::error::WreditError::Encoding`] when the tag is not representable
+    /// (an out-of-range single-byte index).
+    fn set_document_encoding(&mut self, encoding: DocumentEncoding) -> WreditResult<()>;
+
+    /// The encoding selected for this document.
+    fn document_encoding(&self) -> DocumentEncoding;
+
+    /// Stages `scalars` at `cursor_id`'s caret, advancing it.
+    ///
+    /// Every scalar is validated before the first is staged, so a
+    /// rejected value leaves the buffer unchanged.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::error::WreditError::Encoding`] for a surrogate or a value above
+    /// U+10FFFF, plus cursor and capacity errors from staging.
+    fn insert_scalars(&mut self, cursor_id: usize, scalars: &[u32]) -> WreditResult<usize>;
+
+    /// Stages the scalar values of `text` at the caret.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`TextEditableEncoding::insert_scalars`].
+    fn insert_str(&mut self, cursor_id: usize, text: &str) -> WreditResult<usize>;
+
+    /// Decodes `bytes` from `encoding` and stages the resulting scalars
+    /// at the caret.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`crate::encoding_dispatch::decode`] errors, plus the
+    /// staging errors of [`TextEditableEncoding::insert_scalars`].
+    fn insert_encoded(
+        &mut self,
+        cursor_id: usize,
+        bytes: &[u8],
+        encoding: DocumentEncoding,
+        policy: DecodePolicy,
+    ) -> WreditResult<usize>;
+
+    /// Reads the committed range `[start, end)` as scalar values.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::error::WreditError::InvalidOperation`] when the range escapes the
+    /// committed document, and [`crate::error::WreditError::Encoding`] when an
+    /// element is not a valid scalar.
+    fn read_scalars(&self, start: usize, end: usize) -> WreditResult<Vec<u32>>;
+
+    /// Reads the committed range `[start, end)` as a `String`.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`TextEditableEncoding::read_scalars`].
+    fn read_string(&self, start: usize, end: usize) -> WreditResult<String>;
+
+    /// Encodes the committed range `[start, end)` into `encoding`.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`TextEditableEncoding::read_scalars`], plus the
+    /// encoding errors of [`crate::encoding_dispatch::encode`].
+    fn read_encoded(
+        &self,
+        start: usize,
+        end: usize,
+        encoding: DocumentEncoding,
+        policy: EncodePolicy,
+    ) -> WreditResult<Vec<u8>>;
 }
 
 /// Undo/redo over the committed document.

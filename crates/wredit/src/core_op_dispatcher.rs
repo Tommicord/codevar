@@ -20,6 +20,7 @@
 //! cursor validation, raw insert/remove bookkeeping and private-gap
 //! staging.
 
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use codevar_logger::log_error;
@@ -30,11 +31,13 @@ use super::flush_writable::write_bytes_to_raw;
 use super::shared_gap::{SLOT_CURSOR_BITS, SLOT_MAX_BASE, SLOT_MAX_SIZE};
 use super::traits::{
     TextEditableBufferQuery, TextEditableColumnarSelection, TextEditableCursor, TextEditableDelete,
-    TextEditableGap, TextEditableHistory, TextEditableOverwrite, TextEditablePut, TextEditableReplace,
-    TextEditableSelection, Writable,
+    TextEditableEncoding, TextEditableGap, TextEditableHistory, TextEditableOverwrite, TextEditablePut,
+    TextEditableReplace, TextEditableSelection, Writable,
 };
 use super::writable::{GAP_NONE, MAX_CURSORS, MAX_GAPS, SHARED_GAP_SLOTS, StreamWritable, WritableEvent};
 use super::writable_scan;
+use crate::encoding::{DocumentEncoding, is_valid_scalar};
+use crate::encoding_dispatch::{DecodePolicy, EncodePolicy, decode, encode};
 use crate::error::{WreditError, WreditResult};
 use codevar_wredit_asm::memmove;
 
@@ -1224,6 +1227,93 @@ where
     }
 }
 
+impl<const GAP_SIZE: usize> TextEditableEncoding<u32, u32, GAP_SIZE> for StreamWritable<u32, u32, GAP_SIZE> {
+    fn set_document_encoding(&mut self, encoding: DocumentEncoding) -> WreditResult<()> {
+        self.base.set_encoding(encoding)
+    }
+
+    fn document_encoding(&self) -> DocumentEncoding {
+        self.base.document_encoding()
+    }
+
+    fn insert_scalars(&mut self, cursor_id: usize, scalars: &[u32]) -> WreditResult<usize> {
+        // Validate before touching the buffer so a rejected scalar
+        // cannot leave a partially inserted sequence behind.
+        for &value in scalars {
+            if !is_valid_scalar(value) {
+                log_error!("wredit: rejecting non-scalar value U+{value:04X}");
+                return Err(WreditError::Encoding);
+            }
+        }
+        let id = self.validate_cursor(cursor_id)?;
+        let Some(cursor) = self.base.cursor(id) else {
+            log_error!("wredit: cursor {id} vanished before scalar insertion");
+            return Err(WreditError::InvalidCursor { cursor: id });
+        };
+        let mut position = cursor.array_pos();
+        for &value in scalars {
+            self.stage_private(id, value, position)?;
+            position = self.move_caret_to(id, position.saturating_add(1));
+        }
+        Ok(position)
+    }
+
+    fn insert_str(&mut self, cursor_id: usize, text: &str) -> WreditResult<usize> {
+        let scalars: Vec<u32> = text.chars().map(u32::from).collect();
+        self.insert_scalars(cursor_id, &scalars)
+    }
+
+    fn insert_encoded(
+        &mut self,
+        cursor_id: usize,
+        bytes: &[u8],
+        encoding: DocumentEncoding,
+        policy: DecodePolicy,
+    ) -> WreditResult<usize> {
+        let scalars = decode(bytes, encoding, policy)?;
+        self.insert_scalars(cursor_id, &scalars)
+    }
+
+    fn read_scalars(&self, start: usize, end: usize) -> WreditResult<Vec<u32>> {
+        let elements = self
+            .raw_slice(start, end)
+            .ok_or(WreditError::InvalidOperation {
+                what: "scalar read range",
+            })?;
+        let mut scalars = Vec::with_capacity(elements.len());
+        for &element in elements {
+            let value = packed_char(element);
+            if !is_valid_scalar(value) {
+                log_error!("wredit: buffer holds non-scalar value U+{value:04X}");
+                return Err(WreditError::Encoding);
+            }
+            scalars.push(value);
+        }
+        Ok(scalars)
+    }
+
+    fn read_string(&self, start: usize, end: usize) -> WreditResult<String> {
+        let scalars = self.read_scalars(start, end)?;
+        let mut text = String::with_capacity(scalars.len());
+        for value in scalars {
+            let character = char::from_u32(value).ok_or(WreditError::Encoding)?;
+            text.push(character);
+        }
+        Ok(text)
+    }
+
+    fn read_encoded(
+        &self,
+        start: usize,
+        end: usize,
+        encoding: DocumentEncoding,
+        policy: EncodePolicy,
+    ) -> WreditResult<Vec<u8>> {
+        let scalars = self.read_scalars(start, end)?;
+        encode(&scalars, encoding, policy)
+    }
+}
+
 impl<Raw, Buf, const GAP_SIZE: usize> TextEditableCursor<Raw, Buf, GAP_SIZE>
     for StreamWritable<Raw, Buf, GAP_SIZE>
 where
@@ -1631,8 +1721,8 @@ pub(crate) mod tests {
     use super::*;
     use crate::base::{COMMON_MASK, make_packed};
     use crate::traits::{
-        TextEditableBufferQuery, TextEditableCursor, TextEditableDelete, TextEditableOverwrite,
-        TextEditablePut, TextEditableReplace, TextEditableSelection,
+        TextEditableBufferQuery, TextEditableCursor, TextEditableDelete, TextEditableEncoding,
+        TextEditableOverwrite, TextEditablePut, TextEditableReplace, TextEditableSelection,
     };
 
     // Justification: `unwrap` in tests is permitted by the project
@@ -1946,5 +2036,64 @@ pub(crate) mod tests {
         assert!(stream.event_bridge().is_none());
         // No gaps exist yet, so nothing is close to position 0.
         assert_eq!(unsafe { stream.proximity(0) }, None);
+    }
+
+    #[test]
+    fn scalar_text_round_trips_through_the_document_encoding() {
+        let mut stream = new_stream();
+        let id = stream.active_cursor_id();
+        assert_eq!(stream.document_encoding(), DocumentEncoding::Utf8);
+        stream
+            .set_document_encoding(DocumentEncoding::Utf16Le)
+            .unwrap();
+        assert_eq!(stream.document_encoding(), DocumentEncoding::Utf16Le);
+
+        let text = "aé😀";
+        let end = stream.insert_str(id, text).unwrap();
+        assert_eq!(end, 3);
+        stream.flush_all();
+        assert_eq!(stream.read_string(0, 3).unwrap(), text);
+        assert_eq!(
+            stream.read_scalars(0, 3).unwrap(),
+            vec![u32::from('a'), u32::from('é'), u32::from('😀')]
+        );
+
+        let bytes = stream
+            .read_encoded(0, 3, DocumentEncoding::Utf16Le, EncodePolicy::Strict)
+            .unwrap();
+        assert_eq!(bytes.len(), 8);
+        stream
+            .insert_encoded(id, &bytes, DocumentEncoding::Utf16Le, DecodePolicy::Strict)
+            .unwrap();
+        stream.flush_all();
+        assert_eq!(stream.read_string(0, 6).unwrap(), "aé😀aé😀");
+    }
+
+    #[test]
+    fn non_scalar_insert_is_rejected_without_mutating_the_buffer() {
+        let mut stream = new_stream();
+        let id = stream.active_cursor_id();
+        stream.insert_str(id, "ok").unwrap();
+        stream.flush_all();
+
+        assert!(matches!(
+            stream.insert_scalars(id, &[u32::from('x'), 0xD800]),
+            Err(WreditError::Encoding)
+        ));
+        assert_eq!(stream.raw_length(), 2);
+        stream.flush_all();
+        assert_eq!(stream.read_string(0, 2).unwrap(), "ok");
+    }
+
+    #[test]
+    fn scalar_read_rejects_out_of_range_ranges() {
+        let mut stream = new_stream();
+        let id = stream.active_cursor_id();
+        stream.insert_str(id, "abc").unwrap();
+        stream.flush_all();
+        assert!(matches!(
+            stream.read_scalars(0, 4),
+            Err(WreditError::InvalidOperation { .. })
+        ));
     }
 }

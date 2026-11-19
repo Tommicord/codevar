@@ -39,6 +39,19 @@ use crate::base::{
 /// width of the [`crate::base::ENC_SINGLE_BYTE`] tag range.
 pub const SINGLE_BYTE_COUNT: u8 = 28;
 
+/// `true` when `value` is a Unicode scalar value.
+///
+/// Scalar values are the code points the edit buffer stores: every
+/// integer up to U+10FFFF except the surrogate range
+/// `U+D800..=U+DFFF`.  The packed 24-bit payload can hold integers
+/// outside this range, so insertion paths validate with this predicate
+/// before a value reaches the buffer.
+#[must_use]
+#[inline]
+pub const fn is_valid_scalar(value: u32) -> bool {
+    value <= 0x10_FFFF && (value < 0xD800 || value > 0xDFFF)
+}
+
 /// A document encoding supported by the engine.
 ///
 /// The Unicode variants describe how bytes are decoded into scalar
@@ -379,5 +392,16 @@ mod tests {
     #[test]
     fn default_is_utf8() {
         assert_eq!(DocumentEncoding::default(), DocumentEncoding::Utf8);
+    }
+
+    #[test]
+    fn scalar_validation_rejects_surrogates_and_out_of_range_values() {
+        assert!(is_valid_scalar(0x0));
+        assert!(is_valid_scalar(u32::from('a')));
+        assert!(is_valid_scalar(0x10_FFFF));
+        assert!(!is_valid_scalar(0xD7FF + 1));
+        assert!(!is_valid_scalar(0xDFFF));
+        assert!(!is_valid_scalar(0x11_0000));
+        assert!(!is_valid_scalar(u32::MAX));
     }
 }
