@@ -31,6 +31,7 @@ mod codebook;
 mod core_op_dispatcher;
 pub mod cursor;
 pub mod cursor_allocator;
+pub mod encoding_dispatch;
 pub mod error;
 pub mod flush_writable;
 pub mod fs_id_compress;
@@ -41,6 +42,7 @@ pub mod simd;
 pub mod staging_gap;
 pub mod storage_bind;
 pub mod traits;
+pub mod unicode_segmentation;
 pub mod writable;
 mod writable_scan;
 

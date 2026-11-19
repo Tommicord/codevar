@@ -251,6 +251,24 @@ pub trait TextEditableCursor<Raw, Buf, const GAP_SIZE: usize>: Writable<Raw, Buf
     /// Moves the caret to `(row, col)`; returns the new position.
     fn move_cursor_to(&mut self, cursor_id: usize, row: usize, col: usize) -> WreditResult<usize>;
 
+    /// Moves the caret to the next grapheme cluster boundary; returns the new position.
+    fn move_cursor_next_grapheme(&mut self, cursor_id: usize) -> WreditResult<usize>;
+
+    /// Moves the caret to the previous grapheme cluster boundary; returns the new position.
+    fn move_cursor_prev_grapheme(&mut self, cursor_id: usize) -> WreditResult<usize>;
+
+    /// Moves the caret to the next word boundary; returns the new position.
+    fn move_cursor_next_word(&mut self, cursor_id: usize) -> WreditResult<usize>;
+
+    /// Moves the caret to the previous word boundary; returns the new position.
+    fn move_cursor_prev_word(&mut self, cursor_id: usize) -> WreditResult<usize>;
+
+    /// Moves the caret to the next sentence boundary; returns the new position.
+    fn move_cursor_next_sentence(&mut self, cursor_id: usize) -> WreditResult<usize>;
+
+    /// Moves the caret to the previous sentence boundary; returns the new position.
+    fn move_cursor_prev_sentence(&mut self, cursor_id: usize) -> WreditResult<usize>;
+
     /// Preloads the cursor's stack line ring around `row`.
     ///
     /// A cold random row jump has to scan the committed document to

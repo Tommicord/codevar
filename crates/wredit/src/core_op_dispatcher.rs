@@ -1321,6 +1321,133 @@ where
         Ok(to)
     }
 
+    fn move_cursor_next_grapheme(&mut self, cursor_id: usize) -> WreditResult<usize> {
+        let id = self.validate_cursor(cursor_id)?;
+        self.flush_cursor_gap(id);
+        self.base.sync_cursor_length(id);
+        let from = self
+            .base
+            .cursor(id)
+            .map(super::cursor::Cursor::array_pos)
+            .unwrap_or(0);
+        let raw = self.base.raw_ref().as_ptr();
+        let len = self.base.logical_length();
+        let code_points: Vec<u32> = (0..len)
+            .map(|i| unsafe { Into::<u32>::into(*raw.add(i)) })
+            .collect();
+        let to = crate::unicode_segmentation::next_grapheme_position(&code_points, from);
+        let to = to.min(len);
+        self.base
+            .emit(WritableEvent::cursor_moved(id, from, to));
+        Ok(to)
+    }
+
+    fn move_cursor_prev_grapheme(&mut self, cursor_id: usize) -> WreditResult<usize> {
+        let id = self.validate_cursor(cursor_id)?;
+        self.flush_cursor_gap(id);
+        self.base.sync_cursor_length(id);
+        let from = self
+            .base
+            .cursor(id)
+            .map(super::cursor::Cursor::array_pos)
+            .unwrap_or(0);
+        let raw = self.base.raw_ref().as_ptr();
+        let len = self.base.logical_length();
+        let code_points: Vec<u32> = (0..len)
+            .map(|i| unsafe { Into::<u32>::into(*raw.add(i)) })
+            .collect();
+        let to = crate::unicode_segmentation::prev_grapheme_position(&code_points, from)
+            .max(0)
+            .min(len);
+        self.base
+            .emit(WritableEvent::cursor_moved(id, from, to));
+        Ok(to)
+    }
+
+    fn move_cursor_next_word(&mut self, cursor_id: usize) -> WreditResult<usize> {
+        let id = self.validate_cursor(cursor_id)?;
+        self.flush_cursor_gap(id);
+        self.base.sync_cursor_length(id);
+        let from = self
+            .base
+            .cursor(id)
+            .map(super::cursor::Cursor::array_pos)
+            .unwrap_or(0);
+        let raw = self.base.raw_ref().as_ptr();
+        let len = self.base.logical_length();
+        let code_points: Vec<u32> = (0..len)
+            .map(|i| unsafe { Into::<u32>::into(*raw.add(i)) })
+            .collect();
+        let to = crate::unicode_segmentation::next_word_position(&code_points, from).min(len);
+        self.base
+            .emit(WritableEvent::cursor_moved(id, from, to));
+        Ok(to)
+    }
+
+    fn move_cursor_prev_word(&mut self, cursor_id: usize) -> WreditResult<usize> {
+        let id = self.validate_cursor(cursor_id)?;
+        self.flush_cursor_gap(id);
+        self.base.sync_cursor_length(id);
+        let from = self
+            .base
+            .cursor(id)
+            .map(super::cursor::Cursor::array_pos)
+            .unwrap_or(0);
+        let raw = self.base.raw_ref().as_ptr();
+        let len = self.base.logical_length();
+        let code_points: Vec<u32> = (0..len)
+            .map(|i| unsafe { Into::<u32>::into(*raw.add(i)) })
+            .collect();
+        let to = crate::unicode_segmentation::prev_word_position(&code_points, from)
+            .max(0)
+            .min(len);
+        self.base
+            .emit(WritableEvent::cursor_moved(id, from, to));
+        Ok(to)
+    }
+
+    fn move_cursor_next_sentence(&mut self, cursor_id: usize) -> WreditResult<usize> {
+        let id = self.validate_cursor(cursor_id)?;
+        self.flush_cursor_gap(id);
+        self.base.sync_cursor_length(id);
+        let from = self
+            .base
+            .cursor(id)
+            .map(super::cursor::Cursor::array_pos)
+            .unwrap_or(0);
+        let raw = self.base.raw_ref().as_ptr();
+        let len = self.base.logical_length();
+        let code_points: Vec<u32> = (0..len)
+            .map(|i| unsafe { Into::<u32>::into(*raw.add(i)) })
+            .collect();
+        let to = crate::unicode_segmentation::next_sentence_position(&code_points, from).min(len);
+        self.base
+            .emit(WritableEvent::cursor_moved(id, from, to));
+        Ok(to)
+    }
+
+    fn move_cursor_prev_sentence(&mut self, cursor_id: usize) -> WreditResult<usize> {
+        let id = self.validate_cursor(cursor_id)?;
+        self.flush_cursor_gap(id);
+        self.base.sync_cursor_length(id);
+        let from = self
+            .base
+            .cursor(id)
+            .map(super::cursor::Cursor::array_pos)
+            .unwrap_or(0);
+        let raw = self.base.raw_ref().as_ptr();
+        let len = self.base.logical_length();
+        let code_points: Vec<u32> = (0..len)
+            .map(|i| unsafe { Into::<u32>::into(*raw.add(i)) })
+            .collect();
+        let to = crate::unicode_segmentation::prev_sentence_position(&code_points, from)
+            .max(0)
+            .min(len);
+        self.base
+            .emit(WritableEvent::cursor_moved(id, from, to));
+        Ok(to)
+    }
+
     fn move_cursor_to(&mut self, cursor_id: usize, row: usize, col: usize) -> WreditResult<usize> {
         let id = self.validate_cursor(cursor_id)?;
         self.flush_cursor_gap(id);
