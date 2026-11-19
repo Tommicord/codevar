@@ -28,7 +28,14 @@
 //! registry below keeps tag resolution explicit and rejects unknown
 //! tags instead of guessing.
 
+use alloc::string::String;
+use alloc::vec::Vec;
+
+use codevar_logger::log_error;
+use codevar_textlike_encode::encoding::{CoderResult, DecoderResult, EncoderResult};
+
 use crate::encoding::DocumentEncoding;
+use crate::error::{WreditError, WreditResult};
 
 /// Resolves a stable document-encoding tag.
 ///
@@ -54,6 +61,317 @@ pub fn encoding_for_label(label: &str) -> Option<DocumentEncoding> {
 #[inline]
 pub fn encoding_for_bom(bytes: &[u8]) -> Option<DocumentEncoding> {
     DocumentEncoding::sniff_bom(bytes)
+}
+
+/// Policy applied when a byte stream contains a malformed sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodePolicy {
+    /// Reject the first malformed sequence.
+    Strict,
+    /// Substitute U+FFFD and continue decoding.
+    Replace,
+}
+
+/// Policy applied when a scalar value has no mapping in the target
+/// encoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncodePolicy {
+    /// Reject the first unmappable scalar.
+    Strict,
+    /// Write an ASCII question mark (`?`) instead.
+    Replace,
+}
+
+/// Size of the stack buffer used to drain the streaming decoders.
+const DECODE_CHUNK: usize = 4096;
+
+/// Decodes `bytes` from `encoding` into Unicode scalar values.
+///
+/// A leading BOM belonging to `encoding` is removed. `policy` controls
+/// whether malformed input is rejected or replaced with U+FFFD.
+///
+/// # Errors
+///
+/// * [`WreditError::Encoding`] for an invalid [`DocumentEncoding`] or a
+///   decoder state failure.
+/// * [`WreditError::MalformedInput`] under [`DecodePolicy::Strict`].
+pub fn decode(bytes: &[u8], encoding: DocumentEncoding, policy: DecodePolicy) -> WreditResult<Vec<u32>> {
+    if !encoding.is_valid() {
+        return Err(WreditError::Encoding);
+    }
+    let bytes = encoding.strip_bom(bytes);
+    if encoding.is_utf32() {
+        decode_utf32(bytes, encoding, policy)
+    } else {
+        decode_textlike(bytes, encoding, policy)
+    }
+}
+
+/// Decodes `bytes` into a `String`.
+///
+/// # Errors
+///
+/// Same as [`decode`], plus [`WreditError::Encoding`] if a decoder
+/// somehow produced a scalar outside the Unicode range.
+pub fn decode_to_string(
+    bytes: &[u8],
+    encoding: DocumentEncoding,
+    policy: DecodePolicy,
+) -> WreditResult<String> {
+    let scalars = decode(bytes, encoding, policy)?;
+    let mut text = String::with_capacity(scalars.len());
+    for value in scalars {
+        text.push(scalar_to_char(value)?);
+    }
+    Ok(text)
+}
+
+/// Encodes Unicode scalar values into `encoding`.
+///
+/// No byte-order mark is emitted; use [`encode_with_bom`] when the
+/// caller wants one.
+///
+/// # Errors
+///
+/// * [`WreditError::Encoding`] for an invalid [`DocumentEncoding`] or a
+///   scalar outside the Unicode range.
+/// * [`WreditError::UnmappableCharacter`] under
+///   [`EncodePolicy::Strict`] when the target cannot represent a
+///   scalar.
+pub fn encode(scalars: &[u32], encoding: DocumentEncoding, policy: EncodePolicy) -> WreditResult<Vec<u8>> {
+    if !encoding.is_valid() {
+        return Err(WreditError::Encoding);
+    }
+    match encoding {
+        DocumentEncoding::Utf8 => encode_utf8(scalars),
+        DocumentEncoding::Utf16Le => encode_utf16(scalars, true),
+        DocumentEncoding::Utf16Be => encode_utf16(scalars, false),
+        DocumentEncoding::Utf32Le => encode_utf32(scalars, true),
+        DocumentEncoding::Utf32Be => encode_utf32(scalars, false),
+        DocumentEncoding::SingleByte(_) => encode_single_byte(scalars, encoding, policy),
+    }
+}
+
+/// Encodes a `&str` into `encoding`.
+///
+/// # Errors
+///
+/// Same as [`encode`].
+pub fn encode_from_str(
+    text: &str,
+    encoding: DocumentEncoding,
+    policy: EncodePolicy,
+) -> WreditResult<Vec<u8>> {
+    let scalars: Vec<u32> = text.chars().map(u32::from).collect();
+    encode(&scalars, encoding, policy)
+}
+
+/// Encodes scalar values and prefixes the encoding's byte-order mark,
+/// if it has one.
+///
+/// # Errors
+///
+/// Same as [`encode`].
+pub fn encode_with_bom(
+    scalars: &[u32],
+    encoding: DocumentEncoding,
+    policy: EncodePolicy,
+) -> WreditResult<Vec<u8>> {
+    let bom = encoding.bom();
+    let mut bytes = Vec::with_capacity(
+        bom.len()
+            .saturating_add(scalars.len().saturating_mul(4)),
+    );
+    bytes.extend_from_slice(bom);
+    bytes.extend_from_slice(&encode(scalars, encoding, policy)?);
+    Ok(bytes)
+}
+
+/// Decode status of one streaming iteration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DecodeStatus {
+    Done,
+    Again,
+    Malformed,
+}
+
+fn decode_textlike(bytes: &[u8], encoding: DocumentEncoding, policy: DecodePolicy) -> WreditResult<Vec<u32>> {
+    let Some(metadata) = encoding.textlike() else {
+        return Err(WreditError::Encoding);
+    };
+    let mut decoder = metadata.new_decoder_without_bom_handling();
+    let mut utf8 = Vec::with_capacity(bytes.len().saturating_mul(3));
+    let mut chunk = [0u8; DECODE_CHUNK];
+    let mut offset = 0usize;
+    loop {
+        let (status, read, written) = match policy {
+            DecodePolicy::Strict => {
+                let (result, read, written) =
+                    decoder.decode_to_utf8_without_replacement(&bytes[offset..], &mut chunk, true);
+                let status = match result {
+                    DecoderResult::InputEmpty => DecodeStatus::Done,
+                    DecoderResult::OutputFull => DecodeStatus::Again,
+                    DecoderResult::Malformed(_, _) => DecodeStatus::Malformed,
+                };
+                (status, read, written)
+            }
+            DecodePolicy::Replace => {
+                let (result, read, written, _) = decoder.decode_to_utf8(&bytes[offset..], &mut chunk, true);
+                let status = match result {
+                    CoderResult::InputEmpty => DecodeStatus::Done,
+                    CoderResult::OutputFull => DecodeStatus::Again,
+                };
+                (status, read, written)
+            }
+        };
+        utf8.extend_from_slice(&chunk[..written]);
+        offset = offset.saturating_add(read);
+        match status {
+            DecodeStatus::Done => break,
+            DecodeStatus::Again => {
+                if read == 0 && written == 0 {
+                    log_error!("wredit: decoder made no progress at byte {offset}");
+                    return Err(WreditError::Encoding);
+                }
+            }
+            DecodeStatus::Malformed => {
+                return Err(WreditError::MalformedInput {
+                    encoding: encoding.name(),
+                    offset,
+                });
+            }
+        }
+    }
+    let text = core::str::from_utf8(&utf8).map_err(|_| WreditError::Encoding)?;
+    Ok(text.chars().map(u32::from).collect())
+}
+
+fn decode_utf32(bytes: &[u8], encoding: DocumentEncoding, policy: DecodePolicy) -> WreditResult<Vec<u32>> {
+    let little_endian = matches!(encoding, DocumentEncoding::Utf32Le);
+    let mut scalars = Vec::with_capacity(bytes.len() / 4);
+    let mut offset = 0usize;
+    while offset + 4 <= bytes.len() {
+        let word = if little_endian {
+            u32::from_le_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+            ])
+        } else {
+            u32::from_be_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+            ])
+        };
+        match char::from_u32(word) {
+            Some(character) => scalars.push(u32::from(character)),
+            None => match policy {
+                DecodePolicy::Strict => {
+                    return Err(WreditError::MalformedInput {
+                        encoding: encoding.name(),
+                        offset,
+                    });
+                }
+                DecodePolicy::Replace => scalars.push(u32::from(char::REPLACEMENT_CHARACTER)),
+            },
+        }
+        offset += 4;
+    }
+    if offset < bytes.len() {
+        match policy {
+            DecodePolicy::Strict => {
+                return Err(WreditError::MalformedInput {
+                    encoding: encoding.name(),
+                    offset,
+                });
+            }
+            DecodePolicy::Replace => scalars.push(u32::from(char::REPLACEMENT_CHARACTER)),
+        }
+    }
+    Ok(scalars)
+}
+
+fn encode_utf8(scalars: &[u32]) -> WreditResult<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(scalars.len().saturating_mul(3));
+    let mut buffer = [0u8; 4];
+    for &value in scalars {
+        let character = scalar_to_char(value)?;
+        bytes.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
+    }
+    Ok(bytes)
+}
+
+fn encode_utf16(scalars: &[u32], little_endian: bool) -> WreditResult<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(scalars.len().saturating_mul(2));
+    let mut buffer = [0u16; 2];
+    for &value in scalars {
+        let character = scalar_to_char(value)?;
+        for unit in character.encode_utf16(&mut buffer) {
+            let encoded = if little_endian {
+                unit.to_le_bytes()
+            } else {
+                unit.to_be_bytes()
+            };
+            bytes.extend_from_slice(&encoded);
+        }
+    }
+    Ok(bytes)
+}
+
+fn encode_utf32(scalars: &[u32], little_endian: bool) -> WreditResult<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(scalars.len().saturating_mul(4));
+    for &value in scalars {
+        let character = scalar_to_char(value)?;
+        let encoded = if little_endian {
+            u32::from(character).to_le_bytes()
+        } else {
+            u32::from(character).to_be_bytes()
+        };
+        bytes.extend_from_slice(&encoded);
+    }
+    Ok(bytes)
+}
+
+fn encode_single_byte(
+    scalars: &[u32],
+    encoding: DocumentEncoding,
+    policy: EncodePolicy,
+) -> WreditResult<Vec<u8>> {
+    let Some(metadata) = encoding.textlike() else {
+        return Err(WreditError::Encoding);
+    };
+    let mut encoder = metadata.new_encoder();
+    let mut bytes = Vec::with_capacity(scalars.len());
+    let mut utf8_buffer = [0u8; 4];
+    let mut byte_buffer = [0u8; 4];
+    for &value in scalars {
+        let character = scalar_to_char(value)?;
+        let source = character.encode_utf8(&mut utf8_buffer);
+        match encoder.encode_from_utf8_without_replacement(source, &mut byte_buffer, true) {
+            (EncoderResult::InputEmpty, read, 1) if read == source.len() => bytes.push(byte_buffer[0]),
+            (EncoderResult::Unmappable(_), _, _) | (EncoderResult::InputEmpty, _, 0) => match policy {
+                EncodePolicy::Strict => {
+                    return Err(WreditError::UnmappableCharacter { character });
+                }
+                EncodePolicy::Replace => bytes.push(b'?'),
+            },
+            (EncoderResult::OutputFull, _, _) => {
+                return Err(WreditError::LimitExceeded {
+                    what: "single-byte encode buffer",
+                });
+            }
+            _ => return Err(WreditError::Encoding),
+        }
+    }
+    Ok(bytes)
+}
+
+#[inline]
+fn scalar_to_char(value: u32) -> WreditResult<char> {
+    char::from_u32(value).ok_or(WreditError::Encoding)
 }
 
 #[cfg(test)]
@@ -105,5 +423,162 @@ mod tests {
             Some(DocumentEncoding::Utf32Le)
         );
         assert_eq!(encoding_for_bom(b"plain"), None);
+    }
+
+    #[test]
+    fn utf8_round_trips_astral_characters() {
+        let text = "aé€😀";
+        let scalars: Vec<u32> = text.chars().map(u32::from).collect();
+        let bytes = encode(&scalars, DocumentEncoding::Utf8, EncodePolicy::Strict).unwrap();
+        assert_eq!(bytes, text.as_bytes());
+        assert_eq!(
+            decode(&bytes, DocumentEncoding::Utf8, DecodePolicy::Strict).unwrap(),
+            scalars
+        );
+    }
+
+    #[test]
+    fn utf16_round_trips_both_endians() {
+        let text = "aé€😀";
+        let scalars: Vec<u32> = text.chars().map(u32::from).collect();
+        for encoding in [DocumentEncoding::Utf16Le, DocumentEncoding::Utf16Be] {
+            let bytes = encode(&scalars, encoding, EncodePolicy::Strict).unwrap();
+            assert_eq!(decode(&bytes, encoding, DecodePolicy::Strict).unwrap(), scalars);
+        }
+    }
+
+    #[test]
+    fn utf32_round_trips_both_endians_and_rejects_partial_units() {
+        let text = "aé€😀";
+        let scalars: Vec<u32> = text.chars().map(u32::from).collect();
+        for encoding in [DocumentEncoding::Utf32Le, DocumentEncoding::Utf32Be] {
+            let bytes = encode(&scalars, encoding, EncodePolicy::Strict).unwrap();
+            assert_eq!(bytes.len(), scalars.len() * 4);
+            assert_eq!(decode(&bytes, encoding, DecodePolicy::Strict).unwrap(), scalars);
+
+            let mut partial = bytes.clone();
+            partial.push(0x41);
+            assert!(matches!(
+                decode(&partial, encoding, DecodePolicy::Strict),
+                Err(WreditError::MalformedInput { .. })
+            ));
+            assert_eq!(
+                decode(&partial, encoding, DecodePolicy::Replace)
+                    .unwrap()
+                    .last()
+                    .copied(),
+                Some(u32::from(char::REPLACEMENT_CHARACTER))
+            );
+        }
+    }
+
+    #[test]
+    fn utf32_rejects_surrogate_and_out_of_range_scalars() {
+        for word in [0xD800u32, 0xDFFF, 0x11_0000, u32::MAX] {
+            let bytes = word.to_le_bytes();
+            assert!(matches!(
+                decode(&bytes, DocumentEncoding::Utf32Le, DecodePolicy::Strict),
+                Err(WreditError::MalformedInput { .. })
+            ));
+        }
+        assert!(matches!(
+            encode(&[0xD800], DocumentEncoding::Utf8, EncodePolicy::Strict),
+            Err(WreditError::Encoding)
+        ));
+    }
+
+    #[test]
+    fn utf8_strict_and_replacement_policies_differ() {
+        let malformed = [0x61, 0xFF, 0x62];
+        assert!(matches!(
+            decode(&malformed, DocumentEncoding::Utf8, DecodePolicy::Strict),
+            Err(WreditError::MalformedInput { .. })
+        ));
+        assert_eq!(
+            decode(&malformed, DocumentEncoding::Utf8, DecodePolicy::Replace).unwrap(),
+            vec![
+                u32::from('a'),
+                u32::from(char::REPLACEMENT_CHARACTER),
+                u32::from('b')
+            ]
+        );
+    }
+
+    #[test]
+    fn decoding_strips_a_matching_bom() {
+        let scalars = [u32::from('a')];
+        for encoding in [
+            DocumentEncoding::Utf8,
+            DocumentEncoding::Utf16Le,
+            DocumentEncoding::Utf16Be,
+            DocumentEncoding::Utf32Le,
+            DocumentEncoding::Utf32Be,
+        ] {
+            let bytes = encode_with_bom(&scalars, encoding, EncodePolicy::Strict).unwrap();
+            assert!(bytes.starts_with(encoding.bom()));
+            assert_eq!(decode(&bytes, encoding, DecodePolicy::Strict).unwrap(), scalars);
+        }
+    }
+
+    #[test]
+    fn windows1252_round_trips_and_replaces_unmappable_scalars() {
+        let encoding = DocumentEncoding::SingleByte(20);
+        let euro = u32::from('€');
+        let bytes = encode(&[euro], encoding, EncodePolicy::Strict).unwrap();
+        assert_eq!(bytes, vec![0x80]);
+        assert_eq!(
+            decode(&bytes, encoding, DecodePolicy::Strict).unwrap(),
+            vec![euro]
+        );
+
+        let snowman = u32::from('☃');
+        assert!(matches!(
+            encode(&[snowman], encoding, EncodePolicy::Strict),
+            Err(WreditError::UnmappableCharacter { character: '☃' })
+        ));
+        assert_eq!(
+            encode(&[snowman], encoding, EncodePolicy::Replace).unwrap(),
+            vec![b'?']
+        );
+    }
+
+    #[test]
+    fn streaming_decoder_handles_inputs_larger_than_one_chunk() {
+        let text: String = core::iter::repeat('a')
+            .take(DECODE_CHUNK * 2 + 17)
+            .collect();
+        let scalars: Vec<u32> = text.chars().map(u32::from).collect();
+        let bytes = encode_from_str(&text, DocumentEncoding::Utf8, EncodePolicy::Strict).unwrap();
+        assert_eq!(
+            decode(&bytes, DocumentEncoding::Utf8, DecodePolicy::Strict).unwrap(),
+            scalars
+        );
+        assert_eq!(
+            decode_to_string(&bytes, DocumentEncoding::Utf8, DecodePolicy::Strict).unwrap(),
+            text
+        );
+    }
+
+    #[test]
+    fn empty_input_round_trips() {
+        for encoding in [
+            DocumentEncoding::Utf8,
+            DocumentEncoding::Utf16Le,
+            DocumentEncoding::Utf16Be,
+            DocumentEncoding::Utf32Le,
+            DocumentEncoding::Utf32Be,
+            DocumentEncoding::SingleByte(20),
+        ] {
+            assert!(
+                decode(&[], encoding, DecodePolicy::Strict)
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(
+                encode(&[], encoding, EncodePolicy::Strict)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
     }
 }

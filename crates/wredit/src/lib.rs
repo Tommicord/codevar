@@ -63,6 +63,9 @@ pub use base::{
 };
 pub use cursor::{BidiIndex, ColumnarRange, ColumnarSelection, Cursor};
 pub use encoding::DocumentEncoding;
+pub use encoding_dispatch::{
+    DecodePolicy, EncodePolicy, decode, decode_to_string, encode, encode_from_str, encode_with_bom,
+};
 pub use history_ring_journal::{Edit, HistoryStore, delta_common, is_word_continuation};
 pub use shared_gap::{SharedGapSlot, SharedGapTable};
 pub use traits::{

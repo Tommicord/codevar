@@ -106,6 +106,18 @@ pub enum WreditError {
     },
     /// The textlike encoder or decoder rejected the input.
     Encoding,
+    /// The byte stream is not valid in the selected encoding.
+    MalformedInput {
+        /// Encoding name (`"UTF-8"`, `"windows-1252"`, ...).
+        encoding: &'static str,
+        /// Byte offset of the first sequence that failed validation.
+        offset: usize,
+    },
+    /// A scalar value cannot be represented in the selected encoding.
+    UnmappableCharacter {
+        /// The scalar that has no mapping.
+        character: char,
+    },
     /// A requested range exceeds what the operation supports (for
     /// example a length that no longer fits the kernel's `int`
     /// parameters).
@@ -213,6 +225,12 @@ impl fmt::Display for WreditError {
                 write!(f, "no block mapped at virtual address {address:#x}")
             }
             Self::Encoding => f.write_str("text encoding failed"),
+            Self::MalformedInput { encoding, offset } => {
+                write!(f, "malformed {encoding} input at byte offset {offset}")
+            }
+            Self::UnmappableCharacter { character } => {
+                write!(f, "character {character:?} has no mapping in the target encoding")
+            }
             Self::LimitExceeded { what } => write!(f, "limit exceeded: {what}"),
             Self::InvalidOperation { what } => write!(f, "invalid operation: {what}"),
             Self::InvalidGapSize { size } => {
@@ -275,6 +293,17 @@ mod tests {
                 "no block mapped at virtual address 0x1000",
             ),
             (WreditError::Encoding, "text encoding failed"),
+            (
+                WreditError::MalformedInput {
+                    encoding: "UTF-8",
+                    offset: 7,
+                },
+                "malformed UTF-8 input at byte offset 7",
+            ),
+            (
+                WreditError::UnmappableCharacter { character: '☃' },
+                "character '☃' has no mapping in the target encoding",
+            ),
             (
                 WreditError::LimitExceeded { what: "kernel args" },
                 "limit exceeded: kernel args",
