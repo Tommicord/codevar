@@ -31,6 +31,7 @@ mod codebook;
 mod core_op_dispatcher;
 pub mod cursor;
 pub mod cursor_allocator;
+pub mod encoding;
 pub mod encoding_dispatch;
 pub mod error;
 pub mod flush_writable;
@@ -56,11 +57,12 @@ pub use fs_block::{BLOCK_SHIFT, BLOCK_SIZE, BlockDevice, MAX_BLOCKS, MemoryDisk}
 pub use fs_writable::WritableFile;
 
 pub use base::{
-    CHAR_MASK, COMMON_MASK, ENC_SINGLE_BYTE, ENC_UNKNOWN, ENC_UTF8, ENC_UTF16BE, ENC_UTF16LE, MERGE_MASK,
-    NAME_LEN, SHIFT_TYPE, TYPE_MASK, WritableAlignedPtr, WritableGapSize, make_packed, packed_char,
-    packed_type,
+    CHAR_MASK, COMMON_MASK, ENC_SINGLE_BYTE, ENC_SINGLE_BYTE_COUNT, ENC_SINGLE_BYTE_LAST, ENC_UNKNOWN,
+    ENC_UTF8, ENC_UTF16BE, ENC_UTF16LE, ENC_UTF32BE, ENC_UTF32LE, MERGE_MASK, NAME_LEN, SHIFT_TYPE,
+    TYPE_MASK, WritableAlignedPtr, WritableGapSize, make_packed, packed_char, packed_type,
 };
 pub use cursor::{BidiIndex, ColumnarRange, ColumnarSelection, Cursor};
+pub use encoding::DocumentEncoding;
 pub use history_ring_journal::{Edit, HistoryStore, delta_common, is_word_continuation};
 pub use shared_gap::{SharedGapSlot, SharedGapTable};
 pub use traits::{

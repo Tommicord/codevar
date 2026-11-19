@@ -65,8 +65,21 @@ pub const ENC_UTF8: u16 = 0x1;
 pub const ENC_UTF16LE: u16 = 0x2;
 /// UTF-16 big-endian document encoding.
 pub const ENC_UTF16BE: u16 = 0x3;
-/// Single-byte document encoding (Latin-1 style).
-pub const ENC_SINGLE_BYTE: u16 = 0x4;
+/// UTF-32 little-endian document encoding.
+pub const ENC_UTF32LE: u16 = 0x4;
+/// UTF-32 big-endian document encoding.
+pub const ENC_UTF32BE: u16 = 0x5;
+/// First tag of the single-byte document encodings.
+///
+/// Tags `ENC_SINGLE_BYTE..=ENC_SINGLE_BYTE_LAST` select one entry of
+/// [`codevar_textlike_encode::legacy::SINGLE_BYTE_ENCODINGS`] in that
+/// order. The range is deliberately separate from the Unicode tags so
+/// that adding a Unicode encoding never renumbers the single-byte set.
+pub const ENC_SINGLE_BYTE: u16 = 0x10;
+/// Number of selectable single-byte document encodings.
+pub const ENC_SINGLE_BYTE_COUNT: u16 = 28;
+/// Last tag of the single-byte document encodings.
+pub const ENC_SINGLE_BYTE_LAST: u16 = ENC_SINGLE_BYTE + ENC_SINGLE_BYTE_COUNT - 1;
 
 /// Capacity of the document name in bytes (without the terminator).
 pub const NAME_LEN: usize = 0xFF;
