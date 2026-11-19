@@ -20,13 +20,6 @@
 //! the document boundary.  This module is the single place that maps a
 //! stable [`crate::base`] tag to a [`DocumentEncoding`] and performs the
 //! byte ↔ scalar conversion.
-//!
-//! The previous design used a dense function-pointer table with one row
-//! per encoding.  That table could not represent UTF-32 (absent from
-//! the WHATWG Encoding Standard) or the 28 selectable single-byte
-//! encodings, and it clamped every unknown tag to windows-1252.  The
-//! registry below keeps tag resolution explicit and rejects unknown
-//! tags instead of guessing.
 
 use alloc::string::String;
 use alloc::vec::Vec;
