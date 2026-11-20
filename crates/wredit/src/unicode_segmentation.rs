@@ -7884,46 +7884,98 @@ pub fn prev_sentence_boundary(code_points: &[u32], mut index: usize) -> usize {
     index
 }
 
+/// Return the position of the *next* grapheme cluster boundary strictly after
+/// `pos`.  When `pos` sits at the start of a combining cluster (e.g. `e` +
+/// combining accent), this skips the whole cluster and lands at the next
+/// boundary, so the cursor moves by one grapheme rather than one code point.
+///
+/// At end-of-text or past the end, returns `code_points.len()`.
 #[inline]
 #[must_use]
 pub fn next_grapheme_position(code_points: &[u32], pos: usize) -> usize {
-    let nb = next_grapheme_boundary(code_points, pos);
-    nb.max(pos + 1).min(code_points.len())
+    if pos >= code_points.len() {
+        return code_points.len();
+    }
+    // Walk forward until we find the next boundary strictly after `pos`.
+    // That boundary is the start of the next grapheme cluster.
+    let mut index = pos + 1;
+    while index < code_points.len() && !is_grapheme_boundary(code_points, index) {
+        index += 1;
+    }
+    index.min(code_points.len())
 }
 
+/// Return the position of the *previous* grapheme cluster boundary strictly
+/// before `pos`.  At start-of-text, returns 0.
 #[inline]
 #[must_use]
 pub fn prev_grapheme_position(code_points: &[u32], pos: usize) -> usize {
-    let pb = prev_grapheme_boundary(code_points, pos);
-    if pb >= pos { pos.saturating_sub(1) } else { pb }
+    if pos == 0 {
+        return 0;
+    }
+    // Walk backward until we find the previous boundary strictly before `pos`.
+    let mut index = pos - 1;
+    while index > 0 && !is_grapheme_boundary(code_points, index) {
+        index -= 1;
+    }
+    index
 }
 
+/// Return the position of the *next* word boundary strictly after `pos`.
 #[inline]
 #[must_use]
 pub fn next_word_position(code_points: &[u32], pos: usize) -> usize {
-    let nb = next_word_boundary(code_points, pos);
-    nb.max(pos + 1).min(code_points.len())
+    if pos >= code_points.len() {
+        return code_points.len();
+    }
+    let mut index = pos + 1;
+    while index < code_points.len() && !is_word_boundary(code_points, index) {
+        index += 1;
+    }
+    index.min(code_points.len())
 }
 
+/// Return the position of the *previous* word boundary strictly before `pos`.
 #[inline]
 #[must_use]
 pub fn prev_word_position(code_points: &[u32], pos: usize) -> usize {
-    let pb = prev_word_boundary(code_points, pos);
-    if pb >= pos { pos.saturating_sub(1) } else { pb }
+    if pos == 0 {
+        return 0;
+    }
+    let mut index = pos - 1;
+    while index > 0 && !is_word_boundary(code_points, index) {
+        index -= 1;
+    }
+    index
 }
 
+/// Return the position of the *next* sentence boundary strictly after `pos`.
 #[inline]
 #[must_use]
 pub fn next_sentence_position(code_points: &[u32], pos: usize) -> usize {
-    let nb = next_sentence_boundary(code_points, pos);
-    nb.max(pos + 1).min(code_points.len())
+    if pos >= code_points.len() {
+        return code_points.len();
+    }
+    let mut index = pos + 1;
+    while index < code_points.len() && !is_sentence_boundary(code_points, index) {
+        index += 1;
+    }
+    index.min(code_points.len())
 }
 
+/// Return the position of the *previous* sentence boundary strictly before
+/// `pos`.
 #[inline]
 #[must_use]
 pub fn prev_sentence_position(code_points: &[u32], pos: usize) -> usize {
-    let pb = prev_sentence_boundary(code_points, pos);
-    if pb >= pos { pos.saturating_sub(1) } else { pb }
+    if pos == 0 {
+        return 0;
+    }
+    let mut index = pos - 1;
+    while index > 0 && !is_sentence_boundary(code_points, index) {
+        index -= 1;
+    }
+    index
 }
 
 // ---------------------------------------------------------------------------
@@ -7986,6 +8038,24 @@ mod tests {
         assert_eq!(prev_grapheme_position(&cp, 1), 0);
         assert_eq!(next_grapheme_position(&cp, 4), 5);
         assert_eq!(prev_grapheme_position(&cp, 5), 4);
+    }
+
+    #[test]
+    fn test_next_prev_position_skips_clusters() {
+        // A + combining grave is one grapheme cluster.
+        let cp = [0x0041, 0x0300];
+        assert_eq!(next_grapheme_position(&cp, 0), 2);
+        assert_eq!(prev_grapheme_position(&cp, 2), 0);
+
+        // Emoji ZWJ sequence: ExtPict ZWJ ExtPict is one cluster.
+        let cp = [0x1F6D1, 0x200D, 0x1F6D1];
+        assert_eq!(next_grapheme_position(&cp, 0), 3);
+        assert_eq!(prev_grapheme_position(&cp, 3), 0);
+
+        // Word boundary skips a whole word.
+        let cp = decode_str_to_code_points("hello world");
+        assert_eq!(next_word_position(&cp, 0), 5);
+        assert_eq!(prev_word_position(&cp, cp.len()), 6);
     }
 
     #[test]
