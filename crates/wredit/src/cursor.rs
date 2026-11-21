@@ -650,7 +650,7 @@ impl LineAnchors {
         let mut low = 0;
         let mut high = starts.len();
         while low < high {
-            let middle = (low + high) / 2;
+            let middle = (low + high) >> 1;
             if starts[middle] as usize <= end {
                 low = middle + 1;
             } else {

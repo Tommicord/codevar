@@ -18,7 +18,7 @@
 //! Real disks expose a fixed-size block interface; the engine mirrors
 //! it with the [`BlockDevice`] trait: reads and writes always transfer
 //! exactly one [`BLOCK_SIZE`]-byte block, and out-of-range indices are
-//! rejected with [`WreditError::BlockOutOfRange`] — the filesystem
+//! rejected with [`Error::BlockOutOfRange`] — the filesystem
 //! layer above never sees a short or torn transfer.
 //!
 //! [`MemoryDisk`] is the reference implementation: a flat, zeroed
@@ -27,7 +27,7 @@
 
 use alloc::vec::Vec;
 
-use crate::error::{WreditError, WreditResult};
+use crate::error::{Error, Result};
 
 /// Bytes per block — the allocation unit of the whole storage layer.
 ///
@@ -48,7 +48,7 @@ pub type Block = [u8; BLOCK_SIZE];
 /// The block interface of a storage device.
 ///
 /// Implementations must treat `index` as authoritative: an index past
-/// [`BlockDevice::block_count`] is [`WreditError::BlockOutOfRange`],
+/// [`BlockDevice::block_count`] is [`Error::BlockOutOfRange`],
 /// never a wrap or a silent clamp.
 pub trait BlockDevice {
     /// Number of blocks the device holds.
@@ -59,18 +59,18 @@ pub trait BlockDevice {
     ///
     /// # Errors
     ///
-    /// * [`WreditError::BlockOutOfRange`] when `index` is past the end
-    /// * [`WreditError::InvalidOperation`] when `out` is not exactly
+    /// * [`Error::BlockOutOfRange`] when `index` is past the end
+    /// * [`Error::InvalidOperation`] when `out` is not exactly
     ///   [`BLOCK_SIZE`] bytes
-    /// * [`WreditError::DeviceIo`] on a device-side failure
-    fn read_block(&self, index: u64, out: &mut [u8]) -> WreditResult<()>;
+    /// * [`Error::DeviceIo`] on a device-side failure
+    fn read_block(&self, index: u64, out: &mut [u8]) -> Result<()>;
 
     /// Writes `data` (exactly one block) to block `index`.
     ///
     /// # Errors
     ///
     /// Same set as [`BlockDevice::read_block`].
-    fn write_block(&mut self, index: u64, data: &[u8]) -> WreditResult<()>;
+    fn write_block(&mut self, index: u64, data: &[u8]) -> Result<()>;
 }
 
 /// An in-RAM block device: the engine's "platters" as one flat array.
@@ -83,10 +83,10 @@ pub trait BlockDevice {
 /// # Examples
 ///
 /// ```
-/// use codevar_wredit::error::WreditResult;
+/// use codevar_wredit::error::Result;
 /// use codevar_wredit::fs_block::{BlockDevice, MemoryDisk, BLOCK_SIZE};
 ///
-/// fn inspect() -> WreditResult<u64> {
+/// fn inspect() -> Result<u64> {
 ///     let disk = MemoryDisk::new(64)?;
 ///     let mut block = [0u8; BLOCK_SIZE];
 ///     disk.read_block(0, &mut block)?;
@@ -106,13 +106,13 @@ impl MemoryDisk {
     ///
     /// # Errors
     ///
-    /// * [`WreditError::BlockOutOfRange`] when `block_count` is zero
+    /// * [`Error::BlockOutOfRange`] when `block_count` is zero
     ///   or exceeds [`MAX_BLOCKS`]
-    /// * [`WreditError::DiskFull`] when the host cannot back the
+    /// * [`Error::DiskFull`] when the host cannot back the
     ///   allocation
-    pub fn new(block_count: u64) -> WreditResult<Self> {
+    pub fn new(block_count: u64) -> Result<Self> {
         if block_count == 0 || block_count > MAX_BLOCKS {
-            return Err(WreditError::BlockOutOfRange {
+            return Err(Error::BlockOutOfRange {
                 index: block_count,
                 count: MAX_BLOCKS,
             });
@@ -120,13 +120,13 @@ impl MemoryDisk {
         let byte_len = block_count
             .checked_mul(BLOCK_SIZE as u64)
             .and_then(|total| usize::try_from(total).ok())
-            .ok_or(WreditError::LimitExceeded {
+            .ok_or(Error::LimitExceeded {
                 what: "memory disk size",
             })?;
         let mut blocks = Vec::new();
         blocks
             .try_reserve_exact(byte_len)
-            .map_err(|_| WreditError::DiskFull { free: 0 })?;
+            .map_err(|_| Error::DiskFull { free: 0 })?;
         blocks.resize(byte_len, 0);
         Ok(Self { blocks })
     }
@@ -137,16 +137,16 @@ impl MemoryDisk {
         (self.blocks.len() / BLOCK_SIZE) as u64
     }
 
-    /// Byte offset of `index`, or [`WreditError::BlockOutOfRange`].
-    fn byte_offset(&self, index: u64) -> WreditResult<usize> {
+    /// Byte offset of `index`, or [`Error::BlockOutOfRange`].
+    fn byte_offset(&self, index: u64) -> Result<usize> {
         let count = self.block_count();
         if index >= count {
-            return Err(WreditError::BlockOutOfRange { index, count });
+            return Err(Error::BlockOutOfRange { index, count });
         }
         usize::try_from(index)
             .ok()
             .and_then(|i| i.checked_mul(BLOCK_SIZE))
-            .ok_or(WreditError::InvalidAddress { address: index })
+            .ok_or(Error::InvalidAddress { address: index })
     }
 }
 
@@ -155,14 +155,14 @@ impl BlockDevice for MemoryDisk {
         MemoryDisk::block_count(self)
     }
 
-    fn read_block(&self, index: u64, out: &mut [u8]) -> WreditResult<()> {
+    fn read_block(&self, index: u64, out: &mut [u8]) -> Result<()> {
         check_transfer(out.len())?;
         let start = self.byte_offset(index)?;
         out.copy_from_slice(&self.blocks[start..start + BLOCK_SIZE]);
         Ok(())
     }
 
-    fn write_block(&mut self, index: u64, data: &[u8]) -> WreditResult<()> {
+    fn write_block(&mut self, index: u64, data: &[u8]) -> Result<()> {
         check_transfer(data.len())?;
         let start = self.byte_offset(index)?;
         self.blocks[start..start + BLOCK_SIZE].copy_from_slice(data);
@@ -171,9 +171,9 @@ impl BlockDevice for MemoryDisk {
 }
 
 /// Rejects transfers that are not exactly one block long.
-fn check_transfer(len: usize) -> WreditResult<()> {
+fn check_transfer(len: usize) -> Result<()> {
     if len != BLOCK_SIZE {
-        return Err(WreditError::InvalidOperation {
+        return Err(Error::InvalidOperation {
             what: "block transfers must be exactly one block",
         });
     }
@@ -217,15 +217,15 @@ mod tests {
         let block = [0u8; BLOCK_SIZE];
         assert!(matches!(
             disk.read_block(2, &mut [0u8; BLOCK_SIZE]),
-            Err(crate::error::WreditError::BlockOutOfRange { index: 2, count: 2 })
+            Err(crate::error::Error::BlockOutOfRange { index: 2, count: 2 })
         ));
         assert!(matches!(
             disk.write_block(9, &block),
-            Err(crate::error::WreditError::BlockOutOfRange { index: 9, count: 2 })
+            Err(crate::error::Error::BlockOutOfRange { index: 9, count: 2 })
         ));
         assert!(matches!(
             disk.read_block(0, &mut [0u8; 16]),
-            Err(crate::error::WreditError::InvalidOperation { .. })
+            Err(crate::error::Error::InvalidOperation { .. })
         ));
     }
 

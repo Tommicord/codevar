@@ -7131,8 +7131,12 @@ fn incb_lookup(cp: u32) -> InCB {
     }
 }
 
+/// Returns the Unicode UAX #29 Word Break property of `cp`.
+///
+/// Exposed to the crate so other modules can classify characters with the
+/// full property table instead of maintaining their own subsets.
 #[inline]
-fn wb_prop(cp: u32) -> WordBreak {
+pub(crate) fn wb_prop(cp: u32) -> WordBreak {
     match gcp_lookup(WORD_BREAK, cp) {
         1 => WordBreak::CR,
         2 => WordBreak::LF,

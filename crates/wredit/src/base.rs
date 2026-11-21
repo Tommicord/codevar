@@ -36,7 +36,7 @@ use core::ptr::NonNull;
 
 use codevar_logger::log_error;
 
-use crate::error::{WreditError, WreditResult};
+use crate::error::{Error, Result};
 
 /// Shift of the element type field inside a packed raw element.
 pub const SHIFT_TYPE: u32 = 28;
@@ -264,11 +264,11 @@ impl<T: Copy, const ALIGN: usize> WritableAlignedPtr<T, ALIGN> {
     ///
     /// # Errors
     ///
-    /// * [`WreditError::LimitExceeded`] when `capacity` cannot be
+    /// * [`Error::LimitExceeded`] when `capacity` cannot be
     ///   expressed as a memory layout (overflow).
-    /// * [`WreditError::CapacityExhausted`] when the allocator
+    /// * [`Error::CapacityExhausted`] when the allocator
     ///   refuses the request; the buffer is left untouched.
-    pub fn ensure_capacity(&mut self, capacity: usize) -> WreditResult<()> {
+    pub fn ensure_capacity(&mut self, capacity: usize) -> Result<()> {
         if capacity <= self.allocated {
             return Ok(());
         }
@@ -353,21 +353,21 @@ impl<T: Copy, const ALIGN: usize> Drop for WritableAlignedPtr<T, ALIGN> {
 /// `alloc::alloc::handle_alloc_error`, a failed allocation is *not*
 /// fatal: it is logged through `codevar_logger` and an error is
 /// returned so the operation can report
-/// [`WreditError::CapacityExhausted`] and leave the document intact.
+/// [`Error::CapacityExhausted`] and leave the document intact.
 ///
 /// # Errors
 ///
-/// [`WreditError::CapacityExhausted`] when the layout overflows or
+/// [`Error::CapacityExhausted`] when the layout overflows or
 /// the global allocator refuses the request.
-pub fn ensure_merge_buffer<T: Copy>(capacity: usize, align: usize) -> WreditResult<NonNull<T>> {
+pub fn ensure_merge_buffer<T: Copy>(capacity: usize, align: usize) -> Result<NonNull<T>> {
     if capacity == 0 {
-        return Err(WreditError::InvalidGapSize { size: 0 });
+        return Err(Error::InvalidGapSize { size: 0 });
     }
     let layout = Layout::array::<T>(capacity)
         .and_then(|l| l.align_to(align.max(align_of::<T>()).max(1)))
         .map_err(|_| {
             log_error!("writable buffer layout overflow");
-            WreditError::LimitExceeded {
+            Error::LimitExceeded {
                 what: "writable buffer layout",
             }
         })?;
@@ -377,12 +377,12 @@ pub fn ensure_merge_buffer<T: Copy>(capacity: usize, align: usize) -> WreditResu
     let ptr = unsafe { alloc(layout) };
     if ptr.is_null() {
         log_error!("writable buffer allocation failed");
-        return Err(WreditError::CapacityExhausted {
+        return Err(Error::CapacityExhausted {
             requested: capacity,
             available: 0,
         });
     }
-    NonNull::new(ptr.cast::<T>()).ok_or(WreditError::CapacityExhausted {
+    NonNull::new(ptr.cast::<T>()).ok_or(Error::CapacityExhausted {
         requested: capacity,
         available: 0,
     })
@@ -456,7 +456,7 @@ mod tests {
     fn overflow_capacity_requests_are_rejected_not_wrapped() {
         let mut buffer: WritableAlignedPtr<u64, 64> = WritableAlignedPtr::new();
         let result = buffer.ensure_capacity(usize::MAX / 4);
-        assert!(matches!(result, Err(WreditError::LimitExceeded { .. })));
+        assert!(matches!(result, Err(Error::LimitExceeded { .. })));
         // The buffer is unchanged after the failure.
         assert_eq!(buffer.allocated(), 0);
         assert_eq!(buffer.count(), 0);
@@ -466,7 +466,7 @@ mod tests {
     fn zero_sized_requests_are_rejected() {
         assert!(matches!(
             ensure_merge_buffer::<u32>(0, 64),
-            Err(WreditError::InvalidGapSize { size: 0 })
+            Err(Error::InvalidGapSize { size: 0 })
         ));
     }
 

@@ -27,15 +27,15 @@ name = "text_core"
 harness = false
 
 [[bench]]
+name = "history_ring_journal"
+harness = false
+
+[[bench]]
 name = "primitives"
 harness = false
 
 [[bench]]
 name = "storage_bind"
-harness = false
-
-[[bench]]
-name = "inssched_probe"
 harness = false
 
 [[bench]]

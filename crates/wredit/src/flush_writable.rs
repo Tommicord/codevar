@@ -35,7 +35,7 @@ use core::mem::MaybeUninit;
 
 use super::base::{COMMON_MASK, MERGE_MASK, WritableAlignedPtr, make_packed, packed_char, packed_type};
 use super::writable::{MAX_GAPS, SHARED_GAP_SLOTS, StreamWritable, WritableEvent};
-use crate::error::WreditResult;
+use crate::error::Result;
 use codevar_logger::log_error;
 use codevar_wredit_asm::{memcpy, memmove};
 
@@ -58,15 +58,15 @@ enum LineLayout {
 /// Number of plain elements resolved on the stack per block move.
 const FLUSH_CHUNK: usize = 0x40;
 
-/// Byte threshold above which the flush layer uses non-temporal
-/// stores for the tail shift and the staged-data copy.
+/// Byte threshold above which the engine uses non-temporal stores for
+/// large block copies and tail shifts.
 ///
 /// Non-temporal stores bypass the cache hierarchy and avoid a
-/// read-for-ownership on the destination, so they win once a flush
+/// read-for-ownership on the destination, so they win once a copy
 /// touches more data than fits in the last-level cache. 1 MiB is a
 /// conservative LLC-sized floor that keeps small edits on the cached
 /// path while large pastes and block commits stream past the caches.
-const NT_THRESHOLD: usize = 1 << 20;
+pub(crate) const NT_THRESHOLD: usize = 1 << 20;
 
 /// Inserts `src` into the raw document at `at`.
 ///
@@ -121,21 +121,14 @@ pub(crate) fn write_bytes_to_raw<Raw: Copy>(
             // and its destination.
             memmove(base.add((at + src.len()) * elem), base.add(at * elem), byte_len);
         }
-        if src.len() >= NT_THRESHOLD {
+        let src_bytes = core::mem::size_of_val(src);
+        if src_bytes >= NT_THRESHOLD {
             // Non-temporal staged-data copy: the destination was just
             // vacated and will not be reused soon, so streaming stores
             // avoid polluting the cache.
-            codevar_wredit_asm::memcpy_nt(
-                base.add(at * elem),
-                src.as_ptr().cast::<u8>(),
-                core::mem::size_of_val(src),
-            );
+            codevar_wredit_asm::memcpy_nt(base.add(at * elem), src.as_ptr().cast::<u8>(), src_bytes);
         } else {
-            memcpy(
-                base.add(at * elem),
-                src.as_ptr().cast::<u8>(),
-                core::mem::size_of_val(src),
-            );
+            memcpy(base.add(at * elem), src.as_ptr().cast::<u8>(), src_bytes);
         }
     }
     raw.set_count(new_length);
@@ -246,13 +239,31 @@ pub(crate) fn flush_stream_write_scalar<Raw: Copy + Into<u32> + From<u32>>(
         // and the staged slice is a valid read-only range. `memmove`
         // tolerates the overlap between the shifted tail and its
         // destination.
+        let staged_bytes = core::mem::size_of_val(values);
         unsafe {
-            memmove(base.add((at + staged) * elem), base.add(at * elem), tail_bytes);
-            memcpy(
-                base.add(at * elem),
-                values.as_ptr().cast::<u8>(),
-                core::mem::size_of_val(values),
-            );
+            if tail_bytes >= NT_THRESHOLD {
+                // Non-temporal tail shift: a large paste streams past
+                // the LLC, so bypassing the cache avoids the read-for-
+                // ownership on the destination.
+                codevar_wredit_asm::memmove_nt(
+                    base.add((at + staged) * elem),
+                    base.add(at * elem),
+                    tail_bytes,
+                );
+            } else {
+                memmove(base.add((at + staged) * elem), base.add(at * elem), tail_bytes);
+            }
+            if staged_bytes >= NT_THRESHOLD {
+                // The destination was just vacated and the staged run is
+                // larger than the cache, so stream it in.
+                codevar_wredit_asm::memcpy_nt(
+                    base.add(at * elem),
+                    values.as_ptr().cast::<u8>(),
+                    staged_bytes,
+                );
+            } else {
+                memcpy(base.add(at * elem), values.as_ptr().cast::<u8>(), staged_bytes);
+            }
         }
         raw.set_count(worst_case);
         return Some(worst_case);
@@ -445,7 +456,7 @@ where
     /// disabled; allocation failures are logged and reported but never
     /// fatal, leaving the document intact.
     #[inline]
-    pub(crate) fn record_edit(&mut self, position: usize, old: &[Raw], new: &[Raw]) -> WreditResult<()> {
+    pub(crate) fn record_edit(&mut self, position: usize, old: &[Raw], new: &[Raw]) -> Result<()> {
         let Some(history) = self.base.history_mut() else {
             return Ok(());
         };

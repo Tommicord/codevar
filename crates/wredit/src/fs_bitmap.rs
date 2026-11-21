@@ -21,7 +21,7 @@
 //! bit store. [`Bitmap`] is exactly that: one bit per address, bit 0
 //! of byte 0 the lowest address, `1` meaning *used*.
 
-use crate::error::{WreditError, WreditResult};
+use crate::error::{Error, Result};
 
 use crate::fs_block::BLOCK_SIZE;
 
@@ -130,11 +130,11 @@ impl Bitmap {
     ///
     /// # Errors
     ///
-    /// [`WreditError::InvalidOperation`] when `bytes` is not exactly
+    /// [`Error::InvalidOperation`] when `bytes` is not exactly
     /// one block long.
-    pub fn from_bytes(bytes: &[u8]) -> WreditResult<Self> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() != BLOCK_SIZE {
-            return Err(WreditError::InvalidOperation {
+            return Err(Error::InvalidOperation {
                 what: "a bitmap occupies exactly one block",
             });
         }

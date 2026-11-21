@@ -33,13 +33,13 @@
 //! # Example
 //!
 //! ```rust
-//! use codevar_wredit::error::WreditResult;
+//! use codevar_wredit::error::Result;
 //! use codevar_wredit::{DocumentEncoding, TextEditableEncoding};
 //! use codevar_wredit::fs_block::MemoryDisk;
 //! use codevar_wredit::fs::DiskFs;
 //! use codevar_wredit::storage_bind::BoundDocument;
 //!
-//! fn edit_stored_file() -> WreditResult<()> {
+//! fn edit_stored_file() -> Result<()> {
 //!     let disk = MemoryDisk::new(256)?;
 //!     let mut fs = DiskFs::format(disk, 256, 128)?;
 //!     let inode = fs.create(2, "notes.txt", 0x8000)?;
@@ -59,7 +59,7 @@ use codevar_logger::{log_error, log_info};
 
 use crate::encoding::{DocumentEncoding, is_valid_scalar};
 use crate::encoding_dispatch::{DecodePolicy, EncodePolicy, decode, encode, encode_with_bom};
-use crate::error::{WreditError, WreditResult};
+use crate::error::{Error, Result};
 use crate::fs::DiskFs;
 use crate::fs_block::BlockDevice;
 use crate::fs_writable::WritableFile;
@@ -133,12 +133,12 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
     ///
     /// # Errors
     ///
-    /// * [`WreditError::IsADirectory`] when `inode` is not a regular file
-    /// * [`WreditError::NotFound`] when `inode` does not exist
+    /// * [`Error::IsADirectory`] when `inode` is not a regular file
+    /// * [`Error::NotFound`] when `inode` does not exist
     /// * Propagates device I/O errors from reading the file
-    /// * [`WreditError::CapacityExhausted`] when the edit buffer cannot
+    /// * [`Error::CapacityExhausted`] when the edit buffer cannot
     ///   grow to hold the file contents
-    pub fn open(fs: &'fs mut DiskFs<D>, inode: u32) -> WreditResult<Self> {
+    pub fn open(fs: &'fs mut DiskFs<D>, inode: u32) -> Result<Self> {
         Self::open_with_optional_encoding(fs, inode, None)
     }
 
@@ -152,13 +152,13 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
     ///
     /// # Errors
     ///
-    /// Same as [`Self::open`], plus [`WreditError::Encoding`] when
+    /// Same as [`Self::open`], plus [`Error::Encoding`] when
     /// `encoding` carries an out-of-range single-byte index.
     pub fn open_with_encoding(
         fs: &'fs mut DiskFs<D>,
         inode: u32,
         encoding: DocumentEncoding,
-    ) -> WreditResult<Self> {
+    ) -> Result<Self> {
         Self::open_with_optional_encoding(fs, inode, Some(encoding))
     }
 
@@ -166,10 +166,10 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
         fs: &'fs mut DiskFs<D>,
         inode: u32,
         requested: Option<DocumentEncoding>,
-    ) -> WreditResult<Self> {
+    ) -> Result<Self> {
         let ino = fs.read_inode(inode)?;
         if !ino.is_regular() {
-            return Err(WreditError::IsADirectory {
+            return Err(Error::IsADirectory {
                 what: "bound document target",
             });
         }
@@ -200,10 +200,10 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
         bytes: &[u8],
         encoding: DocumentEncoding,
         loaded_size: u64,
-    ) -> WreditResult<Self> {
+    ) -> Result<Self> {
         if !encoding.is_valid() {
             log_error!("storage_bind: rejecting an invalid document encoding");
-            return Err(WreditError::Encoding);
+            return Err(Error::Encoding);
         }
         let bom = if encoding.bom().is_empty() || !bytes.starts_with(encoding.bom()) {
             BomPolicy::Omit
@@ -215,7 +215,7 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
         let mut stream = StreamWritable::with_capacity(scalars.len());
         let cursor_id = stream
             .append_cursor(Cursor::new())
-            .ok_or(WreditError::LimitExceeded { what: "cursor pool" })?;
+            .ok_or(Error::LimitExceeded { what: "cursor pool" })?;
         stream.set_active_cursor(cursor_id);
         stream.set_document_encoding(encoding)?;
         stream.insert_scalars(cursor_id, &scalars)?;
@@ -246,9 +246,9 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
     /// # Errors
     ///
     /// Propagates filesystem errors from creating the file and the
-    /// writable file, and [`WreditError::LimitExceeded`] when the
+    /// writable file, and [`Error::LimitExceeded`] when the
     /// cursor pool is full.
-    pub fn create(fs: &'fs mut DiskFs<D>, parent: u32, name: &str, mode: u16) -> WreditResult<Self> {
+    pub fn create(fs: &'fs mut DiskFs<D>, parent: u32, name: &str, mode: u16) -> Result<Self> {
         Self::create_with_encoding(fs, parent, name, mode, DocumentEncoding::Utf8)
     }
 
@@ -260,7 +260,7 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
     ///
     /// # Errors
     ///
-    /// Same as [`Self::create`], plus [`WreditError::Encoding`] when
+    /// Same as [`Self::create`], plus [`Error::Encoding`] when
     /// `encoding` carries an out-of-range single-byte index.
     pub fn create_with_encoding(
         fs: &'fs mut DiskFs<D>,
@@ -268,17 +268,17 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
         name: &str,
         mode: u16,
         encoding: DocumentEncoding,
-    ) -> WreditResult<Self> {
+    ) -> Result<Self> {
         if !encoding.is_valid() {
             log_error!("storage_bind: rejecting an invalid document encoding");
-            return Err(WreditError::Encoding);
+            return Err(Error::Encoding);
         }
         let inode = fs.create(parent, name, mode)?;
         let file = WritableFile::new(fs, inode)?;
         let mut stream = StreamWritable::new();
         let cursor_id = stream
             .append_cursor(Cursor::new())
-            .ok_or(WreditError::LimitExceeded { what: "cursor pool" })?;
+            .ok_or(Error::LimitExceeded { what: "cursor pool" })?;
         stream.set_active_cursor(cursor_id);
         stream.set_document_encoding(encoding)?;
 
@@ -344,12 +344,12 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
     ///
     /// # Errors
     ///
-    /// [`WreditError::Encoding`] when `encoding` carries an
+    /// [`Error::Encoding`] when `encoding` carries an
     /// out-of-range single-byte index; the current encoding is kept.
-    pub fn set_encoding(&mut self, encoding: DocumentEncoding) -> WreditResult<()> {
+    pub fn set_encoding(&mut self, encoding: DocumentEncoding) -> Result<()> {
         if !encoding.is_valid() {
             log_error!("storage_bind: rejecting an invalid document encoding");
-            return Err(WreditError::Encoding);
+            return Err(Error::Encoding);
         }
         self.encoding = encoding;
         self.stream.set_document_encoding(encoding)?;
@@ -423,19 +423,19 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
     /// or deleted text) never leaves stale trailing bytes.
     ///
     /// Encoding is strict: a scalar the target encoding cannot
-    /// represent returns [`WreditError::UnmappableCharacter`] before
+    /// represent returns [`Error::UnmappableCharacter`] before
     /// anything is written, so the stored file is never partially
     /// rewritten.
     ///
     /// # Errors
     ///
-    /// * [`WreditError::Encoding`] when the buffer holds a non-scalar
+    /// * [`Error::Encoding`] when the buffer holds a non-scalar
     ///   payload
-    /// * [`WreditError::UnmappableCharacter`] when the target encoding
+    /// * [`Error::UnmappableCharacter`] when the target encoding
     ///   cannot represent a scalar
     /// * Propagates device I/O errors from writing, truncating and
     ///   syncing
-    pub fn save(&mut self) -> WreditResult<()> {
+    pub fn save(&mut self) -> Result<()> {
         self.flush_all();
 
         let length = self.stream.raw_length();
@@ -445,7 +445,7 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
             let value = packed_char(element);
             if !is_valid_scalar(value) {
                 log_error!("storage_bind: buffer holds non-scalar value U+{value:04X}");
-                return Err(WreditError::Encoding);
+                return Err(Error::Encoding);
             }
             scalars.push(value);
         }
@@ -479,7 +479,7 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
     /// # Errors
     ///
     /// Propagates device I/O errors from saving.
-    pub fn commit_and_save(&mut self) -> WreditResult<()> {
+    pub fn commit_and_save(&mut self) -> Result<()> {
         self.save()
     }
 
@@ -490,7 +490,7 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
     ///
     /// Marks the document dirty.
     #[inline]
-    pub fn put(&mut self, value: u32) -> WreditResult<usize> {
+    pub fn put(&mut self, value: u32) -> Result<usize> {
         self.dirty = true;
         self.stream.put(self.cursor_id, value)
     }
@@ -500,7 +500,7 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
     ///
     /// Marks the document dirty.
     #[inline]
-    pub fn put_at(&mut self, cursor_id: usize, value: u32) -> WreditResult<usize> {
+    pub fn put_at(&mut self, cursor_id: usize, value: u32) -> Result<usize> {
         self.dirty = true;
         self.stream.put(cursor_id, value)
     }
@@ -510,7 +510,7 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
     ///
     /// Marks the document dirty.
     #[inline]
-    pub fn put_shared(&mut self, value: u32) -> WreditResult<usize> {
+    pub fn put_shared(&mut self, value: u32) -> Result<usize> {
         self.dirty = true;
         self.stream.put_shared(self.cursor_id, value)
     }
@@ -520,7 +520,7 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
     ///
     /// Marks the document dirty.
     #[inline]
-    pub fn delete(&mut self) -> WreditResult<usize> {
+    pub fn delete(&mut self) -> Result<usize> {
         self.dirty = true;
         self.stream.delete(self.cursor_id)
     }
@@ -529,7 +529,7 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
     ///
     /// Marks the document dirty.
     #[inline]
-    pub fn delete_at(&mut self, cursor_id: usize) -> WreditResult<usize> {
+    pub fn delete_at(&mut self, cursor_id: usize) -> Result<usize> {
         self.dirty = true;
         self.stream.delete(cursor_id)
     }
@@ -539,7 +539,7 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
     ///
     /// Marks the document dirty.
     #[inline]
-    pub fn backspace(&mut self) -> WreditResult<usize> {
+    pub fn backspace(&mut self) -> Result<usize> {
         self.dirty = true;
         self.stream.backspace(self.cursor_id)
     }
@@ -548,7 +548,7 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
     ///
     /// Marks the document dirty.
     #[inline]
-    pub fn delete_range(&mut self, start: usize, end: usize) -> WreditResult<usize> {
+    pub fn delete_range(&mut self, start: usize, end: usize) -> Result<usize> {
         self.dirty = true;
         self.stream.delete_range(start, end)
     }
@@ -558,7 +558,7 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
     ///
     /// Marks the document dirty.
     #[inline]
-    pub fn replace(&mut self, value: u32) -> WreditResult<usize> {
+    pub fn replace(&mut self, value: u32) -> Result<usize> {
         self.dirty = true;
         self.stream.replace(self.cursor_id, value)
     }
@@ -568,7 +568,7 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
     ///
     /// Marks the document dirty.
     #[inline]
-    pub fn replace_range(&mut self, start: usize, end: usize, values: &[u32]) -> WreditResult<usize> {
+    pub fn replace_range(&mut self, start: usize, end: usize, values: &[u32]) -> Result<usize> {
         self.dirty = true;
         self.stream.replace_range(start, end, values)
     }
@@ -579,7 +579,7 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
     ///
     /// Marks the document dirty.
     #[inline]
-    pub fn overwrite(&mut self, value: u32) -> WreditResult<usize> {
+    pub fn overwrite(&mut self, value: u32) -> Result<usize> {
         self.dirty = true;
         self.stream.overwrite(self.cursor_id, value)
     }
@@ -589,7 +589,7 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
     ///
     /// Marks the document dirty.
     #[inline]
-    pub fn overwrite_slice(&mut self, start: usize, values: &[u32]) -> WreditResult<usize> {
+    pub fn overwrite_slice(&mut self, start: usize, values: &[u32]) -> Result<usize> {
         self.dirty = true;
         self.stream.overwrite_slice(start, values)
     }
@@ -597,7 +597,7 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
     /// Moves the active caret forward by `amount`; returns the new
     /// position.
     #[inline]
-    pub fn move_cursor_forward(&mut self, amount: usize) -> WreditResult<usize> {
+    pub fn move_cursor_forward(&mut self, amount: usize) -> Result<usize> {
         self.stream
             .move_cursor_forward(self.cursor_id, amount)
     }
@@ -605,14 +605,14 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
     /// Moves `cursor_id`'s caret forward by `amount`; returns the new
     /// position.
     #[inline]
-    pub fn move_cursor_forward_at(&mut self, cursor_id: usize, amount: usize) -> WreditResult<usize> {
+    pub fn move_cursor_forward_at(&mut self, cursor_id: usize, amount: usize) -> Result<usize> {
         self.stream.move_cursor_forward(cursor_id, amount)
     }
 
     /// Moves the active caret backward by `amount`; returns the new
     /// position.
     #[inline]
-    pub fn move_cursor_backward(&mut self, amount: usize) -> WreditResult<usize> {
+    pub fn move_cursor_backward(&mut self, amount: usize) -> Result<usize> {
         self.stream
             .move_cursor_backward(self.cursor_id, amount)
     }
@@ -620,7 +620,7 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
     /// Moves `cursor_id`'s caret backward by `amount`; returns the new
     /// position.
     #[inline]
-    pub fn move_cursor_backward_at(&mut self, cursor_id: usize, amount: usize) -> WreditResult<usize> {
+    pub fn move_cursor_backward_at(&mut self, cursor_id: usize, amount: usize) -> Result<usize> {
         self.stream
             .move_cursor_backward(cursor_id, amount)
     }
@@ -628,46 +628,46 @@ impl<'fs, D: BlockDevice, const STAGING: usize, const GAP_SIZE: usize>
     /// Moves the active caret to the next line; returns the new
     /// position.
     #[inline]
-    pub fn move_cursor_next_line(&mut self) -> WreditResult<usize> {
+    pub fn move_cursor_next_line(&mut self) -> Result<usize> {
         self.stream.move_cursor_next_line(self.cursor_id)
     }
 
     /// Moves the active caret to the previous line; returns the new
     /// position.
     #[inline]
-    pub fn move_cursor_prev_line(&mut self) -> WreditResult<usize> {
+    pub fn move_cursor_prev_line(&mut self) -> Result<usize> {
         self.stream.move_cursor_prev_line(self.cursor_id)
     }
 
     /// Moves the active caret to `(row, col)`; returns the new position.
     #[inline]
-    pub fn move_cursor_to(&mut self, row: usize, col: usize) -> WreditResult<usize> {
+    pub fn move_cursor_to(&mut self, row: usize, col: usize) -> Result<usize> {
         self.stream
             .move_cursor_to(self.cursor_id, row, col)
     }
 
     /// Preloads the active cursor's stack line ring around `row`.
     #[inline]
-    pub fn request_region_load(&mut self, row: usize) -> WreditResult<bool> {
+    pub fn request_region_load(&mut self, row: usize) -> Result<bool> {
         self.stream
             .request_region_load(self.cursor_id, row)
     }
 
     /// The active caret's row.
     #[inline]
-    pub fn cursor_row(&self) -> WreditResult<usize> {
+    pub fn cursor_row(&self) -> Result<usize> {
         self.stream.cursor_row(self.cursor_id)
     }
 
     /// The active caret's column.
     #[inline]
-    pub fn cursor_col(&self) -> WreditResult<usize> {
+    pub fn cursor_col(&self) -> Result<usize> {
         self.stream.cursor_col(self.cursor_id)
     }
 
     /// The width of the active caret's line.
     #[inline]
-    pub fn cursor_width(&self) -> WreditResult<usize> {
+    pub fn cursor_width(&self) -> Result<usize> {
         self.stream.cursor_width(self.cursor_id)
     }
 
@@ -854,7 +854,7 @@ mod tests {
         let dir = fs.mkdir(2, "subdir").unwrap();
         assert!(matches!(
             BoundDocument::<MemoryDisk, 256, 1024>::open(&mut fs, dir),
-            Err(crate::error::WreditError::IsADirectory { .. })
+            Err(crate::error::Error::IsADirectory { .. })
         ));
     }
 
@@ -1044,7 +1044,7 @@ mod tests {
 
         assert!(matches!(
             bound.save(),
-            Err(crate::error::WreditError::UnmappableCharacter { character: '☃' })
+            Err(crate::error::Error::UnmappableCharacter { character: '☃' })
         ));
         assert_eq!(bound.loaded_size(), 0);
         assert!(bound.is_dirty());

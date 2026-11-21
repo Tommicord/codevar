@@ -22,7 +22,7 @@
 //! management, cursor movement, selection and buffer queries — so a
 //! frontend can depend on the smallest surface it needs.
 //!
-//! Fallible operations report [`WreditResult`]; invalid cursor ids
+//! Fallible operations report [`Result`]; invalid cursor ids
 //! and out-of-range positions are rejected with an error (and a log
 //! line), never a panic.
 
@@ -36,7 +36,7 @@ use super::shared_gap::SharedGapTable;
 use super::writable::{EventBridge, SHARED_GAP_SLOTS};
 use crate::encoding::DocumentEncoding;
 use crate::encoding_dispatch::{DecodePolicy, EncodePolicy};
-use crate::error::WreditResult;
+use crate::error::Result;
 
 /// The structural contract of a multi-cursor text writable.
 pub trait Writable<Raw, Buf, const GAP_SIZE: usize>: Sized {
@@ -161,47 +161,47 @@ pub trait Writable<Raw, Buf, const GAP_SIZE: usize>: Sized {
 pub trait TextEditablePut<Raw, Buf, const GAP_SIZE: usize>: Writable<Raw, Buf, GAP_SIZE> {
     /// Stages `value` in the cursor's private gap and advances the
     /// caret. Returns the caret's new logical position.
-    fn put(&mut self, cursor_id: usize, value: Raw) -> WreditResult<usize>;
+    fn put(&mut self, cursor_id: usize, value: Raw) -> Result<usize>;
 
     /// Stages `value` in a *shared* gap the cursor belongs to and
     /// advances the caret. Returns the new logical position.
-    fn put_shared(&mut self, cursor_id: usize, value: Raw) -> WreditResult<usize>;
+    fn put_shared(&mut self, cursor_id: usize, value: Raw) -> Result<usize>;
 }
 
 /// Deleting committed text.
 pub trait TextEditableDelete<Raw, Buf, const GAP_SIZE: usize>: Writable<Raw, Buf, GAP_SIZE> {
     /// Deletes the element at the caret (forward delete). Returns
     /// the number of removed elements (0 at the document end).
-    fn delete(&mut self, cursor_id: usize) -> WreditResult<usize>;
+    fn delete(&mut self, cursor_id: usize) -> Result<usize>;
 
     /// Deletes the element before the caret (backspace). Returns the
     /// number of removed elements (0 at the document start).
-    fn backspace(&mut self, cursor_id: usize) -> WreditResult<usize>;
+    fn backspace(&mut self, cursor_id: usize) -> Result<usize>;
 
     /// Deletes the committed half-open range `[start, end)`.
-    fn delete_range(&mut self, start: usize, end: usize) -> WreditResult<usize>;
+    fn delete_range(&mut self, start: usize, end: usize) -> Result<usize>;
 }
 
 /// Replacing committed text.
 pub trait TextEditableReplace<Raw, Buf, const GAP_SIZE: usize>: Writable<Raw, Buf, GAP_SIZE> {
     /// Deletes the element at the caret and stages `value` in its
     /// place. Returns the new logical caret position.
-    fn replace(&mut self, cursor_id: usize, value: Raw) -> WreditResult<usize>;
+    fn replace(&mut self, cursor_id: usize, value: Raw) -> Result<usize>;
 
     /// Replaces the committed range `[start, end)` with `values`,
     /// committed immediately.
-    fn replace_range(&mut self, start: usize, end: usize, values: &[Raw]) -> WreditResult<usize>;
+    fn replace_range(&mut self, start: usize, end: usize, values: &[Raw]) -> Result<usize>;
 }
 
 /// Overwriting committed text in place.
 pub trait TextEditableOverwrite<Raw, Buf, const GAP_SIZE: usize>: Writable<Raw, Buf, GAP_SIZE> {
     /// Stages a merge element that overwrites the element at the
     /// caret on flush (or appends when the caret is at the end).
-    fn overwrite(&mut self, cursor_id: usize, value: Raw) -> WreditResult<usize>;
+    fn overwrite(&mut self, cursor_id: usize, value: Raw) -> Result<usize>;
 
     /// Overwrites committed elements in place starting at `start`;
     /// `values` extending past the document end are appended.
-    fn overwrite_slice(&mut self, start: usize, values: &[Raw]) -> WreditResult<usize>;
+    fn overwrite_slice(&mut self, start: usize, values: &[Raw]) -> Result<usize>;
 }
 
 /// Gap (flush and block shift) management.
@@ -241,37 +241,37 @@ pub trait TextEditableGap<Raw, Buf, const GAP_SIZE: usize>: Writable<Raw, Buf, G
 /// Caret movement.
 pub trait TextEditableCursor<Raw, Buf, const GAP_SIZE: usize>: Writable<Raw, Buf, GAP_SIZE> {
     /// Moves the caret forward by `amount`; returns the new position.
-    fn move_cursor_forward(&mut self, cursor_id: usize, amount: usize) -> WreditResult<usize>;
+    fn move_cursor_forward(&mut self, cursor_id: usize, amount: usize) -> Result<usize>;
 
     /// Moves the caret backward by `amount`; returns the new position.
-    fn move_cursor_backward(&mut self, cursor_id: usize, amount: usize) -> WreditResult<usize>;
+    fn move_cursor_backward(&mut self, cursor_id: usize, amount: usize) -> Result<usize>;
 
     /// Moves the caret to the next line; returns the new position.
-    fn move_cursor_next_line(&mut self, cursor_id: usize) -> WreditResult<usize>;
+    fn move_cursor_next_line(&mut self, cursor_id: usize) -> Result<usize>;
 
     /// Moves the caret to the previous line; returns the new position.
-    fn move_cursor_prev_line(&mut self, cursor_id: usize) -> WreditResult<usize>;
+    fn move_cursor_prev_line(&mut self, cursor_id: usize) -> Result<usize>;
 
     /// Moves the caret to `(row, col)`; returns the new position.
-    fn move_cursor_to(&mut self, cursor_id: usize, row: usize, col: usize) -> WreditResult<usize>;
+    fn move_cursor_to(&mut self, cursor_id: usize, row: usize, col: usize) -> Result<usize>;
 
     /// Moves the caret to the next grapheme cluster boundary; returns the new position.
-    fn move_cursor_next_grapheme(&mut self, cursor_id: usize) -> WreditResult<usize>;
+    fn move_cursor_next_grapheme(&mut self, cursor_id: usize) -> Result<usize>;
 
     /// Moves the caret to the previous grapheme cluster boundary; returns the new position.
-    fn move_cursor_prev_grapheme(&mut self, cursor_id: usize) -> WreditResult<usize>;
+    fn move_cursor_prev_grapheme(&mut self, cursor_id: usize) -> Result<usize>;
 
     /// Moves the caret to the next word boundary; returns the new position.
-    fn move_cursor_next_word(&mut self, cursor_id: usize) -> WreditResult<usize>;
+    fn move_cursor_next_word(&mut self, cursor_id: usize) -> Result<usize>;
 
     /// Moves the caret to the previous word boundary; returns the new position.
-    fn move_cursor_prev_word(&mut self, cursor_id: usize) -> WreditResult<usize>;
+    fn move_cursor_prev_word(&mut self, cursor_id: usize) -> Result<usize>;
 
     /// Moves the caret to the next sentence boundary; returns the new position.
-    fn move_cursor_next_sentence(&mut self, cursor_id: usize) -> WreditResult<usize>;
+    fn move_cursor_next_sentence(&mut self, cursor_id: usize) -> Result<usize>;
 
     /// Moves the caret to the previous sentence boundary; returns the new position.
-    fn move_cursor_prev_sentence(&mut self, cursor_id: usize) -> WreditResult<usize>;
+    fn move_cursor_prev_sentence(&mut self, cursor_id: usize) -> Result<usize>;
 
     /// Preloads the cursor's stack line ring around `row`.
     ///
@@ -280,16 +280,16 @@ pub trait TextEditableCursor<Raw, Buf, const GAP_SIZE: usize>: Writable<Raw, Buf
     /// current ring and makes the following row/column work in the
     /// region constant time. Returns `false` for a document below the
     /// cache threshold or a row past the last committed line.
-    fn request_region_load(&mut self, cursor_id: usize, row: usize) -> WreditResult<bool>;
+    fn request_region_load(&mut self, cursor_id: usize, row: usize) -> Result<bool>;
 
     /// The caret's row.
-    fn cursor_row(&self, cursor_id: usize) -> WreditResult<usize>;
+    fn cursor_row(&self, cursor_id: usize) -> Result<usize>;
 
     /// The caret's column.
-    fn cursor_col(&self, cursor_id: usize) -> WreditResult<usize>;
+    fn cursor_col(&self, cursor_id: usize) -> Result<usize>;
 
     /// The width of the caret's line.
-    fn cursor_width(&self, cursor_id: usize) -> WreditResult<usize>;
+    fn cursor_width(&self, cursor_id: usize) -> Result<usize>;
 }
 
 /// Selection management.
@@ -345,9 +345,9 @@ pub trait TextEditableEncoding<Raw, Buf, const GAP_SIZE: usize>: Writable<Raw, B
     ///
     /// # Errors
     ///
-    /// [`crate::error::WreditError::Encoding`] when the tag is not representable
+    /// [`crate::error::Error::Encoding`] when the tag is not representable
     /// (an out-of-range single-byte index).
-    fn set_document_encoding(&mut self, encoding: DocumentEncoding) -> WreditResult<()>;
+    fn set_document_encoding(&mut self, encoding: DocumentEncoding) -> Result<()>;
 
     /// The encoding selected for this document.
     fn document_encoding(&self) -> DocumentEncoding;
@@ -359,16 +359,16 @@ pub trait TextEditableEncoding<Raw, Buf, const GAP_SIZE: usize>: Writable<Raw, B
     ///
     /// # Errors
     ///
-    /// [`crate::error::WreditError::Encoding`] for a surrogate or a value above
+    /// [`crate::error::Error::Encoding`] for a surrogate or a value above
     /// U+10FFFF, plus cursor and capacity errors from staging.
-    fn insert_scalars(&mut self, cursor_id: usize, scalars: &[u32]) -> WreditResult<usize>;
+    fn insert_scalars(&mut self, cursor_id: usize, scalars: &[u32]) -> Result<usize>;
 
     /// Stages the scalar values of `text` at the caret.
     ///
     /// # Errors
     ///
     /// Same as [`TextEditableEncoding::insert_scalars`].
-    fn insert_str(&mut self, cursor_id: usize, text: &str) -> WreditResult<usize>;
+    fn insert_str(&mut self, cursor_id: usize, text: &str) -> Result<usize>;
 
     /// Decodes `bytes` from `encoding` and stages the resulting scalars
     /// at the caret.
@@ -383,23 +383,23 @@ pub trait TextEditableEncoding<Raw, Buf, const GAP_SIZE: usize>: Writable<Raw, B
         bytes: &[u8],
         encoding: DocumentEncoding,
         policy: DecodePolicy,
-    ) -> WreditResult<usize>;
+    ) -> Result<usize>;
 
     /// Reads the committed range `[start, end)` as scalar values.
     ///
     /// # Errors
     ///
-    /// [`crate::error::WreditError::InvalidOperation`] when the range escapes the
-    /// committed document, and [`crate::error::WreditError::Encoding`] when an
+    /// [`crate::error::Error::InvalidOperation`] when the range escapes the
+    /// committed document, and [`crate::error::Error::Encoding`] when an
     /// element is not a valid scalar.
-    fn read_scalars(&self, start: usize, end: usize) -> WreditResult<Vec<u32>>;
+    fn read_scalars(&self, start: usize, end: usize) -> Result<Vec<u32>>;
 
     /// Reads the committed range `[start, end)` as a `String`.
     ///
     /// # Errors
     ///
     /// Same as [`TextEditableEncoding::read_scalars`].
-    fn read_string(&self, start: usize, end: usize) -> WreditResult<String>;
+    fn read_string(&self, start: usize, end: usize) -> Result<String>;
 
     /// Encodes the committed range `[start, end)` into `encoding`.
     ///
@@ -413,7 +413,7 @@ pub trait TextEditableEncoding<Raw, Buf, const GAP_SIZE: usize>: Writable<Raw, B
         end: usize,
         encoding: DocumentEncoding,
         policy: EncodePolicy,
-    ) -> WreditResult<Vec<u8>>;
+    ) -> Result<Vec<u8>>;
 }
 
 /// Undo/redo over the committed document.
@@ -430,7 +430,7 @@ pub trait TextEditableHistory<Raw, Buf, const GAP_SIZE: usize>: Writable<Raw, Bu
     /// Enables the undo/redo store with the given hot-byte budget, journal
     /// window and keep threshold.  Returns `CapacityExhausted` (logged) on
     /// allocation failure; the writable stays usable without history.
-    fn enable_history(&mut self, hot_bytes: u64, window: usize, keep: usize) -> WreditResult<()>;
+    fn enable_history(&mut self, hot_bytes: u64, window: usize, keep: usize) -> Result<()>;
 
     /// `true` when the undo/redo store is enabled.
     fn history_enabled(&self) -> bool;
@@ -445,15 +445,15 @@ pub trait TextEditableHistory<Raw, Buf, const GAP_SIZE: usize>: Writable<Raw, Bu
 
     /// Undoes one edit, applying its inverse to the committed document.
     /// Returns `false` (and logs a refusal) at `cur <= base`.
-    fn undo(&mut self) -> WreditResult<bool>;
+    fn undo(&mut self) -> Result<bool>;
 
     /// Redoes one edit, re-applying it to the committed document.
     /// Returns `false` (and logs a refusal) at `cur >= head`.
-    fn redo(&mut self) -> WreditResult<bool>;
+    fn redo(&mut self) -> Result<bool>;
 
     /// Restores to the revision `back` steps behind the tip.
     /// Returns `false` when `head - back` falls outside `[base, head]`.
-    fn restore(&mut self, back: usize) -> WreditResult<bool>;
+    fn restore(&mut self, back: usize) -> Result<bool>;
 }
 
 /// Columnar (vertical/block) selection: one element range per spanned

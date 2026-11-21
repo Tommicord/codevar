@@ -40,8 +40,8 @@ use super::cursor::{Cursor, LineAnchors, LineRing};
 use super::history_ring_journal::HistoryStore;
 use super::shared_gap::SharedGapTable;
 use crate::encoding::DocumentEncoding;
-use crate::error::WreditError;
-use crate::error::WreditResult;
+use crate::error::Error;
+use crate::error::Result;
 
 /// Maximum number of private (per-cursor) gaps held inline.
 pub const MAX_GAPS: usize = 0x4;
@@ -445,7 +445,7 @@ pub struct WritableEvent {
     /// Secondary position payload (element count, new caret, ..).
     pub end: usize,
     /// The error, for [`WritableEventType::Error`] events.
-    pub error: Option<WreditError>,
+    pub error: Option<Error>,
 }
 
 impl WritableEvent {
@@ -499,7 +499,7 @@ impl WritableEvent {
 
     /// An error event carrying `error` for `cursor`.
     #[must_use]
-    pub const fn error(cursor: usize, error: WreditError) -> Self {
+    pub const fn error(cursor: usize, error: Error) -> Self {
         Self {
             kind: WritableEventType::Error,
             cursor,
@@ -670,7 +670,7 @@ impl<Raw: Copy, Buf: Copy, const GAP_SIZE: usize> BaseWritable<Raw, Buf, GAP_SIZ
     /// window and keep threshold.  Returns `CapacityExhausted` (logged) on
     /// allocation failure; the writable is left usable without history.
     #[inline]
-    pub(crate) fn enable_history(&mut self, hot_bytes: u64, window: usize, keep: usize) -> WreditResult<()> {
+    pub(crate) fn enable_history(&mut self, hot_bytes: u64, window: usize, keep: usize) -> Result<()> {
         self.history = Some(HistoryStore::new(hot_bytes, window, keep)?);
         Ok(())
     }
@@ -1009,12 +1009,12 @@ impl<Raw: Copy, Buf: Copy, const GAP_SIZE: usize> BaseWritable<Raw, Buf, GAP_SIZ
     ///
     /// # Errors
     ///
-    /// [`WreditError::Encoding`] when `encoding` carries an
+    /// [`Error::Encoding`] when `encoding` carries an
     /// out-of-range single-byte index; the current encoding is kept.
-    pub fn set_encoding(&mut self, encoding: DocumentEncoding) -> WreditResult<()> {
+    pub fn set_encoding(&mut self, encoding: DocumentEncoding) -> Result<()> {
         if !encoding.is_valid() {
             log_error!("wredit: rejecting an invalid document encoding");
-            return Err(WreditError::Encoding);
+            return Err(Error::Encoding);
         }
         self.encoding = encoding.tag();
         Ok(())
@@ -1327,7 +1327,7 @@ mod tests {
         let changed = WritableEvent::buffer_changed(3, 7);
         assert_eq!(changed.start, 3);
         assert_eq!(changed.end, 7);
-        let error = WritableEvent::error(2, crate::error::WreditError::InvalidCursor { cursor: 2 });
+        let error = WritableEvent::error(2, crate::error::Error::InvalidCursor { cursor: 2 });
         assert!(error.error.is_some());
     }
 

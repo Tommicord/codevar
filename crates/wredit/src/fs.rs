@@ -48,7 +48,7 @@
 
 use alloc::vec::Vec;
 
-use crate::error::{WreditError, WreditResult};
+use crate::error::{Error, Result};
 
 use crate::fs_bitmap::Bitmap;
 use crate::fs_block::{BLOCK_SIZE, BlockDevice};
@@ -194,9 +194,9 @@ impl SuperBlock {
     }
 
     /// Deserializes a block into a superblock, validating the magic.
-    pub fn from_bytes(bytes: &[u8]) -> WreditResult<Self> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() != BLOCK_SIZE {
-            return Err(WreditError::InvalidOperation {
+            return Err(Error::InvalidOperation {
                 what: "a superblock occupies exactly one block",
             });
         }
@@ -206,7 +206,7 @@ impl SuperBlock {
                 .unwrap_or([0; 4]),
         );
         if magic != SUPER_MAGIC {
-            return Err(WreditError::CorruptImage {
+            return Err(Error::CorruptImage {
                 what: "bad superblock magic",
             });
         }
@@ -363,15 +363,15 @@ fn read_u16(bytes: &[u8], offset: usize) -> u16 {
 ///
 /// Yields `(original length, flags, stored bytes)`; every field is
 /// bounds-checked so a corrupt pool block is reported as
-/// [`WreditError::CorruptImage`] instead of panicking.
-fn pool_record(block: &[u8], offset: usize) -> WreditResult<(usize, u8, &[u8])> {
+/// [`Error::CorruptImage`] instead of panicking.
+fn pool_record(block: &[u8], offset: usize) -> Result<(usize, u8, &[u8])> {
     let header_end = offset
         .checked_add(POOL_RECORD_HEADER)
-        .ok_or(WreditError::CorruptImage {
+        .ok_or(Error::CorruptImage {
             what: "name pool record",
         })?;
     if header_end > block.len() {
-        return Err(WreditError::CorruptImage {
+        return Err(Error::CorruptImage {
             what: "name pool record header",
         });
     }
@@ -380,19 +380,19 @@ fn pool_record(block: &[u8], offset: usize) -> WreditResult<(usize, u8, &[u8])> 
     let flags = block[offset + POOL_FLAGS_OFFSET];
     let end = header_end
         .checked_add(stored_len)
-        .ok_or(WreditError::CorruptImage {
+        .ok_or(Error::CorruptImage {
             what: "name pool record",
         })?;
     let stored = block
         .get(header_end..end)
-        .ok_or(WreditError::CorruptImage {
+        .ok_or(Error::CorruptImage {
             what: "name pool record bytes",
         })?;
     Ok((orig_len, flags, stored))
 }
 
 /// Whether the pooled record at `offset` decodes to exactly `name`.
-fn pool_record_eq(block: &[u8], offset: usize, name: &[u8]) -> WreditResult<bool> {
+fn pool_record_eq(block: &[u8], offset: usize, name: &[u8]) -> Result<bool> {
     let (orig_len, flags, stored) = pool_record(block, offset)?;
     if orig_len != name.len() {
         return Ok(false);
@@ -412,17 +412,17 @@ fn write_pool_record(
     name: &[u8],
     stored: &[u8],
     compressed: bool,
-) -> WreditResult<()> {
+) -> Result<()> {
     let total = POOL_RECORD_HEADER
         .checked_add(stored.len())
-        .ok_or(WreditError::LimitExceeded {
+        .ok_or(Error::LimitExceeded {
             what: "name pool record",
         })?;
     if offset
         .checked_add(total)
         .is_none_or(|end| end > block.len())
     {
-        return Err(WreditError::LimitExceeded {
+        return Err(Error::LimitExceeded {
             what: "name pool record",
         });
     }
@@ -562,11 +562,11 @@ impl DirEntry {
 /// # Examples
 ///
 /// ```
-/// use codevar_wredit::error::WreditResult;
+/// use codevar_wredit::error::Result;
 /// use codevar_wredit::fs_block::MemoryDisk;
 /// use codevar_wredit::fs::{DiskFs, Inode};
 ///
-/// fn create_file() -> WreditResult<()> {
+/// fn create_file() -> Result<()> {
 ///     let disk = MemoryDisk::new(256)?;
 ///     let mut fs = DiskFs::format(disk, 256, 128)?;
 ///     let inode = fs.create(2, "hello.txt", 0x8000)?;
@@ -595,25 +595,25 @@ impl<D: BlockDevice> DiskFs<D> {
     ///
     /// # Errors
     ///
-    /// [`WreditError::DiskFull`] when the device is too small to hold
+    /// [`Error::DiskFull`] when the device is too small to hold
     /// the metadata structures.
-    /// [`WreditError::DeviceIo`] when a metadata block cannot be
+    /// [`Error::DeviceIo`] when a metadata block cannot be
     /// written.
-    pub fn format(device: D, block_count: u64, inode_count: u64) -> WreditResult<Self> {
+    pub fn format(device: D, block_count: u64, inode_count: u64) -> Result<Self> {
         let block_count = u32::try_from(block_count)
-            .map_err(|_| WreditError::LimitExceeded { what: "block count" })?
+            .map_err(|_| Error::LimitExceeded { what: "block count" })?
             as u64;
         let inode_count = u32::try_from(inode_count)
-            .map_err(|_| WreditError::LimitExceeded { what: "inode count" })?
+            .map_err(|_| Error::LimitExceeded { what: "inode count" })?
             as u64;
         if block_count == 0 || block_count > (BLOCK_SIZE * 8) as u64 {
-            return Err(WreditError::BlockOutOfRange {
+            return Err(Error::BlockOutOfRange {
                 index: block_count,
                 count: (BLOCK_SIZE * 8) as u64,
             });
         }
         if inode_count == 0 || inode_count > (BLOCK_SIZE * 8) as u64 {
-            return Err(WreditError::BlockOutOfRange {
+            return Err(Error::BlockOutOfRange {
                 index: inode_count,
                 count: (BLOCK_SIZE * 8) as u64,
             });
@@ -626,7 +626,7 @@ impl<D: BlockDevice> DiskFs<D> {
             / BLOCK_SIZE;
         let metadata_blocks = 3u64.saturating_add(inode_table_blocks as u64);
         if block_count <= metadata_blocks {
-            return Err(WreditError::DiskFull { free: 0 });
+            return Err(Error::DiskFull { free: 0 });
         }
 
         let mut block_bitmap = Bitmap::new();
@@ -699,10 +699,10 @@ impl<D: BlockDevice> DiskFs<D> {
     ///
     /// # Errors
     ///
-    /// [`WreditError::CorruptImage`] when the superblock magic is bad
+    /// [`Error::CorruptImage`] when the superblock magic is bad
     /// or the geometry is inconsistent.
-    /// [`WreditError::DeviceIo`] when a metadata block cannot be read.
-    pub fn open(device: D) -> WreditResult<Self> {
+    /// [`Error::DeviceIo`] when a metadata block cannot be read.
+    pub fn open(device: D) -> Result<Self> {
         let mut sb_block = [0u8; BLOCK_SIZE];
         device.read_block(0, &mut sb_block)?;
         let sb = SuperBlock::from_bytes(&sb_block)?;
@@ -711,7 +711,7 @@ impl<D: BlockDevice> DiskFs<D> {
             || sb.inode_count == 0
             || sb.inode_count > (BLOCK_SIZE * 8) as u32
         {
-            return Err(WreditError::CorruptImage {
+            return Err(Error::CorruptImage {
                 what: "bad superblock geometry",
             });
         }
@@ -733,7 +733,7 @@ impl<D: BlockDevice> DiskFs<D> {
     }
 
     /// Writes all dirty metadata (superblock and bitmaps) to the device.
-    pub fn flush(&mut self) -> WreditResult<()> {
+    pub fn flush(&mut self) -> Result<()> {
         if self.sb_dirty {
             self.device.write_block(0, &self.sb.to_bytes())?;
             self.sb_dirty = false;
@@ -774,11 +774,11 @@ impl<D: BlockDevice> DiskFs<D> {
     }
 
     /// Allocates a free data block.
-    pub fn alloc_block(&mut self) -> WreditResult<u32> {
+    pub fn alloc_block(&mut self) -> Result<u32> {
         let block = self
             .block_bitmap
             .find_free(self.sb.block_count)
-            .ok_or(WreditError::DiskFull {
+            .ok_or(Error::DiskFull {
                 free: self.block_bitmap.count_free(self.sb.block_count) as u64,
             })?;
         self.block_bitmap.set_used(block);
@@ -791,9 +791,9 @@ impl<D: BlockDevice> DiskFs<D> {
     }
 
     /// Frees a data block.
-    pub fn free_block(&mut self, block: u32) -> WreditResult<()> {
+    pub fn free_block(&mut self, block: u32) -> Result<()> {
         if block >= self.sb.block_count {
-            return Err(WreditError::BlockOutOfRange {
+            return Err(Error::BlockOutOfRange {
                 index: block as u64,
                 count: self.sb.block_count as u64,
             });
@@ -808,11 +808,11 @@ impl<D: BlockDevice> DiskFs<D> {
     }
 
     /// Allocates a free inode.
-    pub fn alloc_inode(&mut self) -> WreditResult<u32> {
+    pub fn alloc_inode(&mut self) -> Result<u32> {
         let inode = self
             .inode_bitmap
             .find_free(self.sb.inode_count)
-            .ok_or(WreditError::DiskFull {
+            .ok_or(Error::DiskFull {
                 free: self.inode_bitmap.count_free(self.sb.inode_count) as u64,
             })?;
         self.inode_bitmap.set_used(inode);
@@ -825,9 +825,9 @@ impl<D: BlockDevice> DiskFs<D> {
     }
 
     /// Frees an inode.
-    pub fn free_inode(&mut self, inode: u32) -> WreditResult<()> {
+    pub fn free_inode(&mut self, inode: u32) -> Result<()> {
         if inode == 0 || inode > self.sb.inode_count {
-            return Err(WreditError::InvalidAddress {
+            return Err(Error::InvalidAddress {
                 address: inode as u64,
             });
         }
@@ -841,12 +841,12 @@ impl<D: BlockDevice> DiskFs<D> {
     }
 
     /// Reads an inode from the table.
-    pub fn read_inode(&self, inode: u32) -> WreditResult<Inode> {
+    pub fn read_inode(&self, inode: u32) -> Result<Inode> {
         if inode == 0 || inode > self.sb.inode_count {
-            return Err(WreditError::NotFound { what: "inode" });
+            return Err(Error::NotFound { what: "inode" });
         }
         if !self.inode_bitmap.is_used(inode) {
-            return Err(WreditError::NotFound { what: "inode" });
+            return Err(Error::NotFound { what: "inode" });
         }
         let index = (inode - 1) as usize;
         let block = self.sb.inode_table_block + (index / INODES_PER_BLOCK) as u32;
@@ -859,16 +859,16 @@ impl<D: BlockDevice> DiskFs<D> {
     }
 
     /// Writes an inode to the table.
-    pub fn write_inode(&mut self, inode: u32, value: &Inode) -> WreditResult<()> {
+    pub fn write_inode(&mut self, inode: u32, value: &Inode) -> Result<()> {
         if inode == 0 || inode > self.sb.inode_count {
-            return Err(WreditError::InvalidAddress {
+            return Err(Error::InvalidAddress {
                 address: inode as u64,
             });
         }
         self.write_inode_raw(inode, value)
     }
 
-    fn write_inode_raw(&mut self, inode: u32, value: &Inode) -> WreditResult<()> {
+    fn write_inode_raw(&mut self, inode: u32, value: &Inode) -> Result<()> {
         let index = (inode - 1) as usize;
         let block = self.sb.inode_table_block + (index / INODES_PER_BLOCK) as u32;
         let offset = (index % INODES_PER_BLOCK) * INODE_SIZE;
@@ -884,14 +884,14 @@ impl<D: BlockDevice> DiskFs<D> {
     /// Resolves logical block `logical` of `ino` to a physical block,
     /// allocating blocks (and the indirect block) when `allocate` is
     /// true.
-    fn block_for(&mut self, ino: &mut Inode, logical: u32, allocate: bool) -> WreditResult<u32> {
+    fn block_for(&mut self, ino: &mut Inode, logical: u32, allocate: bool) -> Result<u32> {
         if logical < DIRECT_COUNT as u32 {
             let slot = logical as usize;
             if ino.direct[slot] != 0 {
                 return Ok(ino.direct[slot]);
             }
             if !allocate {
-                return Err(WreditError::BlockNotFound {
+                return Err(Error::BlockNotFound {
                     address: logical as u64,
                 });
             }
@@ -903,13 +903,13 @@ impl<D: BlockDevice> DiskFs<D> {
         // Indirect.
         let idx = (logical - DIRECT_COUNT as u32) as usize;
         if idx >= INDIRECT_PTRS {
-            return Err(WreditError::LimitExceeded {
+            return Err(Error::LimitExceeded {
                 what: "inode block pointers",
             });
         }
         if ino.indirect == 0 {
             if !allocate {
-                return Err(WreditError::BlockNotFound {
+                return Err(Error::BlockNotFound {
                     address: logical as u64,
                 });
             }
@@ -933,7 +933,7 @@ impl<D: BlockDevice> DiskFs<D> {
             return Ok(data);
         }
         if !allocate {
-            return Err(WreditError::BlockNotFound {
+            return Err(Error::BlockNotFound {
                 address: logical as u64,
             });
         }
@@ -945,7 +945,7 @@ impl<D: BlockDevice> DiskFs<D> {
     }
 
     /// Reads up to `buf.len()` bytes from `inode` at `offset`.
-    pub fn read_at(&mut self, inode: u32, offset: u64, buf: &mut [u8]) -> WreditResult<usize> {
+    pub fn read_at(&mut self, inode: u32, offset: u64, buf: &mut [u8]) -> Result<usize> {
         let mut ino = self.read_inode(inode)?;
         if offset >= ino.size as u64 || buf.is_empty() {
             return Ok(0);
@@ -971,7 +971,7 @@ impl<D: BlockDevice> DiskFs<D> {
 
     /// Writes `buf` to `inode` at `offset`, allocating blocks as
     /// needed. Returns the number of bytes written.
-    pub fn write_at(&mut self, inode: u32, offset: u64, buf: &[u8]) -> WreditResult<usize> {
+    pub fn write_at(&mut self, inode: u32, offset: u64, buf: &[u8]) -> Result<usize> {
         if buf.is_empty() {
             return Ok(0);
         }
@@ -1014,21 +1014,21 @@ impl<D: BlockDevice> DiskFs<D> {
 
     /// Reads a directory block's entries and finds `name`, returning
     /// its inode.
-    fn find_dirent(&mut self, dir_inode: u32, name: &str) -> WreditResult<u32> {
+    fn find_dirent(&mut self, dir_inode: u32, name: &str) -> Result<u32> {
         let ino = self.read_inode(dir_inode)?;
         if !ino.is_directory() {
-            return Err(WreditError::NotADirectory {
+            return Err(Error::NotADirectory {
                 what: "path component",
             });
         }
         let name_bytes = name.as_bytes();
         if name_bytes.len() > MAX_NAME_LEN {
-            return Err(WreditError::NameTooLong {
+            return Err(Error::NameTooLong {
                 len: name_bytes.len(),
             });
         }
         if name_bytes.is_empty() {
-            return Err(WreditError::NotFound {
+            return Err(Error::NotFound {
                 what: "directory entry",
             });
         }
@@ -1053,7 +1053,7 @@ impl<D: BlockDevice> DiskFs<D> {
                 }
             }
         }
-        Err(WreditError::NotFound {
+        Err(Error::NotFound {
             what: "directory entry",
         })
     }
@@ -1081,14 +1081,14 @@ impl<D: BlockDevice> DiskFs<D> {
 
     /// Records that `ino` now uses physical `block` at logical slot
     /// `logical` (used when appending fresh blocks).
-    fn block_for_direct_alloc(&mut self, ino: &mut Inode, logical: u32, block: u32) -> WreditResult<()> {
+    fn block_for_direct_alloc(&mut self, ino: &mut Inode, logical: u32, block: u32) -> Result<()> {
         if logical < DIRECT_COUNT as u32 {
             ino.direct[logical as usize] = block;
             ino.block_count = ino.block_count.saturating_add(1);
             return Ok(());
         }
         if ino.indirect == 0 {
-            return Err(WreditError::InvalidOperation {
+            return Err(Error::InvalidOperation {
                 what: "no indirect block to append into",
             });
         }
@@ -1103,7 +1103,7 @@ impl<D: BlockDevice> DiskFs<D> {
     }
 
     /// Searches the name pool for a record already holding `name`.
-    fn find_pool_record(&self, name: &[u8], wanted_hash: u32) -> WreditResult<Option<(u32, u16)>> {
+    fn find_pool_record(&self, name: &[u8], wanted_hash: u32) -> Result<Option<(u32, u16)>> {
         let mut block = self.sb.name_head;
         let mut block_buf = [0u8; BLOCK_SIZE];
         while block != 0 {
@@ -1131,21 +1131,21 @@ impl<D: BlockDevice> DiskFs<D> {
     }
 
     /// Reconstructs the pooled name recorded at `(block, off)`.
-    fn read_pool_name(&self, block: u32, off: u16) -> WreditResult<Vec<u8>> {
+    fn read_pool_name(&self, block: u32, off: u16) -> Result<Vec<u8>> {
         let mut block_buf = [0u8; BLOCK_SIZE];
         self.device
             .read_block(u64::from(block), &mut block_buf)?;
         let offset = usize::from(off);
         let (orig_len, flags, stored) = pool_record(&block_buf, offset)?;
         let name = if flags & POOL_FLAG_COMPRESSED != 0 {
-            crate::fs_id_compress::decompress(stored).ok_or(WreditError::CorruptImage {
+            crate::fs_id_compress::decompress(stored).ok_or(Error::CorruptImage {
                 what: "compressed name",
             })?
         } else {
             stored.to_vec()
         };
         if name.len() != orig_len {
-            return Err(WreditError::CorruptImage {
+            return Err(Error::CorruptImage {
                 what: "name length mismatch",
             });
         }
@@ -1157,7 +1157,7 @@ impl<D: BlockDevice> DiskFs<D> {
     /// The name is stored codec-compressed when that is smaller than the
     /// raw bytes, and an equal name already present is reused, so the
     /// pool holds one record per distinct long name.
-    fn intern_name(&mut self, name: &[u8]) -> WreditResult<(u32, u16)> {
+    fn intern_name(&mut self, name: &[u8]) -> Result<(u32, u16)> {
         let packed = crate::fs_id_compress::compress(name);
         let compressed = packed.len() < name.len();
         let stored: Vec<u8> = if compressed { packed } else { name.to_vec() };
@@ -1210,7 +1210,7 @@ impl<D: BlockDevice> DiskFs<D> {
     }
 
     /// Whether `entry` names exactly `name`, resolving pooled names.
-    fn entry_name_matches(&self, entry: &DirEntry, name: &[u8]) -> WreditResult<bool> {
+    fn entry_name_matches(&self, entry: &DirEntry, name: &[u8]) -> Result<bool> {
         if !entry.is_pooled() {
             return Ok(name.len() <= NAME_MAX
                 && entry.name_len as usize == name.len()
@@ -1227,19 +1227,19 @@ impl<D: BlockDevice> DiskFs<D> {
     }
 
     /// Appends a directory entry `name -> inode` to `parent`.
-    fn add_dirent(&mut self, parent: u32, name: &str, inode: u32, file_type: FileType) -> WreditResult<()> {
+    fn add_dirent(&mut self, parent: u32, name: &str, inode: u32, file_type: FileType) -> Result<()> {
         let mut ino = self.read_inode(parent)?;
         if !ino.is_directory() {
-            return Err(WreditError::NotADirectory {
+            return Err(Error::NotADirectory {
                 what: "parent directory",
             });
         }
         let name_bytes = name.as_bytes();
         if name_bytes.is_empty() {
-            return Err(WreditError::InvalidOperation { what: "empty name" });
+            return Err(Error::InvalidOperation { what: "empty name" });
         }
         if name_bytes.len() > MAX_NAME_LEN {
-            return Err(WreditError::NameTooLong {
+            return Err(Error::NameTooLong {
                 len: name_bytes.len(),
             });
         }
@@ -1290,7 +1290,7 @@ impl<D: BlockDevice> DiskFs<D> {
         if name_bytes.len() <= NAME_MAX {
             // Short enough to live inside the entry.
             if !entry.set_name(name_bytes) {
-                return Err(WreditError::NameTooLong {
+                return Err(Error::NameTooLong {
                     len: name_bytes.len(),
                 });
             }
@@ -1318,7 +1318,7 @@ impl<D: BlockDevice> DiskFs<D> {
     ///
     /// `.` and `..` are handled; `..` walks the parent stack. An empty
     /// path or `/` resolves to `start_inode`.
-    pub fn lookup(&mut self, path: &str, start_inode: u32) -> WreditResult<u32> {
+    pub fn lookup(&mut self, path: &str, start_inode: u32) -> Result<u32> {
         let mut current = start_inode;
         let mut dir_stack: [u32; DEPTH_MAX] = [0; DEPTH_MAX];
         let mut depth = 0usize;
@@ -1351,12 +1351,12 @@ impl<D: BlockDevice> DiskFs<D> {
                 break;
             }
             if !next_ino.is_directory() {
-                return Err(WreditError::NotADirectory {
+                return Err(Error::NotADirectory {
                     what: "path component",
                 });
             }
             if depth >= DEPTH_MAX {
-                return Err(WreditError::LimitExceeded {
+                return Err(Error::LimitExceeded {
                     what: "directory nesting",
                 });
             }
@@ -1370,13 +1370,13 @@ impl<D: BlockDevice> DiskFs<D> {
 
     /// Creates `name` inside `parent` with `mode`, returning its new
     /// inode.
-    pub fn create(&mut self, parent: u32, name: &str, mode: u16) -> WreditResult<u32> {
+    pub fn create(&mut self, parent: u32, name: &str, mode: u16) -> Result<u32> {
         if name.is_empty() {
-            return Err(WreditError::InvalidOperation { what: "empty name" });
+            return Err(Error::InvalidOperation { what: "empty name" });
         }
         // Reject names that already exist.
         if self.find_dirent(parent, name).is_ok() {
-            return Err(WreditError::AlreadyExists { what: "name" });
+            return Err(Error::AlreadyExists { what: "name" });
         }
         let inode = self.alloc_inode()?;
         let new_ino = if mode & 0x4000 != 0 {
@@ -1402,13 +1402,13 @@ impl<D: BlockDevice> DiskFs<D> {
     }
 
     /// Makes `name` a directory inside `parent`.
-    pub fn mkdir(&mut self, parent: u32, name: &str) -> WreditResult<u32> {
+    pub fn mkdir(&mut self, parent: u32, name: &str) -> Result<u32> {
         self.create(parent, name, 0x4000)
     }
 
     /// Removes the directory entry `name` from `parent` without
     /// freeing the inode or its blocks.
-    pub fn unlink(&mut self, parent: u32, name: &str) -> WreditResult<()> {
+    pub fn unlink(&mut self, parent: u32, name: &str) -> Result<()> {
         let target = self.find_dirent(parent, name)?;
         let ino = self.read_inode(parent)?;
         let name_bytes = name.as_bytes();
@@ -1439,7 +1439,7 @@ impl<D: BlockDevice> DiskFs<D> {
                 }
             }
         }
-        Err(WreditError::NotFound {
+        Err(Error::NotFound {
             what: "directory entry",
         })
     }
@@ -1467,16 +1467,16 @@ impl<D: BlockDevice> DiskFs<D> {
     ///
     /// # Errors
     ///
-    /// * [`WreditError::NotFound`] when `name` does not exist in `parent`
-    /// * [`WreditError::NotADirectory`] when `name` is not a directory
-    /// * [`WreditError::DirectoryNotEmpty`] when `name` holds entries
+    /// * [`Error::NotFound`] when `name` does not exist in `parent`
+    /// * [`Error::NotADirectory`] when `name` is not a directory
+    /// * [`Error::DirectoryNotEmpty`] when `name` holds entries
     ///   besides `.` and `..`
     /// * Propagates device I/O errors from reading and writing blocks
-    pub fn rmdir(&mut self, parent: u32, name: &str) -> WreditResult<()> {
+    pub fn rmdir(&mut self, parent: u32, name: &str) -> Result<()> {
         let target = self.find_dirent(parent, name)?;
         let target_ino = self.read_inode(target)?;
         if !target_ino.is_directory() {
-            return Err(WreditError::NotADirectory { what: "rmdir target" });
+            return Err(Error::NotADirectory { what: "rmdir target" });
         }
         // A directory is empty when its only entries are "." and "..".
         let mut block_buf = [0u8; BLOCK_SIZE];
@@ -1495,7 +1495,7 @@ impl<D: BlockDevice> DiskFs<D> {
                     // "." and ".." always point at the directory itself or
                     // its parent; any other entry means non-empty.
                     if entry.inode != target && entry.inode != parent {
-                        return Err(WreditError::DirectoryNotEmpty {
+                        return Err(Error::DirectoryNotEmpty {
                             what: "directory not empty",
                         });
                     }
@@ -1529,13 +1529,13 @@ impl<D: BlockDevice> DiskFs<D> {
     ///
     /// # Errors
     ///
-    /// * [`WreditError::NotFound`] when `source` does not exist
-    /// * [`WreditError::AlreadyExists`] when `target_name` exists and is
+    /// * [`Error::NotFound`] when `source` does not exist
+    /// * [`Error::AlreadyExists`] when `target_name` exists and is
     ///   a non-empty directory
-    /// * [`WreditError::NotADirectory`] when a path component is not a
+    /// * [`Error::NotADirectory`] when a path component is not a
     ///   directory
     /// * Propagates device I/O errors from reading and writing blocks
-    pub fn rename(&mut self, parent: u32, source: &str, target_name: &str) -> WreditResult<()> {
+    pub fn rename(&mut self, parent: u32, source: &str, target_name: &str) -> Result<()> {
         if source == target_name {
             return Ok(());
         }
@@ -1551,7 +1551,7 @@ impl<D: BlockDevice> DiskFs<D> {
             if target_ino.is_directory() {
                 // A non-empty directory cannot be replaced.
                 if !self.is_directory_empty(target_inode, &target_ino)? {
-                    return Err(WreditError::AlreadyExists {
+                    return Err(Error::AlreadyExists {
                         what: "target directory",
                     });
                 }
@@ -1594,7 +1594,7 @@ impl<D: BlockDevice> DiskFs<D> {
                     if entry.name_hash == wanted_hash && self.entry_name_matches(&entry, source_bytes)? {
                         let mut new_entry = entry;
                         if !new_entry.set_name(target_name.as_bytes()) {
-                            return Err(WreditError::NameTooLong {
+                            return Err(Error::NameTooLong {
                                 len: target_name.as_bytes().len(),
                             });
                         }
@@ -1611,7 +1611,7 @@ impl<D: BlockDevice> DiskFs<D> {
             }
         }
         if !found {
-            return Err(WreditError::NotFound {
+            return Err(Error::NotFound {
                 what: "directory entry",
             });
         }
@@ -1628,7 +1628,7 @@ impl<D: BlockDevice> DiskFs<D> {
 
     /// Returns true when the directory at `inode` holds no entries
     /// besides `.` and `..`.
-    fn is_directory_empty(&mut self, inode: u32, ino: &Inode) -> WreditResult<bool> {
+    fn is_directory_empty(&mut self, inode: u32, ino: &Inode) -> Result<bool> {
         let mut block_buf = [0u8; BLOCK_SIZE];
         let blocks = (ino.size as usize).div_ceil(BLOCK_SIZE);
         for b in 0..blocks {
@@ -1657,12 +1657,12 @@ impl<D: BlockDevice> DiskFs<D> {
     ///
     /// # Errors
     ///
-    /// * [`WreditError::NotADirectory`] when `inode` is not a directory
+    /// * [`Error::NotADirectory`] when `inode` is not a directory
     /// * Propagates device I/O errors from reading blocks
-    pub fn readdir(&mut self, inode: u32) -> WreditResult<alloc::vec::Vec<DirEntryInfo>> {
+    pub fn readdir(&mut self, inode: u32) -> Result<alloc::vec::Vec<DirEntryInfo>> {
         let ino = self.read_inode(inode)?;
         if !ino.is_directory() {
-            return Err(WreditError::NotADirectory {
+            return Err(Error::NotADirectory {
                 what: "readdir target",
             });
         }
@@ -1712,15 +1712,15 @@ impl<D: BlockDevice> DiskFs<D> {
     ///
     /// # Errors
     ///
-    /// * [`WreditError::NotADirectory`] — never; kept for symmetry with
+    /// * [`Error::NotADirectory`] — never; kept for symmetry with
     ///   other file operations
-    /// * [`WreditError::NotFound`] when `inode` does not exist
-    /// * [`WreditError::IsADirectory`] when `inode` is a directory
+    /// * [`Error::NotFound`] when `inode` does not exist
+    /// * [`Error::IsADirectory`] when `inode` is a directory
     /// * Propagates device I/O errors from reading and writing blocks
-    pub fn truncate(&mut self, inode: u32, new_size: u64) -> WreditResult<()> {
+    pub fn truncate(&mut self, inode: u32, new_size: u64) -> Result<()> {
         let mut ino = self.read_inode(inode)?;
         if ino.is_directory() {
-            return Err(WreditError::IsADirectory {
+            return Err(Error::IsADirectory {
                 what: "truncate target",
             });
         }
@@ -1804,7 +1804,7 @@ mod tests {
         BLOCK_SIZE, DirEntryInfo, DiskFs, FileType, MAX_NAME_LEN, NAME_MAX, POOL_BLOCK_HEADER,
         POOL_RECORD_HEADER, POOL_USED_OFFSET,
     };
-    use crate::error::WreditError;
+    use crate::error::Error;
     use crate::fs_block::{BlockDevice, MemoryDisk};
 
     #[test]
@@ -1843,11 +1843,11 @@ mod tests {
         fs.create(2, "a.txt", 0x8000).unwrap();
         assert!(matches!(
             fs.create(2, "a.txt", 0x8000),
-            Err(WreditError::AlreadyExists { .. })
+            Err(Error::AlreadyExists { .. })
         ));
         assert!(matches!(
             fs.lookup("nope.txt", 2),
-            Err(WreditError::NotFound { .. })
+            Err(Error::NotFound { .. })
         ));
     }
 
@@ -1911,7 +1911,7 @@ mod tests {
         fs.unlink(2, "tmp.txt").unwrap();
         assert!(matches!(
             fs.lookup("tmp.txt", 2),
-            Err(WreditError::NotFound { .. })
+            Err(Error::NotFound { .. })
         ));
     }
 
@@ -1944,7 +1944,7 @@ mod tests {
             assert!(fs.read_inode(inode).unwrap().name_block != 0);
             assert_eq!(fs.lookup(name, dir).unwrap(), inode, "len {len}");
             fs.unlink(dir, name).unwrap();
-            assert!(matches!(fs.lookup(name, dir), Err(WreditError::NotFound { .. })));
+            assert!(matches!(fs.lookup(name, dir), Err(Error::NotFound { .. })));
         }
     }
 
@@ -1955,15 +1955,15 @@ mod tests {
         let too_long = "a".repeat(MAX_NAME_LEN + 1);
         assert!(matches!(
             fs.create(2, &too_long, 0x8000),
-            Err(WreditError::NameTooLong { .. })
+            Err(Error::NameTooLong { .. })
         ));
         assert!(matches!(
             fs.lookup(&too_long, 2),
-            Err(WreditError::NameTooLong { .. })
+            Err(Error::NameTooLong { .. })
         ));
         assert!(matches!(
             fs.create(2, "", 0x8000),
-            Err(WreditError::InvalidOperation { .. })
+            Err(Error::InvalidOperation { .. })
         ));
     }
 
@@ -2018,7 +2018,7 @@ mod tests {
         fs.unlink(2, &long).unwrap();
         // Removing the pooled entry leaves its inline sibling alone.
         assert!(fs.lookup("short.rs", 2).is_ok());
-        assert!(matches!(fs.lookup(&long, 2), Err(WreditError::NotFound { .. })));
+        assert!(matches!(fs.lookup(&long, 2), Err(Error::NotFound { .. })));
     }
 
     #[test]
@@ -2069,10 +2069,10 @@ mod tests {
         fs.rmdir(2, "emptydir").unwrap();
         assert!(matches!(
             fs.lookup("emptydir", 2),
-            Err(WreditError::NotFound { .. })
+            Err(Error::NotFound { .. })
         ));
         // The inode is freed.
-        assert!(matches!(fs.read_inode(dir), Err(WreditError::NotFound { .. })));
+        assert!(matches!(fs.read_inode(dir), Err(Error::NotFound { .. })));
     }
 
     #[test]
@@ -2084,7 +2084,7 @@ mod tests {
         fs.create(dir, "child.txt", 0x8000).unwrap();
         assert!(matches!(
             fs.rmdir(2, "dir"),
-            Err(WreditError::DirectoryNotEmpty { .. })
+            Err(Error::DirectoryNotEmpty { .. })
         ));
         // The directory still exists.
         assert!(fs.lookup("dir", 2).is_ok());
@@ -2097,7 +2097,7 @@ mod tests {
         fs.create(2, "file.txt", 0x8000).unwrap();
         assert!(matches!(
             fs.rmdir(2, "file.txt"),
-            Err(WreditError::NotADirectory { .. })
+            Err(Error::NotADirectory { .. })
         ));
     }
 
@@ -2113,7 +2113,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             fs.lookup("old_name.txt", 2),
-            Err(WreditError::NotFound { .. })
+            Err(Error::NotFound { .. })
         ));
         let inode = fs.lookup("new_name.txt", 2).unwrap();
         let mut buf = [0u8; 4];
@@ -2133,7 +2133,7 @@ mod tests {
         fs.write_at(b_inode, 0, b"BBBB").unwrap();
 
         fs.rename(2, "a.txt", "b.txt").unwrap();
-        assert!(matches!(fs.lookup("a.txt", 2), Err(WreditError::NotFound { .. })));
+        assert!(matches!(fs.lookup("a.txt", 2), Err(Error::NotFound { .. })));
         let inode = fs.lookup("b.txt", 2).unwrap();
         let mut buf = [0u8; 4];
         assert_eq!(fs.read_at(inode, 0, &mut buf).unwrap(), 4);
@@ -2152,7 +2152,7 @@ mod tests {
 
         assert!(matches!(
             fs.rename(2, "file.txt", "dir2"),
-            Err(WreditError::AlreadyExists { .. })
+            Err(Error::AlreadyExists { .. })
         ));
         // The source file still exists.
         assert!(fs.lookup("file.txt", 2).is_ok());
@@ -2221,7 +2221,7 @@ mod tests {
         let inode = fs.lookup("file.txt", 2).unwrap();
         assert!(matches!(
             fs.readdir(inode),
-            Err(WreditError::NotADirectory { .. })
+            Err(Error::NotADirectory { .. })
         ));
     }
 

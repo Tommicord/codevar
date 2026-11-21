@@ -51,7 +51,8 @@ use alloc::vec::Vec;
 use codevar_logger::log_error;
 
 use crate::base::packed_char;
-use crate::error::{WreditError, WreditResult};
+use crate::error::{Error, Result};
+use crate::unicode_segmentation::{WordBreak, wb_prop};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -69,12 +70,13 @@ const MIN_RING_CAPACITY: usize = 16;
 /// Maximum ring capacity in edit slots (guards against a hostile budget).
 const MAX_RING_CAPACITY: usize = 1 << 20;
 
-/// Undo-group classification: bit `b` of `GROUP_MASK` is set when byte `b`
-/// is a word character (ASCII letter, digit or underscore), i.e. the packed
+/// Undo-group classification: bit `b` of `GROUP_MASK` is set when ASCII byte
+/// `b` is a word character (letter, digit or underscore), i.e. the packed
 /// element continues the current word and coalesces into the preceding undo
-/// group.  Covers bytes `0..=127`; bytes `>= 128` are never word characters.
-/// A single `shr`+`and`+`test` classifies a byte with no L1 load, unlike the
-/// 256-byte table it replaces.
+/// group.  This is only the fast path for `0..=127`; code points `>= 128` are
+/// classified through `unicode_segmentation::wb_prop`.  A single
+/// `shr`+`and`+`test` classifies a byte with no L1 load, unlike the 256-byte
+/// table it replaces.
 const GROUP_MASK: u128 = {
     let mut mask = 0u128;
     let mut byte = 0u64;
@@ -94,17 +96,16 @@ const GROUP_MASK: u128 = {
 /// Returns `true` when the packed element's character continues the current
 /// word, i.e. it should coalesce into the preceding edit's undo group.
 ///
-/// This implementation classifies full Unicode characters using the
-/// Unicode UAX #29 Word Break property.  Letters, digits, and punctuation
-/// that join into words return `true`. Characters that break words return
-/// `false`.
+/// Classification follows the Unicode UAX #29 Word Break property: letters,
+/// digits, and the characters that join into words return `true`; characters
+/// that break words return `false`.
 ///
-/// The ASCII fast path (bytes < 128) uses the existing `GROUP_MASK` lookup;
-/// for non-ASCII code points the function checks known Unicode letter and
-/// digit blocks.
-#[inline]
+/// The ASCII fast path (code points < 128) uses the `GROUP_MASK` lookup; all
+/// other code points are classified with `unicode_segmentation::wb_prop`,
+/// which covers the full Unicode range rather than a hand-maintained subset of
+/// script blocks.
 #[must_use]
-pub const fn is_word_continuation(element: u32) -> bool {
+pub fn is_word_continuation(element: u32) -> bool {
     let cp = packed_char(element);
 
     // ASCII fast path: use the existing GROUP_MASK lookup.
@@ -112,94 +113,22 @@ pub const fn is_word_continuation(element: u32) -> bool {
     if cp < 128 {
         return (GROUP_MASK >> cp) & 1 == 1;
     }
-    // Unicode word-break classification: treat code points that are
-    // known letters, digits, or extending marks as word-continuing.
-    // This is a conservative subset; the full WordBreak property is
-    // available via `crate::unicode_segmentation::wb_prop`.
-    let is_letter_or_digit =
-        // Latin scripts
-        (0x00C0 <= cp && cp <= 0x024F) || // Latin (Latin-1 Supplement through Latin Extended-B)
-        // Greek and Coptic
-        (0x0370 <= cp && cp <= 0x03FF) ||
-        // Cyrillic
-        (0x0400 <= cp && cp <= 0x04FF) ||
-        // Armenian
-        (0x0530 <= cp && cp <= 0x058F) ||
-        // Hebrew
-        (0x0590 <= cp && cp <= 0x05FF) ||
-        // Arabic
-        (0x0600 <= cp && cp <= 0x06FF) ||
-        // Syriac
-        (0x0700 <= cp && cp <= 0x074F) ||
-        // Thaana
-        (0x0780 <= cp && cp <= 0x07BF) ||
-        // Devanagari
-        (0x0900 <= cp && cp <= 0x097F) ||
-        // Bengali
-        (0x0980 <= cp && cp <= 0x09FF) ||
-        // Gurmukhi
-        (0x0A00 <= cp && cp <= 0x0A7F) ||
-        // Gujarati
-        (0x0B00 <= cp && cp <= 0x0B7F) ||
-        // Oriya
-        (0x0B80 <= cp && cp <= 0x0BFF) ||
-        // Tamil
-        (0x0C00 <= cp && cp <= 0x0C5F) ||
-        // Telugu
-        (0x0C80 <= cp && cp <= 0x0CFF) ||
-        // Malayalam
-        (0x0D00 <= cp && cp <= 0x0D7F) ||
-        // Kannada
-        (0x0D80 <= cp && cp <= 0x0DFF) ||
-        // Sinhala
-        (0x0E00 <= cp && cp <= 0x0E7F) ||
-        // Thai
-        (0x0E80 <= cp && cp <= 0x0EFF) ||
-        // Lao
-        (0x0F00 <= cp && cp <= 0x0FFF) ||
-        // Tibetan
-        (0x1000 <= cp && cp <= 0x109F) ||
-        // Georgian
-        (0x10A0 <= cp && cp <= 0x10FF) ||
-        // Hangul Jamo
-        (0x1100 <= cp && cp <= 0x11FF) ||
-        // Bopomofo
-        (0x3100 <= cp && cp <= 0x312F) ||
-        // Hangul Compatibility Jamo
-        (0x3130 <= cp && cp <= 0x318F) ||
-        // CJK Unified Ideographs
-        (0x4E00 <= cp && cp <= 0x9FFF) ||
-        // Hangul Syllables
-        (0xAC00 <= cp && cp <= 0xD7AF) ||
-        // CJK Compatibility Ideographs
-        (0x3300 <= cp && cp <= 0x33FF) ||
-        // Bopomofo Extended
-        (0x3190 <= cp && cp <= 0x319F) ||
-        // CJK Radicals
-        (0x2E80 <= cp && cp <= 0x2EFF) ||
-        // Enclosed CJK Letters and Months
-        (0x3200 <= cp && cp <= 0x32FF) ||
-        // Measurement
-        (0x2100 <= cp && cp <= 0x214F) ||
-        // Number Forms
-        (0x2150 <= cp && cp <= 0x218F) ||
-        // Digits (extended)
-        (0xFF10 <= cp && cp <= 0xFF19) ||
-        // Ideographic Description
-        (0x2FF0 <= cp && cp <= 0x2FFF) ||
-        // Counting
-        (0x2460 <= cp && cp <= 0x24FF);
 
-    // Also treat combining marks (general category Mn, Mc) as word-continuing.
-    // Since we can't easily check general category in const fn, we use a range
-    // check for common combining mark blocks.
-    let is_extending_mark = (0x0300 <= cp && cp <= 0x036F) || // Combining Diacritical Marks
-        (0x1AB0 <= cp && cp <= 0x1AFF) || // Spacing Modifier Letters
-        (0xA660 <= cp && cp <= 0xA69F) || // Arabic Mathematical Alphabetic
-        (0xFB00 <= cp && cp <= 0xFB06) || // Latin Compatibility
-        (0xFE20 <= cp && cp <= 0xFE2F); // Combining Diacritical Marks for Symbols
-
-    is_letter_or_digit || is_extending_mark
+    // Extend, Format and ZWJ are word-transparent (UAX #29 WB4) and attach
+    // to the preceding character.  The Mid* and quote classes only join two
+    // word characters and are excluded, matching the ASCII fast path, where
+    // punctuation such as `'` does not continue a word on its own.
+    matches!(
+        wb_prop(cp),
+        WordBreak::ALetter
+            | WordBreak::HebrewLetter
+            | WordBreak::Numeric
+            | WordBreak::Katakana
+            | WordBreak::ExtendNumLet
+            | WordBreak::Extend
+            | WordBreak::Format
+            | WordBreak::ZWJ
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -379,7 +308,7 @@ impl DeltaRing {
     /// `CapacityExhausted` (logged, not fatal) on allocation failure; the
     /// caller's document is left intact.
     #[inline]
-    pub fn new(hot_bytes: u64) -> WreditResult<Self> {
+    pub fn new(hot_bytes: u64) -> Result<Self> {
         let min_record = RECORD_OVERHEAD as u64 + ELEMENT_BYTES as u64; // 20 bytes
         let capacity = if hot_bytes == 0 {
             MIN_RING_CAPACITY
@@ -503,7 +432,7 @@ impl DeltaRing {
     /// Returns `CapacityExhausted` (logged) if the ring's backing storage or
     /// the edit's vectors cannot be allocated.
     #[inline]
-    fn push_edit(&mut self, edit: Edit) -> WreditResult<()> {
+    fn push_edit(&mut self, edit: Edit) -> Result<()> {
         let logical = self.hot.head;
         let slot = Self::slot(logical, self.hot.mask);
         // Ensure physical storage covers `slot`.
@@ -516,7 +445,7 @@ impl DeltaRing {
                 .and_then(|c| c.checked_add(needed))
                 .ok_or_else(|| {
                     log_error!("delta ring capacity overflow");
-                    WreditError::LimitExceeded {
+                    Error::LimitExceeded {
                         what: "delta ring capacity",
                     }
                 })?
@@ -524,7 +453,7 @@ impl DeltaRing {
                 .clamp(self.hot.capacity, MAX_RING_CAPACITY);
             if new_cap == self.hot.capacity && self.hot.capacity < needed {
                 log_error!("delta ring capacity clamp reached");
-                return Err(WreditError::CapacityExhausted {
+                return Err(Error::CapacityExhausted {
                     requested: needed,
                     available: self.hot.capacity,
                 });
@@ -534,7 +463,7 @@ impl DeltaRing {
                 .reserve(new_cap - self.hot.edits.len());
             if self.hot.edits.capacity() < new_cap {
                 log_error!("delta ring reserve fell short of requested capacity");
-                return Err(WreditError::CapacityExhausted {
+                return Err(Error::CapacityExhausted {
                     requested: new_cap,
                     available: self.hot.edits.capacity(),
                 });
@@ -558,7 +487,7 @@ impl DeltaRing {
             .checked_add(record_bytes)
             .ok_or_else(|| {
                 log_error!("delta ring bytes counter overflow");
-                WreditError::LimitExceeded {
+                Error::LimitExceeded {
                     what: "delta ring bytes",
                 }
             })?;
@@ -617,7 +546,7 @@ impl DeltaRing {
     /// Returns `CapacityExhausted` (logged, document intact) if the edit or
     /// ring storage cannot be allocated.
     #[inline]
-    pub fn record(&mut self, edit: Edit) -> WreditResult<()> {
+    pub fn record(&mut self, edit: Edit) -> Result<()> {
         // 1. Truncate the future.
         while self.hot.head > self.hot.cur {
             self.pop_back();
@@ -650,7 +579,7 @@ impl DeltaRing {
     #[inline]
     pub fn step<F>(&mut self, to: usize, mut apply: F) -> bool
     where
-        F: FnMut(&Edit, bool) -> WreditResult<()>,
+        F: FnMut(&Edit, bool) -> Result<()>,
     {
         if to == self.hot.cur {
             return true;
@@ -669,7 +598,7 @@ impl DeltaRing {
     #[inline]
     fn step_forward<F>(&mut self, to: usize, apply: &mut F) -> bool
     where
-        F: FnMut(&Edit, bool) -> WreditResult<()>,
+        F: FnMut(&Edit, bool) -> Result<()>,
     {
         while self.hot.cur < to {
             if self.hot.cur >= self.hot.head {
@@ -708,7 +637,7 @@ impl DeltaRing {
     #[inline]
     fn step_backward<F>(&mut self, to: usize, apply: &mut F) -> bool
     where
-        F: FnMut(&Edit, bool) -> WreditResult<()>,
+        F: FnMut(&Edit, bool) -> Result<()>,
     {
         while self.hot.cur > to {
             let target = self.hot.cur - 1;
@@ -746,7 +675,7 @@ impl DeltaRing {
     #[inline]
     pub fn undo<F>(&mut self, mut apply: F) -> bool
     where
-        F: FnMut(&Edit, bool) -> WreditResult<()>,
+        F: FnMut(&Edit, bool) -> Result<()>,
     {
         if self.hot.cur <= self.hot.base {
             self.refusal();
@@ -759,7 +688,7 @@ impl DeltaRing {
     #[inline]
     pub fn redo<F>(&mut self, mut apply: F) -> bool
     where
-        F: FnMut(&Edit, bool) -> WreditResult<()>,
+        F: FnMut(&Edit, bool) -> Result<()>,
     {
         if self.hot.cur >= self.hot.head {
             self.refusal();
@@ -773,7 +702,7 @@ impl DeltaRing {
     #[inline]
     pub fn restore<F>(&mut self, back: usize, apply: F) -> bool
     where
-        F: FnMut(&Edit, bool) -> WreditResult<()>,
+        F: FnMut(&Edit, bool) -> Result<()>,
     {
         // `back > head` would underflow: refuse outright.
         let Some(target) = self.hot.head.checked_sub(back) else {
@@ -1179,7 +1108,7 @@ impl JournalWindow {
     /// Finalises the window: computes its SHAKE256 fingerprint and marks it
     /// closed.  Returns `CapacityExhausted` (logged) on hashing failure.
     #[inline]
-    fn close(&mut self) -> WreditResult<()> {
+    fn close(&mut self) -> Result<()> {
         if !self.open {
             return Ok(());
         }
@@ -1209,7 +1138,7 @@ pub struct SolidJournal {
 impl SolidJournal {
     /// Creates a journal with the given window and keep parameters.
     #[inline]
-    pub fn new(window: usize, keep: usize) -> WreditResult<Self> {
+    pub fn new(window: usize, keep: usize) -> Result<Self> {
         let window = window.max(1);
         let keep = keep.max(window);
         let windows = alloc::vec![JournalWindow::new(0)];
@@ -1241,7 +1170,7 @@ impl SolidJournal {
     /// a new open window starts.  Returns `CapacityExhausted` (logged) if
     /// the elements vector cannot grow.
     #[inline]
-    pub fn append(&mut self, elements: &[u32]) -> WreditResult<()> {
+    pub fn append(&mut self, elements: &[u32]) -> Result<()> {
         let tail_index = self.windows.len() - 1; // >= 1 by construction
         let tail_open = self.windows[tail_index].open;
         if !tail_open {
@@ -1268,7 +1197,7 @@ impl SolidJournal {
     /// Closes the open window at `index` (finalises its fingerprint) and
     /// opens a new empty window at `self.head`.
     #[inline]
-    fn close_window(&mut self, index: usize) -> WreditResult<()> {
+    fn close_window(&mut self, index: usize) -> Result<()> {
         let was_open = self.windows[index].open;
         if was_open {
             self.windows[index].close()?;
@@ -1282,7 +1211,7 @@ impl SolidJournal {
     /// this, no more appends go into the tail window and a new one starts on
     /// the next `append`.  Returns `CapacityExhausted` (logged) on failure.
     #[inline]
-    pub fn mark_save(&mut self) -> WreditResult<()> {
+    pub fn mark_save(&mut self) -> Result<()> {
         let last = self.windows.len() - 1; // >= 0 by construction
         if self.windows[last].open {
             self.windows[last].close()?;
@@ -1455,7 +1384,7 @@ impl HistoryStore {
     /// keep threshold.  Returns `CapacityExhausted` (logged, never fatal)
     /// on allocation failure.
     #[inline]
-    pub fn new(hot_bytes: u64, window: usize, keep: usize) -> WreditResult<Self> {
+    pub fn new(hot_bytes: u64, window: usize, keep: usize) -> Result<Self> {
         Ok(Self {
             ring: DeltaRing::new(hot_bytes)?,
             journal: SolidJournal::new(window, keep)?,
@@ -1507,7 +1436,7 @@ impl HistoryStore {
     /// Edits recorded while `cur < head` truncate the future (the redo
     /// branch), matching [`DeltaRing::record`].
     #[inline]
-    pub fn record(&mut self, position: usize, old: &[u32], new: &[u32]) -> WreditResult<()> {
+    pub fn record(&mut self, position: usize, old: &[u32], new: &[u32]) -> Result<()> {
         let group_id = self.next_group_id;
         self.next_group_id = self.next_group_id.saturating_add(1);
         let edit = Edit::new(old.to_vec(), new.to_vec(), position, group_id);
@@ -1913,12 +1842,9 @@ mod tests {
 
     #[test]
     fn group_lut_full_table_sanity() {
-        // The original LUT only classified ASCII bytes 0..=127 as
-        // word characters. The updated implementation now also classifies
-        // non-ASCII code points in common Unicode letter/digit blocks.
-        // Verify that the ASCII classification is unchanged and that
-        // a representative non-ASCII letter is now classified as
-        // word-continuing.
+        // The ASCII fast path classifies bytes 0..=127 exactly as before.
+        // Non-ASCII code points are now classified through the full UAX #29
+        // Word Break property instead of a hand-maintained subset of blocks.
         for byte in 0u8..=127u8 {
             let element = crate::base::make_packed(byte as u32, crate::base::COMMON_MASK);
             let expected = matches!(byte, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_');
@@ -1933,6 +1859,28 @@ mod tests {
             is_word_continuation(greek),
             "0x03B1 (alpha) should be word-continuing"
         );
+    }
+
+    #[test]
+    fn group_lut_uses_full_word_break_property() {
+        let packed = |cp: u32| crate::base::make_packed(cp, crate::base::COMMON_MASK);
+
+        // Deseret capital letter U+10400 is ALetter but sits outside the
+        // script-block ranges the previous hand-maintained subset covered.
+        assert!(is_word_continuation(packed(0x1_0400)));
+        // Arabic-Indic zero is Numeric, katakana U+30A2 is Katakana.
+        assert!(is_word_continuation(packed(0x0660)));
+        assert!(is_word_continuation(packed(0x30A2)));
+        // A combining acute accent is Extend and stays attached to a word.
+        assert!(is_word_continuation(packed(0x0301)));
+        // ZWJ is word-transparent (UAX #29 WB4).
+        assert!(is_word_continuation(packed(0x200D)));
+        // An em dash and an emoji are Other and break the word.
+        assert!(!is_word_continuation(packed(0x2014)));
+        assert!(!is_word_continuation(packed(0x1F600)));
+        // MidLetter punctuation does not continue a word on its own, which
+        // keeps non-ASCII behaviour consistent with ASCII `'`.
+        assert!(!is_word_continuation(packed(0x00B7)));
     }
 
     // ---- Edit record_bytes / inverse ----

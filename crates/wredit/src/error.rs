@@ -15,30 +15,30 @@
 
 //! Error types for the Wredit text editing engine.
 //!
-//! Every fallible operation in this crate reports [`WreditError`];
+//! Every fallible operation in this crate reports [`Error`];
 //! the crate never panics in production code paths.
 
 use core::fmt;
 
 /// Result alias used throughout the Wredit engine.
-pub type WreditResult<T> = Result<T, WreditError>;
+pub type Result<T> = core::result::Result<T, Error>;
 
 /// Everything that can go wrong inside the Wredit engine.
 ///
 /// Variants are grouped by the layer that raises them: position and
-/// cursor validation ([`WreditError::InvalidPosition`],
-/// [`WreditError::InvalidCursor`]), the staging gap layer
-/// ([`WreditError::InvalidGapSize`], [`WreditError::StagingFull`]),
-/// the block storage layer ([`WreditError::InvalidAddress`],
-/// [`WreditError::BlockNotFound`], [`WreditError::CapacityExhausted`],
-/// [`WreditError::BlockOutOfRange`], [`WreditError::DiskFull`],
-/// [`WreditError::DeviceIo`]), the namespace layer
-/// ([`WreditError::NotFound`], [`WreditError::AlreadyExists`],
-/// [`WreditError::NotADirectory`], [`WreditError::IsADirectory`],
-/// [`WreditError::DirectoryNotEmpty`], [`WreditError::InvalidPath`],
-/// [`WreditError::NameTooLong`]), image validation
-/// ([`WreditError::CorruptImage`]), and encoding
-/// ([`WreditError::Encoding`]).
+/// cursor validation ([`Error::InvalidPosition`],
+/// [`Error::InvalidCursor`]), the staging gap layer
+/// ([`Error::InvalidGapSize`], [`Error::StagingFull`]),
+/// the block storage layer ([`Error::InvalidAddress`],
+/// [`Error::BlockNotFound`], [`Error::CapacityExhausted`],
+/// [`Error::BlockOutOfRange`], [`Error::DiskFull`],
+/// [`Error::DeviceIo`]), the namespace layer
+/// ([`Error::NotFound`], [`Error::AlreadyExists`],
+/// [`Error::NotADirectory`], [`Error::IsADirectory`],
+/// [`Error::DirectoryNotEmpty`], [`Error::InvalidPath`],
+/// [`Error::NameTooLong`]), image validation
+/// ([`Error::CorruptImage`]), and encoding
+/// ([`Error::Encoding`]).
 ///
 /// The GPU (HOT) path deliberately has **no** error variants: an
 /// unavailable or failing device is not an error condition, the
@@ -48,11 +48,11 @@ pub type WreditResult<T> = Result<T, WreditError>;
 /// # Examples
 ///
 /// ```
-/// use codevar_wredit::error::{WreditError, WreditResult};
+/// use codevar_wredit::error::{Error, Result};
 ///
-/// fn checked(position: u64, len: u64) -> WreditResult<u64> {
+/// fn checked(position: u64, len: u64) -> Result<u64> {
 ///     if position > len {
-///         return Err(WreditError::InvalidPosition { position, len });
+///         return Err(Error::InvalidPosition { position, len });
 ///     }
 ///     Ok(position)
 /// }
@@ -60,12 +60,12 @@ pub type WreditResult<T> = Result<T, WreditError>;
 /// assert_eq!(checked(3, 5), Ok(3));
 /// assert!(matches!(
 ///     checked(7, 5),
-///     Err(WreditError::InvalidPosition { position: 7, len: 5 })
+///     Err(Error::InvalidPosition { position: 7, len: 5 })
 /// ));
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum WreditError {
+pub enum Error {
     /// A cursor or byte position lies outside the current document.
     InvalidPosition {
         /// The rejected position, in code points.
@@ -206,7 +206,7 @@ pub enum WreditError {
     },
 }
 
-impl fmt::Display for WreditError {
+impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidPosition { position, len } => {
@@ -256,7 +256,7 @@ impl fmt::Display for WreditError {
     }
 }
 
-impl core::error::Error for WreditError {}
+impl core::error::Error for Error {}
 
 #[cfg(test)]
 mod tests {
@@ -266,98 +266,98 @@ mod tests {
     fn displays_every_variant() {
         let samples = [
             (
-                WreditError::InvalidPosition { position: 9, len: 4 },
+                Error::InvalidPosition { position: 9, len: 4 },
                 "position 9 is outside the document (length 4)",
             ),
             (
-                WreditError::OutOfRange { start: 5, end: 2 },
+                Error::OutOfRange { start: 5, end: 2 },
                 "range 5..2 is invalid",
             ),
             (
-                WreditError::InvalidCursor { cursor: 3 },
+                Error::InvalidCursor { cursor: 3 },
                 "cursor 3 does not exist",
             ),
             (
-                WreditError::CapacityExhausted {
+                Error::CapacityExhausted {
                     requested: 8,
                     available: 2,
                 },
                 "block allocator exhausted: requested 8 blocks, 2 free",
             ),
             (
-                WreditError::InvalidAddress { address: 0x1234 },
+                Error::InvalidAddress { address: 0x1234 },
                 "invalid virtual address 0x1234",
             ),
             (
-                WreditError::BlockNotFound { address: 0x1000 },
+                Error::BlockNotFound { address: 0x1000 },
                 "no block mapped at virtual address 0x1000",
             ),
-            (WreditError::Encoding, "text encoding failed"),
+            (Error::Encoding, "text encoding failed"),
             (
-                WreditError::MalformedInput {
+                Error::MalformedInput {
                     encoding: "UTF-8",
                     offset: 7,
                 },
                 "malformed UTF-8 input at byte offset 7",
             ),
             (
-                WreditError::UnmappableCharacter { character: '☃' },
+                Error::UnmappableCharacter { character: '☃' },
                 "character '☃' has no mapping in the target encoding",
             ),
             (
-                WreditError::LimitExceeded { what: "kernel args" },
+                Error::LimitExceeded { what: "kernel args" },
                 "limit exceeded: kernel args",
             ),
             (
-                WreditError::InvalidOperation { what: "empty group" },
+                Error::InvalidOperation { what: "empty group" },
                 "invalid operation: empty group",
             ),
             (
-                WreditError::InvalidGapSize { size: 0 },
+                Error::InvalidGapSize { size: 0 },
                 "staging gap size 0 cannot hold a region",
             ),
             (
-                WreditError::StagingFull {
+                Error::StagingFull {
                     staged: 256,
                     capacity: 256,
                 },
                 "staging area full: 256 of 256 elements staged",
             ),
             (
-                WreditError::BlockOutOfRange { index: 40, count: 32 },
+                Error::BlockOutOfRange { index: 40, count: 32 },
                 "block 40 is outside the device (32 blocks)",
             ),
             (
-                WreditError::DiskFull { free: 0 },
+                Error::DiskFull { free: 0 },
                 "the block store is full (0 free)",
             ),
             (
-                WreditError::CorruptImage { what: "bad magic" },
+                Error::CorruptImage { what: "bad magic" },
                 "corrupt storage image: bad magic",
             ),
-            (WreditError::NotFound { what: "file" }, "not found: file"),
+            (Error::NotFound { what: "file" }, "not found: file"),
             (
-                WreditError::AlreadyExists { what: "directory" },
+                Error::AlreadyExists { what: "directory" },
                 "already exists: directory",
             ),
             (
-                WreditError::NameTooLong { len: 60 },
+                Error::NameTooLong { len: 60 },
                 "name of 60 bytes exceeds the limit",
             ),
             (
-                WreditError::DeviceIo {
+                Error::DeviceIo {
                     what: "writing block 7",
                 },
                 "block device I/O failed: writing block 7",
             ),
-            (WreditError::NotADirectory { what: "a/b" }, "not a directory: a/b"),
-            (WreditError::IsADirectory { what: "/src" }, "is a directory: /src"),
+            (Error::NotADirectory { what: "a/b" }, "not a directory: a/b"),
+            (Error::IsADirectory { what: "/src" }, "is a directory: /src"),
             (
-                WreditError::DirectoryNotEmpty { what: "/src" },
+                Error::DirectoryNotEmpty { what: "/src" },
                 "directory not empty: /src",
             ),
             (
-                WreditError::InvalidPath {
+                Error::InvalidPath {
                     what: "empty component",
                 },
                 "invalid path: empty component",
@@ -370,7 +370,7 @@ mod tests {
 
     #[test]
     fn is_std_error() {
-        let err: &dyn core::error::Error = &WreditError::Encoding;
+        let err: &dyn core::error::Error = &Error::Encoding;
         assert!(err.source().is_none());
     }
 }

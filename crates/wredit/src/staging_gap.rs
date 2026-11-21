@@ -50,7 +50,7 @@
 //! [`crate::fs_writable::WritableFile`] sits on top of it and
 //! pushes committed elements through the block store.
 
-use crate::error::{WreditError, WreditResult};
+use crate::error::{Error, Result};
 
 /// A cursor's suballocated slice of the staging area.
 ///
@@ -134,10 +134,10 @@ impl StagingRegion {
 ///
 /// # Examples
 ///
-/// use codevar_wredit::error::WreditResult;
+/// use codevar_wredit::error::Result;
 /// use codevar_wredit::staging_gap::StagingGap;
 ///
-/// fn edit() -> WreditResult<()> {
+/// fn edit() -> Result<()> {
 ///     let mut gap: StagingGap<u32, 32, 8> = StagingGap::try_from_slice(&[1, 2, 3])?;
 ///     gap.add_region(0)?;
 ///     let at = gap.stage(0, 9)?;
@@ -191,12 +191,12 @@ impl<T: Copy + Default, const COMMIT_CAP: usize, const GAP_SIZE: usize> StagingG
     ///
     /// # Errors
     ///
-    /// [`WreditError::InvalidOperation`] when `elements.len() + GAP_SIZE`
+    /// [`Error::InvalidOperation`] when `elements.len() + GAP_SIZE`
     /// exceeds [`COMMIT_CAP`].
-    pub fn try_from_slice(elements: &[T]) -> WreditResult<Self> {
+    pub fn try_from_slice(elements: &[T]) -> Result<Self> {
         let len = elements.len();
         if len.saturating_add(GAP_SIZE) > COMMIT_CAP {
-            return Err(WreditError::InvalidOperation {
+            return Err(Error::InvalidOperation {
                 what: "elements plus staging capacity exceed commit capacity",
             });
         }
@@ -319,19 +319,19 @@ impl<T: Copy + Default, const COMMIT_CAP: usize, const GAP_SIZE: usize> StagingG
     ///
     /// # Errors
     ///
-    /// * [`WreditError::InvalidOperation`] when the cursor already owns
+    /// * [`Error::InvalidOperation`] when the cursor already owns
     ///   a region
-    /// * [`WreditError::StagingFull`] when no slot is left for another
+    /// * [`Error::StagingFull`] when no slot is left for another
     ///   region
-    pub fn add_region(&mut self, cursor_id: usize) -> WreditResult<()> {
+    pub fn add_region(&mut self, cursor_id: usize) -> Result<()> {
         if self.region_count >= GAP_SIZE {
-            return Err(WreditError::StagingFull {
+            return Err(Error::StagingFull {
                 staged: self.staging_used(),
                 capacity: GAP_SIZE,
             });
         }
         if (0..self.region_count).any(|i| self.regions[i].cursor_id == cursor_id) {
-            return Err(WreditError::InvalidOperation {
+            return Err(Error::InvalidOperation {
                 what: "cursor already owns a staging region",
             });
         }
@@ -382,24 +382,24 @@ impl<T: Copy + Default, const COMMIT_CAP: usize, const GAP_SIZE: usize> StagingG
     ///
     /// # Errors
     ///
-    /// * [`WreditError::InvalidCursor`] when the cursor owns no region
-    /// * [`WreditError::StagingFull`] when the region is full, or when
+    /// * [`Error::InvalidCursor`] when the cursor owns no region
+    /// * [`Error::StagingFull`] when the region is full, or when
     ///   the staging budget (every staged element must fit the gap
     ///   before it commits) is exhausted
-    pub fn stage(&mut self, cursor_id: usize, value: T) -> WreditResult<usize> {
+    pub fn stage(&mut self, cursor_id: usize, value: T) -> Result<usize> {
         let index = self
             .region_index(cursor_id)
-            .ok_or(WreditError::InvalidCursor { cursor: cursor_id })?;
+            .ok_or(Error::InvalidCursor { cursor: cursor_id })?;
         let region = self.regions[index];
         if region.is_full() {
-            return Err(WreditError::StagingFull {
+            return Err(Error::StagingFull {
                 staged: region.staged,
                 capacity: region.size,
             });
         }
         let used = self.staging_used();
         if used >= self.gap_len {
-            return Err(WreditError::StagingFull {
+            return Err(Error::StagingFull {
                 staged: used,
                 capacity: self.gap_len,
             });
@@ -417,26 +417,26 @@ impl<T: Copy + Default, const COMMIT_CAP: usize, const GAP_SIZE: usize> StagingG
     ///
     /// # Errors
     ///
-    /// * [`WreditError::InvalidCursor`] when the cursor owns no region
-    /// * [`WreditError::StagingFull`] when either the remaining region
+    /// * [`Error::InvalidCursor`] when the cursor owns no region
+    /// * [`Error::StagingFull`] when either the remaining region
     ///   slots or the staging budget cannot hold the whole slice
-    pub fn stage_slice(&mut self, cursor_id: usize, values: &[T]) -> WreditResult<usize> {
+    pub fn stage_slice(&mut self, cursor_id: usize, values: &[T]) -> Result<usize> {
         if values.is_empty() {
             return Ok(0);
         }
         let index = self
             .region_index(cursor_id)
-            .ok_or(WreditError::InvalidCursor { cursor: cursor_id })?;
+            .ok_or(Error::InvalidCursor { cursor: cursor_id })?;
         let region = self.regions[index];
         if values.len() > region.remaining() {
-            return Err(WreditError::StagingFull {
+            return Err(Error::StagingFull {
                 staged: region.staged,
                 capacity: region.size,
             });
         }
         let used = self.staging_used();
         if used.saturating_add(values.len()) > self.gap_len {
-            return Err(WreditError::StagingFull {
+            return Err(Error::StagingFull {
                 staged: used,
                 capacity: self.gap_len,
             });
@@ -456,11 +456,11 @@ impl<T: Copy + Default, const COMMIT_CAP: usize, const GAP_SIZE: usize> StagingG
     ///
     /// # Errors
     ///
-    /// [`WreditError::InvalidCursor`] when the cursor owns no region.
-    pub fn flush_region(&mut self, cursor_id: usize) -> WreditResult<usize> {
+    /// [`Error::InvalidCursor`] when the cursor owns no region.
+    pub fn flush_region(&mut self, cursor_id: usize) -> Result<usize> {
         let index = self
             .region_index(cursor_id)
-            .ok_or(WreditError::InvalidCursor { cursor: cursor_id })?;
+            .ok_or(Error::InvalidCursor { cursor: cursor_id })?;
         Ok(self.commit_up_to(index))
     }
 
@@ -485,13 +485,13 @@ impl<T: Copy + Default, const COMMIT_CAP: usize, const GAP_SIZE: usize> StagingG
     ///
     /// # Errors
     ///
-    /// [`WreditError::InvalidPosition`] when `index` exceeds the
+    /// [`Error::InvalidPosition`] when `index` exceeds the
     /// committed length.
-    pub fn move_gap_to(&mut self, index: usize) -> WreditResult<()> {
+    pub fn move_gap_to(&mut self, index: usize) -> Result<()> {
         let _ = self.flush_all();
         let committed = self.committed_len;
         if index > committed {
-            return Err(WreditError::InvalidPosition {
+            return Err(Error::InvalidPosition {
                 position: index as u64,
                 len: committed as u64,
             });
@@ -512,18 +512,18 @@ impl<T: Copy + Default, const COMMIT_CAP: usize, const GAP_SIZE: usize> StagingG
     ///
     /// # Errors
     ///
-    /// [`WreditError::OutOfRange`] when `start > end` or `end` exceeds
+    /// [`Error::OutOfRange`] when `start > end` or `end` exceeds
     /// the committed length.
-    pub fn delete_range(&mut self, start: usize, end: usize) -> WreditResult<usize> {
+    pub fn delete_range(&mut self, start: usize, end: usize) -> Result<usize> {
         if start > end {
-            return Err(WreditError::OutOfRange {
+            return Err(Error::OutOfRange {
                 start: start as u64,
                 end: end as u64,
             });
         }
         self.move_gap_to(start)?;
         if end > self.committed_len {
-            return Err(WreditError::OutOfRange {
+            return Err(Error::OutOfRange {
                 start: start as u64,
                 end: end as u64,
             });
@@ -568,10 +568,24 @@ impl<T: Copy + Default, const COMMIT_CAP: usize, const GAP_SIZE: usize> StagingG
         for i in 0..count {
             let region = self.regions[i];
             let size = share.max(region.staged);
-            for slot in 0..region.staged {
-                self.staging[start + slot] = staged[next];
-                next += 1;
+            let byte_len = region
+                .staged
+                .saturating_mul(core::mem::size_of::<T>());
+            if byte_len != 0 {
+                // Safety: `staged` holds `GAP_SIZE` initialized elements
+                // and `next + region.staged <= staged_len <= GAP_SIZE`;
+                // invariant 3 keeps `start + region.staged` inside
+                // `staging` because `size >= region.staged`. The two
+                // arrays are distinct, so the ranges never overlap.
+                unsafe {
+                    codevar_wredit_asm::memcpy(
+                        self.staging.as_mut_ptr().add(start).cast::<u8>(),
+                        staged.as_ptr().add(next).cast::<u8>(),
+                        byte_len,
+                    );
+                }
             }
+            next += region.staged;
             // Preserve how many slots are occupied so the cursor's edits
             // are not discarded by rebalancing.
             self.regions[i] = StagingRegion {
@@ -725,7 +739,7 @@ impl<T: Copy + Default, const COMMIT_CAP: usize, const GAP_SIZE: usize> Default
 #[cfg(test)]
 mod tests {
     use super::StagingGap;
-    use crate::error::WreditError;
+    use crate::error::Error;
 
     /// Justification: `unwrap` in tests is permitted by the project
     /// lint configuration (`allow-unwrap-in-tests`); every call here
@@ -812,7 +826,7 @@ mod tests {
         assert!(gap.stage_slice(0, &[1, 2, 3]).is_ok());
         assert!(matches!(
             gap.stage_slice(0, &[4, 5]),
-            Err(WreditError::StagingFull {
+            Err(Error::StagingFull {
                 staged: 3,
                 capacity: 4
             })
@@ -825,7 +839,7 @@ mod tests {
         // Now the region is full.
         assert!(matches!(
             gap.stage(0, 5),
-            Err(WreditError::StagingFull {
+            Err(Error::StagingFull {
                 staged: 4,
                 capacity: 4
             })
@@ -855,7 +869,7 @@ mod tests {
         assert_eq!(gap.gap_position(), 6);
         assert!(matches!(
             gap.move_gap_to(7),
-            Err(WreditError::InvalidPosition { position: 7, len: 6 })
+            Err(Error::InvalidPosition { position: 7, len: 6 })
         ));
     }
 
@@ -871,11 +885,11 @@ mod tests {
         assert_eq!(gap.gap_available(), 6);
         assert!(matches!(
             gap.delete_range(2, 9),
-            Err(WreditError::OutOfRange { start: 2, end: 9 })
+            Err(Error::OutOfRange { start: 2, end: 9 })
         ));
         assert!(matches!(
             gap.delete_range(2, 1),
-            Err(WreditError::OutOfRange { start: 2, end: 1 })
+            Err(Error::OutOfRange { start: 2, end: 1 })
         ));
     }
 
@@ -901,6 +915,26 @@ mod tests {
     }
 
     #[test]
+    fn rebalance_copies_multiword_elements() {
+        // Non-`u32` payloads exercise the byte-level block copy in
+        // `rebalance`, not just a single-word move.
+        #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+        struct Pair {
+            first: u32,
+            second: u32,
+        }
+
+        let mut gap: StagingGap<Pair, 64, 12> = StagingGap::new();
+        gap.add_region(0).unwrap();
+        gap.add_region(1).unwrap();
+        gap.add_region(2).unwrap();
+        let value = Pair { first: 7, second: 9 };
+        gap.stage(2, value).unwrap();
+        gap.add_region(3).unwrap();
+        assert_eq!(gap.get(0), Some(value));
+    }
+
+    #[test]
     fn removing_a_region_drops_its_staged_edits() {
         let mut gap: StagingGap<u32, 32, 8> = StagingGap::try_from_slice(&[1]).unwrap();
         gap.add_region(0).unwrap();
@@ -917,10 +951,7 @@ mod tests {
     fn duplicate_regions_and_zero_capacity_are_rejected() {
         let mut gap: StagingGap<u32, 32, 8> = StagingGap::new();
         gap.add_region(0).unwrap();
-        assert!(matches!(
-            gap.add_region(0),
-            Err(WreditError::InvalidOperation { .. })
-        ));
+        assert!(matches!(gap.add_region(0), Err(Error::InvalidOperation { .. })));
     }
 
     #[test]

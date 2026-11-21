@@ -38,8 +38,9 @@ use super::writable::{GAP_NONE, MAX_CURSORS, MAX_GAPS, SHARED_GAP_SLOTS, StreamW
 use super::writable_scan;
 use crate::encoding::{DocumentEncoding, is_valid_scalar};
 use crate::encoding_dispatch::{DecodePolicy, EncodePolicy, decode, encode};
-use crate::error::{WreditError, WreditResult};
-use codevar_wredit_asm::memmove;
+use crate::error::{Error, Result};
+use crate::flush_writable::NT_THRESHOLD;
+use codevar_wredit_asm::{memmove, memmove_nt};
 
 impl<Raw, Buf, const GAP_SIZE: usize> Writable<Raw, Buf, GAP_SIZE> for StreamWritable<Raw, Buf, GAP_SIZE>
 where
@@ -272,11 +273,10 @@ where
     /// Validates a cursor id for a fallible operation.
     ///
     /// An unknown id is logged and reported as
-    /// [`WreditError::InvalidCursor`].
-    pub(crate) fn validate_cursor(&self, cursor_id: usize) -> WreditResult<usize> {
+    /// [`Error::InvalidCursor`].
+    pub(crate) fn validate_cursor(&self, cursor_id: usize) -> Result<usize> {
         if !self.base.valid_cursor_id(cursor_id) {
-            log_error!("wredit: invalid cursor id {cursor_id}");
-            return Err(WreditError::InvalidCursor { cursor: cursor_id });
+            return Err(Error::InvalidCursor { cursor: cursor_id });
         }
         Ok(cursor_id)
     }
@@ -294,14 +294,14 @@ where
     ///
     /// Returns the gap index, or an error when the fixed gap set is
     /// exhausted or the cursor is staged in a shared gap.
-    pub(crate) fn ensure_private_gap(&mut self, cursor_id: usize, base: usize) -> WreditResult<usize> {
+    pub(crate) fn ensure_private_gap(&mut self, cursor_id: usize, base: usize) -> Result<usize> {
         let mapping = self.cursor_mapping(cursor_id);
         if mapping < MAX_GAPS as u16 {
             return Ok(usize::from(mapping));
         }
         if mapping != GAP_NONE {
             log_error!("wredit: cursor {cursor_id} is staged in a shared gap; flush before private staging");
-            return Err(WreditError::InvalidOperation {
+            return Err(Error::InvalidOperation {
                 what: "cursor staged in a shared gap",
             });
         }
@@ -312,7 +312,7 @@ where
             }
             None => {
                 log_error!("wredit: every private gap slot is in use");
-                Err(WreditError::CapacityExhausted {
+                Err(Error::CapacityExhausted {
                     requested: 1,
                     available: 0,
                 })
@@ -323,15 +323,15 @@ where
     /// Resolves (allocating on first use) the shared gap slot the
     /// cursor belongs to.
     ///
-    /// Returns [`WreditError::InvalidOperation`] when the cursor is
-    /// staged in a private gap, and [`WreditError::CapacityExhausted`]
+    /// Returns [`Error::InvalidOperation`] when the cursor is
+    /// staged in a private gap, and [`Error::CapacityExhausted`]
     /// when no slot or mask bit is left.
-    pub(crate) fn ensure_shared_slot(&mut self, cursor_id: usize) -> WreditResult<usize> {
+    pub(crate) fn ensure_shared_slot(&mut self, cursor_id: usize) -> Result<usize> {
         let mapping = self.cursor_mapping(cursor_id);
         if mapping == GAP_NONE {
             if cursor_id >= super::shared_gap::SLOT_CURSOR_BITS {
                 log_error!("wredit: cursor {cursor_id} exceeds the shared gap mask");
-                return Err(WreditError::InvalidCursor { cursor: cursor_id });
+                return Err(Error::InvalidCursor { cursor: cursor_id });
             }
             let mask = 1u16 << cursor_id;
             // SAFETY: the mask names only the validated `cursor_id`
@@ -340,7 +340,7 @@ where
                 Some(slot) => slot,
                 None => {
                     log_error!("wredit: every shared gap slot is in use");
-                    return Err(WreditError::CapacityExhausted {
+                    return Err(Error::CapacityExhausted {
                         requested: 1,
                         available: 0,
                     });
@@ -352,7 +352,7 @@ where
             Ok(usize::from(mapping - MAX_GAPS as u16))
         } else {
             log_error!("wredit: cursor {cursor_id} is staged in a private gap");
-            Err(WreditError::InvalidOperation {
+            Err(Error::InvalidOperation {
                 what: "cursor staged in a private gap",
             })
         }
@@ -379,7 +379,7 @@ where
     ///
     /// Returns the gap index that received (or would have received)
     /// the value.
-    pub(crate) fn stage_private(&mut self, cursor_id: usize, value: Raw, base: usize) -> WreditResult<usize> {
+    pub(crate) fn stage_private(&mut self, cursor_id: usize, value: Raw, base: usize) -> Result<usize> {
         let mut index = self.ensure_private_gap(cursor_id, base)?;
         if self
             .base
@@ -403,7 +403,7 @@ where
         };
         if !pushed {
             log_error!("wredit: gap window unavailable for staging");
-            return Err(WreditError::CapacityExhausted {
+            return Err(Error::CapacityExhausted {
                 requested: GAP_SIZE,
                 available: 0,
             });
@@ -504,20 +504,20 @@ where
         position: usize,
         remove_count: usize,
         insert: &[Raw],
-    ) -> WreditResult<()> {
+    ) -> Result<()> {
         let raw_length = self.base.raw_length;
         let Some(new_length) = raw_length
             .checked_sub(remove_count)
             .and_then(|length| length.checked_add(insert.len()))
         else {
             log_error!("wredit: apply edit length overflow");
-            return Err(WreditError::LimitExceeded {
+            return Err(Error::LimitExceeded {
                 what: "apply edit length",
             });
         };
         if position > new_length {
             log_error!("wredit: apply edit position {position} exceeds length {new_length}");
-            return Err(WreditError::InvalidPosition {
+            return Err(Error::InvalidPosition {
                 position: position as u64,
                 len: new_length as u64,
             });
@@ -534,11 +534,19 @@ where
             // Safety: `end <= raw_length <= capacity` after the growth
             // above; `memmove` tolerates the tail overlap.
             unsafe {
-                memmove(
-                    ptr.add(position).cast::<u8>(),
-                    ptr.add(end).cast::<u8>(),
-                    byte_len,
-                );
+                if byte_len >= NT_THRESHOLD {
+                    memmove_nt(
+                        ptr.add(position).cast::<u8>(),
+                        ptr.add(end).cast::<u8>(),
+                        byte_len,
+                    );
+                } else {
+                    memmove(
+                        ptr.add(position).cast::<u8>(),
+                        ptr.add(end).cast::<u8>(),
+                        byte_len,
+                    );
+                }
             }
             raw.set_count(raw_length - remove_count);
             self.base.raw_length = raw_length - remove_count;
@@ -549,7 +557,7 @@ where
             let committed = write_bytes_to_raw(self.base.raw_mut(), current_length, position, insert);
             if committed == current_length {
                 log_error!("wredit: apply edit insertion refused");
-                return Err(WreditError::CapacityExhausted {
+                return Err(Error::CapacityExhausted {
                     requested: insert.len(),
                     available: 0,
                 });
@@ -618,7 +626,11 @@ where
             // are in bounds; the arch `memmove` handles the tail
             // overlap with its destination.
             unsafe {
-                memmove(ptr.add(start).cast::<u8>(), ptr.add(end).cast::<u8>(), byte_len);
+                if byte_len >= NT_THRESHOLD {
+                    memmove_nt(ptr.add(start).cast::<u8>(), ptr.add(end).cast::<u8>(), byte_len);
+                } else {
+                    memmove(ptr.add(start).cast::<u8>(), ptr.add(end).cast::<u8>(), byte_len);
+                }
             }
             let new_length = old_length - count;
             raw.set_count(new_length);
@@ -732,7 +744,7 @@ where
     Raw: Copy + Into<u32> + From<u32> + From<Buf>,
     Buf: Copy + From<Raw>,
 {
-    fn delete(&mut self, cursor_id: usize) -> WreditResult<usize> {
+    fn delete(&mut self, cursor_id: usize) -> Result<usize> {
         let id = self.validate_cursor(cursor_id)?;
         // Commit the cursor's own staged run first so the deletion
         // addresses a committed layout.
@@ -748,7 +760,7 @@ where
         Ok(self.commit_removal(position, 1))
     }
 
-    fn backspace(&mut self, cursor_id: usize) -> WreditResult<usize> {
+    fn backspace(&mut self, cursor_id: usize) -> Result<usize> {
         let id = self.validate_cursor(cursor_id)?;
         self.flush_cursor_gap(id);
         let position = self
@@ -763,11 +775,11 @@ where
         Ok(self.commit_removal(at, 1))
     }
 
-    fn delete_range(&mut self, start: usize, end: usize) -> WreditResult<usize> {
+    fn delete_range(&mut self, start: usize, end: usize) -> Result<usize> {
         let raw_length = self.base.raw_length;
         if start > end || end > raw_length {
             log_error!("wredit: delete_range {start}..{end} outside the document (length {raw_length})");
-            return Err(WreditError::OutOfRange {
+            return Err(Error::OutOfRange {
                 start: start as u64,
                 end: end as u64,
             });
@@ -786,7 +798,7 @@ where
     Raw: Copy + Into<u32> + From<u32> + From<Buf>,
     Buf: Copy + From<Raw>,
 {
-    fn replace(&mut self, cursor_id: usize, value: Raw) -> WreditResult<usize> {
+    fn replace(&mut self, cursor_id: usize, value: Raw) -> Result<usize> {
         let id = self.validate_cursor(cursor_id)?;
         // A staged run at the caret commits first, then the element
         // it landed on is removed and the replacement stages.
@@ -799,7 +811,7 @@ where
         if position < self.base.raw_length {
             let removed = self.commit_removal(position, 1);
             if removed == 0 {
-                return Err(WreditError::InvalidOperation {
+                return Err(Error::InvalidOperation {
                     what: "replace could not remove the covered element",
                 });
             }
@@ -807,11 +819,11 @@ where
         self.put(id, value)
     }
 
-    fn replace_range(&mut self, start: usize, end: usize, values: &[Raw]) -> WreditResult<usize> {
+    fn replace_range(&mut self, start: usize, end: usize, values: &[Raw]) -> Result<usize> {
         let raw_length = self.base.raw_length;
         if start > end || end > raw_length {
             log_error!("wredit: replace_range {start}..{end} outside the document (length {raw_length})");
-            return Err(WreditError::OutOfRange {
+            return Err(Error::OutOfRange {
                 start: start as u64,
                 end: end as u64,
             });
@@ -820,7 +832,7 @@ where
         if removed > 0 {
             let done = self.commit_removal(start, removed);
             if done == 0 {
-                return Err(WreditError::InvalidOperation {
+                return Err(Error::InvalidOperation {
                     what: "replace_range could not remove the old range",
                 });
             }
@@ -832,7 +844,7 @@ where
         if inserted == 0 {
             // The removal already applied; the insertion was refused
             // (allocation) — report it without unwinding anything.
-            return Err(WreditError::CapacityExhausted {
+            return Err(Error::CapacityExhausted {
                 requested: values.len(),
                 available: 0,
             });
@@ -980,7 +992,7 @@ where
     Raw: Copy + Into<u32> + From<u32> + From<Buf>,
     Buf: Copy + From<Raw>,
 {
-    fn put(&mut self, cursor_id: usize, value: Raw) -> WreditResult<usize> {
+    fn put(&mut self, cursor_id: usize, value: Raw) -> Result<usize> {
         let id = self.validate_cursor(cursor_id)?;
         let position = self
             .base
@@ -991,13 +1003,13 @@ where
         Ok(self.move_caret_to(id, position.saturating_add(1)))
     }
 
-    fn put_shared(&mut self, cursor_id: usize, value: Raw) -> WreditResult<usize> {
+    fn put_shared(&mut self, cursor_id: usize, value: Raw) -> Result<usize> {
         let id = self.validate_cursor(cursor_id)?;
         // The mask only addresses live cursors; ids at or above the
         // mask width can never join a shared gap.
         if id >= MAX_CURSORS || id >= SLOT_CURSOR_BITS {
             log_error!("wredit: cursor {id} cannot join a shared gap mask");
-            return Err(WreditError::InvalidCursor { cursor: id });
+            return Err(Error::InvalidCursor { cursor: id });
         }
         let mut recovered = false;
         loop {
@@ -1009,7 +1021,7 @@ where
             let slot = self.ensure_shared_slot(id)?;
             let Some(descriptor) = self.base.shared_ref().slot(slot) else {
                 log_error!("wredit: shared gap slot {slot} vanished");
-                return Err(WreditError::InvalidOperation {
+                return Err(Error::InvalidOperation {
                     what: "shared gap slot missing",
                 });
             };
@@ -1017,7 +1029,7 @@ where
             if size >= SLOT_MAX_SIZE {
                 if recovered {
                     log_error!("wredit: shared gap region exhausted");
-                    return Err(WreditError::CapacityExhausted {
+                    return Err(Error::CapacityExhausted {
                         requested: size + 1,
                         available: 0,
                     });
@@ -1039,7 +1051,7 @@ where
                 .and_then(|value| value.checked_add(1))
             else {
                 log_error!("wredit: shared gap region offset overflow");
-                return Err(WreditError::LimitExceeded {
+                return Err(Error::LimitExceeded {
                     what: "shared gap region offset",
                 });
             };
@@ -1049,7 +1061,7 @@ where
                 .ensure_capacity(offset)
                 .is_err()
             {
-                return Err(WreditError::CapacityExhausted {
+                return Err(Error::CapacityExhausted {
                     requested: offset,
                     available: 0,
                 });
@@ -1060,7 +1072,7 @@ where
                 *slot_ref = Buf::from(value);
             } else {
                 log_error!("wredit: shared gap write escaped the staging arena");
-                return Err(WreditError::InvalidOperation {
+                return Err(Error::InvalidOperation {
                     what: "shared gap write out of bounds",
                 });
             }
@@ -1078,7 +1090,7 @@ where
     Raw: Copy + Into<u32> + From<u32> + From<Buf>,
     Buf: Copy + From<Raw>,
 {
-    fn overwrite(&mut self, cursor_id: usize, value: Raw) -> WreditResult<usize> {
+    fn overwrite(&mut self, cursor_id: usize, value: Raw) -> Result<usize> {
         let id = self.validate_cursor(cursor_id)?;
         let position = self
             .base
@@ -1096,14 +1108,14 @@ where
         Ok(self.move_caret_to(id, position.saturating_add(1)))
     }
 
-    fn overwrite_slice(&mut self, start: usize, values: &[Raw]) -> WreditResult<usize> {
+    fn overwrite_slice(&mut self, start: usize, values: &[Raw]) -> Result<usize> {
         if values.is_empty() {
             return Ok(0);
         }
         let raw_length = self.base.raw_length;
         if start > raw_length {
             log_error!("wredit: overwrite_slice at {start} exceeds length {raw_length}");
-            return Err(WreditError::InvalidPosition {
+            return Err(Error::InvalidPosition {
                 position: start as u64,
                 len: raw_length as u64,
             });
@@ -1140,7 +1152,7 @@ where
                 target.copy_from_slice(&values[..overwritten]);
             } else {
                 log_error!("wredit: overwrite_slice target escaped the raw buffer");
-                return Err(WreditError::InvalidOperation {
+                return Err(Error::InvalidOperation {
                     what: "overwrite_slice target out of bounds",
                 });
             }
@@ -1161,7 +1173,7 @@ where
         if appended > 0 {
             let inserted = self.commit_insertion(raw_length, &values[overwritten..]);
             if inserted == 0 {
-                return Err(WreditError::CapacityExhausted {
+                return Err(Error::CapacityExhausted {
                     requested: appended,
                     available: 0,
                 });
@@ -1228,7 +1240,7 @@ where
 }
 
 impl<const GAP_SIZE: usize> TextEditableEncoding<u32, u32, GAP_SIZE> for StreamWritable<u32, u32, GAP_SIZE> {
-    fn set_document_encoding(&mut self, encoding: DocumentEncoding) -> WreditResult<()> {
+    fn set_document_encoding(&mut self, encoding: DocumentEncoding) -> Result<()> {
         self.base.set_encoding(encoding)
     }
 
@@ -1236,19 +1248,19 @@ impl<const GAP_SIZE: usize> TextEditableEncoding<u32, u32, GAP_SIZE> for StreamW
         self.base.document_encoding()
     }
 
-    fn insert_scalars(&mut self, cursor_id: usize, scalars: &[u32]) -> WreditResult<usize> {
+    fn insert_scalars(&mut self, cursor_id: usize, scalars: &[u32]) -> Result<usize> {
         // Validate before touching the buffer so a rejected scalar
         // cannot leave a partially inserted sequence behind.
         for &value in scalars {
             if !is_valid_scalar(value) {
                 log_error!("wredit: rejecting non-scalar value U+{value:04X}");
-                return Err(WreditError::Encoding);
+                return Err(Error::Encoding);
             }
         }
         let id = self.validate_cursor(cursor_id)?;
         let Some(cursor) = self.base.cursor(id) else {
             log_error!("wredit: cursor {id} vanished before scalar insertion");
-            return Err(WreditError::InvalidCursor { cursor: id });
+            return Err(Error::InvalidCursor { cursor: id });
         };
         let mut position = cursor.array_pos();
         for &value in scalars {
@@ -1258,7 +1270,7 @@ impl<const GAP_SIZE: usize> TextEditableEncoding<u32, u32, GAP_SIZE> for StreamW
         Ok(position)
     }
 
-    fn insert_str(&mut self, cursor_id: usize, text: &str) -> WreditResult<usize> {
+    fn insert_str(&mut self, cursor_id: usize, text: &str) -> Result<usize> {
         let scalars: Vec<u32> = text.chars().map(u32::from).collect();
         self.insert_scalars(cursor_id, &scalars)
     }
@@ -1269,15 +1281,15 @@ impl<const GAP_SIZE: usize> TextEditableEncoding<u32, u32, GAP_SIZE> for StreamW
         bytes: &[u8],
         encoding: DocumentEncoding,
         policy: DecodePolicy,
-    ) -> WreditResult<usize> {
+    ) -> Result<usize> {
         let scalars = decode(bytes, encoding, policy)?;
         self.insert_scalars(cursor_id, &scalars)
     }
 
-    fn read_scalars(&self, start: usize, end: usize) -> WreditResult<Vec<u32>> {
+    fn read_scalars(&self, start: usize, end: usize) -> Result<Vec<u32>> {
         let elements = self
             .raw_slice(start, end)
-            .ok_or(WreditError::InvalidOperation {
+            .ok_or(Error::InvalidOperation {
                 what: "scalar read range",
             })?;
         let mut scalars = Vec::with_capacity(elements.len());
@@ -1285,18 +1297,22 @@ impl<const GAP_SIZE: usize> TextEditableEncoding<u32, u32, GAP_SIZE> for StreamW
             let value = packed_char(element);
             if !is_valid_scalar(value) {
                 log_error!("wredit: buffer holds non-scalar value U+{value:04X}");
-                return Err(WreditError::Encoding);
+                return Err(Error::Encoding);
             }
             scalars.push(value);
         }
         Ok(scalars)
     }
 
-    fn read_string(&self, start: usize, end: usize) -> WreditResult<String> {
+    fn read_string(&self, start: usize, end: usize) -> Result<String> {
         let scalars = self.read_scalars(start, end)?;
         let mut text = String::with_capacity(scalars.len());
         for value in scalars {
-            let character = char::from_u32(value).ok_or(WreditError::Encoding)?;
+            // SAFETY: `read_scalars` already rejected every non-scalar
+            // value, so `value` is a Unicode scalar value and the
+            // unchecked conversion cannot observe a surrogate or an
+            // out-of-range code point.
+            let character = unsafe { char::from_u32_unchecked(value) };
             text.push(character);
         }
         Ok(text)
@@ -1308,7 +1324,7 @@ impl<const GAP_SIZE: usize> TextEditableEncoding<u32, u32, GAP_SIZE> for StreamW
         end: usize,
         encoding: DocumentEncoding,
         policy: EncodePolicy,
-    ) -> WreditResult<Vec<u8>> {
+    ) -> Result<Vec<u8>> {
         let scalars = self.read_scalars(start, end)?;
         encode(&scalars, encoding, policy)
     }
@@ -1320,7 +1336,7 @@ where
     Raw: Copy + Into<u32> + From<u32> + From<Buf>,
     Buf: Copy + From<Raw>,
 {
-    fn move_cursor_forward(&mut self, cursor_id: usize, amount: usize) -> WreditResult<usize> {
+    fn move_cursor_forward(&mut self, cursor_id: usize, amount: usize) -> Result<usize> {
         let id = self.validate_cursor(cursor_id)?;
         // Element-wise movement works against the logical document,
         // so staged runs need no flush: only this cursor's clamping
@@ -1344,7 +1360,7 @@ where
         Ok(to)
     }
 
-    fn move_cursor_backward(&mut self, cursor_id: usize, amount: usize) -> WreditResult<usize> {
+    fn move_cursor_backward(&mut self, cursor_id: usize, amount: usize) -> Result<usize> {
         let id = self.validate_cursor(cursor_id)?;
         self.base.sync_cursor_length(id);
         let Some(from) = self
@@ -1364,7 +1380,7 @@ where
         Ok(to)
     }
 
-    fn move_cursor_next_line(&mut self, cursor_id: usize) -> WreditResult<usize> {
+    fn move_cursor_next_line(&mut self, cursor_id: usize) -> Result<usize> {
         let id = self.validate_cursor(cursor_id)?;
         // Line navigation reads the committed layout: commit whatever
         // this cursor has staged first. A successful flush already
@@ -1390,7 +1406,7 @@ where
         Ok(to)
     }
 
-    fn move_cursor_prev_line(&mut self, cursor_id: usize) -> WreditResult<usize> {
+    fn move_cursor_prev_line(&mut self, cursor_id: usize) -> Result<usize> {
         let id = self.validate_cursor(cursor_id)?;
         self.flush_cursor_gap(id);
         self.base.sync_cursor_length(id);
@@ -1411,7 +1427,7 @@ where
         Ok(to)
     }
 
-    fn move_cursor_next_grapheme(&mut self, cursor_id: usize) -> WreditResult<usize> {
+    fn move_cursor_next_grapheme(&mut self, cursor_id: usize) -> Result<usize> {
         let id = self.validate_cursor(cursor_id)?;
         self.flush_cursor_gap(id);
         self.base.sync_cursor_length(id);
@@ -1432,7 +1448,7 @@ where
         Ok(to)
     }
 
-    fn move_cursor_prev_grapheme(&mut self, cursor_id: usize) -> WreditResult<usize> {
+    fn move_cursor_prev_grapheme(&mut self, cursor_id: usize) -> Result<usize> {
         let id = self.validate_cursor(cursor_id)?;
         self.flush_cursor_gap(id);
         self.base.sync_cursor_length(id);
@@ -1454,7 +1470,7 @@ where
         Ok(to)
     }
 
-    fn move_cursor_next_word(&mut self, cursor_id: usize) -> WreditResult<usize> {
+    fn move_cursor_next_word(&mut self, cursor_id: usize) -> Result<usize> {
         let id = self.validate_cursor(cursor_id)?;
         self.flush_cursor_gap(id);
         self.base.sync_cursor_length(id);
@@ -1474,7 +1490,7 @@ where
         Ok(to)
     }
 
-    fn move_cursor_prev_word(&mut self, cursor_id: usize) -> WreditResult<usize> {
+    fn move_cursor_prev_word(&mut self, cursor_id: usize) -> Result<usize> {
         let id = self.validate_cursor(cursor_id)?;
         self.flush_cursor_gap(id);
         self.base.sync_cursor_length(id);
@@ -1496,7 +1512,7 @@ where
         Ok(to)
     }
 
-    fn move_cursor_next_sentence(&mut self, cursor_id: usize) -> WreditResult<usize> {
+    fn move_cursor_next_sentence(&mut self, cursor_id: usize) -> Result<usize> {
         let id = self.validate_cursor(cursor_id)?;
         self.flush_cursor_gap(id);
         self.base.sync_cursor_length(id);
@@ -1516,7 +1532,7 @@ where
         Ok(to)
     }
 
-    fn move_cursor_prev_sentence(&mut self, cursor_id: usize) -> WreditResult<usize> {
+    fn move_cursor_prev_sentence(&mut self, cursor_id: usize) -> Result<usize> {
         let id = self.validate_cursor(cursor_id)?;
         self.flush_cursor_gap(id);
         self.base.sync_cursor_length(id);
@@ -1538,7 +1554,7 @@ where
         Ok(to)
     }
 
-    fn move_cursor_to(&mut self, cursor_id: usize, row: usize, col: usize) -> WreditResult<usize> {
+    fn move_cursor_to(&mut self, cursor_id: usize, row: usize, col: usize) -> Result<usize> {
         let id = self.validate_cursor(cursor_id)?;
         self.flush_cursor_gap(id);
         // Refresh only the clamping bound: the committed layout is
@@ -1563,7 +1579,7 @@ where
         Ok(to)
     }
 
-    fn request_region_load(&mut self, cursor_id: usize, row: usize) -> WreditResult<bool> {
+    fn request_region_load(&mut self, cursor_id: usize, row: usize) -> Result<bool> {
         let id = self.validate_cursor(cursor_id)?;
         let logical = self.base.logical_length();
         let Some(cursor) = self.base.cursor(id) else {
@@ -1577,7 +1593,7 @@ where
         Ok(loaded)
     }
 
-    fn cursor_row(&self, cursor_id: usize) -> WreditResult<usize> {
+    fn cursor_row(&self, cursor_id: usize) -> Result<usize> {
         let id = self.validate_cursor(cursor_id)?;
         let anchors = self.base.valid_line_anchors();
         let rows = self.base.rows.get();
@@ -1590,7 +1606,7 @@ where
         Ok(row)
     }
 
-    fn cursor_col(&self, cursor_id: usize) -> WreditResult<usize> {
+    fn cursor_col(&self, cursor_id: usize) -> Result<usize> {
         let id = self.validate_cursor(cursor_id)?;
         Ok(self
             .base
@@ -1599,7 +1615,7 @@ where
             .unwrap_or(0))
     }
 
-    fn cursor_width(&self, cursor_id: usize) -> WreditResult<usize> {
+    fn cursor_width(&self, cursor_id: usize) -> Result<usize> {
         let id = self.validate_cursor(cursor_id)?;
         Ok(self
             .base
@@ -1615,7 +1631,7 @@ where
     Raw: Copy + Into<u32> + From<u32> + From<Buf>,
     Buf: Copy + From<Raw>,
 {
-    fn enable_history(&mut self, hot_bytes: u64, window: usize, keep: usize) -> WreditResult<()> {
+    fn enable_history(&mut self, hot_bytes: u64, window: usize, keep: usize) -> Result<()> {
         self.base.enable_history(hot_bytes, window, keep)
     }
 
@@ -1639,7 +1655,7 @@ where
             .unwrap_or(false)
     }
 
-    fn undo(&mut self) -> WreditResult<bool> {
+    fn undo(&mut self) -> Result<bool> {
         let Some(history) = self.base.history_mut() else {
             return Ok(false);
         };
@@ -1661,7 +1677,7 @@ where
         Ok(true)
     }
 
-    fn redo(&mut self) -> WreditResult<bool> {
+    fn redo(&mut self) -> Result<bool> {
         let Some(history) = self.base.history_mut() else {
             return Ok(false);
         };
@@ -1683,7 +1699,7 @@ where
         Ok(true)
     }
 
-    fn restore(&mut self, back: usize) -> WreditResult<bool> {
+    fn restore(&mut self, back: usize) -> Result<bool> {
         let Some(history) = self.base.history_mut() else {
             return Ok(false);
         };
@@ -2078,7 +2094,7 @@ pub(crate) mod tests {
 
         assert!(matches!(
             stream.insert_scalars(id, &[u32::from('x'), 0xD800]),
-            Err(WreditError::Encoding)
+            Err(Error::Encoding)
         ));
         assert_eq!(stream.raw_length(), 2);
         stream.flush_all();
@@ -2093,7 +2109,7 @@ pub(crate) mod tests {
         stream.flush_all();
         assert!(matches!(
             stream.read_scalars(0, 4),
-            Err(WreditError::InvalidOperation { .. })
+            Err(Error::InvalidOperation { .. })
         ));
     }
 }

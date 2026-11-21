@@ -24,7 +24,7 @@
 //! on the heap.
 
 use super::fs::DiskFs;
-use crate::error::{WreditError, WreditResult};
+use crate::error::{Error, Result};
 use crate::fs_block::BlockDevice;
 
 /// A buffered, seekable view of one regular file.
@@ -45,7 +45,7 @@ use crate::fs_block::BlockDevice;
 /// use codevar_wredit::fs::DiskFs;
 /// use codevar_wredit::fs_writable::WritableFile;
 ///
-/// fn write_file() -> codevar_wredit::error::WreditResult<()> {
+/// fn write_file() -> codevar_wredit::error::Result<()> {
 ///     let disk = MemoryDisk::new(256)?;
 ///     let mut fs = DiskFs::format(disk, 256, 128)?;
 ///     let inode = fs.create(2, "notes.txt", 0x8000)?;
@@ -80,16 +80,16 @@ impl<'a, D: BlockDevice, const STAGING: usize> WritableFile<'a, D, STAGING> {
     ///
     /// # Errors
     ///
-    /// * [`WreditError::InvalidGapSize`] when `STAGING` is zero.
-    /// * [`WreditError::IsADirectory`] when `inode` is a directory.
+    /// * [`Error::InvalidGapSize`] when `STAGING` is zero.
+    /// * [`Error::IsADirectory`] when `inode` is a directory.
     /// * Propagates any device I/O error from the inode read.
-    pub fn new(fs: &'a mut DiskFs<D>, inode: u32) -> WreditResult<Self> {
+    pub fn new(fs: &'a mut DiskFs<D>, inode: u32) -> Result<Self> {
         if STAGING == 0 {
-            return Err(WreditError::InvalidGapSize { size: 0 });
+            return Err(Error::InvalidGapSize { size: 0 });
         }
         let ino = fs.read_inode(inode)?;
         if !ino.is_regular() {
-            return Err(WreditError::IsADirectory {
+            return Err(Error::IsADirectory {
                 what: "writable file target",
             });
         }
@@ -122,7 +122,7 @@ impl<'a, D: BlockDevice, const STAGING: usize> WritableFile<'a, D, STAGING> {
     /// # Errors
     ///
     /// Propagates a device I/O error from the flush.
-    pub fn set_position(&mut self, offset: u64) -> WreditResult<()> {
+    pub fn set_position(&mut self, offset: u64) -> Result<()> {
         self.flush()?;
         self.position = offset;
         Ok(())
@@ -140,7 +140,7 @@ impl<'a, D: BlockDevice, const STAGING: usize> WritableFile<'a, D, STAGING> {
     /// # Errors
     ///
     /// Propagates a device I/O error from any write-through.
-    pub fn write(&mut self, buf: &[u8]) -> WreditResult<usize> {
+    pub fn write(&mut self, buf: &[u8]) -> Result<usize> {
         let mut written = 0usize;
         while written < buf.len() {
             let space = STAGING - self.stage_len;
@@ -169,7 +169,7 @@ impl<'a, D: BlockDevice, const STAGING: usize> WritableFile<'a, D, STAGING> {
     /// # Errors
     ///
     /// Propagates a device I/O error from the underlying read.
-    pub fn read(&mut self, buf: &mut [u8]) -> WreditResult<usize> {
+    pub fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         self.flush()?;
         let size = u64::from(self.fs.read_inode(self.inode)?.size);
         let available = size.saturating_sub(self.position) as usize;
@@ -185,7 +185,7 @@ impl<'a, D: BlockDevice, const STAGING: usize> WritableFile<'a, D, STAGING> {
     /// # Errors
     ///
     /// Propagates a device I/O error from the write.
-    pub fn flush(&mut self) -> WreditResult<()> {
+    pub fn flush(&mut self) -> Result<()> {
         if self.stage_len == 0 {
             return Ok(());
         }
@@ -197,7 +197,7 @@ impl<'a, D: BlockDevice, const STAGING: usize> WritableFile<'a, D, STAGING> {
     /// # Errors
     ///
     /// Propagates any device I/O error from the cache or metadata flush.
-    pub fn sync_all(&mut self) -> WreditResult<()> {
+    pub fn sync_all(&mut self) -> Result<()> {
         self.flush()?;
         self.fs.flush()
     }
@@ -212,7 +212,7 @@ impl<'a, D: BlockDevice, const STAGING: usize> WritableFile<'a, D, STAGING> {
     ///
     /// Propagates a device I/O error from the flush or from the
     /// truncate operation.
-    pub fn truncate(&mut self, new_size: u64) -> WreditResult<()> {
+    pub fn truncate(&mut self, new_size: u64) -> Result<()> {
         self.flush()?;
         self.fs.truncate(self.inode, new_size)?;
         if self.position > new_size {
@@ -222,7 +222,7 @@ impl<'a, D: BlockDevice, const STAGING: usize> WritableFile<'a, D, STAGING> {
     }
 
     /// Writes the whole cache to the file at `position - stage_len`.
-    fn flush_cache(&mut self) -> WreditResult<()> {
+    fn flush_cache(&mut self) -> Result<()> {
         let len = self.stage_len;
         if len == 0 {
             return Ok(());
@@ -246,7 +246,7 @@ impl<'a, D: BlockDevice, const STAGING: usize> Drop for WritableFile<'a, D, STAG
 #[cfg(test)]
 mod tests {
     use super::WritableFile;
-    use crate::error::WreditResult;
+    use crate::error::Result;
     use crate::fs::DiskFs;
     use crate::fs_block::MemoryDisk;
 
@@ -254,7 +254,7 @@ mod tests {
     /// lint configuration (`allow-unwrap-in-tests`).
 
     #[test]
-    fn write_then_flush_persists_to_blocks() -> WreditResult<()> {
+    fn write_then_flush_persists_to_blocks() -> Result<()> {
         let disk = MemoryDisk::new(256)?;
         let mut fs = DiskFs::format(disk, 256, 128)?;
         let inode = fs.create(2, "notes.txt", 0x8000)?;
@@ -270,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn staging_cache_flushes_when_full() -> WreditResult<()> {
+    fn staging_cache_flushes_when_full() -> Result<()> {
         let disk = MemoryDisk::new(256)?;
         let mut fs = DiskFs::format(disk, 256, 128)?;
         let inode = fs.create(2, "chunked.txt", 0x8000)?;
@@ -295,7 +295,7 @@ mod tests {
         let dir = fs.lookup("src", 2).unwrap();
         assert!(matches!(
             WritableFile::<MemoryDisk, 8>::new(&mut fs, dir),
-            Err(crate::error::WreditError::IsADirectory { .. })
+            Err(crate::error::Error::IsADirectory { .. })
         ));
     }
 }
